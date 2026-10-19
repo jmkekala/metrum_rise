@@ -5,7 +5,8 @@
 //! Each building, household and worker settles its own 24-hour window at its daily phase
 //! instead of all at midnight: about N / 23,040 of each per slot. Building accounts are in
 //! `building_economy.rs` and wages in `employment.rs`; this module settles a household's window
-//! and holds the requests a phase leaves for the next hour's pass. City-wide totals post into
+//! and queues the requests a phase leaves: a housing review for the `housing requests` queue
+//! and an exit for the next hour's pass. City-wide totals post into
 //! [`super::data::CityDayTotals`] as each entity settles, so the calendar close is O(1).
 
 use super::HouseholdSystem;
@@ -44,12 +45,13 @@ impl HouseholdSystem {
         }
     }
 
-    /// Queues household `household_id` for the housing review the next hour serves: housing
-    /// affordability, relocation and eviction (`SIM-02-G`; a per-slot queue in `SIM-02-J`).
-    /// O(1).
-    pub(crate) fn request_housing_review(&mut self, household_id: usize) {
+    /// Queues household `household_id`'s housing review from `slot`: housing affordability,
+    /// relocation and eviction, which the `housing requests` queue serves (`SIM-02-G`,
+    /// `SIM-02-J`). O(1).
+    pub(crate) fn request_housing_review(&mut self, household_id: usize, slot: u64) {
         if self.households[household_id].member_count > 0 {
-            self.housing_reviews.push(self.handles.handle(household_id));
+            self.housing_reviews
+                .push(slot, self.handles.handle(household_id));
         }
     }
 

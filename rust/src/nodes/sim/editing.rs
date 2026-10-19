@@ -3099,7 +3099,8 @@ mod tests {
                 total_cost: 800.0,
                 freight_cost: 0.0,
                 eta_hours: 1,
-                queued_hours: 0,
+                leg_started_hour: 0,
+                trip_event_slot: 0,
                 cargo_loaded: false,
             });
 
@@ -3158,13 +3159,24 @@ mod tests {
             total_cost: 0.0,
             freight_cost: 0.0,
             eta_hours: 1,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: true,
         });
 
         assert!(core.bulldoze_building(1));
         assert_eq!(core.agents.len(), 1);
         assert!(core.undo_action_internal());
+        // The removed shipment's checks found nothing; undo checks the carrier again at the
+        // next slot (`SIM-02-J`). A freight check saves as kind 3 with the shipment id.
+        let next_slot = core.time.absolute_slot() + 1;
+        assert!(
+            core.events
+                .pending()
+                .iter()
+                .any(|timed| timed.slot == next_slot && timed.event.to_saved() == (3, 0))
+        );
+        assert!(core.logistics.trip_event_due(0, next_slot));
 
         let restored = core
             .agents

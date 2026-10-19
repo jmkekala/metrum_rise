@@ -23,11 +23,13 @@ use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::{
-    Household, HouseholdSystem, REPLENISHMENT_SHOPPING_TO_STORE,
+    DestinationRoll, Household, HouseholdSystem, JobBoardRoll, REPLENISHMENT_SHOPPING_TO_STORE,
+    SavedDestinationRoll, SavedDestinationSweep, SavedJobBoard, SavedJobBoardSweep,
 };
 use crate::simulation::economy::logistics::{
-    CarrierClass, FreightRequestFailure, FreightRequestKey, SavedSupplierRoll, SavedSupplierSweep,
-    Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem, SupplierRoll,
+    CarrierClass, FreightRequest, FreightRequestFailure, FreightRequestKey, FreightRequestKind,
+    SavedSupplierRoll, SavedSupplierSweep, Shipment, ShipmentEndpoint, ShipmentStatus,
+    ShipmentSystem, SupplierRoll,
 };
 use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
 use crate::simulation::grid::noise::NoiseSystem;
@@ -252,7 +254,7 @@ fn snapshot_test_building(
         operating_budget: 500.0,
         profit_tax_budget_baseline: 375.0,
         last_day_profit: 125.0,
-        shipment_cooldown_until_tick: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -608,7 +610,41 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         .handles
         .register_appended(households.households.len());
     let first_household = households.handles.handle(0);
-    households.housing_reviews.push(first_household);
+    households.housing_reviews.push(17, first_household);
+    households.rehousing.push(23, first_household);
+    households.restock_requests.push(29, first_household);
+    households.visit_requests.push(31, first_household);
+    households.visit_credit = 448;
+    households.shopper_departures.place(960, 1_200);
+    // A destination front and a sweep in progress (`SIM-02-J`), each kind saved in order.
+    let destinations = SavedDestinationRoll {
+        current: [true, false],
+        front: Some((
+            7,
+            [
+                vec![(1 << 32 | 3, -1, 0, ([4, 0], 1), ([2, 5], 2))],
+                vec![(0, 2, 2, ([0, 0], 0), ([1, 0], 1))],
+            ],
+        )),
+        sweep: Some(SavedDestinationSweep {
+            building_handles: 2,
+            hour: 8,
+            next_chunk: 300,
+            entries: [vec![(1, 0, -3, ([6, 0], 1), ([0, 0], 0))], Vec::new()],
+        }),
+    };
+    households.destinations = DestinationRoll::restore(destinations.clone()).unwrap();
+    let job_board = SavedJobBoard {
+        front: Some((9, vec![Handle::from_parts(0, 0), Handle::from_parts(1, 2)])),
+        sweep: Some(SavedJobBoardSweep {
+            building_handles: 2,
+            hour: 10,
+            next_chunk: 200,
+            members: vec![Handle::from_parts(1, 2)],
+        }),
+    };
+    households.job_board = JobBoardRoll::restore(job_board.clone()).unwrap();
+    households.job_requests.push(37, Handle::from_parts(0, 0));
     households.exits.push(first_household);
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -627,9 +663,22 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         total_cost: 640.0,
         freight_cost: 16.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: false,
     });
+    // Ids continue past dropped shipments, and the request queue keeps its order (`SIM-02-J`).
+    logistics.next_shipment_id = 5;
+    for (slot, kind) in [
+        (90, FreightRequestKind::Export),
+        (91, FreightRequestKind::Inbound),
+    ] {
+        logistics.freight_requests.push_back(FreightRequest {
+            slot,
+            building: crate::simulation::core::handles::Handle::from_parts(0, 2),
+            kind,
+        });
+    }
     logistics.request_failures.insert(
         FreightRequestKey {
             destination_building_id: 0,
@@ -905,6 +954,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 scheduler: crate::simulation::save::SavedScheduler {
                     environment,
                     demand_snapshot: demand_snapshot.clone(),
+                    logistics_next_shipment_id: logistics.next_shipment_id,
                     ..Default::default()
                 },
                 allocator,
@@ -1053,7 +1103,34 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         (1.0 / 3.0, 7, 0.375)
     );
     assert_eq!(loaded.households.daily_ledgers()[0].paid_workers, 2);
-    assert_eq!(loaded.households.housing_reviews, vec![first_household]);
+    assert_eq!(
+        loaded.households.housing_reviews.iter().collect::<Vec<_>>(),
+        vec![(17, first_household)]
+    );
+    assert_eq!(
+        loaded.households.rehousing.iter().collect::<Vec<_>>(),
+        vec![(23, first_household)]
+    );
+    assert_eq!(
+        loaded
+            .households
+            .restock_requests
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![(29, first_household)]
+    );
+    assert_eq!(
+        loaded.households.visit_requests.iter().collect::<Vec<_>>(),
+        vec![(31, first_household)]
+    );
+    assert_eq!(loaded.households.visit_credit, 448);
+    assert_eq!(
+        loaded.households.shopper_departures,
+        households.shopper_departures
+    );
+    assert_eq!(loaded.households.destinations.saved(), destinations);
+    assert_eq!(loaded.households.job_board.saved(), job_board);
+    assert_eq!(loaded.households.job_requests, households.job_requests);
     assert_eq!(loaded.households.exits, vec![first_household]);
     assert_eq!(
         (
@@ -1466,6 +1543,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.logistics.shipments[0].freight_cost, 16.0);
     assert_eq!(loaded.logistics.supplier_roll.saved(), supplier_roll);
+    assert_eq!(loaded.logistics.next_shipment_id, 5);
+    assert_eq!(
+        loaded.logistics.freight_requests,
+        logistics.freight_requests
+    );
 }
 
 #[test]
@@ -1567,7 +1649,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         operating_budget: 500.0,
         profit_tax_budget_baseline: 500.0,
         last_day_profit: 0.0,
-        shipment_cooldown_until_tick: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,

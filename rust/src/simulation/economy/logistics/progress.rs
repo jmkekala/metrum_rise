@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Shipment arrival, refund, and failure handling.
+//! Shipment loading, dispatch, arrival, refund, timeout and failure handling. Every step runs
+//! when the shipment's state changes or at one of its trip events (`SIM-02-E`, `SIM-02-J`):
+//! nothing scans the open shipments.
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -12,6 +14,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
 use super::data::{Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
+use super::requests::event_cooldown_until;
 use super::resource::{building_accepts_input_resource, refund_input_payment};
 
 enum CarrierProgress {
@@ -26,29 +29,35 @@ impl ShipmentSystem {
         self.shipments.binary_search_by_key(&id, |job| job.id).ok()
     }
 
-    /// Loads every new shipment's cargo at its source and lists it for a paced carrier
-    /// departure (`SIM-02-E`); a shipment whose endpoints are no longer ready fails at once.
-    /// O(open shipments).
-    pub(super) fn load_ready_shipments(
+    /// Loads the cargo of every unloaded shipment with an id of at least `first_id` at its
+    /// source and lists it for a carrier departure (`SIM-02-E`); a shipment whose endpoints are
+    /// no longer ready fails at once. O(log S) plus O(1) per shipment from `first_id` on.
+    pub(super) fn load_new_shipments(
         &mut self,
+        first_id: u64,
         allocator: &mut BuildingAllocator,
         treasury_balance: &mut f64,
         retry_cooldown_hours: u16,
         catalog: &RuntimeEconomyCatalog,
     ) {
-        for idx in 0..self.shipments.len() {
+        let first = self
+            .shipments
+            .partition_point(|shipment| shipment.id < first_id);
+        for idx in first..self.shipments.len() {
             let shipment = &self.shipments[idx];
             if shipment.status != ShipmentStatus::InTransit || shipment.cargo_loaded {
                 continue;
             }
             if !shipment_endpoints_ready(shipment, allocator, catalog) {
-                let cooldown_until_tick = self.hour_ticks + u32::from(retry_cooldown_hours);
+                // Loading runs after the slot's phases.
+                let retry_from = allocator.now_slot + 1;
                 self.update_shipment(idx, |shipment| {
                     fail_shipment_before_dispatch(
                         shipment,
                         allocator,
                         treasury_balance,
-                        cooldown_until_tick,
+                        retry_from,
+                        retry_cooldown_hours,
                     )
                 });
                 continue;
@@ -62,7 +71,7 @@ impl ShipmentSystem {
         }
     }
 
-    /// Sends loaded shipment `id`'s carrier on its way at its paced slot (`SIM-02-E`). True when
+    /// Sends loaded shipment `id`'s carrier on its way at its departure slot (`SIM-02-E`). True when
     /// a carrier left; one that cannot route fails the shipment and returns its cargo.
     /// O(log S) plus one route.
     pub(crate) fn dispatch_shipment(
@@ -123,26 +132,29 @@ impl ShipmentSystem {
                 .operational_clock
                 .shipment_retry_cooldown_hours;
             return_loaded_cargo(&shipment, allocator);
-            let cooldown_until_tick = self.hour_ticks + u32::from(retry_cooldown_hours);
+            // Departures fire before the slot's phases.
+            let retry_from = allocator.now_slot;
             self.update_shipment(idx, |shipment| {
                 fail_shipment_before_dispatch(
                     shipment,
                     allocator,
                     treasury_balance,
-                    cooldown_until_tick,
+                    retry_from,
+                    retry_cooldown_hours,
                 )
             });
             return false;
         };
         self.shipments[idx].carrier = agents.agent_handle(carrier_agent_id);
-        self.shipments[idx].queued_hours = 0;
+        self.shipments[idx].leg_started_hour = self.hour_ticks;
         crate::debug::work::add(crate::debug::work::Work::FreightDispatches, 1);
         true
     }
 
     /// One check of shipment `id`'s carrier (`SIM-02-E`): a carrier at its destination delivers
-    /// and turns back, one back at its source finishes. True while the carrier is under way.
-    /// O(log S) plus the delivery.
+    /// and turns back, one back at its source finishes, and one still on a leg that started
+    /// its timeout's hours ago times out (`SIM-02-J`): an outbound leg expires with a refund, a
+    /// return leg finishes. True while the carrier is under way. O(log S) plus the delivery.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_shipment(
         &mut self,
@@ -158,11 +170,12 @@ impl ShipmentSystem {
             return false;
         };
         let shipment = self.shipments[idx].clone();
+        let overdue = self.leg_overdue(&shipment);
         match shipment.status {
             ShipmentStatus::Returning => {
                 match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.source) {
-                    CarrierProgress::Traveling => true,
-                    CarrierProgress::Arrived | CarrierProgress::Missing => {
+                    CarrierProgress::Traveling if !overdue => true,
+                    _ => {
                         self.finish_delivered_shipment(idx, &shipment, agents);
                         false
                     }
@@ -180,7 +193,20 @@ impl ShipmentSystem {
                     .shipment_retry_cooldown_hours;
                 match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.destination)
                 {
-                    CarrierProgress::Traveling => true,
+                    CarrierProgress::Traveling if !overdue => true,
+                    CarrierProgress::Traveling => {
+                        self.fail_in_transit_shipment(
+                            idx,
+                            allocator,
+                            agents,
+                            treasury_balance,
+                            retry_cooldown_hours,
+                            &catalog,
+                            ShipmentStatus::Expired,
+                            "carrier_timeout",
+                        );
+                        false
+                    }
                     CarrierProgress::Missing => {
                         self.fail_in_transit_shipment(
                             idx,
@@ -215,55 +241,17 @@ impl ShipmentSystem {
         }
     }
 
-    /// Hourly: carriers still under way age by one hour and time out; arrived ones are left to
-    /// their checks (`SIM-02-E`). O(open shipments).
-    pub(super) fn expire_overdue_shipments(
-        &mut self,
-        allocator: &mut BuildingAllocator,
-        agents: &mut AgentSystem,
-        treasury_balance: &mut f64,
-        retry_cooldown_hours: u16,
-        catalog: &RuntimeEconomyCatalog,
-    ) {
-        for idx in 0..self.shipments.len() {
-            let shipment = &self.shipments[idx];
-            let endpoint = match shipment.status {
-                ShipmentStatus::Returning => shipment.source,
-                ShipmentStatus::InTransit => shipment.destination,
-                _ => continue,
-            };
-            if shipment.carrier.is_none()
-                || !matches!(
-                    shipment_carrier_progress_to_endpoint(shipment, agents, endpoint),
-                    CarrierProgress::Traveling
-                )
-            {
-                continue;
-            }
-            self.shipments[idx].queued_hours = self.shipments[idx].queued_hours.saturating_add(1);
-            let shipment = self.shipments[idx].clone();
-            if shipment.queued_hours < in_transit_timeout_hours(&shipment) {
-                continue;
-            }
-            if shipment.status == ShipmentStatus::Returning {
-                self.finish_delivered_shipment(idx, &shipment, agents);
-            } else {
-                self.fail_in_transit_shipment(
-                    idx,
-                    allocator,
-                    agents,
-                    treasury_balance,
-                    retry_cooldown_hours,
-                    catalog,
-                    ShipmentStatus::Expired,
-                    "carrier_timeout",
-                );
-            }
-        }
+    // Whether `shipment`'s current leg has run its timeout's logistics hours. The hourly pass
+    // aged a carrier still on the road by one hour at each hour start; comparing the hours since
+    // the leg's start at each check expires it at the first check of the same hour.
+    fn leg_overdue(&self, shipment: &Shipment) -> bool {
+        self.hour_ticks.saturating_sub(shipment.leg_started_hour)
+            >= u32::from(in_transit_timeout_hours(shipment))
     }
 
     /// Test driver of one logistics hour's trips: loads and dispatches every ready shipment at
-    /// once, ages the carriers under way, then checks every carrier once.
+    /// once, starts the next logistics hour, then checks every carrier once, which times out the
+    /// legs that ran their hours.
     #[cfg(test)]
     pub(super) fn progress_shipments(
         &mut self,
@@ -280,17 +268,17 @@ impl ShipmentSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
             .operational_clock
             .shipment_retry_cooldown_hours;
-        self.load_ready_shipments(allocator, treasury_balance, retry_cooldown_hours, &catalog);
-        for id in std::mem::take(&mut self.held_dispatches) {
-            self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
-        }
-        self.expire_overdue_shipments(
+        self.load_new_shipments(
+            0,
             allocator,
-            agents,
             treasury_balance,
             retry_cooldown_hours,
             &catalog,
         );
+        for id in std::mem::take(&mut self.held_dispatches) {
+            self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
+        }
+        self.hourly_tick();
         let ids: Vec<u64> = self.shipments.iter().map(|shipment| shipment.id).collect();
         for id in ids {
             self.check_shipment(
@@ -306,8 +294,10 @@ impl ShipmentSystem {
         self.assert_reservations_current();
     }
 
-    /// Test driver of one logistics hour with its trips taken at once: the hourly pass, then
-    /// every held carrier dispatched and every carrier checked, then closed shipments dropped.
+    /// Test driver of one logistics hour with its trips taken at once: the hour starts, every
+    /// building's phase check queues its requests, the queue serves them all and any shipment a
+    /// test added unloaded loads, then every held carrier is dispatched and every carrier
+    /// checked, then closed shipments dropped.
     #[cfg(test)]
     pub(crate) fn hourly_tick_with_trips(
         &mut self,
@@ -318,13 +308,28 @@ impl ShipmentSystem {
         minute_of_day: u16,
         treasury_balance: &mut f64,
     ) {
-        self.hourly_tick(
+        self.hourly_tick();
+        self.request_freight_for_every_building(self.hour_start_slot_for_test(), allocator);
+        self.serve_freight_requests(
+            usize::MAX,
             allocator,
-            agents,
             transit_network,
             graph,
             minute_of_day,
             treasury_balance,
+        );
+        let retry_cooldown_hours = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
+            .operational_clock
+            .shipment_retry_cooldown_hours;
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.load_new_shipments(
+            0,
+            allocator,
+            treasury_balance,
+            retry_cooldown_hours,
+            &catalog,
         );
         for id in std::mem::take(&mut self.held_dispatches) {
             self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
@@ -597,7 +602,7 @@ impl ShipmentSystem {
             self.update_shipment(shipment_idx, |shipment| {
                 shipment.status = ShipmentStatus::Returning;
             });
-            self.shipments[shipment_idx].queued_hours = 0;
+            self.shipments[shipment_idx].leg_started_hour = self.hour_ticks;
         } else {
             self.finish_delivered_shipment(shipment_idx, shipment, agents);
         }
@@ -704,8 +709,14 @@ impl ShipmentSystem {
                 destination_idx,
                 shipment.total_cost,
             );
-            allocator.buildings[destination_idx].shipment_cooldown_until_tick =
-                self.hour_ticks + u32::from(retry_cooldown_hours);
+            // Checks fire before the slot's phases.
+            allocator.buildings[destination_idx].shipment_cooldown_until_slot =
+                event_cooldown_until(
+                    allocator,
+                    destination_idx,
+                    allocator.now_slot,
+                    retry_cooldown_hours,
+                );
         }
         if shipment.cargo_loaded
             && let ShipmentEndpoint::Building(source_idx) = shipment.source
@@ -713,8 +724,12 @@ impl ShipmentSystem {
         {
             allocator.buildings[source_idx]
                 .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-            allocator.buildings[source_idx].shipment_cooldown_until_tick =
-                self.hour_ticks + u32::from(retry_cooldown_hours);
+            allocator.buildings[source_idx].shipment_cooldown_until_slot = event_cooldown_until(
+                allocator,
+                source_idx,
+                allocator.now_slot,
+                retry_cooldown_hours,
+            );
         }
 
         let (source_kind, source_id) = shipment_endpoint_log_fields(shipment.source);
@@ -733,7 +748,7 @@ impl ShipmentSystem {
                 .resource_id_for_runtime_id(shipment.resource_runtime_id)
                 .unwrap_or("unknown"),
             shipment.amount,
-            shipment.queued_hours,
+            self.hour_ticks.saturating_sub(shipment.leg_started_hour),
             shipment.eta_hours,
             in_transit_timeout_hours(&shipment),
             shipment.total_cost,
@@ -807,12 +822,14 @@ fn building_can_participate_in_freight(allocator: &BuildingAllocator, building_i
         && !building.is_under_construction()
 }
 
-// `cooldown_until_tick` is the logistics hour tick from which both endpoints may request again.
+// Fails a shipment that never left; both endpoints may request again from their first phase at
+// or after `retry_from` (`event_cooldown_until`).
 fn fail_shipment_before_dispatch(
     shipment: &mut Shipment,
     allocator: &mut BuildingAllocator,
     treasury_balance: &mut f64,
-    cooldown_until_tick: u32,
+    retry_from: u64,
+    retry_cooldown_hours: u16,
 ) {
     if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
         && destination_idx < allocator.buildings.len()
@@ -823,12 +840,14 @@ fn fail_shipment_before_dispatch(
             destination_idx,
             shipment.total_cost,
         );
-        allocator.buildings[destination_idx].shipment_cooldown_until_tick = cooldown_until_tick;
+        allocator.buildings[destination_idx].shipment_cooldown_until_slot =
+            event_cooldown_until(allocator, destination_idx, retry_from, retry_cooldown_hours);
     }
     if let ShipmentEndpoint::Building(source_idx) = shipment.source
         && source_idx < allocator.buildings.len()
     {
-        allocator.buildings[source_idx].shipment_cooldown_until_tick = cooldown_until_tick;
+        allocator.buildings[source_idx].shipment_cooldown_until_slot =
+            event_cooldown_until(allocator, source_idx, retry_from, retry_cooldown_hours);
     }
     shipment.status = ShipmentStatus::Failed;
 }

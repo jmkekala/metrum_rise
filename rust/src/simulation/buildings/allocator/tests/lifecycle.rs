@@ -674,18 +674,7 @@ fn test_immigration_claims_vacant_home() {
     agents.pos_y[0] = expected_door.y;
     // The carrier moves in when it arrives (`SIM-02-E`); the hour then counts its members.
     households.materialize_arrived_household_carriers(&mut agents, &allocator);
-    let mut treasury_balance = 0.0;
-    households.operational_hour_tick(
-        &mut agents,
-        &mut allocator,
-        &mut logistics,
-        &network,
-        &graph,
-        0,
-        0,
-        &mut treasury_balance,
-        &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
-    );
+    households.operational_hour_tick(&mut agents, &allocator, &mut logistics, 0, 0);
     assert_eq!(agents.len(), expected_household_size as usize);
     assert_eq!(households.households.len(), 1);
     assert_eq!(

@@ -205,7 +205,7 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
         operating_budget,
         profit_tax_budget_baseline,
         last_day_profit,
-        shipment_cooldown_until_tick,
+        shipment_cooldown_until_slot,
         daily_owa_input_value,
         daily_local_input_value,
         daily_city_funded_input_cost,
@@ -275,7 +275,7 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
     ] {
         out.f32(value);
     }
-    out.u32(*shipment_cooldown_until_tick);
+    out.u64(*shipment_cooldown_until_slot);
     for value in [
         *daily_owa_input_value,
         *daily_local_input_value,
@@ -361,7 +361,7 @@ pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String>
         profit_tax_budget_baseline,
         last_day_profit,
     ] = [reader.f32()?, reader.f32()?, reader.f32()?, reader.f32()?];
-    let shipment_cooldown_until_tick = reader.u32()?;
+    let shipment_cooldown_until_slot = reader.u64()?;
     let [
         daily_owa_input_value,
         daily_local_input_value,
@@ -439,7 +439,7 @@ pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String>
         operating_budget,
         profit_tax_budget_baseline,
         last_day_profit,
-        shipment_cooldown_until_tick,
+        shipment_cooldown_until_slot,
         daily_owa_input_value,
         daily_local_input_value,
         daily_city_funded_input_cost,

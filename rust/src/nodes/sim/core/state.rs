@@ -11,12 +11,16 @@ use super::budget::{
     RoadLengthRoll,
 };
 use super::frame::EconomyObserver;
-use super::schedule::{CELL_LOT_QUOTA, SimEvent, SimSystem, simulation_schedule};
+use super::schedule::{
+    CELL_LOT_QUOTA, FREIGHT_REQUEST_QUOTA, HOUSING_REQUEST_QUOTA, JOB_REQUEST_QUOTA,
+    RESTOCK_REQUEST_QUOTA, SimEvent, SimSystem, simulation_schedule,
+};
 use super::snapshot::SimulationSnapshot;
 use super::terrain_payloads::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
     RefinedTerrainPatchCacheKey,
 };
+use super::trips::TripEvent;
 use super::water_preview::{AuthoredWaterPatchFillDebug, WorldLakeFillPreview};
 use crate::debug_log;
 use crate::simulation::agriculture::AgricultureSystem;
@@ -599,8 +603,9 @@ impl SimCore {
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
     /// The demand pass plans on a snapshot of the whole city taken after the hour's census
     /// instead of the one the slots would have swept. Every entity's hour runs at once after
-    /// the pass, then the cell-lot queue serves the hour's quota and one whole freight supplier
-    /// sweep runs, as the slots of the hour would.
+    /// the pass, then the cell-lot, freight, housing, restock, visit and job request queues
+    /// serve the hour's quota and whole freight supplier, household destination and job board
+    /// sweeps run, as the slots of the hour would.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
         self.demand.discard_snapshot_front();
         // The census runs at once on a copy taken now and publishes before the pass; a census
@@ -623,8 +628,25 @@ impl SimCore {
         for slot in &PlanningSlot::ALL[1..] {
             self.execute_demand_planning_slot(*slot, day_index, minute_of_day);
         }
-        self.run_every_hour_phase();
+        let hour_start = absolute_slot(day_index, minute_of_day - minute_of_day % 60, 0);
+        self.run_every_hour_phase(hour_start);
         self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize * SLOTS_PER_HOUR as usize);
+        self.serve_freight_request_queue(
+            hour_start,
+            FREIGHT_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
+        );
+        self.serve_housing_request_queue(HOUSING_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize);
+        self.serve_restock_request_queue(
+            hour_start,
+            RESTOCK_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
+        );
+        for slot in hour_start..hour_start + SLOTS_PER_HOUR {
+            self.serve_visit_request_queue(slot);
+        }
+        self.serve_job_request_queue(
+            hour_start,
+            JOB_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
+        );
         self.allocator
             .building_handles
             .register_appended(self.allocator.buildings.len());
@@ -633,6 +655,14 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
+        self.households.run_whole_destination_sweep(
+            hour_start / SLOTS_PER_HOUR + 1,
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+        );
+        self.households
+            .run_whole_job_board(hour_start / SLOTS_PER_HOUR + 1, &self.allocator);
     }
 
     /// Slot `slot`'s chunk of the rolling freight supplier index (`SIM-02-I`) that the next
@@ -688,14 +718,10 @@ impl SimCore {
         }
         self.households.operational_hour_tick(
             &mut self.agents,
-            &mut self.allocator,
+            &self.allocator,
             &mut self.logistics,
-            &self.transit_network,
-            &self.region_graph,
             absolute_hour,
             minute_of_day,
-            &mut self.treasury.balance,
-            &self.fiscal_policy,
         );
         // Capture receipts before demand can remove or replace their building.
         observer.hourly_economy(self);
@@ -725,7 +751,6 @@ impl SimCore {
         // follow at slots 1 to 3 (`SIM-02-I`).
         self.execute_demand_planning_slot(PlanningSlot::Residential, day_index, minute_of_day);
         observer.buildings_changed(self);
-        self.schedule_trip_departures(absolute_slot(day_index, minute_of_day, 0));
     }
 
     /// Fits every lane to the compiled road surface, for setups that build roads and borders
@@ -1005,6 +1030,17 @@ impl SimCore {
                 &self.allocator,
                 &self.allocator.building_handles,
             );
+            // An overdue freight event fires at the next slot; its shipment records that slot.
+            for timed in &trips {
+                if let SimEvent::Trip(
+                    TripEvent::FreightDispatch { shipment } | TripEvent::FreightCheck { shipment },
+                ) = timed.event
+                    && timed.slot < next_slot
+                    && self.logistics.trip_event_due(shipment, timed.slot)
+                {
+                    self.logistics.set_trip_event_slot(shipment, next_slot);
+                }
+            }
             reschedule_trips(&mut self.events, trips);
         }
     }

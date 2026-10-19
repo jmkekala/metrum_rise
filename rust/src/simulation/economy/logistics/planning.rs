@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Shared hourly freight planning context.
+//! Shared freight planning context of one slot of the freight request queue.
 //!
 //! The context is assembled from persistent state (`SIM-02-I`): the maintained reservation
 //! views, the freight topology cached by road-graph revision and the supplier index the rolling
-//! sweep finished. It borrows them for one pass and hands them back in
-//! [`FreightPlanningContext::finish`].
+//! sweep finished. It borrows them for the requests one slot serves (`SIM-02-J`) and hands them
+//! back in [`FreightPlanningContext::finish`].
 
 use std::sync::Arc;
 
@@ -80,13 +80,13 @@ impl FreightTopology {
     }
 }
 
-/// Immutable indices and mutable reservation state shared by one hourly freight pass.
+/// Immutable indices and mutable reservation state shared by the freight requests of one slot.
 pub(super) struct FreightPlanningContext {
-    /// Cached authored runtime catalog used by all freight planners this hour.
+    /// Cached authored runtime catalog used by the slot's freight planners.
     pub(super) catalog: Arc<RuntimeEconomyCatalog>,
-    /// Cached authored runtime tuning used by all freight planners this hour.
+    /// Cached authored runtime tuning used by the slot's freight planners.
     pub(super) tuning: Arc<RuntimeEconomyTuning>,
-    /// Maintained reservation views, updated by new plans and planning holds.
+    /// Maintained reservation views, updated by new plans.
     pub(super) reservations: ReservationViews,
     /// Reachable `OWA` border nodes in deterministic graph order.
     pub(super) border_nodes: Vec<u32>,
@@ -101,15 +101,18 @@ pub(super) struct FreightPlanningContext {
     pub(super) route_cache: FreightRouteCache,
     // Revisions of the borrowed topology.
     topology_keys: TopologyKeys,
-    // Hour of a supplier index borrowed from the rolling sweep; `None` for one built here.
-    supplier_index_hour: Option<u32>,
+    // Logistics hour of the supplier index, and whether this context built it rather than
+    // borrowing the rolling sweep's front.
+    supplier_index_hour: u32,
+    supplier_index_built: bool,
 }
 
 impl FreightPlanningContext {
-    /// Assembles the context for an hourly input/export planning pass. O(1) apart from the
-    /// route-cache preparation, unless the road graph changed, the reservation views must be
-    /// rebuilt, or no sweep finished this hour's supplier index: a world that has none (its
-    /// first hour, a changed topology, an hour stepped without the sweep) builds it here.
+    /// Assembles the context for one slot's freight requests. O(borders) for the route-cache
+    /// preparation, unless the road graph changed, the reservation views must be rebuilt, or no
+    /// sweep finished this hour's supplier index: a world that has none (its first hour, a
+    /// changed topology, an hour stepped without the sweep) builds one here, O(handles ×
+    /// outputs), and keeps it as the front for the rest of the hour.
     pub(super) fn build(
         shipments: &mut ShipmentSystem,
         allocator: &mut BuildingAllocator,
@@ -127,11 +130,11 @@ impl FreightPlanningContext {
         let resource_count = catalog.resource_count();
         let reservations = shipments.take_reservation_views(resource_count);
         let hour = shipments.hour_ticks;
-        let (supplier_index, supplier_index_hour) = match shipments
+        let (supplier_index, supplier_index_built) = match shipments
             .supplier_roll
             .take_front(hour, shipments.freight_topology.components_generation())
         {
-            Some(index) => (index, Some(hour)),
+            Some(index) => (index, false),
             None => (
                 SupplierCandidateIndex::build(
                     allocator,
@@ -141,7 +144,7 @@ impl FreightPlanningContext {
                     &reservations,
                     tuning.logistics.truck_payload_kg,
                 ),
-                None,
+                true,
             ),
         };
         let FreightTopology {
@@ -164,15 +167,15 @@ impl FreightPlanningContext {
             supplier_index,
             route_cache,
             topology_keys,
-            supplier_index_hour,
+            supplier_index_hour: hour,
+            supplier_index_built,
         }
     }
 
-    /// Hands the route cache, reservation views, topology and swept supplier index back after
-    /// hourly freight planning has finished; the export holds protected local stock from this
-    /// pass only.
-    pub(super) fn finish(mut self, shipments: &mut ShipmentSystem) {
-        self.reservations.release_holds();
+    /// Hands the route cache, reservation views, topology and supplier index back after the
+    /// slot's planning; an index built here becomes the front for the rest of the hour, so the
+    /// hour's later slots read the same listing.
+    pub(super) fn finish(self, shipments: &mut ShipmentSystem) {
         shipments.freight_route_cache = self.route_cache;
         shipments.reservations = Some(self.reservations);
         shipments.freight_topology = FreightTopology {
@@ -181,10 +184,17 @@ impl FreightPlanningContext {
             components: self.freight_components,
             max_speed: self.max_freight_speed,
         };
-        if let Some(hour) = self.supplier_index_hour {
+        if self.supplier_index_built {
+            let components = shipments.freight_topology.components_generation();
+            shipments.supplier_roll.install_front(
+                self.supplier_index_hour,
+                components,
+                self.supplier_index,
+            );
+        } else {
             shipments
                 .supplier_roll
-                .restore_front(hour, self.supplier_index);
+                .restore_front(self.supplier_index_hour, self.supplier_index);
         }
     }
 }

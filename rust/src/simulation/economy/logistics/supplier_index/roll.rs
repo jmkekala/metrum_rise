@@ -118,6 +118,20 @@ impl SupplierRoll {
         }
     }
 
+    /// Makes `index`, built at once for logistics hour `hour` over freight components of
+    /// generation `components`, the front that hour's later passes read. A sweep in progress
+    /// keeps going and replaces it at the hour's end. O(1).
+    pub(in crate::simulation::economy::logistics) fn install_front(
+        &mut self,
+        hour: u32,
+        components: Option<u32>,
+        index: SupplierCandidateIndex,
+    ) {
+        self.front = Some(index);
+        self.front_hour = Some(hour);
+        self.front_components = components;
+    }
+
     // Chunk `slot mod S` of the hour's sweep for the pass after logistics hour `hour_ticks`.
     fn advance(
         &mut self,

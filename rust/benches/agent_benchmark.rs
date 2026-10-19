@@ -379,7 +379,7 @@ fn build_access_shared() -> AccessSharedSetup {
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
-            shipment_cooldown_until_tick: 0,
+            shipment_cooldown_until_slot: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
             pending_redevelopment: false,

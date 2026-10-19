@@ -363,7 +363,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   planned in the hour's first three slots and the hour's buildings are queued, permitted and
   cleared in the fourth, in the same order as before. Newly admitted households set off three
   slots later, and route guidance now follows new and removed buildings at once instead of up to
-  a day later (save format 101).
+  a day later (save format 101). `SIM-02-J` parts 1 and 2 (2026-10-19): freight orders, housing
+  moves, shopping, service visits and job searches now happen a few at a time through every
+  minute instead of all at the top of the hour: each building, household and resident asks at
+  its own minute. A family that loses its home looks for a new one at its own minute, so the
+  hour's newcomers may take the vacancy first, and a worker whose better job filled before it
+  applied waits for its next job review instead of trying again each hour. Shops run out less
+  often in larger cities (save format 102).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

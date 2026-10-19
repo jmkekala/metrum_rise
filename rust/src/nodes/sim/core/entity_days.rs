@@ -104,7 +104,7 @@ impl SimCore {
                 self.collect_fiscal_revenue(revenue);
                 observer.household_day_closed(self, household_id);
                 self.households.open_household_window(household_id);
-                self.households.request_housing_review(household_id);
+                self.households.request_housing_review(household_id, slot);
                 if self
                     .households
                     .exit_eligible(household_id, exit_policy, &self.allocator)

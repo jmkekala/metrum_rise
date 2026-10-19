@@ -3,7 +3,7 @@
 //! Household record storage and building-reference maintenance.
 
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::AtomicU32;
 
 use super::metrics::household_supply_resource_runtime_id;
 use super::replenishment::{
@@ -12,6 +12,7 @@ use super::replenishment::{
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::{Handle, HandleTable};
+use crate::simulation::core::request_queue::RequestQueue;
 use crate::simulation::economy::agents::AgentHandle;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -249,7 +250,6 @@ pub struct HouseholdSystem {
     pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
     pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
-    pub(super) shopper_candidate_scratch: Vec<AtomicUsize>,
     pub(super) workplace_route_cache: super::employment::WorkplaceRouteCache,
     // The quotes in insertion order with the workplace pass that added each; a quote expires
     // a day of passes later, so the cache holds about one day's searches (`SIM-02-G`).
@@ -271,13 +271,52 @@ pub struct HouseholdSystem {
     pub(crate) last_day_totals: CityDayTotals,
     /// Coal stocked at power plants at the latest hourly dispatch, for the budget report.
     pub(crate) coal_inventory_kg: f64,
-    /// Households whose daily phase asked for a housing review, served by the next hour's pass
-    /// (`SIM-02-G`; a per-slot queue in `SIM-02-J`). Saved.
-    pub(crate) housing_reviews: Vec<Handle<Household>>,
+    /// Households whose daily phase asked for a housing review (`SIM-02-G`), served by the
+    /// `housing requests` queue after the rehousings (`SIM-02-J`). Saved in order.
+    pub(crate) housing_reviews: RequestQueue<Household>,
+    /// Households whose hourly phase found them without a usable home, served by the
+    /// `housing requests` queue first (`SIM-02-J`). Saved in order.
+    pub(crate) rehousing: RequestQueue<Household>,
+    // Outcomes of the housing requests served this hour, logged at its last slot.
+    pub(super) housing_diagnostics: super::relocation::HousingResolutionDiagnostics,
     /// Households that chose to leave at their daily phase, removed by the next hour's pass.
     /// Saved.
     pub(crate) exits: Vec<Handle<Household>>,
-    pub(super) housing_review_scratch: Vec<usize>,
+    /// Households whose hourly phase called for a restock, served by the `restock requests`
+    /// queue (`SIM-02-J`). Saved in order.
+    pub(crate) restock_requests: RequestQueue<Household>,
+    /// Households whose hourly phase drew a visible service visit, served by the
+    /// `visit requests` queue (`SIM-02-J`). Saved in order.
+    pub(crate) visit_requests: RequestQueue<Household>,
+    /// Slots of visit credit, one visit per `SLOTS_PER_HOUR` (`SIM-02-J`). Saved.
+    pub(crate) visit_credit: u32,
+    /// Shopper departures planned per minute, which levels them (`SIM-02-J`). Saved.
+    pub(crate) shopper_departures: crate::simulation::core::scheduler::MinuteLeveler,
+    /// Foot and car components that destination entries are bucketed by.
+    pub(crate) destination_topology: super::destinations::HouseholdTopology,
+    /// The rolling index of stores and service stores restock and visit requests read
+    /// (`SIM-02-J`). Saved.
+    pub(crate) destinations: super::destinations::DestinationRoll,
+    /// Agents whose hourly phase let them look for work, served by the `job requests` queue
+    /// (`SIM-02-J`). Saved in order.
+    pub(crate) job_requests: RequestQueue<crate::simulation::economy::agents::Agent>,
+    /// The open workplaces this hour's job searches read, swept over the hour before
+    /// (`SIM-02-J`). Saved.
+    pub(crate) job_board: super::job_board::JobBoardRoll,
+    // The job board's network side, derived and rebuilt when its key changes.
+    pub(super) job_supply: Option<super::employment::JobSupplySnapshot>,
+    // Reused batches of the slot's restock, visit and job requests.
+    pub(super) restock_batch: Vec<(u64, usize)>,
+    pub(super) visit_batch: Vec<usize>,
+    pub(super) job_batch: Vec<usize>,
+    // This hour's job search work: queue service, home keys, plans and milliseconds.
+    pub(super) job_queue_stats: super::requests::QueueStats,
+    pub(super) job_hour: (u32, u32, f64),
+    // Outcomes of this hour's restock and visit requests, logged at its last slot.
+    pub(super) replenishment_hour: super::replenishment::ReplenishmentDiagnostics,
+    pub(super) restock_queue_stats: super::requests::QueueStats,
+    pub(super) visit_hour: super::service_visits::ServiceVisitDiagnostics,
+    pub(super) visit_queue_stats: super::requests::QueueStats,
     /// The last finished hour's electricity dispatch and coverage, and this hour's totals so
     /// far (`SIM-02-I`). Saved.
     pub(crate) electricity_hour: super::electricity::ElectricityHour,
@@ -313,7 +352,6 @@ impl HouseholdSystem {
             removal_candidates_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
-            shopper_candidate_scratch: Vec::new(),
             workplace_route_cache: Default::default(),
             workplace_route_cache_order: Default::default(),
             workplace_route_cache_pass: 0,
@@ -326,9 +364,28 @@ impl HouseholdSystem {
             day_totals: CityDayTotals::default(),
             last_day_totals: CityDayTotals::default(),
             coal_inventory_kg: 0.0,
-            housing_reviews: Vec::new(),
+            housing_reviews: RequestQueue::default(),
+            rehousing: RequestQueue::default(),
+            housing_diagnostics: Default::default(),
             exits: Vec::new(),
-            housing_review_scratch: Vec::new(),
+            restock_requests: RequestQueue::default(),
+            visit_requests: RequestQueue::default(),
+            visit_credit: 0,
+            shopper_departures: Default::default(),
+            destination_topology: Default::default(),
+            destinations: Default::default(),
+            job_requests: RequestQueue::default(),
+            job_board: Default::default(),
+            job_supply: None,
+            restock_batch: Vec::new(),
+            visit_batch: Vec::new(),
+            job_batch: Vec::new(),
+            job_queue_stats: Default::default(),
+            job_hour: Default::default(),
+            replenishment_hour: Default::default(),
+            restock_queue_stats: Default::default(),
+            visit_hour: Default::default(),
+            visit_queue_stats: Default::default(),
             electricity_hour: Default::default(),
             service_sales: Default::default(),
             removed_electricity: Default::default(),
@@ -470,7 +527,6 @@ impl HouseholdSystem {
         self.removal_candidates_scratch.clear();
         self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
-        self.shopper_candidate_scratch.clear();
         self.invalidate_workplace_route_cache();
         self.workplace_network_quotes = Default::default();
         self.workplace_query_shards.clear();
@@ -479,7 +535,23 @@ impl HouseholdSystem {
         self.last_day_totals = CityDayTotals::default();
         self.coal_inventory_kg = 0.0;
         self.housing_reviews.clear();
+        self.rehousing.clear();
+        self.housing_diagnostics = Default::default();
         self.exits.clear();
+        self.restock_requests.clear();
+        self.visit_requests.clear();
+        self.visit_credit = 0;
+        self.shopper_departures = Default::default();
+        self.destinations = Default::default();
+        self.replenishment_hour = Default::default();
+        self.restock_queue_stats = Default::default();
+        self.visit_hour = Default::default();
+        self.visit_queue_stats = Default::default();
+        self.job_requests.clear();
+        self.job_board = Default::default();
+        self.job_supply = None;
+        self.job_queue_stats = Default::default();
+        self.job_hour = Default::default();
         self.electricity_hour = Default::default();
         self.service_sales = Default::default();
         self.removed_electricity = Default::default();
@@ -703,22 +775,6 @@ impl HouseholdSystem {
     pub(super) fn reset_shopping_car_scratch(&mut self) -> &[AtomicU32] {
         resize_atomic_scratch(&mut self.shopping_car_scratch, self.households.len());
         &self.shopping_car_scratch
-    }
-
-    /// Returns max-filled per-household shopper candidates for deterministic parallel reductions.
-    pub(super) fn reset_shopper_candidate_scratch(&mut self) -> &[AtomicUsize] {
-        if self.shopper_candidate_scratch.len() > self.households.len() {
-            self.shopper_candidate_scratch
-                .truncate(self.households.len());
-        }
-        while self.shopper_candidate_scratch.len() < self.households.len() {
-            self.shopper_candidate_scratch
-                .push(AtomicUsize::new(usize::MAX));
-        }
-        for slot in &self.shopper_candidate_scratch {
-            slot.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
-        }
-        &self.shopper_candidate_scratch
     }
 }
 

@@ -6,7 +6,7 @@
 //! moves its amount in O(1), so no pass rebuilds them from every shipment. Each slot sums
 //! integer units of 2^-30 kg, each amount converted once, so adds and removes in any order give
 //! the same sum as a fresh build, which a load makes. Test builds compare the views with a fresh
-//! build after every logistics hour.
+//! build at the start of every logistics hour and at the end of each test driver's hour.
 
 use crate::simulation::economy::definitions::ResourceRuntimeId;
 
@@ -39,9 +39,6 @@ pub(super) struct ReservationViews {
     // Reservations summed in each slot.
     outbound_open: Vec<u32>,
     inbound_open: Vec<u32>,
-    // Planning holds `(source, destination, resource, units)` of the pass in progress, in the
-    // order they were taken; released before the views are stored.
-    holds: Vec<(usize, usize, ResourceRuntimeId, u64)>,
 }
 
 impl ReservationViews {
@@ -66,7 +63,6 @@ impl ReservationViews {
             reserved_inbound: vec![0; slot_count],
             outbound_open: vec![0; slot_count],
             inbound_open: vec![0; slot_count],
-            holds: Vec::new(),
         };
         for shipment in shipments {
             views.add_shipment(shipment);
@@ -134,32 +130,6 @@ impl ReservationViews {
     ) {
         let units = reservation_units(amount);
         self.reserve(Side::Outbound, source_idx, resource_runtime_id, units);
-    }
-
-    /// Holds local stock for an input order this pass may still place, as a local shipment would,
-    /// until [`Self::release_holds`]. O(1).
-    pub(super) fn record_hold(
-        &mut self,
-        source_idx: usize,
-        destination_idx: usize,
-        resource_runtime_id: ResourceRuntimeId,
-        amount: f32,
-    ) {
-        self.record_local_shipment(source_idx, destination_idx, resource_runtime_id, amount);
-        self.holds.push((
-            source_idx,
-            destination_idx,
-            resource_runtime_id,
-            reservation_units(amount),
-        ));
-    }
-
-    /// Releases every hold, last first. O(holds).
-    pub(super) fn release_holds(&mut self) {
-        while let Some((source, destination, resource, units)) = self.holds.pop() {
-            self.release(Side::Outbound, source, resource, units);
-            self.release(Side::Inbound, destination, resource, units);
-        }
     }
 
     pub(super) fn add_shipment(&mut self, shipment: &Shipment) {
@@ -236,18 +206,6 @@ impl ReservationViews {
         }
     }
 
-    fn release(
-        &mut self,
-        side: Side,
-        building_idx: usize,
-        resource_runtime_id: ResourceRuntimeId,
-        units: u64,
-    ) {
-        if let Some(slot) = self.slot(building_idx, resource_runtime_id) {
-            self.release_slot(side, slot, units);
-        }
-    }
-
     fn reserve_slot(&mut self, side: Side, slot: usize, units: u64) {
         self.grow_to(slot);
         let (amounts, open) = self.side(side);
@@ -315,8 +273,6 @@ impl ReservationViews {
             )
         };
         self.resource_count == other.resource_count
-            && self.holds.is_empty()
-            && other.holds.is_empty()
             && (0..len).all(|index| slot(self, index) == slot(other, index))
     }
 }
@@ -502,7 +458,8 @@ mod tests {
             total_cost: 0.0,
             freight_cost: 0.0,
             eta_hours: 1,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: false,
         }
     }
@@ -584,12 +541,6 @@ mod tests {
             }
             shipments.shipments.push(shipment);
         }
-        // Export holds last for the pass only.
-        let before_holds = views.clone();
-        views.record_hold(5, 3, 2, 40.0);
-        assert!(views.has_open_inbound(3, 2));
-        views.release_holds();
-        assert!(views.matches(&before_holds));
         shipments.reservations = Some(views);
         shipments.assert_reservations_current();
 

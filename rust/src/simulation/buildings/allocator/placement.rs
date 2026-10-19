@@ -1885,7 +1885,7 @@ impl BuildingAllocator {
             operating_budget: startup_budget,
             profit_tax_budget_baseline: startup_budget,
             last_day_profit: 0.0,
-            shipment_cooldown_until_tick: 0,
+            shipment_cooldown_until_slot: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
             daily_city_funded_input_cost: 0.0,

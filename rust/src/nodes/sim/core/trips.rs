@@ -2,12 +2,17 @@
 
 //! Trips as timed events (`SIM-02-E`, `docs/simulation.md#deadlines-and-timed-events`).
 //!
-//! The hourly passes still decide which freight carriers, shoppers, service visitors and
-//! household arrival carriers set out, but none of them leaves at the boundary: each pass holds
-//! its trips and lists them, and [`SimCore::schedule_trip_departures`] spaces every kind evenly
-//! over the following hour. A trip is then checked until it arrives, so deliveries, pickups and
-//! move-ins happen when the agent gets there instead of at the next hour. Rechecks back off with the trip's age, so a trip stuck in traffic is checked every few
-//! minutes. Each event costs O(1) plus the arrival it settles.
+//! The hourly admission still decides which household arrival carriers set out, but none
+//! leaves at once: it holds and lists them, and [`SimCore::schedule_arrival_departures`]
+//! spaces them evenly over the hour after the hour's actions slot. Freight, shoppers and
+//! visitors are planned by request queues in any slot (`SIM-02-J`); each carrier the freight
+//! queue loads leaves near its shipment id's slot of the hour ahead (`spread_slot`), moved to
+//! the least busy nearby minute (`MinuteLeveler`), and shoppers and visitors leave as
+//! `household_requests.rs` schedules them. A shipment has one live trip event, whose slot it
+//! records; another event of it is a leftover and does nothing. A trip is then checked until it
+//! arrives, so deliveries, pickups and move-ins happen when the agent gets there instead of at
+//! the next hour. Rechecks back off with the trip's age, so a trip stuck in traffic is checked
+//! every few minutes. Each event costs O(1) plus the arrival it settles.
 
 use super::frame::EconomyObserver;
 use super::schedule::SimEvent;
@@ -16,11 +21,13 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::core::scheduler::{
     SLOTS_PER_HOUR, SLOTS_PER_MINUTE, TRIP_CHECK_MAX_SLOTS, TRIP_CHECK_SLOTS, paced_slot,
+    spread_slot,
 };
 use crate::simulation::economy::agents::AgentHandle;
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::Household;
 use crate::simulation::economy::logistics::Shipment;
+use crate::simulation::economy::logistics::ShipmentStatus;
 
 /// One step of a trip, keyed by the entity that owns it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,44 +93,88 @@ impl TripEvent {
 }
 
 impl SimCore {
-    /// Spaces the trips the passes of `slot` held over the following hour, each kind on its own
-    /// even spread, in the order the passes listed them.
-    pub(super) fn schedule_trip_departures(&mut self, slot: u64) {
-        // Each list is drained in place so its capacity is reused the next hour.
+    /// One slot of the `freight requests` queue (`SIM-02-J`): plans up to `quota` queued
+    /// requests, then schedules each loaded carrier's departure at its shipment id's slot of the
+    /// hour ahead. O(1) with nothing queued; see `ShipmentSystem::serve_freight_requests`.
+    pub(super) fn serve_freight_request_queue(&mut self, slot: u64, quota: usize) {
+        let (_, minute_of_day) = super::schedule::slot_calendar(slot);
+        self.logistics.serve_freight_requests(
+            quota,
+            &mut self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+            minute_of_day,
+            &mut self.treasury.balance,
+        );
+        self.schedule_freight_dispatches(slot);
+    }
+
+    // Each carrier loaded since the last call leaves near its shipment id's offset in the hour
+    // after `slot`, in the least busy minute nearby. The list is drained in place so its
+    // capacity is reused. O(window) per carrier.
+    fn schedule_freight_dispatches(&mut self, slot: u64) {
         let mut dispatches = std::mem::take(&mut self.logistics.held_dispatches);
-        let count = dispatches.len();
-        for (index, shipment) in dispatches.drain(..).enumerate() {
-            self.schedule_trip(
-                paced_slot(slot, index, count),
+        for shipment in dispatches.drain(..) {
+            let departure = self
+                .logistics
+                .departure_minutes
+                .place(slot, spread_slot(slot, shipment));
+            self.schedule_freight_trip(
+                departure,
+                shipment,
                 TripEvent::FreightDispatch { shipment },
             );
         }
         self.logistics.held_dispatches = dispatches;
-        let mut shoppers = std::mem::take(&mut self.households.held_shoppers);
-        let count = shoppers.len();
-        for (index, household) in shoppers.drain(..).enumerate() {
-            self.schedule_trip(
-                paced_slot(slot, index, count),
-                TripEvent::ShopperDeparture { household },
-            );
+    }
+
+    // Schedules `trip` of shipment `shipment` at `slot`, or the wheel's next slot if that is
+    // later, and records the slot on the shipment as its one live trip event. O(log S).
+    fn schedule_freight_trip(&mut self, slot: u64, shipment: u64, trip: TripEvent) {
+        let slot = slot.max(self.events.next_slot());
+        self.logistics.set_trip_event_slot(shipment, slot);
+        self.schedule_trip(slot, trip);
+    }
+
+    /// Resumes the trips of shipments an undo restored, whose events may have fired and found
+    /// nothing while they were removed: a loaded shipment without a carrier departs at its
+    /// recorded slot, or at the next slot if that has passed, and one with a carrier is checked
+    /// at the next slot. A departure still pending at the recorded slot fires twice there, and
+    /// the second finds the carrier gone; a check still pending is a leftover once the new one
+    /// is recorded. O(restored shipments × log S).
+    pub(crate) fn resume_restored_freight(&mut self, shipment_ids: &[u64]) {
+        let next_slot = self.time.absolute_slot() + 1;
+        for &shipment in shipment_ids {
+            let Some(idx) = self.logistics.shipment_index(shipment) else {
+                continue;
+            };
+            let restored = &self.logistics.shipments[idx];
+            if !restored.status.is_open() {
+                continue;
+            }
+            if !restored.carrier.is_none() {
+                self.schedule_freight_trip(
+                    next_slot,
+                    shipment,
+                    TripEvent::FreightCheck { shipment },
+                );
+            } else if restored.status == ShipmentStatus::InTransit && restored.cargo_loaded {
+                let departure = restored.trip_event_slot.max(next_slot);
+                self.schedule_freight_trip(
+                    departure,
+                    shipment,
+                    TripEvent::FreightDispatch { shipment },
+                );
+            }
         }
-        self.households.held_shoppers = shoppers;
-        let mut visitors = std::mem::take(&mut self.households.held_visitors);
-        let count = visitors.len();
-        for (index, visitor) in visitors.drain(..).enumerate() {
-            self.schedule_trip(
-                paced_slot(slot, index, count),
-                TripEvent::VisitDeparture { visitor },
-            );
-        }
-        self.households.held_visitors = visitors;
-        self.schedule_arrival_departures(slot);
     }
 
     /// Paces the departures of the arrival carriers admission launched, evenly over the hour
-    /// after `slot`: the hour's actions slot admits after the hour's other trips were paced
-    /// (`SIM-02-I`), so no carrier is still held when the slot ends.
+    /// after `slot`, in the order admission listed them. Admission runs at the hour's actions
+    /// slot (`SIM-02-I`), which calls this, so no carrier is still held when the slot ends.
+    /// Freight, shoppers and visitors leave from their queues (`SIM-02-J`).
     pub(super) fn schedule_arrival_departures(&mut self, slot: u64) {
+        // The list is drained in place so its capacity is reused the next hour.
         let mut arrivals = std::mem::take(&mut self.agents.held_arrivals);
         let count = arrivals.len();
         for (index, carrier) in arrivals.drain(..).enumerate() {
@@ -135,7 +186,7 @@ impl SimCore {
         self.agents.held_arrivals = arrivals;
     }
 
-    fn schedule_trip(&mut self, slot: u64, trip: TripEvent) {
+    pub(super) fn schedule_trip(&mut self, slot: u64, trip: TripEvent) {
         self.events.schedule(slot, SimEvent::Trip(trip));
     }
 
@@ -162,6 +213,9 @@ impl SimCore {
         let next_check = slot + TRIP_CHECK_SLOTS;
         match event {
             TripEvent::FreightDispatch { shipment } => {
+                if !self.logistics.trip_event_due(shipment, slot) {
+                    return;
+                }
                 if self.logistics.dispatch_shipment(
                     shipment,
                     &mut self.allocator,
@@ -170,10 +224,17 @@ impl SimCore {
                     &self.region_graph,
                     &mut self.treasury.balance,
                 ) {
-                    self.schedule_trip(next_check, TripEvent::FreightCheck { shipment });
+                    self.schedule_freight_trip(
+                        next_check,
+                        shipment,
+                        TripEvent::FreightCheck { shipment },
+                    );
                 }
             }
             TripEvent::FreightCheck { shipment } => {
+                if !self.logistics.trip_event_due(shipment, slot) {
+                    return;
+                }
                 let under_way = {
                     let mut on_delivery = |delivered: &Shipment, allocator: &BuildingAllocator| {
                         observer.freight_delivered(delivered, allocator)
@@ -194,7 +255,11 @@ impl SimCore {
                             .resolve_agent(self.logistics.shipments[idx].carrier)
                     });
                     let next = self.next_trip_check(slot, carrier);
-                    self.schedule_trip(next, TripEvent::FreightCheck { shipment });
+                    self.schedule_freight_trip(
+                        next,
+                        shipment,
+                        TripEvent::FreightCheck { shipment },
+                    );
                 }
             }
             TripEvent::ShopperDeparture { household } => {
@@ -310,29 +375,60 @@ mod tests {
     fn held_trips_leave_evenly_over_the_following_hour() {
         let mut core = SimCore::new(WorldConfig::new(512.0, 512.0, 40.0, 10.0));
         let slot = core.events.next_slot() - 1;
-        core.logistics.held_dispatches.extend(0..120);
-        core.households
-            .held_shoppers
-            .extend((0..3).map(|index| Handle::from_parts(index, 0)));
-        core.schedule_trip_departures(slot);
-        assert!(core.logistics.held_dispatches.is_empty());
-        assert!(core.households.held_shoppers.is_empty());
+        core.agents
+            .held_arrivals
+            .extend((0..120).map(|index| Handle::from_parts(index, 0)));
+        core.schedule_arrival_departures(slot);
+        assert!(core.agents.held_arrivals.is_empty());
         let pending = core.events.pending();
         let mut per_minute = [0_u32; 60];
-        let mut dispatches = 0;
         for timed in &pending {
             assert!(timed.slot > slot && timed.slot < slot + SLOTS_PER_HOUR);
-            if matches!(
+            assert!(matches!(
                 timed.event,
-                SimEvent::Trip(TripEvent::FreightDispatch { .. })
-            ) {
-                dispatches += 1;
-                per_minute[((timed.slot - slot - 1) / SLOTS_PER_MINUTE) as usize] += 1;
-            }
+                SimEvent::Trip(TripEvent::ArrivalDeparture { .. })
+            ));
+            per_minute[((timed.slot - slot - 1) / SLOTS_PER_MINUTE) as usize] += 1;
         }
-        assert_eq!(dispatches, 120);
+        assert_eq!(pending.len(), 120);
         assert!(per_minute.iter().all(|&count| count <= 120 / 60 + 2));
-        assert_eq!(pending.len(), 123);
+    }
+
+    #[test]
+    fn only_a_shipments_recorded_trip_event_steps_it() {
+        use crate::simulation::economy::logistics::{
+            CarrierClass, ShipmentEndpoint, ShipmentStatus,
+        };
+        let mut core = SimCore::new(WorldConfig::new(512.0, 512.0, 40.0, 10.0));
+        let slot = core.events.next_slot();
+        // A return leg whose carrier is gone finishes at its next live check.
+        core.logistics.shipments.push(Shipment {
+            id: 0,
+            resource_runtime_id: 1,
+            amount: 40.0,
+            source: ShipmentEndpoint::OwaBorder(0),
+            destination: ShipmentEndpoint::Building(0),
+            carrier_class: CarrierClass::Truck,
+            status: ShipmentStatus::Returning,
+            carrier: Handle::from_parts(3, 1),
+            total_cost: 0.0,
+            freight_cost: 0.0,
+            eta_hours: 1,
+            leg_started_hour: 0,
+            trip_event_slot: slot + 2,
+            cargo_loaded: true,
+        });
+        let check = TripEvent::FreightCheck { shipment: 0 };
+        core.run_trip_event(check, slot + 1, &mut ());
+        assert_eq!(
+            core.logistics.shipments[0].status,
+            ShipmentStatus::Returning
+        );
+        core.run_trip_event(check, slot + 2, &mut ());
+        assert_eq!(
+            core.logistics.shipments[0].status,
+            ShipmentStatus::Fulfilled
+        );
     }
 
     #[test]

@@ -341,8 +341,6 @@ impl SimCore {
             original_site_count: self.allocator.building_sites.len(),
             original_agent_count: self.agents.agents.len(),
             original_household_count: self.households.households.len(),
-            original_shipment_count: self.logistics.shipments.len(),
-            original_request_failure_count: self.logistics.request_failures.len(),
             buildings,
             sites,
             agents,
@@ -580,18 +578,13 @@ impl SimCore {
                 .saturating_add(undo.removed_carriers.len())
                 != undo.original_agent_count
             || self.households.households.len() != undo.original_household_count
-            || self
+            // Freight keeps moving while the bulldoze waits (`SIM-02-J`): the shipments the
+            // undo restores must still be gone, and request failures restore by key.
+            || undo
                 .logistics
                 .shipments
-                .len()
-                .saturating_add(undo.logistics.shipments.len())
-                != undo.original_shipment_count
-            || self
-                .logistics
-                .request_failures
-                .len()
-                .saturating_add(undo.logistics.request_failures.len())
-                != undo.original_request_failure_count
+                .iter()
+                .any(|shipment| self.logistics.shipment_index(shipment.id).is_some())
         {
             return false;
         }
@@ -834,10 +827,12 @@ impl SimCore {
         self.agents.invalidate_lane_bucket_snapshot();
 
         self.households.restore_building_undo(undo.households);
-        self.logistics.restore_building_undo(undo.logistics);
+        let restored_shipments = self.logistics.restore_building_undo(undo.logistics);
         for (shipment_id, handle) in restored_carriers {
             self.logistics.rebind_carrier(shipment_id, handle);
         }
+        // Their trip events may have fired while they were removed (`SIM-02-J`).
+        self.resume_restored_freight(&restored_shipments);
         self.register_service_input_capacity(building_idx);
         if let Some(lot) = undo.cell_lot {
             self.zoning.restore_cell_lot_removal_undo(lot);

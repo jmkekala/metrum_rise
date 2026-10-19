@@ -467,6 +467,13 @@ fn write_snapshot(
         maps,
     )?;
     world::save_supplier_roll(tx, &view.logistics.saved_supplier_roll(view.network))?;
+    // Rolling buffers count as current while the CCH matches the saved road graph.
+    let layout = view
+        .network
+        .cch_dirty_chunks
+        .is_empty()
+        .then_some(view.network.cch_graph.build_generation);
+    world::save_household_queue_state(tx, view.households, layout)?;
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
@@ -604,6 +611,12 @@ pub(crate) fn load_from_sqlite(
     let vacancy_order = world::load_vacancy_order(&conn, allocator.buildings.len())?;
     let mut households = world::load_households(&conn)?;
     let mut logistics = world::load_shipments(&conn)?;
+    if scheduler.logistics_next_shipment_id < logistics.first_free_shipment_id() {
+        return Err(SaveLoadError::custom(
+            "saved shipment id counter is behind a saved shipment",
+        ));
+    }
+    logistics.next_shipment_id = scheduler.logistics_next_shipment_id;
     let mut resource_extraction =
         world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;

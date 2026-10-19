@@ -12,8 +12,10 @@ events), `SIM-02-F` (per-entity hourly economy), `SIM-02-G` (per-entity daily se
 `SIM-02-H` (rolling environment grids and the cell-lot queue) and `SIM-02-I` (rolling
 snapshots and pure jobs, in four parts: counts, electricity, store sales, freight suppliers and
 the demand snapshot; the funding census over slots on a rolling input copy; construction
-permits on the published census; demand planning one zone type a slot) are done, and
-`SIM-02-J` (request queues) is next; see the
+permits on the published census; demand planning one zone type a slot) are done.
+`SIM-02-J` (request queues) is in progress: part 1 (freight requests) and part 2 (the housing,
+restock, visit and job queues) are done; household admission and its credit, building level
+changes, household departures and building removals remain. See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -270,7 +272,9 @@ and tests that step a whole hour serve the hour's quota after every phase.
   - **Agents:** the wage, paid while the workplace has paid fewer than its funded jobs in its
     own window, and the daily happiness update.
   - **Served by the next hour:** housing reviews and exits, which need the member links the
-    hourly membership census builds (`SIM-02-J` turns them into per-slot queues).
+    hourly membership census builds (`SIM-02-J` turns them into per-slot queues). Since
+    `SIM-02-J` part 2 the `housing requests` queue serves the reviews
+    ([Request queues](#request-queues)); exits still wait for the next hour.
   - **Reads one period old:** wages read the funded jobs the last hourly census copied onto
     each building. Water and sewage coverage is whether an operational provider settled in the
     last closed day, and providers' revenue shares come from that day's receipts.
@@ -303,8 +307,10 @@ and tests that step a whole hour serve the hour's quota after every phase.
   - Passive deadlines: a building's freight cooldown is `shipment_cooldown_until_tick`, compared
     with `ShipmentSystem::hour_ticks`, and an agent's job lock is `job_lock_until_day`, compared
     with `AgentSystem::settlement_days`. Each counter advances where the old decrement scan ran,
-    so results are unchanged. Both counters are saved in `scheduler_state`. The fields become
-    slots when their systems move to phases (`SIM-02-E`, `SIM-02-J`).
+    so results are unchanged. Both counters are saved in `scheduler_state`. Since `SIM-02-J`
+    the freight cooldown is a slot deadline, `shipment_cooldown_until_slot`, compared at the
+    building's phase and ending at its next hourly phase
+    ([Request queues](#request-queues)). The job lock stays a day deadline.
   - Construction completes at `construction_complete_slot`: its start slot plus its duration ×
     960. Placement stamps the deadline from `BuildingAllocator::now_slot` (the slot in progress)
     and lists `(handle, slot)`. The simulation turns that list into `ConstructionComplete
@@ -343,6 +349,11 @@ and tests that step a whole hour serve the hour's quota after every phase.
     that own them (`SIM-02-F` for households, `SIM-02-J` for freight).
   - A wheel restarted because the clock was set directly keeps its trips: an overdue one fires
     at the next slot.
+  - Since `SIM-02-J` the request queues choose who sets out and list their own trips, and
+    `schedule_trip_departures` is gone: freight carriers and reserved shoppers leave near a
+    target slot in the hour ahead, levelled per minute; a visible visitor leaves at the next
+    slot; arrival carriers keep `paced_slot` from the hour's actions slot. Freight leg timeouts
+    are checked at each trip check ([Request queues](#request-queues)).
 
 ### Snapshots
 
@@ -398,9 +409,9 @@ sweep that misses a slot is abandoned.
 
 - **Freight suppliers** (`logistics/supplier_index/roll.rs`): the index of local suppliers with
   a truck load to sell, as building handles in buckets by resource, freight component and 512 m
-  chunk. Hourly freight planning reads the index the previous hour finished, built for the same
-  logistics hour and component generation; otherwise (a world's first hour, after a road edit)
-  it builds one at once. Supplier choice still checks live stock, so only eligibility lags.
+  chunk. Freight planning (the per-slot freight requests since `SIM-02-J`) reads the index the
+  previous hour finished, built for the same logistics hour and component generation;
+  otherwise (a world's first hour, after a road edit) it builds one at once. Supplier choice still checks live stock, so only eligibility lags.
   Saved: both buffers, the sweep's cursor and whether each buffer was built for the saved road
   layout (`freight_supplier_sweep`, `freight_supplier_entries`); a load relabels only the
   current ones, so a game saved between a road edit and the next slot rebuilds where the
@@ -413,15 +424,45 @@ sweep that misses a slot is abandoned.
   workforce and the residential occupants that the hourly demand pass composes its snapshot
   from. The pass reads the previous hour's sweep, first folding the entities created in new
   handle slots since that sweep began, so a site placed mid-hour is never planned twice; the
-  operational hour folds them before its job search, so a household hired that hour is not
-  counted as unemployed while its workplace still shows the job open (part 2). The workforce
-  fields are counted on the live city at the pass, after job search, from the buildings'
-  published funded jobs, in a parallel O(H/p + B/p) scan that `SIM-02-K` replaces with
-  maintained totals. The
+  operational hour folds them before its job search (since `SIM-02-J`, before the slot's job
+  requests), so a household hired that hour is not counted as unemployed while its workplace
+  still shows the job open (part 2). The workforce fields are counted on the live city at the
+  pass, after job search (since `SIM-02-J`, with the hires the job queue has made so far), from
+  the buildings' published funded jobs, in a parallel O(H/p + B/p) scan that `SIM-02-K`
+  replaces with maintained totals. The
   treasury the consumer count draws on is frozen at the sweep's first slot, and benefit claims
   are walked in handle order. The construction epoch at the planning slot reads the same
   snapshot, with the workforce the pass counted on the live city (part 3). Saved: front, back and cursor as binary blobs in `scheduler_state`. A handle slot
   freed and reused after its chunk keeps the old entity's contribution until the next sweep.
+
+**Implemented in `SIM-02-J`:** two more hourly rolling snapshots of building handles, folded by
+handle slot over the hour's slots and published at its last slot for the next hour's
+[request queues](#request-queues).
+
+- **Household destinations** (`households/destinations.rs`, after the demand snapshot): the
+  stores selling household supplies and the service stores hosting visits, in buckets by foot
+  and car component and 512 m chunk. Restock and visit requests resolve each handle and check
+  the store again (sold out, closed), so only eligibility lags; a store restocked since its
+  chunk waits for the next sweep. A store that left or sold out since its chunk counts against
+  its own cap, the size of the live inspection cap, so a scan inspects at most 384 live stores
+  (visits 128) and passes over at most as many others. A reader without a front for its hour
+  and the current CCH build builds one at once, O(B). Walking proofs are prepared per
+  inspected candidate instead of per store per hour; they are exact either way. Foot and car
+  components are cached by CCH build generation (`HouseholdTopology`). Saved: both buffers, the
+  sweep cursor and, for the front and the sweep, whether they were folded with the saved game's
+  CCH build and no road change waits for the next rebuild (`household_queue_state`,
+  `household_destinations`); a load labels only those current, as part 3 does for the freight
+  supplier index.
+- **Job board** (`households/job_board.rs`): the buildings with an open funded job at their
+  slot, in handle order. A search reads each member's live funded jobs and workers, so a job
+  filled since its chunk is no option. Membership lags the census by one hour: the board
+  folded during hour h−1 reads h−1's published funded jobs, so a job the hour's census opens at
+  a building not on the board waits for the next board; an hour without a board builds one at
+  once. Its network side (buckets, arrival ends, prepared targets) is rebuilt per board hour
+  and CCH, metric and lane revision, and when a member's own door changes
+  (`BuildingEntranceKey` per entry), not on any building's door; top walking and car speeds are
+  cached by CCH build and metric revision. Saved: front, back and cursor
+  (`job_board_members.buffer`, `household_queue_state.job_*`).
 
 ### Request queues
 
@@ -458,6 +499,87 @@ moves onto the timing wheel.
 - Cost per slot: O(1) with nothing queued. A served region costs O(region) with the cached
   asset sizes, plus repairing the building-site index or road surface if an earlier system in
   the slot left them stale, a repair the frame's render snapshot otherwise makes.
+
+**Implemented in `SIM-02-J`** (part 1, freight; part 2, households;
+`simulation/core/request_queue.rs`, `logistics/requests.rs`, `households/requests.rs`,
+`nodes/sim/core/household_requests.rs`): five more queues follow `cell lots`, in this order:
+`freight requests`, `housing requests`, `restock requests`, `visit requests` and
+`job requests`.
+
+- **Order and marks:** an entity queues `(slot, handle)` at its phase, a building also the
+  request's kind. Phases visit their handles in ascending order, so each queue's insertion
+  order is already oldest first with ties by handle. A mark per handle slot, holding the queued
+  handle's generation, keeps one request per entity and queue (freight: per kind); a pop
+  clears the mark only for the popped request's generation, so a stale request never clears
+  the mark of a newer entity in the same slot. Marks are derived: a load rebuilds them from the
+  saved requests. A request whose handle no longer resolves is dropped when served; one whose
+  entity changed is served on the entity as it is then. With nothing queued a queue costs
+  O(1).
+- **Freight** (quota 8): at its hourly phase, after production and off its cooldown, a building
+  queues an inbound restock request when an input has fallen to its reorder point and an export
+  request when its surplus reaches the dispatch target, inbound first, at most one of each kind
+  (a pending bit per kind and handle slot). The queue plans against the live stock and
+  reservations and the [supplier index](#snapshots) of the previous hour's sweep. A slot's plans
+  load their cargo at the slot's end, as the hourly pass loaded its plans after planning. Each carrier keeps a
+  golden-ratio target in the hour ahead (`spread_slot`) and leaves in the least busy minute
+  within 15 minutes of it, never before the next minute (`MinuteLeveler`, a saved 128-minute
+  count ring, O(31) per departure). A shipment has one live trip event
+  (`Shipment::trip_event_slot`); its leg times out at a trip check once the logistics hours
+  since the leg started (`leg_started_hour`) reach its timeout; closed shipments leave the list
+  whenever a new shipment id is a multiple of 256. Cooldowns are slot deadlines
+  (`Building::shipment_cooldown_until_slot`): a failure or export planned for a request lasts
+  until the phase that queued it comes round, so a failed inbound plan still blocks that
+  phase's export; any other failure (a carrier that cannot leave, a shipment failing on the
+  road, an endpoint removed) lasts until the building's next hourly phase, found from its
+  handle's phase in O(1). No hourly pass creates or scans shipments.
+- **Housing** (quota 64): a household's hourly phase queues its rehousing while it has an
+  independent member and no usable home; its daily phase queues its housing review. The queue
+  serves both oldest first, merged by (queue slot, household), a household's rehousing before
+  its review of the same slot. Reviews read the live vacancy lists: the admission order keeps
+  its rehousing homes per level and 512 m chunk (`by_level_chunk`), and a review's nearest
+  affordable home is a ring search over that level's chunks. Exits still wait for the next
+  operational hour.
+- **Restock** (quota 64): after its hour a household queues its restock when the hourly pass's
+  test (`restock_due`) holds for the hour of its phase and a member is free to shop; its
+  shopper is the first eligible member in agent order. The queue plans a slot's requests in
+  parallel and reserves them in queue order against live store stock, from the
+  [household destinations](#snapshots). A reserved shopper leaves near its household handle's
+  slot of the hour ahead (`spread_slot`), in the least busy minute within 15 minutes (a second
+  `MinuteLeveler`). A household that moves while its shopper is still inside the old home
+  cancels and refunds the purchase first.
+- **Visits** (one a slot, paced by a credit): the phase's draw queues a visible service visit
+  while fewer than 64 wait. The credit accrues 64 visits an hour (one every 15 slots) and holds
+  at most one visit while nothing waits; each whole credit serves one request. The visitor
+  leaves at the next slot.
+- **Job search** (quota 64): an agent's hourly phase first ends an assignment to a workplace
+  that stopped operating or of an agent who cannot work, then queues its search while it is in
+  a building and unemployed, past its job lock or unpaid for two days. The queue runs a slot's
+  searches together against the [job board](#snapshots): homes shared within the slot are
+  searched once, options rank as before, and plans apply resident workers with a job at home
+  first, then in agent order. Funded jobs come from each workplace's own row
+  (`Building::funded_job_capacity`). A searcher who keeps its job, including one whose better
+  jobs filled first or who finds no open or reachable job, is locked again; the lock stays a
+  day deadline.
+- **Planning slots:** the queues serve in the hour's planning slots 0–2 too, after the slot's
+  fixed systems. They change the live city between the planning slots (hires, moves,
+  purchases) but remove no building or household, so they never invalidate the published
+  books and never mark a flow field; the later slots' live workforce counts and re-proofs see
+  the hires.
+- **Gone from the hour:** freight creation and the shipment progress scan; the export hold
+  pass; the parallel O(households) unhoused check and the rehousing pass; the reviews'
+  per-batch vacancy planner; the O(households) restock scan, the O(agents) shopper scan and the
+  hourly store and service index builds; the job search's O(agents) ejection, key collection,
+  plan and relock scans and its two O(B) job-supply scans. The household hour keeps the arrival
+  count, the logistics clock and the commute-quote expiry.
+- **Saved** (save format 102): `freight_requests`; `shipments.leg_started_hour` and
+  `shipments.trip_event_slot`; `buildings.shipment_cooldown_until_slot`; in `scheduler_state`
+  the next shipment id and the freight departure leveler (`logistics_next_shipment_id`,
+  `freight_departure_first_minute`, `freight_departure_counts`); `household_requests` with its
+  queue slot (`slot`, NULL for exits; kinds 0 housing reviews, 1 exits, 2 rehousings, 3
+  restocks, 4 visits); `job_requests`; `household_queue_state` (the visit credit, the shopper
+  leveler and the destination and job board sweep state); `household_destinations`;
+  `job_board_members`. Marks and pending bits are derived. Quotas follow measured request
+  rates; see [Decided while unattended](#decided-while-unattended).
 
 ### Pure jobs
 
@@ -506,10 +628,11 @@ about 90 MB of lanes at 100k after every road edit.
   recomputes a current census whole, whatever step it had reached; a stale one restarts at the
   next window slot, or runs at slot 0.
 - **Readers:** buildings take funded jobs and activity from their copies at their phases, and
-  the demand snapshot sweep reads the same copies. Job search, restock and visit planning read
-  the published census. Demand planning lends the published books, with the buildings started
-  since the copy appended as buyers, and runs no census of its own. Commercial and industrial
-  construction is proved once an hour, in the hour's actions slot, on the same books, and keeps
+  the demand snapshot sweep reads the same copies. Restock and visit requests read only the
+  published census's walking proofs and household access rows, and job search the funded jobs
+  copied onto each workplace (`SIM-02-J`). Demand planning lends the published books, with the
+  buildings started since the copy appended as buyers, and runs no census of its own.
+  Commercial and industrial construction is proved once an hour, in the hour's actions slot, on the same books, and keeps
   a saved permit until it starts (`SIM-02-I` parts 3 and 4). Planning slots 0–2 and the actions
   slot 3 all read the census published at slot 0; a save in those slots keeps what restores it
   exactly (`census_inputs.published`), so a load there plans on the same books (part 4). A load
@@ -1297,6 +1420,81 @@ on a fresh `$ARTIFACTS` directory.
 - **Found and recorded:** `ROAD-54`, a race in the road preview's poll that predates this part
   (about one `./run.sh --test` run in 15 on parts 3 and 4).
 
+#### `SIM-02-J`, parts 1 and 2 — freight requests and the household queues (2026-10-19)
+
+- **Save format 102:** the freight request queue, the shipments' leg start hour and trip event
+  slot, the buildings' cooldown slot, the freight departure leveler and next shipment id, the
+  household request queue slot, the job request queue, the household queue state, the household
+  destinations and the job board ([Request queues](#request-queues)). The Kuopio fixture gained
+  the tables and columns (two of them renamed) and its hash in `placements.json`.
+- **What moved off the hour:** freight creation (part 1); rehousing, restock and visit planning
+  and job search (part 2), each queued at an entity's phase and served a few per slot, on two
+  new hourly rolling snapshots (household destinations and the job board). Housing reviews
+  leave the next hour for the housing queue. See [Request queues](#request-queues),
+  [Snapshots](#snapshots) and [Decided while unattended](#decided-while-unattended).
+- **Review fixes:** queue marks follow the queue; a held shopper's reservation ends with the
+  household's move; a restock is queued only with a shopper free; dead store entries have their
+  own cap; housing requests are served oldest first across rehousings and reviews; a searcher
+  that finds no open job keeps its job under a new lock; the job board is a rolling snapshot
+  instead of being built at the hour's first search; the destination roll saves whether its
+  buffers are current. See [Decided while unattended](#decided-while-unattended).
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass. Against part 4,
+  baseline net income per resident 13.48 at 10k (13.36) and 12.93 at 30k (12.43), arrivals 30k
+  12.96 (12.19); the baseline 30k out-of-stock rate 0.185 (0.256), below its band. Out of band
+  and explained: fiscal-stress deliveries 8.70 and 10.44 per 1,000 buildings a day (13.22 and
+  12.68) and fiscal 10k net income per resident 27.25 (28.36, band low 28.04), startup freight
+  delivered before the measured window (see
+  [Decided while unattended](#decided-while-unattended)). The busiest minute holds 2.6–3.8% of
+  an hour's departures, 4.3% for fiscal 10k shopping (2 of 46 in one hour); the busiest
+  settlement hour is unchanged.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days). The continuation tests also check every frame that the queue marks equal the
+  ones a load rebuilds.
+- **Request rates** (debug channels, the envelope cities, 3 sampled days at 10k and 30k and 1 at
+  100k; requests an hour, mean, with the busiest hour in parentheses): housing 217 / 628 /
+  2,119; restock 399 / 968 / 5,593 (972 / 2,984 / 9,550); visits 15 / 34 / 25 under the
+  64-an-hour credit; jobs 164 / 1,348 / 1,708, the 100k city's startup hours filling 64 a slot
+  with up to 9,799 waiting; freight 54 / 146 / 600. No housing, restock or freight slot carried
+  a request to the next.
+- **Planning slots** (`populated_census_window_churn`, 24 hours, release): at 10k and 30k,
+  baseline and fiscal stress, 96 planning passes each, with no slot or epoch skipped, no
+  re-proof drop and no census restart.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`). Max / p99 / mean in
+  ms, part 4 in parentheses: 10k 1× 89.5 / 6.27 / 2.38 (66.4 / 6.23 / 2.42), 10k 32× 95.0 /
+  6.99 / 2.87 (67.2 / 7.11 / 2.88), 30k 1× 95.2 / 7.50 / 3.42 (82.6 / 7.55 / 3.33), 30k 32× 95.0 /
+  13.41 / 5.69 (98.1 / 18.93 / 5.22), 100k 1× 123.5 / 18.24 / 12.67 (235.4 / 17.93 / 11.66),
+  100k 32× 249.0 / 60.31 / 25.09 (359.9 / 128.44 / 21.99). Every gate limit passes. The hour frames are small now:
+  their maximum is 10–12 ms at 10k and 27 ms at 30k. At 100k the worst frame fell by half and
+  the 32× p99 from 128 to 60 ms. The 10k and 30k maxima are single frames outside the hour
+  boundary: a slow-frame diagnostic on the same snapshots found the hour's planning removal of a
+  building in each (10k 13:00, 30k 01:00) and no other large work, the freed lot region served
+  from cold generated cells, as in parts 2–4 (`SIM-02-K`). The 100k means rose 9–14% (and 30k
+  32× 9%): the queues' work moved from the hour frame into ordinary frames, where `SIM-02-K`
+  bounds it per slot.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with `SIM-02-A` (hour / day
+  means in ms, `SIM-02-A` first): baseline 10k 16.9–17.8 / 7.1–7.6 against 3.2 / 0.00; baseline
+  30k 62.1–62.2 / 46.7–50.4 against 10.2–10.4 / 0.00; fiscal 10k 27.6–28.1 / 22.5–23.2 against
+  13.2–13.3 / 0.00; fiscal 30k 78.5–80.5 / 68.3–71.2 against 39.8–40.3 / 0.00 (part 4: 5.7,
+  15.7–15.8, 20.9–21.0 and 51.2–51.4 hourly). No time limit fails. Six work-count limits fail
+  (five on part 4); the new one is the baseline city's CCH point searches, 3.47× from 10k to
+  30k against a limit of 3.43×, which `SIM-02-A` passes: the queues route each request on its
+  own, and the 30k fixture's job queue serves 8× the 10k one's searches (1,348 against 164 an
+  hour, its job churn, the same cause as the `job_search_keys` scaling `SIM-02-A` also fails),
+  while its households number 2.86× the 10k one's.
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1;
+  the `SIM-02-A` runs used its retained binary.
+- **Tests:** 2,521 release library tests and the 4 growth integration tests pass; clippy and
+  rustfmt add nothing. `./run.sh --test` (isolated profile): the Rust suites and every headless
+  Godot bridge test pass; the rendered vegetation level test on the desktop display was
+  terminated before it finished, most likely by the isolated run's 600 s Godot watchdog with the
+  display asleep (it passed on every earlier run). The step does not change the Godot bridge. `held_trips_leave_evenly_over_the_following_hour` now paces
+  through `schedule_arrival_departures`, and the census case
+  `an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire` queues its arrivals'
+  job searches at the hour's last slot.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -1310,22 +1508,22 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `materialize_arrived_household_carriers` | O(agents) scan | Carrier-arrival event | E (done) |
 | `rebuild_household_and_worker_counts` | O(agents + households + buildings) | Member lists maintained by the agent lifecycle; each household recounts at its hourly phase; worker counts follow job changes | I (done) |
 | `sync_agent_money_from_households` | O(agents) | Agent `money` mirror deleted (never read); employed adults follow job changes and the household's phase | F (done), I (done) |
-| `rehouse_unhoused_before_growth` | O(households) when any unhoused | Housing queue | J |
+| `rehouse_unhoused_before_growth` | O(households) when any unhoused | Rehousing queued at the household's hourly phase; `housing requests` queue on the live vacancy lists | J (done) |
 | `run_building_economy` production, `refresh_commercial_activity_floor` | O(buildings) | Production at the building phase; the floor follows the funding census | F (done), I (done) |
 | `settle_hourly_service_store_sales`, `charge_households_for_aggregate_service_sales` | O(households + buildings), global pool | Pool as rolling snapshot; each household charged at its phase | I (done) |
 | `run_electricity_hour` | O(households + buildings), one city-wide coverage | Coverage as rolling snapshot; billing at phase. Since F it bills the activity of each building's phase | I (done) |
 | `decrement_building_cooldowns` | O(buildings) | Passive deadline | D (done) |
 | `FreightPlanningContext::build` | O(nodes + edges + buildings), rebuilt hourly | Rolling supplier index; borders, components and speed cached by revision; reservations kept by shipment changes | I (done) |
-| `create_profile_input_shipments`, `create_profile_output_exports` | O(buildings), serial reservations | Freight request queue at buyer phase | J |
-| `progress_shipments`, `dispatch_ready_carriers` | O(open shipments); all trucks leave on the hour | Dispatch and arrival events; hourly timeouts until J | E (done), J |
+| `create_profile_input_shipments`, `create_profile_output_exports` | O(buildings), serial reservations | Requests queued at the building's hourly phase; `freight requests` queue; cooldowns as slot deadlines | J (done) |
+| `progress_shipments`, `dispatch_ready_carriers` | O(open shipments); all trucks leave on the hour | Dispatch and arrival events; departures levelled per minute; leg timeouts at trip checks | E (done), J (done) |
 | `progress_households_for_operational_hour` | O(households) | `EntityPhase` hourly | F (done) |
 | `apply_starvation_happiness_loss` | O(agents) | At the agent phase | F (done) |
-| `process_active_household_shopping` | O(households) scan | Shopper events; leg timeouts at the household phase | E (done), F (done) |
+| `process_active_household_shopping` | O(households) scan | Shopper events; leg timeouts at the household phase; shopper departures levelled per minute | E (done), F (done), J (done) |
 | `process_visible_service_visit_returns` | O(agents) scan | Visit-end event | E (done) |
-| `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed; since F a parallel O(households) scan finds whether any household can restock | Restock queue; indices from rolling snapshots | J |
-| `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queue with per-slot quota | J |
+| `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed; since F a parallel O(households) scan finds whether any household can restock | Restock queued at the household's hourly phase with a shopper free; `restock requests` queue on the rolling household destinations | J (done) |
+| `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queued at the household's hourly phase; `visit requests` queue paced by a 64-an-hour credit | J (done) |
 | Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Hourly census as resumable steps over the hour's second half on a rolling input copy, published at slot 0; planning and construction permits read it, no other census runs | I (done) |
-| Job search | Gated by the job lock (`job_lock_until_day`) | Job queue on lock deadline | J |
+| Job search | Gated by the job lock (`job_lock_until_day`) | Search queued at the agent's hourly phase; `job requests` queue on the rolling job board; the lock stays a day deadline | J (done) |
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H (done) |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot; entities created since its start folded before the next hour's job search; workforce counted live at the pass (`K` maintains it) | I (done) |
 | Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | One slot per zone type (slots 0–2) into a saved hour plan; slot 3 admits, queues and executes; each slot `Cost::CityScan` (per-zone lot lists are a `K` item) | I (done) |
@@ -1338,7 +1536,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `job_lock_days` decrement | O(agents) | Passive deadline | D (done) |
 | Bankruptcy, wages, property tax, utilities, profit tax | Serial over buildings and agents | Per building at its daily phase, same internal order; wages at each worker's phase | G (done) |
 | `pay_household_transfers` | Serial over households until the treasury runs out | Per household at its phase; slot order decides who is paid | G (done) |
-| `resolve_household_housing` | Serial over households | Check at phase enqueues housing requests, served by the next hour | G (done), J |
+| `resolve_household_housing` | Serial over households | Check at phase enqueues housing reviews, served by the `housing requests` queue | G (done), J (done) |
 | `workplace_route_cache.clear` | Daily clear | Entries expire 24 passes after they were added | G (done) |
 | Road upkeep sum | O(edges) | Rolling road-length sum; upkeep charged at the calendar close | G (done) |
 | `run_daily_pass`, `execute_demand_household_removal` | O(households) | Exit check at phase; departures through a credit-paced queue | G (done), J |
@@ -2188,6 +2386,211 @@ alternatives and the evidence. The user reviews these on return.
   availability check and a profile lookup, in parallel, and a list per zone would have to
   follow every parcel creation, removal, rezoning and occupancy change. `SIM-02-K` item, with
   the measured lot-scan time (Measurements (review)).
+- **`SIM-02-J` — freight cooldowns as slot deadlines, ending at the building's next phase.** The
+  cooldown was a logistics-hour tick (`hour_ticks + 1`), which under the hourly pass always
+  expired by the next pass. With phases it blocked a building's later phase in the same hour
+  after a mid-hour failure, and a dispatch failure early in the next hour could cost the
+  requester that hour's phase too. `Building::shipment_cooldown_until_slot` is now an absolute
+  slot compared at the phase. A failure or export planned for a request waits for the phase
+  that queued it to come round (`phase slot + hours × 960`), so a failed inbound plan still
+  blocks the same phase's export, as in the hourly pass. A failure at any other time (a carrier
+  that cannot leave, a shipment failing on the road, an endpoint removed) waits for the
+  building's first hourly phase after it, from the handle's phase offset in O(1), plus whole
+  hours for a longer cooldown. Alternatives: keep hour ticks and correct by the phase offset
+  (inexact for the trip events that fire at an hour's first slot, before the hour starts the
+  logistics clock, when the cooldown is over an hour), or a plain `failure slot + 960` (retries
+  one or two phases later depending on where the failure falls).
+- **`SIM-02-J` — at most one queued freight request per building and kind.** A pending bit per
+  kind and handle slot (with its generation) is set at enqueue and cleared when the request is
+  served or dropped, so the queue holds at most two requests per building even if it ever falls
+  behind. The bits are derived from the queue on load, not saved. The saved request slot is now
+  read: a plan checks and sets the cooldown against the phase that queued it.
+- **`SIM-02-J` — one live trip event per shipment.** `Shipment::trip_event_slot` (saved) records
+  the slot of its departure or next check; a freight event due at another slot is a leftover and
+  does nothing. Undo re-schedules restored shipments at the recorded departure or the next slot
+  without starting a second check chain; a clock set directly moves the recorded slot with the
+  overdue event.
+- **`SIM-02-J` — bulldoze undo checks the restored shipments by id.** It compared the global
+  counts of shipments and request failures, which the per-slot freight queue changes in almost
+  every slot, so undo would have been refused after any freight activity. Now every restored
+  shipment id must still be absent; request failures restore by key.
+- **`SIM-02-J` — freight departures levelled per minute.** Each departure keeps its golden-ratio
+  target in the hour ahead (`spread_slot`) and takes the least busy minute within 15 minutes of
+  it, never before the next minute (`MinuteLeveler`, a saved 128-minute count ring, O(31) per
+  departure). The targets alone put 5.0% of an hour's departures in its busiest minute at 10k
+  baseline and 30k arrivals (2 of 40 or 3 of 60); per-hour counters keyed by a departure counter
+  either thin the sequence again or wait about 52 minutes, and half-hour blocks still exceed 4%
+  in 12–17% of hours at 40–50 departures. Simulated over 6,000 hours of uniform releases with
+  flat and daily-cycle rates of 40–200 an hour, levelling kept every hour at or below 4.0%, with
+  waits of 30–35 minutes; the gate's freight busiest minute fell from 5.0% to 3.3% at 10k
+  baseline and 30k arrivals. Alternatives: a minimum-gap pacer from the last hour's count (backs
+  up for hours after a sudden wave), or pacing each half-hour's departures at its end
+  (O(departures) at a boundary).
+- **`SIM-02-J` — building removals keep the network freight quotes.** A building removal or remap
+  drops only the building-indexed freight quotes, not the network border sweeps, which the
+  per-slot queue would otherwise rebuild in the slot after every removal (6–11 ms at 100k).
+- **`SIM-02-J` — no export hold step.** The hourly pass's export hold held nothing in 24, 24 and
+  12 measured hours at 10k, 30k and 100k with the one-hour retry cooldown, so it is gone.
+  Exports still ship only stock above the one-day buffer.
+- **`SIM-02-J` — fiscal-stress freight deliveries below the band.** The 10k fiscal-stress city's
+  startup logs show earlier delivery, not lost freight: cumulative deliveries by day 2 are 1,781
+  against 1,309 on the build before `SIM-02-J`; day 3 has 772 against 1,166; by day 10 the
+  total is 3,125 against 3,004 (+4%); and there are no cooldown rejections. The envelope
+  measures from day 2, so the front-loaded deliveries fall before its window. This explains the
+  gate's fiscal deliveries (8.70 and 10.44 per 1,000 buildings a day at 10k and 30k, against
+  13.22 and 12.68 on part 4) and the fiscal 10k net income per resident (27.25, band low
+  28.04).
+- **`SIM-02-J` — housing requests from a per-slot queue.** A household's hourly phase queues its
+  rehousing while it has an independent member and no usable home; its daily phase queues its
+  housing review as before. The `housing requests` queue serves both oldest first, merged by
+  (queue slot, household), a household's rehousing before its review of the same slot; a
+  household waits at most once per queue (a generation mark per handle slot, derived on load).
+  Member lists are maintained since `SIM-02-I`, so a review no longer waits for the hour's
+  membership census. This replaces the hour's parallel O(households) unhoused check ("the
+  unhoused check stays a city scan until `SIM-02-J`" above). Alternative: rehousings first from
+  the shared quota (the first build), which let a rehousing queued later overtake older reviews.
+- **`SIM-02-J` — rehousing no longer runs before the hour's admission.** A household that loses
+  its home is rehoused at its next hourly phase, which may fall after the next hour's admission
+  claimed the vacancy it would have taken. Alternatives: drain the queue before the demand pass
+  (an O(unhoused) boundary pass again), or a saved per-household unhoused flag served at the
+  hour. Evidence (the part 2 gate against part 1, which passed with reload, repeat, 1 and 3
+  workers identical): the unhoused rate is at or below the base everywhere but baseline 10k
+  (9.4e-5 against 6.7e-5, about one household in a city of 10,600 residents and 5,300
+  households), all in band; the vacancy rate is within 1.6% at 10k baseline, and 1.6e-4 against
+  1.7e-4 at 30k baseline.
+- **`SIM-02-J` — housing reviews read the live vacancy lists.** The review batch built a vacancy
+  planner over every residential vacancy, O(V log V) per build; per slot that is 960 builds an
+  hour. The admission order now also keeps its rehousing homes per level and 512 m chunk
+  (`by_level_chunk`, updated with each vacancy change in O(log V)), and a review's nearest
+  affordable home is a ring search over that level's chunks, with the planner's eligibility
+  (operational, not under construction or redevelopment, a place left) checked per home. Over
+  the same vacancies it picks the planner's home. A level's chunk bounds only grow until it
+  empties, so a search may scan rings that have since emptied. Alternative: build the planner
+  once per hour and keep it (its own claims would need saving to reload identically).
+- **`SIM-02-J` — restock requests at the household's phase, only with a shopper free.** After
+  its hour a household queues its restock when the hourly pass's test (`restock_due`: stock
+  under the trigger, no trip or cooldown, and waiting for a shopper, out of stock while a store
+  sells, or its check offset) holds for the hour of its phase and a member is free to shop. The
+  phase walks the members; a household with none free is left waiting without a request and
+  checks again at its next phase. The shopper is the household's first eligible member in agent
+  order (its member list), as the O(agents) shopper scan found. The `restock requests` queue
+  plans a slot's requests in parallel and reserves them in queue order against live store
+  stock; the hourly pass planned all households in household order. Out of stock with no front
+  for the hour yet counts as "a store sells". The first build also queued households waiting for
+  their shopper, about four in five requests; queueing only with a shopper free cut restock
+  requests from 1,080 / 3,340 / about 17,000 an hour to 407 / 913 / 5,584 at 10k / 30k / 100k
+  (100k busiest hour 9,532, busiest slot 24, none carried). Alternatives: re-queue on a member's
+  arrival home (an event per arrival at home), or one queue for restock and visits (one quota
+  would let visits delay restocks).
+- **`SIM-02-J` — a held shopper's reservation ends with the household's move.** Cancelling a
+  purchase before pickup releases the shopper's departure hold; a household that moves while its
+  shopper is still inside the old home cancels and refunds the purchase first. Alternative: keep
+  the departure inside the household's next phase (no lifecycle change, but a household could
+  still move between reservation and departure).
+- **`SIM-02-J` — visible visits keep the hourly cap as a rate.** The hourly pass planned the 64
+  drawn households with the smallest draw hash. Now the phase's draw queues the visit while
+  fewer than 64 wait, and the `visit requests` queue serves one per whole credit, the credit
+  accruing 64 visits an hour (one per 15 slots) and holding at most one visit while nothing
+  waits. Visible visits stay at most 64 an hour, so agent traffic is unchanged; selection is
+  first drawn, first served. Visitors leave at the next slot, already paced by the credit.
+  Alternative: a per-slot quota of one (up to 960 visits an hour, about 15× the visible visitors
+  at 100k). Evidence (the part 2 gate against part 1): 15 / 35 / 24 visits an hour at 10k / 30k
+  / 100k, never over 64; no burst limit applies to visits, and the shopping burst is 2.4–3.6%.
+- **`SIM-02-J` — household destinations as a rolling snapshot.** The stores selling household
+  supplies and the service stores hosting visits are folded over each hour's slots by building
+  handle slot into foot and car component and 512 m chunk buckets, published at the hour's last
+  slot for the next hour (`household destinations`, after the demand snapshot sweep). Readers
+  resolve each handle and check the store again (sold out, closed), so only eligibility lags; a
+  store restocked since its chunk waits for the next sweep. A reader without a front for its
+  hour and the current CCH build builds one at once, O(B). Walking proofs are prepared per
+  inspected candidate instead of per store per hour; they are exact either way. Foot and car
+  components are cached by CCH build generation (`HouseholdTopology`). Saved: both buffers and
+  the sweep cursor (`household_queue_state`, `household_destinations`).
+- **`SIM-02-J` — dead store entries have their own cap.** A store that left or sold out since its
+  chunk counts against a cap the size of the live inspection cap, so a scan inspects at most 384
+  live stores (visits 128) and passes over at most as many others.
+- **`SIM-02-J` — shopper departures levelled like freight.** A reserved shopper leaves near its
+  household handle's slot of the hour ahead (`spread_slot`), in the least busy minute within 15
+  minutes (a second saved `MinuteLeveler`); the hourly pass spaced each hour's shoppers evenly
+  with `paced_slot`. Arrivals keep `paced_slot`, from the hour's actions slot where admission
+  runs (`SIM-02-I` part 4). With shoppers, visitors and freight on queues, the slot-0 pacing call
+  (`schedule_trip_departures`) had nothing left to pace and is deleted.
+- **`SIM-02-J` — census rows read mid-hour.** The census is published at slot 0 and read by
+  planning slots 0–3; a load in slots 0–2 restores it, a later load runs a census of the loaded
+  city. The queues' readers do not depend on which. Restock and visits read only the published
+  census's walking proofs (checked against the network revisions) and household access rows
+  (checked against the household's home and door), both exact shortcuts of the route test they
+  skip, never a building row of the books. Job search and the job board read funded jobs from
+  each workplace's own row (`Building::funded_job_capacity`, copied at publication and saved,
+  which moves with the building) instead of `JobFunding::capacities` by dense index; at the
+  hour's first slot the two are equal. The household destination index reads only live building
+  state.
+- **`SIM-02-J` — job searches from a per-slot queue.** An agent's hourly phase first ends an
+  assignment to a workplace that stopped operating or of an agent who cannot work (the hour's
+  O(agents) ejection scan), then queues its search when it is in a building and unemployed,
+  past its job lock or unpaid for two days. The `job requests` queue runs a slot's searches
+  together: homes shared within the slot are searched once, options are ranked as before, and
+  plans apply resident workers with a job at home first, then in agent order. A search reads
+  each board member's live funded jobs and workers, so a job filled since is no option; the
+  hourly pass ranked the hour-start board and skipped filled jobs only when applying. The hour's
+  O(agents) key collection, plan and relock scans and its two O(B) job-supply scans are gone.
+- **`SIM-02-J` — the job board as a rolling snapshot** (`job board`, `Rolling { Hour }`): building
+  handles with an open funded job, folded by handle slot over the previous hour and published at
+  its last slot; front, back and cursor are saved (`job_board_members.buffer`,
+  `household_queue_state.job_*`). Membership lags the census by one hour: the board folded
+  during hour h−1 reads h−1's published funded jobs, so a job the hour's census opens at a
+  building not on the board waits for the next board. The network side is rebuilt per board
+  hour and CCH, metric and lane revision, and when a member's own door changes
+  (`BuildingEntranceKey` per entry) rather than on any building's door; top walking and car
+  speeds are cached by CCH build and metric revision (`HouseholdTopology`). Alternative: the
+  first build's board, built at the hour's first search from the buildings with an open funded
+  job then (current openings, but a scan over every building in one slot of each hour).
+- **`SIM-02-J` — the job lock stays a day deadline.** Locks expiring the same day are searched at
+  the agents' phases in the hour after the calendar close, which the job queue absorbs.
+  Alternative: a slot deadline (spreads expiries by hire time; a saved column changes type).
+  Evidence (the part 2 gate against part 1): employment rate +0.2–0.3% at baseline (10k 0.682,
+  30k 0.670), final employment at the base; job requests 1,400 an hour at 30k with no slot
+  carried except in the 100k startup hours.
+- **`SIM-02-J` — a searcher who keeps its job is locked again.** An employed searcher whose better
+  jobs all filled before it applied is locked again, as is one that finds the board empty or no
+  reachable member on it. Before, a filled better job left it unlocked to retry next hour.
+  Alternative: keep it unlocked and searching at every phase (each phase one search against a
+  board that will not change until the next census). Evidence: as for the job lock.
+- **`SIM-02-J` — the snapshot census case queues its arrivals' searches at the hour's last
+  slot.** `an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire` queues the
+  arrivals' job searches at the hour's last slot, since searches no longer wait for the hour, so
+  their hire still happens at the next hour's first slot, after the fold the test checks.
+  Alternative: drop the case (the fold order it guards still holds by construction: queues run
+  after the operational hour).
+- **`SIM-02-J` — queue marks follow the queue.** `RequestQueue::pop` clears a handle slot's mark
+  only for the popped request's generation; a request of an entity that left, taken after the
+  entity that reused the slot queued, no longer clears the newer entity's mark. Continuation
+  tests check every frame that the marks equal the ones a load rebuilds.
+- **`SIM-02-J` — rolling buffers saved with whether they are current.** A save taken after a
+  road edit and before the next slot holds a destination front or sweep folded with the old
+  components; the saved game would rebuild or abandon it at its next use, but a load labelled
+  every buffer with the loaded components, so it would have kept it. `household_queue_state` now
+  records for the front and the sweep whether they were folded with the saved game's CCH build
+  and no road change waits for the next rebuild, and a load labels only those, as the freight
+  supplier index does since `SIM-02-I` part 3.
+- **`SIM-02-J` — the commute quote cache still clears on any building or door change.**
+  `workplace_route_cache` is cleared whenever the building or door revision moves, which with
+  per-slot searches can happen mid-hour. Narrowing the clear to the changed buildings means
+  scanning the cache for keys naming them (dense indices; a swap-remove renames two buildings),
+  so it is left for `SIM-02-K`.
+- **`SIM-02-J` — quotas from measured request rates.** Freight, 8 a slot: the performance-contract
+  cities queue about 75, 314 and 1,041 requests an hour at 10k, 30k and 100k (busiest hours 130,
+  416 and 1,209), with busiest slots of 3, 6 and 8 and none carried to the next slot. The
+  household queues, from the envelope cities on the final build (debug channels on, 3 sampled
+  days at 10k and 30k, 1 at 100k): housing 217 / 628 / 2,119 requests an hour (busiest slots
+  4 / 6 / 10, none carried), quota 64 (16 on the first build); restock 399 / 968 / 5,593
+  (busiest hours 972 / 2,984 / 9,550, none carried), quota 64, where the first build's 16 a slot
+  (15,360 an hour) fell behind at 100k with up to 18,800 waiting while households waiting for
+  their shopper still queued; visits capped at 64 an hour by the credit (up to 63 waiting); jobs
+  164 / 1,348 / 1,708 at about 0.1 ms a search at 100k, quota 64, which only the 100k city's
+  startup hours fill (every arrival searching, up to 9,799 waiting, each for up to a few hours).
+  A million residents would queue about 22 housing requests a slot and, at the 30k rate, about
+  34 restocks.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

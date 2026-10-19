@@ -33,6 +33,107 @@ pub(crate) fn paced_slot(slot: u64, index: usize, count: usize) -> u64 {
     slot + 1 + (index as u64 * (SLOTS_PER_HOUR - 1)) / count as u64
 }
 
+// 2^64 / φ, odd: multiples of it modulo 2^64 are the fractional parts of k/φ, the golden-ratio
+// sequence, scaled to 64 bits.
+const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// The first slot after `slot` at `key`'s offset within the hour, `floor(frac(key/φ) × S)` of
+/// the hour's `S` slots: a wait of 1 to `S` slots, half an hour on average. The offsets of
+/// consecutive keys follow the golden-ratio sequence, so trips keyed by consecutive ids and
+/// released at random slots spread over every hour without the clusters of leaving at once.
+/// Simulated over 1,000 hours of uniform releases, the busiest minute of an hour with `n` of
+/// them held at most 5.0% at n = 45, 4.8% at 62, 3.6% at 100 and 2.3% at 600, within the 5%
+/// burst limit (`docs/simulation.md#behaviour-envelope-sim-02-a`). O(1).
+pub(crate) fn spread_slot(slot: u64, key: u64) -> u64 {
+    let offset =
+        ((u128::from(key.wrapping_mul(GOLDEN_GAMMA)) * u128::from(SLOTS_PER_HOUR)) >> 64) as u64;
+    slot + (offset + SLOTS_PER_HOUR - slot % SLOTS_PER_HOUR - 1) % SLOTS_PER_HOUR + 1
+}
+
+/// Minutes a [`MinuteLeveler`] remembers: the hour a departure may wait plus its window.
+pub(crate) const LEVELER_MINUTES: usize = 128;
+// Minutes on either side of a target a levelled departure may move to.
+const LEVELER_REACH: u64 = 15;
+
+/// Departures already placed in each upcoming minute, so a new one can take the least busy
+/// minute near its target. A target's window is the 31 minutes centred on it, moved later to
+/// start no sooner than the minute after the current one; the departure takes the minute with
+/// the fewest departures,
+/// the closest to its target among equals, then the earliest, and keeps the target's slot
+/// within the minute. Released at random slots with [`spread_slot`] targets, the busiest minute
+/// of an hour with 40 to 200 departures stayed at or below 4% in simulation, against 5% for
+/// the targets alone, with the wait still about half an hour
+/// (`docs/simulation.md#behaviour-envelope-sim-02-a`). O(window) per departure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MinuteLeveler {
+    // First minute the counts cover; minute `m` is at `m % LEVELER_MINUTES`.
+    first_minute: u64,
+    counts: [u16; LEVELER_MINUTES],
+}
+
+impl Default for MinuteLeveler {
+    fn default() -> Self {
+        Self {
+            first_minute: 0,
+            counts: [0; LEVELER_MINUTES],
+        }
+    }
+}
+
+impl MinuteLeveler {
+    /// The slot of a departure targeted at `target_slot`, placed after slot `now_slot`, and
+    /// counted in its minute. Targets more than an hour ahead are not levelled beyond the
+    /// remembered minutes. O(window), allocation-free.
+    pub(crate) fn place(&mut self, now_slot: u64, target_slot: u64) -> u64 {
+        let first = now_slot / SLOTS_PER_MINUTE + 1;
+        self.advance(first);
+        let target_minute = target_slot / SLOTS_PER_MINUTE;
+        let low = target_minute.saturating_sub(LEVELER_REACH).max(first);
+        let high = (low + 2 * LEVELER_REACH).min(first + LEVELER_MINUTES as u64 - 1);
+        let mut best = low;
+        let mut best_key = (u16::MAX, u64::MAX);
+        for minute in low..=high {
+            let key = (
+                self.counts[minute as usize % LEVELER_MINUTES],
+                minute.abs_diff(target_minute),
+            );
+            if key < best_key {
+                best = minute;
+                best_key = key;
+            }
+        }
+        let count = &mut self.counts[best as usize % LEVELER_MINUTES];
+        *count = count.saturating_add(1);
+        best * SLOTS_PER_MINUTE + target_slot % SLOTS_PER_MINUTE
+    }
+
+    // Forgets the minutes before `first`, whose entries the minutes after the window reuse.
+    // Amortized O(1) per minute the clock advances.
+    fn advance(&mut self, first: u64) {
+        if first <= self.first_minute {
+            return;
+        }
+        let passed = (first - self.first_minute).min(LEVELER_MINUTES as u64);
+        for minute in self.first_minute..self.first_minute + passed {
+            self.counts[minute as usize % LEVELER_MINUTES] = 0;
+        }
+        self.first_minute = first;
+    }
+
+    /// Saved form: the first minute and the counts in ring order.
+    pub(crate) fn saved(&self) -> (u64, &[u16; LEVELER_MINUTES]) {
+        (self.first_minute, &self.counts)
+    }
+
+    /// Inverse of [`Self::saved`]; `None` for a count list of another length.
+    pub(crate) fn restore(first_minute: u64, counts: &[u16]) -> Option<Self> {
+        Some(Self {
+            first_minute,
+            counts: counts.try_into().ok()?,
+        })
+    }
+}
+
 /// Calendar period of a periodic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Period {
@@ -298,6 +399,94 @@ mod tests {
             let busiest = *per_minute.iter().max().unwrap();
             assert!(busiest <= count / 60 + 2, "{count}: busiest minute {busiest}");
         }
+    }
+
+    #[test]
+    fn spread_departures_of_consecutive_keys_leave_no_busy_minute() {
+        // Keys released at random-looking slots of each hour, as freight plans are at the
+        // buildings' phases, leave within the following hour at their keys' offsets.
+        for per_hour in [40_u64, 62, 100, 333, 1_000] {
+            let hours = 12;
+            let mut departures = vec![[0_u64; 60]; hours as usize + 2];
+            for key in 0..per_hour * hours {
+                let hour = key / per_hour;
+                let released = hour * SLOTS_PER_HOUR + key.wrapping_mul(7_919) % SLOTS_PER_HOUR;
+                let slot = spread_slot(released, key);
+                assert!(slot > released && slot <= released + SLOTS_PER_HOUR);
+                assert_eq!(slot % SLOTS_PER_HOUR, spread_slot(0, key) % SLOTS_PER_HOUR);
+                departures[(slot / SLOTS_PER_HOUR) as usize]
+                    [((slot % SLOTS_PER_HOUR) / SLOTS_PER_MINUTE) as usize] += 1;
+            }
+            // Full hours only: the first and last are half filled.
+            for minutes in &departures[1..hours as usize] {
+                let total: u64 = minutes.iter().sum();
+                let busiest = *minutes.iter().max().unwrap();
+                assert!(
+                    busiest * 20 <= total.max(40),
+                    "{per_hour} an hour: busiest minute {busiest} of {total}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn levelled_departures_keep_the_busiest_minute_within_four_percent() {
+        // Releases at random-looking slots, 40 to 62 an hour, levelled around their spread
+        // targets: no hour of 40 or more departures puts over 4% in one minute, and the wait
+        // stays about half an hour.
+        for per_hour in [40_u64, 45, 50, 62] {
+            let hours = 48;
+            let mut leveler = MinuteLeveler::default();
+            let mut departures = vec![[0_u64; 60]; hours as usize + 3];
+            let mut waited = 0;
+            // Releases in clock order, as the queue plans them.
+            let mut releases: Vec<u64> = (0..per_hour * hours)
+                .map(|n| {
+                    (n / per_hour) * SLOTS_PER_HOUR
+                        + n.wrapping_mul(0x9E37_79B9).rotate_left(7) % SLOTS_PER_HOUR
+                })
+                .collect();
+            releases.sort_unstable();
+            for (key, &released) in releases.iter().enumerate() {
+                let key = key as u64;
+                let slot = leveler.place(released, spread_slot(released, key));
+                assert!(slot > released && slot <= released + 2 * SLOTS_PER_HOUR);
+                waited += slot - released;
+                departures[(slot / SLOTS_PER_HOUR) as usize]
+                    [((slot % SLOTS_PER_HOUR) / SLOTS_PER_MINUTE) as usize] += 1;
+            }
+            let mean_wait_minutes = waited / (per_hour * hours) / SLOTS_PER_MINUTE;
+            assert!(
+                (25..=40).contains(&mean_wait_minutes),
+                "{per_hour}: {mean_wait_minutes}"
+            );
+            for minutes in &departures[1..hours as usize] {
+                let total: u64 = minutes.iter().sum();
+                let busiest = *minutes.iter().max().unwrap();
+                assert!(
+                    total < 40 || busiest * 25 <= total,
+                    "{per_hour} an hour: busiest minute {busiest} of {total}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_leveler_continues_identically_from_its_saved_form() {
+        let mut running = MinuteLeveler::default();
+        for key in 0..200 {
+            running.place(key * 7, spread_slot(key * 7, key));
+        }
+        let (first, counts) = running.saved();
+        let mut restored = MinuteLeveler::restore(first, counts).unwrap();
+        for key in 200..400 {
+            let now = key * 7;
+            assert_eq!(
+                running.place(now, spread_slot(now, key)),
+                restored.place(now, spread_slot(now, key))
+            );
+        }
+        assert!(MinuteLeveler::restore(0, &[0; 3]).is_none());
     }
 
     fn declaration(system: u8, kind: SystemKind) -> Declaration<u8> {

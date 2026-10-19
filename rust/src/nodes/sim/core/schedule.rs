@@ -6,8 +6,9 @@
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The
 //! timing wheel fires first, then the fixed-slot systems: the funding census's publication,
 //! until `SIM-02-K` the re-hosted operational hour, and the calendar close. The entities of the
-//! slot's hourly and daily phases follow, then the cell-lot queue, one chunk each of the rolling
-//! road length, environment sweep, freight supplier index and demand snapshot, at an hour's last
+//! slot's hourly and daily phases follow, then the cell-lot, freight, housing, restock, visit
+//! and job request queues, one chunk each of the rolling road length, environment sweep, freight
+//! supplier index, demand snapshot, household destinations and job board, at an hour's last
 //! slot the hour's city totals, one chunk of the funding census's input copy over the hour's
 //! first half and the census's share of its steps over the second half.
 
@@ -56,6 +57,17 @@ pub(crate) enum SimSystem {
     AgentDays,
     /// Regenerates the oldest pending dirty cell-lot regions, `CELL_LOT_QUOTA` per slot.
     CellLots,
+    /// Plans the oldest queued freight requests, `FREIGHT_REQUEST_QUOTA` per slot (`SIM-02-J`).
+    FreightRequests,
+    /// Serves the oldest queued rehousings and housing reviews, `HOUSING_REQUEST_QUOTA` per
+    /// slot (`SIM-02-J`).
+    HousingRequests,
+    /// Plans the oldest queued restocks, `RESTOCK_REQUEST_QUOTA` per slot (`SIM-02-J`).
+    RestockRequests,
+    /// Plans the oldest queued visible service visits as the visit credit allows (`SIM-02-J`).
+    VisitRequests,
+    /// Runs the oldest queued job searches, `JOB_REQUEST_QUOTA` per slot (`SIM-02-J`).
+    JobRequests,
     /// One chunk of the rolling road length that daily upkeep reads.
     RoadLength,
     /// One chunk of the day-long sweep of pollution, noise and desirability (`SIM-02-H`).
@@ -64,6 +76,12 @@ pub(crate) enum SimSystem {
     FreightSuppliers,
     /// One chunk of the hour-long sweep of the demand snapshot (`SIM-02-I`).
     DemandSnapshot,
+    /// One chunk of the hour-long sweep of the stores and service stores restock and visit
+    /// requests read (`SIM-02-J`).
+    HouseholdDestinations,
+    /// One chunk of the hour-long sweep of the open workplaces the next hour's job searches
+    /// read (`SIM-02-J`).
+    JobBoard,
     /// The hour's city totals, which the hourly phases fold: at its last slot they become the
     /// next hour's electricity dispatch and coverage and service-sales prices and pool
     /// (`SIM-02-I`).
@@ -110,6 +128,34 @@ impl SimEvent {
 
 /// Dirty cell-lot regions the `cell lots` queue regenerates per slot (`SIM-02-H`).
 pub(super) const CELL_LOT_QUOTA: u32 = 1;
+
+/// Freight requests the `freight requests` queue plans per slot (`SIM-02-J`): 7,680 an hour.
+/// The performance-contract cities queue about 75, 314 and 1,041 an hour at 10k, 30k and 100k
+/// residents (peaks 130, 416 and 1,209), about one a slot at 100k; their busiest slots held 3, 6
+/// and 8, and no slot left a request for the next, so requests are planned in the slot that
+/// queued them with room for a city several times larger.
+pub(super) const FREIGHT_REQUEST_QUOTA: u32 = 8;
+
+/// Rehousings and housing reviews the `housing requests` queue serves per slot (`SIM-02-J`):
+/// 61,440 an hour. Daily phases queue each household's review once a day; the envelope cities
+/// queue about 217, 628 and 2,119 an hour at 10k, 30k and 100k residents, with busiest slots of
+/// 4, 6 and 10 and nothing carried to the next slot. A million residents queue about 22 a slot.
+pub(super) const HOUSING_REQUEST_QUOTA: u32 = 64;
+
+/// Restocks the `restock requests` queue plans per slot (`SIM-02-J`): 61,440 an hour. A
+/// household waiting for a shopper, or out of stock, asks again at every hourly phase; the
+/// envelope cities queue about 1,080, 3,340 and 17,000 an hour at 10k, 30k and 100k (peaks
+/// 1,750, 5,170 and 20,000; most wait for a shopper, which costs only a walk of the members).
+/// The 100k city's busiest slot held 51 and no slot carried a request to the next.
+pub(super) const RESTOCK_REQUEST_QUOTA: u32 = 64;
+
+/// Job searches the `job requests` queue runs per slot (`SIM-02-J`): 61,440 an hour. An
+/// unemployed adult searches every hour and a worker once its lock of five to nine days passes;
+/// the searches of the homes a slot holds share their options. The envelope cities search about
+/// 160, 1,400 and 1,700 times an hour at 10k, 30k and 100k, at about 0.1 ms a search at 100k;
+/// only the 100k city's first hours, when every arrival looks for work, fill the quota, and
+/// their searches then wait up to a few hours.
+pub(super) const JOB_REQUEST_QUOTA: u32 = 64;
 
 /// The fixed declaration list, in registration order.
 pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
@@ -317,6 +363,60 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         Declaration {
+            system: SimSystem::FreightRequests,
+            name: "freight requests",
+            kind: SystemKind::Queue {
+                quota: FREIGHT_REQUEST_QUOTA,
+            },
+            reads: state::BUILDINGS | state::LOGISTICS | state::NETWORK | state::TREASURY,
+            writes: state::BUILDINGS | state::LOGISTICS | state::TREASURY | state::EVENTS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::HousingRequests,
+            name: "housing requests",
+            kind: SystemKind::Queue {
+                quota: HOUSING_REQUEST_QUOTA,
+            },
+            reads: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::RestockRequests,
+            name: "restock requests",
+            kind: SystemKind::Queue {
+                quota: RESTOCK_REQUEST_QUOTA,
+            },
+            reads: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::NETWORK,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::EVENTS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        // One visit per whole credit: at most one a slot.
+        Declaration {
+            system: SimSystem::VisitRequests,
+            name: "visit requests",
+            kind: SystemKind::Queue { quota: 1 },
+            reads: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::NETWORK,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::EVENTS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::JobRequests,
+            name: "job requests",
+            kind: SystemKind::Queue {
+                quota: JOB_REQUEST_QUOTA,
+            },
+            reads: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::NETWORK,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
             system: SimSystem::RoadLength,
             name: "road length",
             kind: SystemKind::Rolling {
@@ -357,6 +457,28 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             },
             reads: state::BUILDINGS | state::HOUSEHOLDS | state::TREASURY | state::DEMAND,
             writes: state::DEMAND,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::HouseholdDestinations,
+            name: "household destinations",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::BUILDINGS | state::NETWORK,
+            writes: state::HOUSEHOLDS,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::JobBoard,
+            name: "job board",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::BUILDINGS,
+            writes: state::HOUSEHOLDS,
             cost: Cost::Chunk,
             tier: Tier::Full,
         },
@@ -493,10 +615,25 @@ impl SimCore {
                 SimSystem::CellLots => {
                     self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize);
                 }
+                SimSystem::FreightRequests => {
+                    self.serve_freight_request_queue(slot, FREIGHT_REQUEST_QUOTA as usize);
+                }
+                SimSystem::HousingRequests => {
+                    self.serve_housing_request_queue(HOUSING_REQUEST_QUOTA as usize);
+                }
+                SimSystem::RestockRequests => {
+                    self.serve_restock_request_queue(slot, RESTOCK_REQUEST_QUOTA as usize);
+                }
+                SimSystem::VisitRequests => self.serve_visit_request_queue(slot),
+                SimSystem::JobRequests => {
+                    self.serve_job_request_queue(slot, JOB_REQUEST_QUOTA as usize);
+                }
                 SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
                 SimSystem::EnvironmentGrids => self.advance_environment_sweep(slot),
                 SimSystem::FreightSuppliers => self.advance_freight_supplier_sweep(slot),
                 SimSystem::DemandSnapshot => self.advance_demand_snapshot(slot),
+                SimSystem::HouseholdDestinations => self.advance_household_destinations(slot),
+                SimSystem::JobBoard => self.advance_job_board(slot),
                 SimSystem::CityHour => self.advance_city_hour(slot),
                 SimSystem::CensusInputs => self.advance_census_inputs(slot),
                 SimSystem::Census => self.advance_census(slot),

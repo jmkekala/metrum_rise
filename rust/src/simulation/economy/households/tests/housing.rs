@@ -545,7 +545,8 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: true,
     });
 
@@ -1087,4 +1088,41 @@ fn failed_stay_rule_does_not_relocate_zero_reserve_household_to_level_one() {
     assert_eq!(allocator.buildings[1].occupancy, 0);
     assert_eq!(agents.home_building[a0], usize::MAX);
     assert_eq!(agents.home_building[a1], usize::MAX);
+}
+
+#[test]
+fn housing_requests_leave_oldest_first_across_rehousings_and_reviews() {
+    let mut allocator = BuildingAllocator::new();
+    let asset =
+        register_test_residential_asset_with_capacity(&mut allocator, "test", "oldest_first", 2);
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, &asset, 0.0));
+    allocator.rebuild_zone_index();
+    let mut households = HouseholdSystem::new();
+    let mut agents = AgentSystem::new();
+    for hid in 0..2 {
+        households.households.push(make_household(0, 1, 5.0, 5.0));
+        let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.assign_household_id(agent, hid);
+    }
+    households.handles.register_appended(2);
+    let (first, second) = (households.handles.handle(0), households.handles.handle(1));
+    households.rehousing.push(9, second);
+    households.housing_reviews.push(8, first);
+    assert_eq!(
+        households.serve_housing_requests(1, &mut agents, &mut allocator),
+        1
+    );
+    assert!(
+        households.housing_reviews.is_empty(),
+        "the older review first"
+    );
+    assert_eq!(households.rehousing.len(), 1);
+    households.housing_reviews.push(9, second);
+    households.serve_housing_requests(1, &mut agents, &mut allocator);
+    assert!(
+        households.rehousing.is_empty() && households.housing_reviews.len() == 1,
+        "a household's rehousing goes before its review of the same slot"
+    );
 }

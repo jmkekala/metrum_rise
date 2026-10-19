@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Sampled visible service visits layered over aggregate commercial service demand.
+//!
+//! A household's hourly phase draws whether it visits that hour and queues the visit; the
+//! `visit requests` queue serves them oldest first at `VISIBLE_SERVICE_VISITS_PER_HOUR`, the
+//! cap the hourly pass applied, against the hour's destination front (`SIM-02-J`).
 
 use std::sync::atomic::AtomicU32;
 
 use super::candidate_visits::CandidateVisits;
 use super::data::{Household, HouseholdSystem};
-use super::metrics::{
-    OPERATIONAL_HOURS_PER_DAY, building_operation_factors, economy_profile_for_building,
-};
+use super::destinations::{DestinationIndex, service_hosts_visits};
+use super::metrics::OPERATIONAL_HOURS_PER_DAY;
 use super::replenishment::{
     REPLENISHMENT_FULFILLED, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
-    REPLENISHMENT_STABLE, ShoppingShortlist, prepare_walking_access, proven_shopping_walk,
-    shopping_route_is_feasible, squared_building_distance,
+    REPLENISHMENT_STABLE, ShoppingShortlist, first_eligible_shopper, prepare_walking_access,
+    proven_shopping_walk, shopping_route_is_feasible, squared_building_distance,
 };
+use super::requests::QueueStats;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
-    chunk_for_point,
 };
 use crate::simulation::economy::agents::tick::{BuildingWalkingAccess, PedestrianReachability};
 use crate::simulation::economy::agents::{
@@ -31,17 +35,17 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
-use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 const PERSONAL_SERVICE_RESOURCE_ID: &str = "personal_services";
 const VISIBLE_PERSONAL_SERVICE_VISIT_SAMPLE_RATE: f32 = 1.0;
-const VISIBLE_SERVICE_VISIT_MAX_REQUESTS_PER_HOUR: usize = 64;
+/// Visible service visits served an hour, one per 15 slots; also the most that wait.
+pub(crate) const VISIBLE_SERVICE_VISITS_PER_HOUR: u32 = 64;
 const SERVICE_VISIT_SEARCH_CANDIDATES: usize = 8;
 const SERVICE_VISIT_ROUTE_SCAN_CANDIDATES: usize = 128;
 
 #[derive(Default)]
-struct ServiceVisitDiagnostics {
+pub(super) struct ServiceVisitDiagnostics {
     attempts: u32,
     successes: u32,
     returns_scheduled: u32,
@@ -70,100 +74,36 @@ impl ServiceVisitDiagnostics {
 }
 
 #[derive(Clone, Copy)]
-struct ServiceVisitRequest {
-    household_id: usize,
-    visitor_agent_id: usize,
-    priority_key: u64,
-}
-
-#[derive(Clone, Copy)]
 struct ServiceVisitPlan {
     household_id: usize,
     visitor_agent_id: usize,
     service_building_id: usize,
 }
 
-struct ServiceVisitEntry {
-    building_idx: usize,
-    chunk: (i32, i32),
-    foot_components: BuildingModeComponents,
-    car_components: BuildingModeComponents,
-    walking_access: Option<BuildingWalkingAccess>,
-}
-
+// The service stores of the hour's destination front (`households/destinations.rs`), read
+// through their handles: a store that left or stopped hosting visits is skipped.
 struct ServiceVisitIndex<'a> {
-    entries: Vec<ServiceVisitEntry>,
-    foot_buckets: ReachableBucketIndex,
-    car_buckets: ReachableBucketIndex,
+    services: &'a DestinationIndex,
+    catalog: &'a RuntimeEconomyCatalog,
+    resource_runtime_id: ResourceRuntimeId,
     walking: Option<&'a PedestrianReachability>,
 }
 
-impl<'a> ServiceVisitIndex<'a> {
-    #[allow(clippy::too_many_arguments)]
-    fn build(
-        allocator: &BuildingAllocator,
-        catalog: &RuntimeEconomyCatalog,
-        resource_runtime_id: ResourceRuntimeId,
-        graph: &RegionGraph,
-        foot_components: &ModeComponentIndex,
-        car_components: &ModeComponentIndex,
-        network: &TransitNetwork,
-        walking: Option<&'a PedestrianReachability>,
-    ) -> Self {
-        let mut entries: Vec<_> = allocator
-            .buildings
-            .par_iter()
-            .enumerate()
-            .filter_map(|(idx, building)| {
-                if !service_building_can_host_visible_visit(catalog, building, resource_runtime_id)
-                {
-                    return None;
-                }
-                let foot_components =
-                    foot_components.building_components(allocator, graph, idx, TransitFlags::FOOT);
-                let car_components =
-                    car_components.building_components(allocator, graph, idx, TransitFlags::CAR);
-                if foot_components.as_slice().is_empty() && car_components.as_slice().is_empty() {
-                    return None;
-                }
-                Some(ServiceVisitEntry {
-                    building_idx: idx,
-                    chunk: chunk_for_point(building.center_x, building.center_y),
-                    foot_components,
-                    car_components,
-                    walking_access: walking.map(|walking| {
-                        prepare_walking_access(idx, allocator, network, graph, walking)
-                    }),
-                })
-            })
-            .collect();
-        entries.sort_unstable_by_key(|entry| (entry.chunk, entry.building_idx));
-
-        let mut foot_bucket_entries = Vec::with_capacity(entries.len());
-        let mut car_bucket_entries = Vec::with_capacity(entries.len());
-        for (entry_idx, entry) in entries.iter().enumerate() {
-            entry.foot_components.append_bucket_entries(
-                &mut foot_bucket_entries,
-                entry.chunk,
-                entry_idx,
-            );
-            entry.car_components.append_bucket_entries(
-                &mut car_bucket_entries,
-                entry.chunk,
-                entry_idx,
-            );
-        }
-
-        Self {
-            entries,
-            foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
-            car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
-            walking,
-        }
+impl ServiceVisitIndex<'_> {
+    // The live building of entry `position` while it still hosts visits. O(outputs).
+    fn live_service(&self, allocator: &BuildingAllocator, position: usize) -> Option<usize> {
+        let entry = self.services.entries.get(position)?;
+        let building_idx = allocator.building_handles.resolve(entry.building)?;
+        service_hosts_visits(
+            self.catalog,
+            &allocator.buildings[building_idx],
+            self.resource_runtime_id,
+        )
+        .then_some(building_idx)
     }
 
     fn has_any(&self) -> bool {
-        !self.entries.is_empty()
+        self.services.has_any()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -187,8 +127,9 @@ impl<'a> ServiceVisitIndex<'a> {
         }
         let mut shortlist = ShoppingShortlist::<SERVICE_VISIT_SEARCH_CANDIDATES>::default();
         CandidateVisits::with(|visits| {
-            visits.begin_query(self.entries.len());
-            let mut inspected = 0;
+            visits.begin_query(self.services.entries.len());
+            // Live stores inspected, and stores passed over because they left or stopped hosting.
+            let mut inspected = [0; 2];
             let home = &allocator.buildings[home_idx];
             let prepared_home = home_access.or_else(|| {
                 self.walking.map(|walking| {
@@ -198,7 +139,7 @@ impl<'a> ServiceVisitIndex<'a> {
             let home_foot_components =
                 foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
             self.scan_candidate_bucket(
-                &self.foot_buckets,
+                &self.services.foot_buckets,
                 home_foot_components,
                 home_idx,
                 prepared_home.as_ref(),
@@ -223,7 +164,7 @@ impl<'a> ServiceVisitIndex<'a> {
                     TransitFlags::CAR,
                 );
                 self.scan_candidate_bucket(
-                    &self.car_buckets,
+                    &self.services.car_buckets,
                     home_car_components,
                     home_idx,
                     prepared_home.as_ref(),
@@ -260,47 +201,52 @@ impl<'a> ServiceVisitIndex<'a> {
         pathfind_count: &AtomicU32,
         candidates: &mut ShoppingShortlist<SERVICE_VISIT_SEARCH_CANDIDATES>,
         visits: &mut CandidateVisits,
-        inspected: &mut usize,
+        inspected: &mut [usize; 2],
         diagnostics: &mut ServiceVisitDiagnostics,
     ) {
         buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
             ReachableBucketScanEvent::Item { item_idx } => {
-                if let Some(entry) = self.entries.get(item_idx) {
-                    if visits.contains(item_idx) {
-                        return true;
-                    }
-                    if *inspected == SERVICE_VISIT_ROUTE_SCAN_CANDIDATES {
-                        return false;
-                    }
-                    visits.mark_seen(item_idx);
-                    *inspected += 1;
-                    let distance = squared_building_distance(
-                        origin_x,
-                        origin_y,
-                        &allocator.buildings[entry.building_idx],
-                    );
-                    let Some(position) = candidates.insertion(entry.building_idx, distance) else {
-                        diagnostics.rejected_outside_shortlist += 1;
-                        return true;
-                    };
-                    if !proven_shopping_walk(
-                        self.walking,
-                        prepared_home,
-                        entry.walking_access.as_ref(),
-                    ) && !shopping_route_is_feasible(
+                if visits.contains(item_idx) {
+                    return true;
+                }
+                visits.mark_seen(item_idx);
+                // A store that left or stopped hosting is no candidate; such stores have their
+                // own cap, so a closed district cannot make the scan visit every entry.
+                let Some(service_idx) = self.live_service(allocator, item_idx) else {
+                    inspected[1] += 1;
+                    return inspected[1] < SERVICE_VISIT_ROUTE_SCAN_CANDIDATES;
+                };
+                if inspected[0] == SERVICE_VISIT_ROUTE_SCAN_CANDIDATES {
+                    return false;
+                }
+                inspected[0] += 1;
+                let distance = squared_building_distance(
+                    origin_x,
+                    origin_y,
+                    &allocator.buildings[service_idx],
+                );
+                let Some(position) = candidates.insertion(service_idx, distance) else {
+                    diagnostics.rejected_outside_shortlist += 1;
+                    return true;
+                };
+                let service_access = self.walking.map(|walking| {
+                    prepare_walking_access(service_idx, allocator, transit_network, graph, walking)
+                });
+                if !proven_shopping_walk(self.walking, prepared_home, service_access.as_ref())
+                    && !shopping_route_is_feasible(
                         home_idx,
-                        entry.building_idx,
+                        service_idx,
                         has_car,
                         allocator,
                         transit_network,
                         graph,
                         pathfind_count,
-                    ) {
-                        diagnostics.rejected_unreachable += 1;
-                        return true;
-                    }
-                    candidates.insert(position, entry.building_idx, distance);
+                    )
+                {
+                    diagnostics.rejected_unreachable += 1;
+                    return true;
                 }
+                candidates.insert(position, service_idx, distance);
                 true
             }
             ReachableBucketScanEvent::RingComplete {
@@ -350,143 +296,185 @@ impl HouseholdSystem {
             && agents.current_building[agent_idx] != agents.home_building[agent_idx]
     }
 
-    pub(super) fn plan_and_apply_visible_service_visits(
+    /// Queues household `household_id`'s visible service visit at its hourly phase in absolute
+    /// hour `absolute_hour` (`SIM-02-J`) when the hour's sampled draw picks it, unless an hour
+    /// of visits already waits. O(1).
+    pub(super) fn request_service_visit(
         &mut self,
+        household_id: usize,
+        slot: u64,
+        building_count: usize,
+        visit_rate_per_resident: f32,
+    ) {
+        let household = &self.households[household_id];
+        if self.visit_requests.len() >= VISIBLE_SERVICE_VISITS_PER_HOUR as usize
+            || !visit_due(
+                household_id,
+                household,
+                building_count,
+                (slot / SLOTS_PER_HOUR) as u32,
+                visit_rate_per_resident,
+            )
+        {
+            return;
+        }
+        self.visit_requests
+            .push(slot, self.handles.handle(household_id));
+    }
+
+    /// One slot of the `visit requests` queue (`SIM-02-J`): a visit's credit accrues at
+    /// `VISIBLE_SERVICE_VISITS_PER_HOUR` an hour, at most one visit's worth while nothing waits,
+    /// and each whole credit serves the oldest request. Returns the requests taken. O(1)
+    /// without a whole credit or a request; see [`Self::serve_visits`].
+    pub(crate) fn serve_visit_requests(
+        &mut self,
+        slot: u64,
         agents: &mut AgentSystem,
-        allocator: &BuildingAllocator,
+        allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
-        absolute_hour: u32,
-        catalog: &RuntimeEconomyCatalog,
+    ) -> usize {
+        let whole = SLOTS_PER_HOUR as u32;
+        self.visit_credit = (self.visit_credit + VISIBLE_SERVICE_VISITS_PER_HOUR).min(whole);
+        if self.visit_credit < whole || self.visit_requests.is_empty() {
+            return 0;
+        }
+        self.visit_credit -= whole;
+        self.serve_visits(slot, 1, agents, allocator, transit_network, graph)
+    }
+
+    /// Takes up to `count` visit requests and sends each household's first member at home to
+    /// the nearest reachable service store of the hour's destination front; the visitor is
+    /// held for its departure. A request whose household left is dropped. Returns the requests
+    /// taken. Each costs its household's members and at most
+    /// `SERVICE_VISIT_ROUTE_SCAN_CANDIDATES` inspected stores and as many passed over because
+    /// they closed, after a front built at once if the hour had none.
+    pub(super) fn serve_visits(
+        &mut self,
+        slot: u64,
+        count: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> usize {
+        let mut taken = 0;
+        let mut batch = std::mem::take(&mut self.visit_batch);
+        batch.clear();
+        while taken < count {
+            let Some((_, handle)) = self.visit_requests.pop() else {
+                break;
+            };
+            taken += 1;
+            if let Some(household_id) = self.handles.resolve(handle) {
+                batch.push(household_id);
+            }
+        }
+        if !batch.is_empty() {
+            self.plan_and_hold_visits(slot, &batch, agents, allocator, transit_network, graph);
+        }
+        self.visit_batch = batch;
+        self.visit_queue_stats
+            .record_slot(taken, self.visit_requests.len());
+        taken
+    }
+
+    // Plans the visits of `batch`, households in queue order, in parallel, then holds the
+    // visitors whose plans still hold, in that order.
+    fn plan_and_hold_visits(
+        &mut self,
+        slot: u64,
+        batch: &[usize],
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
     ) {
-        let Some(personal_services) =
-            catalog.resource_runtime_id_for_id(PERSONAL_SERVICE_RESOURCE_ID)
-        else {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let Some(personal_services) = personal_services_resource(&catalog) else {
             return;
         };
-        let visit_rate_per_resident = service_visit_rate_per_resident(catalog, personal_services)
-            * VISIBLE_PERSONAL_SERVICE_VISIT_SAMPLE_RATE;
-        if visit_rate_per_resident <= 0.0 {
-            return;
-        }
-        if !staffed_visible_service_building_exists(allocator, catalog, personal_services) {
-            return;
-        }
-
-        let shopper_candidates = self.collect_eligible_shopper_candidates(agents);
-        let (mut requests, mut diagnostics) = self
-            .households
-            .par_iter()
-            .enumerate()
-            .fold(
-                || (Vec::new(), ServiceVisitDiagnostics::default()),
-                |(mut requests, mut diagnostics), (hid, household)| {
-                    if let Some(request) = visible_service_visit_request(
-                        hid,
-                        household,
-                        shopper_candidates[hid],
-                        agents,
-                        allocator,
-                        absolute_hour,
-                        visit_rate_per_resident,
-                        &mut diagnostics,
-                    ) {
-                        requests.push(request);
-                    }
-                    (requests, diagnostics)
-                },
-            )
-            .reduce(
-                || (Vec::new(), ServiceVisitDiagnostics::default()),
-                |mut left, right| {
-                    left.0.extend(right.0);
-                    left.1.merge(right.1);
-                    left
-                },
-            );
-        if requests.is_empty() {
-            if diagnostics.has_signal() {
-                log_service_visit_diagnostics(absolute_hour, &diagnostics);
-            }
-            return;
-        }
-
-        requests.sort_unstable_by_key(|request| (request.priority_key, request.household_id));
-        requests.truncate(VISIBLE_SERVICE_VISIT_MAX_REQUESTS_PER_HOUR);
-        let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
-        let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
-        let service_index = ServiceVisitIndex::build(
-            allocator,
-            catalog,
-            personal_services,
-            graph,
-            &foot_components,
-            &car_components,
-            transit_network,
-            self.job_funding.customers.walking_proofs(transit_network),
+        agents.register_appended_household_members();
+        let front = self.destination_front(slot, allocator, transit_network, graph, &catalog);
+        let service_index = ServiceVisitIndex {
+            services: &front.services,
+            catalog: &catalog,
+            resource_runtime_id: personal_services,
+            walking: self.job_funding.customers.walking_proofs(transit_network),
+        };
+        let mut diagnostics = std::mem::take(&mut self.visit_hour);
+        diagnostics.attempts += batch.len() as u32;
+        let (foot_components, car_components) = (
+            self.destination_topology.foot(),
+            self.destination_topology.car(),
         );
-        if !service_index.has_any() {
-            diagnostics.failed_no_service_candidates += requests.len() as u32;
-            log_service_visit_diagnostics(absolute_hour, &diagnostics);
-            return;
-        }
-        let (plans, route_diagnostics) = requests
+        let (households, customers) = (&self.households, &self.job_funding.customers);
+        let shared_agents = &*agents;
+        let shared_allocator = &*allocator;
+        let plans: Vec<_> = batch
             .par_iter()
-            .fold(
-                || {
-                    (
-                        Vec::new(),
-                        ServiceVisitDiagnostics::default(),
-                        Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES),
-                    )
-                },
-                |(mut plans, mut diagnostics, mut candidates), request| {
-                    if let Some(plan) = plan_visible_service_visit(
-                        *request,
-                        agents,
-                        allocator,
-                        &service_index,
-                        &self.job_funding.customers,
-                        transit_network,
-                        graph,
-                        &foot_components,
-                        &car_components,
-                        &mut candidates,
-                        &mut diagnostics,
-                    ) {
-                        plans.push(plan);
-                    }
-                    (plans, diagnostics, candidates)
+            .map_init(
+                || Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES),
+                |candidates, &household_id| {
+                    let mut diagnostics = ServiceVisitDiagnostics::default();
+                    let visitor = first_eligible_shopper(
+                        shared_agents,
+                        household_id,
+                        &households[household_id],
+                    );
+                    let plan = if visitor == usize::MAX {
+                        diagnostics.failed_no_shopper += 1;
+                        None
+                    } else if !service_index.has_any() {
+                        diagnostics.failed_no_service_candidates += 1;
+                        None
+                    } else {
+                        plan_visible_service_visit(
+                            household_id,
+                            visitor,
+                            shared_agents,
+                            shared_allocator,
+                            &service_index,
+                            customers,
+                            transit_network,
+                            graph,
+                            foot_components,
+                            car_components,
+                            candidates,
+                            &mut diagnostics,
+                        )
+                    };
+                    (plan, diagnostics)
                 },
             )
-            .map(|(plans, diagnostics, _)| (plans, diagnostics))
-            .reduce(
-                || (Vec::new(), ServiceVisitDiagnostics::default()),
-                |mut left, right| {
-                    left.0.extend(right.0);
-                    left.1.merge(right.1);
-                    left
-                },
-            );
-        diagnostics.merge(route_diagnostics);
-
-        let mut plans = plans;
-        plans.sort_unstable_by_key(|plan| (plan.household_id, plan.service_building_id));
-        for plan in plans {
+            .collect();
+        for (plan, plan_diagnostics) in plans {
+            diagnostics.merge(plan_diagnostics);
+            let Some(plan) = plan else {
+                continue;
+            };
             if !service_plan_still_valid(plan, &self.households, agents, allocator) {
                 continue;
             }
             agents.planned_target_building[plan.visitor_agent_id] = plan.service_building_id;
             agents.planned_activity[plan.visitor_agent_id] = ACTIVITY_SHOPPING;
-            // The visitor waits at home for its paced departure (`SIM-02-E`).
+            // The visitor waits at home for its departure (`SIM-02-E`).
             agents.hold_departure(plan.visitor_agent_id);
             self.held_visitors
                 .push(agents.agent_handle(plan.visitor_agent_id));
             diagnostics.successes += 1;
         }
+        self.visit_hour = diagnostics;
+        self.destinations.restore_front(front);
+    }
 
-        if diagnostics.has_signal() {
-            log_service_visit_diagnostics(absolute_hour, &diagnostics);
+    /// Logs and resets the hour's visit outcomes.
+    pub(super) fn close_visit_hour(&mut self) {
+        let diagnostics = std::mem::take(&mut self.visit_hour);
+        let queue = std::mem::take(&mut self.visit_queue_stats);
+        if diagnostics.has_signal() || queue.taken > 0 {
+            log_service_visit_diagnostics(&queue, &diagnostics);
         }
     }
 
@@ -494,25 +482,19 @@ impl HouseholdSystem {
     pub(super) fn run_visible_service_visits_for_test(
         &mut self,
         agents: &mut AgentSystem,
-        allocator: &BuildingAllocator,
+        allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         absolute_hour: u32,
     ) {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        // One hour: visits end, new visitors leave at once.
+        // One hour: visits end, every drawn household's visitor leaves at once.
         for agent_idx in 0..agents.len() {
             self.end_service_visit(agent_idx, agents, allocator);
         }
-        self.plan_and_apply_visible_service_visits(
-            agents,
-            allocator,
-            transit_network,
-            graph,
-            absolute_hour,
-            &catalog,
-        );
+        let slot = u64::from(absolute_hour) * SLOTS_PER_HOUR;
+        self.queue_every_household_for_test(slot, agents, allocator);
+        self.restock_requests.clear();
+        self.serve_visits(slot, usize::MAX, agents, allocator, transit_network, graph);
         for visitor in std::mem::take(&mut self.held_visitors) {
             if let Some(agent_idx) = agents.resolve_agent(visitor) {
                 agents.release_departure(agent_idx);
@@ -521,11 +503,11 @@ impl HouseholdSystem {
     }
 }
 
-fn log_service_visit_diagnostics(absolute_hour: u32, diagnostics: &ServiceVisitDiagnostics) {
+fn log_service_visit_diagnostics(queue: &QueueStats, diagnostics: &ServiceVisitDiagnostics) {
     debug_log!(
         "economy",
-        "visible service visit diagnostics: hour={} attempts={} success={} returns={} candidates={} no_service_candidates={} no_shopper={} rejected_unreachable={} rejected_outside_shortlist={}",
-        absolute_hour,
+        "visible service visit diagnostics: {} attempts={} success={} returns={} candidates={} no_service_candidates={} no_shopper={} rejected_unreachable={} rejected_outside_shortlist={}",
+        queue,
         diagnostics.attempts,
         diagnostics.successes,
         diagnostics.returns_scheduled,
@@ -537,19 +519,34 @@ fn log_service_visit_diagnostics(absolute_hour: u32, diagnostics: &ServiceVisitD
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn visible_service_visit_request(
+/// The rate of personal-service visits per resident and day.
+pub(super) fn service_visit_rate(catalog: &RuntimeEconomyCatalog) -> f32 {
+    personal_services_resource(catalog).map_or(0.0, |resource| {
+        service_visit_rate_per_resident(catalog, resource)
+            * VISIBLE_PERSONAL_SERVICE_VISIT_SAMPLE_RATE
+    })
+}
+
+/// The personal-services resource visible visits buy, if the catalog has it.
+pub(super) fn personal_services_resource(
+    catalog: &RuntimeEconomyCatalog,
+) -> Option<ResourceRuntimeId> {
+    catalog.resource_runtime_id_for_id(PERSONAL_SERVICE_RESOURCE_ID)
+}
+
+// Whether household `household_id` draws a visible service visit in absolute hour
+// `absolute_hour`: a housed, stocked household with money and no restock pending, picked with
+// its members' hourly visit probability by a stable hash of household, home and hour. O(1).
+fn visit_due(
     household_id: usize,
     household: &Household,
-    visitor_agent_id: usize,
-    agents: &AgentSystem,
-    allocator: &BuildingAllocator,
+    building_count: usize,
     absolute_hour: u32,
     visit_rate_per_resident: f32,
-    diagnostics: &mut ServiceVisitDiagnostics,
-) -> Option<ServiceVisitRequest> {
-    if household.member_count == 0
-        || household.home_building_id >= allocator.buildings.len()
+) -> bool {
+    if visit_rate_per_resident <= 0.0
+        || household.member_count == 0
+        || household.home_building_id >= building_count
         || household.budget <= 0.0
         || household.stock_days == 0.0
         || !matches!(
@@ -557,36 +554,24 @@ fn visible_service_visit_request(
             REPLENISHMENT_STABLE | REPLENISHMENT_FULFILLED
         )
     {
-        return None;
+        return false;
     }
-    let priority_key = stable_service_visit_hash(
+    let draw = stable_service_visit_hash(
         household_id as u64,
         household.home_building_id as u64,
         u64::from(absolute_hour),
     );
     let hourly_visit_probability =
         household.member_count as f32 * visit_rate_per_resident / OPERATIONAL_HOURS_PER_DAY;
-    if hourly_visit_probability <= 0.0
-        || (hourly_visit_probability < 1.0
-            && stable_hash_unit_interval(priority_key) >= hourly_visit_probability)
-    {
-        return None;
-    }
-    diagnostics.attempts += 1;
-    if visitor_agent_id >= agents.len() {
-        diagnostics.failed_no_shopper += 1;
-        return None;
-    }
-    Some(ServiceVisitRequest {
-        household_id,
-        visitor_agent_id,
-        priority_key,
-    })
+    hourly_visit_probability > 0.0
+        && (hourly_visit_probability >= 1.0
+            || stable_hash_unit_interval(draw) < hourly_visit_probability)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn plan_visible_service_visit(
-    request: ServiceVisitRequest,
+    household_id: usize,
+    visitor_agent_id: usize,
     agents: &AgentSystem,
     allocator: &BuildingAllocator,
     service_index: &ServiceVisitIndex,
@@ -598,16 +583,11 @@ fn plan_visible_service_visit(
     candidates: &mut Vec<usize>,
     diagnostics: &mut ServiceVisitDiagnostics,
 ) -> Option<ServiceVisitPlan> {
-    let has_car = agents.has_car[request.visitor_agent_id];
-    let home_idx = agents.home_building[request.visitor_agent_id];
+    let has_car = agents.has_car[visitor_agent_id];
+    let home_idx = agents.home_building[visitor_agent_id];
     service_index.fill_route_feasible_candidates(
         home_idx,
-        customers.household_walking_access(
-            request.household_id,
-            home_idx,
-            allocator,
-            transit_network,
-        ),
+        customers.household_walking_access(household_id, home_idx, allocator, transit_network),
         has_car,
         allocator,
         transit_network,
@@ -624,8 +604,8 @@ fn plan_visible_service_visit(
         return None;
     };
     Some(ServiceVisitPlan {
-        household_id: request.household_id,
-        visitor_agent_id: request.visitor_agent_id,
+        household_id,
+        visitor_agent_id,
         service_building_id,
     })
 }
@@ -691,41 +671,6 @@ fn active_household_replenishment_carrier(
             household.replenishment_state,
             REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
         )
-}
-
-fn staffed_visible_service_building_exists(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    resource_runtime_id: ResourceRuntimeId,
-) -> bool {
-    allocator.buildings.par_iter().any(|building| {
-        service_building_can_host_visible_visit(catalog, building, resource_runtime_id)
-    })
-}
-
-fn service_building_can_host_visible_visit(
-    catalog: &RuntimeEconomyCatalog,
-    building: &Building,
-    resource_runtime_id: ResourceRuntimeId,
-) -> bool {
-    if building.broken
-        || building.economy_broken
-        || building.is_deserted
-        || building.is_under_construction()
-        || building.edge_idx == usize::MAX
-        || !matches!(building.zone_type, ZoneType::Commercial)
-    {
-        return false;
-    }
-    let Some(profile) = economy_profile_for_building(catalog, building) else {
-        return false;
-    };
-    if profile.kind != EconomyProfileRuntimeKind::ServiceStore
-        || profile.output_port(resource_runtime_id).is_none()
-    {
-        return false;
-    }
-    building_operation_factors(catalog, building, profile).throughput_factor > 0.0
 }
 
 fn service_profile_outputs_resource(

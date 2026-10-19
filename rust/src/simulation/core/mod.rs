@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Core simulation primitives: time, slots, scheduling, entity handles and timed events.
+//! Core simulation primitives: time, slots, scheduling, entity handles, request queues and timed
+//! events.
 
 pub(crate) mod change_log;
 pub mod config;
 pub(crate) mod handles;
 pub(crate) mod phases;
+pub(crate) mod request_queue;
 pub(crate) mod scheduler;
 pub(crate) mod sparse_chunk_grid;
 pub mod time;

@@ -1,30 +1,35 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Household housing resolution, relocation, and eviction.
-
-use std::collections::BTreeMap;
+//!
+//! The `housing requests` queue serves them a few per slot (`SIM-02-J`): a household's hourly
+//! phase queues its rehousing while it has no usable home, and its daily phase queues its
+//! housing review. Both read the allocator's live vacancy lists, rehousing by level and lowest
+//! building ID, reviews by level and nearest home, so each request costs a bounded search
+//! instead of a planner built over every vacancy.
 
 use super::HouseholdSystem;
 use super::metrics::{
     household_has_independent_member, household_is_housed, household_reserve_days,
     level_tuning_value,
 };
+use super::requests::QueueStats;
 use crate::debug_log;
-use crate::simulation::buildings::allocator::{
-    Building, BuildingAllocator, baseline_private_zone_slot,
-};
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator, ChunkBounds};
 use crate::simulation::economy::accessibility::{
     chunk_for_point, min_possible_ring_distance_sq, scan_ring_chunks,
 };
 use crate::simulation::economy::agents::{AgentSystem, NO_MEMBER};
 use crate::simulation::economy::definitions::{
+    HouseholdRuntimeTuning, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::zoning::ZoneType;
-use rayon::prelude::*;
 
-#[derive(Default)]
-struct HousingResolutionDiagnostics {
+/// Outcomes of housing requests, counted over one hour of the queue or one whole pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct HousingResolutionDiagnostics {
+    queue: QueueStats,
+    rehoused: u32,
     checked_households: u32,
     housed_households: u32,
     unhoused_start_households: u32,
@@ -38,314 +43,32 @@ struct HousingResolutionDiagnostics {
     still_unhoused: u32,
 }
 
-struct VacancyCandidate {
-    building_idx: usize,
-    level: u8,
-    remaining_slots: u32,
-    chunk: (i32, i32),
-}
-
-// Inclusive (min, max) chunk coordinates.
-type ChunkBounds = ((i32, i32), (i32, i32));
-
-struct VacancyPlanner {
-    candidates: Vec<VacancyCandidate>,
-    levels_desc: Vec<u8>,
-    by_level: BTreeMap<u8, Vec<usize>>,
-    by_level_chunk: BTreeMap<u8, BTreeMap<(i32, i32), Vec<usize>>>,
-    level_chunk_bounds: BTreeMap<u8, ChunkBounds>,
-}
-
-impl VacancyPlanner {
-    fn new(allocator: &BuildingAllocator) -> Self {
-        let mut candidates = Vec::new();
-        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
-            return Self::from_candidates(candidates);
-        };
-        for &building_idx in &allocator.vacancy_index[residential_slot] {
-            if building_idx >= allocator.buildings.len() {
-                continue;
-            }
-            let building = &allocator.buildings[building_idx];
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-                || building.pending_redevelopment
-            {
-                continue;
-            }
-            let remaining_slots = allocator
-                .household_capacity(building_idx)
-                .saturating_sub(building.occupancy);
-            if remaining_slots == 0 {
-                continue;
-            }
-            candidates.push(VacancyCandidate {
-                building_idx,
-                level: building.level,
-                remaining_slots,
-                chunk: chunk_for_point(building.center_x, building.center_y),
-            });
-        }
-        candidates.sort_unstable_by(|left, right| {
-            right
-                .level
-                .cmp(&left.level)
-                .then_with(|| left.building_idx.cmp(&right.building_idx))
-        });
-        Self::from_candidates(candidates)
-    }
-
-    fn from_candidates(candidates: Vec<VacancyCandidate>) -> Self {
-        let mut planner = Self {
-            candidates,
-            levels_desc: Vec::new(),
-            by_level: BTreeMap::new(),
-            by_level_chunk: BTreeMap::new(),
-            level_chunk_bounds: BTreeMap::new(),
-        };
-        for candidate_pos in 0..planner.candidates.len() {
-            planner.index_candidate(candidate_pos);
-        }
-        planner.levels_desc.sort_unstable_by(|a, b| b.cmp(a));
-        planner.levels_desc.dedup();
-        planner
-    }
-
-    fn claim_affordable_home(
-        &mut self,
-        reserve_days: f32,
-        allocator: &BuildingAllocator,
-        current_home: Option<usize>,
-        minimum_level_exclusive: Option<u8>,
-        config: &crate::simulation::economy::definitions::HouseholdRuntimeTuning,
-    ) -> Option<usize> {
-        let current_center = current_home.and_then(|building_idx| {
-            allocator
-                .buildings
-                .get(building_idx)
-                .map(|building| (building.center_x, building.center_y))
-        });
-
-        for &level in &self.levels_desc {
-            if minimum_level_exclusive.is_some_and(|minimum_level| level <= minimum_level) {
-                break;
-            }
-            let move_in_threshold =
-                level_tuning_value(&config.residential_move_in_min_reserve_days_by_level, level);
-            if reserve_days + f32::EPSILON < move_in_threshold {
-                continue;
-            }
-            let candidate_pos = if let Some((origin_x, origin_y)) = current_center {
-                self.nearest_candidate_in_level(level, origin_x, origin_y, allocator, current_home)
-            } else {
-                self.first_candidate_in_level(level, allocator, current_home)
-            };
-            if let Some(candidate_pos) = candidate_pos {
-                self.candidates[candidate_pos].remaining_slots = self.candidates[candidate_pos]
-                    .remaining_slots
-                    .saturating_sub(1);
-                return Some(self.candidates[candidate_pos].building_idx);
-            }
-        }
-        None
-    }
-
-    fn release_home(&mut self, allocator: &BuildingAllocator, building_idx: usize) {
-        let Some(candidate) = vacancy_candidate_for_building(allocator, building_idx) else {
-            return;
-        };
-        if let Some(existing_pos) = self
-            .candidates
-            .iter()
-            .position(|existing| existing.building_idx == building_idx)
-        {
-            let needs_reindex = self.candidates[existing_pos].level != candidate.level
-                || self.candidates[existing_pos].chunk != candidate.chunk;
-            self.candidates[existing_pos] = candidate;
-            if needs_reindex {
-                self.rebuild_indices();
-            }
-            return;
-        }
-        self.candidates.push(candidate);
-        self.index_candidate(self.candidates.len() - 1);
-    }
-
-    fn rebuild_indices(&mut self) {
-        self.levels_desc.clear();
-        self.by_level.clear();
-        self.by_level_chunk.clear();
-        self.level_chunk_bounds.clear();
-        for candidate_pos in 0..self.candidates.len() {
-            self.index_candidate(candidate_pos);
-        }
-    }
-
-    fn index_candidate(&mut self, candidate_pos: usize) {
-        let candidate = &self.candidates[candidate_pos];
-        insert_level_desc(&mut self.levels_desc, candidate.level);
-        insert_candidate_pos_by_building(
-            self.by_level.entry(candidate.level).or_default(),
-            &self.candidates,
-            candidate_pos,
-        );
-        insert_candidate_pos_by_building(
-            self.by_level_chunk
-                .entry(candidate.level)
-                .or_default()
-                .entry(candidate.chunk)
-                .or_default(),
-            &self.candidates,
-            candidate_pos,
-        );
-        update_level_chunk_bounds(
-            &mut self.level_chunk_bounds,
-            candidate.level,
-            candidate.chunk,
+impl HousingResolutionDiagnostics {
+    fn log(&self, scope: &str) {
+        debug_log!(
+            "economy",
+            "household housing resolution: scope={} {} rehoused={} checked={} housed={} \
+             unhoused_start={} stay_ok={} stay_failed={} waiting={} relocated_unhoused={} \
+             relocated_failed_stay={} relocated_upgrade={} evicted={} still_unhoused={}",
+            scope,
+            self.queue,
+            self.rehoused,
+            self.checked_households,
+            self.housed_households,
+            self.unhoused_start_households,
+            self.stay_passed,
+            self.stay_failed,
+            self.waiting_for_eviction,
+            self.relocated_unhoused,
+            self.relocated_failed_stay,
+            self.relocated_upgrade,
+            self.evicted,
+            self.still_unhoused,
         );
     }
-
-    fn first_candidate_in_level(
-        &self,
-        level: u8,
-        allocator: &BuildingAllocator,
-        current_home: Option<usize>,
-    ) -> Option<usize> {
-        self.by_level
-            .get(&level)?
-            .iter()
-            .copied()
-            .find(|&pos| self.candidate_is_available(pos, allocator, current_home))
-    }
-
-    fn nearest_candidate_in_level(
-        &self,
-        level: u8,
-        origin_x: f32,
-        origin_y: f32,
-        allocator: &BuildingAllocator,
-        current_home: Option<usize>,
-    ) -> Option<usize> {
-        let by_chunk = self.by_level_chunk.get(&level)?;
-        let origin_chunk = chunk_for_point(origin_x, origin_y);
-        let max_ring =
-            max_chunk_ring_for_level(self.level_chunk_bounds.get(&level).copied()?, origin_chunk);
-        let mut best: Option<(usize, f32, usize)> = None;
-        for ring in 0..=max_ring {
-            scan_ring_chunks(origin_chunk, ring, |chunk_key| {
-                let Some(candidate_positions) = by_chunk.get(&chunk_key) else {
-                    return;
-                };
-                for &candidate_pos in candidate_positions {
-                    if !self.candidate_is_available(candidate_pos, allocator, current_home) {
-                        continue;
-                    }
-                    let building_idx = self.candidates[candidate_pos].building_idx;
-                    let building = &allocator.buildings[building_idx];
-                    let distance = squared_distance_to_building(origin_x, origin_y, building);
-                    let challenger = (candidate_pos, distance, building_idx);
-                    if best.is_none_or(|current| {
-                        challenger.1.total_cmp(&current.1).is_lt()
-                            || (challenger.1.total_cmp(&current.1).is_eq()
-                                && challenger.2 < current.2)
-                    }) {
-                        best = Some(challenger);
-                    }
-                }
-            });
-            if let Some((_, best_distance, _)) = best
-                && (ring == max_ring
-                    || best_distance
-                        < min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1))
-            {
-                break;
-            }
-        }
-        best.map(|(candidate_pos, _, _)| candidate_pos)
-    }
-
-    fn candidate_is_available(
-        &self,
-        candidate_pos: usize,
-        allocator: &BuildingAllocator,
-        current_home: Option<usize>,
-    ) -> bool {
-        let Some(candidate) = self.candidates.get(candidate_pos) else {
-            return false;
-        };
-        if candidate.remaining_slots == 0 || Some(candidate.building_idx) == current_home {
-            return false;
-        }
-        allocator
-            .buildings
-            .get(candidate.building_idx)
-            .is_some_and(|building| {
-                !building.pending_redevelopment
-                    && allocator.household_capacity(candidate.building_idx) > 0
-            })
-    }
 }
 
-fn vacancy_candidate_for_building(
-    allocator: &BuildingAllocator,
-    building_idx: usize,
-) -> Option<VacancyCandidate> {
-    let building = allocator.buildings.get(building_idx)?;
-    if building.pending_redevelopment {
-        return None;
-    }
-    let remaining_slots = allocator
-        .household_capacity(building_idx)
-        .saturating_sub(building.occupancy);
-    if remaining_slots == 0 {
-        return None;
-    }
-    Some(VacancyCandidate {
-        building_idx,
-        level: building.level,
-        remaining_slots,
-        chunk: chunk_for_point(building.center_x, building.center_y),
-    })
-}
-
-fn insert_level_desc(levels: &mut Vec<u8>, level: u8) {
-    match levels.binary_search_by(|existing| existing.cmp(&level).reverse()) {
-        Ok(_) => {}
-        Err(pos) => levels.insert(pos, level),
-    }
-}
-
-fn insert_candidate_pos_by_building(
-    positions: &mut Vec<usize>,
-    candidates: &[VacancyCandidate],
-    candidate_pos: usize,
-) {
-    let building_idx = candidates[candidate_pos].building_idx;
-    let insert_pos = positions
-        .binary_search_by(|&existing_pos| candidates[existing_pos].building_idx.cmp(&building_idx))
-        .unwrap_or_else(|pos| pos);
-    positions.insert(insert_pos, candidate_pos);
-}
-
-fn update_level_chunk_bounds(
-    bounds_by_level: &mut BTreeMap<u8, ChunkBounds>,
-    level: u8,
-    chunk: (i32, i32),
-) {
-    bounds_by_level
-        .entry(level)
-        .and_modify(|(min_chunk, max_chunk)| {
-            min_chunk.0 = min_chunk.0.min(chunk.0);
-            min_chunk.1 = min_chunk.1.min(chunk.1);
-            max_chunk.0 = max_chunk.0.max(chunk.0);
-            max_chunk.1 = max_chunk.1.max(chunk.1);
-        })
-        .or_insert((chunk, chunk));
-}
-
-fn max_chunk_ring_for_level(bounds: ChunkBounds, origin_chunk: (i32, i32)) -> i32 {
+fn max_chunk_ring(bounds: ChunkBounds, origin_chunk: (i32, i32)) -> i32 {
     let (min_chunk, max_chunk) = bounds;
     [
         (origin_chunk.0 - min_chunk.0).abs(),
@@ -364,19 +87,228 @@ fn squared_distance_to_building(origin_x: f32, origin_y: f32, building: &Buildin
     dx * dx + dy * dy
 }
 
+// Whether a household living in `current_home` may move into listed home `building_idx`: a
+// place left in a different, operational home not about to be redeveloped. O(1).
+fn home_is_available(
+    allocator: &BuildingAllocator,
+    building_idx: usize,
+    current_home: Option<usize>,
+) -> bool {
+    Some(building_idx) != current_home
+        && allocator.buildings.get(building_idx).is_some_and(|home| {
+            !home.broken
+                && !home.economy_broken
+                && !home.is_deserted
+                && !home.is_under_construction()
+                && !home.pending_redevelopment
+                && allocator.household_capacity(building_idx) > home.occupancy
+        })
+}
+
+// The available listed home of `level` nearest `(origin_x, origin_y)`, ties to the lower
+// building ID. Scans 512 m chunk rings outward and stops once no unscanned ring can hold a
+// closer home. O(scanned chunks + their homes).
+fn nearest_home_in_level(
+    allocator: &BuildingAllocator,
+    level: u8,
+    origin_x: f32,
+    origin_y: f32,
+    current_home: Option<usize>,
+) -> Option<usize> {
+    let (by_chunk, bounds) = allocator.rehousing_homes_by_chunk(level)?;
+    let origin_chunk = chunk_for_point(origin_x, origin_y);
+    let max_ring = max_chunk_ring(bounds, origin_chunk);
+    let mut best: Option<(f32, usize)> = None;
+    for ring in 0..=max_ring {
+        scan_ring_chunks(origin_chunk, ring, |chunk| {
+            let Some(homes) = by_chunk.get(&chunk) else {
+                return;
+            };
+            for &building_idx in homes {
+                if !home_is_available(allocator, building_idx, current_home) {
+                    continue;
+                }
+                let distance = squared_distance_to_building(
+                    origin_x,
+                    origin_y,
+                    &allocator.buildings[building_idx],
+                );
+                if best.is_none_or(|(best_distance, best_building)| {
+                    distance
+                        .total_cmp(&best_distance)
+                        .then(building_idx.cmp(&best_building))
+                        .is_lt()
+                }) {
+                    best = Some((distance, building_idx));
+                }
+            }
+        });
+        if let Some((best_distance, _)) = best
+            && (ring == max_ring
+                || best_distance
+                    < min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1))
+        {
+            break;
+        }
+    }
+    best.map(|(_, building_idx)| building_idx)
+}
+
+// The home a household with `reserve_days` of reserves moves to: the highest level whose
+// move-in reserve it meets, above `minimum_level_exclusive` when given; in that level the
+// available home nearest `current_home` or, without a home, the lowest building ID. Reads the
+// live vacancy lists, which the move itself then updates. O(levels × (scanned chunks + their
+// homes)).
+fn affordable_home(
+    reserve_days: f32,
+    allocator: &BuildingAllocator,
+    current_home: Option<usize>,
+    minimum_level_exclusive: Option<u8>,
+    config: &HouseholdRuntimeTuning,
+) -> Option<usize> {
+    let current_center = current_home
+        .and_then(|building_idx| allocator.buildings.get(building_idx))
+        .map(|building| (building.center_x, building.center_y));
+    for level in allocator.rehousing_levels_desc() {
+        if minimum_level_exclusive.is_some_and(|minimum_level| level <= minimum_level) {
+            break;
+        }
+        let move_in_threshold =
+            level_tuning_value(&config.residential_move_in_min_reserve_days_by_level, level);
+        if reserve_days + f32::EPSILON < move_in_threshold {
+            continue;
+        }
+        let home = match current_center {
+            Some((origin_x, origin_y)) => {
+                nearest_home_in_level(allocator, level, origin_x, origin_y, current_home)
+            }
+            None => allocator
+                .rehousing_homes(level)
+                .find(|&building_idx| home_is_available(allocator, building_idx, current_home)),
+        };
+        if home.is_some() {
+            return home;
+        }
+    }
+    None
+}
+
 impl HouseholdSystem {
-    /// Rehouses existing residents before hourly job and arrival planning can claim their homes.
-    /// Shared vacancy claims are serial in household order: O(H + U*(levels + log V) + moved
-    /// members), with no vacancy scan or new scratch allocation. The common fully housed case
-    /// costs one parallel O(H) check.
+    /// One slot of the `housing requests` queue (`SIM-02-J`): up to `quota` requests from the
+    /// queued rehousings and housing reviews, oldest first by queue slot and household. A
+    /// request whose household left is dropped. Returns the requests taken. O(1) with nothing queued; each
+    /// request costs a vacancy search, O(levels × (scanned chunks + their homes)), and moves its
+    /// members, after a stale vacancy index's rebuild.
+    pub(crate) fn serve_housing_requests(
+        &mut self,
+        quota: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> usize {
+        if self.rehousing.is_empty() && self.housing_reviews.is_empty() {
+            return 0;
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
+        if allocator.dirty_index {
+            allocator.rebuild_zone_index();
+        }
+        // Agents a loader or tool appended directly join their lists before housing walks them.
+        agents.register_appended_household_members();
+        let mut diagnostics = self.housing_diagnostics;
+        let mut served = 0;
+        while served < quota {
+            // Both queues oldest first, merged by queue slot and household; a rehousing goes
+            // before a review queued in the same slot by the same household.
+            let rehousing_first = match (self.rehousing.front(), self.housing_reviews.front()) {
+                (Some(rehousing), Some(review)) => rehousing <= review,
+                (rehousing, _) => rehousing.is_some(),
+            };
+            if rehousing_first && let Some((_, handle)) = self.rehousing.pop() {
+                if let Some(household_id) = self.handles.resolve(handle)
+                    && self.rehouse_household(household_id, &catalog, &tuning, agents, allocator)
+                {
+                    diagnostics.rehoused = diagnostics.rehoused.saturating_add(1);
+                }
+            } else if let Some((_, handle)) = self.housing_reviews.pop() {
+                if let Some(household_id) = self.handles.resolve(handle) {
+                    self.review_household_housing(
+                        household_id,
+                        &catalog,
+                        &tuning,
+                        agents,
+                        allocator,
+                        &mut diagnostics,
+                    );
+                }
+            } else {
+                break;
+            }
+            served += 1;
+        }
+        diagnostics
+            .queue
+            .record_slot(served, self.rehousing.len() + self.housing_reviews.len());
+        self.housing_diagnostics = diagnostics;
+        served
+    }
+
+    /// Logs and resets the hour's housing outcomes, at the hour's last slot.
+    pub(super) fn close_housing_hour(&mut self) {
+        let diagnostics = std::mem::take(&mut self.housing_diagnostics);
+        if diagnostics.queue.taken > 0 {
+            diagnostics.log("hour");
+        }
+    }
+
+    // Moves unhoused household `household_id` into the highest-level vacancy its reserves
+    // afford, lowest building ID first. Returns whether it moved. O(levels + log V + members).
+    fn rehouse_household(
+        &mut self,
+        household_id: usize,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> bool {
+        let household = &self.households[household_id];
+        if household.member_count == 0
+            || !household_has_independent_member(household)
+            || household_is_housed(household, allocator)
+        {
+            return false;
+        }
+        let reserves = household_reserve_days(catalog, tuning, household);
+        let old_home = household.home_building_id;
+        let Some(home) = allocator.first_rehousing_vacancy(|level| {
+            reserves + f32::EPSILON
+                >= level_tuning_value(
+                    &tuning
+                        .households
+                        .residential_move_in_min_reserve_days_by_level,
+                    level,
+                )
+        }) else {
+            return false;
+        };
+        if old_home < allocator.buildings.len() {
+            allocator.release_vacancy(old_home);
+        }
+        self.occupy_household_home(household_id, old_home, home, agents, allocator);
+        true
+    }
+
+    /// Rehouses every unhoused household at once, in household order, as the hourly pass did
+    /// before the `housing requests` queue. The common fully housed case moves nobody.
+    #[cfg(test)]
     pub(super) fn rehouse_unhoused_before_growth(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
-        if !self.any_unhoused_household(allocator) {
-            return;
-        }
         if allocator.dirty_index {
             allocator.rebuild_zone_index();
         }
@@ -385,40 +317,8 @@ impl HouseholdSystem {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         for household_id in 0..self.households.len() {
-            let household = &self.households[household_id];
-            if household.member_count == 0
-                || !household_has_independent_member(household)
-                || household_is_housed(household, allocator)
-            {
-                continue;
-            }
-            let reserves = household_reserve_days(&catalog, &tuning, household);
-            let old_home = household.home_building_id;
-            let target = allocator.first_rehousing_vacancy(|level| {
-                reserves + f32::EPSILON
-                    >= level_tuning_value(
-                        &tuning
-                            .households
-                            .residential_move_in_min_reserve_days_by_level,
-                        level,
-                    )
-            });
-            if let Some(home) = target {
-                if old_home < allocator.buildings.len() {
-                    allocator.release_vacancy(old_home);
-                }
-                self.occupy_household_home(household_id, old_home, home, agents, allocator);
-            }
+            self.rehouse_household(household_id, &catalog, &tuning, agents, allocator);
         }
-    }
-
-    // Whether a household with members lacks a usable home, from the member counts of its last
-    // hourly phase and the live home. Reads only saved state, so a reloaded game decides the
-    // same. O(H) parallel, stopping at the first one; `SIM-02-J` replaces it with a queue.
-    fn any_unhoused_household(&self, allocator: &BuildingAllocator) -> bool {
-        self.households.par_iter().any(|household| {
-            household.member_count > 0 && !household_is_housed(household, allocator)
-        })
     }
 
     /// Housing affordability, relocation and eviction of every household at once, as their
@@ -429,201 +329,130 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
-        let household_ids: Vec<usize> = (0..self.households.len()).collect();
-        self.resolve_housing_of(&household_ids, agents, allocator);
-    }
-
-    /// Serves the housing reviews that households' daily phases queued (`SIM-02-G`), in queue
-    /// order, moving members along their households' member lists.
-    /// O(V log V + reviews x (levels + log V) + moved members) for V vacant homes.
-    pub(super) fn review_queued_housing(
-        &mut self,
-        agents: &mut AgentSystem,
-        allocator: &mut BuildingAllocator,
-    ) {
-        if self.housing_reviews.is_empty() {
-            return;
-        }
-        let mut household_ids = std::mem::take(&mut self.housing_review_scratch);
-        household_ids.clear();
-        household_ids.extend(
-            self.housing_reviews
-                .drain(..)
-                .filter_map(|handle| self.handles.resolve(handle)),
-        );
-        self.resolve_housing_of(&household_ids, agents, allocator);
-        self.housing_review_scratch = household_ids;
-    }
-
-    fn resolve_housing_of(
-        &mut self,
-        household_ids: &[usize],
-        agents: &mut AgentSystem,
-        allocator: &mut BuildingAllocator,
-    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let config = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
         if allocator.dirty_index {
             allocator.rebuild_zone_index();
         }
-        let mut vacancy_planner = VacancyPlanner::new(allocator);
-
         let mut diagnostics = HousingResolutionDiagnostics::default();
-        for &household_id in household_ids {
-            let household = &self.households[household_id];
-            if household.member_count == 0 {
-                continue;
-            }
-            diagnostics.checked_households = diagnostics.checked_households.saturating_add(1);
+        for household_id in 0..self.households.len() {
+            self.review_household_housing(
+                household_id,
+                &catalog,
+                &config,
+                agents,
+                allocator,
+                &mut diagnostics,
+            );
+        }
+        diagnostics.log("pass");
+    }
 
-            if !household_has_independent_member(household) {
-                let current_home = household.home_building_id;
-                diagnostics.unhoused_start_households =
-                    diagnostics.unhoused_start_households.saturating_add(1);
-                if current_home < allocator.buildings.len() {
-                    self.evict_household(
-                        household_id,
-                        current_home,
-                        agents,
-                        allocator,
-                        &mut vacancy_planner,
-                    );
-                    diagnostics.evicted = diagnostics.evicted.saturating_add(1);
-                }
+    // Household `household_id`'s housing review: an unhoused household takes the best home it
+    // can afford; a housed one stays, upgrades to a higher level nearby, or after failing its
+    // stay reserve long enough relocates nearby or is evicted. The vacancy index is current.
+    fn review_household_housing(
+        &mut self,
+        household_id: usize,
+        catalog: &RuntimeEconomyCatalog,
+        config: &RuntimeEconomyTuning,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        diagnostics: &mut HousingResolutionDiagnostics,
+    ) {
+        let household = &self.households[household_id];
+        if household.member_count == 0 {
+            return;
+        }
+        diagnostics.checked_households = diagnostics.checked_households.saturating_add(1);
+
+        if !household_has_independent_member(household) {
+            let current_home = household.home_building_id;
+            diagnostics.unhoused_start_households =
+                diagnostics.unhoused_start_households.saturating_add(1);
+            if current_home < allocator.buildings.len() {
+                self.evict_household(household_id, current_home, agents, allocator);
+                diagnostics.evicted = diagnostics.evicted.saturating_add(1);
+            }
+            self.households[household_id].unhoused_days_elapsed = self.households[household_id]
+                .unhoused_days_elapsed
+                .saturating_add(1);
+            diagnostics.still_unhoused = diagnostics.still_unhoused.saturating_add(1);
+            return;
+        }
+
+        let reserve_days = household_reserve_days(catalog, config, household);
+        let current_home = household.home_building_id;
+        let is_housed = household_is_housed(household, allocator);
+
+        if !is_housed {
+            diagnostics.unhoused_start_households =
+                diagnostics.unhoused_start_households.saturating_add(1);
+            self.households[household_id].stay_failure_days = 0;
+            if let Some(target_home) =
+                affordable_home(reserve_days, allocator, None, None, &config.households)
+            {
+                self.relocate_household(household_id, current_home, target_home, agents, allocator);
+                diagnostics.relocated_unhoused = diagnostics.relocated_unhoused.saturating_add(1);
+            } else {
                 self.households[household_id].unhoused_days_elapsed = self.households[household_id]
                     .unhoused_days_elapsed
                     .saturating_add(1);
                 diagnostics.still_unhoused = diagnostics.still_unhoused.saturating_add(1);
-                continue;
             }
+            return;
+        }
+        diagnostics.housed_households = diagnostics.housed_households.saturating_add(1);
+        self.households[household_id].unhoused_days_elapsed = 0;
 
-            let reserve_days = household_reserve_days(&catalog, &config, household);
-            let current_home = household.home_building_id;
-            let is_housed = household_is_housed(household, allocator);
+        let current_level = allocator.buildings[current_home].level;
+        let stay_threshold = level_tuning_value(
+            &config.households.residential_stay_min_reserve_days_by_level,
+            current_level,
+        );
 
-            if !is_housed {
-                diagnostics.unhoused_start_households =
-                    diagnostics.unhoused_start_households.saturating_add(1);
-                self.households[household_id].stay_failure_days = 0;
-                if let Some(target_home) = vacancy_planner.claim_affordable_home(
-                    reserve_days,
-                    allocator,
-                    None,
-                    None,
-                    &config.households,
-                ) {
-                    self.relocate_household(
-                        household_id,
-                        current_home,
-                        target_home,
-                        agents,
-                        allocator,
-                        &mut vacancy_planner,
-                    );
-                    diagnostics.relocated_unhoused =
-                        diagnostics.relocated_unhoused.saturating_add(1);
-                } else {
-                    self.households[household_id].unhoused_days_elapsed = self.households
-                        [household_id]
-                        .unhoused_days_elapsed
-                        .saturating_add(1);
-                    diagnostics.still_unhoused = diagnostics.still_unhoused.saturating_add(1);
-                }
-                continue;
-            }
-            diagnostics.housed_households = diagnostics.housed_households.saturating_add(1);
-            self.households[household_id].unhoused_days_elapsed = 0;
-
-            let current_level = allocator.buildings[current_home].level;
-            let stay_threshold = level_tuning_value(
-                &config.households.residential_stay_min_reserve_days_by_level,
-                current_level,
-            );
-
-            if reserve_days >= stay_threshold {
-                diagnostics.stay_passed = diagnostics.stay_passed.saturating_add(1);
-                self.households[household_id].stay_failure_days = 0;
-                if let Some(target_home) = vacancy_planner.claim_affordable_home(
-                    reserve_days,
-                    allocator,
-                    Some(current_home),
-                    Some(current_level),
-                    &config.households,
-                ) {
-                    self.relocate_household(
-                        household_id,
-                        current_home,
-                        target_home,
-                        agents,
-                        allocator,
-                        &mut vacancy_planner,
-                    );
-                    diagnostics.relocated_upgrade = diagnostics.relocated_upgrade.saturating_add(1);
-                }
-                continue;
-            }
-
-            diagnostics.stay_failed = diagnostics.stay_failed.saturating_add(1);
-            self.households[household_id].stay_failure_days = self.households[household_id]
-                .stay_failure_days
-                .saturating_add(1);
-            if self.households[household_id].stay_failure_days
-                < config.households.stay_failure_days_before_eviction
-            {
-                diagnostics.waiting_for_eviction =
-                    diagnostics.waiting_for_eviction.saturating_add(1);
-                continue;
-            }
-
-            if let Some(target_home) = vacancy_planner.claim_affordable_home(
+        if reserve_days >= stay_threshold {
+            diagnostics.stay_passed = diagnostics.stay_passed.saturating_add(1);
+            self.households[household_id].stay_failure_days = 0;
+            if let Some(target_home) = affordable_home(
                 reserve_days,
                 allocator,
                 Some(current_home),
-                None,
+                Some(current_level),
                 &config.households,
             ) {
-                self.relocate_household(
-                    household_id,
-                    current_home,
-                    target_home,
-                    agents,
-                    allocator,
-                    &mut vacancy_planner,
-                );
-                diagnostics.relocated_failed_stay =
-                    diagnostics.relocated_failed_stay.saturating_add(1);
-            } else {
-                self.evict_household(
-                    household_id,
-                    current_home,
-                    agents,
-                    allocator,
-                    &mut vacancy_planner,
-                );
-                diagnostics.evicted = diagnostics.evicted.saturating_add(1);
+                self.relocate_household(household_id, current_home, target_home, agents, allocator);
+                diagnostics.relocated_upgrade = diagnostics.relocated_upgrade.saturating_add(1);
             }
+            return;
         }
 
-        debug_log!(
-            "economy",
-            "household housing resolution: checked={} housed={} unhoused_start={} stay_ok={} \
-             stay_failed={} waiting={} relocated_unhoused={} relocated_failed_stay={} \
-             relocated_upgrade={} evicted={} still_unhoused={}",
-            diagnostics.checked_households,
-            diagnostics.housed_households,
-            diagnostics.unhoused_start_households,
-            diagnostics.stay_passed,
-            diagnostics.stay_failed,
-            diagnostics.waiting_for_eviction,
-            diagnostics.relocated_unhoused,
-            diagnostics.relocated_failed_stay,
-            diagnostics.relocated_upgrade,
-            diagnostics.evicted,
-            diagnostics.still_unhoused,
-        );
+        diagnostics.stay_failed = diagnostics.stay_failed.saturating_add(1);
+        self.households[household_id].stay_failure_days = self.households[household_id]
+            .stay_failure_days
+            .saturating_add(1);
+        if self.households[household_id].stay_failure_days
+            < config.households.stay_failure_days_before_eviction
+        {
+            diagnostics.waiting_for_eviction = diagnostics.waiting_for_eviction.saturating_add(1);
+            return;
+        }
+
+        if let Some(target_home) = affordable_home(
+            reserve_days,
+            allocator,
+            Some(current_home),
+            None,
+            &config.households,
+        ) {
+            self.relocate_household(household_id, current_home, target_home, agents, allocator);
+            diagnostics.relocated_failed_stay = diagnostics.relocated_failed_stay.saturating_add(1);
+        } else {
+            self.evict_household(household_id, current_home, agents, allocator);
+            diagnostics.evicted = diagnostics.evicted.saturating_add(1);
+        }
     }
 
     fn relocate_household(
@@ -633,14 +462,12 @@ impl HouseholdSystem {
         new_home: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        vacancy_planner: &mut VacancyPlanner,
     ) {
         if household_id >= self.households.len() || new_home >= allocator.buildings.len() {
             return;
         }
         if old_home < allocator.buildings.len() {
             allocator.release_vacancy(old_home);
-            vacancy_planner.release_home(allocator, old_home);
         }
         self.occupy_household_home(household_id, old_home, new_home, agents, allocator);
     }
@@ -653,6 +480,11 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
+        // A reserved purchase whose shopper has not left the old home would lose its trip with
+        // the move, so it is cancelled and refunded first (`SIM-02-J`).
+        if self.shopper_not_left(household_id, old_home, agents) {
+            self.cancel_household_replenishment(household_id, agents, allocator);
+        }
         allocator.claim_vacancy(new_home);
 
         self.households[household_id].home_building_id = new_home;
@@ -677,14 +509,12 @@ impl HouseholdSystem {
         old_home: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        vacancy_planner: &mut VacancyPlanner,
     ) {
         if household_id >= self.households.len() {
             return;
         }
         if old_home < allocator.buildings.len() {
             allocator.release_vacancy(old_home);
-            vacancy_planner.release_home(allocator, old_home);
         }
 
         self.cancel_household_replenishment(household_id, agents, allocator);

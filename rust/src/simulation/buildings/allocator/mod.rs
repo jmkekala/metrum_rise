@@ -22,6 +22,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::support::indexed_test_building;
 
+pub(crate) use admission_order::ChunkBounds;
 pub(crate) use entrance::{
     BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
 };
@@ -228,9 +229,9 @@ pub struct Building {
     pub profit_tax_budget_baseline: f32,
     /// Completed previous-day operating-budget delta captured before the daily baseline reset.
     pub last_day_profit: f32,
-    /// Logistics hour tick from which this building may open another freight request
-    /// (`ShipmentSystem::hour_ticks`); a passive deadline, never decremented.
-    pub shipment_cooldown_until_tick: u32,
+    /// First absolute slot at which this building's hourly phase may request freight again; a
+    /// passive deadline compared at the phase, never decremented (`SIM-02-J`).
+    pub shipment_cooldown_until_slot: u64,
     /// Currency value of input shipments received from OWA during the current day.
     ///
     /// Reset once per day after the demand snapshot is taken. Read by the demand system to

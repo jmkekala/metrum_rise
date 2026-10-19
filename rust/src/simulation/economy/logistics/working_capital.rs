@@ -315,7 +315,8 @@ mod tests {
             total_cost: 108.0,
             freight_cost: 8.0,
             eta_hours: 1,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: false,
         }
     }

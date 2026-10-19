@@ -322,6 +322,14 @@ impl BuildingModeComponents {
         (self.components, self.count as usize)
     }
 
+    /// Inverse of [`Self::raw_parts`], for saved components; `None` for a count over two.
+    pub(crate) fn from_raw_parts(components: [u32; 2], count: usize) -> Option<Self> {
+        (count <= components.len()).then_some(Self {
+            components,
+            count: count as u8,
+        })
+    }
+
     /// Appends this building's reachable components to an existing candidate-index buffer.
     pub(crate) fn append_bucket_entries(
         self,

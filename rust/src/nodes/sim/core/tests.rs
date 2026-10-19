@@ -1050,7 +1050,7 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         operating_budget: 0.0,
         profit_tax_budget_baseline: 0.0,
         last_day_profit: 0.0,
-        shipment_cooldown_until_tick: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,

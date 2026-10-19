@@ -8,13 +8,16 @@ mod building_economy;
 mod candidate_visits;
 mod census;
 mod data;
+mod destinations;
 mod electricity;
 mod employment;
+mod job_board;
 mod membership;
 mod metrics;
 mod relocation;
 mod removal;
 mod replenishment;
+mod requests;
 mod service_sales;
 mod service_visits;
 mod settlement;
@@ -25,8 +28,12 @@ mod tick;
 pub(crate) use building_economy::{produce_building_hour, refresh_activity_floor};
 pub(crate) use data::{DailyPowerSettlementSummary, HouseholdBuildingUndo};
 pub use data::{Household, HouseholdSystem};
+pub(crate) use destinations::{
+    DestinationRoll, SavedDestination, SavedDestinationRoll, SavedDestinationSweep,
+};
 pub(crate) use electricity::ElectricityProfiles;
 pub(crate) use employment::{WORKPLACE_QUOTE_PASSES, WagePayment};
+pub(crate) use job_board::{JobBoardRoll, SavedJobBoard, SavedJobBoardSweep};
 pub(crate) use removal::HouseholdExitPolicy;
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,

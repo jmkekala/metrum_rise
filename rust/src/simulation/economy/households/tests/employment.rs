@@ -1781,7 +1781,8 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
         total_cost: paid_goods + 8.0,
         freight_cost: 8.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: true,
     });
     check(&mut allocator, &mut logistics, profile.worker_capacity);
@@ -3707,4 +3708,84 @@ fn workplace_quotes_expire_a_day_of_passes_after_they_were_added() {
         households.expire_workplace_route_cache();
     }
     assert_eq!(households.workplace_route_cache_entries().count(), 0);
+}
+
+#[test]
+fn employed_searchers_are_locked_again_when_no_job_is_open() {
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 5.0, 5.0));
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "locked_res", ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "locked_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    let (graph, network) = simple_work_graph();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.assign_household_id(agent, 0);
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+    allocator.buildings[1].worker_count = 1;
+    assert_eq!(agents.job_lock_until_day[agent], agents.settlement_days);
+    // No building has a funded job open, so the board is empty.
+    households.assign_agent_workplaces_from_census(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        420,
+    );
+    assert_eq!(agents.work_building[agent], 1);
+    assert!(agents.job_lock_until_day[agent] > agents.settlement_days);
+}
+
+#[test]
+fn a_job_board_swept_over_an_hour_equals_one_built_at_once() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    use crate::simulation::economy::households::JobBoardRoll;
+    let catalog = load_runtime_economy_catalog().expect("catalog");
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "board_com", ZoneClass::Commercial);
+    for (index, (funded, workers)) in [(2, 0), (1, 1), (3, 1)].into_iter().enumerate() {
+        let mut building = make_building(index as f32 * 30.0, ZoneType::Commercial, &asset, 0.0);
+        building.funded_job_capacity = funded;
+        building.worker_count = workers;
+        allocator.buildings.push(building);
+    }
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
+    let mut swept = JobBoardRoll::default();
+    for slot in SLOTS_PER_HOUR..2 * SLOTS_PER_HOUR {
+        swept.advance(slot, &allocator, &catalog);
+    }
+    let mut built = JobBoardRoll::default();
+    built.run_whole(2, &allocator, &catalog);
+    let handles = &allocator.building_handles;
+    assert_eq!(
+        swept.members_for(2, &allocator, &catalog),
+        [handles.handle(0), handles.handle(2)],
+        "the full building has no open job"
+    );
+    assert_eq!(swept.saved(), built.saved());
+    // A sweep that misses a slot is abandoned; its hour then builds a board at once.
+    let mut missed = JobBoardRoll::default();
+    for slot in (2 * SLOTS_PER_HOUR..3 * SLOTS_PER_HOUR).filter(|slot| slot % 100 != 7) {
+        missed.advance(slot, &allocator, &catalog);
+    }
+    assert!(missed.saved().front.is_none() && missed.saved().sweep.is_none());
 }

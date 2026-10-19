@@ -278,7 +278,8 @@ fn forced_liquidation_sells_stock_on_hand_not_loaded_cargo() {
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         // The logistics hour loads every shipment it plans, so a building's daily phase only
         // sees cargo that has already left its stock (`SIM-02-G`).
         cargo_loaded: true,

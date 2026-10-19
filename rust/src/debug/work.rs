@@ -98,11 +98,13 @@ pub(crate) enum Work {
     /// Business spawns and upgrades an earlier planning slot of the hour planned that a later
     /// slot's proof rejected, dropped from the hour's plan (`SIM-02-I`).
     ReproofDrops,
+    /// Building phases whose freight check a freight cooldown turned away (`SIM-02-J`).
+    FreightCooldownRejections,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::ReproofDrops as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::FreightCooldownRejections as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
@@ -227,6 +229,7 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "flow_fields_built",
     "flow_fields_skipped",
     "reproof_drops",
+    "freight_cooldown_rejections",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

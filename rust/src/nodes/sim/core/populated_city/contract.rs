@@ -335,14 +335,21 @@ fn perf_contract_phase() {
                 &core.region_graph,
             );
         }
-        "logistics" => core.logistics.hourly_tick(
-            &mut core.allocator,
-            &mut core.agents,
-            &core.transit_network,
-            &core.region_graph,
-            60,
-            &mut core.treasury.balance,
-        ),
+        // One hour of freight requests at once: every building's phase check, then the queue.
+        "logistics" => {
+            core.logistics.hourly_tick();
+            let slot = core.time.absolute_slot();
+            core.logistics
+                .request_freight_for_every_building(slot, &mut core.allocator);
+            core.logistics.serve_freight_requests(
+                usize::MAX,
+                &mut core.allocator,
+                &core.transit_network,
+                &core.region_graph,
+                60,
+                &mut core.treasury.balance,
+            );
+        }
         "lots" => {
             std::hint::black_box(core.prepare_cell_lots_internal());
         }

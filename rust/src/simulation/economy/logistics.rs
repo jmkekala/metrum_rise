@@ -5,7 +5,8 @@
 //! The first shipment slice keeps freight explicit without introducing per-order
 //! micro-deliveries. Commercial buildings open bounded restock requests,
 //! industrial suppliers reserve stock for them, and `OWA` border terminals act
-//! as the external fallback for ordinary imported goods.
+//! as the external fallback for ordinary imported goods. Buildings request freight at their
+//! hourly phases and the `freight requests` queue plans it (`SIM-02-J`, `requests.rs`).
 
 mod data;
 mod exports;
@@ -16,6 +17,7 @@ mod planning;
 mod progress;
 mod quantization;
 mod recurring_supply;
+mod requests;
 mod reservations;
 mod resource;
 mod route_cache;
@@ -35,6 +37,7 @@ pub use self::data::{
 };
 pub(crate) use self::quantization::{export_dispatch_target_kg, quantize_requested_amount};
 pub(crate) use self::recurring_supply::{ProjectedSupplySource, RecurringSupply};
+pub(crate) use self::requests::{FreightRequest, FreightRequestKind};
 pub(crate) use self::resource::{
     building_outputs_can_export_to_owa, building_outputs_can_supply_local_inputs,
     freight_goods_multiplier, imported_input_unit_price,

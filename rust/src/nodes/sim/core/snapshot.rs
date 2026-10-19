@@ -212,8 +212,6 @@ pub(crate) struct BuildingRemovalUndo {
     pub(crate) original_site_count: usize,
     pub(crate) original_agent_count: usize,
     pub(crate) original_household_count: usize,
-    pub(crate) original_shipment_count: usize,
-    pub(crate) original_request_failure_count: usize,
     pub(crate) buildings: Vec<(usize, Building)>,
     pub(crate) sites: Vec<(usize, BuildingSiteClient)>,
     pub(crate) agents: Vec<(usize, Agent)>,

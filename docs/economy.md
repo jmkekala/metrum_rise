@@ -94,14 +94,16 @@ crossed:
    day.
 4. Each slot, after everything above: the **hourly phases** of the buildings, households and
    agents whose phase falls in it (`SIM-02-F`), then their **daily phases** (`SIM-02-G`), then
-   at most one dirty cell-lot region (`SIM-02-H`), then one chunk of the rolling road-length
+   at most one dirty cell-lot region (`SIM-02-H`) and the freight, housing, restock, visit and
+   job request queues (`SIM-02-J`), then one chunk of the rolling road-length
    sum and one of the day's pollution, noise and desirability sweep
    ([`simulation.md`](simulation.md#snapshots)). Each entity has one hourly phase per hour,
    about 1/960 of the city per slot, and one daily phase per day, about 1/23,040. Readers see
    the environment grids the previous day's sweep finished at its last slot.
 
-Household hour (`households/tick.rs`): count the households still arriving; rehouse unhoused
-households; logistics; replenishment and service-visit planning; job search against the census.
+Household hour (`households/tick.rs`): count the households still arriving; logistics clock;
+the commute-quote expiry. Freight, housing, restock, visits and job search are request queues
+served each slot (`SIM-02-J`, [`simulation.md`](simulation.md#request-queues)).
 The funding census is no longer part of the hour (`SIM-02-I`,
 [`simulation.md`](simulation.md#pure-jobs)): its inputs are copied over each hour's first half,
 it runs in steps over the second half, and it publishes at the next hour's first slot, just
@@ -121,11 +123,12 @@ finished hour: power dispatch and coverage, and the residents, store capacity an
 service sales. The hour's last slot folds the hour's own totals for the next hour (`city
 hour`, `SIM-02-I`).
 
-Trips decided on the hour do not leave on it (`SIM-02-E`,
-[`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers, shoppers,
-service visitors and household arrival carriers wait for a departure slot; each kind is spaced
-evenly over the following hour. Arrival carriers are paced from the hour's actions slot, where
-admission runs (`SIM-02-I` part 4), so they leave three slots after the hour's other trips. Each trip is then checked as it travels (every one to eight
+Trips do not leave when they are decided (`SIM-02-E`,
+[`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers and shoppers
+leave near a target slot in the hour ahead, in the least busy minute within 15 minutes of it,
+and a visible service visitor leaves at the next slot (`SIM-02-J`). Household arrival carriers
+are spaced evenly over the hour after the actions slot, where admission runs (`SIM-02-I` part
+4). Each trip is then checked as it travels (every one to eight
 minutes, growing with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's return or a household moving in no longer
 waits for the next hour. Leg timeouts still count operational hours.
 
@@ -142,10 +145,10 @@ Daily phases (`nodes/sim/core/entity_days.rs`), each over the entity's own 24-ho
 3. **Agent:** the wage, paid while the workplace has paid fewer than its funded jobs in its own
    window, and the daily happiness update.
 
-The next hour serves the queued housing reviews and exits, walking each household's member
-list. Wages read the funded jobs the last hourly census copied onto each
-building; water and sewage coverage is whether a provider settled operational in the last
-closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded
+The `housing requests` queue serves the housing reviews a few per slot, and the next hour
+removes the claimed exits, each walking the household's member list (`SIM-02-J`). Wages read
+the funded jobs the last hourly census copied onto each building; water and sewage coverage is
+whether a provider settled operational in the last closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded
 network-only legs remain valid until their CCH or lane revision changes. Every payment also
 posts into the calendar day's totals, which the close reports in O(1).
 
@@ -423,7 +426,7 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
 - An unaffordable full refill becomes the largest affordable partial basket.
 - The reservation moves stock and money; supplies rise only when the shopper returns home.
   Shopping owns both legs and the wait for pickup and delivery acknowledgement; the work
-  scheduler skips it. The shopper waits at home for its paced departure slot, picks up as soon as
+  scheduler skips it. The shopper waits at home for its departure slot, picks up as soon as
   it reaches the store (VAT is collected then) and delivers as soon as it is home (`SIM-02-E`).
 - Each leg's deadline is its travel estimate plus the authored allowance. A timeout before pickup
   refunds; one after pickup records a failure. After 3 failures the household enters
@@ -467,9 +470,10 @@ household_reserve_days = household_budget / max(household_daily_essential_cost, 
   active shopping trip through the normal refund rules and releases the shopper; once the
   household is rehoused, a member away from home and work goes to the new home after its
   current trip.
-- Unhoused households try to rehouse at each operational hour, claiming real vacancies before
-  arrivals can. A parallel check over the households finds whether any is unhoused (`SIM-02-J`
-  turns rehousing into a queue).
+- An unhoused household with an independent member queues its rehousing at its hourly phase;
+  the `housing requests` queue serves rehousings and the daily phases' housing reviews oldest
+  first, a few per slot. Rehousing claims the highest affordable vacancy by level and lowest
+  building ID, which the next hour's admission may already have taken (`SIM-02-J`).
 - `unhoused_days_elapsed` counts consecutive settled days without a home. Demand's exit policy
   interprets it ([`demand.md`](demand.md#household-removal)).
 
@@ -572,8 +576,12 @@ Two caches serve the search:
 
 Neither cache changes a result.
 
-Resident workers whose best job is at home are assigned first; all others apply in agent order
-against live slot counts.
+Searches run from the `job requests` queue, queued at each agent's hourly phase and served a
+slot's searches together against the hourly job board (`SIM-02-J`,
+[`simulation.md`](simulation.md#request-queues)). Within a slot, resident workers whose best
+job is at home are assigned first; all others apply in agent order against live slot counts. A
+worker who keeps its job, including one whose better options filled before it applied, is
+locked again.
 
 ## Production
 
@@ -673,8 +681,9 @@ freight.
   review is not hourly trucks.
 - **Reservations:**
   - creating a shipment reserves source stock and buyer demand;
-  - the planning hour loads the stock into the shipment; the carrier leaves at a slot paced over
-    the following hour (`SIM-02-E`), and the seller is paid only on delivery;
+  - the planning slot loads the stock into the shipment at its end; the carrier leaves near a
+    target slot in the hour ahead, levelled per minute (`SIM-02-J`), and the seller is paid only
+    on delivery;
   - failure, expiry, cancellation or building removal releases both sides deterministically,
     refunding buyers (or the treasury for city services);
   - a delivered shipment stays settled when an endpoint is removed.
@@ -685,7 +694,7 @@ freight.
 - **Supplier search:** `SupplierCandidateIndex` lists a supplier under a resource only while its
   unreserved stock fills one batch. Searches scan chunk rings outward from the buyer and stop at
   the nearest qualifying supplier, so an empty search ends at once (`ECON-15`). The index is a
-  rolling snapshot (`SIM-02-I`): an hourly freight pass reads the listing the previous hour's
+  rolling snapshot (`SIM-02-I`): freight requests read the listing the previous hour's
   sweep built, each supplier as it stood at its slot of that hour, and the choice still checks
   the supplier's live stock.
 - **Routing:** freight routes use the exact car-access abstraction of the entrance cache, with
@@ -696,8 +705,9 @@ freight.
   subsequent building quote refreshes cost O(buildings), evaluating live frontage delay once
   per arrival end. The minimum uses the original table's f32 values and the original order of
   frontage/local additions, so fees remain bit-identical. It does not select a dispatch border.
-- **Retries:** failures enter a cooldown (1 hour) and escalate to a visible terminal state after
-  3 attempts. Terminal states never block recovery after cooldown, budget, supplier or road
+- **Retries:** failures enter a cooldown that ends at the building's next hourly phase (one
+  hour for a failure the building's own plan made) and escalate to a visible terminal state
+  after 3 attempts. Terminal states never block recovery after cooldown, budget, supplier or road
   changes.
 
 ## Private construction

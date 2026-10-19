@@ -4,6 +4,7 @@
 
 use super::candidate_visits::CandidateVisits;
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
+use super::destinations::{DestinationIndex, store_sells_supplies};
 use super::electricity::ElectricityProfiles;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
@@ -12,16 +13,16 @@ use super::metrics::{
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::handles::Handle;
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
-    chunk_for_point,
 };
 use crate::simulation::economy::agents::tick::{
     BuildingWalkingAccess, PedestrianReachability, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds,
 };
 use crate::simulation::economy::agents::{
-    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentHandle, AgentSystem, TRANSIT_IN_BUILDING,
+    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentHandle, AgentSystem, NO_MEMBER, TRANSIT_IN_BUILDING,
     age_group_can_shop,
 };
 use crate::simulation::economy::definitions::{
@@ -57,7 +58,7 @@ pub const REPLENISHMENT_COOLDOWN: u8 = 6;
 pub const REPLENISHMENT_FAILED_TERMINAL: u8 = 7;
 
 #[derive(Default)]
-struct ReplenishmentDiagnostics {
+pub(super) struct ReplenishmentDiagnostics {
     attempts: u32,
     successes: u32,
     failed_no_store_candidates: u32,
@@ -79,6 +80,11 @@ struct ReplenishmentDiagnostics {
 }
 
 impl ReplenishmentDiagnostics {
+    /// Counts a household out of stock that waits out its cooldown before shopping again.
+    pub(super) fn count_urgent_cooldown_skip(&mut self) {
+        self.urgent_cooldown_skips += 1;
+    }
+
     fn has_signal(&self) -> bool {
         self.attempts > 0 || self.failed_no_shopper > 0 || self.urgent_cooldown_skips > 0
     }
@@ -132,15 +138,6 @@ impl HouseholdHourTuning {
     }
 }
 
-struct StoreSupplyEntry {
-    building_idx: usize,
-    chunk: (i32, i32),
-    foot_components: BuildingModeComponents,
-    car_components: BuildingModeComponents,
-    // Compact directed walking proofs, prepared once per hour when connectivity is current.
-    walking_access: Option<BuildingWalkingAccess>,
-}
-
 /// A cached cyclic pedestrian component proves both walking legs in O(1); the ordinary
 /// planner, which always allows walking, then succeeds too. False means only unproven.
 pub(super) fn proven_shopping_walk(
@@ -188,103 +185,53 @@ struct ShoppingRoutes<'a> {
 impl ShoppingRoutes<'_> {
     // Exact: the same answer as `shopping_route_is_feasible`, without a path search
     // when the walking proof holds. O(1) then; otherwise two ordinary trip plans.
-    fn feasible(&self, store: &StoreSupplyEntry) -> bool {
-        proven_shopping_walk(
-            self.walking,
-            self.home.as_ref(),
-            store.walking_access.as_ref(),
-        ) || shopping_route_is_feasible(
-            self.home_idx,
-            store.building_idx,
-            self.has_car,
-            self.allocator,
-            self.transit_network,
-            self.graph,
-            self.pathfind_count,
-        )
+    fn feasible(&self, store_idx: usize) -> bool {
+        let store_access = self.walking.map(|walking| {
+            prepare_walking_access(
+                store_idx,
+                self.allocator,
+                self.transit_network,
+                self.graph,
+                walking,
+            )
+        });
+        proven_shopping_walk(self.walking, self.home.as_ref(), store_access.as_ref())
+            || shopping_route_is_feasible(
+                self.home_idx,
+                store_idx,
+                self.has_car,
+                self.allocator,
+                self.transit_network,
+                self.graph,
+                self.pathfind_count,
+            )
     }
 }
 
-struct StoreSupplyIndex {
-    entries: Vec<StoreSupplyEntry>,
-    foot_buckets: ReachableBucketIndex,
-    car_buckets: ReachableBucketIndex,
+// The stores of the hour's destination front (`households/destinations.rs`), read through
+// their handles: a store left or sold out since its chunk folded is skipped.
+struct StoreSupplyIndex<'a> {
+    stores: &'a DestinationIndex,
+    catalog: &'a RuntimeEconomyCatalog,
+    household_supply_resource: u16,
 }
 
-impl StoreSupplyIndex {
-    #[allow(clippy::too_many_arguments)]
-    fn build(
-        allocator: &BuildingAllocator,
-        catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
-        household_supply_resource: u16,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-        foot_components: &ModeComponentIndex,
-        car_components: &ModeComponentIndex,
-        walking: Option<&PedestrianReachability>,
-    ) -> Self {
-        let mut entries: Vec<_> = allocator
-            .buildings
-            .par_iter()
-            .enumerate()
-            .filter_map(|(idx, store)| {
-                if store.broken
-                    || store.economy_broken
-                    || store.is_deserted
-                    || store.is_under_construction()
-                    || store.edge_idx == usize::MAX
-                    || !matches!(store.zone_type, ZoneType::Commercial)
-                    || store.inventory_units(household_supply_resource) <= 0.0
-                    || !economy_profile_for_building(catalog, store).is_some_and(|profile| {
-                        profile.output_port(household_supply_resource).is_some()
-                    })
-                {
-                    return None;
-                }
-                let foot_components =
-                    foot_components.building_components(allocator, graph, idx, TransitFlags::FOOT);
-                let car_components =
-                    car_components.building_components(allocator, graph, idx, TransitFlags::CAR);
-                if foot_components.as_slice().is_empty() && car_components.as_slice().is_empty() {
-                    return None;
-                }
-                Some(StoreSupplyEntry {
-                    building_idx: idx,
-                    chunk: chunk_for_point(store.center_x, store.center_y),
-                    foot_components,
-                    car_components,
-                    walking_access: walking.map(|walking| {
-                        prepare_walking_access(idx, allocator, network, graph, walking)
-                    }),
-                })
-            })
-            .collect();
-        entries.sort_unstable_by_key(|entry| (entry.chunk, entry.building_idx));
-
-        let mut foot_bucket_entries = Vec::with_capacity(entries.len());
-        let mut car_bucket_entries = Vec::with_capacity(entries.len());
-        for (entry_idx, entry) in entries.iter().enumerate() {
-            entry.foot_components.append_bucket_entries(
-                &mut foot_bucket_entries,
-                entry.chunk,
-                entry_idx,
-            );
-            entry.car_components.append_bucket_entries(
-                &mut car_bucket_entries,
-                entry.chunk,
-                entry_idx,
-            );
-        }
-
-        Self {
-            entries,
-            foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
-            car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
-        }
-    }
-
+impl StoreSupplyIndex<'_> {
     fn has_any(&self) -> bool {
-        !self.entries.is_empty()
+        self.stores.has_any()
+    }
+
+    // The live building of entry `position` while it still sells household supplies. O(1)
+    // plus the profile lookup.
+    fn live_store(&self, allocator: &BuildingAllocator, position: usize) -> Option<usize> {
+        let entry = self.stores.entries.get(position)?;
+        let store_idx = allocator.building_handles.resolve(entry.building)?;
+        store_sells_supplies(
+            self.catalog,
+            &allocator.buildings[store_idx],
+            self.household_supply_resource,
+        )
+        .then_some(store_idx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -336,13 +283,14 @@ impl StoreSupplyIndex {
         }
 
         CandidateVisits::with(|visits| {
-            visits.begin_query(self.entries.len());
-            let mut inspected = 0;
+            visits.begin_query(self.stores.entries.len());
+            // Live stores inspected, and stores passed over because they left or sold out.
+            let mut inspected = [0; 2];
             let home = &allocator.buildings[home_idx];
             let home_foot_components =
                 foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
             self.scan_candidate_bucket(
-                &self.foot_buckets,
+                &self.stores.foot_buckets,
                 home_foot_components,
                 home.center_x,
                 home.center_y,
@@ -361,7 +309,7 @@ impl StoreSupplyIndex {
                     TransitFlags::CAR,
                 );
                 self.scan_candidate_bucket(
-                    &self.car_buckets,
+                    &self.stores.car_buckets,
                     home_car_components,
                     home.center_x,
                     home.center_y,
@@ -386,36 +334,37 @@ impl StoreSupplyIndex {
         routes: &ShoppingRoutes,
         candidates: &mut ShoppingShortlist<GROCERY_SEARCH_CANDIDATES>,
         visits: &mut CandidateVisits,
-        inspected: &mut usize,
+        inspected: &mut [usize; 2],
         diagnostics: &mut ReplenishmentDiagnostics,
     ) {
         let allocator = routes.allocator;
         buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
             ReachableBucketScanEvent::Item { item_idx } => {
-                if let Some(entry) = self.entries.get(item_idx) {
-                    if visits.contains(item_idx) {
-                        return true;
-                    }
-                    if *inspected == GROCERY_ROUTE_SCAN_CANDIDATES {
-                        return false;
-                    }
-                    visits.mark_seen(item_idx);
-                    *inspected += 1;
-                    let distance = squared_building_distance(
-                        origin_x,
-                        origin_y,
-                        &allocator.buildings[entry.building_idx],
-                    );
-                    let Some(position) = candidates.insertion(entry.building_idx, distance) else {
-                        diagnostics.rejected_outside_shortlist += 1;
-                        return true;
-                    };
-                    if !routes.feasible(entry) {
-                        diagnostics.rejected_unreachable += 1;
-                        return true;
-                    }
-                    candidates.insert(position, entry.building_idx, distance);
+                if visits.contains(item_idx) {
+                    return true;
                 }
+                visits.mark_seen(item_idx);
+                // A store that left or sold out is no candidate; such stores have their own
+                // cap, so a shortage cannot make the scan visit every entry.
+                let Some(store_idx) = self.live_store(allocator, item_idx) else {
+                    inspected[1] += 1;
+                    return inspected[1] < GROCERY_ROUTE_SCAN_CANDIDATES;
+                };
+                if inspected[0] == GROCERY_ROUTE_SCAN_CANDIDATES {
+                    return false;
+                }
+                inspected[0] += 1;
+                let distance =
+                    squared_building_distance(origin_x, origin_y, &allocator.buildings[store_idx]);
+                let Some(position) = candidates.insertion(store_idx, distance) else {
+                    diagnostics.rejected_outside_shortlist += 1;
+                    return true;
+                };
+                if !routes.feasible(store_idx) {
+                    diagnostics.rejected_unreachable += 1;
+                    return true;
+                }
+                candidates.insert(position, store_idx, distance);
                 true
             }
             ReachableBucketScanEvent::RingComplete {
@@ -437,31 +386,34 @@ impl StoreSupplyIndex {
         diagnostics: &mut ReplenishmentDiagnostics,
     ) -> bool {
         let (allocator, home_idx) = (routes.allocator, routes.home_idx);
-        if self.entries.is_empty() {
+        if self.stores.entries.is_empty() {
             return false;
         }
-        let total_entries = self.entries.len();
+        let total_entries = self.stores.entries.len();
         let start = search_cursor as usize % total_entries;
         let inspected = total_entries.min(GROCERY_ROUTE_SCAN_CANDIDATES);
         for offset in 0..inspected {
-            let entry = &self.entries[(start + offset) % total_entries];
-            if !routes.has_car && entry.foot_components.as_slice().is_empty() {
+            let position = (start + offset) % total_entries;
+            if !routes.has_car && self.stores.entries[position].foot.as_slice().is_empty() {
                 continue;
             }
+            let Some(store_idx) = self.live_store(allocator, position) else {
+                continue;
+            };
             let distance = squared_building_distance(
                 allocator.buildings[home_idx].center_x,
                 allocator.buildings[home_idx].center_y,
-                &allocator.buildings[entry.building_idx],
+                &allocator.buildings[store_idx],
             );
-            let Some(position) = candidates.insertion(entry.building_idx, distance) else {
+            let Some(position) = candidates.insertion(store_idx, distance) else {
                 diagnostics.rejected_outside_shortlist += 1;
                 continue;
             };
-            if !routes.feasible(entry) {
+            if !routes.feasible(store_idx) {
                 diagnostics.rejected_unreachable += 1;
                 continue;
             }
-            candidates.insert(position, entry.building_idx, distance);
+            candidates.insert(position, store_idx, distance);
         }
         inspected > 0
     }
@@ -599,6 +551,10 @@ pub(super) fn insert_shopping_candidate(
 }
 
 impl HouseholdSystem {
+    /// One hour of restock and visit planning for every household at once, as their hourly
+    /// phases would queue them at absolute hour `absolute_hour`, served without quota. Held
+    /// trips stay held.
+    #[cfg(test)]
     pub(super) fn run_household_operational_hour(
         &mut self,
         agents: &mut AgentSystem,
@@ -608,38 +564,18 @@ impl HouseholdSystem {
         absolute_hour: u32,
         household_vat_rate: f32,
     ) {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
-        // Consumption, utilities and leg timeouts run at each household's hourly phase
-        // (`SIM-02-F`); this pass only plans the hour's purchases and visits.
-        let trigger_days = household_demand_profile(&catalog).reorder_threshold_days;
-        let (restock_candidate_exists, urgent_restock_candidate_exists) =
-            self.restock_candidates(allocator.buildings.len(), trigger_days);
-
-        self.plan_and_apply_household_replenishment(
+        let slot = u64::from(absolute_hour) * SLOTS_PER_HOUR;
+        self.queue_every_household_for_test(slot, agents, allocator);
+        self.serve_restock_requests(
+            slot,
+            usize::MAX,
             agents,
             allocator,
             transit_network,
             graph,
-            absolute_hour,
-            &catalog,
-            &tuning,
-            household_supply_resource,
             household_vat_rate,
-            restock_candidate_exists,
-            urgent_restock_candidate_exists,
         );
-        self.plan_and_apply_visible_service_visits(
-            agents,
-            allocator,
-            transit_network,
-            graph,
-            absolute_hour,
-            &catalog,
-        );
+        self.serve_visits(slot, usize::MAX, agents, allocator, transit_network, graph);
     }
 
     /// Runs the hour of every household whose hourly phase falls in this slot (`SIM-02-F`):
@@ -693,23 +629,6 @@ impl HouseholdSystem {
                 terminal_failure_count,
             );
         }
-    }
-
-    // Whether any household could restock this hour, and whether one of them has run out.
-    fn restock_candidates(&self, building_count: usize, trigger_days: f32) -> (bool, bool) {
-        self.households
-            .par_iter()
-            .filter(|household| {
-                household.member_count > 0
-                    && household.stock_days < trigger_days
-                    && household.home_building_id < building_count
-                    && !matches!(
-                        household.replenishment_state,
-                        REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-                    )
-            })
-            .map(|household| (true, household.stock_days == 0.0))
-            .reduce(|| (false, false), |a, b| (a.0 || b.0, a.1 || b.1))
     }
 
     #[cfg(test)]
@@ -769,41 +688,17 @@ impl HouseholdSystem {
             );
         }
 
-        let profile = household_demand_profile(&catalog);
-        let trigger_days = profile.reorder_threshold_days;
-        let restock_candidate_exists = self.households.par_iter().any(|household| {
-            household.member_count > 0
-                && household.stock_days < trigger_days
-                && household.home_building_id < allocator.buildings.len()
-                && !matches!(
-                    household.replenishment_state,
-                    REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-                )
-        });
-        if !restock_candidate_exists {
-            return;
-        }
-        let urgent_restock_candidate_exists = self.households.par_iter().any(|household| {
-            household.member_count > 0
-                && household.stock_days == 0.0
-                && household.home_building_id < allocator.buildings.len()
-                && !matches!(
-                    household.replenishment_state,
-                    REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-                )
-        });
-        self.plan_and_apply_household_replenishment(
+        let slot = u64::from(absolute_hour) * SLOTS_PER_HOUR;
+        self.queue_every_household_for_test(slot, agents, allocator);
+        self.visit_requests.clear();
+        self.serve_restock_requests(
+            slot,
+            usize::MAX,
             agents,
             allocator,
             transit_network,
             graph,
-            absolute_hour,
-            &catalog,
-            &tuning,
-            household_supply_resource,
             tuning.fiscal.household_vat_rate,
-            restock_candidate_exists,
-            urgent_restock_candidate_exists,
         );
         for household in std::mem::take(&mut self.held_shoppers) {
             if let Some(hid) = self.handles.resolve(household) {
@@ -812,101 +707,139 @@ impl HouseholdSystem {
         }
     }
 
+    /// One slot of the `restock requests` queue (`SIM-02-J`): takes up to `quota` requests,
+    /// plans them in parallel against the hour's destination front and reserves them in queue
+    /// order against live store stock; a reserved shopper is held for its departure. A request
+    /// whose household left is dropped. Returns the requests taken. O(1) with nothing queued;
+    /// a request walks its household's members and inspects at most
+    /// `GROCERY_ROUTE_SCAN_CANDIDATES` stores and passes over as many that left or sold out,
+    /// after a front built at once if the hour had none.
     #[allow(clippy::too_many_arguments)]
-    fn plan_and_apply_household_replenishment(
+    pub(crate) fn serve_restock_requests(
         &mut self,
+        slot: u64,
+        quota: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
-        absolute_hour: u32,
-        catalog: &RuntimeEconomyCatalog,
-        tuning: &RuntimeEconomyTuning,
-        household_supply_resource: u16,
         household_vat_rate: f32,
-        restock_candidate_exists: bool,
-        urgent_restock_candidate_exists: bool,
-    ) {
-        if !restock_candidate_exists {
-            return;
+    ) -> usize {
+        if self.restock_requests.is_empty() {
+            return 0;
         }
+        let mut batch = std::mem::take(&mut self.restock_batch);
+        batch.clear();
+        let mut taken = 0;
+        while taken < quota {
+            let Some((queued_slot, handle)) = self.restock_requests.pop() else {
+                break;
+            };
+            taken += 1;
+            if let Some(household_id) = self.handles.resolve(handle) {
+                batch.push((queued_slot, household_id));
+            }
+        }
+        if !batch.is_empty() {
+            self.plan_and_reserve_restocks(
+                slot,
+                &batch,
+                agents,
+                allocator,
+                transit_network,
+                graph,
+                household_vat_rate,
+            );
+        }
+        self.restock_batch = batch;
+        self.restock_queue_stats
+            .record_slot(taken, self.restock_requests.len());
+        taken
+    }
+
+    // Plans the restocks of `batch`, `(queue slot, household)` in queue order, each against the
+    // hour of its queue slot, then reserves them in that order.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_and_reserve_restocks(
+        &mut self,
+        slot: u64,
+        batch: &[(u64, usize)],
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        household_vat_rate: f32,
+    ) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
         let check_interval = u32::from(
             tuning
                 .operational_clock
                 .household_replenishment_check_interval_hours,
         );
-        let profile = household_demand_profile(catalog);
+        let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
         let trigger_days = profile.reorder_threshold_days;
-        let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
-        let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
-        let shopper_candidates = self.collect_eligible_shopper_candidates(agents);
+        agents.register_appended_household_members();
+        let front = self.destination_front(slot, allocator, transit_network, graph, &catalog);
+        let store_index = StoreSupplyIndex {
+            stores: &front.stores,
+            catalog: &catalog,
+            household_supply_resource,
+        };
+        let stores_exist = store_index.has_any();
         // Proofs prepared by the hourly funding census; `None` after a topology change.
         let walking = self.job_funding.customers.walking_proofs(transit_network);
-        let store_index = StoreSupplyIndex::build(
-            allocator,
-            catalog,
-            household_supply_resource,
-            transit_network,
-            graph,
-            &foot_components,
-            &car_components,
-            walking,
+        let (foot_components, car_components) = (
+            self.destination_topology.foot(),
+            self.destination_topology.car(),
         );
-        let stock_critical_purchase_available =
-            urgent_restock_candidate_exists && store_index.has_any();
-        let (mut plans, mut diagnostics) = self
-            .households
+        let (households, customers) = (&self.households, &self.job_funding.customers);
+        let shared_agents = &*agents;
+        let shared_allocator = &*allocator;
+        let plans: Vec<_> = batch
             .par_iter()
-            .enumerate()
-            .fold(
-                || {
-                    (
-                        Vec::new(),
-                        ReplenishmentDiagnostics::default(),
-                        Vec::with_capacity(GROCERY_SEARCH_CANDIDATES),
-                    )
-                },
-                |(mut plans, mut diagnostics, mut candidates), (hid, household)| {
-                    if let Some(plan) = plan_household_replenishment(
+            .map_init(
+                || Vec::with_capacity(GROCERY_SEARCH_CANDIDATES),
+                |candidates, &(queued_slot, hid)| {
+                    let household = &households[hid];
+                    let mut diagnostics = ReplenishmentDiagnostics::default();
+                    let plan = plan_household_replenishment(
                         hid,
                         household,
-                        shopper_candidates[hid],
-                        agents,
-                        allocator,
+                        first_eligible_shopper(shared_agents, hid, household),
+                        shared_agents,
+                        shared_allocator,
                         &store_index,
-                        &self.job_funding.customers,
+                        customers,
                         transit_network,
                         graph,
-                        &foot_components,
-                        &car_components,
+                        foot_components,
+                        car_components,
                         walking,
-                        absolute_hour,
+                        (queued_slot / SLOTS_PER_HOUR) as u32,
                         check_interval,
-                        stock_critical_purchase_available,
+                        stores_exist,
                         target_days,
                         trigger_days,
-                        &mut candidates,
+                        candidates,
                         &mut diagnostics,
-                    ) {
-                        plans.push(plan);
-                    }
-                    (plans, diagnostics, candidates)
+                    );
+                    (plan, diagnostics)
                 },
             )
-            .map(|(plans, diagnostics, _)| (plans, diagnostics))
-            .reduce(
-                || (Vec::new(), ReplenishmentDiagnostics::default()),
-                |mut left, right| {
-                    left.0.extend(right.0);
-                    left.1.merge(right.1);
-                    left
-                },
-            );
-        plans.sort_unstable_by_key(|plan| plan.household_id);
+            .collect();
         self.ensure_daily_ledger_len();
         self.handles.register_appended(self.households.len());
-        for plan in plans {
+        let mut diagnostics = std::mem::take(&mut self.replenishment_hour);
+        for (plan, plan_diagnostics) in plans {
+            diagnostics.merge(plan_diagnostics);
+            let Some(plan) = plan else {
+                continue;
+            };
             let household_id = plan.household_id;
             let reserved = apply_replenishment_plan(
                 plan,
@@ -927,7 +860,7 @@ impl HouseholdSystem {
                 tuning
                     .operational_clock
                     .household_shopping_leg_timeout_hours,
-                catalog,
+                &catalog,
                 household_vat_rate,
                 &mut diagnostics,
             );
@@ -935,17 +868,33 @@ impl HouseholdSystem {
                 self.held_shoppers.push(self.handles.handle(household_id));
             }
         }
+        self.replenishment_hour = diagnostics;
+        self.destinations.restore_front(front);
+    }
 
-        if diagnostics.has_signal() {
+    /// Leaves household `household_id`'s restock waiting for a shopper: what a planned restock
+    /// does when no member is free to carry it. O(1).
+    pub(super) fn wait_for_shopper(&mut self, household_id: usize) {
+        let household = &mut self.households[household_id];
+        household.replenishment_state = REPLENISHMENT_WAITING_FOR_SHOPPER;
+        household.shopping_agent = AgentHandle::NONE;
+        self.replenishment_hour.failed_no_shopper += 1;
+    }
+
+    /// Logs and resets the hour's restock and visit outcomes, at the hour's last slot.
+    pub(super) fn close_shopping_hour(&mut self) {
+        let diagnostics = std::mem::take(&mut self.replenishment_hour);
+        let queue = std::mem::take(&mut self.restock_queue_stats);
+        if diagnostics.has_signal() || queue.taken > 0 {
             debug_log!(
                 "economy",
-                "household replenishment diagnostics: hour={} attempts={} success={} failed={} \
+                "household replenishment diagnostics: {} attempts={} success={} failed={} \
                  urgent_cooldown_skips={} candidates={} no_store_candidates={} \
                  no_shopper={} \
                  rejected_empty={} rejected_invalid_store={} rejected_missing_profile={} \
                  rejected_not_output={} rejected_unaffordable={} rejected_unreachable={} rejected_outside_shortlist={} rejected_zero_desired={} \
                  rejected_zero_amount={} reserved_amount={:.1} reserved_cost={:.1}",
-                absolute_hour,
+                queue,
                 diagnostics.attempts,
                 diagnostics.successes,
                 diagnostics.failed_no_sale,
@@ -966,52 +915,7 @@ impl HouseholdSystem {
                 diagnostics.reserved_cost
             );
         }
-    }
-
-    pub(super) fn collect_eligible_shopper_candidates(
-        &mut self,
-        agents: &AgentSystem,
-    ) -> Vec<usize> {
-        use std::sync::atomic::Ordering;
-
-        self.reset_shopper_candidate_scratch();
-        let scratch = &self.shopper_candidate_scratch;
-        let households = &self.households;
-        (0..agents.len()).into_par_iter().for_each(|agent_idx| {
-            let household_id = agents.household_id[agent_idx];
-            if household_id >= households.len()
-                || agents.transit[agent_idx] != TRANSIT_IN_BUILDING
-                || agents.activity[agent_idx] != ACTIVITY_HOME
-                || !age_group_can_shop(agents.age_group[agent_idx])
-                || agents.planned_target_building[agent_idx] != usize::MAX
-                || agents.target_building[agent_idx] != usize::MAX
-            {
-                return;
-            }
-            let household = &households[household_id];
-            if agents.current_building[agent_idx] != household.home_building_id
-                || agents.home_building[agent_idx] != household.home_building_id
-            {
-                return;
-            }
-            let slot = &scratch[household_id];
-            let mut current = slot.load(Ordering::Relaxed);
-            while agent_idx < current {
-                match slot.compare_exchange_weak(
-                    current,
-                    agent_idx,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(next) => current = next,
-                }
-            }
-        });
-        scratch
-            .iter()
-            .map(|slot| slot.load(Ordering::Relaxed))
-            .collect()
+        self.close_visit_hour();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1272,6 +1176,22 @@ impl HouseholdSystem {
         vat
     }
 
+    /// Whether household `hid` has reserved a purchase whose shopper is still inside
+    /// `building`, the home it set out from: its trip has not begun. O(1).
+    pub(super) fn shopper_not_left(
+        &self,
+        hid: usize,
+        building: usize,
+        agents: &AgentSystem,
+    ) -> bool {
+        let household = &self.households[hid];
+        household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
+            && shopping_carrier(household, hid, agents).is_some_and(|agent_idx| {
+                agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+                    && agents.current_building[agent_idx] == building
+            })
+    }
+
     /// Cancels an evicted household's shopping task through the normal refund and ledger path.
     pub(super) fn cancel_household_replenishment(
         &mut self,
@@ -1367,6 +1287,56 @@ fn record_household_utility_cost(ledger: &mut DailyHouseholdLedger, total_cost: 
     ledger.sewage_consumption_cost += service_cost;
 }
 
+/// Whether `household` tries to restock in absolute hour `absolute_hour`: it has members, a
+/// home among `building_count` buildings and no shopping trip under way or cooldown left, its
+/// stock is under `trigger_days`, and it waits for a shopper, ran out while some store sells
+/// (`stores_exist`), or its check offset comes round every `check_interval` hours (the only
+/// time a household that failed for good retries). O(1).
+pub(super) fn restock_due(
+    household: &Household,
+    building_count: usize,
+    absolute_hour: u32,
+    check_interval: u32,
+    stores_exist: bool,
+    trigger_days: f32,
+) -> bool {
+    let check_offset_matches = absolute_hour % check_interval
+        == u32::from(household.replenishment_offset_hours % check_interval as u16);
+    let stock_critical_urgent = household.stock_days == 0.0 && stores_exist;
+    let waiting_for_shopper = household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER;
+    let terminal_retry =
+        household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL && check_offset_matches;
+    !(household.member_count == 0
+        || household.home_building_id == usize::MAX
+        || household.home_building_id >= building_count
+        || household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
+        || household.replenishment_state == REPLENISHMENT_SHOPPING_RETURNING
+        || (household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL && !terminal_retry)
+        || household.cooldown_hours > 0
+        || household.stock_days >= trigger_days
+        || (!waiting_for_shopper
+            && !terminal_retry
+            && !stock_critical_urgent
+            && !check_offset_matches))
+}
+
+/// The household's first member, in agent order, who could carry its shopping now: at home,
+/// old enough and without another trip; `usize::MAX` for none. O(members).
+pub(super) fn first_eligible_shopper(
+    agents: &AgentSystem,
+    household_id: usize,
+    household: &Household,
+) -> usize {
+    let mut agent_idx = agents.first_household_member(household_id);
+    while agent_idx != NO_MEMBER {
+        if eligible_shopper_for_household(agents, agent_idx, household_id, household) {
+            return agent_idx;
+        }
+        agent_idx = agents.next_household_member(agent_idx);
+    }
+    usize::MAX
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_household_replenishment(
     hid: usize,
@@ -1389,28 +1359,14 @@ fn plan_household_replenishment(
     candidates: &mut Vec<usize>,
     diagnostics: &mut ReplenishmentDiagnostics,
 ) -> Option<ReplenishmentCandidatePlan> {
-    let check_offset_matches = absolute_hour % check_interval
-        == u32::from(household.replenishment_offset_hours % check_interval as u16);
-    let stock_critical_urgent = household.stock_days == 0.0 && stock_critical_purchase_available;
-    let waiting_for_shopper = household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER;
-    let terminal_retry =
-        household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL && check_offset_matches;
-    if stock_critical_urgent && household.cooldown_hours > 0 {
-        diagnostics.urgent_cooldown_skips += 1;
-    }
-    if household.member_count == 0
-        || household.home_building_id == usize::MAX
-        || household.home_building_id >= allocator.buildings.len()
-        || household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
-        || household.replenishment_state == REPLENISHMENT_SHOPPING_RETURNING
-        || (household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL && !terminal_retry)
-        || household.cooldown_hours > 0
-        || household.stock_days >= trigger_days
-        || (!waiting_for_shopper
-            && !terminal_retry
-            && !stock_critical_urgent
-            && !check_offset_matches)
-    {
+    if !restock_due(
+        household,
+        allocator.buildings.len(),
+        absolute_hour,
+        check_interval,
+        stock_critical_purchase_available,
+        trigger_days,
+    ) {
         return None;
     }
 
@@ -1727,6 +1683,10 @@ fn cancel_replenishment_before_pickup(
             .add_inventory_units(household_supply_resource, household.reserved_amount);
     }
     household.budget += household.reserved_total_cost;
+    // A shopper still held for its departure goes back to its own schedule (`SIM-02-J`).
+    if let Some(agent_idx) = agents.resolve_agent(household.shopping_agent) {
+        agents.release_departure(agent_idx);
+    }
     schedule_shopper_home(household, agents, ACTIVITY_HOME);
     clear_replenishment_request(household);
     register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);

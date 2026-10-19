@@ -2,13 +2,15 @@
 
 //! Core shipment storage and typed logistics state.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::scheduler::MinuteLeveler;
 use crate::simulation::economy::agents::{AgentHandle, AgentSystem};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
 
 use super::planning::FreightTopology;
+use super::requests::{FreightRequest, FreightRequestStats, event_cooldown_until};
 use super::reservations::ReservationViews;
 use super::resource::refund_input_payment;
 use super::route_cache::FreightRouteCache;
@@ -139,10 +141,16 @@ pub struct Shipment {
     pub freight_cost: f32,
     /// Estimated trip duration used for capacity and timeout bounds; arrival is physical.
     pub eta_hours: u16,
-    /// Operational hours spent in the current active logistics state.
-    pub queued_hours: u16,
-    /// Whether the cargo has left the source building's stock: loaded on the planning hour,
-    /// carried from the carrier's paced departure on (`SIM-02-E`).
+    /// Logistics hour (`ShipmentSystem::hour_ticks`) in which the current leg's carrier set out:
+    /// the leg times out `max(6, 4 × eta_hours + 2)` hours later, at the first check after
+    /// that hour starts (`SIM-02-J`). Zero until dispatch.
+    pub leg_started_hour: u32,
+    /// Slot of the shipment's one live trip event, its departure or its next carrier check; an
+    /// event of this shipment due at another slot is a leftover and does nothing (`SIM-02-J`).
+    /// Zero before the first is scheduled.
+    pub(crate) trip_event_slot: u64,
+    /// Whether the cargo has left the source building's stock: loaded at the end of the slot that
+    /// planned it, carried from the carrier's departure on (`SIM-02-E`, `SIM-02-J`).
     pub(crate) cargo_loaded: bool,
 }
 
@@ -164,19 +172,33 @@ pub struct FreightRequestFailure {
     pub terminal: bool,
 }
 
+/// Shipments created between two drops of the closed ones: closed jobs leave the list whenever
+/// a new shipment id is a multiple of this, so the list grows by at most this many jobs between
+/// drops and a drop costs O(list) once per this many shipments (`SIM-02-J`).
+const SHIPMENT_DROP_INTERVAL: u64 = 256;
+
 /// Runtime collection of active freight jobs.
 #[derive(Clone, Debug)]
 pub struct ShipmentSystem {
     /// Active and recently closed jobs in ascending stable shipment-ID order.
     /// Append allocates increasing IDs; retention, loading and undo preserve this order.
     pub shipments: Vec<Shipment>,
-    /// Next stable shipment id to assign.
+    /// Next stable shipment id to assign. Saved, so ids are never reused across a load.
     pub next_shipment_id: u64,
-    /// Hourly logistics passes run so far; the clock of building freight cooldowns
-    /// (`Building::shipment_cooldown_until_tick`). Saved.
+    /// Logistics hours started so far; the clock of carrier leg timeouts. Saved.
     pub(crate) hour_ticks: u32,
-    /// Shipments loaded since SimCore last paced their carriers' departures, in id order.
+    /// Shipments loaded since SimCore last scheduled their carriers' departures, in id order.
     pub(crate) held_dispatches: Vec<u64>,
+    /// Freight departures already placed in each upcoming minute (`SIM-02-J`). Saved.
+    pub(crate) departure_minutes: MinuteLeveler,
+    /// Freight requests the building phases queued and the `freight requests` queue has not
+    /// served yet, oldest first (`SIM-02-J`). Saved in order.
+    pub(crate) freight_requests: VecDeque<FreightRequest>,
+    /// Per building handle slot, the generation and the kinds it has queued (`requests.rs`).
+    /// Derived from the queue: rebuilt on load, not saved.
+    pub(super) request_pending: Vec<(u32, u8)>,
+    /// The queue's counts this logistics hour, for its debug line. Not saved.
+    pub(super) request_stats: FreightRequestStats,
     /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
     /// Freight ETA cache reused while topology revisions remain unchanged.
@@ -215,6 +237,10 @@ impl ShipmentSystem {
             next_shipment_id: 0,
             hour_ticks: 0,
             held_dispatches: Vec::new(),
+            departure_minutes: MinuteLeveler::default(),
+            freight_requests: VecDeque::new(),
+            request_pending: Vec::new(),
+            request_stats: FreightRequestStats::default(),
             request_failures: BTreeMap::new(),
             freight_route_cache: FreightRouteCache::default(),
             freight_route_cache_building_revision: u64::MAX,
@@ -280,8 +306,10 @@ impl ShipmentSystem {
         }
     }
 
-    /// Reinserts freight state removed by building invalidation.
-    pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) {
+    /// Reinserts freight state removed by building invalidation and returns the restored
+    /// shipments' ids, whose trips the caller resumes.
+    pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) -> Vec<u64> {
+        let restored = undo.shipments.iter().map(|shipment| shipment.id).collect();
         for shipment in undo.shipments {
             if let Some(views) = &mut self.reservations {
                 views.add_shipment(&shipment);
@@ -293,10 +321,31 @@ impl ShipmentSystem {
             self.request_failures.insert(key, failure);
         }
         self.invalidate_route_cache();
+        restored
     }
 
-    /// Clears route-derived state after an undo remaps building or carrier indices.
+    /// Drops the building-indexed freight quotes after a removal, remap or undo moved dense
+    /// building indices, keeping the network sweeps and node costs, which no building index
+    /// reaches; the next use revalidates the rest (`FreightRouteCache::clear_buildings`). O(1).
+    /// A full clear here rebuilt every border sweep after each building removal, which the
+    /// hourly pass did once an hour but the per-slot freight queue would do in the slot after
+    /// every removal (`SIM-02-J`).
     pub(crate) fn invalidate_route_cache(&mut self) {
+        self.freight_route_cache.clear_buildings();
+        self.freight_route_cache_building_revision = u64::MAX;
+        self.freight_route_cache_entrance_revision = u64::MAX;
+    }
+
+    /// Clears all active shipments, queued freight requests and request diagnostics.
+    pub fn clear(&mut self) {
+        self.shipments.clear();
+        self.next_shipment_id = 0;
+        self.departure_minutes = MinuteLeveler::default();
+        self.freight_requests.clear();
+        self.request_pending.clear();
+        self.request_failures.clear();
+        self.reservations = None;
+        self.supplier_roll = SupplierRoll::default();
         self.freight_route_cache.clear();
         self.freight_route_cache_building_revision = u64::MAX;
         self.freight_route_cache_entrance_revision = u64::MAX;
@@ -304,30 +353,26 @@ impl ShipmentSystem {
         self.freight_route_cache_metric_revision = u64::MAX;
     }
 
-    /// Clears all active shipments and freight request diagnostics.
-    pub fn clear(&mut self) {
-        self.shipments.clear();
-        self.next_shipment_id = 0;
-        self.request_failures.clear();
-        self.reservations = None;
-        self.supplier_roll = SupplierRoll::default();
-        self.invalidate_route_cache();
-    }
-
+    /// The next shipment id. Every [`SHIPMENT_DROP_INTERVAL`]-th id first drops the closed
+    /// shipments, which hold no reservation; the rule follows the saved id counter alone, so a
+    /// loaded game drops them at the same shipment. O(1), or O(shipments) at a drop.
     pub(super) fn allocate_shipment_id(&mut self) -> u64 {
         let id = self.next_shipment_id;
+        if id.is_multiple_of(SHIPMENT_DROP_INTERVAL) {
+            self.shipments.retain(|shipment| shipment.status.is_open());
+        }
         self.next_shipment_id = self.next_shipment_id.saturating_add(1);
         id
     }
 
-    /// Rebuilds the next stable shipment id after loading persisted shipment rows.
-    pub(crate) fn rebuild_next_shipment_id(&mut self) {
-        self.next_shipment_id = self
-            .shipments
+    /// The lowest id a new shipment may take after loading `next_shipment_id`: past every
+    /// saved shipment.
+    pub(crate) fn first_free_shipment_id(&self) -> u64 {
+        self.shipments
             .iter()
             .map(|shipment| shipment.id)
             .max()
-            .map_or(0, |max_id| max_id.saturating_add(1));
+            .map_or(0, |max_id| max_id.saturating_add(1))
     }
 
     /// Remaps building references after a building swap-remove.
@@ -347,6 +392,21 @@ impl ShipmentSystem {
         }
         self.request_failures = remapped_failures;
         self.invalidate_route_cache();
+    }
+
+    /// Records `slot` as shipment `id`'s one live trip event, so any other event of it is a
+    /// leftover. O(log S).
+    pub(crate) fn set_trip_event_slot(&mut self, id: u64, slot: u64) {
+        if let Ok(idx) = self.shipments.binary_search_by_key(&id, |job| job.id) {
+            self.shipments[idx].trip_event_slot = slot;
+        }
+    }
+
+    /// Whether shipment `id` is listed with a live trip event due at `slot`. O(log S).
+    pub(crate) fn trip_event_due(&self, id: u64, slot: u64) -> bool {
+        self.shipments
+            .binary_search_by_key(&id, |job| job.id)
+            .is_ok_and(|idx| self.shipments[idx].trip_event_slot == slot)
     }
 
     /// Points shipment `shipment_id` at its carrier restored with a new handle by undo. O(log S).
@@ -372,6 +432,8 @@ impl ShipmentSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
             .operational_clock
             .shipment_retry_cooldown_hours;
+        // Endpoints retry from their first phase after this slot's (`event_cooldown_until`).
+        let retry_from = allocator.now_slot + 1;
         self.shipments.retain(|shipment| {
             let touches_removed = shipment.source.touches_building(removed_building)
                 || shipment.destination.touches_building(removed_building);
@@ -391,8 +453,13 @@ impl ShipmentSystem {
                     destination_id,
                     shipment.total_cost,
                 );
-                allocator.buildings[destination_id].shipment_cooldown_until_tick =
-                    self.hour_ticks + u32::from(retry_cooldown_hours);
+                allocator.buildings[destination_id].shipment_cooldown_until_slot =
+                    event_cooldown_until(
+                        allocator,
+                        destination_id,
+                        retry_from,
+                        retry_cooldown_hours,
+                    );
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
@@ -403,8 +470,8 @@ impl ShipmentSystem {
             {
                 allocator.buildings[source_id]
                     .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-                allocator.buildings[source_id].shipment_cooldown_until_tick =
-                    self.hour_ticks + u32::from(retry_cooldown_hours);
+                allocator.buildings[source_id].shipment_cooldown_until_slot =
+                    event_cooldown_until(allocator, source_id, retry_from, retry_cooldown_hours);
             }
 
             if let Some(carrier) = agents.resolve_agent(shipment.carrier)
@@ -424,6 +491,13 @@ impl ShipmentSystem {
         self.request_failures
             .retain(|key, _| key.destination_building_id != removed_building);
         self.invalidate_route_cache();
+    }
+
+    // The slot that starts the current logistics hour, for test drivers that step logistics
+    // hours without the slot clock.
+    #[cfg(test)]
+    pub(super) fn hour_start_slot_for_test(&self) -> u64 {
+        u64::from(self.hour_ticks) * crate::simulation::core::scheduler::SLOTS_PER_HOUR
     }
 
     pub(super) fn request_key(

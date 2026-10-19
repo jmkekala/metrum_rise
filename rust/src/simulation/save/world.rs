@@ -7,6 +7,8 @@ use crate::simulation::agriculture::{AgricultureSystem, FieldSite, validate_fiel
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, SavedVacancyOrder};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::request_queue::RequestQueue;
+use crate::simulation::core::scheduler::{LEVELER_MINUTES, MinuteLeveler};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     QuantityUnit, load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -15,10 +17,14 @@ use crate::simulation::economy::demand::{
     ConstructionPermit, DemandBuildingActionKey, DemandLevelChangeAction, DemandSpawnAction,
     DemandSystem, SpawnPermit,
 };
-use crate::simulation::economy::households::{Household, HouseholdSystem};
+use crate::simulation::economy::households::{
+    DestinationRoll, Household, HouseholdSystem, JobBoardRoll, SavedDestination,
+    SavedDestinationRoll, SavedDestinationSweep, SavedJobBoard, SavedJobBoardSweep,
+};
 use crate::simulation::economy::logistics::{
-    CarrierClass, FreightRequestFailure, FreightRequestKey, SavedSupplierRoll, SavedSupplierSweep,
-    Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem, SupplierRoll,
+    CarrierClass, FreightRequest, FreightRequestFailure, FreightRequestKey, FreightRequestKind,
+    SavedSupplierRoll, SavedSupplierSweep, Shipment, ShipmentEndpoint, ShipmentStatus,
+    ShipmentSystem, SupplierRoll,
 };
 use crate::simulation::extraction::{
     ExtractorSite, ResourceExtractionSystem, validate_extractor_polygon_world,
@@ -270,7 +276,7 @@ pub(super) fn save_world(
     super::cell_zoning::save(tx, zoning, maps)?;
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -309,7 +315,7 @@ pub(super) fn save_world(
             b.operating_budget,
             b.profit_tax_budget_baseline,
             b.last_day_profit,
-            i64::from(b.shipment_cooldown_until_tick),
+            u64_to_i64(b.shipment_cooldown_until_slot)?,
             usize_to_i64(b.width_cells as usize)?,
             usize_to_i64(b.depth_cells as usize)?,
             &b.asset_id,
@@ -410,15 +416,38 @@ pub(super) fn save_world(
             sales.hour_capacity_by_resource[slot],
         ])?;
     }
-    // Requests the households' daily phases left for the next hour (`SIM-02-G`).
+    // Requests the households' phases queued, in order: kinds 0 housing reviews, 2 rehousings,
+    // 3 restocks and 4 visible visits with their queue slots (`SIM-02-J`), 1 exits for the next
+    // hour (`SIM-02-G`).
     let mut request_stmt = tx.prepare(
-        "INSERT INTO household_requests(kind, sequence, household_slot, household_generation) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO household_requests(kind, sequence, slot, household_slot, household_generation) VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
-    for (kind, requests) in [(0_i64, &households.housing_reviews), (1, &households.exits)] {
-        for (sequence, &handle) in requests.iter().enumerate() {
+    for (kind, queue) in [
+        (0_i64, &households.housing_reviews),
+        (2, &households.rehousing),
+        (3, &households.restock_requests),
+        (4, &households.visit_requests),
+    ] {
+        for (sequence, (queued_slot, handle)) in queue.iter().enumerate() {
             let (slot, generation) = handle_to_db(handle);
-            request_stmt.execute(params![kind, sequence as i64, slot, generation])?;
+            request_stmt.execute(params![
+                kind,
+                sequence as i64,
+                u64_to_i64(queued_slot)?,
+                slot,
+                generation
+            ])?;
         }
+    }
+    for (sequence, &handle) in households.exits.iter().enumerate() {
+        let (slot, generation) = handle_to_db(handle);
+        request_stmt.execute(params![
+            1_i64,
+            sequence as i64,
+            Option::<i64>::None,
+            slot,
+            generation
+        ])?;
     }
     let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)")?;
     for (hid, household) in households.households.iter().enumerate() {
@@ -485,7 +514,7 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, queued_hours, freight_cost, carrier_generation, cargo_loaded) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, leg_started_hour, freight_cost, carrier_generation, cargo_loaded, trip_event_slot) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
     for shipment in &logistics.shipments {
         let (source_kind, source_building_id, source_border_node) =
             shipment_endpoint_to_db(shipment.source, maps)?;
@@ -506,10 +535,11 @@ pub(super) fn save_world(
             handle_to_db(shipment.carrier).0,
             shipment.total_cost,
             i64::from(shipment.eta_hours),
-            i64::from(shipment.queued_hours),
+            i64::from(shipment.leg_started_hour),
             shipment.freight_cost,
             handle_to_db(shipment.carrier).1,
             i64::from(shipment.cargo_loaded),
+            u64_to_i64(shipment.trip_event_slot)?,
         ])?;
     }
     let mut request_failure_stmt = tx.prepare("INSERT INTO freight_request_failures(destination_building_id, resource_runtime_id, failures, terminal) VALUES (?1, ?2, ?3, ?4)")?;
@@ -521,7 +551,266 @@ pub(super) fn save_world(
             if failure.terminal { 1_i64 } else { 0_i64 },
         ])?;
     }
+    // Requests the buildings' phases queued and the queue has not served (`SIM-02-J`).
+    let mut request_stmt = tx.prepare("INSERT INTO freight_requests(position, slot, kind, building_slot, building_generation) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+    for (position, request) in logistics.freight_requests.iter().enumerate() {
+        let (slot, generation) = handle_to_db(request.building);
+        request_stmt.execute(params![
+            usize_to_i64(position)?,
+            u64_to_i64(request.slot)?,
+            request.kind.code(),
+            slot,
+            generation,
+        ])?;
+    }
 
+    Ok(())
+}
+
+// The visit credit, the shopper departure leveler, the household destination roll, the job
+// board and the queued job searches (`SIM-02-J`), for a game whose road components are of CCH
+// build `layout`, `None` while a road change waits for the next rebuild. The destination front's
+// entries are buffer 0 and the sweep's buffer 1, each kind (0 stores, 1 service stores) in its
+// own order.
+pub(super) fn save_household_queue_state(
+    tx: &Transaction,
+    households: &HouseholdSystem,
+    layout: Option<u32>,
+) -> SaveLoadResult<()> {
+    let roll = households.destinations.saved_for(layout);
+    let (sweep_handles, sweep_hour, sweep_next_chunk) = match &roll.sweep {
+        Some(sweep) => (
+            u64_to_i64(sweep.building_handles)?,
+            u64_to_i64(sweep.hour)?,
+            u64_to_i64(sweep.next_chunk)?,
+        ),
+        None => (NONE_REF, 0, 0),
+    };
+    let front_hour = match &roll.front {
+        Some((hour, _)) => u64_to_i64(*hour)?,
+        None => NONE_REF,
+    };
+    let (first_minute, counts) = households.shopper_departures.saved();
+    let board = households.job_board.saved();
+    let job_board_hour = match &board.front {
+        Some((hour, _)) => u64_to_i64(*hour)?,
+        None => NONE_REF,
+    };
+    let (job_sweep_handles, job_sweep_hour, job_sweep_next_chunk) = match &board.sweep {
+        Some(sweep) => (
+            u64_to_i64(sweep.building_handles)?,
+            u64_to_i64(sweep.hour)?,
+            u64_to_i64(sweep.next_chunk)?,
+        ),
+        None => (NONE_REF, 0, 0),
+    };
+    tx.execute(
+        "INSERT INTO household_queue_state(singleton, visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            i64::from(households.visit_credit),
+            u64_to_i64(first_minute)?,
+            pack_u16_slice(counts),
+            front_hour,
+            sweep_handles,
+            sweep_hour,
+            sweep_next_chunk,
+            bool_to_db(roll.current[0]),
+            bool_to_db(roll.current[1]),
+            job_board_hour,
+            job_sweep_handles,
+            job_sweep_hour,
+            job_sweep_next_chunk,
+        ],
+    )?;
+    // The job board's members (buffer 0) and the sweep's (buffer 1), and the queued job
+    // searches, each in order (`SIM-02-J`).
+    let mut stmt = tx.prepare(
+        "INSERT INTO job_board_members(buffer, position, building_slot, building_generation) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    let front = board.front.as_ref().map(|(_, members)| members.as_slice());
+    let back = board.sweep.as_ref().map(|sweep| sweep.members.as_slice());
+    for (buffer, members) in [(0_i64, front), (1, back)] {
+        for (position, &building) in members.unwrap_or_default().iter().enumerate() {
+            let (slot, generation) = handle_to_db(building);
+            stmt.execute(params![buffer, usize_to_i64(position)?, slot, generation])?;
+        }
+    }
+    let mut stmt = tx.prepare(
+        "INSERT INTO job_requests(sequence, slot, agent_slot, agent_generation) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (sequence, (queued_slot, agent)) in households.job_requests.iter().enumerate() {
+        let (slot, generation) = handle_to_db(agent);
+        stmt.execute(params![
+            usize_to_i64(sequence)?,
+            u64_to_i64(queued_slot)?,
+            slot,
+            generation
+        ])?;
+    }
+    let mut stmt = tx.prepare("INSERT INTO household_destinations(buffer, kind, position, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
+    let front = roll.front.as_ref().map(|(_, entries)| entries);
+    let back = roll.sweep.as_ref().map(|sweep| &sweep.entries);
+    for (buffer, entries) in [(0_i64, front), (1, back)] {
+        let Some(entries) = entries else {
+            continue;
+        };
+        for (kind, entries) in entries.iter().enumerate() {
+            for (position, &(building, x, y, (foot, foot_count), (car, car_count))) in
+                entries.iter().enumerate()
+            {
+                stmt.execute(params![
+                    buffer,
+                    usize_to_i64(kind)?,
+                    usize_to_i64(position)?,
+                    i64::from((building >> 32) as u32),
+                    i64::from(building as u32),
+                    i64::from(x),
+                    i64::from(y),
+                    usize_to_i64(foot_count)?,
+                    i64::from(foot[0]),
+                    i64::from(foot[1]),
+                    usize_to_i64(car_count)?,
+                    i64::from(car[0]),
+                    i64::from(car[1]),
+                ])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// `household_queue_state`: the visit credit and shopper leveler, the destination roll's header
+// and the job board's hour.
+type QueueStateRow = (
+    (i64, i64, Vec<u8>),
+    (i64, i64, i64, i64),
+    (i64, i64, i64),
+    (i64, i64, i64),
+);
+
+fn load_household_queue_state(
+    conn: &Connection,
+    households: &mut HouseholdSystem,
+) -> SaveLoadResult<()> {
+    let (
+        (credit, first_minute, counts),
+        (front_hour, sweep_handles, sweep_hour, sweep_next_chunk),
+        (front_current, sweep_current, job_board_hour),
+        (job_sweep_handles, job_sweep_hour, job_sweep_next_chunk),
+    ): QueueStateRow = conn.query_row(
+        "SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk FROM household_queue_state WHERE singleton = 1",
+        [],
+        |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?, row.get(2)?),
+                (row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?),
+                (row.get(7)?, row.get(8)?, row.get(9)?),
+                (row.get(10)?, row.get(11)?, row.get(12)?),
+            ))
+        },
+    )?;
+    households.visit_credit = i64_to_u32(credit)?;
+    let mut board_buffers = [Vec::new(), Vec::new()];
+    let mut stmt = conn.prepare(
+        "SELECT buffer, building_slot, building_generation FROM job_board_members ORDER BY buffer, position",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let members = usize::try_from(row.get::<_, i64>(0)?)
+            .ok()
+            .and_then(|buffer| board_buffers.get_mut(buffer))
+            .ok_or_else(|| SaveLoadError::custom("invalid job board buffer"))?;
+        members.push(handle_from_db(row.get(1)?, row.get(2)?)?);
+    }
+    let [board_front, board_back] = board_buffers;
+    if (job_board_hour == NONE_REF && !board_front.is_empty())
+        || (job_sweep_handles == NONE_REF && !board_back.is_empty())
+    {
+        return Err(SaveLoadError::custom(
+            "job board members without their buffer",
+        ));
+    }
+    let board = SavedJobBoard {
+        front: match job_board_hour {
+            NONE_REF => None,
+            hour => Some((i64_to_u64(hour)?, board_front)),
+        },
+        sweep: match job_sweep_handles {
+            NONE_REF => None,
+            handles => Some(SavedJobBoardSweep {
+                building_handles: i64_to_u64(handles)?,
+                hour: i64_to_u64(job_sweep_hour)?,
+                next_chunk: i64_to_u64(job_sweep_next_chunk)?,
+                members: board_back,
+            }),
+        },
+    };
+    households.job_board = JobBoardRoll::restore(board).map_err(SaveLoadError::custom)?;
+    let mut stmt = conn
+        .prepare("SELECT slot, agent_slot, agent_generation FROM job_requests ORDER BY sequence")?;
+    let requests = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .map(|row| {
+            let (queued_slot, slot, generation): (i64, i64, i64) = row?;
+            Ok((i64_to_u64(queued_slot)?, handle_from_db(slot, generation)?))
+        })
+        .collect::<SaveLoadResult<Vec<_>>>()?;
+    households.job_requests = RequestQueue::restore(requests);
+    let counts = unpack_u16_blob(&counts, LEVELER_MINUTES)?;
+    households.shopper_departures = MinuteLeveler::restore(i64_to_u64(first_minute)?, &counts)
+        .ok_or_else(|| SaveLoadError::custom("invalid shopper departure counts"))?;
+    let mut buffers: [[Vec<SavedDestination>; 2]; 2] = Default::default();
+    let mut stmt = conn.prepare("SELECT buffer, kind, building_slot, building_generation, chunk_x, chunk_y, foot_count, foot_a, foot_b, car_count, car_a, car_b FROM household_destinations ORDER BY buffer, kind, position")?;
+    let mut rows = stmt.query([])?;
+    let chunk = |value: i64| {
+        i32::try_from(value).map_err(|_| SaveLoadError::custom("destination chunk out of range"))
+    };
+    while let Some(row) = rows.next()? {
+        let entries = usize::try_from(row.get::<_, i64>(0)?)
+            .ok()
+            .zip(usize::try_from(row.get::<_, i64>(1)?).ok())
+            .and_then(|(buffer, kind)| buffers.get_mut(buffer)?.get_mut(kind))
+            .ok_or_else(|| SaveLoadError::custom("invalid household destination buffer"))?;
+        entries.push((
+            u64::from(i64_to_u32(row.get(2)?)?) << 32 | u64::from(i64_to_u32(row.get(3)?)?),
+            chunk(row.get(4)?)?,
+            chunk(row.get(5)?)?,
+            (
+                [i64_to_u32(row.get(7)?)?, i64_to_u32(row.get(8)?)?],
+                i64_to_usize(row.get(6)?)?,
+            ),
+            (
+                [i64_to_u32(row.get(10)?)?, i64_to_u32(row.get(11)?)?],
+                i64_to_usize(row.get(9)?)?,
+            ),
+        ));
+    }
+    let [front, back] = buffers;
+    let has_entries = |entries: &[Vec<SavedDestination>; 2]| entries.iter().any(|e| !e.is_empty());
+    if (front_hour == NONE_REF && has_entries(&front))
+        || (sweep_handles == NONE_REF && has_entries(&back))
+    {
+        return Err(SaveLoadError::custom(
+            "household destinations without their buffer",
+        ));
+    }
+    let saved = SavedDestinationRoll {
+        current: [front_current != 0, sweep_current != 0],
+        front: match front_hour {
+            NONE_REF => None,
+            hour => Some((i64_to_u64(hour)?, front)),
+        },
+        sweep: match sweep_handles {
+            NONE_REF => None,
+            handles => Some(SavedDestinationSweep {
+                building_handles: i64_to_u64(handles)?,
+                hour: i64_to_u64(sweep_hour)?,
+                next_chunk: i64_to_u64(sweep_next_chunk)?,
+                entries: back,
+            }),
+        },
+    };
+    households.destinations = DestinationRoll::restore(saved).map_err(SaveLoadError::custom)?;
     Ok(())
 }
 
@@ -1178,7 +1467,7 @@ pub(super) fn load_buildings(
     // col: 0=building_id 1=parcel_id 2=edge_id 3=frontage_t 4=side 5=cell_x 6=cell_y
     //      7=profile_runtime_id 8=occupancy 9=worker_count 10=service_funding_override
     //      11=revenue 12=operating_budget 13=profit_tax_budget_baseline 14=last_day_profit
-    //      15=shipment_cooldown_until_tick 16=width 17=depth 18=asset_id 19=level
+    //      15=shipment_cooldown_until_slot 16=width 17=depth 18=asset_id 19=level
     //      20=construction_total_hours 21=construction_complete_slot 22=broken
     //      23=pending_redevelopment 24=rezone_grace_days_remaining 25=is_deserted
     //      26=budget_distress 27=daily_household_sales_value 28=daily_power_service_units
@@ -1193,7 +1482,7 @@ pub(super) fn load_buildings(
         [],
         |row| row.get(0),
     )?)?;
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_slot, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -1263,7 +1552,7 @@ pub(super) fn load_buildings(
             operating_budget: row.get(12)?,
             profit_tax_budget_baseline: row.get(13)?,
             last_day_profit: row.get(14)?,
-            shipment_cooldown_until_tick: i64_to_u32(row.get(15)?)?,
+            shipment_cooldown_until_slot: i64_to_u64(row.get(15)?)?,
             level: row.get::<_, i64>(19)?.clamp(1, 255) as u8,
             construction_total_hours: i64_to_u16(row.get(20)?)?,
             construction_complete_slot: i64_to_u64(row.get(21)?)?,
@@ -1670,17 +1959,33 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
         }
     }
     let mut stmt = conn.prepare(
-        "SELECT kind, household_slot, household_generation FROM household_requests ORDER BY kind, sequence",
+        "SELECT kind, slot, household_slot, household_generation FROM household_requests ORDER BY kind, sequence",
     )?;
     let mut rows = stmt.query([])?;
+    let mut queues = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     while let Some(row) = rows.next()? {
-        let handle = handle_from_db(row.get(1)?, row.get(2)?)?;
-        match row.get::<_, i64>(0)? {
-            0 => households.housing_reviews.push(handle),
-            1 => households.exits.push(handle),
-            _ => return Err(SaveLoadError::custom("unknown household request kind")),
+        let handle = handle_from_db(row.get(2)?, row.get(3)?)?;
+        let kind = row.get::<_, i64>(0)?;
+        if kind == 1 {
+            households.exits.push(handle);
+            continue;
         }
+        let queued_slot = row
+            .get::<_, Option<i64>>(1)?
+            .ok_or_else(|| SaveLoadError::custom("household request without its queue slot"))?;
+        let queue = match kind {
+            0 => 0,
+            2..=4 => kind as usize - 1,
+            _ => return Err(SaveLoadError::custom("unknown household request kind")),
+        };
+        queues[queue].push((i64_to_u64(queued_slot)?, handle));
     }
+    let [reviews, rehousing, restocks, visits] = queues;
+    households.housing_reviews = RequestQueue::restore(reviews);
+    households.rehousing = RequestQueue::restore(rehousing);
+    households.restock_requests = RequestQueue::restore(restocks);
+    households.visit_requests = RequestQueue::restore(visits);
+    load_household_queue_state(conn, &mut households)?;
     Ok(households)
 }
 
@@ -1691,7 +1996,7 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
         .map_err(SaveLoadError::custom)?
         .logistics
         .truck_payload_kg;
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, queued_hours, freight_cost, carrier_generation, cargo_loaded FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, leg_started_hour, freight_cost, carrier_generation, cargo_loaded, trip_event_slot FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let resource = i64_to_u16(row.get(1)?)?;
@@ -1731,11 +2036,11 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             total_cost,
             freight_cost,
             eta_hours: i64_to_u16(row.get(13)?)?,
-            queued_hours: i64_to_u16(row.get(14)?)?,
+            leg_started_hour: i64_to_u32(row.get(14)?)?,
             cargo_loaded: row.get::<_, i64>(17)? != 0,
+            trip_event_slot: i64_to_u64(row.get(18)?)?,
         });
     }
-    logistics.rebuild_next_shipment_id();
     let mut failure_stmt = conn.prepare("SELECT destination_building_id, resource_runtime_id, failures, terminal FROM freight_request_failures ORDER BY destination_building_id, resource_runtime_id")?;
     let mut failure_rows = failure_stmt.query([])?;
     while let Some(row) = failure_rows.next()? {
@@ -1757,6 +2062,17 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             },
         );
     }
+    let mut request_stmt = conn.prepare("SELECT slot, kind, building_slot, building_generation FROM freight_requests ORDER BY position")?;
+    let mut request_rows = request_stmt.query([])?;
+    while let Some(row) = request_rows.next()? {
+        logistics.freight_requests.push_back(FreightRequest {
+            slot: i64_to_u64(row.get(0)?)?,
+            kind: FreightRequestKind::from_code(row.get(1)?)
+                .ok_or_else(|| SaveLoadError::custom("unknown freight request kind"))?,
+            building: handle_from_db(row.get(2)?, row.get(3)?)?,
+        });
+    }
+    logistics.rebuild_request_pending();
     logistics.supplier_roll = load_supplier_roll(conn)?;
     Ok(logistics)
 }

@@ -708,13 +708,12 @@ fn growing_town_continues_identically_after_a_mid_hour_save_load() {
 #[test]
 fn stale_vacancy_index_continues_identically_after_a_save_load() {
     let mut source = growing_town_mid_hour();
-    // The hour's last minute with a housing review queued and nothing else due to read the
-    // index before the hour: no construction start and no cell-lot region.
+    // The hour's last minute with nothing else due to read the index before the hour: no
+    // construction start and no cell-lot region.
     loop {
         let core = &source.core;
         let now = u64::from(core.time.day_index - 1) * 1440 + u64::from(core.time.minute_of_day);
         if core.time.minute_of_day % 60 == 59
-            && !core.households.housing_reviews.is_empty()
             && !core.zoning.has_dirty_cell_lots()
             && core
                 .pending_demand_spawns
@@ -731,13 +730,20 @@ fn stale_vacancy_index_continues_identically_after_a_save_load() {
     }
     // A player's placement. Every editing path reads the index before it returns, so a save
     // normally finds it clean; this save is taken as if the placement had left it stale for
-    // its next reader, the next frame's flow-field drain.
+    // its next reader, the next frame's flow-field drain; the `housing requests` queue then
+    // reviews every household against the rebuilt index.
     source
         .core
         .place_service_building_internal(COAL_POWER_PLANT, -560.0, 8.0)
         .unwrap();
-    source.core.allocator.dirty_index = true;
-    assert!(source.core.allocator.dirty_index);
+    let core = &mut source.core;
+    let slot = core.time.absolute_slot();
+    let households = core.households.households.len();
+    core.households.handles.register_appended(households);
+    for household_id in 0..households {
+        core.households.request_housing_review(household_id, slot);
+    }
+    core.allocator.dirty_index = true;
     assert!(!source.core.households.housing_reviews.is_empty());
     assert_continues_identically_after_reload(source, "stale");
 }
@@ -755,6 +761,64 @@ fn a_supplier_index_left_stale_by_a_road_edit_continues_identically_after_a_save
     );
     commit_road(&mut source.core, (MAIN_STREET_END_X_M, 0.0), (450.0, 0.0));
     assert_continues_identically_after_reload(source, "supplier-roll");
+}
+
+#[test]
+fn queued_freight_requests_continue_identically_after_a_mid_hour_save_load() {
+    use crate::simulation::economy::logistics::{FreightRequest, FreightRequestKind};
+    let mut source = growing_town_mid_hour();
+    // A backlog of one inbound and one export request per building, which the queue serves
+    // over many slots after the save, beside the requests the phases keep queueing.
+    let core = &mut source.core;
+    assert!(
+        core.logistics.next_shipment_id > 0,
+        "the town ships freight"
+    );
+    let slot = core.time.absolute_slot();
+    let buildings = core.allocator.buildings.len();
+    core.allocator.building_handles.register_appended(buildings);
+    for building_idx in 0..buildings {
+        let building = core.allocator.building_handles.handle(building_idx);
+        for kind in [FreightRequestKind::Inbound, FreightRequestKind::Export] {
+            core.logistics.freight_requests.push_back(FreightRequest {
+                slot,
+                building,
+                kind,
+            });
+        }
+    }
+    assert!(core.logistics.freight_requests.len() >= 64);
+    assert_continues_identically_after_reload(source, "freight");
+}
+
+#[test]
+fn queued_household_requests_continue_identically_after_a_mid_hour_save_load() {
+    let mut source = growing_town_mid_hour();
+    // A rehousing, review, restock and visit request per household and a job search per agent,
+    // which the queues serve over the slots after the save, beside the requests the phases keep
+    // queueing.
+    let core = &mut source.core;
+    let slot = core.time.absolute_slot();
+    let households = core.households.households.len();
+    core.households.handles.register_appended(households);
+    for household_id in 0..households {
+        let handle = core.households.handles.handle(household_id);
+        let queues = &mut core.households;
+        queues.rehousing.push(slot, handle);
+        queues.housing_reviews.push(slot, handle);
+        queues.restock_requests.push(slot, handle);
+        queues.visit_requests.push(slot, handle);
+    }
+    // And a job search per agent.
+    let agents = core.agents.len();
+    core.agents.handles.register_appended(agents);
+    for agent_idx in 0..agents {
+        let handle = core.agents.agent_handle(agent_idx);
+        core.households.job_requests.push(slot, handle);
+    }
+    assert!(households >= 16, "a backlog beyond one slot's quota");
+    assert!(agents >= 64, "a job search backlog beyond one slot's quota");
+    assert_continues_identically_after_reload(source, "household-requests");
 }
 
 // A starter town with a power plant, two days in and saved at mid-hour: homes have been claimed
@@ -814,6 +878,28 @@ fn assert_continues_identically_after_checked_reload(
         .load_game_internal(path.to_str().unwrap())
         .unwrap();
     std::fs::remove_file(path).unwrap();
+    let (a, b) = (&source.core.logistics, &loaded.core.logistics);
+    assert_eq!(
+        a.freight_requests, b.freight_requests,
+        "queued freight requests"
+    );
+    assert_eq!(a.next_shipment_id, b.next_shipment_id, "next shipment id");
+    let (a, b) = (&source.core.households, &loaded.core.households);
+    assert_eq!(
+        a.housing_reviews, b.housing_reviews,
+        "queued housing reviews"
+    );
+    assert_eq!(a.rehousing, b.rehousing, "queued rehousings");
+    assert_eq!(a.restock_requests, b.restock_requests, "queued restocks");
+    assert_eq!(a.visit_requests, b.visit_requests, "queued visits");
+    assert_eq!(a.visit_credit, b.visit_credit, "visit credit");
+    assert_eq!(a.job_requests, b.job_requests, "queued job searches");
+    assert_eq!(a.job_board.saved(), b.job_board.saved(), "job board");
+    assert_eq!(
+        a.destinations.saved(),
+        b.destinations.saved(),
+        "household destinations"
+    );
     loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
     let nodes = SavedNodes::of(&source.core, &loaded.core);
     check(&source.core, &loaded.core);
@@ -837,6 +923,18 @@ fn assert_continues_identically_after_checked_reload(
             loaded.core.logistics.supplier_roll.saved(),
             "supplier index at {when:?}"
         );
+        // A queue's marks are a function of its requests, so a load's rebuild equals them.
+        for core in [&source.core, &loaded.core] {
+            let households = &core.households;
+            assert!(
+                households.rehousing.marks_follow_queue()
+                    && households.housing_reviews.marks_follow_queue()
+                    && households.restock_requests.marks_follow_queue()
+                    && households.visit_requests.marks_follow_queue()
+                    && households.job_requests.marks_follow_queue(),
+                "queue marks at {when:?}"
+            );
+        }
         if source.core.time.day_index >= target_day {
             break;
         }
@@ -884,6 +982,7 @@ fn assert_continues_identically_after_checked_reload(
         for (x, y) in a.households.iter().zip(&b.households) {
             assert_eq!(x.home_building_id, y.home_building_id, "home at {when:?}");
             assert_eq!(x.budget.to_bits(), y.budget.to_bits(), "budget at {when:?}");
+            assert_eq!(x.stock.to_bits(), y.stock.to_bits(), "stock at {when:?}");
         }
         let (a, b) = (&source.core.allocator, &loaded.core.allocator);
         assert_eq!(

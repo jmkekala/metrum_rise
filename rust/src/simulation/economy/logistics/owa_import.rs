@@ -128,7 +128,8 @@ impl ShipmentSystem {
             total_cost,
             freight_cost,
             eta_hours,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: false,
         });
         reservations.record_owa_import(dest_idx, resource_runtime_id, amount);

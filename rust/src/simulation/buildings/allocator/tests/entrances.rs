@@ -72,7 +72,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         profit_tax_budget_baseline: 0.0,
         last_day_profit: 0.0,
 
-        shipment_cooldown_until_tick: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -222,7 +222,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         profit_tax_budget_baseline: 0.0,
         last_day_profit: 0.0,
 
-        shipment_cooldown_until_tick: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,

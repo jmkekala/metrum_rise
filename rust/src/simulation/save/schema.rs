@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 101;
+pub const SAVE_VERSION: i64 = 102;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -160,7 +160,10 @@ CREATE TABLE scheduler_state(
     environment_next_chunk INTEGER NOT NULL,
     demand_snapshot_front BLOB,
     demand_snapshot_next_chunk INTEGER NOT NULL,
-    demand_snapshot_back BLOB
+    demand_snapshot_back BLOB,
+    logistics_next_shipment_id INTEGER NOT NULL,
+    freight_departure_first_minute INTEGER NOT NULL,
+    freight_departure_counts BLOB NOT NULL
 );
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,
@@ -282,7 +285,7 @@ CREATE TABLE buildings(
     operating_budget REAL NOT NULL,
     profit_tax_budget_baseline REAL NOT NULL,
     last_day_profit REAL NOT NULL,
-    shipment_cooldown_until_tick INTEGER NOT NULL,
+    shipment_cooldown_until_slot INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
     asset_id TEXT NOT NULL,
@@ -393,9 +396,55 @@ CREATE TABLE service_sales_resources(
 CREATE TABLE household_requests(
     kind INTEGER NOT NULL,
     sequence INTEGER NOT NULL,
+    slot INTEGER,
     household_slot INTEGER NOT NULL,
     household_generation INTEGER NOT NULL,
     PRIMARY KEY(kind, sequence)
+);
+CREATE TABLE household_queue_state(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    visit_credit INTEGER NOT NULL,
+    shopper_departure_first_minute INTEGER NOT NULL,
+    shopper_departure_counts BLOB NOT NULL,
+    destination_front_hour INTEGER NOT NULL,
+    destination_sweep_building_handles INTEGER NOT NULL,
+    destination_sweep_hour INTEGER NOT NULL,
+    destination_sweep_next_chunk INTEGER NOT NULL,
+    destination_front_current INTEGER NOT NULL,
+    destination_sweep_current INTEGER NOT NULL,
+    job_board_hour INTEGER NOT NULL,
+    job_sweep_building_handles INTEGER NOT NULL,
+    job_sweep_hour INTEGER NOT NULL,
+    job_sweep_next_chunk INTEGER NOT NULL
+);
+CREATE TABLE job_board_members(
+    buffer INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    PRIMARY KEY(buffer, position)
+);
+CREATE TABLE job_requests(
+    sequence INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    agent_slot INTEGER NOT NULL,
+    agent_generation INTEGER NOT NULL
+);
+CREATE TABLE household_destinations(
+    buffer INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    foot_count INTEGER NOT NULL,
+    foot_a INTEGER NOT NULL,
+    foot_b INTEGER NOT NULL,
+    car_count INTEGER NOT NULL,
+    car_a INTEGER NOT NULL,
+    car_b INTEGER NOT NULL,
+    PRIMARY KEY(buffer, kind, position)
 );
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,
@@ -517,10 +566,11 @@ CREATE TABLE shipments(
     carrier_slot INTEGER NOT NULL,
     total_cost REAL NOT NULL,
     eta_hours INTEGER NOT NULL,
-    queued_hours INTEGER NOT NULL,
+    leg_started_hour INTEGER NOT NULL,
     freight_cost REAL NOT NULL,
     carrier_generation INTEGER NOT NULL,
-    cargo_loaded INTEGER NOT NULL
+    cargo_loaded INTEGER NOT NULL,
+    trip_event_slot INTEGER NOT NULL
 );
 CREATE TABLE entity_handle_slots(
     kind INTEGER NOT NULL,
@@ -541,6 +591,13 @@ CREATE TABLE freight_request_failures(
     failures INTEGER NOT NULL,
     terminal INTEGER NOT NULL,
     PRIMARY KEY(destination_building_id, resource_runtime_id)
+);
+CREATE TABLE freight_requests(
+    position INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL
 );
 CREATE TABLE freight_supplier_sweep(
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),

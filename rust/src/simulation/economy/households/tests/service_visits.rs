@@ -48,7 +48,13 @@ fn personal_service_demand_schedules_visible_barber_visit() {
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
     agents.assign_household_id(visitor, 0);
 
-    households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 0);
+    households.run_visible_service_visits_for_test(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        0,
+    );
 
     assert_eq!(agents.planned_target_building[visitor], 1);
     assert_eq!(agents.planned_activity[visitor], ACTIVITY_SHOPPING);
@@ -138,7 +144,7 @@ fn personal_service_demand_schedules_visible_barber_visit() {
             agents.planned_activity[visitor] = ACTIVITY_HOME;
             households.run_visible_service_visits_for_test(
                 &mut agents,
-                &allocator,
+                &mut allocator,
                 &network,
                 &graph,
                 0,
@@ -247,7 +253,13 @@ fn personal_service_visit_waits_when_household_needs_replenishment() {
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
     agents.assign_household_id(visitor, 0);
 
-    households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 0);
+    households.run_visible_service_visits_for_test(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        0,
+    );
 
     assert_eq!(agents.planned_target_building[visitor], usize::MAX);
 }
@@ -294,7 +306,13 @@ fn health_essentials_service_does_not_spawn_pharmacy_visit_yet() {
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
     agents.assign_household_id(visitor, 0);
 
-    households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 0);
+    households.run_visible_service_visits_for_test(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        0,
+    );
 
     assert_eq!(agents.planned_target_building[visitor], usize::MAX);
 }
@@ -340,7 +358,13 @@ fn personal_service_visitor_returns_home_on_next_household_pass() {
     agents.assign_household_id(visitor, 0);
     arrive_agent_at_building(&mut agents, visitor, 1, ACTIVITY_SHOPPING);
 
-    households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 1);
+    households.run_visible_service_visits_for_test(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        1,
+    );
 
     assert_eq!(agents.planned_target_building[visitor], 0);
     assert_eq!(agents.planned_activity[visitor], ACTIVITY_HOME);

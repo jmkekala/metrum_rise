@@ -45,6 +45,8 @@ impl SimCore {
                     next_event_seq: events.next_seq(),
                     next_spawn_id: self.next_spawn_id,
                     logistics_hour_ticks: self.logistics.hour_ticks,
+                    logistics_next_shipment_id: self.logistics.next_shipment_id,
+                    freight_departures: self.logistics.departure_minutes.clone(),
                     agent_settlement_days: self.agents.settlement_days,
                     road_length: {
                         let (edges, next_edge) =
@@ -142,8 +144,12 @@ impl SimCore {
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.logistics.hour_ticks = loaded.scheduler.logistics_hour_ticks;
+        self.logistics.departure_minutes = loaded.scheduler.freight_departures.clone();
         // The saved supplier index labels components as the loaded graph does (`SIM-02-I`).
         self.logistics
+            .adopt_loaded_topology(&self.transit_network, &self.region_graph);
+        // So does the household destination index (`SIM-02-J`).
+        self.households
             .adopt_loaded_topology(&self.transit_network, &self.region_graph);
         self.resource_extraction = loaded.resource_extraction;
         self.agriculture = loaded.agriculture;

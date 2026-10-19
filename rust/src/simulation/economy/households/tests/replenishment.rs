@@ -1501,3 +1501,86 @@ fn routine_stock_checks_spread_evenly_over_the_check_slots() {
         }
     }
 }
+
+// A household whose shopper is reserved and held for its departure, as the restock queue
+// leaves it before the departure event.
+fn household_with_held_shopper() -> (
+    HouseholdSystem,
+    BuildingAllocator,
+    AgentSystem,
+    TransitNetwork,
+    RegionGraph,
+) {
+    let mut household = make_household(0, 1, 30.0, 0.0);
+    household.replenishment_state = REPLENISHMENT_NEEDS;
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "held_res", "held_store", 50.0, 20.0);
+    households.run_household_operational_hour(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        0,
+        0.2,
+    );
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert!(
+        agents.departure_held(0),
+        "the shopper waits for its departure"
+    );
+    (households, allocator, agents, network, graph)
+}
+
+#[test]
+fn an_eviction_before_the_departure_releases_the_shopper_and_refunds_the_purchase() {
+    let (mut households, mut allocator, mut agents, _, _) = household_with_held_shopper();
+    let supplies = household_supply_resource_runtime_id(&load_runtime_economy_catalog().unwrap());
+    let reserved = households.households[0].reserved_total_cost;
+    let budget = households.households[0].budget;
+    let store_stock = allocator.buildings[1].inventory_units(supplies);
+    // A household without an independent member is evicted at its review.
+    households.households[0].adult_count = 0;
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    let household = &households.households[0];
+    assert_eq!(household.home_building_id, usize::MAX);
+    assert_ne!(
+        household.replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(household.budget, budget + reserved);
+    assert!(allocator.buildings[1].inventory_units(supplies) > store_stock);
+    assert!(!agents.departure_held(0), "the shopper is free again");
+}
+
+#[test]
+fn a_move_before_the_departure_cancels_the_unstarted_trip_and_refunds_it() {
+    let (mut households, mut allocator, mut agents, network, graph) = household_with_held_shopper();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "held_new_home",
+        ZoneClass::Residential,
+    );
+    allocator
+        .buildings
+        .push(make_building(-40.0, ZoneType::Residential, &asset, 0.0));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let reserved = households.households[0].reserved_total_cost;
+    let budget = households.households[0].budget;
+    // The home breaks, and the household's review moves it to the new home.
+    allocator.buildings[0].broken = true;
+    households.resolve_household_housing(&mut agents, &mut allocator);
+    let household = &households.households[0];
+    assert_eq!(household.home_building_id, 2);
+    assert_ne!(
+        household.replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert_eq!(household.budget, budget + reserved);
+    assert_eq!(agents.home_building[0], 2);
+    assert!(!agents.departure_held(0), "the shopper is free again");
+}

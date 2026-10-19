@@ -12,6 +12,7 @@ mod budget;
 mod entity_days;
 mod entity_phases;
 mod frame;
+mod household_requests;
 mod populated_city;
 mod road_commit;
 mod road_edit_plan;

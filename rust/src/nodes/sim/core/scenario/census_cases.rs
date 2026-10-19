@@ -601,7 +601,9 @@ fn planning_lends_the_published_census_after_a_firm_starts_in_the_window() {
 // A household that arrives during the demand snapshot's sweep and is hired at the next hour's
 // first slot joins the front as it was before that hire, as the sweep took every other
 // household. Taken after it, its job would still be open in the swept workplace while its
-// adult no longer counted as unemployed, and admission would count that job twice.
+// adult no longer counted as unemployed, and admission would count that job twice. Job
+// searches run from their queue at any slot since `SIM-02-J`, so the arrivals' searches are
+// queued at the hour's last slot, for the next hour's first.
 #[test]
 fn an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire() {
     let mut scenario = GrowthScenario::starter_town();
@@ -634,6 +636,15 @@ fn an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire() {
                 .sum::<u32>()
         };
         let before = employed(core);
+        let slot = core.time.absolute_slot();
+        let agents = core.agents.len();
+        core.agents.handles.register_appended(agents);
+        for agent_idx in 0..agents {
+            if (start.0..end.0).contains(&core.agents.household_id[agent_idx]) {
+                let agent = core.agents.agent_handle(agent_idx);
+                core.households.job_requests.push(slot, agent);
+            }
+        }
         step_to_chunk(core, 0);
         if counts(core) != end || employed(core) == before {
             continue;

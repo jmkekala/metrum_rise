@@ -138,6 +138,8 @@ fn returning_shipments_close_without_changing_settled_cargo_or_unrelated_agents(
         agents.freight_shipment_id[agent] = shipment_id;
         let seed = agents.schedule_seed[agent];
         let mut shipments = ShipmentSystem::new();
+        // The return leg started five hours ago, one before its timeout.
+        shipments.hour_ticks = 5;
         shipments.shipments.push(Shipment {
             id: 7,
             resource_runtime_id: resource,
@@ -154,7 +156,8 @@ fn returning_shipments_close_without_changing_settled_cargo_or_unrelated_agents(
             total_cost: 200.0,
             freight_cost: 0.0,
             eta_hours: 1,
-            queued_hours: 5,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: true,
         });
         for _ in 0..2 {
@@ -216,7 +219,8 @@ fn stale_shipment_carrier_cannot_remove_an_unrelated_agent() {
                 total_cost: 200.0,
                 freight_cost: 0.0,
                 eta_hours: 1,
-                queued_hours: 0,
+                leg_started_hour: 0,
+                trip_event_slot: 0,
                 cargo_loaded: true,
             });
             if removal {
@@ -263,7 +267,8 @@ fn returning_carrier_fixture(count: usize) -> (ShipmentSystem, AgentSystem) {
             total_cost: 200.0,
             freight_cost: 0.0,
             eta_hours: u16::MAX,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: true,
         });
     }
@@ -315,8 +320,16 @@ fn carrier_cleanup_preserves_surviving_links_across_swaps() {
         if resident_at_end {
             agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
         }
-        for idx in [0, 5, 12, 17, 61] {
-            shipments.shipments[idx].queued_hours = u16::MAX;
+        // Five return legs started long enough ago to time out at their next check, even with
+        // the fixture's longest timeout.
+        let now = u32::from(u16::MAX) + 1;
+        shipments.hour_ticks = now;
+        for (idx, shipment) in shipments.shipments.iter_mut().enumerate() {
+            shipment.leg_started_hour = if [0, 5, 12, 17, 61].contains(&idx) {
+                0
+            } else {
+                now
+            };
         }
         progress_shipments_for_test(
             &mut shipments,
@@ -716,7 +729,7 @@ fn make_building(
         operating_budget: budget,
         profit_tax_budget_baseline: budget,
         last_day_profit: 0.0,
-        shipment_cooldown_until_tick: 0,
+        shipment_cooldown_until_slot: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -4295,7 +4308,7 @@ fn minimum_input_order_must_afford_the_carrier_as_well_as_the_goods() {
         assert!(shipments.shipments.is_empty());
         assert_eq!(allocator.buildings[buyer].operating_budget, goods_budget);
         allocator.buildings[buyer].operating_budget += 100.0;
-        allocator.buildings[buyer].shipment_cooldown_until_tick = 0;
+        allocator.buildings[buyer].shipment_cooldown_until_slot = 0;
         create_profile_input_shipments_for_test(
             &mut shipments,
             &mut allocator,
@@ -4617,7 +4630,7 @@ fn owa_border_fallback_creates_import_shipment() {
         ShipmentEndpoint::OwaBorder(border_node)
     );
 
-    shipments.shipments[0].queued_hours = 4;
+    shipments.shipments[0].leg_started_hour = 0;
     mark_carrier_arrived(&shipments, &mut agents, 0);
     progress_shipments_for_test(
         &mut shipments,
@@ -4627,7 +4640,10 @@ fn owa_border_fallback_creates_import_shipment() {
         &graph,
     );
     assert_eq!(shipments.shipments[0].status, ShipmentStatus::Returning);
-    assert_eq!(shipments.shipments[0].queued_hours, 0);
+    assert_eq!(
+        shipments.shipments[0].leg_started_hour,
+        shipments.hour_ticks
+    );
     mark_carrier_returned(&shipments, &mut agents, 0);
     progress_shipments_for_test(
         &mut shipments,
@@ -4871,7 +4887,7 @@ fn factory_batches_input_orders_and_daily_exports_instead_of_hourly_trucks() {
     }
     assert_eq!(shipments.shipments[0].amount, 200.0);
     assert_eq!(shipments.shipments[0].resource_runtime_id, food);
-    allocator.buildings[0].shipment_cooldown_until_tick = 0;
+    allocator.buildings[0].shipment_cooldown_until_slot = 0;
     allocator.buildings[0].set_inventory_units(grain, 399.0);
     create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 0);
     assert_eq!(shipments.shipments.len(), 2);
@@ -5149,7 +5165,8 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: false,
     });
     let planning = super::planning::FreightPlanningContext::build(
@@ -5176,50 +5193,85 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
     assert_eq!(listed, [0]);
 }
 
+// Buyers and producers plan at their own phases (`SIM-02-J`): a producer whose export comes
+// first ships only stock above its one-day buffer, so a local buyer planning after it still
+// gets the same order from it.
 #[test]
-fn owa_export_holds_affordable_local_input_need_first() {
+fn owa_export_keeps_the_one_day_buffer_for_a_later_local_buyer() {
     let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
-    let mut allocator = BuildingAllocator::new();
-    let industrial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "local_priority_export_industrial",
-        ZoneClass::Industrial,
-    );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "local_priority_export_commercial",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        &allocator,
-        -50.0,
-        ZoneType::Industrial,
-        industrial_edge,
-        &industrial_asset,
-        400.0,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        &allocator,
-        50.0,
-        ZoneType::Commercial,
-        commercial_edge,
-        &commercial_asset,
-        0.0,
-        20_000.0,
-    ));
-    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    allocator.rebuild_zone_index();
+    let mut orders = Vec::new();
+    for export_first in [false, true] {
+        let mut allocator = BuildingAllocator::new();
+        let industrial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "local_priority_export_industrial",
+            ZoneClass::Industrial,
+        );
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "local_priority_export_commercial",
+            ZoneClass::Commercial,
+        );
+        allocator.buildings.push(make_building(
+            &allocator,
+            -50.0,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial_asset,
+            400.0,
+            0.0,
+        ));
+        allocator.buildings.push(make_building(
+            &allocator,
+            50.0,
+            ZoneType::Commercial,
+            commercial_edge,
+            &commercial_asset,
+            0.0,
+            20_000.0,
+        ));
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        allocator.rebuild_zone_index();
 
-    let mut shipments = ShipmentSystem::new();
-    create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
-
-    assert!(
-        shipments.shipments.is_empty(),
-        "industrial surplus should be held for affordable local commercial input demand"
-    );
+        let mut shipments = ShipmentSystem::new();
+        if export_first {
+            create_profile_output_exports_for_test(
+                &mut shipments,
+                &mut allocator,
+                &network,
+                &graph,
+                480,
+            );
+            assert!(
+                shipments
+                    .shipments
+                    .iter()
+                    .any(|s| matches!(s.destination, ShipmentEndpoint::OwaBorder(_))),
+                "the producer exports its surplus first"
+            );
+        }
+        create_profile_input_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &network,
+            &graph,
+            480,
+        );
+        let local: Vec<f32> = shipments
+            .shipments
+            .iter()
+            .filter(|s| {
+                s.source == ShipmentEndpoint::Building(0)
+                    && s.destination == ShipmentEndpoint::Building(1)
+            })
+            .map(|s| s.amount)
+            .collect();
+        assert_eq!(local.len(), 1, "the buyer orders from the local producer");
+        orders.push(local[0]);
+    }
+    assert_eq!(orders[0], orders[1]);
 }
 
 #[test]
@@ -5359,7 +5411,8 @@ fn deserted_destination_rejects_inbound_delivery() {
         total_cost: 600.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: false,
     });
 
@@ -5412,7 +5465,8 @@ fn under_construction_destination_rejects_inbound_delivery() {
         total_cost: 600.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: false,
     });
 
@@ -5478,7 +5532,8 @@ fn deserted_local_source_releases_reserved_delivery() {
         total_cost: 600.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: false,
     });
 
@@ -5630,9 +5685,15 @@ fn destination_removal_restores_dispatched_local_source_stock() {
     assert!(shipments.shipments.is_empty());
     assert_eq!(agents.len(), 0);
     assert!((allocator.buildings[0].inventory_units(packaged_food) - 300.0).abs() < 0.01);
+    // The source retries at its first phase after the removal's slot (`SIM-02-J`).
     assert_eq!(
-        allocator.buildings[0].shipment_cooldown_until_tick,
-        shipments.hour_ticks + u32::from(tuning.operational_clock.shipment_retry_cooldown_hours)
+        allocator.buildings[0].shipment_cooldown_until_slot,
+        super::requests::event_cooldown_until(
+            &allocator,
+            0,
+            allocator.now_slot + 1,
+            tuning.operational_clock.shipment_retry_cooldown_hours,
+        )
     );
 }
 
@@ -5785,7 +5846,8 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             total_cost: 800.0,
             freight_cost: 0.0,
             eta_hours: 1,
-            queued_hours: 0,
+            leg_started_hour: 0,
+            trip_event_slot: 0,
             cargo_loaded: false,
         });
         assert_eq!(treasury, 1_200.0);
@@ -5914,7 +5976,7 @@ fn terminal_input_request_retries_after_budget_recovers() {
     );
 
     allocator.buildings[0].operating_budget = 5_000.0;
-    allocator.buildings[0].shipment_cooldown_until_tick = 0;
+    allocator.buildings[0].shipment_cooldown_until_slot = 0;
     logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
 
     assert!(!shipments.shipments.is_empty());
@@ -6069,7 +6131,7 @@ fn delivered_exports_pay_freight_without_depressing_the_bid() {
     );
 
     shipments.shipments.clear();
-    allocator.buildings[0].shipment_cooldown_until_tick = 0;
+    allocator.buildings[0].shipment_cooldown_until_slot = 0;
     allocator.buildings[0].add_inventory_units(resource_runtime_id, 500.0);
     create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
 
@@ -6114,7 +6176,7 @@ fn exports_have_no_shared_buying_quota_but_reserve_real_stock() {
             .all(|s| s.freight_cost > 0.0 && s.total_cost > s.freight_cost)
     );
     for building in &mut allocator.buildings {
-        building.shipment_cooldown_until_tick = 0;
+        building.shipment_cooldown_until_slot = 0;
     }
     create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
     assert_eq!(
@@ -6454,80 +6516,6 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
 }
 
 #[test]
-fn local_export_holds_share_the_buyers_budget_across_recipe_inputs() {
-    let (graph, network, supply_edge, buyer_edge, _) = simple_graph_with_border();
-    let catalog = load_runtime_economy_catalog().unwrap();
-    let mut allocator = BuildingAllocator::new();
-    let farm = register_test_field_asset(&mut allocator, "test", "hold_grain");
-    let machinery = register_test_asset_with_profile(
-        &mut allocator,
-        "test",
-        "hold_machinery",
-        ZoneClass::Industrial,
-        Some("machinery_factory_basic"),
-    );
-    let food = register_test_asset(&mut allocator, "test", "hold_food", ZoneClass::Industrial);
-    let grain_price = catalog
-        .profile_for_id("grain_farm_basic")
-        .unwrap()
-        .unit_price_currency;
-    let buyer_budget = 50.0 * grain_price + 10.0; // Enough for grain freight, not a second input batch.
-    for (asset, x, zone, edge, stock, budget) in [
-        (farm, -70.0, ZoneType::None, supply_edge, 500.0, 0.0),
-        (
-            machinery,
-            -40.0,
-            ZoneType::Industrial,
-            supply_edge,
-            240.0,
-            0.0,
-        ),
-        (
-            food,
-            50.0,
-            ZoneType::Industrial,
-            buyer_edge,
-            0.0,
-            buyer_budget,
-        ),
-    ] {
-        let mut building = make_building(&allocator, x, zone, edge, &asset, stock, budget);
-        if budget == 0.0 {
-            let profile = catalog
-                .profile_by_runtime_id(building.economy_profile_runtime_id)
-                .unwrap();
-            for input in &profile.inputs {
-                if profile.output_port(input.resource_runtime_id).is_none() {
-                    building.set_inventory_units(input.resource_runtime_id, 80.0);
-                }
-            }
-        }
-        allocator.buildings.push(building);
-    }
-    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    allocator.rebuild_zone_index();
-    let mut shipments = ShipmentSystem::new();
-    let mut planning = super::planning::FreightPlanningContext::build(
-        &mut shipments,
-        &mut allocator,
-        &network,
-        &graph,
-    );
-    shipments.create_profile_output_exports(&mut allocator, &network, &graph, 480, &mut planning);
-    let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
-    let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
-    assert_eq!(
-        planning.reservations.reserved_inbound_amount(2, grain),
-        50.0
-    );
-    assert_eq!(
-        planning.reservations.reserved_inbound_amount(2, machinery),
-        0.0
-    );
-    assert_eq!(allocator.buildings[2].operating_budget, buyer_budget);
-}
-
-#[test]
 fn city_input_refund_on_a_later_day_remains_in_net_spending() {
     let mut allocator = BuildingAllocator::new();
     let asset = register_test_city_service_asset(
@@ -6632,7 +6620,8 @@ fn rolling_supplier_fixture() -> (
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
-        queued_hours: 0,
+        leg_started_hour: 0,
+        trip_event_slot: 0,
         cargo_loaded: false,
     });
     shipments.hour_ticks = 7;
@@ -6848,4 +6837,304 @@ fn road_edit_retires_the_supplier_front_and_the_sweep_in_progress() {
             )
             .is_some()
     );
+}
+
+// Three commercial buyers on one road that each import their input over the border.
+fn queued_buyers_fixture() -> (BuildingAllocator, RegionGraph, TransitNetwork) {
+    let (graph, network, _industrial_edge, commercial_edge, _border) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "queued_buyer",
+        ZoneClass::Commercial,
+    );
+    for x in [30.0, 50.0, 70.0] {
+        allocator.buildings.push(make_building(
+            &allocator,
+            x,
+            ZoneType::Commercial,
+            commercial_edge,
+            &asset,
+            50.0,
+            5_000.0,
+        ));
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
+    (allocator, graph, network)
+}
+
+#[test]
+fn freight_requests_are_served_oldest_first_and_drop_buildings_that_left() {
+    use super::requests::{FreightRequest, FreightRequestKind::Inbound};
+    let (mut allocator, graph, network) = queued_buyers_fixture();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+    let handles: Vec<_> = (0..3)
+        .map(|idx| allocator.building_handles.handle(idx))
+        .collect();
+    let mut shipments = ShipmentSystem::new();
+    // Phases in slot order, not handle order: the last buyer's phase comes first.
+    for (slot, idx) in [(5, 2), (6, 0), (7, 1)] {
+        shipments.request_freight_at_phase(slot, idx, &allocator, &catalog, &tuning);
+    }
+    let request = |slot, building| FreightRequest {
+        slot,
+        building,
+        kind: Inbound,
+    };
+    assert_eq!(
+        shipments.freight_requests,
+        [
+            request(5, handles[2]),
+            request(6, handles[0]),
+            request(7, handles[1])
+        ]
+    );
+    // A kind still queued is not queued again, and a load derives the same pending kinds.
+    shipments.request_freight_at_phase(8, 0, &allocator, &catalog, &tuning);
+    assert_eq!(shipments.freight_requests.len(), 3);
+    let pending = shipments.request_pending.clone();
+    shipments.rebuild_request_pending();
+    assert_eq!(shipments.request_pending, pending);
+
+    // The first buyer leaves after queueing; the last takes its dense index.
+    allocator.building_handles.swap_remove(0, 3);
+    allocator.buildings.swap_remove(0);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+    let mut served = Vec::new();
+    let mut treasury = 0.0;
+    while !shipments.freight_requests.is_empty() {
+        let before = shipments.shipments.len();
+        assert_eq!(
+            shipments.serve_freight_requests(
+                1,
+                &mut allocator,
+                &network,
+                &graph,
+                480,
+                &mut treasury
+            ),
+            1
+        );
+        served.push(
+            shipments.shipments[before..]
+                .iter()
+                .map(|shipment| shipment.destination)
+                .collect::<Vec<_>>(),
+        );
+    }
+    // Oldest first: the old last buyer (now at index 0), nothing for the one that left, then
+    // the middle buyer; each plan loads its cargo and lists its carrier.
+    assert_eq!(
+        served,
+        [
+            vec![ShipmentEndpoint::Building(0)],
+            vec![],
+            vec![ShipmentEndpoint::Building(1)]
+        ]
+    );
+    assert!(
+        shipments
+            .shipments
+            .iter()
+            .all(|shipment| shipment.cargo_loaded)
+    );
+    assert_eq!(shipments.held_dispatches, [0, 1]);
+    assert_eq!(
+        shipments.serve_freight_requests(8, &mut allocator, &network, &graph, 480, &mut treasury),
+        0
+    );
+}
+
+// Over an unchanged city one hour of building phases served by the queue plans what the hourly
+// pass planned, which planned every building's inputs and then every export, with one
+// difference: a producer that exports before same-hour local buyers plan ships their orders
+// too, and they draw on its one-day buffer instead. Every input order is the same, and so are
+// budgets and cooldowns; only ids follow the order of service.
+#[test]
+fn an_hour_of_freight_requests_plans_what_the_hourly_pass_planned() {
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let build = || {
+        let mut allocator = BuildingAllocator::new();
+        let industrial = register_test_asset(
+            &mut allocator,
+            "test",
+            "local_priority_export_industrial",
+            ZoneClass::Industrial,
+        );
+        let commercial = register_test_asset(
+            &mut allocator,
+            "test",
+            "local_priority_export_commercial",
+            ZoneClass::Commercial,
+        );
+        // A producer that imports its inputs and exports, two stores that buy from it, and a
+        // producer that only imports.
+        for (x, zone, edge, asset, stock, budget) in [
+            (
+                -50.0,
+                ZoneType::Industrial,
+                industrial_edge,
+                &industrial,
+                2_000.0,
+                20_000.0,
+            ),
+            (
+                30.0,
+                ZoneType::Commercial,
+                commercial_edge,
+                &commercial,
+                0.0,
+                20_000.0,
+            ),
+            (
+                60.0,
+                ZoneType::Commercial,
+                commercial_edge,
+                &commercial,
+                50.0,
+                5_000.0,
+            ),
+            (
+                -80.0,
+                ZoneType::Industrial,
+                industrial_edge,
+                &industrial,
+                0.0,
+                9_000.0,
+            ),
+        ] {
+            allocator.buildings.push(make_building(
+                &allocator, x, zone, edge, asset, stock, budget,
+            ));
+        }
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        allocator.rebuild_zone_index();
+        allocator
+    };
+    let is_export =
+        |shipment: &Shipment| matches!(shipment.destination, ShipmentEndpoint::OwaBorder(_));
+    let orders = |shipments: &ShipmentSystem| {
+        let mut orders: Vec<_> = shipments
+            .shipments
+            .iter()
+            .filter(|shipment| !is_export(shipment))
+            .map(|s| {
+                (
+                    format!("{:?}->{:?}", s.source, s.destination),
+                    s.resource_runtime_id,
+                    s.amount.to_bits(),
+                    s.total_cost.to_bits(),
+                    s.freight_cost.to_bits(),
+                    s.eta_hours,
+                )
+            })
+            .collect();
+        orders.sort();
+        orders
+    };
+    let export = |shipments: &ShipmentSystem| {
+        let exports: Vec<_> = shipments
+            .shipments
+            .iter()
+            .filter(|shipment| is_export(shipment))
+            .collect();
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].source, ShipmentEndpoint::Building(0));
+        exports[0].amount
+    };
+
+    let mut hourly_allocator = build();
+    let mut hourly = ShipmentSystem::new();
+    create_profile_input_shipments_for_test(
+        &mut hourly,
+        &mut hourly_allocator,
+        &network,
+        &graph,
+        480,
+    );
+    create_profile_output_exports_for_test(
+        &mut hourly,
+        &mut hourly_allocator,
+        &network,
+        &graph,
+        480,
+    );
+
+    let mut queued_allocator = build();
+    let mut queued = ShipmentSystem::new();
+    queued.request_freight_for_every_building(0, &mut queued_allocator);
+    let mut treasury = 0.0;
+    queued.serve_freight_requests(
+        usize::MAX,
+        &mut queued_allocator,
+        &network,
+        &graph,
+        480,
+        &mut treasury,
+    );
+
+    assert_eq!(orders(&queued), orders(&hourly));
+    let local_sales: f32 = hourly
+        .shipments
+        .iter()
+        .filter(|s| s.source == ShipmentEndpoint::Building(0) && !is_export(s))
+        .map(|s| s.amount)
+        .sum();
+    assert!(local_sales > 0.0, "the stores buy from the producer");
+    assert_eq!(export(&queued), export(&hourly) + local_sales);
+    for (a, b) in hourly_allocator
+        .buildings
+        .iter()
+        .zip(&queued_allocator.buildings)
+    {
+        assert_eq!(a.operating_budget.to_bits(), b.operating_budget.to_bits());
+        assert_eq!(
+            a.shipment_cooldown_until_slot,
+            b.shipment_cooldown_until_slot
+        );
+    }
+}
+
+// Cooldowns are slot deadlines (`SIM-02-J`): a failure planned for a request waits for the
+// same phase an hour on, so the phase's own export stays blocked; a failure at any other time
+// lets the building retry at its next hourly phase, as the hourly pass retried at the next pass.
+#[test]
+fn freight_cooldowns_end_at_the_buildings_next_phase() {
+    use super::requests::{event_cooldown_until, freight_ready, planned_cooldown_until};
+    use crate::simulation::core::phases::{PHASES_PER_HOUR, daily_phase};
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    let (mut allocator, _graph, _network) = queued_buyers_fixture();
+    let phase = u64::from(daily_phase(allocator.building_handles.handle(1)) % PHASES_PER_HOUR);
+    let hour = 40 * SLOTS_PER_HOUR;
+    for from in [
+        hour,
+        hour + phase,
+        hour + phase + 1,
+        hour + SLOTS_PER_HOUR - 1,
+    ] {
+        let until = event_cooldown_until(&allocator, 1, from, 1);
+        assert!(
+            until >= from && until < from + SLOTS_PER_HOUR,
+            "{from}: {until}"
+        );
+        assert_eq!(until % SLOTS_PER_HOUR, phase);
+        assert_eq!(
+            event_cooldown_until(&allocator, 1, from, 2),
+            until + SLOTS_PER_HOUR
+        );
+    }
+    let phase_slot = hour + phase;
+    allocator.buildings[1].shipment_cooldown_until_slot = planned_cooldown_until(phase_slot, 1);
+    assert!(!freight_ready(&allocator.buildings[1], phase_slot));
+    assert!(freight_ready(
+        &allocator.buildings[1],
+        phase_slot + SLOTS_PER_HOUR
+    ));
 }

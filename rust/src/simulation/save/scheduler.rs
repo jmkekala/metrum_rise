@@ -3,8 +3,11 @@
 //! Scheduler state (`SIM-02`): the timing wheel and its counters, saved as generic rows so
 //! this module does not depend on the simulation's event types.
 
-use super::{SaveLoadError, SaveLoadResult, i64_to_u16, i64_to_u32, i64_to_u64, u64_to_i64};
-use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+use super::{
+    SaveLoadError, SaveLoadResult, i64_to_u16, i64_to_u32, i64_to_u64, pack_u16_slice, u64_to_i64,
+    unpack_u16_blob,
+};
+use crate::simulation::core::scheduler::{LEVELER_MINUTES, MinuteLeveler, SLOTS_PER_DAY};
 use crate::simulation::economy::demand::SavedDemandSnapshot;
 use crate::simulation::grid::sweep::{EnvironmentSweep, SweepCapacities};
 use crate::simulation::network::graph::RegionGraph;
@@ -21,6 +24,11 @@ pub(crate) struct SavedScheduler {
     pub(crate) next_spawn_id: u64,
     /// Clock of building freight cooldowns (`ShipmentSystem::hour_ticks`).
     pub(crate) logistics_hour_ticks: u32,
+    /// Next shipment id (`ShipmentSystem::next_shipment_id`): closed shipments leave the list,
+    /// so the saved rows cannot recover it, and departures and drops follow ids (`SIM-02-J`).
+    pub(crate) logistics_next_shipment_id: u64,
+    /// Freight departures placed per upcoming minute (`ShipmentSystem::departure_minutes`).
+    pub(crate) freight_departures: MinuteLeveler,
     /// Clock of job locks (`AgentSystem::settlement_days`).
     pub(crate) agent_settlement_days: u32,
     /// Rolling road length for daily upkeep (`SIM-02-G`): last finished sweep in metres,
@@ -58,7 +66,7 @@ pub(super) fn save(
         None => (-1, None),
     };
     tx.execute(
-        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back, logistics_next_shipment_id, freight_departure_first_minute, freight_departure_counts) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             u64_to_i64(scheduler.next_slot)?,
             u64_to_i64(scheduler.next_event_seq)?,
@@ -80,6 +88,9 @@ pub(super) fn save(
             demand.front,
             demand_next_chunk,
             demand_back,
+            u64_to_i64(scheduler.logistics_next_shipment_id)?,
+            u64_to_i64(scheduler.freight_departures.saved().0)?,
+            pack_u16_slice(scheduler.freight_departures.saved().1),
         ],
     )?;
     let mut events =
@@ -100,8 +111,8 @@ type SavedRoadLengthRow = (f64, i64, i64, i64, i64);
 
 pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
     // Clock and event counters, then the road-length sweep columns.
-    let row: (i64, i64, i64, i64, i64, SavedRoadLengthRow) = conn.query_row(
-        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured FROM scheduler_state WHERE singleton = 1",
+    let row: (i64, i64, i64, i64, i64, SavedRoadLengthRow, i64) = conn.query_row(
+        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, logistics_next_shipment_id FROM scheduler_state WHERE singleton = 1",
         [],
         |row| {
             Ok((
@@ -117,6 +128,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
                     row.get(8)?,
                     row.get(9)?,
                 ),
+                row.get(10)?,
             ))
         },
     )?;
@@ -125,6 +137,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         next_event_seq: i64_to_u64(row.1)?,
         next_spawn_id: i64_to_u64(row.2)?,
         logistics_hour_ticks: i64_to_u32(row.3)?,
+        logistics_next_shipment_id: i64_to_u64(row.6)?,
         agent_settlement_days: i64_to_u32(row.4)?,
         road_length: (
             row.5.0,
@@ -137,6 +150,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
             i64_to_u64(row.5.3)?,
             row.5.4 != 0,
         ),
+        freight_departures: load_freight_departures(conn)?,
         environment: load_environment(conn)?,
         demand_snapshot: load_demand_snapshot(conn)?,
         events: Vec::new(),
@@ -161,6 +175,17 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         ));
     }
     Ok(scheduler)
+}
+
+fn load_freight_departures(conn: &Connection) -> SaveLoadResult<MinuteLeveler> {
+    let (first_minute, counts): (i64, Vec<u8>) = conn.query_row(
+        "SELECT freight_departure_first_minute, freight_departure_counts FROM scheduler_state WHERE singleton = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let counts = unpack_u16_blob(&counts, LEVELER_MINUTES)?;
+    MinuteLeveler::restore(i64_to_u64(first_minute)?, &counts)
+        .ok_or_else(|| SaveLoadError::custom("invalid freight departure counts"))
 }
 
 fn load_demand_snapshot(conn: &Connection) -> SaveLoadResult<SavedDemandSnapshot> {
