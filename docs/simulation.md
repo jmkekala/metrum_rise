@@ -819,6 +819,44 @@ previous step's results exactly.
 | `SIM-02-J` | Matching becomes request queues. |
 | `SIM-02-K` | Legacy `FixedSlot` hour and day systems, `simulate_tick_internal`, `simulate_operational_hour_internal` and every minute-0 path are deleted. `PERF-07` acceptance at 30k and 100k. The cadence sections in `economy.md` and `demand.md` point here. |
 
+#### `SIM-02-K` parts
+
+Planned 2026-10-20 from a profile of the 100k `PERF-07` day on `SIM-02-I` part 3 (per-phase
+timing and `perf` call stacks; an ordinary 100k frame was then 11.9 ms at 1× and 21 ms at 32×,
+about 70% of it serial). Each part is gated and committed on its own, in this order:
+
+1. **K1, legacy paths deleted.** `simulate_tick_internal`, `simulate_operational_hour_internal`,
+   the coarse-hour census callers and every minute-0 or hour-boundary path go; tests,
+   benchmarks and the contract harness step the slot clock. The remaining fixed-slot systems
+   state honest costs. Expected envelope: identical, or the difference explained.
+2. **K2, render snapshot.** Cull on the agents' stored positions before posing (about 9% of the
+   moving agents are in the camera), an O(1) surface query for off-lane agents, parallel
+   bucketing. Saves about 5.5 ms at 1× and 6.5 ms at 32× at 100k.
+3. **K3, frame spikes.** Generated cells built during loading instead of by the first lot regions
+   served (25–96 ms a region at 100k, all day); census slices budgeted by work units instead of
+   rows (up to 115 ms a slice); incremental zone-index and entrance repairs after clearances
+   (about 10 ms at 100k); the first frame after loading; test-build checks out of timed frames.
+4. **K4, agent tick.** Lane buckets kept across appends and swap-removes instead of rebuilt each
+   tick, filled in parallel; the unused per-edge `current_congestion` write removed; indoor agents
+   off the per-frame movement pass (departures planned at their slot); movement shards balanced;
+   fewer agents in the serial handoff set; cheaper pose sampling. Saves about 3 ms at 1× and
+   7 ms at 32× at 100k together.
+5. **K5, planning slots without city scans.** Per-zone lot lists, maintained workforce and
+   market totals instead of the O(B + H) scans at slots 0–3 (`Cost::CityScan`), incremental
+   downgrade candidates, the job board and destination index without their O(B) fallback
+   builds, the commute quote cache cleared per building.
+6. **K6, 100k traffic.** Find why trips stall in the 100k fixture (about 45,000 of 145,000
+   agents always moving; junction throughput, routing) and keep movement within the `PERF-06`
+   limits.
+7. **K7, acceptance.** `PERF-07` max at most 8 ms at 30k and 100k, at 1× and 32×, over a full game
+   day; envelope and burst limits; `SIM-02` and `PERF-07` marked done.
+
+If a part cannot reach its target without changing a decision of this document (for example a
+coarser simulation tier for distant agents, or GPU compute), the findings and options are
+written here and the part stops for review. Timing comparisons run the previous part's binary
+as a control in the same session, on the same snapshot: a machine restart on 2026-10-19 raised
+every `PERF-07` mean about 30% for unchanged binaries.
+
 ### Behaviour envelope (`SIM-02-A`)
 
 Decided 2026-10-15. The envelope defines "the economy still works" while gameplay changes are
