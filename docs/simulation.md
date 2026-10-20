@@ -1683,6 +1683,24 @@ on a fresh `$ARTIFACTS` directory.
 - **Tests:** 2,531 release library tests and the 4 growth integration tests pass; the benchmarks
   build; clippy and rustfmt add nothing. Tests that drove the deleted hour now step the hour's
   slots with the same expected numbers. The step does not change the Godot bridge.
+- **Fix (debug build):** two `building_site_terrain` tests tripped the save-time check that
+  valid census books in an hour's planning slots keep the copy their census read. Both load
+  the Kuopio fixture and save without moving the clock. The fixture is at day 1, 00:00, and
+  its `census_inputs.published` was NULL (part 4 added the column without a value); a load
+  reads NULL as a save after the actions slot, counts the loaded city and marks its books
+  valid without a kept copy. The deleted live-copy exception (`!derive_funding`) had also
+  covered that copy. No game save holds this state: a world's first slot never runs, so a new
+  world saved before its first publication writes books that are not valid, and every
+  publication, the whole-census fallback included, keeps its copy. The fixture now holds
+  that value (what a re-save of it writes) and its new hash in `placements.json`; the check
+  is unchanged. A census test saves in slots 0–2 after a whole census at the publication,
+  both on the window's copy (an edit past the window's last slot) and on a copy taken then
+  (an undo there), and continues identically. Debug and release library suites (2,532 each),
+  the growth tests and the gate (bit-identical envelope and determinism) pass; clippy adds
+  nothing. Alternatives rejected: refusing such a save at load (a release load deliberately
+  counts the loaded city), loading NULL as books that are not valid (a shim for a state no
+  game writes), and editing the two tests (the bad state would stay for every other user of
+  the fixture). From this fix on, every step's gate runs the debug library suite as well.
 
 ### Phase inventory
 
@@ -2911,4 +2929,6 @@ alternatives and the evidence. The user reviews these on return.
   planning and the epoch ran at slot 0; from part 4 it holds only for loads after slot 3, and
   the test comment in `census_cases.rs` says so.
 - `SIM-02-I` part 4 step results: save format 101 (`census_inputs.published`); the Kuopio
-  fixture gained the column and its hash in `placements.json`.
+  fixture gained the column and its hash in `placements.json` (as NULL, which the `SIM-02-K`
+  part 1 fix replaced with books that are not valid, what a game saved at the world's first
+  slot writes).

@@ -718,8 +718,8 @@ impl CensusInputs {
     /// The published census's saved form (`SIM-02-I`): whether its books are `valid` for the
     /// live city and, for valid books, the copy the census read with `adopted`, the service
     /// ceilings it adopted for buildings appended after the copy. `None` for valid books
-    /// without a kept copy (a census run without the slots): the load then counts the loaded
-    /// city. O(copied rows).
+    /// without a kept copy, which no game path leaves since `SIM-02-K` part 1: the load then
+    /// counts the loaded city. O(copied rows).
     pub(crate) fn save_published(
         &self,
         valid: bool,
@@ -731,7 +731,9 @@ impl CensusInputs {
         if valid {
             // The slot clock keeps the front from the publication at the hour's first slot
             // until the fill's last slot, and every change to it or to the books' validity in
-            // between clears the books or keeps the front.
+            // between clears the books or keeps the front. A load there restores the kept front
+            // or books that are not valid, and a world's first slot never runs, so a new world
+            // has no valid books before its first publication.
             debug_assert!(
                 self.published_front && !self.pending,
                 "valid books in the hour's planning slots must keep the copy their census read"

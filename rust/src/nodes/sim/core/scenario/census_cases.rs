@@ -306,6 +306,36 @@ fn the_published_census_continues_identically_after_save_load_in_the_planning_sl
     }
 }
 
+// A census the window left stale runs whole at the hour's first slot (`SIM-02-I`): after a
+// frontage price change past the window's last slot it reads the window's copy again, and after
+// an undo there, which drops both copies, a copy of the city taken then. Either way the
+// publication keeps the copy it read, so a save in the hour's planning slots restores it.
+#[test]
+fn a_census_run_whole_at_its_publication_keeps_its_copy_for_the_planning_slots() {
+    let mut source = busy_town();
+    for copied_now in [false, true] {
+        for chunk in 0..3 {
+            step_to_chunk(&mut source.core, SLOTS_PER_HOUR - 1);
+            let core = &mut source.core;
+            if copied_now {
+                assert!(core.bulldoze_building(core.allocator.buildings.len() - 1));
+                assert!(core.undo_action_internal());
+                assert!(!core.households.census_inputs.has_pending_front());
+            } else {
+                core.transit_network.frontage_delay_revision += 1;
+            }
+            let key = core.households.census_key(&core.transit_network);
+            assert!(!core.households.census_ready(next_hour_slot(core), key));
+            step_to_chunk(&mut source.core, chunk);
+            let kind = if copied_now { "copied" } else { "stale" };
+            let label = format!("{kind}-slot-{chunk}");
+            // The planning slots lend these books, so the save keeps their copy.
+            assert!(published_books_lent(&source.core), "{label}");
+            assert_census_continues_after_reload(&mut source, &label);
+        }
+    }
+}
+
 // Saves `source`, loads the save, checks that the loaded game saves the same copy and census
 // state and that both run the next three hours' censuses bit for bit.
 fn assert_census_continues_after_reload(source: &mut GrowthScenario, label: &str) {
