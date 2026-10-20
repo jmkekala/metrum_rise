@@ -10,7 +10,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::hiring::{
-    CENSUS_WINDOW_START, FILL_SLOTS, FrozenCensusParameters, JobFunding,
+    CENSUS_WINDOW_START, CensusProgress, FILL_SLOTS, FrozenCensusParameters, JobFunding,
 };
 
 // A town busy with homes, businesses and freight on the road.
@@ -100,6 +100,63 @@ fn the_census_on_the_input_copy_equals_the_live_census_over_an_unchanged_hour() 
         ]
     };
     assert_eq!(books(&copied), books(&live));
+}
+
+#[test]
+fn the_census_in_work_unit_slices_equals_one_run_on_its_copy() {
+    let mut scenario = busy_town();
+    let core = &mut scenario.core;
+    let start = next_hour_slot(core);
+    for slot in start..start + FILL_SLOTS {
+        core.advance_census_inputs(slot);
+    }
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let mut inputs = std::mem::take(&mut core.households.census_inputs);
+    inputs.prepare(
+        &mut core.allocator,
+        &core.households.households,
+        &core.logistics,
+        &catalog,
+        FrozenCensusParameters::default(),
+    );
+    let mut once = JobFunding::default();
+    once.refresh_from_inputs(
+        &mut inputs,
+        &core.transit_network,
+        &core.region_graph,
+        &catalog,
+        &tuning,
+    );
+    assert!(once.capacities.iter().any(|&jobs| jobs > 0));
+    // One work unit stops every step after each row; 2,000 stops a serial sweep after any row
+    // that searched a route (`SIM-02-K`).
+    for budget in [1, 2_000] {
+        let mut sliced = JobFunding::default();
+        let mut progress = CensusProgress::default();
+        let mut slices = 0;
+        while !sliced.step_from_inputs(
+            &mut inputs,
+            &mut progress,
+            &core.transit_network,
+            &core.region_graph,
+            &catalog,
+            &tuning,
+            budget,
+        ) {
+            slices += 1;
+        }
+        assert!(
+            slices
+                > if budget == 1 {
+                    core.allocator.buildings.len()
+                } else {
+                    1
+                },
+            "{budget} work units: {slices} slices"
+        );
+        assert_same_census(&sliced, &once, &format!("{budget} work units"));
+    }
 }
 
 #[test]

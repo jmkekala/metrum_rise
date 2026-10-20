@@ -53,6 +53,12 @@ impl ShipmentSystem {
         self.freight_route_cache.building_cache_counts
     }
 
+    /// Freight route searches made on cache misses so far, for the funding census's work units
+    /// (`SIM-02-K`). A monotonic counter; O(1).
+    pub(crate) fn route_searches(&self) -> u64 {
+        self.freight_route_cache.searches()
+    }
+
     /// Prices a live or proposed seller's directed delivery to a business customer.
     /// Call `prepare_site_carrier_quotes` once before a batch. Each query reuses bounded
     /// network search storage and applies live frontage delays, without temporary IDs.

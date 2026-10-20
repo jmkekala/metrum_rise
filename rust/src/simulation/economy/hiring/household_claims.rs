@@ -158,6 +158,16 @@ impl HouseholdQuotes {
         }
     }
 
+    /// Drops the recorded quote sequence after the customer book was reset, so no later
+    /// preparation replays it against a book that no longer holds its claims (`SIM-02-K`: a
+    /// census restarted between the consumer-market refresh and setup). O(1), keeps storage.
+    pub(super) fn forget(&mut self) {
+        debug_assert!(!self.pending);
+        self.quotes.clear();
+        self.units.clear();
+        self.requests.clear();
+    }
+
     /// Starts an exact retry in O(1), retaining the preceding accepted household book.
     pub(super) fn restart(&mut self, customers: &mut ConsumerMarket, census: &Census<'_>) {
         debug_assert!(!self.pending);

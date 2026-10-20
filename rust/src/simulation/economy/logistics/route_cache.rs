@@ -43,6 +43,9 @@ pub(super) struct FreightRouteCache {
     #[cfg(test)]
     pub(super) building_cache_counts: [u64; 4],
     query: CchQueryScratch,
+    // Network searches made on cache misses so far, which the funding census counts as work
+    // (`SIM-02-K`); monotonic, never read by any result.
+    searches: u64,
     cost_bounds: CchCarCostBounds,
     // Complete quotes also compare their own lane prices after a global traffic revision.
     building_to_building: Vec<[Option<BuildingCost>; 2]>,
@@ -168,6 +171,11 @@ fn retained_quote<T: Copy>(entries: &mut [Option<T>; 2], matches: impl Fn(T) -> 
 impl FreightRouteCache {
     /// Reserves indexed geometry slots without visiting any unchanged building.
     /// Queries fill requested slots lazily; preparation is O(new building slots), warm O(1).
+    // Network searches made on cache misses so far; O(1).
+    pub(super) fn searches(&self) -> u64 {
+        self.searches
+    }
+
     pub(super) fn prepare_buildings(&mut self, buildings: usize) {
         self.access.resize(buildings, None);
     }
@@ -564,6 +572,7 @@ impl FreightRouteCache {
                 return entry.cost;
             }
         }
+        self.searches += 1;
         let cost = network.cch_graph.find_cost(
             from,
             to,

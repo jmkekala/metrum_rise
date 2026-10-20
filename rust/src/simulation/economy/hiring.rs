@@ -201,7 +201,8 @@ impl JobFunding {
         self.import_quote_replays
     }
 
-    /// [`Self::refresh`] run in slices of `budget` rows, as the slots run it (`SIM-02-I`); after
+    /// [`Self::refresh`] run in slices of `budget` work units, as the slots run it (`SIM-02-I`,
+    /// `SIM-02-K`); after
     /// `restart_after` slices it starts again from its first step, as a network or structural
     /// change makes it. Returns the slices run.
     #[cfg(test)]
@@ -242,7 +243,7 @@ impl JobFunding {
         let mut slices = 0;
         loop {
             slices += 1;
-            if self.run_census_steps(&context, logistics, &mut progress, budget) {
+            if self.run_census_steps(&context, logistics, &mut progress, budget as u64) {
                 return slices;
             }
             if restart_after == Some(slices) {
@@ -839,7 +840,7 @@ impl JobFunding {
             &context,
             logistics,
             &mut steps::CensusProgress::default(),
-            usize::MAX,
+            u64::MAX,
         );
     }
 }

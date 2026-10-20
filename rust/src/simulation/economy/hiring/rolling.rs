@@ -11,12 +11,18 @@
 //! census that is missing, unfinished or stale runs whole there. Its results are a function of
 //! the copy and the network alone, so a loaded game recomputes a census in progress at load.
 //!
-//! **Costs.** Each window slot gets ceil(R / S) rows of work, R the rows left assuming as many
-//! closure passes as the previous census took ([`CensusProgress::remaining`]) and S the window
-//! slots left, so later passes do not all land in the last slots; the window's last slot gets
-//! all that remains. A step that is not sliced (the consumer-market
-//! refresh, setup, the input-source reset, repair, business seeding, propagation) runs whole in
-//! the slot it starts in. A restart repeats the work done so far.
+//! **Costs** (`SIM-02-K`). Work is counted in work units (`hiring/steps.rs`), never measured
+//! time. Each window slot gets ceil(R / D) work units, at least one. R is the work
+//! left: the previous census's total less the work used so far, or, if more, the estimate of
+//! [`CensusProgress::remaining_work`] (the rows left at their weights, a serial sweep in
+//! progress at its observed rate, as many closure passes as the previous census took). D is
+//! max(S − [`SLACK_SLOTS`], S / 4, 1), S the window slots left: the census plans to finish
+//! [`SLACK_SLOTS`] slots before the window ends, and from S = 128 on, work it did not plan for
+//! spreads over the slots left instead of landing in one. The window's last slot gets all that
+//! remains, as the whole-census fallback at publication does.
+//! A step that is not sliced (the route quotes, the consumer-market refresh, setup, the
+//! input-source reset, repair, business seeding, propagation) runs whole in the slot it starts
+//! in. A restart repeats the work done so far.
 
 use super::{CensusInputs, CensusProgress, FILL_SLOTS, JobFunding};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -26,6 +32,10 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 
 /// First slot of the hour at which the census runs: the copy has filled over the slots before.
 pub(crate) const CENSUS_WINDOW_START: u64 = FILL_SLOTS;
+
+/// Window slots the census plans to leave unused at the window's end, for a census that needs
+/// more work than the previous one took (`SIM-02-K`): a fifth of the window.
+pub(crate) const SLACK_SLOTS: u64 = 96;
 
 /// First slot of the hour at which building and household swap-removes run (`SIM-02-J`): the
 /// hour's planning slots 0 to 3 read the census published at slot 0 before it.
@@ -118,6 +128,9 @@ pub(crate) struct RollingCensus {
     // Closure passes the last finished census took, which the next one's slices plan for;
     // slicing never changes a census's result.
     expected_passes: usize,
+    // Work units the last finished census used, which the next one's slices plan for
+    // (`SIM-02-K`).
+    expected_work: u64,
     /// Census restarts so far, for tests.
     #[cfg(test)]
     pub(crate) restarts: usize,
@@ -200,13 +213,21 @@ impl RollingCensus {
     ) -> bool {
         let slots_left = SLOTS_PER_HOUR.saturating_sub(chunk);
         let budget = if slots_left <= 1 {
-            usize::MAX
+            u64::MAX
         } else {
             let (buildings, households) = inputs.front_len();
-            self.progress
-                .remaining(buildings, households, self.expected_passes)
-                .div_ceil(slots_left as usize)
-                .max(1)
+            let rows = self
+                .progress
+                .remaining_work(buildings, households, self.expected_passes);
+            let planned = self
+                .expected_work
+                .saturating_sub(self.progress.used_work())
+                .max(rows);
+            let divisor = slots_left
+                .saturating_sub(SLACK_SLOTS)
+                .max(slots_left / 4)
+                .max(1);
+            planned.div_ceil(divisor).max(1)
         };
         let done = self.funding.step_from_inputs(
             inputs,
@@ -219,6 +240,7 @@ impl RollingCensus {
         );
         if done {
             self.expected_passes = self.progress.passes();
+            self.expected_work = self.progress.used_work();
         }
         done
     }
@@ -294,11 +316,12 @@ impl RollingCensus {
             graph,
             catalog,
             tuning,
-            usize::MAX,
+            u64::MAX,
         );
         // As the uninterrupted game records when the same census finishes (`Self::step`, which
         // the whole run at publication goes through too).
         self.expected_passes = self.progress.passes();
+        self.expected_work = self.progress.used_work();
     }
 
     /// Recomputes, at load, the census the hour's first slot published into `live`, from the
@@ -335,7 +358,7 @@ impl RollingCensus {
             graph,
             catalog,
             tuning,
-            usize::MAX,
+            u64::MAX,
         );
         inputs.consume();
         inputs.keep_published_front();
@@ -343,6 +366,7 @@ impl RollingCensus {
         funding.published = Some(key);
         *live = funding;
         self.expected_passes = progress.passes();
+        self.expected_work = progress.used_work();
     }
 }
 

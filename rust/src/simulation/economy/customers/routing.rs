@@ -99,9 +99,18 @@ pub(crate) struct ConsumerMarket {
     index_builds: u64,
     claim_revision: u64,
     last_claim_direct: bool,
+    // Households visited and trip fallbacks tried by claims so far, which the funding census
+    // counts as work (`SIM-02-K`); monotonic, never read by any result.
+    claim_work: [u64; 2],
 }
 
 impl ConsumerMarket {
+    /// Households visited and trip fallbacks tried by claims so far, for the funding census's
+    /// work units (`SIM-02-K`). Monotonic counters; O(1).
+    pub(crate) fn claim_work(&self) -> [u64; 2] {
+        self.claim_work
+    }
+
     fn bump_quote_revision(&mut self) {
         self.claim_revision = self.claim_revision.wrapping_add(1);
     }
@@ -814,6 +823,7 @@ impl ConsumerMarket {
                         return true;
                     }
                     self.visited[household] = self.visit;
+                    self.claim_work[0] += 1;
                     #[cfg(test)]
                     if trace {
                         candidates += 1;
@@ -849,6 +859,7 @@ impl ConsumerMarket {
                         return claimed < requested;
                     }
                     self.last_claim_direct = false;
+                    self.claim_work[1] += 1;
                     #[cfg(test)]
                     if trace {
                         fallback_needed += 1;

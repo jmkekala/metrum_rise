@@ -273,7 +273,7 @@ impl HouseholdSystem {
             graph,
             &catalog,
             &tuning,
-            usize::MAX,
+            u64::MAX,
         );
         funding
     }

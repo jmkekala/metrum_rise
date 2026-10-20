@@ -18,11 +18,18 @@
 //! validation (seeding the accounts, the claims sliced by seller, the proof sliced, publishing
 //! the financing); and settling, or propagating impossible customers into the next pass.
 //!
-//! **Costs.** Work is counted in rows: buildings for every building pass, households for the
-//! consumer-market refresh, nothing for the bookkeeping steps. A sliced step processes exactly
-//! its budget of rows; an unsliced one runs whole once started. [`CensusProgress::remaining`]
-//! estimates the rows left assuming the current pass is the last, which the hourly driver
-//! spreads over the slots left. Steps allocate nothing once the census storage has grown.
+//! **Costs** (`SIM-02-K`). Work is counted in work units, a deterministic estimate of census
+//! work in nominal nanoseconds made from counts alone, never from measured time: each step's
+//! rows at the step's weight ([`Step::row_work`]: buildings for building passes, households for
+//! the consumer-market refresh), and, in the serial claim and staffing sweeps, the searches the
+//! row made ([`WORK_WEIGHTS`]: network route searches, supplier searches, candidates and
+//! routes, input quotes, consumer candidates and fallbacks, funded-operation searches). A
+//! uniform sliced step takes its budget's rows; a serial sweep runs rows until their work
+//! reaches the budget, so one slice holds at most one row past it; an unsliced step runs whole
+//! once started and starts only in a slot that has done no other step, unless the budget
+//! covers its estimate. [`CensusProgress::remaining_work`] bounds the work left from below,
+//! which the hourly driver combines with the previous census's total. Slicing never changes a
+//! result. Steps allocate nothing once the census storage has grown.
 
 use std::ops::Range;
 
@@ -87,6 +94,33 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
     "done",
 ];
 
+/// Work-unit weights of the counted searches (`SIM-02-K`), in nominal nanoseconds, fitted to
+/// per-row timings of the serial sweeps at 100k (release, eight workers): a network route
+/// search, a supplier search, a supplier candidate, a supplier route priced, an input quote,
+/// a consumer candidate, a consumer trip fallback and a funded-operation search.
+const WORK_WEIGHTS: [u64; 8] = [15_000, 500, 40, 30, 100, 50, 5_000, 2_000];
+
+// The weighted counted work of a census's books and route cache so far; differences between
+// two readings are a span's counted work. O(1).
+fn counted_work(funding: &JobFunding, logistics: &ShipmentSystem) -> u64 {
+    let [searches, candidates, routes, quotes] = funding.input_supply.work_counts();
+    let [consumers, fallbacks] = funding.customers.claim_work();
+    [
+        logistics.route_searches(),
+        searches,
+        candidates,
+        routes,
+        quotes,
+        consumers,
+        fallbacks,
+    ]
+    .iter()
+    .zip(WORK_WEIGHTS)
+    .fold(0_u64, |sum, (&count, weight)| {
+        sum.wrapping_add(count.wrapping_mul(weight))
+    })
+}
+
 /// A census step; see the module documentation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Step {
@@ -118,6 +152,43 @@ enum Step {
 }
 
 impl Step {
+    // Work units a row of the step costs (`SIM-02-K`): nominal nanoseconds at 100k, release,
+    // eight workers; for the serial sweeps the row alone, before its counted searches.
+    fn row_work(self) -> u64 {
+        use Step::*;
+        match self {
+            Routes => 60,
+            MarketChunks => 10,
+            Customers => 250,
+            Setup => 60,
+            Ceilings => 10,
+            ImportFunding => 20,
+            HouseholdClaims | CurrentStaff | Expansion => 25,
+            Sources => 50,
+            SourceProduction | PublishActivity | PublishProduction => 10,
+            Repair => 40,
+            BusinessSeed => 65,
+            BusinessClaims => 20,
+            BusinessProof => 10,
+            Settle => 20,
+            MarketBegin | MarketEnd | PassStart | FinishPass | BusinessPublish | Done => 0,
+        }
+    }
+
+    // Whether the step runs whole once started.
+    fn unsliced(self) -> bool {
+        use Step::*;
+        matches!(
+            self,
+            Routes | Customers | Setup | Sources | Repair | BusinessSeed | Settle
+        )
+    }
+
+    // A lower bound of the step's work: its rows at its weight.
+    fn work(self, buildings: usize, households: usize) -> u64 {
+        self.rows(buildings, households) as u64 * self.row_work()
+    }
+
     // Rows of work: buildings for building passes, households for the consumer market.
     fn rows(self, buildings: usize, households: usize) -> usize {
         match self {
@@ -194,6 +265,10 @@ pub(crate) struct CensusProgress {
     first_pass: bool,
     // Closure passes started; slicing only, never read by the census itself.
     passes: usize,
+    // Work units used so far, and by the current step (`SIM-02-K`); slicing only, never read
+    // by the census itself.
+    used: u64,
+    step_used: u64,
     reduced: bool,
     settled: bool,
     // Diagnostic step times for the `funding_detail` debug line; never read by the census.
@@ -206,10 +281,18 @@ impl CensusProgress {
         self.step == Step::Done
     }
 
-    /// Rows left assuming the census takes `expected` closure passes, as the previous one
-    /// did (`SIM-02-I`): the current pass's and the steps after it, and whole passes for the
-    /// ones still expected. A census that needs more catches up in its last slots. O(steps).
-    pub(crate) fn remaining(&self, buildings: usize, households: usize, expected: usize) -> usize {
+    /// An estimate of the work units left assuming the census takes `expected` closure passes,
+    /// as the previous one did (`SIM-02-I`): the rows of the current pass's steps and those
+    /// after it, and whole passes for the ones still expected, at each step's row weight
+    /// (`SIM-02-K`). A serial sweep in progress prices its rows left at the rate its rows done
+    /// used, searches included; later sweeps' searches are not counted, so it is a lower bound
+    /// of their work. O(steps).
+    pub(crate) fn remaining_work(
+        &self,
+        buildings: usize,
+        households: usize,
+        expected: usize,
+    ) -> u64 {
         if self.step == Step::Done {
             return 0;
         }
@@ -218,19 +301,33 @@ impl CensusProgress {
         } else {
             self.cursor
         };
-        let mut rows = self.step.rows(buildings, households).saturating_sub(done);
+        let rate = if matches!(
+            self.step,
+            Step::HouseholdClaims | Step::CurrentStaff | Step::Expansion
+        ) && done > 0
+        {
+            (self.step_used / done as u64).max(self.step.row_work())
+        } else {
+            self.step.row_work()
+        };
+        let mut work = self.step.rows(buildings, households).saturating_sub(done) as u64 * rate;
         let mut step = self.step.next();
         while step != Step::Done {
-            rows += step.rows(buildings, households);
+            work += step.work(buildings, households);
             step = step.next();
         }
         let mut pass = 0;
         let mut step = Step::PassStart;
         while step != Step::Done {
-            pass += step.rows(buildings, households);
+            pass += step.work(buildings, households);
             step = step.next();
         }
-        rows + expected.saturating_sub(self.passes.max(1)) * pass
+        work + expected.saturating_sub(self.passes.max(1)) as u64 * pass
+    }
+
+    /// Work units this census has used so far (`SIM-02-K`).
+    pub(crate) fn used_work(&self) -> u64 {
+        self.used
     }
 
     /// Closure passes started so far.
@@ -241,6 +338,7 @@ impl CensusProgress {
     fn advance(&mut self, step: Step) {
         self.step = step;
         self.cursor = 0;
+        self.step_used = 0;
     }
 
     // The next slice of a sliced step over `total` items within `budget`; finishing it moves
@@ -285,14 +383,16 @@ fn utilities(catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning) -> 
 }
 
 impl JobFunding {
-    /// Runs census steps until `budget` rows are used or every step has run; returns whether
-    /// the census is done. `usize::MAX` runs it to the end.
+    /// Runs census steps until `budget` work units are used or every step has run; returns
+    /// whether the census is done. `u64::MAX` runs it to the end. An unsliced step whose rows
+    /// alone exceed what is left of the budget waits for the next call unless it is the call's
+    /// first step (`SIM-02-K`).
     pub(super) fn run_census_steps<F>(
         &mut self,
         ctx: &CensusContext<'_, F>,
         logistics: &mut ShipmentSystem,
         progress: &mut CensusProgress,
-        mut budget: usize,
+        budget: u64,
     ) -> bool
     where
         F: Fn(usize, u32, &EconomyProfileRuntime) -> u32 + Sync,
@@ -300,7 +400,17 @@ impl JobFunding {
         #[cfg(test)]
         let _contract_phase = crate::debug::work::phases::enter("census");
         let timing = timing_category().enabled();
-        while progress.step != Step::Done && budget > 0 {
+        let mut left = budget;
+        while progress.step != Step::Done && left > 0 {
+            if left < budget
+                && progress.step.unsliced()
+                && progress
+                    .step
+                    .work(ctx.allocator.buildings.len(), ctx.households.len())
+                    > left
+            {
+                break;
+            }
             let started = timing.then(std::time::Instant::now);
             #[cfg(test)]
             let measured = std::time::Instant::now();
@@ -314,7 +424,11 @@ impl JobFunding {
                 measured.elapsed().as_nanos() as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
-            budget = budget.saturating_sub(used);
+            progress.used = progress.used.saturating_add(used);
+            if progress.step == step {
+                progress.step_used = progress.step_used.saturating_add(used);
+            }
+            left = left.saturating_sub(used);
             if progress.step == Step::Done && timing {
                 self.log_census(ctx, progress);
             }
@@ -322,27 +436,31 @@ impl JobFunding {
         progress.step == Step::Done
     }
 
-    // One step or slice; returns the rows it used.
+    // One step or slice within `budget` work units; returns the work units it used.
     fn census_step<F>(
         &mut self,
         ctx: &CensusContext<'_, F>,
         logistics: &mut ShipmentSystem,
         progress: &mut CensusProgress,
-        budget: usize,
-    ) -> usize
+        budget: u64,
+    ) -> u64
     where
         F: Fn(usize, u32, &EconomyProfileRuntime) -> u32 + Sync,
     {
         let buildings = ctx.allocator.buildings.len();
         let step = progress.step;
-        let whole = step.rows(buildings, ctx.households.len());
+        let whole = step.work(buildings, ctx.households.len());
+        // Rows of a uniform sliced step the budget covers, at least one.
+        let budget_rows = usize::try_from(budget / step.row_work().max(1))
+            .unwrap_or(usize::MAX)
+            .max(1);
         match step {
             Step::Routes => self.census_routes(ctx, logistics),
             Step::MarketBegin => self.census_market_begin(ctx, progress),
             Step::MarketChunks => {
                 let chunks = buildings.div_ceil(MARKET_CHUNK);
-                let slice = progress.slice(chunks, budget.div_ceil(MARKET_CHUNK));
-                let used = (slice.len() * MARKET_CHUNK).min(buildings);
+                let slice = progress.slice(chunks, budget_rows.div_ceil(MARKET_CHUNK));
+                let used = (slice.len() * MARKET_CHUNK).min(buildings) as u64 * step.row_work();
                 self.census_market_chunks(ctx, slice);
                 progress.finish_slice(chunks);
                 return used;
@@ -350,22 +468,29 @@ impl JobFunding {
             Step::MarketEnd => self.census_market_end(ctx, progress),
             Step::Customers => self.census_customers(ctx, progress),
             Step::Setup => self.census_setup(ctx, progress),
+            Step::HouseholdClaims | Step::CurrentStaff | Step::Expansion => {
+                let start = progress.cursor.min(buildings);
+                let (end, used) = if step == Step::HouseholdClaims {
+                    self.census_household_claims(ctx, logistics, start, budget)
+                } else {
+                    self.census_staffing(ctx, logistics, step == Step::CurrentStaff, start, budget)
+                };
+                progress.cursor = end;
+                progress.finish_slice(buildings);
+                return used;
+            }
             Step::Ceilings
             | Step::ImportFunding
-            | Step::HouseholdClaims
             | Step::SourceProduction
-            | Step::CurrentStaff
-            | Step::Expansion
             | Step::PublishActivity
             | Step::PublishProduction
             | Step::BusinessClaims
             | Step::BusinessProof => {
-                let rows = progress.slice(buildings, budget);
-                let used = rows.len();
+                let rows = progress.slice(buildings, budget_rows);
+                let used = rows.len() as u64 * step.row_work();
                 match step {
                     Step::Ceilings => self.census_ceilings(ctx, rows),
                     Step::ImportFunding => self.census_import_funding(ctx, rows),
-                    Step::HouseholdClaims => self.census_household_claims(ctx, rows),
                     Step::SourceProduction => self.reserve_household_production(
                         ctx.allocator,
                         ctx.catalog,
@@ -373,9 +498,6 @@ impl JobFunding {
                         true,
                         rows,
                     ),
-                    Step::CurrentStaff | Step::Expansion => {
-                        self.census_staffing(ctx, logistics, step == Step::CurrentStaff, rows)
-                    }
                     Step::PublishActivity => {
                         for index in rows {
                             self.input_supply.publish_funded_activity(
@@ -748,6 +870,12 @@ impl JobFunding {
             network,
             graph,
         );
+        // A refresh that reset the book ends the recorded quotes' validity now, not at setup:
+        // a census restarted before setup refreshes again, finds its inputs unchanged and
+        // would otherwise replay the previous census's quotes against the reset book.
+        if !progress.retained_customers {
+            self.household_quotes.forget();
+        }
     }
 
     fn census_setup<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &mut CensusProgress) {
@@ -1074,7 +1202,15 @@ impl JobFunding {
         }
     }
 
-    fn census_household_claims<F>(&mut self, ctx: &CensusContext<'_, F>, rows: Range<usize>) {
+    // Household claims from row `start` until the rows' work reaches `budget`; returns the
+    // row it stopped before and the work used. O(rows + their counted searches).
+    fn census_household_claims<F>(
+        &mut self,
+        ctx: &CensusContext<'_, F>,
+        logistics: &ShipmentSystem,
+        start: usize,
+        budget: u64,
+    ) -> (usize, u64) {
         let CensusContext {
             allocator,
             network,
@@ -1092,7 +1228,19 @@ impl JobFunding {
         let timing = timing_category().enabled();
         let household_census =
             household_claims::Census::new(allocator, catalog, fiscal, network, graph);
-        for index in rows {
+        let total = allocator.buildings.len();
+        let counted = counted_work(self, logistics);
+        let mut operations = 0_u64;
+        let work = |funding: &Self, rows: usize, operations: u64| {
+            rows as u64 * Step::HouseholdClaims.row_work()
+                + operations * WORK_WEIGHTS[7]
+                + counted_work(funding, logistics).wrapping_sub(counted)
+        };
+        for index in start..total {
+            let used = work(self, index - start, operations);
+            if used >= budget {
+                return (index, used);
+            }
             let building = &allocator.buildings[index];
             if !live(building) || self.service_flags[index] {
                 continue;
@@ -1192,6 +1340,7 @@ impl JobFunding {
             }
             #[cfg(test)]
             let staffing_start = timing.then(std::time::Instant::now);
+            operations += 1;
             (self.capacities[index], self.activities[index]) = funded_private_operation(
                 building,
                 profile,
@@ -1238,18 +1387,22 @@ impl JobFunding {
                 self.household_detail[2] += start.elapsed().as_secs_f64() * 1000.0;
             }
         }
+        (total, work(self, total - start, operations))
     }
 
     // Reserves current operations before offering inputs to prospective employees. Supplier
     // phases and building order remain stable within both dependent sweeps. Fully staffed
-    // operations already searched their complete range in the current-staff sweep.
+    // operations already searched their complete range in the current-staff sweep. Runs from
+    // supplier-order slot `start` until the slots' work reaches `budget`; returns the slot it
+    // stopped before and the work used. O(slots + their counted searches).
     fn census_staffing<F>(
         &mut self,
         ctx: &CensusContext<'_, F>,
         logistics: &mut ShipmentSystem,
         current_staff: bool,
-        rows: Range<usize>,
-    ) {
+        start: usize,
+        budget: u64,
+    ) -> (usize, u64) {
         let CensusContext {
             allocator,
             network,
@@ -1263,7 +1416,19 @@ impl JobFunding {
         let utilities = utilities(catalog, tuning);
         let household_census =
             household_claims::Census::new(allocator, catalog, fiscal, network, graph);
-        for slot in rows {
+        let total = allocator.buildings.len();
+        let counted = counted_work(self, logistics);
+        let mut operations = 0_u64;
+        let work = |funding: &Self, logistics: &ShipmentSystem, slots: usize, operations: u64| {
+            slots as u64 * Step::CurrentStaff.row_work()
+                + operations * WORK_WEIGHTS[7]
+                + counted_work(funding, logistics).wrapping_sub(counted)
+        };
+        for slot in start..total {
+            let used = work(self, logistics, slot - start, operations);
+            if used >= budget {
+                return (slot, used);
+            }
             let index = self.local_order[slot];
             let building = &allocator.buildings[index];
             if !live(building) {
@@ -1372,6 +1537,7 @@ impl JobFunding {
                 continue;
             }
             let mut headroom = self.headroom[index];
+            operations += 1;
             let operation = funded_private_operation(
                 building,
                 profile,
@@ -1407,6 +1573,7 @@ impl JobFunding {
                 );
             }
         }
+        (total, work(self, logistics, total - start, operations))
     }
 
     fn log_census<F>(&self, ctx: &CensusContext<'_, F>, progress: &CensusProgress) {

@@ -224,3 +224,101 @@ fn populated_census_step_costs() {
         })
     );
 }
+
+/// Diagnostic, not acceptance timing: the census of `METRUM_CENSUS_WINDOWS` windows (default
+/// 2) of a prepared `PERF-07` city (`METRUM_PERF_RESIDENTS`, `METRUM_PERF_CACHE`), stepped slot
+/// by slot apart from the rest of the slot's systems. Prints one `CENSUS_SLOTS` line a window:
+/// its slowest slots with their steps, the last slot with census work and the window total.
+#[test]
+#[ignore = "SIM-02-K census slot costs on a prepared PERF-07 city; run alone, release"]
+fn perf07_census_slot_costs() {
+    super::contract::timing_mode();
+    let residents = super::contract::residents();
+    let mut city = super::snapshot::load_snapshot(residents, &super::contract::cache_dir());
+    let core = &mut city.core;
+    core.time.speed_multiplier = 32.0;
+    let windows = env_u32("METRUM_CENSUS_WINDOWS", 2);
+    for window in 0..windows {
+        // Up to the last fill slot of the hour in progress.
+        let target =
+            (core.time.absolute_slot() / SLOTS_PER_HOUR) * SLOTS_PER_HOUR + SLOTS_PER_HOUR / 2 - 1;
+        let target = if core.time.absolute_slot() > target {
+            target + SLOTS_PER_HOUR
+        } else {
+            target
+        };
+        while core.time.absolute_slot() + 16 < target {
+            core.step_frame(FRAME_DT_S);
+        }
+        while core.time.absolute_slot() < target {
+            core.step_frame(FRAME_DT_S / 16.0);
+        }
+        assert_eq!(core.time.absolute_slot(), target);
+        let first = target + 1;
+        let mut slots = Vec::new();
+        let window_before = step_millis();
+        for slot in first..first + SLOTS_PER_HOUR / 2 {
+            let before = step_millis();
+            let started = std::time::Instant::now();
+            core.advance_census(slot);
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            let steps: Vec<(&str, f64)> = crate::simulation::economy::hiring::STEP_NAMES
+                .iter()
+                .zip(step_millis().iter().zip(&before))
+                .map(|(name, (after, before))| (*name, after - before))
+                .filter(|(_, ms)| *ms >= 0.05)
+                .map(|(name, ms)| (name, (ms * 100.0).round() / 100.0))
+                .collect();
+            slots.push((ms, slot % SLOTS_PER_HOUR, steps));
+        }
+        assert!(core.households.census_run.is_done());
+        let step_totals: serde_json::Map<_, _> = crate::simulation::economy::hiring::STEP_NAMES
+            .iter()
+            .zip(step_millis().iter().zip(&window_before))
+            .filter(|(_, (after, before))| *after - *before >= 0.01)
+            .map(|(name, (after, before))| {
+                (
+                    name.to_string(),
+                    serde_json::json!(((after - before) * 100.0).round() / 100.0),
+                )
+            })
+            .collect();
+        let total: f64 = slots.iter().map(|(ms, ..)| ms).sum();
+        let busy = slots.iter().filter(|(ms, ..)| *ms >= 0.05).count();
+        let last = slots
+            .iter()
+            .rev()
+            .find(|(ms, ..)| *ms >= 0.05)
+            .map_or(0, |(_, chunk, _)| *chunk);
+        let over_1 = slots.iter().filter(|(ms, ..)| *ms > 1.0).count();
+        let mut sorted: Vec<_> = slots.iter().collect();
+        sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let worst: Vec<_> = sorted[..12]
+            .iter()
+            .map(|(ms, chunk, steps)| {
+                serde_json::json!([(ms * 100.0).round() / 100.0, chunk, steps])
+            })
+            .collect();
+        eprintln!(
+            "CENSUS_SLOTS {}",
+            serde_json::json!({
+                "residents": residents,
+                "window": window,
+                "buildings": core.allocator.buildings.len(),
+                "households": core.households.households.len(),
+                "passes": core.households.census_run.funding().closure_passes,
+                "window_total_ms": (total * 100.0).round() / 100.0,
+                "slots_with_work": busy,
+                "last_slot_with_work": last,
+                "slots_over_1ms": over_1,
+                "max_ms": (sorted[0].0 * 100.0).round() / 100.0,
+                "step_ms": step_totals,
+                "worst": worst,
+            })
+        );
+        // Into the next hour, past the publication.
+        while core.time.absolute_slot() < first + SLOTS_PER_HOUR / 2 + 1 {
+            core.step_frame(FRAME_DT_S);
+        }
+    }
+}

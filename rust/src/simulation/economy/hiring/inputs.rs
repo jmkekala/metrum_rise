@@ -1032,14 +1032,14 @@ impl JobFunding {
             graph,
             catalog,
             tuning,
-            usize::MAX,
+            u64::MAX,
         );
         inputs.consume();
     }
 
-    /// Runs census steps on the front [`CensusInputs::prepare`] readied until `budget` rows
-    /// are used (`docs/simulation.md#pure-jobs`, `hiring/steps.rs`); returns whether the census
-    /// is done.
+    /// Runs census steps on the front [`CensusInputs::prepare`] readied until `budget` work
+    /// units are used (`docs/simulation.md#pure-jobs`, `hiring/steps.rs`); returns whether the
+    /// census is done.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn step_from_inputs(
         &mut self,
@@ -1049,7 +1049,7 @@ impl JobFunding {
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        budget: usize,
+        budget: u64,
     ) -> bool {
         let front = &inputs.front;
         let context = CensusContext {

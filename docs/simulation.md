@@ -17,7 +17,8 @@ permits on the published census; demand planning one zone type a slot) are done.
 job queues (part 2); the level-change, building-removal, departure and admission queues (part
 3). `SIM-02-K` is in progress: parts 1 (legacy hour and day paths deleted) and 2 (render
 snapshot) are done, and part 3's first commit (frame spikes: cells at load, entrance
-cache, first-frame pathing, timing-run checks) is done. See the
+cache, first-frame pathing, timing-run checks) and second commit (census slices in work units)
+are done. See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -674,9 +675,17 @@ about 90 MB of lanes at 100k after every road edit.
   front copy and the live network as resumable steps into a back `JobFunding`: routes and
   market setup, then for each closure pass import funding, household claims, source
   production, current staff, expansion, publication, repair, and business claims and proof.
-  A sliced step takes ceil(R / S) rows a slot, never a wall-clock budget: R is the rows left if
-  the current pass is the last, S the window slots left, and slot 959 takes the rest. The other
-  steps run whole in the slot they start in. Frontage prices publish when a census starts. A
+  Each slot's budget is in work units, a deterministic estimate of census work made from counts
+  alone, never from measured time (`SIM-02-K`): a step's rows at the step's weight and, in the
+  serial household-claim and staffing sweeps, the searches each row made (network route
+  searches, supplier searches, candidates and routes, input quotes, consumer candidates and
+  fallbacks, funded-operation searches). A uniform step takes the rows its budget covers; a
+  serial sweep stops at the row whose work reaches the budget. The budget is ceil(R / D): R the
+  previous census's total less the work used so far, or, if more, the rows left at their
+  weights with a sweep in progress at its observed rate; D = max(S − 96, S / 4, 1), S the window
+  slots left. The census so plans to finish 96 slots before the window ends; from S = 128 on,
+  work it did not plan for spreads over the slots left. Slot 959 takes the rest. The other
+  steps run whole and start only in a slot that has run no other step. Frontage prices publish when a census starts. A
   change of the network revisions (CCH build and metric, lanes, frontage) or of the building
   or household structure revisions restarts the census, even after it finished early; appends
   and in-place changes do not. A fiscal or service funding change also restarts it, after
@@ -832,13 +841,17 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    (see [Decided while unattended](#decided-while-unattended)); site queries that skip distant
    sites, with one gather per vehicle; parallel pose and bucketing. Planned saving about 5.5 ms
    at 1× and 6.5 ms at 32× at 100k; the 100k snapshot mean fell 5.9 ms at 1× and 7.8 ms at 32×.
-3. **K3, frame spikes** (first commit done 2026-10-20). Done: (a) generated cells built during
+3. **K3, frame spikes** (two commits done 2026-10-20). Done: (a) generated cells built during
    loading instead of by the first lot regions served (25–134 ms a region at 100k, all day), the
    entrance part of (c) (a removal keeps a clean entrance cache in step), (d) the route scratch
-   and flow fields built at load, and (e) test-build checks out of timing runs. Left for the next
-   K3 commit: (b) census slices, the zone-index part of (c) (kept as a decision), (d)'s first
-   trip events, and the clearance site publication. Every worst `PERF-07` frame of the K2 build
-   was attributed to its systems first (table in the results section).
+   and flow fields built at load, (e) test-build checks out of timing runs, and (b) for the
+   sliced census steps, now budgeted in work units (results section, part 3, second commit).
+   Left for the next K3 commit: the six census steps that still run whole (consumer-market
+   refresh, route quotes, business seeding, setup, input-source reset, repair), the first
+   census after loading's estimate, the clearance site publication (cause found: one merged
+   dirty box across all of a slot's site changes), and (d)'s first trip events. The zone-index
+   part of (c) stays as a decision. Every worst `PERF-07` frame of the K2 build was attributed
+   to its systems first (table in the results section).
 4. **K4, agent tick.** Lane buckets kept across appends and swap-removes instead of rebuilt each
    tick, filled in parallel; the unused per-edge `current_congestion` write removed; indoor agents
    off the per-frame movement pass (departures planned at their slot); movement shards balanced;
@@ -1887,6 +1900,111 @@ on a fresh `$ARTIFACTS` directory.
   so the isolated `./run.sh --test` ran: every bridge and asset test passes with no script
   errors.
 
+#### `SIM-02-K`, part 3 — census slices in work units (2026-10-20, second commit)
+
+- **What changed:** the funding census's slot budget counts work units instead of rows (see
+  [Pure jobs](#pure-jobs)). Slicing never changes a census's result.
+  - **Counters.** Three monotonic counters, read only by the census's slicer: the freight route
+    cache counts its network searches on a miss, the recurring supply its nearest-supplier
+    searches, candidates visited, routes priced and input quotes, and the consumer market the
+    households its claims visit and the trip fallbacks they try. Each is one integer add on a
+    path that already does the work; the census sums them with weights, O(1) a row.
+  - **Weights.** A temporary per-row profile of the three serial sweeps at 100k (the first window
+    after loading, 456,636 rows over two closure passes) found no row above 0.30 ms. A
+    least-squares fit of row time on the counts gave about 32 ns a row, 14.4 µs a network route
+    search, 2.2 µs a funded-operation search, 155 ns a staffing trial, 54 ns a consumer
+    candidate, 42 ns a supplier candidate and 33 ns a supplier route. The weights are rounded
+    from it (15,000, 2,000, 100 an input quote, 50, 40, 30 and 25 a row; 500 a supplier search,
+    5,000 a consumer fallback); the uniform steps' row weights come from their measured totals.
+  - **Plan.** R is the previous census's total less the work used, or the estimate of the work
+    left if larger; a serial sweep in progress prices its rows left at its observed rate.
+    D = max(S − 96, S / 4, 1). A first build without the observed rate and with D = max(S − 96,
+    1) crawled on the rows' estimate when the previous census underestimated, then spent 3–7 ms
+    a slot catching up at its planned last slots (859–864 at 100k); the observed rate and the
+    S / 4 tail remove most of that.
+  - **Unsliced steps** start only in a slot that has run no other step, so a slot holds at most
+    one of them.
+- **Fix found by the change:** a census restarted after the consumer-market refresh and before
+  setup replayed the previous census's household quotes against a reset customer book. The
+  refresh had reset the book (its inputs changed), but the recorded quotes were dropped only at
+  setup; the restarted refresh found its inputs unchanged and reported the book retained. The
+  refresh now drops the recorded quotes when it resets the book. Under row budgets the step after
+  the refresh usually ran in the same slot; once unsliced steps start in their own slots, the
+  existing sliced-and-restarted equivalence test (5 units a slice, restarted after the third
+  slice) caught it. The envelope is unchanged.
+- **Census cost per slot** (`perf07_census_slot_costs`, an ignored release test: the census of
+  two consecutive windows of the prepared `PERF-07` city stepped slot by slot without the slot's
+  other systems, `RAYON_NUM_THREADS=8`, pinned; diagnostic timing, not acceptance). Window 0 is
+  the first after loading, window 1 the next hour's. Before is the part 3 first commit:
+
+  | Tier | Window | Total ms | Max slot ms | Slots > 1 ms | Worst sliced-step slot ms | Last slot with work |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 100k | 0 | 144.0 → 143.8 | 21.6 → 21.5 | 17 → 19 | 20.4 → 2.8 | 952 → 936 |
+  | 100k | 1 | 91.4 → 101.3 | 14.6 → 11.0 | 16 → 8 | 14.6 → under 1 | 920 → 741 |
+  | 30k | 0 | 40.0 → 30.8 | 8.0 → 6.1 | 10 → 4 | 2.9 → 0.3 | 952 → 932 |
+  | 30k | 1 | 20.5 → 20.0 | 3.1 → 2.6 | 7 → 3 | 3.1 → 0.3 | 920 → 742 |
+
+  Every slot over 1 ms after the change is an unsliced step, except at 100k window 0, whose
+  census did about 1.6× the previous census's work (current staff 68 against 42 ms the next
+  hour) and caught up at 1.4–2.8 ms a slot at slots 924–925. The unsliced steps at 100k:
+  consumer-market refresh 11.0–21.5 ms, route quotes 1.5–10.3 ms (10.3 when the frontage prices
+  changed), business seeding 5.1–5.7, the input-source reset 3.5–5.2, setup 4.2–4.4, repair
+  2.0–3.8, propagation about 1.0; at 30k 0.9–6.1, 0.2–2.5, 1.6–2.6, 1.0–1.3, 0.5–1.4, 0.5–1.1
+  and 0.2.
+- **Window bound.** The census finishes inside its window by construction: slot 959's budget is
+  unbounded, and the publication at the next slot 0 runs whole a census that is missing,
+  unfinished or stale, as before, so no city can need more than the window. Measured, the last
+  slot with census work is 936 and 741 at 100k, 932 and 742 at 30k (of 480–959). A city with
+  more census work raises the per-slot budget in proportion instead of running past the window;
+  a census needing more than its plan spends the 96 slack slots and the S / 4 tail first, and
+  only what is left at slot 959 runs in one slice.
+- **Not done in this commit:** slicing the unsliced steps (options in
+  [Decided while unattended](#decided-while-unattended)); the clearance site publication (found:
+  one bounding box over every site change of the slot, see the same section).
+- **Equivalence:** the busy town's census in slices of 1 and 2,000 work units equals one run bit
+  for bit (`the_census_in_work_unit_slices_equals_one_run_on_its_copy`); the existing tests of
+  slices of 1, 5, 37 and 1,000 units with restarts, the stepped window with a network restart
+  and the save/load continuations pass.
+- **Envelope and determinism** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass; the envelope is
+  bit-identical to the first commit's, and repeat, 1 and 3 workers and save/reload are identical.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`), full day, each build
+  on its own prepared cities, in one session with the first commit as the control. Milliseconds
+  and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 9.5 (9.6) | 1.23 (1.25) | 1.45 (1.49) | 0.54 (0.54) | 2 (2) | 0 (0) |
+  | 10k | 32× | 10.6 (10.9) | 2.35 (2.53) | 4.93 (5.21) | 1.06 (1.04) | 2 (2) | 0 (0) |
+  | 30k | 1× | 20.9 (19.5) | 2.28 (2.28) | 3.48 (3.84) | 1.33 (1.30) | 6 (8) | 2 (2) |
+  | 30k | 32× | 25.5 (23.1) | 7.32 (8.47) | 22.94 (22.20) | 3.30 (3.25) | 21 (33) | 3 (3) |
+  | 100k | 1× | 60.9 (60.4) | 8.31 (8.44) | 16.35 (18.12) | 6.14 (6.10) | 1,454 (1,410) | 76 (133) |
+  | 100k | 32× | 81.7 (81.4) | 33.75 (36.49) | 76.16 (78.50) | 16.95 (16.78) | 2,700 (2,700) | 984 (662) |
+
+  Every gate limit passes. At 100k 1× the control's two census-window frames (minutes 517 and
+  529, 59.4 and 38.7 ms, 53.8 and 33.3 ms of slot work) are gone, frames over 16.7 ms fall from
+  133 to 76 and the p99.9 from 18.1 to 16.4 ms; the census window's worst frame is now its
+  start at minute 30 (28.8 ms, the control 28.5: route quotes and the consumer-market refresh,
+  unsliced). At 100k 32× the p99 falls from 36.5 to 33.8 ms and the p99.9 from 78.5 to 76.2 ms,
+  but frames over 16.7 ms rise from 662 to 984: the census now spreads over about 300 slots of
+  the window instead of about 60, adding about 3 ms to more frames whose ordinary cost (about
+  17 ms, the agent tick, `K4`) is already at the threshold. The maxima are the hour's planning
+  slots at every tier (`K5`); the 30k 1× and 32× maxima (20.9 and 25.5 ms against 19.5 and
+  23.1) are the 01:00 residential planning frame in both builds, within the run-to-run
+  variation the gate allows. Load time is unchanged (100k 18.5 s).
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the first commit's build
+  as control: hour means 2.59–2.63, 7.74–7.78, 10.43–10.75 and 30.78–31.45 ms (control
+  2.56–2.76, 7.66–7.68, 10.83–11.05 and 31.22–31.55); level, and the same six work-count limits
+  fail.
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1;
+  the control is the first commit's gate binary.
+- **Tests:** 2,536 release and 2,536 debug library tests and the 4 growth integration tests
+  pass; clippy adds nothing (the 59 warnings in `agents/data.rs` and `asset_document.rs`
+  remain); rustfmt adds nothing in the touched files. The change does not touch the Godot
+  bridge.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -2382,7 +2500,8 @@ alternatives and the evidence. The user reviews these on return.
   electricity funding and clock at slot 479. The census then runs over slots 480–959 and
   publishes at the next slot 0, so its copy is 31–60 minutes old when it publishes, where the
   census used to read the live city at :00.
-  The slicing budget counts rows (ceil(rows left / slots left)), never wall-clock time, so the
+  The slicing budget counts work units (rows at each step's weight plus the searches the claim
+  and staffing sweeps make; `SIM-02-K` part 3), never wall-clock time, so the
   steps are the same on any machine. Alternative: copy and census interleaved over the whole
   hour, 30 minutes fresher, but the census would read a copy still being filled. At 100k the
   window totals 98.8 ms over 480 slots, median 0.03 ms a slot (a diagnostic run, unpinned).
@@ -2583,7 +2702,8 @@ alternatives and the evidence. The user reviews these on return.
 - **`SIM-02-I` — census slices plan for the previous census's closure passes.** A census sliced
   assuming its current closure pass was the last left passes 2 and 3 to the window's last slots,
   and slot 959 took a whole pass. Slices now assume as many passes as the previous census took
-  (one before the first), so the remaining work spreads over the slots left; a census needing
+  (one before the first), so the remaining work spreads over the slots left (since `SIM-02-K`
+  part 3 the plan also takes the previous census's total work); a census needing
   more catches up at the end. Slicing never changes a census's result (the stepped-equals-one-run
   tests pass). Measured, `populated_census_step_costs` (release, eight workers, P-cores): at 10k
   a census needing two closure passes has its slowest slot at 1.07 ms (window slot 583; one run
@@ -3146,6 +3266,66 @@ alternatives and the evidence. The user reviews these on return.
   could start from the entrance of the building the first removal swap-removed. The cache now
   stays current. The envelope cities show no difference: a clearance needs an empty building,
   so its evacuation rarely moves anyone.
+
+- **`SIM-02-K` part 3 — census slices in work units.** Alternatives: budgets in staffing
+  operations and trials (a 20.6 ms slice had 2,408 trials and 973 network searches, a 16 ms
+  slice 6,576 trials and 93 searches, so they do not predict cost); wall-clock budgets
+  (forbidden: slices must not depend on the machine); the census as a pure job (it routes on the
+  live lanes and network, see [Pure jobs](#pure-jobs)); fixed row budgets per step (cost per
+  row varies by orders of magnitude within one step). Chosen: weighted counts of the searches
+  the census already makes, from release counters in the route cache, the supplier book and the
+  consumer market, with weights fitted to a per-row profile at 100k. Slicing reads only these
+  counts, so it is deterministic, and never changes a result. Evidence: at 100k the worst slot
+  of a sliced step fell from 20.4 to under 1 ms in the steady hour; the envelope is
+  bit-identical.
+- **`SIM-02-K` part 3 — the census's plan: the previous total, the observed rate and slack.**
+  Alternatives: a fixed budget per slot (a census finishes early, but at 32× a frame crosses
+  about 8.5 slots, so the census frames would carry 8.5 budgets); the rows left at their weights
+  alone (measured: a census heavier than its estimate crawled, then spent 3–7 ms a slot at its
+  planned last slots); a floor of about 0.25 ms a slot (dropped: it changed nothing at 100k and
+  made small towns' censuses finish in the window's first slots, so the restart tests no longer
+  saw a census in progress; spreading costs nothing). Chosen: R = max(previous total − used,
+  rows left at their weights with the sweep in progress at its observed rate), D = max(S − 96,
+  S / 4, 1). Remaining weakness: the first census after loading did 1.6× the previous one's work
+  at 100k and still caught up at 1.4–2.8 ms a slot near its end.
+- **`SIM-02-K` part 3 — the census spreads evenly at 32× too.** At 100k 32× the evenly spread
+  census raised the frames over 16.7 ms from 662 to 984 while lowering the p99 and p99.9.
+  Alternative: concentrate the census in fewer slots (a fixed budget a slot), which at 32× puts
+  about 8.5 budgets into each census frame and raises the worst census frames instead. Kept:
+  `PERF-07`'s target is the maximum, and the 32× frames at 100k exceed 8 ms on the agent tick
+  alone (`K4`), so the count over 16.7 ms is decided there.
+- **`SIM-02-K` part 3 — unsliced census steps start in their own slot.** A step that runs whole
+  starts only in a slot that ran nothing else, so no slot stacks two of them or one on top of a
+  sliced step.
+- **`SIM-02-K` part 3 — a reset customer book drops its recorded quotes at once.** See the fix in
+  the results section. Alternatives: make the refresh report the book not retained after a
+  restart (it would need to know a census was abandoned, which is the driver's state, not the
+  book's); clear the quotes at every census start (loses the cross-census replay the books keep
+  on purpose). Chosen: the book and its replay record change together.
+- **`SIM-02-K` part 3 — the unsliced census steps stay whole for now (findings).** At 100k: the
+  consumer-market refresh 11–22 ms (household budgets in order with a running treasury, access
+  rows, the reachable-household index rebuilt when membership changed, the claim reset), route
+  quotes 1.5–10 ms (border sweeps, building access and quotes, after any frontage price change),
+  business seeding 5–6 ms (one serial pass over buildings inside the business book's reset),
+  the input-source reset 3.5–5 ms, setup 4–4.5 ms (two serial passes building offsets and the
+  supplier order), repair 2–4 ms and propagation about 1 ms. Options, each a resumable form of
+  the step with its carried state in `CensusProgress`: budgets in household ranges carrying the
+  running treasury and the change flags, access rows in household ranges, one index category a
+  slice and the claim reset in ranges; one border sweep a slice, then access and quotes in
+  building ranges; business seeding in building ranges between a reset start and end; setup's
+  passes in building ranges carrying their counters. The step order and every result stay as
+  they are.
+- **`SIM-02-K` part 3 — the clearance site publication (findings).** Measured at 100k 32× over
+  the `PERF-07` day (temporary timing, one run): 53 site publications took over 0.3 ms; the
+  largest took 44.7, 22.3, 13.6, 10.7 and 9.9 ms, all of it in the terrain patch ownership refresh. Yard
+  publication took under 0.06 ms and the site query index was already current. The allocator
+  merges every site change of the slot into one bounding box, so two or three removals
+  kilometres apart refresh every render patch between them: boxes 3.2–5.1 km across, 32–132
+  patches, about 0.34 ms a patch. Each patch's ownership is a function of the roads, the sites
+  and the heightmap, so refreshing a patch no change touched reproduces its state. Option (no
+  gameplay change): keep one box per change, merging only boxes that overlap, and refresh the
+  union of their patches; the cost then follows the changed sites, O(changes × patches a site),
+  and patches far from every change are no longer re-uploaded. Not done: it needs its own gate.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

@@ -99,6 +99,9 @@ pub(crate) struct RecurringSupply {
     nearest_incumbents: Vec<Option<usize>>,
     #[cfg(test)]
     search_counts: [u64; 6],
+    // Nearest searches, candidates visited, routes priced and input quotes so far, which the
+    // funding census counts as work (`SIM-02-K`); monotonic, never read by any result.
+    work: [u64; 4],
     // Source handles below this are live buildings, the census's own and any appended since
     // (which hold no supply); prepared variants are numbered from here (`SIM-02-I`).
     source_base: usize,
@@ -115,6 +118,12 @@ impl RecurringSupply {
     #[cfg(test)]
     pub(crate) fn search_counts_for_test(&self) -> [u64; 6] {
         self.search_counts
+    }
+
+    /// Nearest searches, candidates visited, routes priced and input quotes made so far, for
+    /// the funding census's work units (`SIM-02-K`). Monotonic counters; O(1).
+    pub(crate) fn work_counts(&self) -> [u64; 4] {
+        self.work
     }
 
     /// Prepares temporary project owners outside input quotation loops.
@@ -1207,6 +1216,7 @@ impl RecurringSupply {
         routes: &mut FreightRouteCache,
         goods_multiplier: f32,
     ) -> InputSupplyCosts {
+        self.work[3] += 1;
         if input.daily_units > 0.0 && !goods_multiplier.is_finite() {
             return InputSupplyCosts {
                 goods: f64::INFINITY,
@@ -1393,7 +1403,6 @@ impl RecurringSupply {
             self.components
                 .as_ref()?
                 .entrance_components(entrance, graph, TransitFlags::CAR);
-        #[cfg(test)]
         let mut counts = [1, 0, 0, 0];
         // Reprice the preceding buyer's supplier as an initial upper bound. Every
         // candidate that can beat it is still checked, so this changes search cost,
@@ -1409,10 +1418,7 @@ impl RecurringSupply {
             {
                 return None;
             }
-            #[cfg(test)]
-            {
-                counts[2] += 1;
-            }
+            counts[2] += 1;
             let seconds =
                 self.source_route(source, buyer, entrance, allocator, network, graph, routes)?;
             Some((source, slot, seconds))
@@ -1430,10 +1436,7 @@ impl RecurringSupply {
                 entrance.door_pos.y,
                 |event| match event {
                     BoundedScanEvent::Item { item_idx: source } => {
-                        #[cfg(test)]
-                        {
-                            counts[1] += 1;
-                        }
+                        counts[1] += 1;
                         if Some(self.source_owner(source)) == buyer
                             || Some(self.source_owner(source)) == excluded
                             || best.is_some_and(|best| best.0 == source)
@@ -1466,10 +1469,7 @@ impl RecurringSupply {
                         if self.remaining[slot] <= 0.0 {
                             return true;
                         }
-                        #[cfg(test)]
-                        {
-                            counts[2] += 1;
-                        }
+                        counts[2] += 1;
                         let seconds = self.source_route(
                             source, buyer, entrance, allocator, network, graph, routes,
                         );
@@ -1505,10 +1505,7 @@ impl RecurringSupply {
                     | BoundedScanEvent::RingComplete {
                         next_min_distance_sq,
                     } => {
-                        #[cfg(test)]
-                        {
-                            counts[3] += 1;
-                        }
+                        counts[3] += 1;
                         best.is_none_or(|(_, _, seconds)| {
                             lower_bound_travel_seconds(next_min_distance_sq, self.max_speed)
                                 <= seconds
@@ -1518,6 +1515,9 @@ impl RecurringSupply {
             );
         }
         self.nearest_incumbents[resource as usize] = best.map(|(source, _, _)| source);
+        for (total, count) in self.work.iter_mut().zip(&counts[..3]) {
+            *total += count;
+        }
         #[cfg(test)]
         {
             for (total, count) in self.search_counts.iter_mut().zip(counts) {
