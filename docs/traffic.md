@@ -128,16 +128,23 @@ identities. New benchmark agents may still start with inactive defaults.
 
 ## Lane Buckets
 
-Each tick builds per-lane buckets containing `(lane_distance, agent_index)` sorted by distance.
-These buckets are the hot-path structure for:
+The buckets hold `(lane_distance, agent_index)` per lane, sorted by distance with an index
+tiebreak. The tick keeps them across ticks: the end of each tick fills them from every live lane
+agent on the shared pool (agents grouped by lane range in one pass over 4,096-agent chunks, then
+each lane range fills, sorts and overlap-corrects its own lanes in agent order), appended agents
+join at the next tick start, and swap-removes patch them in place (`SIM-02-K` part 4,
+[simulation.md](simulation.md#sim-02-k-part-4--agent-tick-2026-10-20-first-commit)). A bucket is
+sorted again after an overlap clamp, so the snapshot is always the function of the agents' state
+that a rebuild gives. These buckets are the hot-path structure for:
 
 - nearest-car-ahead gap lookup
 - connector entry slot checks
 - lane-change target gap checks
 - post-movement overlap correction
 
-The bucket fill is incremental over dirty lanes and reuses scratch buffers. This is required for
-the 1M-agent scale target; traffic logic must not allocate per agent in the tick hot path.
+The bucket fill reuses retained scratch buffers and allocates nothing per agent once they have
+grown. This is required for the 1M-agent scale target; traffic logic must not allocate per agent
+in the tick hot path.
 
 Active lane-changing cars are inserted into their target lane bucket and, before movement, also
 into their source lane bucket while the S-curve is still active. This lets cars in both lanes react
@@ -167,7 +174,8 @@ therefore have priority over connector/frontage arrivals for that tick. Reusing 
 reservation is allowed, including entry followed by a frontage detach.
 
 Each lane stores one owner index (`usize::MAX` when free), replacing the former boolean. On a
-64-bit target this adds seven bytes per retained lane; reset remains O(L) in retained lanes.
+64-bit target this adds seven bytes per retained lane; reset remains O(L) in retained lanes, in
+parallel 4,096-lane chunks from 65,536 lanes.
 Connector choices retain their existing `stable_index` algorithm and seeds.
 
 ## Car Following
@@ -526,7 +534,8 @@ the contract runs. Matched alternating process pairs remain reserved for milesto
 and claimed speedups. The short contract is run serially with no concurrent build or measurement;
 the 30-minute Criterion `agent_benchmark` is no longer a routine gate.
 
-Movement now owns route-query scratch by fixed contiguous agent ranges, retaining the existing
+Movement now owns route-query scratch by shards that each take every shards-th chunk of 256
+agents (`SIM-02-K` part 4), retaining the existing
 small-city serial threshold and separate ordered dynamic movement. Scoped TLS access restores
 the previous scratch on return or unwind; this preserves planner entry points while making
 memoization independent of which Rayon worker executes a range. Storage is prepared outside

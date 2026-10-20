@@ -1504,8 +1504,8 @@ changing counter attribution would have concealed the problem.
 **Deterministic routing work (2026-10-14).** Workplace searches now assign sorted key slices to
 retained query buffers rather than Rayon threads. Each parallel phase reads a frozen shared
 network-leg cache; ordered publication visits only changed local slots after the phase.
-Agent movement also assigns query scratch to fixed contiguous agent ranges, with separate
-storage for serial movement. Scoped TLS swaps preserve existing planner entry points and
+Agent movement also assigns query scratch to interleaved agent shards, one scratch each, with
+separate storage for serial movement. Scoped TLS swaps preserve existing planner entry points and
 restore the caller's scratch on return or unwind. Household reset discards workplace scratch
 and shared quotes. Scratch ownership and deferred publication add no per-query allocations;
 preparation and retained storage are bounded

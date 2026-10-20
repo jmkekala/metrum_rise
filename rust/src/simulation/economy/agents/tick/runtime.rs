@@ -23,10 +23,17 @@ pub(super) fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
     }
 }
 
-/// Dispatches fixed contiguous agent slices while assigning each slice an owned route scratch.
+/// Agents per chunk of the movement pass's interleaved shards.
+const MOVEMENT_CHUNK: usize = 256;
+
+/// Dispatches the agents in shards that each own a route scratch.
 ///
-/// Rayon may schedule a slice on any worker, so the scratch is owned by the slice rather than
-/// by a thread-local cache. The serial branch retains the existing small-population exception.
+/// Rayon may schedule a shard on any worker, so the scratch is owned by the shard rather than
+/// by a thread-local cache. A shard takes every `shards`-th chunk of [`MOVEMENT_CHUNK`] agents
+/// (`SIM-02-K` part 4): moving agents cluster in index ranges, so contiguous shards ran at
+/// 1.8× their mean, while interleaved ones each see the whole city's mix. Results never depend
+/// on the layout: a scratch only memoizes route storage. The serial branch retains the
+/// existing small-population exception.
 pub(super) fn dispatch_agents_with_owned_scratch<F: Fn(usize) + Send + Sync>(
     n: usize,
     shards: &mut [TripQueryScratch],
@@ -38,18 +45,21 @@ pub(super) fn dispatch_agents_with_owned_scratch<F: Fn(usize) + Send + Sync>(
         return;
     }
 
-    let shard_count = shards.len().min(n).max(1);
-    let chunk = n.div_ceil(shard_count);
+    let chunk_count = n.div_ceil(MOVEMENT_CHUNK);
+    let shard_count = shards.len().min(chunk_count).max(1);
     shards[..shard_count]
         .par_iter_mut()
         .enumerate()
         .for_each(|(shard_idx, scratch)| {
-            let start = shard_idx * chunk;
-            let end = (start + chunk).min(n);
-            if start < end {
-                TripQueryScratch::with_owned(scratch, || (start..end).for_each(&f));
-            }
+            TripQueryScratch::with_owned(scratch, || visit_shard(shard_idx, shard_count, n, &f));
         });
+}
+
+// Visits shard `shard_idx`'s chunks in index order.
+fn visit_shard(shard_idx: usize, shard_count: usize, n: usize, f: &impl Fn(usize)) {
+    for start in (shard_idx * MOVEMENT_CHUNK..n).step_by(shard_count * MOVEMENT_CHUNK) {
+        (start..(start + MOVEMENT_CHUNK).min(n)).for_each(f);
+    }
 }
 
 #[cfg(test)]
@@ -63,7 +73,7 @@ mod tests {
         pool.install(|| {
             let mut shards: Vec<_> = (0..3).map(|_| TripQueryScratch::default()).collect();
             let mut serial = TripQueryScratch::default();
-            for n in [0, 1, 499, 500, 501, 1003] {
+            for n in [0, 1, 499, 500, 501, 767, 768, 769, 1003] {
                 let visits: Vec<_> = (0..n).map(|_| AtomicUsize::new(0)).collect();
                 dispatch_agents_with_owned_scratch(n, &mut shards, &mut serial, |index| {
                     visits[index].fetch_add(1, Ordering::Relaxed);

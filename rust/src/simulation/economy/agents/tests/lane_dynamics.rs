@@ -472,3 +472,100 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         assert_eq!(agents.lane_buckets[lid], bucket, "lane {lid}");
     }
 }
+
+/// The occupancy snapshot kept across appends and swap-removes (`SIM-02-K` part 4) equals a
+/// rebuild from every agent, and the ticks after it move every agent as a rebuilt one does.
+/// Covers a covered agent leaving, an appended agent taking a covered agent's slot, the last
+/// agent leaving and an append read at the tick start.
+#[test]
+fn lane_buckets_kept_across_appends_and_swap_removes_equal_a_rebuild() {
+    let run = |rebuild: bool| {
+        let (mut network, mut graph, lanes) = build_two_edge_road(2, 0);
+        let mut agents = AgentSystem::new();
+        let mut allocator = BuildingAllocator::new();
+        let clock = test_clock(0, 0);
+        for k in 0..8 {
+            place_on_lane(&mut agents, 0, lanes[k % 2], 10.0 + 9.0 * k as f32, 8.0);
+            agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        }
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &clock);
+        agents.kill_agent(2, &mut allocator);
+        place_on_lane(&mut agents, 0, lanes[1], 4.0, 8.0);
+        agents.kill_agent(4, &mut allocator);
+        let last = agents.agents.len() - 1;
+        agents.kill_agent(last, &mut allocator);
+        place_on_lane(&mut agents, 0, lanes[0], 2.0, 8.0);
+        assert!(agents.lane_bucket_snapshot_valid);
+        assert_eq!(
+            agents.lane_bucket_snapshot_agent_count,
+            agents.agents.len() - 1
+        );
+        if rebuild {
+            agents.invalidate_lane_bucket_snapshot();
+        }
+        // Compares the snapshot with a rebuild from every agent.
+        agents.prepare_lane_buckets_for_test(&network);
+        let buckets: Vec<_> = lanes
+            .iter()
+            .map(|&lane| agents.lane_buckets[lane].clone())
+            .collect();
+        for _ in 0..6 {
+            agents.tick(&allocator, &mut network, &mut graph, 0.1, &clock);
+        }
+        let state: Vec<_> = (0..agents.agents.len())
+            .map(|i| {
+                (
+                    agents.transit[i],
+                    agents.current_lane_id[i],
+                    agents.lane_distance[i].to_bits(),
+                    agents.speed[i].to_bits(),
+                )
+            })
+            .collect();
+        (buckets, state)
+    };
+    assert_eq!(run(false), run(true));
+}
+
+/// The parallel bucket fill, its overlap correction and the movement after it give the same
+/// buckets, dirty-lane order and agent state with 1, 3 and 8 workers.
+#[test]
+fn parallel_lane_bucket_fill_is_independent_of_the_worker_count() {
+    let run = |threads: usize| {
+        let (mut network, mut graph, lanes) = build_two_edge_road(2, 0);
+        let mut agents = AgentSystem::new();
+        let allocator = BuildingAllocator::new();
+        for k in 0..1_500 {
+            if k % 3 == 0 {
+                agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+            } else {
+                place_on_lane(&mut agents, 0, lanes[k % 2], (k as f32 * 7.3) % 95.0, 6.0);
+            }
+        }
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            agents.prepare_lane_buckets_for_test(&network);
+            for _ in 0..3 {
+                agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+            }
+        });
+        let state: Vec<_> = (0..agents.agents.len())
+            .map(|i| (agents.current_lane_id[i], agents.lane_distance[i].to_bits()))
+            .collect();
+        (
+            lanes
+                .iter()
+                .map(|&lane| agents.lane_buckets[lane].clone())
+                .collect::<Vec<_>>(),
+            agents.dirty_lanes.clone(),
+            state,
+        )
+    };
+    let one = run(1);
+    assert!(one.0.iter().all(|bucket| bucket.len() > 100));
+    assert_eq!(one, run(3));
+    assert_eq!(one, run(8));
+}

@@ -19,7 +19,8 @@ job queues (part 2); the level-change, building-removal, departure and admission
 snapshot) are done, and part 3 (frame spikes) is done in four commits: the first (cells at
 load, entrance cache, first-frame pathing, timing-run checks), the second (census slices in
 work units), the third (clearance patches and census refresh slices) and the fourth (the
-census's whole steps in slices). See the
+census's whole steps in slices). Part 4 (agent tick) has its first commit done (lane buckets
+kept across appends and swap-removes, interleaved movement shards). See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -887,11 +888,15 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
 
    K3 closes with these left; `SIM-02-K` part 7 (acceptance) revisits them if they stand between
    a tier and the 8 ms limit.
-4. **K4, agent tick.** Lane buckets kept across appends and swap-removes instead of rebuilt each
-   tick, filled in parallel; the unused per-edge `current_congestion` write removed; indoor agents
-   off the per-frame movement pass (departures planned at their slot); movement shards balanced;
-   fewer agents in the serial handoff set; cheaper pose sampling. Saves about 3 ms at 1× and
-   7 ms at 32× at 100k together.
+4. **K4, agent tick** (first commit done 2026-10-20). Done: lane buckets kept across appends and
+   swap-removes instead of rebuilt each tick and filled on the pool; movement shards interleaved
+   (results section, part 4). Left: the unused per-edge `current_congestion` deleted (needs a
+   save bump); indoor agents off the per-frame movement pass (a departure wheel with wake
+   calls); fewer agents in the serial handoff set (changes a contested-lane tie-break, a
+   gameplay change); cheaper pose sampling; passes over every agent. Planned for all of K4:
+   about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4 and 2.5 ms. Part 5
+   (planning slots) runs before part 4's remaining items, because the planning slots set the
+   maximum at every tier.
 5. **K5, planning slots without city scans.** Per-zone lot lists, maintained workforce and
    market totals instead of the O(B + H) scans at slots 0–3 (`Cost::CityScan`), incremental
    downgrade candidates, the job board and destination index without their O(B) fallback
@@ -2308,6 +2313,188 @@ on a fresh `$ARTIFACTS` directory.
   only; the 59 warnings in `agents/data.rs` and `asset_document.rs` remain); rustfmt adds
   nothing in the touched lines. The change does not touch the Godot bridge.
 
+#### `SIM-02-K`, part 4 — agent tick (2026-10-20, first commit)
+
+- **Measured first** (temporary per-phase timing of the agent tick and of every slot system,
+  never committed; the prepared `PERF-07` cities, `RAYON_NUM_THREADS=8`, pinned to the
+  performance cores; 1× over the day's first 180 game minutes, 32× over the whole day; means
+  over ordinary frames, those without an hour slot; diagnostic, not acceptance). Part 3's
+  build, in ms per frame:
+
+  | Phase | 30k 1× | 30k 32× | 100k 1× | 100k 32× |
+  | --- | --- | --- | --- | --- |
+  | **Agent tick** | **0.73** | **1.69** | **4.67** | **9.62** |
+  | · tick-start bucket rebuild and claim reset | 0.03 | 0.24 | 0.26 | 1.18 |
+  | · IDM speed | 0.07 | 0.10 | 0.36 | 0.42 |
+  | · claim classification | 0.11 | 0.16 | 0.54 | 0.57 |
+  | · parallel movement | 0.24 | 0.54 | 1.75 | 3.63 |
+  | · serial Dynamic movement | 0.03 | 0.24 | 0.20 | 1.81 |
+  | · end-of-tick bucket rebuild and congestion | 0.25 | 0.31 | 1.54 | 1.62 |
+  | · frontage pass | 0.00 | 0.10 | 0.01 | 0.38 |
+  | Render snapshot | 0.31 | 0.58 | 0.81 | 0.91 |
+  | Slot work | 0.04 | 0.95 | 0.25 | 5.92 |
+  | Frame | 1.11 | 3.26 | 5.78 | 16.52 |
+
+  The slowest movement shard ran at 1.64–1.71× the shard mean at every tier and speed; the
+  serial Dynamic set held 128 / 893 / 568 / 4,400 agents.
+- **Lane buckets kept across appends and swap-removes.** The retained occupancy
+  snapshot was rebuilt from every agent at the start of any tick after an agent was appended or
+  swap-removed, which at 32× is every frame. Now:
+  - an appended agent is read at the next tick start, after its spawn call has placed it
+    (a carrier's plan, a border start); O(appended × bucket);
+  - a swap-remove patches the snapshot before the removal: the removed agent's entries go, and
+    the last agent's are renamed to its new index, or added if it was appended after the
+    snapshot; O(entries on their lanes);
+  - the household carrier, relocation and eviction mutators, which move an agent into a
+    building or onto an access leg, remove that agent's entries instead of invalidating;
+  - every other mutator of lane state between ticks still invalidates (building-reference
+    scrub, evacuation, road edits and reattachment, undo, load), and a patch that cannot find
+    an entry invalidates.
+
+  Entries are found from the agents' current lane state, which only the tick and the
+  invalidating mutators change (audited: the freight route changes move a carrier between
+  states that hold no entry). Test builds compare every patched snapshot with a rebuild from
+  every agent at the next tick, entry for entry, with the dirty-lane list and flags; timing
+  runs skip it with the other whole-city checks. A full rebuild at the tick start now happens
+  in 0.1–2.5% of frames (100k 1× and 32×).
+- **The end-of-tick fill on the pool.** One pass over 4,096-agent
+  chunks groups each chunk's lane agents by lane range; then each of 2 × workers contiguous lane
+  ranges clears its previous entries, fills its lanes chunk by chunk in agent order, sorts them
+  and corrects overlaps; ghosts and overlap write-backs are serial and O(their count). O(n + L)
+  work over the workers, no allocation once the retained groups have grown. Two rules make the
+  snapshot the function of the agents' state that a rebuild gives, which keeping it across ticks
+  needs:
+  - after an overlap clamp ties a rear car with a leader of lower index (both at the lane
+    start), the bucket is sorted again; before, the tie kept the pre-clamp order until the next
+    rebuild, so the order of tied cars depended on whether an agent was appended or removed in
+    that frame;
+  - lane-change ghosts are taken after the correction; before, the candidates were taken from
+    the uncorrected distances.
+
+  The test-build check found the first in the bridge suite's growing town at 32× (border
+  arrivals queued at a lane start); the envelope is bit-identical, so neither changed an
+  envelope outcome. The edge congestion sums
+  stay a serial pass in agent order (0.32–0.35 ms at 100k), so the `f32` sums are unchanged; the
+  claim reset runs in 4,096-lane chunks from 65,536 lanes.
+- **Movement shards interleaved.** Each of the worker-count shards takes every
+  shards-th chunk of 256 agents in index order with its own route scratch, instead of one
+  contiguous range: moving agents cluster in index ranges. The slowest shard falls from
+  1.64–1.71× to 1.11–1.38× the mean. A scratch only memoizes route storage, so results do not
+  depend on the layout, and its search counts stay repeatable for a worker count.
+- **After** (same measurement, this commit), ms per frame, part 3 in parentheses:
+
+  | Phase | 30k 1× | 30k 32× | 100k 1× | 100k 32× |
+  | --- | --- | --- | --- | --- |
+  | **Agent tick** | **0.56** (0.73) | **1.35** (1.69) | **3.24** (4.67) | **7.14** (9.62) |
+  | · tick-start bucket work and claim reset | 0.01 (0.03) | 0.02 (0.24) | 0.03 (0.26) | 0.05 (1.18) |
+  | · IDM speed | 0.06 (0.07) | 0.11 (0.10) | 0.31 (0.36) | 0.39 (0.42) |
+  | · claim classification | 0.08 (0.11) | 0.16 (0.16) | 0.51 (0.54) | 0.54 (0.57) |
+  | · parallel movement | 0.19 (0.24) | 0.48 (0.54) | 1.26 (1.75) | 2.86 (3.63) |
+  | · serial Dynamic movement | 0.03 (0.03) | 0.24 (0.24) | 0.21 (0.20) | 1.89 (1.81) |
+  | · end-of-tick fill and congestion | 0.18 (0.25) | 0.24 (0.31) | 0.90 (1.54) | 1.01 (1.62) |
+  | · · of it, the congestion pass | 0.07 | 0.08 | 0.32 | 0.34 |
+  | · frontage pass | 0.00 (0.00) | 0.10 (0.10) | 0.01 (0.01) | 0.39 (0.38) |
+  | Render snapshot | 0.26 (0.31) | 0.55 (0.58) | 0.77 (0.81) | 0.90 (0.91) |
+  | Slot work | 0.04 (0.04) | 0.94 (0.95) | 0.25 (0.25) | 5.96 (5.92) |
+  | Frame | 0.87 (1.11) | 2.90 (3.26) | 4.31 (5.78) | 14.07 (16.52) |
+  | Slowest shard / mean | 1.18 (1.64) | 1.38 (1.71) | 1.11 (1.71) | 1.24 (1.68) |
+
+  The plan estimated about 3 ms at 1× and 7 ms at 32× at 100k for all of part 4; these changes
+  save 1.4 and 2.5 ms. The items not done are below.
+- **Not done** (findings and options in [Decided while unattended](#decided-while-unattended)):
+  `current_congestion` deleted (0.32–0.35 ms at 100k: the serial congestion pass above), indoor
+  agents off the per-frame movement pass, fewer agents in the serial handoff set, cheaper pose
+  sampling, and an index so the per-agent passes skip agents that need nothing.
+- **Equivalence:** `lane_buckets_kept_across_appends_and_swap_removes_equal_a_rebuild` (a
+  covered agent leaving, an appended agent taking a covered slot, the last agent leaving, an
+  append read at the tick start; the snapshot equals a rebuild and six ticks after it move every
+  agent as from a rebuilt one, bit for bit) and
+  `parallel_lane_bucket_fill_is_independent_of_the_worker_count` (1,500 agents with overlapping
+  cars on two lanes: buckets, dirty-lane order and agent state equal with 1, 3 and 8 workers,
+  through three ticks of parallel movement); the dispatch test now covers chunk boundaries. The
+  test-build snapshot check ran in every library test, the envelope and the determinism runs.
+- **Envelope and determinism** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass; the
+  envelope is bit-identical to part 3's last commit, and repeat, 1 and 3 workers and
+  save/reload show no differences.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`), full day, both builds on
+  copies of the same prepared cities (save format unchanged), in one session with part 3 as the
+  control. Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 10k 1× | 9.5 (9.1) | 1.19 (1.24) | 1.44 (1.47) | 0.51 (0.54) | 1 (1) | 0 (0) |
+  | 10k 32× | 11.3 (10.6) | 2.16 (2.23) | 4.72 (5.07) | 0.96 (1.03) | 2 (2) | 0 (0) |
+  | 30k 1× | 19.1 (19.9) | 2.03 (2.25) | 2.91 (3.38) | 1.05 (1.29) | 4 (4) | 1 (1) |
+  | 30k 32× | 23.3 (22.1) | 6.38 (6.64) | 22.29 (21.34) | 3.00 (3.31) | 21 (20) | 3 (3) |
+  | 100k 1× | 54.7 (59.5) | 6.68 (8.19) | 11.48 (16.15) | 4.56 (6.03) | 298 (1,171) | 7 (73) |
+  | 100k 32× | 77.9 (80.8) | 30.86 (32.99) | 59.04 (58.66) | 14.31 (16.95) | 2,700 (2,700) | 383 (1,040) |
+
+  Every gate limit passes for both builds; load time is unchanged (100k 18.5–18.6 s). The
+  means fall 6–8% at 10k, 9–19% at 30k and 16–24% at 100k; at 100k 1× frames over 8 ms fall
+  from 1,171 to 298 and the p99 is 6.7 ms (8.2), and at 100k 32× frames over 16.7 ms from 1,040
+  to 383. The maxima are the hour's planning slots at every tier (minutes 60 and 120, `K5`), the
+  same frames in both builds within the run-to-run variation; the 100k 32× worst frames carry
+  6.2–10.7 ms of agent tick (control 8.8–10.0). Control: the gate binary of part 3's last
+  commit; this build ran right after it.
+
+- **`PERF-06`** (`benchmark_agent_tick_contract`, three alternating process pairs with part 3,
+  pinned, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`): every work count is identical to part 3's and
+  grows exactly 3× from 10k to 30k (lane counts 16). The single timed tick per tier, median
+  [range] ms, part 3 then part 4: network 0.21 [0.21–0.56] / 0.46 [0.25–0.87] at 10k and 0.65
+  [0.52–0.70] / 0.52 [0.47–0.68] at 30k; egress 0.49 [0.44–0.61] / 0.55 [0.48–1.06] and 1.33
+  [1.26–1.72] / 1.40 [1.23–1.42]; ingress 0.47 [0.22–0.49] / 0.27 [0.25–0.47] and 0.44
+  [0.42–0.59] / 0.50 [0.29–1.02]. The ranges overlap; these are routine regression signals, not
+  a speedup claim. The contract's fixture puts every agent on one lane, the parallel fill's
+  worst case (one range holds all entries), which may cost a few hundredths of a ms at 10k.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with part 3's last commit as
+  control: hour means 2.45–2.54, 7.55–7.67, 10.64–10.86 and 31.72–31.77 ms (control 2.54–2.56,
+  7.60–7.63, 10.33–10.43 and 31.24–31.80); level (the contract times economy slot work, which
+  this commit does not touch), and the same six work-count limits fail.
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1;
+  the per-phase tables on temporary timing builds of the same sources.
+- **Tests:** 2,540 release and 2,540 debug library tests and the 4 growth integration tests pass;
+  clippy adds nothing (the 59 warnings in `agents/data.rs` and
+  `asset_document.rs` remain); rustfmt adds nothing in the touched lines. The step changes no
+  code under `rust/src/nodes/` or GDScript; the isolated `./run.sh --test` ran anyway, since a
+  re-sorted tie can change a later movement: the 2,540 debug library tests, the 4 growth tests
+  and every headless bridge, asset and shader test pass with no script errors (run without a
+  display, so the rendered vegetation tests skip).
+- **Frame budget at 32×** (means over ordinary frames, after part 4; the maximum adds the
+  hour's planning slots, `K5`, and the departure waves):
+
+  | Tier | Agent tick | Snapshot | Slot work | Other | Frame | `PERF-07` max |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 30k 32× | 1.35 | 0.55 | 0.94 | 0.05 | 2.90 | 23.3 |
+  | 100k 32× | 7.14 | 0.90 | 5.96 | 0.07 | 14.07 | 77.9 |
+
+  Slot work at 100k 32× per ordinary frame (8.5 slots): restock requests 1.93, trip events
+  1.71, the census 1.00, building hours 0.25, household hours 0.24, freight requests 0.23, job
+  requests 0.21, agent hours 0.09, the demand snapshot 0.07, the rest under 0.05 each. At 30k
+  32×: trip events 0.25, the census 0.24, restock requests 0.19, building and household hours
+  0.06 each.
+
+  - **30k 32×** has room: an ordinary frame is 2.9 ms. Its maximum (about 24 ms) is the hour's
+    planning slots (`K5`), then the departure waves; 8 ms needs `K5` and the slots' worst
+    single items (census and queue slices) under about 4 ms in a frame.
+  - **100k 32×** does not: the mean ordinary frame alone is 14 ms, before any hour, wave or
+    census peak. For a worst frame of 8 ms at 8.5 slots a frame, every part would need about
+    half of today's mean at once: agent tick about 3.5 ms (today 7.1), slot work about 3.5 ms
+    (5.96), snapshot 0.9 ms, and no frame's slot or departure wave above the mean by more than
+    a few ms. The remaining agent-tick items save at most about 2–3 ms (below), so the agent
+    tick stays near 4.5–5 ms; restock planning (1.9 ms, serial CCH point searches) and trip
+    events (1.7 ms, about 1,500 serial events at 1.1 µs) are per-entity work proportional to
+    the simulated time a frame carries, not boundary work that spreading removes. About 45,000
+    of 145,000 agents are always moving in the 100k fixture (`K6`); in a city whose trips do
+    not stall, the moving set and the per-frame movement work would be smaller.
+  - **Conclusion:** 100k 32× cannot reach 8 ms without changing a spec decision. The options
+    are in [Decided while unattended](#decided-while-unattended) and
+    [Open questions](#open-questions), item 6. 30k at both speeds and 100k 1×
+    (4.3 ms ordinary frame, p99 6.7 ms, 298 frames over 8 ms) are within reach of `K5` and the
+    remaining slot and departure-wave peaks.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -2394,6 +2581,18 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
    generate the old share of the larger capacity, more than demand; after it falls, or a plant
    is removed or runs dry, meters still record the last hour's coverage; a city that had no
    capacity generates nothing in a new plant's first hour.
+6. **100k at 32× within 8 ms.** After part 4's first commit the ordinary 100k 32× frame averages
+   14.07 ms: agent tick 7.14, slot work 5.96 (restock requests 1.93, trip events 1.71, census
+   1.00, the rest about 0.2–0.25 each), snapshot 0.90. A frame carries about 8.5 slots of slot
+   work at 32×. A worst frame of 8 ms would need about 3.5 ms of agent tick plus 3.5 ms of slot
+   work with no peaks. Part 4's remaining items save at most 2–3 ms. Restock planning and trip
+   events are per-entity work that scales with the simulated time a frame carries. Options, all
+   of which change a decision of this document: a coarser simulation tier for distant agents; a
+   cap on simulated minutes per 32× frame (the clock slips behind real time); movement
+   sub-stepping; GPU compute (deferred by decision). Part 6 (the 100k traffic stalls: about
+   45,000 of 145,000 agents always moving) may shrink the problem and runs first. Part 7
+   decides under the stop rule: findings, options, `needs_revalidation`, stop for review. 30k at
+   both speeds and 100k at 1× remain within reach.
 
 ### Decided while unattended
 
@@ -3734,6 +3933,101 @@ alternatives and the evidence. The user reviews these on return.
   catch-up (1.3–1.8 ms at slots 910–930; its census did 68 ms of current-staff work against
   the previous census's 37, more than its own step's plan); and 0.3–1.8 ms of the window's
   first slot outside the steps (frontage price publication and the input copy's swap).
+- **`SIM-02-K` part 4 — the lane-bucket snapshot follows appends and swap-removes.**
+  Alternatives: a per-agent record of the lanes each agent's entries sit in (a reverse index,
+  eight bytes an agent more and a write per agent in every fill), rejected because entries can be
+  found from the agents' current lane state once every mutator between ticks either invalidates
+  or removes the agent's entries itself (audited, and checked against a rebuild after every
+  patch in test builds); patching at the insert, rejected because spawn calls place the agent
+  after inserting it; patching the remaining invalidating mutators too (building-reference
+  scrub, evacuation, road edits), not done: they touch many agents and are rare (a full rebuild
+  now runs in at most 2.5% of 32× frames at 100k).
+- **`SIM-02-K` part 4 — buckets sorted again after an overlap clamp, ghosts after the
+  correction.** A kept snapshot must be the function of the agents' state a rebuild gives. Before,
+  a clamp that tied two cars at the lane start kept them out of index order until the next
+  rebuild, and the next tick's gap and slot checks read whichever order the frame happened to
+  have (rebuilt when an agent had spawned or left). Alternative: keep the old order and rebuild
+  whenever it would differ, which is a rebuild every frame. The check found the tie in the
+  bridge suite's growing town (border arrivals queued at a lane start); the envelope is
+  bit-identical.
+- **`SIM-02-K` part 4 — the fill groups agents by lane range in one pass.** The first version
+  had each lane range scan every agent's key (O(n × ranges)), which saved only 0.1–0.2 ms at
+  100k and cost 0.08 ms at 30k 32×; grouping per 4,096-agent chunk first makes it O(n + L) and
+  the fill 0.6 ms at 100k (the old serial scan, sort and correction: about 1.3 ms). The
+  dirty-lane list is now ascending within each range (was first-touch agent order); only the
+  junction stall debug scan reads its order. Alternatives: a flat sort of every agent's
+  `(lane, distance, index)` (O(n log n), more work than the grouping), or a lane-major CSR
+  layout for the buckets (fewer allocations and cache misses, but it changes every bucket reader
+  and makes the swap-remove patch O(M)).
+- **`SIM-02-K` part 4 — movement shards interleave chunks of 256 agents, each with its own
+  scratch.** Alternatives: more shards than workers drawing scratch from a pool (Rayon work
+  stealing balances dynamic hot spots too, but the scratch serving an agent then depends on
+  scheduling, which makes the route-memo search counts vary between runs — the reason movement
+  scratch became owned by agent ranges on 2026-10-14, [`economy.md`](economy.md)); one scratch
+  per small shard (64+ scratches at several MB each at 100k). Interleaving balances the
+  structural imbalance (moving agents clustered by index) without either: 1.11–1.38× after
+  1.64–1.71×. What is left is random hot spots (trip plans at 32×).
+- **`SIM-02-K` part 4 — `current_congestion` kept (findings).** It is written each frame and
+  saved, and read only by tests and the road-edit copy. Deleting it removes the serial
+  congestion pass, 0.32–0.35 ms a frame at 100k and 0.06–0.08 ms at 30k, and the per-edge
+  scratch. It was not done in this part: it bumps `SAVE_VERSION` and the minimum, rewrites the
+  Kuopio fixture's `network_edges` and its hash in `placements.json`, touches about 40 files
+  (mostly test edges) and needs each build's own `PERF-07` cities, which did not fit the part's
+  timing session. Next: delete the field, the column, `set_edge_congestion`, the edge scratch and
+  the pass; the tests that assert congestion values go with it.
+- **`SIM-02-K` part 4 — indoor agents stay in the movement pass (findings).** About 61% of the
+  agents are indoors. An indoor agent with a cached departure that is not yet due costs a few
+  loads in each per-agent pass (claims, speed, dispatch, the fill's grouping), and one whose
+  departure is due plans its trip inside the parallel movement pass (CCH point searches; at 32×
+  about 50 plans and 40 commute estimates a frame at 100k, historical profile). An exact
+  departure wheel needs every writer of what `handle_in_building` reads to wake the agent: the
+  planned target (shopper, visit, freight and arrival dispatch), the home and work buildings,
+  the activity, the replan gate, the household and building-reference mutators, plus the
+  cached departure's own minute. That is a cross-system change through households, logistics,
+  hiring and the building store, and the departure would still be planned in a frame, so its
+  CCH cost moves rather than disappears unless the plans are batched (a pure job with CCH
+  buckets). Estimated saving at 100k: the per-pass visits of 70,000 indoor agents, about
+  0.3–0.5 ms a frame over claims, speed and dispatch, plus the 32× plan cost moved off the
+  movement pass's critical path. Option for `K4` follow-up: an active-agent list maintained by
+  the transit transitions and a departure wheel keyed by absolute minute, with the wake calls in
+  the lifecycle and household mutators; the departure stays in the same frame, so gameplay is
+  unchanged.
+- **`SIM-02-K` part 4 — the serial handoff set stays (findings).** At 100k 32× it holds 4,400
+  agents a frame (1.9 ms serial). Pedestrians cannot simply leave it: they reach lane ends and
+  claim connector entries like cars (`claim_connector_entry`), so their claim order matters.
+  Extending the minimum-index reservations to handoffs whose target lane is known at
+  classification (a single-candidate connector, a frontage detach, a car's egress attach) is
+  deterministic, but it changes which agent wins a contested lane: today the serial order lets a
+  lower-index agent take a lane as its fallback choice before a higher-index agent's first
+  choice; with reservations the reserver wins, as fixed lateral moves already do. That is a
+  gameplay change in tie-breaking only, for review before it lands.
+- **`SIM-02-K` part 4 — 100k 32× needs a spec decision (findings and options).** After part 4
+  an ordinary 100k 32× frame is 14.1 ms (agent tick 7.1, slot work 6.0, snapshot 0.9): one frame
+  carries 0.53 s of movement for about 45,000 moving agents and 8.5 slots of per-entity work.
+  Options, none implemented:
+  1. **A coarser tier for distant agents** (the spec's `Simulation tiers`): agents outside the
+     area of interest advance on their trip's planned time, not lane by lane, and join the
+     full tier when the camera or a road edit reaches them. It removes most of the agent tick
+     and of the trip events' per-frame cost at 100k, and is the project's stated scaling path.
+     Cost: the tier's systems, the hand-over rules, and the envelope at 100k.
+  2. **A cap on simulated time per frame at 32×** (for example 4 slots, 0.25 s): the frame stays
+     within budget and the clock slips when the work exceeds it, as an over-budget game does
+     today. Cheap and honest, but 32× is then not 32× at 100k.
+  3. **Movement sub-stepped over frames, slots over the frame's span**: run a 32× frame's movement
+     in two halves on alternating frames. Changes the movement step (`FRAME_DT_S × speed`),
+     which the time model fixes.
+  4. **GPU movement** (deferred by the 2026-10-15 decision): the per-agent passes are regular, but
+     the serial handoff set and the trip events are not, and the WGSL determinism caveats stand.
+  5. **Fix the 100k traffic stall first** (`K6`): if most of the 45,000 always-moving agents are
+     stalled trips, a healthy 100k city moves fewer agents a frame; measure before choosing.
+
+  Recommendation: `K6` first (it changes the size of the problem), then decide between 1 and 2
+  for 100k 32× (part 7 decides under the stop rule; see
+  [Open questions](#open-questions), item 6); 30k and 100k 1× need only `K5`.
+- **`SIM-02-K` — part 5 before part 4's remaining items.** After part 4's first commit the
+  maximum at every tier and speed is the hour's planning slots (19–23 ms at 30k, 55–78 ms at
+  100k), while part 4's remaining items save at most 2–3 ms of agent tick. Alternative: finish
+  part 4 first. Rejected, because it leaves every tier's maximum where it is.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

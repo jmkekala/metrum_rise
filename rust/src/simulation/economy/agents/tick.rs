@@ -50,6 +50,7 @@ pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
+pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use trip_failures::TripFailureLog;
 
 impl AgentSystem {

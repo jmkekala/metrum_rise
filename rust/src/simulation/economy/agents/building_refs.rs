@@ -51,6 +51,7 @@ impl AgentSystem {
         if agent_idx >= self.agents.len() {
             return;
         }
+        self.leave_lane_buckets(agent_idx);
         self.set_household_membership(agent_idx, household_id);
         self.agents.age_group[agent_idx] = age_group;
         self.agents.pending_household_size[agent_idx] = 0;
@@ -70,7 +71,6 @@ impl AgentSystem {
             self.agents.pos_y[agent_idx] = door.y;
         }
         self.clear_schedule_building_cache(agent_idx);
-        self.invalidate_lane_bucket_snapshot();
     }
 
     /// Updates a household member after their household relocates to a new home.
@@ -91,13 +91,13 @@ impl AgentSystem {
         }
 
         if old_home_live && self.agents.current_building[agent_idx] == old_home {
+            self.leave_lane_buckets(agent_idx);
             self.agents.current_building[agent_idx] = new_home;
             self.agents.target_building[agent_idx] = usize::MAX;
             self.agents.planned_target_building[agent_idx] = usize::MAX;
             self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
             self.agents.activity[agent_idx] = 0;
             self.clear_route_and_lane_state(agent_idx);
-            self.invalidate_lane_bucket_snapshot();
         } else {
             let mut needs_replan = false;
             if old_home_live && self.agents.target_building[agent_idx] == old_home {
@@ -156,12 +156,12 @@ impl AgentSystem {
         }
 
         if self.agents.current_building[agent_idx] == old_home {
+            self.leave_lane_buckets(agent_idx);
             self.agents.current_building[agent_idx] = usize::MAX;
             self.agents.target_building[agent_idx] = usize::MAX;
             self.agents.planned_target_building[agent_idx] = usize::MAX;
             self.agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
             self.clear_route_and_lane_state(agent_idx);
-            self.invalidate_lane_bucket_snapshot();
         } else {
             let mut needs_replan = false;
             if self.agents.target_building[agent_idx] == old_home {

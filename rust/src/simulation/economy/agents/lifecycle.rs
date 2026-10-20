@@ -366,10 +366,10 @@ impl AgentSystem {
     fn remove_agent_record(&mut self, index: usize, reason: &'static str) -> Option<(usize, usize)> {
         let last = self.agents.len() - 1;
         let moved_household = self.unlink_for_swap_remove(index);
+        self.swap_remove_lane_bucket_agent(index);
         self.handles.swap_remove(index, self.agents.len());
         self.agents.swap_remove(index);
         self.relink_after_swap_remove(index, moved_household);
-        self.invalidate_lane_bucket_snapshot();
         self.repair_inspection_after_remove(index, last, reason);
         if index != last {
             Some((last, index))
@@ -452,7 +452,7 @@ impl AgentSystem {
         self.agents.push(agent);
         self.handles.register_appended(self.agents.len());
         self.register_appended_household_members();
-        self.invalidate_lane_bucket_snapshot();
+        // The lane-bucket snapshot reads appended agents at the next tick (`SIM-02-K`).
         index
     }
 

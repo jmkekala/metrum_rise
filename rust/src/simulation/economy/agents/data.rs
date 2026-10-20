@@ -9,7 +9,7 @@
 
 use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
-use super::tick::{TripFailureLog, TripQueryScratch};
+use super::tick::{LaneBucketScratch, TripFailureLog, TripQueryScratch};
 use crate::simulation::core::handles::{Handle, HandleTable};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
@@ -203,12 +203,19 @@ pub struct AgentSystem {
     pub lane_bucket_live_agent_count: usize,
     /// Lane count represented by the retained occupancy snapshot.
     pub lane_bucket_snapshot_lane_count: usize,
-    /// Agent count represented by the retained occupancy snapshot.
+    /// Agents `0..count` the retained occupancy snapshot represents; agents appended after it
+    /// join at the next tick, and swap-removes patch it in place.
     pub lane_bucket_snapshot_agent_count: usize,
     /// True once `lane_buckets` matches the current authoritative lane state.
     pub lane_bucket_snapshot_valid: bool,
     /// Scratch list of agents whose active lane change also occupies their source lane.
     pub lane_change_ghost_agents: Vec<usize>,
+    /// Retained scratch of the parallel lane-bucket fill; derived state, never saved.
+    pub(crate) lane_bucket_scratch: LaneBucketScratch,
+    /// Test builds: the snapshot was patched since its last fill, so the next tick compares it
+    /// with a rebuild.
+    #[cfg(test)]
+    pub(crate) lane_bucket_patched: bool,
     /// Per-tick reservation owner by lane ID; `usize::MAX` means unclaimed.
     /// Fixed lateral moves choose the lowest agent index in parallel before dynamic handoffs.
     pub lane_claim_owner: Vec<AtomicUsize>,
@@ -298,6 +305,9 @@ impl AgentSystem {
             lane_bucket_snapshot_agent_count: 0,
             lane_bucket_snapshot_valid: false,
             lane_change_ghost_agents: Vec::new(),
+            lane_bucket_scratch: LaneBucketScratch::default(),
+            #[cfg(test)]
+            lane_bucket_patched: false,
             lane_claim_owner: Vec::new(),
             movement_claim_modes: Vec::new(),
             edge_speed_sum: Vec::new(),
