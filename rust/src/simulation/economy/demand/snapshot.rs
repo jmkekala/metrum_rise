@@ -518,7 +518,8 @@ impl DailyDemandSnapshot {
     ) -> Self {
         let demand_sink_rates_by_resource = demand_sink_rates_by_resource(catalog);
         let activity_terms = CommercialActivityTerms::new(catalog);
-        let totals = SnapshotTotals {
+        // Main-thread policy changes reach here outside any pool (CODE-17).
+        let totals = crate::thread_pools::install(|| SnapshotTotals {
             households: collect_household_snapshot_accumulator(
                 allocator, households, catalog, tuning, config,
             ),
@@ -551,7 +552,7 @@ impl DailyDemandSnapshot {
                     UnhousedWorkforce::of(household, allocator, catalog, tuning)
                 })
                 .collect(),
-        };
+        });
         let mut borders = Vec::new();
         collect_connected_border_nodes(graph, &mut borders);
         Self::compose(

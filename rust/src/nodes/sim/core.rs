@@ -71,6 +71,8 @@ pub(crate) use water_preview::{
 };
 
 #[cfg(test)]
+pub(crate) use road_commit::RoadCommitRequest;
+#[cfg(test)]
 use snapshot::pedestrian_lane_surface_height;
 #[cfg(test)]
 use state::{

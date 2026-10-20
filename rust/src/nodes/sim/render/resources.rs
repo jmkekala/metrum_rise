@@ -189,38 +189,41 @@ fn polygon_overlay_data(
     let texel_h_m = overlay_texel_step_m(target_h, bounds.height());
     let site_grid = PolygonMaskGrid::build(mask_sites, bounds);
 
-    let pixels: Vec<u8> = (0..target_h)
-        .into_par_iter()
-        .flat_map_iter(|z| {
-            let sites = mask_sites;
-            let site_grid = &site_grid;
-            let world_z = pixel_world_coord_in_bounds(z, target_h, bounds.min_y, bounds.max_y);
-            (0..target_w).map(move |x| {
-                let world_pos = Vector2::new(
-                    pixel_world_coord_in_bounds(x, target_w, bounds.min_x, bounds.max_x),
-                    world_z,
-                );
-                let mut alpha = 0.0_f32;
-                for &site_idx in site_grid.site_indices_for(world_pos) {
-                    let site = &sites[site_idx];
-                    if !site.contains(world_pos) {
-                        continue;
+    // Godot's main thread builds overlay images: shared pool (CODE-17).
+    let pixels: Vec<u8> = crate::thread_pools::install(|| {
+        (0..target_h)
+            .into_par_iter()
+            .flat_map_iter(|z| {
+                let sites = mask_sites;
+                let site_grid = &site_grid;
+                let world_z = pixel_world_coord_in_bounds(z, target_h, bounds.min_y, bounds.max_y);
+                (0..target_w).map(move |x| {
+                    let world_pos = Vector2::new(
+                        pixel_world_coord_in_bounds(x, target_w, bounds.min_x, bounds.max_x),
+                        world_z,
+                    );
+                    let mut alpha = 0.0_f32;
+                    for &site_idx in site_grid.site_indices_for(world_pos) {
+                        let site = &sites[site_idx];
+                        if !site.contains(world_pos) {
+                            continue;
+                        }
+                        alpha = alpha.max(pixel_soft_mask_alpha(
+                            world_pos,
+                            texel_w_m,
+                            texel_h_m,
+                            site.polygon,
+                            feather_m,
+                        ));
+                        if alpha >= 1.0 {
+                            break;
+                        }
                     }
-                    alpha = alpha.max(pixel_soft_mask_alpha(
-                        world_pos,
-                        texel_w_m,
-                        texel_h_m,
-                        site.polygon,
-                        feather_m,
-                    ));
-                    if alpha >= 1.0 {
-                        break;
-                    }
-                }
-                (alpha * 255.0).round() as u8
+                    (alpha * 255.0).round() as u8
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
     PackedByteArray::from_iter(pixels)
 }
 

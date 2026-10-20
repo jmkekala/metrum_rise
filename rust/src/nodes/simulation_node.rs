@@ -153,6 +153,7 @@ use std::time::Instant;
 
 mod agent_inspection_api;
 mod asset_api;
+mod async_jobs;
 mod async_terrain;
 mod building_lod_api;
 mod cell_zoning_api;
@@ -257,6 +258,8 @@ pub struct SimulationNode {
         Option<std::sync::mpsc::Receiver<crate::nodes::sim::core::RoadCommitAck>>,
     /// Bounded latest-input mailbox for the worker outside the simulation thread.
     pub(crate) road_preview_tx: RoadPreviewSender,
+    /// Road-preview worker thread, joined when the node is freed.
+    road_preview_worker: Option<std::thread::JoinHandle<()>>,
     /// Immutable context consumed by the road-preview worker.
     pub(crate) road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
     /// Latest completed road-tool preview from the dedicated preview worker.
@@ -276,6 +279,8 @@ pub struct SimulationNode {
         Option<crate::simulation::economy::agents::junction_stalls::JunctionStallDetector>,
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
+    /// Payload and mesh jobs in flight on Rayon's pool, waited for when the node is freed.
+    async_jobs: Arc<async_jobs::AsyncJobs>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
     pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
@@ -410,6 +415,35 @@ impl SimulationNode {
 #[godot_api]
 impl SimulationNode {}
 
+impl Drop for SimulationNode {
+    fn drop(&mut self) {
+        stop_workers(
+            &self.cmd_tx,
+            &mut self.road_preview_tx,
+            [self.sim_thread.take(), self.road_preview_worker.take()],
+            &self.async_jobs,
+        );
+    }
+}
+
+// Godot unloads the library soon after it frees its nodes. The node's threads and payload jobs
+// run extension code and may own the last `SimCore` reference, so they must end before the node
+// is gone, leaving its own reference to free the core (CODE-17).
+fn stop_workers(
+    commands: &std::sync::mpsc::Sender<SimCommand>,
+    road_preview: &mut RoadPreviewSender,
+    threads: [Option<std::thread::JoinHandle<()>>; 2],
+    jobs: &async_jobs::AsyncJobs,
+) {
+    let _ = commands.send(SimCommand::Stop);
+    road_preview.disconnect();
+    for thread in threads.into_iter().flatten() {
+        // A panicked thread already reported its panic; there is nothing left to stop.
+        let _ = thread.join();
+    }
+    jobs.wait();
+}
+
 #[godot_api]
 impl INode3D for SimulationNode {
     fn init(base: Base<Node3D>) -> Self {
@@ -464,7 +498,7 @@ impl INode3D for SimulationNode {
         let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
         let (road_preview_tx, road_preview_rx) = road_preview_channel();
         let core_arc = Arc::new(Mutex::new(core));
-        let _road_preview_thread = {
+        let road_preview_worker = {
             let core = Arc::clone(&core_arc);
             let context = Arc::clone(&road_preview_context);
             let result = Arc::clone(&road_preview_result);
@@ -492,6 +526,7 @@ impl INode3D for SimulationNode {
             road_commit_request_id: 0,
             road_commit_result: None,
             road_preview_tx,
+            road_preview_worker: Some(road_preview_worker),
             road_preview_context,
             road_preview_result,
             road_preview_checks: Default::default(),
@@ -502,6 +537,7 @@ impl INode3D for SimulationNode {
             junction_stalls: None,
             terrain_patch_payload_jobs,
             water_patch_payload_jobs,
+            async_jobs: Default::default(),
             road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,

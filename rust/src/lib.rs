@@ -22,15 +22,35 @@ pub mod config;
 pub mod debug;
 pub mod nodes;
 pub mod simulation;
+mod thread_pools;
 mod utils;
 
 struct MetrumRiseExtension;
 
 #[gdextension]
 unsafe impl ExtensionLibrary for MetrumRiseExtension {
-    fn on_level_init(level: InitLevel) {
-        if level == InitLevel::Core {
+    fn on_stage_init(stage: InitStage) {
+        if stage == InitStage::Core {
+            // First, before any extension code runs Rayon work: from here on that work runs in
+            // the shared pool, which the Scene deinit hook joins (CODE-17).
+            if !crate::thread_pools::disable_global_pool() {
+                godot_error!(
+                    "Rayon's global pool started before the extension disabled it; its threads \
+                     can outlive the library (CODE-17)"
+                );
+            }
             crate::debug::init();
+        }
+    }
+
+    // Godot deinitializes Scene after deleting the scene tree and unloads the library soon
+    // after, so a thread the extension started that still runs then executes unmapped code
+    // (CODE-17). Nodes join their own threads when freed; the shared Rayon pool and the
+    // process-wide watchdog stop here.
+    fn on_stage_deinit(stage: InitStage) {
+        if stage == InitStage::Scene {
+            crate::thread_pools::stop();
+            crate::debug::shutdown();
         }
     }
 }

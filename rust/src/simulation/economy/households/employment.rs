@@ -647,25 +647,28 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         // The activity floor stays as the hour pass set it: production at each building's phase
         // reads it until the next hour, and a load restores it.
-        let funded_capacity_by_building: Vec<Option<u32>> = allocator
-            .buildings
-            .par_iter()
-            .enumerate()
-            .map(|(building_idx, building)| {
-                let profile = active_work_profile(&catalog, building)?;
-                if profile.utility_service.as_deref() != Some(UTILITY_SERVICE_POWER) {
-                    return None;
-                }
-                // The same fiscal ceiling the funding census advertises to hiring (`ECON-17`).
-                let capacity = physical_worker_capacity_for_profile(building, profile);
-                Some(service_funded_worker_capacity(
-                    capacity,
-                    profile,
-                    building_idx,
-                    service_funding_by_building,
-                ))
-            })
-            .collect();
+        // Main-thread funding changes reach here outside any pool (CODE-17).
+        let funded_capacity_by_building: Vec<Option<u32>> = crate::thread_pools::install(|| {
+            allocator
+                .buildings
+                .par_iter()
+                .enumerate()
+                .map(|(building_idx, building)| {
+                    let profile = active_work_profile(&catalog, building)?;
+                    if profile.utility_service.as_deref() != Some(UTILITY_SERVICE_POWER) {
+                        return None;
+                    }
+                    // The same fiscal ceiling the funding census advertises to hiring (`ECON-17`).
+                    let capacity = physical_worker_capacity_for_profile(building, profile);
+                    Some(service_funded_worker_capacity(
+                        capacity,
+                        profile,
+                        building_idx,
+                        service_funding_by_building,
+                    ))
+                })
+                .collect()
+        });
         enforce_worker_capacities(
             &mut self.households,
             agents,

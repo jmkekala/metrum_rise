@@ -125,6 +125,11 @@ impl CchGraph {
     /// Recomputes directed metrics in O(profiles × (base transitions + lower triangles)).
     /// Independent profiles run with Rayon. Customization allocates no per-arc storage.
     pub fn customize(&mut self, graph: &RegionGraph) {
+        // A caller outside every pool customizes in the shared one (CODE-17).
+        crate::thread_pools::install(|| self.customize_in_pool(graph));
+    }
+
+    fn customize_in_pool(&mut self, graph: &RegionGraph) {
         self.metric_revision = self.metric_revision.wrapping_add(1);
         self.base_metric
             .par_iter_mut()

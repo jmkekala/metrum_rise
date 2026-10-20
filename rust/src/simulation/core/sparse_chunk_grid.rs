@@ -429,37 +429,40 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         let chunk_size = self.chunk_size;
         let (width, height) = (self.width, self.height);
         let default_value = self.default_value;
-        self.chunks.par_extend(
-            (0..chunk_rows * chunk_cols)
-                .into_par_iter()
-                .with_min_len(16)
-                .filter_map(|chunk_index| {
-                    let chunk_x = chunk_index % chunk_cols;
-                    let chunk_y = chunk_index / chunk_cols;
-                    let origin_x = chunk_x * chunk_size;
-                    let origin_y = chunk_y * chunk_size;
-                    let copy_w = (width - origin_x).min(chunk_size);
-                    let copy_h = (height - origin_y).min(chunk_size);
-                    let touched = (0..copy_h).any(|local_y| {
-                        let start = (origin_y + local_y) * width + origin_x;
-                        dense[start..start + copy_w]
-                            .iter()
-                            .any(|cell| *cell != default_value)
-                    });
-                    if !touched {
-                        return None;
-                    }
-                    let mut chunk = vec![default_value; chunk_len];
-                    for local_y in 0..copy_h {
-                        let src_start = (origin_y + local_y) * width + origin_x;
-                        let src_end = src_start + copy_w;
-                        let row = &dense[src_start..src_end];
-                        let dst_start = local_y * chunk_size;
-                        chunk[dst_start..dst_start + copy_w].copy_from_slice(row);
-                    }
-                    Some((Self::chunk_key(chunk_x, chunk_y), Arc::new(chunk)))
-                }),
-        );
+        // Main-thread water previews and loads reach here outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.chunks.par_extend(
+                (0..chunk_rows * chunk_cols)
+                    .into_par_iter()
+                    .with_min_len(16)
+                    .filter_map(|chunk_index| {
+                        let chunk_x = chunk_index % chunk_cols;
+                        let chunk_y = chunk_index / chunk_cols;
+                        let origin_x = chunk_x * chunk_size;
+                        let origin_y = chunk_y * chunk_size;
+                        let copy_w = (width - origin_x).min(chunk_size);
+                        let copy_h = (height - origin_y).min(chunk_size);
+                        let touched = (0..copy_h).any(|local_y| {
+                            let start = (origin_y + local_y) * width + origin_x;
+                            dense[start..start + copy_w]
+                                .iter()
+                                .any(|cell| *cell != default_value)
+                        });
+                        if !touched {
+                            return None;
+                        }
+                        let mut chunk = vec![default_value; chunk_len];
+                        for local_y in 0..copy_h {
+                            let src_start = (origin_y + local_y) * width + origin_x;
+                            let src_end = src_start + copy_w;
+                            let row = &dense[src_start..src_end];
+                            let dst_start = local_y * chunk_size;
+                            chunk[dst_start..dst_start + copy_w].copy_from_slice(row);
+                        }
+                        Some((Self::chunk_key(chunk_x, chunk_y), Arc::new(chunk)))
+                    }),
+            );
+        });
 
         Ok(())
     }

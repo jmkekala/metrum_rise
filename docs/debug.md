@@ -3,8 +3,8 @@
 This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-06`): the debug channels,
 the runtime visual modes, the junction connector overlay and stall detector, road rejection
 reports and their replay, the agent inspector, trip failure lines, the log format, the shared log, the always-on `events` channel, the Godot
-bridge, the in-game console and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
-flight recorder) are separate; this document lists only their launch flag.
+bridge, the in-game console, how the extension's threads stop before Godot unloads it, and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
+flight recorder) are separate; this document lists only their launch flag and how the watchdog stops.
 
 ## Overview
 
@@ -571,6 +571,65 @@ switched in the console therefore takes effect on the next frame or the next act
 that runs once at load, such as the lighting summary, does not repeat after a switch.
 `PerfDebug` keeps its 0.5 s summaries, logs them on `perf` and exposes the latest one as
 `PerfDebug.last_summary`.
+
+## Shutdown
+
+Godot unloads `libmetrum_rise.so` soon after it deletes the scene tree. A thread still running
+extension code at that point executes unmapped memory and the process dies with `SIGSEGV`
+(`CODE-17`). In the 2026-10-19 core dumps the thread was the road-preview worker: it was detached
+when `SimulationNode` was created, and after the node was freed it returned and dropped the last
+`SimCore` reference while the library unloaded. The `__backtrace` frames in those dumps belong to
+Godot's own crash handler, which faulted again while unwinding through the unmapped code. The
+extension installs no signal handlers; its only hooks are Rust panic hooks, which only the
+library's own code calls.
+
+Every thread the extension starts now ends before the library unloads:
+
+| Thread | Stopped by | Joined by |
+|--------|------------|-----------|
+| Simulation thread | `SimCommand::Stop`, sent when the node is freed; it runs the commands queued before it | `SimulationNode`'s drop |
+| Road-preview worker | Its request channel disconnecting when the node is freed; it finishes the running request | `SimulationNode`'s drop |
+| Preview Rayon pool (`road-preview-N`) and reclaim thread (`road-preview-reclaim`) | The worker returning; the reclaim thread frees what is queued first | The worker, before it returns |
+| Terrain and water payload jobs and water-mesh jobs | They run to completion | `SimulationNode`'s drop waits for them |
+| Shared Rayon pool (`metrum-N`) | The Scene-level deinit hook (`thread_pools::stop`), once its running and spawned work is done | The same hook |
+| Hang watchdog (`metrum-hang-watchdog`) | The Scene-level deinit hook (`debug::shutdown`) | The same hook |
+
+After that wait the node holds the only `SimCore` reference, so the core is freed on Godot's main
+thread, while the node is freed and before Godot deinitializes the extension.
+
+Rayon's global pool cannot be stopped or joined: after one full `run.sh --test` with the joins
+above, `growth_meter_test` still crashed on a global-pool worker caught in Rayon's idle spin
+(`yield_now`, round 13 of 32) when the library unmapped. The extension therefore never uses it.
+All of its Rayon work runs in one shared pool
+([`thread_pools.rs`](../rust/src/thread_pools.rs)), sized like the global pool
+(`RAYON_NUM_THREADS`, else one thread per logical CPU) and built on first use, in the game and in
+test binaries alike:
+
+- A thread outside every Rayon pool (Godot's main thread and `WorkerThreadPool`, the simulation
+  thread, a test thread) enters it through `thread_pools::install`, which blocks the caller as a
+  global-pool call does, or queues a job with `thread_pools::spawn`. Code already on a worker of
+  any pool runs inline, so nested entries cost nothing.
+- The functions that do the parallel work enter the pool themselves, not the `#[func]` bodies:
+  the frame step, the render snapshot, cell-chunk preparation, the road commit, undo and
+  bulldoze, loads and world resets, the routing rebuild, and leaf rebuilds such as the entrance
+  cache, site index, admission order, compile work, overlay images and car smoothing. Every caller,
+  tests and benchmarks included, takes the same path. The simulation thread keeps the core lock
+  while the work runs on a worker; a pool worker never waits for the core (`SIM-01`).
+- The road-preview worker keeps its own joined pool (`ROAD-38`).
+- When the library loads (the Core init stage), `thread_pools::disable_global_pool` spends
+  Rayon's one-time global initialization on a pool that cannot start. Any Rayon call outside the
+  shared pool then panics at its call site with "The global thread pool has not been
+  initialized" instead of starting threads that outlive the library.
+- At Scene deinit, after Godot has deleted the scene tree and every node has joined its own
+  threads, `thread_pools::stop` waits for entries in flight and spawned jobs, then joins the
+  workers. A later install runs on the caller.
+
+Two checks find a call that bypasses the pool. A panicked `#[func]` returns a default value and
+GDScript errors exit 0, so grep the Godot test logs for `global thread pool has not been
+initialized`. `bridge_entry_points_never_use_the_global_pool` re-runs the library test binary as a
+child process that disables its global pool and then drives a town's tools, a day of growth,
+saves and loads, world resets, a bulk-loaded city, the simulation thread, the preview worker and
+spawned jobs.
 
 ## Console
 

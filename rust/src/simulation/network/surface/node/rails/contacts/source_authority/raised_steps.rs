@@ -703,24 +703,27 @@ fn collect_source_group_contacts_with_reuse(
     }
     let computed_source_group_contacts =
         if source_group_misses.len() >= SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD {
-            source_group_misses
-                .par_iter()
-                .map_init(
-                    SourceContactGeometryScratch::default,
-                    |scratch, (key, source_constraint, group_index)| {
-                        (
-                            key.clone(),
-                            collect_source_authorized_contacts_for_source_group(
-                                piece_kind,
-                                source_constraint,
-                                &target_groups[*group_index],
-                                None,
-                                scratch,
-                            ),
-                        )
-                    },
-                )
-                .collect::<Vec<_>>()
+            // A node compile on Godot's main thread runs outside any pool (CODE-17).
+            crate::thread_pools::install(|| {
+                source_group_misses
+                    .par_iter()
+                    .map_init(
+                        SourceContactGeometryScratch::default,
+                        |scratch, (key, source_constraint, group_index)| {
+                            (
+                                key.clone(),
+                                collect_source_authorized_contacts_for_source_group(
+                                    piece_kind,
+                                    source_constraint,
+                                    &target_groups[*group_index],
+                                    None,
+                                    scratch,
+                                ),
+                            )
+                        },
+                    )
+                    .collect::<Vec<_>>()
+            })
         } else {
             let mut edge_clip_cache = BTreeMap::new();
             let mut geometry_scratch = SourceContactGeometryScratch::default();
@@ -1201,17 +1204,20 @@ fn generated_raised_step_source_contact_points_with_reuse(
         }
     }
     let computed_points = if misses.len() >= SOURCE_AUTHORITY_PARALLEL_PAIR_THRESHOLD {
-        misses
-            .par_iter()
-            .map(|(key, left, right)| {
-                (
-                    key.clone(),
-                    Arc::<[NodeRailPointKey]>::from(generated_source_constraint_contact_points(
-                        left, right,
-                    )),
-                )
-            })
-            .collect::<Vec<_>>()
+        // A node compile on Godot's main thread runs outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            misses
+                .par_iter()
+                .map(|(key, left, right)| {
+                    (
+                        key.clone(),
+                        Arc::<[NodeRailPointKey]>::from(
+                            generated_source_constraint_contact_points(left, right),
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
     } else {
         misses
             .iter()

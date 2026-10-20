@@ -300,14 +300,17 @@ impl SimCore {
             .copied()
             .collect::<HashSet<_>>();
         let agent_store = &self.agents.agents;
-        let agents = (0..agent_store.len())
-            .into_par_iter()
-            .filter(|&idx| {
-                !carrier_ids.contains(&idx)
-                    && Self::agent_record_touches_building(agent_store, idx, building_idx)
-            })
-            .map(|idx| (idx, agent_store.get(idx).expect("agent index").to_owned()))
-            .collect();
+        // Main-thread building edits reach here outside any pool (CODE-17).
+        let agents = crate::thread_pools::install(|| {
+            (0..agent_store.len())
+                .into_par_iter()
+                .filter(|&idx| {
+                    !carrier_ids.contains(&idx)
+                        && Self::agent_record_touches_building(agent_store, idx, building_idx)
+                })
+                .map(|idx| (idx, agent_store.get(idx).expect("agent index").to_owned()))
+                .collect()
+        });
         let removed_carriers = logistics
             .carrier_agent_ids
             .iter()
@@ -387,6 +390,11 @@ impl SimCore {
     /// Pops the last state snapshot from the undo stack and restores simulation state.
     /// Returns true if an action was undone.
     pub fn undo_action_internal(&mut self) -> bool {
+        // The restore's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.undo_action_in_pool())
+    }
+
+    fn undo_action_in_pool(&mut self) -> bool {
         if let Some(state) = self.undo_stack.pop_back() {
             if let Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)) = &state.runtime {
                 if !self.restore_cell_gesture_internal(edit) {

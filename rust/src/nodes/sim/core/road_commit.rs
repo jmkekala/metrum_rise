@@ -76,6 +76,16 @@ impl SimCore {
         &mut self,
         request: RoadCommitRequest,
         road_total: Instant,
+        edit_metrics: RoadEditMetrics,
+    ) -> RoadCommitOutcome {
+        // The commit's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| self.commit_road_in_pool(request, road_total, edit_metrics))
+    }
+
+    fn commit_road_in_pool(
+        &mut self,
+        request: RoadCommitRequest,
+        road_total: Instant,
         mut edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
         let RoadCommitRequest {

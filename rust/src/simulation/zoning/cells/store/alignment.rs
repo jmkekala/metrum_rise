@@ -233,10 +233,15 @@ impl CellStore {
             }
         }
         let cell_m = f64::from(config.zone_cell_m);
-        let roads: BTreeMap<_, _> = scope
-            .par_iter()
-            .filter_map(|&id| StraightRoad::new(graph.get_edge(id)?, cell_m).map(|road| (id, road)))
-            .collect();
+        // Main-thread border edits reach here outside any pool (CODE-17).
+        let roads: BTreeMap<_, _> = crate::thread_pools::install(|| {
+            scope
+                .par_iter()
+                .filter_map(|&id| {
+                    StraightRoad::new(graph.get_edge(id)?, cell_m).map(|road| (id, road))
+                })
+                .collect()
+        });
         // Old deleted parents still describe splits. Endpoint lookup is local and avoids
         // searching every saved road choice when children receive fresh graph indices.
         let mut old_at_node: HashMap<u32, Vec<(usize, RoadCellAlignment)>> = HashMap::new();

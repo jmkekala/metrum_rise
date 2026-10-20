@@ -64,14 +64,21 @@ impl NodeTriangulationSolution {
         let triangulated_regions = if arrangement.regions().len()
             >= PARALLEL_NODE_REGION_TRIANGULATION_MIN_ITEMS
         {
-            arrangement
-                .regions()
-                .par_iter()
-                .enumerate()
-                .map(|(region_index, region)| {
-                    triangulate_arrangement_region_for_solution(arrangement, region_index, region)
-                })
-                .collect::<Vec<_>>()
+            // A node compile on Godot's main thread runs outside any pool (CODE-17).
+            crate::thread_pools::install(|| {
+                arrangement
+                    .regions()
+                    .par_iter()
+                    .enumerate()
+                    .map(|(region_index, region)| {
+                        triangulate_arrangement_region_for_solution(
+                            arrangement,
+                            region_index,
+                            region,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
         } else {
             arrangement
                 .regions()

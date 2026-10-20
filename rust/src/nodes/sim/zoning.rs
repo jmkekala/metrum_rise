@@ -65,17 +65,20 @@ impl SimCore {
         if !self.cell_chunk_in_world(chunk) {
             return false;
         }
-        self.prepare_cell_site_queries();
-        if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
-            let allocator = &self.allocator;
-            let roads = &self.transit_network.road_surface;
-            let cell_m = self.config.zone_cell_m;
-            self.zoning
-                .generate_cells(&self.region_graph, bounds, |corners| {
-                    cell_site_blocked(allocator, roads, cell_m, corners)
-                });
-            self.zoning.cells.complete_generated_chunk(chunk, bounds);
-        }
+        // Site-index repair and cell generation are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.prepare_cell_site_queries();
+            if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
+                let allocator = &self.allocator;
+                let roads = &self.transit_network.road_surface;
+                let cell_m = self.config.zone_cell_m;
+                self.zoning
+                    .generate_cells(&self.region_graph, bounds, |corners| {
+                        cell_site_blocked(allocator, roads, cell_m, corners)
+                    });
+                self.zoning.cells.complete_generated_chunk(chunk, bounds);
+            }
+        });
         true
     }
 

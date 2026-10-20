@@ -560,42 +560,45 @@ pub(super) fn paint_at(
     let first = cell_at(pos - Vector2::splat(radius), VegetationLayer::Canopy, step);
     let last = cell_at(pos + Vector2::splat(radius), VegetationLayer::Canopy, step);
     let nx = last.x - first.x + 1;
-    let mut plans: Vec<_> = (0..cells.len() * ATTEMPTS)
-        .into_par_iter()
-        .filter_map(|i| {
-            let x = first.x + (i / ATTEMPTS) as i32 % nx;
-            let z = first.z + (i / ATTEMPTS) as i32 / nx;
-            let attempt = i % ATTEMPTS;
-            let (mut plant, salt) = dart(x, z, attempt, class, seed);
-            let clump = 0.25
-                + 1.5
-                    * crate::simulation::vegetation::value_noise(
-                        plant.x / 40.0,
-                        plant.z / 40.0,
-                        layer_base(0x51a7_32b9, seed),
-                    );
-            let rank = preset.rank(x, z, salt, clump * influence(&plant, pos, radius));
-            if rank.is_nan() || rank >= 1.0 {
-                return None;
-            }
-            (plant.species, plant.variant) = preset.plant(x, z, salt);
-            plant.scale = preset.size(plant.scale);
-            if !authored_clear(core, &plant) {
-                return None;
-            }
-            Some(Proposal {
-                owner: cell_at(
-                    Vector2::new(plant.x, plant.z),
-                    VegetationLayer::Canopy,
-                    owner_step,
-                ),
-                plant,
-                restore: None,
-                // A non-negative float orders like its bit pattern.
-                order: (1, rank.to_bits(), class as u8, z, x, attempt),
+    // Godot's main thread paints with the brush: shared pool (CODE-17).
+    let mut plans: Vec<_> = crate::thread_pools::install(|| {
+        (0..cells.len() * ATTEMPTS)
+            .into_par_iter()
+            .filter_map(|i| {
+                let x = first.x + (i / ATTEMPTS) as i32 % nx;
+                let z = first.z + (i / ATTEMPTS) as i32 / nx;
+                let attempt = i % ATTEMPTS;
+                let (mut plant, salt) = dart(x, z, attempt, class, seed);
+                let clump = 0.25
+                    + 1.5
+                        * crate::simulation::vegetation::value_noise(
+                            plant.x / 40.0,
+                            plant.z / 40.0,
+                            layer_base(0x51a7_32b9, seed),
+                        );
+                let rank = preset.rank(x, z, salt, clump * influence(&plant, pos, radius));
+                if rank.is_nan() || rank >= 1.0 {
+                    return None;
+                }
+                (plant.species, plant.variant) = preset.plant(x, z, salt);
+                plant.scale = preset.size(plant.scale);
+                if !authored_clear(core, &plant) {
+                    return None;
+                }
+                Some(Proposal {
+                    owner: cell_at(
+                        Vector2::new(plant.x, plant.z),
+                        VegetationLayer::Canopy,
+                        owner_step,
+                    ),
+                    plant,
+                    restore: None,
+                    // A non-negative float orders like its bit pattern.
+                    order: (1, rank.to_bits(), class as u8, z, x, attempt),
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
     // Only tombstones propose generator positions. Empty generator slots no longer add a
     // second lattice to the brush, and restore/replacement retains the original exact site.
     for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
@@ -603,51 +606,53 @@ pub(super) fn paint_at(
             continue;
         }
         let (cell_m, salt) = grid(core, layer);
-        let restores: Vec<_> = disc_cells(pos, radius, cell_m, layer)
-            .filter_map(|cell| {
-                if !core.vegetation_edits.cell(cell).0 {
-                    return None;
-                }
-                let [x, z, yaw, scale] = candidate(cell.x, cell.z, cell_m, salt);
-                let (species, variant) = preset.plant(cell.x, cell.z, salt);
-                let authored = Plant {
-                    x,
-                    z,
-                    yaw,
-                    scale: preset.size(scale),
-                    species,
-                    variant,
-                };
-                if !in_disc(&authored, pos, radius) {
-                    return None;
-                }
-                let generated = evaluate_cell(core, cell, cell_m, salt);
-                if layer == VegetationLayer::Understory
-                    && generated.is_none_or(|p| PlantClass::of(p.species, p.variant) != class)
-                {
-                    return None;
-                }
-                let restore =
-                    generated.filter(|p| p.species == species && variant == VARIANT_FROM_SEED);
-                let plant = restore.unwrap_or(authored);
-                if !authored_clear(core, &plant) {
-                    return None;
-                }
-                Some(Proposal {
-                    plant,
-                    owner: cell_at(Vector2::new(x, z), VegetationLayer::Canopy, owner_step),
-                    restore: restore.map(|_| cell),
-                    order: (
-                        0,
-                        hash(cell.x, cell.z, salt.wrapping_add(10)),
-                        layer as u8,
-                        cell.z,
-                        cell.x,
-                        0,
-                    ),
+        let restores: Vec<_> = crate::thread_pools::install(|| {
+            disc_cells(pos, radius, cell_m, layer)
+                .filter_map(|cell| {
+                    if !core.vegetation_edits.cell(cell).0 {
+                        return None;
+                    }
+                    let [x, z, yaw, scale] = candidate(cell.x, cell.z, cell_m, salt);
+                    let (species, variant) = preset.plant(cell.x, cell.z, salt);
+                    let authored = Plant {
+                        x,
+                        z,
+                        yaw,
+                        scale: preset.size(scale),
+                        species,
+                        variant,
+                    };
+                    if !in_disc(&authored, pos, radius) {
+                        return None;
+                    }
+                    let generated = evaluate_cell(core, cell, cell_m, salt);
+                    if layer == VegetationLayer::Understory
+                        && generated.is_none_or(|p| PlantClass::of(p.species, p.variant) != class)
+                    {
+                        return None;
+                    }
+                    let restore =
+                        generated.filter(|p| p.species == species && variant == VARIANT_FROM_SEED);
+                    let plant = restore.unwrap_or(authored);
+                    if !authored_clear(core, &plant) {
+                        return None;
+                    }
+                    Some(Proposal {
+                        plant,
+                        owner: cell_at(Vector2::new(x, z), VegetationLayer::Canopy, owner_step),
+                        restore: restore.map(|_| cell),
+                        order: (
+                            0,
+                            hash(cell.x, cell.z, salt.wrapping_add(10)),
+                            layer as u8,
+                            cell.z,
+                            cell.x,
+                            0,
+                        ),
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        });
         plans.extend(restores);
     }
     if plans.is_empty() {

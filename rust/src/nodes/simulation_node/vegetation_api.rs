@@ -417,39 +417,42 @@ pub(crate) fn plant_at(core: &SimCore, pos: Vector2) -> Option<(PlantTarget, f32
     let mut best = None;
     for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
         let (cell_m, salt) = grid(core, layer);
-        let nearest = disc_cells(pos, PICK_RADIUS_M, cell_m, layer)
-            .enumerate()
-            .filter_map(|(cell_order, cell)| {
-                let (removed, added) = core.vegetation_edits.cell(cell);
-                let generated = if removed {
-                    None
-                } else {
-                    evaluate_cell(core, cell, cell_m, salt)
-                };
-                generated
-                    .iter()
-                    .map(|p| (0, p))
-                    .chain(added.iter().enumerate().map(|(i, p)| (i + 1, p)))
-                    .filter(|(order, p)| {
-                        in_disc(p, pos, PICK_RADIUS_M)
-                            && (*order == 0 || placement::authored_clear(core, p))
-                    })
-                    .map(|(order, p)| {
-                        let distance = (p.x - pos.x).powi(2) + (p.z - pos.y).powi(2);
-                        (
-                            distance,
-                            cell_order,
-                            order,
-                            PlantTarget {
-                                cell,
-                                generated: order == 0,
-                                plant: *p,
-                            },
-                        )
-                    })
-                    .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        // Godot's main thread picks plants under the cursor: shared pool (CODE-17).
+        let nearest = crate::thread_pools::install(|| {
+            disc_cells(pos, PICK_RADIUS_M, cell_m, layer)
+                .enumerate()
+                .filter_map(|(cell_order, cell)| {
+                    let (removed, added) = core.vegetation_edits.cell(cell);
+                    let generated = if removed {
+                        None
+                    } else {
+                        evaluate_cell(core, cell, cell_m, salt)
+                    };
+                    generated
+                        .iter()
+                        .map(|p| (0, p))
+                        .chain(added.iter().enumerate().map(|(i, p)| (i + 1, p)))
+                        .filter(|(order, p)| {
+                            in_disc(p, pos, PICK_RADIUS_M)
+                                && (*order == 0 || placement::authored_clear(core, p))
+                        })
+                        .map(|(order, p)| {
+                            let distance = (p.x - pos.x).powi(2) + (p.z - pos.y).powi(2);
+                            (
+                                distance,
+                                cell_order,
+                                order,
+                                PlantTarget {
+                                    cell,
+                                    generated: order == 0,
+                                    plant: *p,
+                                },
+                            )
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)))
+        });
         if let Some((distance, _, _, plant)) = nearest {
             // Strict replacement retains canopy first on a cross-layer distance tie.
             if best.is_none_or(|(best_distance, _)| distance < best_distance) {
@@ -481,18 +484,21 @@ pub(crate) fn remove_at(core: &mut SimCore, pos: Vector2, radius: f32, stroke: i
         let (cell_m, salt) = grid(core, layer);
         // Read-only parallel planning never allocates inside a candidate body. Serialized
         // commits preserve deterministic authored order and exclusive indexed-store ownership.
-        let plans: Vec<_> = disc_cells(pos, radius, cell_m, layer)
-            .map(|cell| {
-                let (tombstoned, added) = core.vegetation_edits.cell(cell);
-                let generated = if tombstoned {
-                    None
-                } else {
-                    evaluate_cell(core, cell, cell_m, salt).filter(|p| in_disc(p, pos, radius))
-                };
-                (generated.is_some() || added.iter().any(|p| in_disc(p, pos, radius)))
-                    .then_some((cell, generated))
-            })
-            .collect();
+        // Godot's main thread erases with the brush: shared pool (CODE-17).
+        let plans: Vec<_> = crate::thread_pools::install(|| {
+            disc_cells(pos, radius, cell_m, layer)
+                .map(|cell| {
+                    let (tombstoned, added) = core.vegetation_edits.cell(cell);
+                    let generated = if tombstoned {
+                        None
+                    } else {
+                        evaluate_cell(core, cell, cell_m, salt).filter(|p| in_disc(p, pos, radius))
+                    };
+                    (generated.is_some() || added.iter().any(|p| in_disc(p, pos, radius)))
+                        .then_some((cell, generated))
+                })
+                .collect()
+        });
         let changed_cells = plans.iter().flatten().count();
         if changed_cells == 0 {
             continue;
@@ -555,27 +561,30 @@ pub(crate) fn scatter_layer(
     }
     // Indexed collect preserves generator order regardless of Rayon scheduling. Edited patches
     // add one lookup per cell; neither branch allocates in the parallel per-cell body.
-    let records: Vec<_> = (0..nx * nz)
-        .into_par_iter()
-        .map(|i| {
-            let cell = VegetationCell {
-                layer,
-                x: x0 + i % nx,
-                z: z0 + i / nx,
-            };
-            let (removed, added): (bool, &[Plant]) = if edited {
-                core.vegetation_edits.cell(cell)
-            } else {
-                (false, &[])
-            };
-            let generated = if removed {
-                None
-            } else {
-                evaluate_cell(core, cell, cell_m, salt)
-            };
-            (generated, added)
-        })
-        .collect();
+    // Godot's main thread asks for patches: shared pool (CODE-17).
+    let records: Vec<_> = crate::thread_pools::install(|| {
+        (0..nx * nz)
+            .into_par_iter()
+            .map(|i| {
+                let cell = VegetationCell {
+                    layer,
+                    x: x0 + i % nx,
+                    z: z0 + i / nx,
+                };
+                let (removed, added): (bool, &[Plant]) = if edited {
+                    core.vegetation_edits.cell(cell)
+                } else {
+                    (false, &[])
+                };
+                let generated = if removed {
+                    None
+                } else {
+                    evaluate_cell(core, cell, cell_m, salt)
+                };
+                (generated, added)
+            })
+            .collect()
+    });
     let capacity = records
         .iter()
         .map(|(generated, added)| usize::from(generated.is_some()) + added.len())
@@ -588,11 +597,13 @@ pub(crate) fn scatter_layer(
     // cleared inside evaluate_cell, so only the authored ones are tested here: one parallel pass
     // and one allocation for the whole patch, and neither for a patch with no authored plant.
     let clearances: Vec<bool> = if records.iter().any(|(_, added)| !added.is_empty()) {
-        records
-            .par_iter()
-            .flat_map_iter(|(_, added)| added.iter())
-            .map(|plant| placement::authored_clear(core, plant))
-            .collect()
+        crate::thread_pools::install(|| {
+            records
+                .par_iter()
+                .flat_map_iter(|(_, added)| added.iter())
+                .map(|plant| placement::authored_clear(core, plant))
+                .collect()
+        })
     } else {
         Vec::new()
     };

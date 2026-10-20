@@ -200,21 +200,24 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
         previous_same_material_pairs,
     );
     let pair_results = if pair_indices.len() >= SAME_BAND_PARALLEL_PAIR_THRESHOLD {
-        pair_indices
-            .par_chunks(SAME_BAND_PARALLEL_PAIR_BATCH)
-            .map(|pair_batch| {
-                collect_same_band_pair_batch_contacts(
-                    contours,
-                    &summaries,
-                    constraints,
-                    &authority_index,
-                    pair_batch,
-                    &contour_contributors,
-                    &raised_step_pair_contributor_keys,
-                    previous_same_material_pairs,
-                )
-            })
-            .collect::<Vec<_>>()
+        // A node compile on Godot's main thread runs outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            pair_indices
+                .par_chunks(SAME_BAND_PARALLEL_PAIR_BATCH)
+                .map(|pair_batch| {
+                    collect_same_band_pair_batch_contacts(
+                        contours,
+                        &summaries,
+                        constraints,
+                        &authority_index,
+                        pair_batch,
+                        &contour_contributors,
+                        &raised_step_pair_contributor_keys,
+                        previous_same_material_pairs,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
     } else {
         vec![collect_same_band_pair_batch_contacts(
             contours,
@@ -338,10 +341,13 @@ fn populate_required_pair_overlay_summaries(
     let build_summary =
         |&index: &usize| (index, generated_contour_overlay_shapes(&contours[index]));
     let overlay_summaries = if required_indices.len() >= SAME_BAND_PARALLEL_CONTOUR_THRESHOLD {
-        required_indices
-            .par_iter()
-            .map(build_summary)
-            .collect::<Vec<_>>()
+        // A node compile on Godot's main thread runs outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            required_indices
+                .par_iter()
+                .map(build_summary)
+                .collect::<Vec<_>>()
+        })
     } else {
         required_indices
             .iter()

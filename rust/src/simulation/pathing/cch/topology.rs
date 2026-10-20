@@ -8,6 +8,12 @@ use std::collections::{BTreeSet, HashMap};
 impl CchGraph {
     /// Builds turn states, nested dissection, the filled topology and its elimination forest.
     pub fn build(graph: &RegionGraph) -> Self {
+        // Turn states, dissection and customization are parallel; edits and loads on Godot's
+        // main thread build here outside any pool (CODE-17).
+        crate::thread_pools::install(|| Self::build_in_pool(graph))
+    }
+
+    fn build_in_pool(graph: &RegionGraph) -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static BUILD_GEN: AtomicU32 = AtomicU32::new(0);
         let mut result = Self::new(graph.node_count());

@@ -48,28 +48,31 @@ impl SimCore {
         transforms: &mut [f32],
         flags: &[u8],
     ) {
-        transforms
-            .par_chunks_exact_mut(12)
-            .zip(flags.par_iter())
-            .with_min_len(32)
-            .for_each(|(transform, &flag)| {
-                if flag == 0 {
-                    return;
-                }
-                let point = Vector2::new(transform[3], transform[11]);
-                let heading = Vector3::new(transform[2], 0.0, transform[10]);
-                let (height, [x, y, z]) = self.vehicle_ground_pose(vehicle, point, heading);
-                transform[0] = x.x;
-                transform[1] = y.x;
-                transform[2] = z.x;
-                transform[4] = x.y;
-                transform[5] = y.y;
-                transform[6] = z.y;
-                transform[8] = x.z;
-                transform[9] = y.z;
-                transform[10] = z.z;
-                transform[7] = height;
-            });
+        // Godot's main thread grounds cars every frame: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            transforms
+                .par_chunks_exact_mut(12)
+                .zip(flags.par_iter())
+                .with_min_len(32)
+                .for_each(|(transform, &flag)| {
+                    if flag == 0 {
+                        return;
+                    }
+                    let point = Vector2::new(transform[3], transform[11]);
+                    let heading = Vector3::new(transform[2], 0.0, transform[10]);
+                    let (height, [x, y, z]) = self.vehicle_ground_pose(vehicle, point, heading);
+                    transform[0] = x.x;
+                    transform[1] = y.x;
+                    transform[2] = z.x;
+                    transform[4] = x.y;
+                    transform[5] = y.y;
+                    transform[6] = z.y;
+                    transform[8] = x.z;
+                    transform[9] = y.z;
+                    transform[10] = z.z;
+                    transform[7] = height;
+                });
+        });
     }
 }
 

@@ -391,7 +391,7 @@ impl SimulationNode {
                 .count();
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
-            rayon::spawn(move || {
+            self.async_jobs.spawn(move || {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::Channel::Perf.enabled();
                 let snapshot_start = Instant::now();

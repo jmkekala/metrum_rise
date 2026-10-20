@@ -15,32 +15,36 @@ impl SimulationNode {
         use rayon::prelude::*;
         let snapshot = {
             let core = self.lock_core();
-            let edges: Vec<_> = core
-                .region_graph
-                .edges()
-                .par_iter()
-                .enumerate()
-                .filter(|(_, edge)| !edge.deleted)
-                .map(|(id, edge)| {
-                    let points: Vec<_> = edge
-                        .physical_geometry
-                        .iter()
-                        .map(|point| {
-                            [
-                                point.x,
-                                point.y,
-                                point.z,
-                                core.heightmap.sample_height_world(point.x, point.z)
-                                    * crate::config::HEIGHT_SCALE,
-                            ]
+            let core = &*core;
+            // In the extension's shared pool: Rayon's global pool is disabled (CODE-17).
+            let edges: Vec<_> = crate::thread_pools::install(|| {
+                core.region_graph
+                    .edges()
+                    .par_iter()
+                    .enumerate()
+                    .filter(|(_, edge)| !edge.deleted)
+                    .map(|(id, edge)| {
+                        let points: Vec<_> = edge
+                            .physical_geometry
+                            .iter()
+                            .map(|point| {
+                                [
+                                    point.x,
+                                    point.y,
+                                    point.z,
+                                    core.heightmap.sample_height_world(point.x, point.z)
+                                        * crate::config::HEIGHT_SCALE,
+                                ]
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "edge_id": id, "start_node": edge.start_node,
+                            "end_node": edge.end_node, "fwd_lanes": edge.fwd_lanes,
+                            "bkw_lanes": edge.bkw_lanes, "points": points,
                         })
-                        .collect();
-                    serde_json::json!({
-                        "edge_id": id, "start_node": edge.start_node, "end_node": edge.end_node,
-                        "fwd_lanes": edge.fwd_lanes, "bkw_lanes": edge.bkw_lanes, "points": points,
                     })
-                })
-                .collect();
+                    .collect()
+            });
             serde_json::json!({"generation": core.road_tool_surface_generation, "edges": edges})
         };
         GString::from(&snapshot.to_string())

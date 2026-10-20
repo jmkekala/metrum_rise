@@ -698,18 +698,22 @@ pub(crate) fn write_electricity_funding_by_building(
 ) {
     out.clear();
     out.resize(buildings.len(), 1.0);
-    out.par_iter_mut()
-        .zip(buildings)
-        .for_each(|(value, building)| {
-            if catalog
-                .profile_by_runtime_id(building.economy_profile_runtime_id)
-                .is_some_and(|profile| {
-                    profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
-                })
-            {
-                *value = effective_service_funding(building.service_funding_override, city_funding);
-            }
-        });
+    // Main-thread funding changes reach here outside any pool (CODE-17).
+    crate::thread_pools::install(|| {
+        out.par_iter_mut()
+            .zip(buildings)
+            .for_each(|(value, building)| {
+                if catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .is_some_and(|profile| {
+                        profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
+                    })
+                {
+                    *value =
+                        effective_service_funding(building.service_funding_override, city_funding);
+                }
+            });
+    });
 }
 
 pub(crate) fn service_funded_worker_capacity(

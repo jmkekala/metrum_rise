@@ -20,7 +20,9 @@ use crate::simulation::water::WaterSystem;
 
 mod async_payload;
 mod cdt;
+mod global_pool;
 mod road_tool;
+mod shutdown;
 mod zoning;
 
 fn export_has_world_xz(

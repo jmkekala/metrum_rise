@@ -275,10 +275,13 @@ impl BuildingAllocator {
         let Some(slot) = baseline_private_zone_slot(ZoneType::Residential) else {
             return;
         };
-        let sizes: Vec<u16> = self.vacancy_index[slot]
-            .par_iter()
-            .map(|&building_idx| self.admission_size(building_idx).unwrap_or(0))
-            .collect();
+        // Main-thread index repair reaches here outside any pool (CODE-17).
+        let sizes: Vec<u16> = crate::thread_pools::install(|| {
+            self.vacancy_index[slot]
+                .par_iter()
+                .map(|&building_idx| self.admission_size(building_idx).unwrap_or(0))
+                .collect()
+        });
         let mut by_size: Vec<Vec<u32>> = Vec::new();
         for (position, &size) in sizes.iter().enumerate() {
             if size == 0 {

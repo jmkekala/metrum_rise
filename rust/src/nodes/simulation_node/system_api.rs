@@ -301,7 +301,8 @@ impl SimulationNode {
             "agents": core.agents.len() as i64,
             "buildings": core.allocator.buildings.len() as i64,
             "lanes": core.transit_network.lane_system.lanes.len() as i64,
-            "rayon_threads": rayon::current_num_threads() as i64,
+            // The pool the extension's work runs in (CODE-17).
+            "rayon_threads": crate::thread_pools::install(rayon::current_num_threads) as i64,
             "generation": core.road_tool_surface_generation as i64,
             "simulation_speed": core.time.speed_multiplier,
             "command": core.last_road_edit_metrics.to_dictionary(),

@@ -146,7 +146,7 @@ impl SimulationNode {
         if !build_requests.is_empty() {
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.water_patch_payload_jobs);
-            rayon::spawn(move || {
+            self.async_jobs.spawn(move || {
                 let (built, failed) =
                     SimulationNode::try_prepare_water_patch_payloads(&core, build_requests);
                 let mut job_state = jobs
@@ -386,7 +386,7 @@ impl SimulationNode {
 
         if !build_inputs.is_empty() {
             let jobs = Arc::clone(&self.water_patch_mesh_jobs);
-            rayon::spawn(move || {
+            self.async_jobs.spawn(move || {
                 let entries = SimCore::build_water_patch_mesh_cache_entries(build_inputs);
                 let mut job_state = jobs
                     .lock()

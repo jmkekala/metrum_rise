@@ -64,15 +64,21 @@ pub(crate) enum SimCommand {
         /// Immutable target token captured while the cursor still referenced the object.
         target: BulldozeTarget,
     },
+    /// End the thread after the commands queued before this one; the node joins it next.
+    Stop,
 }
 
+// Parallel rebuilds: they run in the shared pool, as every phase under the core lock does
+// (CODE-17). The lock stays on this thread; a pool worker never waits for it (`SIM-01`).
 fn finalize_network_render_products(
     core: &mut SimCore,
 ) -> Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)> {
-    core.rebuild_network_surface_terrain_internal();
-    core.precompute_road_mesh_data();
-    core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-    road_tool_snapshots_from_core(core)
+    crate::thread_pools::install(|| {
+        core.rebuild_network_surface_terrain_internal();
+        core.precompute_road_mesh_data();
+        core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        road_tool_snapshots_from_core(core)
+    })
 }
 
 fn publish_road_tool_snapshots(
@@ -292,7 +298,7 @@ pub(crate) fn run_sim_thread(
                         detail: outcome.rejection,
                     });
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Ok(SimCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;
                     break;
                 }

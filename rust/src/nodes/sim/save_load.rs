@@ -91,6 +91,12 @@ impl SimCore {
         &mut self,
         path: &str,
     ) -> Result<Option<SavedCameraState>, String> {
+        // The load's index, routing and economy rebuilds are parallel; Godot's main thread and
+        // tests run them in the shared pool (CODE-17).
+        crate::thread_pools::install(|| self.load_game_in_pool(path))
+    }
+
+    fn load_game_in_pool(&mut self, path: &str) -> Result<Option<SavedCameraState>, String> {
         let mut loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
             .map_err(|err| err.to_string())?;
         let events = restore_events(&loaded.scheduler, &loaded.time)?;

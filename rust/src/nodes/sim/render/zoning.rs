@@ -58,21 +58,24 @@ fn grid_image_pixels(
         .collect();
     // Texture UVs address pixel centres; environmental cells use their authored metre spacing,
     // including worlds whose rounded grid dimensions do not cover the exact physical extent.
-    pixels
-        .par_chunks_mut(target_w * 4)
-        .enumerate()
-        .for_each(|(y, row)| {
-            let world_y = (y as f32 + 0.5) * pixel_height_m - world_height_m * 0.5;
-            let (_, grid_y) = config.world_to_env_grid(0.0, world_y);
-            for (pixel, &grid_x) in row.as_chunks_mut::<4>().0.iter_mut().zip(&grid_columns) {
-                let val = grid.sample_bilinear(grid_x, grid_y);
-                if val <= 0.01 {
-                    continue;
+    // Godot's main thread builds overlay images: shared pool (CODE-17).
+    crate::thread_pools::install(|| {
+        pixels
+            .par_chunks_mut(target_w * 4)
+            .enumerate()
+            .for_each(|(y, row)| {
+                let world_y = (y as f32 + 0.5) * pixel_height_m - world_height_m * 0.5;
+                let (_, grid_y) = config.world_to_env_grid(0.0, world_y);
+                for (pixel, &grid_x) in row.as_chunks_mut::<4>().0.iter_mut().zip(&grid_columns) {
+                    let val = grid.sample_bilinear(grid_x, grid_y);
+                    if val <= 0.01 {
+                        continue;
+                    }
+                    let alpha = ((val / 100.0).clamp(0.0, 1.0) * 200.0) as u8;
+                    pixel.copy_from_slice(&[r, g, b, alpha]);
                 }
-                let alpha = ((val / 100.0).clamp(0.0, 1.0) * 200.0) as u8;
-                pixel.copy_from_slice(&[r, g, b, alpha]);
-            }
-        });
+            });
+    });
     pixels
 }
 

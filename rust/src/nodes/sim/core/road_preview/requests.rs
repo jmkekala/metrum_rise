@@ -61,6 +61,12 @@ impl RoadPreviewSender {
     pub(crate) fn started(&self) -> u64 {
         self.started.load(Ordering::Acquire)
     }
+
+    /// Ends the worker once its running request is done, as dropping this sender would:
+    /// replacing the only wake sender disconnects the worker's receiver.
+    pub(crate) fn disconnect(&mut self) {
+        self.wake = mpsc::sync_channel(1).0;
+    }
 }
 
 impl RoadPreviewReceiver {

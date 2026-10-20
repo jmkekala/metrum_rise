@@ -176,7 +176,9 @@ impl RoadSurfaceSystem {
         };
         let stamp_results: Vec<(Cow<'_, EarthworkChunkStampResult>, f64)> =
             if chunks.len() >= PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS {
-                chunks.par_iter().copied().map(collect_chunk).collect()
+                // Main-thread terrain edits reach here outside any pool (CODE-17).
+                let chunks = chunks.par_iter().copied();
+                crate::thread_pools::install(|| chunks.map(collect_chunk).collect())
             } else {
                 chunks.iter().copied().map(collect_chunk).collect()
             };

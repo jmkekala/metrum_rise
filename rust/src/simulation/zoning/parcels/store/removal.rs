@@ -11,15 +11,17 @@ impl ParcelStore {
         let Some(ids) = self.edge_index.get(&edge_idx) else {
             return Vec::new();
         };
-        let mut captured: Vec<_> = ids
-            .par_iter()
-            .with_min_len(256)
-            .filter_map(|id| {
-                let index = self.id_to_index[id];
-                let parcel = &self.parcels[index];
-                removed_with_road(parcel, edge_idx).then(|| (index, parcel.clone()))
-            })
-            .collect();
+        // Main-thread road-flag edits reach here outside any pool (CODE-17).
+        let mut captured: Vec<_> = crate::thread_pools::install(|| {
+            ids.par_iter()
+                .with_min_len(256)
+                .filter_map(|id| {
+                    let index = self.id_to_index[id];
+                    let parcel = &self.parcels[index];
+                    removed_with_road(parcel, edge_idx).then(|| (index, parcel.clone()))
+                })
+                .collect()
+        });
         captured.sort_unstable_by_key(|(index, _)| *index);
         captured
     }
@@ -33,14 +35,16 @@ impl ParcelStore {
         let Some(ids) = self.edge_index.get(&edge_idx) else {
             return 0;
         };
-        let mut indices: Vec<_> = ids
-            .par_iter()
-            .with_min_len(256)
-            .filter_map(|id| {
-                let index = self.id_to_index[id];
-                removed_with_road(&self.parcels[index], edge_idx).then_some(index)
-            })
-            .collect();
+        // Main-thread road-flag edits reach here outside any pool (CODE-17).
+        let mut indices: Vec<_> = crate::thread_pools::install(|| {
+            ids.par_iter()
+                .with_min_len(256)
+                .filter_map(|id| {
+                    let index = self.id_to_index[id];
+                    removed_with_road(&self.parcels[index], edge_idx).then_some(index)
+                })
+                .collect()
+        });
         indices.sort_unstable_by(|a, b| b.cmp(a));
         // Descending removals keep each yet-unvisited original index valid. The inverse
         // replays these swaps backwards; mutation and callback publication are sequential.

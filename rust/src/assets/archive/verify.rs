@@ -36,16 +36,19 @@ pub(crate) fn verify(mods: &Path, pack: &str) -> Result<Verification, String> {
     let text = fs::read_to_string(&listing).map_err(|e| format!("{CHECKSUMS}: {e}"))?;
     let listed = parse_checksums(&text)?;
     // (path, Some(changed)) for present files, (path, None) for missing ones.
-    let states = listed
-        .par_iter()
-        .map(|(path, digest)| {
-            let file = root.join(path);
-            if file.is_symlink() || !file.is_file() {
-                return Ok((*path, None));
-            }
-            Ok((*path, Some(sha256(&file)? != *digest)))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    // Godot's `WorkerThreadPool` calls this: shared pool, the caller blocks (CODE-17).
+    let states = crate::thread_pools::install(|| {
+        listed
+            .par_iter()
+            .map(|(path, digest)| {
+                let file = root.join(path);
+                if file.is_symlink() || !file.is_file() {
+                    return Ok((*path, None));
+                }
+                Ok((*path, Some(sha256(&file)? != *digest)))
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
     let pick = |wanted: Option<bool>| -> Vec<String> {
         states
             .iter()

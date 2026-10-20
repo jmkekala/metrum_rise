@@ -1668,7 +1668,8 @@ impl RoadSurfaceSystem {
         // Slice parallel iterators are indexed; collecting into Vec preserves input order, so
         // the serial commit phase remains deterministic without re-sorting by id.
         if items.len() >= parallel_min_items {
-            items.par_iter().cloned().map(&work).collect()
+            // Main-thread validation and mesh precompute reach here outside any pool (CODE-17).
+            crate::thread_pools::install(|| items.par_iter().cloned().map(&work).collect())
         } else {
             items.iter().cloned().map(&work).collect()
         }
@@ -1687,7 +1688,7 @@ impl RoadSurfaceSystem {
         // Consuming indexed work preserves deterministic output order while moving large buffers
         // into workers without cloning them.
         if items.len() >= parallel_min_items {
-            items.into_par_iter().map(work).collect()
+            crate::thread_pools::install(|| items.into_par_iter().map(work).collect())
         } else {
             items.into_iter().map(work).collect()
         }

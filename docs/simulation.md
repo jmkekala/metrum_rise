@@ -854,8 +854,10 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
 If a part cannot reach its target without changing a decision of this document (for example a
 coarser simulation tier for distant agents, or GPU compute), the findings and options are
 written here and the part stops for review. Timing comparisons run the previous part's binary
-as a control in the same session, on the same snapshot: a machine restart on 2026-10-19 raised
-every `PERF-07` mean about 30% for unchanged binaries.
+as a control in the same session, on the same snapshot: after a machine restart onto a newer
+kernel on 2026-10-19 unchanged binaries measured `PERF-07` means about 30% higher, which the
+owned thread pool of `CODE-17` then removed (handing work into Rayon's global pool from outside it
+had become slower).
 
 ### Behaviour envelope (`SIM-02-A`)
 
@@ -1638,7 +1640,9 @@ on a fresh `$ARTIFACTS` directory.
   / 51.42 / 26.68. Every gate limit passes. These ran after the machine restarted onto a newer
   kernel, where the same binary on the same snapshot measures a mean about 30% higher than
   before (parts 1–2 at 30k 1×: 3.42 ms before the restart, 4.43 after), so they are not
-  comparable with the parts 1–2 results above. Same-session control on the same 30k city (parts
+  comparable with the parts 1–2 results above. `CODE-17` later traced the rise to handing work
+  into Rayon's global pool from outside it; its owned pool brings the 10k and 30k means back
+  (30k 1× 3.39 ms). Same-session control on the same 30k city (parts
   1–2's snapshot, migrated): parts 1–2 4.43 / 8.35 / 116.5 mean / p99 / max, part 3 4.43 / 8.30 /
   99.9; on its own snapshot part 3 4.44 / 8.46 / 90.9. At 100k the 32× worst frame fell from 249
   to 201 ms and the p99 from 60 to 51 ms even on the slower machine.

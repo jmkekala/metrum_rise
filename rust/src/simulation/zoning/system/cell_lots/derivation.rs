@@ -52,6 +52,19 @@ impl ZoningSystem {
         if !bounds.is_valid() {
             return CellLotGeneration::default();
         }
+        // Godot's main thread derives lots after its zoning edits, outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.derive_cell_lots_in_pool(graph, bounds, sizes, &blocked)
+        })
+    }
+
+    fn derive_cell_lots_in_pool(
+        &mut self,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        sizes: &[CellLotSize],
+        blocked: impl Fn(&[DVec2; 4], u16) -> bool + Sync,
+    ) -> CellLotGeneration {
         let cell_m = f64::from(self.config.zone_cell_m);
         let mut sizes: Vec<_> = sizes
             .iter()

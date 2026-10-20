@@ -3,25 +3,29 @@
 //! Bounded off-thread destruction of superseded road-preview products.
 
 use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 /// Frees retired values on one dedicated thread, so neither the preview worker nor a lock holder
 /// pays for dropping a planned surface and its caches. At most one value waits in the queue and
 /// one is being freed; when both slots are taken the caller drops inline, keeping memory bounded.
 pub(super) struct Reclaimer<T: Send + 'static> {
+    // Both are `None` without a thread (spawn failure).
     tx: Option<mpsc::SyncSender<T>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl<T: Send + 'static> Reclaimer<T> {
-    /// Starts the reclaim thread once; it exits when this handle is dropped. Without a thread
-    /// (spawn failure), every retirement drops inline.
+    /// Starts the reclaim thread once; dropping this handle frees what is queued and joins the
+    /// thread. Without a thread (spawn failure), every retirement drops inline.
     pub(super) fn spawn(name: &str) -> Self {
         let (tx, rx) = mpsc::sync_channel::<T>(1);
-        let spawned = std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || rx.into_iter().for_each(drop))
-            .is_ok();
+            .ok();
         Self {
-            tx: spawned.then_some(tx),
+            tx: thread.is_some().then_some(tx),
+            thread,
         }
     }
 
@@ -30,6 +34,16 @@ impl<T: Send + 'static> Reclaimer<T> {
         // A rejected send returns the value inside the error, which drops here.
         if let Some(tx) = &self.tx {
             let _ = tx.try_send(value);
+        }
+    }
+}
+
+impl<T: Send + 'static> Drop for Reclaimer<T> {
+    // The thread runs extension code until it returns, so its owner must outlive it (CODE-17).
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -57,8 +71,8 @@ mod tests {
             reclaimer.retire(DropProbe(tx.clone()));
         }
         drop(reclaimer);
-        drop(tx);
-        let threads: Vec<_> = rx.iter().collect();
+        // Dropping the handle joined the thread, so every probe has already reported.
+        let threads: Vec<_> = rx.try_iter().collect();
         // A full queue falls back to inline drops, but nothing is leaked or lost.
         assert_eq!(threads.len(), 64);
         assert!(

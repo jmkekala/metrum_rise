@@ -62,32 +62,35 @@ impl CarVisualSmoother {
     pub(crate) fn interpolate(&self, poses: &mut [f32], ids: &[i64], flags: &[u8], alpha: f32) {
         let rotation_alpha =
             (alpha * (ROTATION_INTERPOLATION_RATE / INTERPOLATION_RATE)).clamp(0.0, 1.0);
-        poses
-            .par_chunks_exact_mut(STRIDE)
-            .zip(ids.par_iter().zip(flags))
-            .with_min_len(PARALLEL_MIN_CARS)
-            .for_each(|(pose, (&id, &flag))| {
-                let Some((target_origin, target_basis)) = read_pose(pose) else {
-                    return;
-                };
-                let target_basis = orthonormalized(target_basis);
-                match self.drawn.get(&id) {
-                    Some(previous)
-                        if previous.grounded == (flag != 0)
-                            && previous.origin.distance_squared(target_origin)
-                                <= SNAP_DISTANCE_M * SNAP_DISTANCE_M =>
-                    {
-                        let rotation = slerp(
-                            previous.rotation,
-                            Quat::from_mat3(&target_basis),
-                            rotation_alpha,
-                        );
-                        let origin = previous.origin.lerp(target_origin, alpha);
-                        write_pose(pose, origin, Mat3::from_quat(rotation));
+        // Godot's main thread calls this every frame: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            poses
+                .par_chunks_exact_mut(STRIDE)
+                .zip(ids.par_iter().zip(flags))
+                .with_min_len(PARALLEL_MIN_CARS)
+                .for_each(|(pose, (&id, &flag))| {
+                    let Some((target_origin, target_basis)) = read_pose(pose) else {
+                        return;
+                    };
+                    let target_basis = orthonormalized(target_basis);
+                    match self.drawn.get(&id) {
+                        Some(previous)
+                            if previous.grounded == (flag != 0)
+                                && previous.origin.distance_squared(target_origin)
+                                    <= SNAP_DISTANCE_M * SNAP_DISTANCE_M =>
+                        {
+                            let rotation = slerp(
+                                previous.rotation,
+                                Quat::from_mat3(&target_basis),
+                                rotation_alpha,
+                            );
+                            let origin = previous.origin.lerp(target_origin, alpha);
+                            write_pose(pose, origin, Mat3::from_quat(rotation));
+                        }
+                        _ => write_pose(pose, target_origin, target_basis),
                     }
-                    _ => write_pose(pose, target_origin, target_basis),
-                }
-            });
+                });
+        });
     }
 
     /// Stores the poses actually uploaded, including any support correction or busy fallback,

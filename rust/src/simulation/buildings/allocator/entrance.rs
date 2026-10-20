@@ -227,10 +227,15 @@ impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
         let old_entrances = traffic_debug.then(|| self.entrances.clone());
-        self.buildings
-            .par_iter()
-            .map(|building| Self::derive_building_entrance(building, graph, lanes, &self.registry))
-            .collect_into_vec(&mut self.entrances);
+        // Main-thread network and asset edits reach here outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.buildings
+                .par_iter()
+                .map(|building| {
+                    Self::derive_building_entrance(building, graph, lanes, &self.registry)
+                })
+                .collect_into_vec(&mut self.entrances)
+        });
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
         // Entrances choose the flow fields' source nodes (`SIM-02-I`): each zone's sources

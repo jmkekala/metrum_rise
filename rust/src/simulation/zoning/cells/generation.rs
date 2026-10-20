@@ -76,6 +76,17 @@ impl CellStore {
         if !bounds.is_valid() {
             return CellGeneration::default();
         }
+        // Godot's main thread previews and paints cells outside any pool (CODE-17).
+        crate::thread_pools::install(|| self.generate_in_pool(graph, config, bounds, &blocked))
+    }
+
+    fn generate_in_pool(
+        &mut self,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+        bounds: CellBounds,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> CellGeneration {
         let mut phase = crate::debug::Channel::EconomyPhases
             .enabled()
             .then(std::time::Instant::now);

@@ -5,7 +5,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, Once, OnceLock, TryLockError};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Mutex, Once, OnceLock, PoisonError, TryLockError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const CRASH_RECORDER_CAPACITY: usize = 4096;
@@ -19,7 +21,8 @@ static CRASH_RECORDER: OnceLock<Mutex<CrashRecorder>> = OnceLock::new();
 static CRASH_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CRASH_START: OnceLock<Instant> = OnceLock::new();
 static PANIC_HOOK: Once = Once::new();
-static HANG_WATCHDOG: Once = Once::new();
+// The running watchdog: dropping the sender stops it, then the handle joins it.
+static HANG_WATCHDOG: Mutex<Option<(mpsc::Sender<()>, JoinHandle<()>)>> = Mutex::new(None);
 static CRASH_DUMP_WRITTEN: AtomicBool = AtomicBool::new(false);
 static HANG_DUMP_WRITTEN: AtomicBool = AtomicBool::new(false);
 static WATCHDOG_MONITOR_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -286,6 +289,19 @@ pub(crate) fn suspend_hang_watchdog() {
     WATCHDOG_MONITOR_ACTIVE.store(false, Ordering::Release);
 }
 
+/// Stops the hang watchdog and joins its thread, so it cannot run once the library unloads.
+/// A later [`init`] may start it again.
+pub(crate) fn shutdown() {
+    let watchdog = HANG_WATCHDOG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some((stop, thread)) = watchdog {
+        drop(stop);
+        let _ = thread.join();
+    }
+}
+
 fn install_panic_hook() {
     PANIC_HOOK.call_once(|| {
         let previous_hook = std::panic::take_hook();
@@ -339,26 +355,33 @@ fn hang_watchdog_timeout_ms() -> Option<u64> {
 }
 
 fn start_hang_watchdog(timeout_ms: u64) {
-    HANG_WATCHDOG.call_once(|| {
-        WATCHDOG_ABORT_AFTER_DUMP.store(
-            std::env::var("METRUM_HANG_ABORT")
-                .map(|value| !value.is_empty() && value != "0")
-                .unwrap_or(false),
-            Ordering::Relaxed,
-        );
-        let spawn_result = std::thread::Builder::new()
-            .name("metrum-hang-watchdog".to_string())
-            .spawn(move || run_hang_watchdog(timeout_ms));
-        if let Err(err) = spawn_result {
-            eprintln!("[CRASH_DIAGNOSTICS] could not start hang watchdog: {err}");
-        }
-    });
+    let mut watchdog = HANG_WATCHDOG.lock().unwrap_or_else(PoisonError::into_inner);
+    if watchdog.is_some() {
+        return;
+    }
+    WATCHDOG_ABORT_AFTER_DUMP.store(
+        std::env::var("METRUM_HANG_ABORT")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false),
+        Ordering::Relaxed,
+    );
+    let (stop, stopped) = mpsc::channel();
+    let spawn_result = std::thread::Builder::new()
+        .name("metrum-hang-watchdog".to_string())
+        .spawn(move || run_hang_watchdog(timeout_ms, stopped));
+    match spawn_result {
+        Ok(thread) => *watchdog = Some((stop, thread)),
+        Err(err) => eprintln!("[CRASH_DIAGNOSTICS] could not start hang watchdog: {err}"),
+    }
 }
 
-fn run_hang_watchdog(timeout_ms: u64) {
+fn run_hang_watchdog(timeout_ms: u64, stopped: mpsc::Receiver<()>) {
     let poll = Duration::from_millis(HANG_WATCHDOG_POLL_MS);
     loop {
-        std::thread::sleep(poll);
+        // Polls every interval until `shutdown` drops the sender.
+        if stopped.recv_timeout(poll) != Err(RecvTimeoutError::Timeout) {
+            return;
+        }
         if !is_crash_diagnostics_enabled() {
             continue;
         }
@@ -634,6 +657,18 @@ fn write_crash_summary(out: &mut impl Write, summary: CrashSimSnapshot) -> std::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The extension calls `shutdown` before Godot unloads it: the watchdog thread must have
+    // exited when it returns, and a later load must be able to start it again.
+    #[test]
+    fn watchdog_shutdown_joins_its_thread_and_allows_a_restart() {
+        for _ in 0..2 {
+            start_hang_watchdog(60_000);
+            assert!(HANG_WATCHDOG.lock().unwrap().is_some());
+            shutdown();
+            assert!(HANG_WATCHDOG.lock().unwrap().is_none());
+        }
+    }
 
     #[test]
     fn flight_recorder_initialization_has_bounded_stack_storage() {

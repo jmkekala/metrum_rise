@@ -539,10 +539,13 @@ pub(super) fn generated_contact_contour_noding_candidates_from_preparation_with_
             )
         };
         let computed = if miss_indices.len() >= CONTACT_NODING_PARALLEL_PAIR_THRESHOLD {
-            miss_indices
-                .par_iter()
-                .map(compute_miss)
-                .collect::<Vec<_>>()
+            // A node compile on Godot's main thread runs outside any pool (CODE-17).
+            crate::thread_pools::install(|| {
+                miss_indices
+                    .par_iter()
+                    .map(compute_miss)
+                    .collect::<Vec<_>>()
+            })
         } else {
             miss_indices.iter().map(compute_miss).collect::<Vec<_>>()
         };

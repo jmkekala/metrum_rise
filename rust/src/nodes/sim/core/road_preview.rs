@@ -33,6 +33,7 @@ use crate::simulation::network::surface::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::thread_pools::JoinedPool;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
@@ -180,11 +181,12 @@ pub(crate) fn run_road_preview_worker(
 ) {
     // One pool for the worker's lifetime, sized like Rayon's global default: one thread per
     // logical CPU (or RAYON_NUM_THREADS). Node compiles are indivisible 15–45 ms tasks; in the
-    // shared global pool they stall every main-thread caller that joins it.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .thread_name(|index| format!("road-preview-{index}"))
-        .build()
-        .expect("road preview thread pool must start");
+    // extension's shared pool they stall every main-thread caller that joins it. Returning
+    // drops the reclaimer and then the pool, joining their threads (CODE-17).
+    let pool = JoinedPool::build(
+        rayon::ThreadPoolBuilder::new().thread_name(|index| format!("road-preview-{index}")),
+    )
+    .expect("road preview thread pool must start");
     // Superseded snapshots own a planned surface and its topology caches; free them elsewhere.
     let reclaimer = reclaim::Reclaimer::spawn("road-preview-reclaim");
     let mut ready_request = None;

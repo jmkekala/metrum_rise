@@ -294,115 +294,123 @@ impl SpatialBatches {
         let assets = &self.assets;
         let rising = &self.level_change_started;
         // par_bridge borrows the map; HashMap::par_iter_mut would first allocate a staging Vec.
-        self.chunks
-            .iter_mut()
-            .par_bridge()
-            .for_each(|(key, chunk)| {
-                // A fresh level change restarts its building's rise even without a revision bump.
-                let changed = chunk.revision != Some(revision) || chunk.construction || fresh;
-                if changed {
-                    chunk.instances.clear();
-                    chunk.construction = false;
-                    if let Some(indices) = allocator.building_chunks.get(key) {
-                        for &id in indices {
-                            let building = &allocator.buildings[id];
-                            chunk.construction |= building.is_under_construction();
-                            let entry = allocator.registry.get(&building.asset_id);
-                            let range = assets.get(&building.asset_id);
-                            if building.broken || entry.is_none() {
-                                if !building.is_under_construction() {
-                                    let scale = crate::config::BUILDING_VISUAL_SCALE;
+        // Godot's main thread rebuilds the changed chunks: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.chunks
+                .iter_mut()
+                .par_bridge()
+                .for_each(|(key, chunk)| {
+                    // A fresh level change restarts its building's rise even without a
+                    // revision bump.
+                    let changed = chunk.revision != Some(revision) || chunk.construction || fresh;
+                    if changed {
+                        chunk.instances.clear();
+                        chunk.construction = false;
+                        if let Some(indices) = allocator.building_chunks.get(key) {
+                            for &id in indices {
+                                let building = &allocator.buildings[id];
+                                chunk.construction |= building.is_under_construction();
+                                let entry = allocator.registry.get(&building.asset_id);
+                                let range = assets.get(&building.asset_id);
+                                if building.broken || entry.is_none() {
+                                    if !building.is_under_construction() {
+                                        let scale = crate::config::BUILDING_VISUAL_SCALE;
+                                        chunk.instances.push(Instance {
+                                            building: id,
+                                            part: 0,
+                                            deserted: false,
+                                            scheme: 0,
+                                            lighting: [0.0; 4],
+                                            transform: Mat4::from_scale_rotation_translation(
+                                                Vec3::splat(scale),
+                                                glam::Quat::from_rotation_y(
+                                                    building
+                                                        .facing_dir
+                                                        .x
+                                                        .atan2(building.facing_dir.y),
+                                                ),
+                                                Vec3::new(
+                                                    building.center_x,
+                                                    building.support_height_m,
+                                                    building.center_y,
+                                                ),
+                                            ),
+                                        });
+                                    }
+                                    continue;
+                                }
+                                // Authored meshless sites (for example production fields)
+                                // are valid; their ground geometry must not become a
+                                // missing-asset marker.
+                                let Some(range) = range else { continue };
+                                let entry = entry.unwrap();
+                                let deserted =
+                                    building.is_deserted && !building.is_under_construction();
+                                // A deserted building draws one flat override material, so a
+                                // scheme group would differ only in bindings nothing samples.
+                                // Collapsing them keeps the extra groups to occupied schemes.
+                                let scheme = if deserted {
+                                    0
+                                } else {
+                                    entry
+                                        .manifest
+                                        .building
+                                        .as_ref()
+                                        .and_then(|data| data.appearance.as_ref())
+                                        .map_or(0, |appearance| {
+                                            appearance.scheme_for(building.appearance_key())
+                                        }) as u16
+                                };
+                                let mut y = building.support_height_m;
+                                if building.is_under_construction() {
+                                    y -= construction_rise_offset_m(
+                                        building,
+                                        construction_visual_progress(building, clock_slots),
+                                    );
+                                } else if !rising.is_empty()
+                                    && let Some(start) =
+                                        rising.get(&(building.parcel_id, building.build_generation))
+                                {
+                                    // Rebuilt every frame like construction until the rise ends.
+                                    chunk.construction = true;
+                                    y -= construction_rise_offset_m(
+                                        building,
+                                        level_change_rise_progress(now.duration_since(*start)),
+                                    );
+                                }
+                                let lighting = super::window_lighting::parameters(
+                                    building.appearance_key(),
+                                    building.zone_type == ZoneType::Residential,
+                                    building.is_deserted || building.is_under_construction(),
+                                );
+                                for part in range.clone() {
                                     chunk.instances.push(Instance {
                                         building: id,
-                                        part: 0,
-                                        deserted: false,
-                                        scheme: 0,
-                                        lighting: [0.0; 4],
-                                        transform: Mat4::from_scale_rotation_translation(
-                                            Vec3::splat(scale),
-                                            glam::Quat::from_rotation_y(
-                                                building.facing_dir.x.atan2(building.facing_dir.y),
-                                            ),
-                                            Vec3::new(
-                                                building.center_x,
-                                                building.support_height_m,
-                                                building.center_y,
-                                            ),
+                                        part,
+                                        deserted,
+                                        scheme,
+                                        lighting,
+                                        transform: building_part_pose(
+                                            Vector2::new(building.center_x, building.center_y),
+                                            y,
+                                            building.facing_dir,
+                                            Some(entry),
+                                            &entry.manifest.mesh_parts[catalog[part].index],
                                         ),
                                     });
                                 }
-                                continue;
-                            }
-                            // Authored meshless sites (for example production fields) are
-                            // valid; their ground geometry must not become a missing-asset marker.
-                            let Some(range) = range else { continue };
-                            let entry = entry.unwrap();
-                            let deserted =
-                                building.is_deserted && !building.is_under_construction();
-                            // A deserted building draws one flat override material, so a
-                            // scheme group would differ only in bindings nothing samples.
-                            // Collapsing them keeps the extra groups to occupied schemes.
-                            let scheme = if deserted {
-                                0
-                            } else {
-                                entry
-                                    .manifest
-                                    .building
-                                    .as_ref()
-                                    .and_then(|data| data.appearance.as_ref())
-                                    .map_or(0, |appearance| {
-                                        appearance.scheme_for(building.appearance_key())
-                                    }) as u16
-                            };
-                            let mut y = building.support_height_m;
-                            if building.is_under_construction() {
-                                y -= construction_rise_offset_m(
-                                    building,
-                                    construction_visual_progress(building, clock_slots),
-                                );
-                            } else if !rising.is_empty()
-                                && let Some(start) =
-                                    rising.get(&(building.parcel_id, building.build_generation))
-                            {
-                                // Rebuilt every frame like construction until the rise ends.
-                                chunk.construction = true;
-                                y -= construction_rise_offset_m(
-                                    building,
-                                    level_change_rise_progress(now.duration_since(*start)),
-                                );
-                            }
-                            let lighting = super::window_lighting::parameters(
-                                building.appearance_key(),
-                                building.zone_type == ZoneType::Residential,
-                                building.is_deserted || building.is_under_construction(),
-                            );
-                            for part in range.clone() {
-                                chunk.instances.push(Instance {
-                                    building: id,
-                                    part,
-                                    deserted,
-                                    scheme,
-                                    lighting,
-                                    transform: building_part_pose(
-                                        Vector2::new(building.center_x, building.center_y),
-                                        y,
-                                        building.facing_dir,
-                                        Some(entry),
-                                        &entry.manifest.mesh_parts[catalog[part].index],
-                                    ),
-                                });
                             }
                         }
+                        chunk
+                            .batches
+                            .synchronize(&chunk.instances, parts, reset_history);
+                        chunk.revision = Some(revision);
                     }
-                    chunk
-                        .batches
-                        .synchronize(&chunk.instances, parts, reset_history);
-                    chunk.revision = Some(revision);
-                }
-                if changed || camera_changed {
-                    chunk.batches.update(parts, view, quality_changed);
-                }
-            });
+                    if changed || camera_changed {
+                        chunk.batches.update(parts, view, quality_changed);
+                    }
+                });
+        });
         self.construction = self.chunks.values().any(|chunk| chunk.construction);
         self.evaluated_parts = self
             .chunks

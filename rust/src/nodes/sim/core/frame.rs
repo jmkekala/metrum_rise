@@ -158,6 +158,15 @@ impl SimCore {
     pub(super) fn step_frame_observed(
         &mut self,
         frame_dt_s: f64,
+        observer: &mut (impl EconomyObserver + Send),
+    ) -> FrameStepReport {
+        // The sim thread, tests and benchmarks all step in the shared pool (CODE-17).
+        crate::thread_pools::install(|| self.step_frame_in_pool(frame_dt_s, observer))
+    }
+
+    fn step_frame_in_pool(
+        &mut self,
+        frame_dt_s: f64,
         observer: &mut impl EconomyObserver,
     ) -> FrameStepReport {
         let mut report = FrameStepReport::default();

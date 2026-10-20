@@ -432,10 +432,13 @@ impl SimCore {
         self.build_snapshot_reusing(RenderSnapshot::default())
     }
 
-    pub(super) fn build_snapshot_reusing(
-        &mut self,
-        mut snapshot: RenderSnapshot,
-    ) -> RenderSnapshot {
+    pub(super) fn build_snapshot_reusing(&mut self, snapshot: RenderSnapshot) -> RenderSnapshot {
+        // The site-index repair and vehicle solves are parallel; the sim thread, Godot's main
+        // thread and tests all build in the shared pool (CODE-17).
+        crate::thread_pools::install(|| self.build_snapshot_in_pool(snapshot))
+    }
+
+    fn build_snapshot_in_pool(&mut self, mut snapshot: RenderSnapshot) -> RenderSnapshot {
         // Repair derived site/index state once, never via a full-store fallback per agent.
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);

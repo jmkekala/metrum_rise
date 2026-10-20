@@ -231,6 +231,11 @@ impl SimCore {
     }
 
     fn finish_terrain_authoring_edit_internal(&mut self) {
+        // Godot's main thread finishes terrain edits; the rebuilds are parallel (CODE-17).
+        crate::thread_pools::install(|| self.finish_terrain_authoring_edit_in_pool());
+    }
+
+    fn finish_terrain_authoring_edit_in_pool(&mut self) {
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
 
@@ -294,28 +299,36 @@ impl SimCore {
     }
 
     pub(crate) fn rebuild_building_entrances_internal(&mut self) {
-        // Refresh queued frontage links before copying parcel attachments into live buildings.
-        // The cell refresh defers all publication while a road transaction is still staged.
-        self.prepare_cell_lots_internal();
-        self.allocator
-            .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
-        self.allocator
-            .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        // Godot's main thread runs this after its network edits; the lot refresh, attachment
+        // repair and entrance rebuild are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            // Refresh queued frontage links before copying parcel attachments into live
+            // buildings. The cell refresh defers all publication while a road transaction is
+            // still staged.
+            self.prepare_cell_lots_internal();
+            self.allocator
+                .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
+            self.allocator
+                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        });
     }
 
     fn run_building_allocator_maintenance_internal(&mut self) {
-        self.allocator.maintain(
-            0,
-            &mut self.zoning,
-            &mut self.agents,
-            &mut self.households,
-            &mut self.logistics,
-            &mut self.treasury.balance,
-            &mut self.transit_network,
-            &mut self.region_graph,
-        );
-        self.publish_pending_production_site_removals();
-        self.mark_changed_zone_flow_fields();
+        // Main-thread edits run maintenance, whose removals reach parallel rebuilds (CODE-17).
+        crate::thread_pools::install(|| {
+            self.allocator.maintain(
+                0,
+                &mut self.zoning,
+                &mut self.agents,
+                &mut self.households,
+                &mut self.logistics,
+                &mut self.treasury.balance,
+                &mut self.transit_network,
+                &mut self.region_graph,
+            );
+            self.publish_pending_production_site_removals();
+            self.mark_changed_zone_flow_fields();
+        });
     }
 
     /// Returns the deterministic building, road or vegetation target for the bulldoze cursor.
@@ -349,17 +362,20 @@ impl SimCore {
         &mut self,
         target: BulldozeTarget,
     ) -> Option<bool> {
-        self.prepare_bulldoze_target_indices();
-        let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
-        if current.kind != target.kind
-            || current.id != target.id
-            || current.vegetation != target.vegetation
-        {
-            return None;
-        }
-        let road_deleted = current.kind == BulldozeTargetKind::Road;
-        self.delete_bulldoze_target(&current)
-            .then_some(road_deleted)
+        // Index repair and the deletion's rebuilds are parallel: shared pool (CODE-17).
+        crate::thread_pools::install(|| {
+            self.prepare_bulldoze_target_indices();
+            let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
+            if current.kind != target.kind
+                || current.id != target.id
+                || current.vegetation != target.vegetation
+            {
+                return None;
+            }
+            let road_deleted = current.kind == BulldozeTargetKind::Road;
+            self.delete_bulldoze_target(&current)
+                .then_some(road_deleted)
+        })
     }
 
     fn delete_bulldoze_target(&mut self, target: &BulldozeTarget) -> bool {
@@ -569,6 +585,12 @@ impl SimCore {
         if building_idx >= self.allocator.buildings.len() {
             return false;
         }
+        // The undo capture and the removal's remaps are parallel; Godot's main thread cancels
+        // pending industry outside any pool (CODE-17).
+        crate::thread_pools::install(|| self.remove_building_in_pool(building_idx, record_undo))
+    }
+
+    fn remove_building_in_pool(&mut self, building_idx: usize, record_undo: bool) -> bool {
         let dirty_bounds = self.allocator.site_world_bounds(building_idx);
         // Read while the farm still owns its field: removing it gives the ground back, and the
         // plants the field was hiding have to return with it.

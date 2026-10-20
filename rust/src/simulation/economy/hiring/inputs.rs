@@ -451,12 +451,15 @@ impl CensusInputs {
         } else {
             &mut []
         };
-        back.par_iter_mut()
-            .chain(front.par_iter_mut())
-            .for_each(|household| {
-                retarget(&mut household.home_building_id);
-                retarget(&mut household.reserved_store_building_id);
-            });
+        // Main-thread edits that remove buildings reach here outside any pool (CODE-17).
+        crate::thread_pools::install(|| {
+            back.par_iter_mut()
+                .chain(front.par_iter_mut())
+                .for_each(|household| {
+                    retarget(&mut household.home_building_id);
+                    retarget(&mut household.reserved_store_building_id);
+                });
+        });
     }
 
     /// Mirrors the swap-remove of household `removed` that follows, before it happens: `live`
