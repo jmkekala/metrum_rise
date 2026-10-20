@@ -4,14 +4,14 @@
 
 use super::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use super::fiscal::CityFiscalPolicy;
-use super::households::{Household, consumer_basket_cost, visit_consumer_budgets};
+use super::households::{Household, consumer_basket_cost, visit_consumer_budgets_in};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use rayon::prelude::*;
 
 pub(crate) mod business;
 mod revalidation;
 mod routing;
-pub(crate) use routing::{ConsumerMarket, DirectConsumerQuoteKey};
+pub(crate) use routing::{ConsumerMarket, DirectConsumerQuoteKey, RefreshInputs, RefreshState};
 
 #[derive(Clone, Copy, Debug)]
 struct Category {
@@ -31,6 +31,15 @@ struct Claim {
     slot: usize,
     previous: Funds,
     acquired: Funds,
+}
+
+/// A consumer budget walk between census slices (`SIM-02-K`): whether every row so far matched
+/// the previous book, the next household not yet written and the walk's running treasury.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BudgetWalk {
+    unchanged: bool,
+    next_household: usize,
+    treasury: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +104,7 @@ impl ConsumerBudgets {
 
     // Refresh immutable account inputs before deciding whether an accepted book can survive.
     // The existing ordered benefit traversal compares each row, including skipped families.
+    #[cfg(test)]
     fn prepare_budgets(
         &mut self,
         households: &[Household],
@@ -104,6 +114,28 @@ impl ConsumerBudgets {
         policy: &CityFiscalPolicy,
         treasury: f64,
     ) -> bool {
+        let mut walk = self.begin_budgets(households.len(), catalog, treasury);
+        self.walk_budgets(
+            &mut walk,
+            households,
+            0..households.len(),
+            allocator,
+            catalog,
+            tuning,
+            policy,
+        );
+        self.finish_budgets(&walk)
+    }
+
+    // The walk's start: the basket's categories and their comparison with the previous book.
+    // O(profile ports). Walking every household range in order, then finishing, prepares the
+    // budgets as one walk does (`SIM-02-K`).
+    fn begin_budgets(
+        &mut self,
+        households: usize,
+        catalog: &RuntimeEconomyCatalog,
+        treasury: f64,
+    ) -> BudgetWalk {
         debug_assert!(!self.revalidation.is_active());
         self.previous_categories.clone_from(&self.categories);
         self.categories.clear();
@@ -144,7 +176,7 @@ impl ConsumerBudgets {
                 0.0
             };
         }
-        let mut unchanged = self.households.len() == households.len()
+        let unchanged = self.households.len() == households
             && self.categories.len() == self.previous_categories.len()
             && self
                 .categories
@@ -155,26 +187,51 @@ impl ConsumerBudgets {
                         && a.units_per_resident.to_bits() == b.units_per_resident.to_bits()
                         && a.budget_share.to_bits() == b.budget_share.to_bits()
                 });
-        self.households.resize(households.len(), (0, 0.0));
-        let mut next_household = 0;
+        self.households.resize(households, (0, 0.0));
         self.affordable_residents = 0.0;
+        BudgetWalk {
+            unchanged,
+            next_household: 0,
+            treasury: treasury.max(0.0),
+        }
+    }
+
+    // Writes the budgets of `range`, the walk's next households, comparing each row with the
+    // previous book. O(range + profile ports), allocation-free.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_budgets(
+        &mut self,
+        walk: &mut BudgetWalk,
+        households: &[Household],
+        range: std::ops::Range<usize>,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        policy: &CityFiscalPolicy,
+    ) {
         let gross_basket = consumer_basket_cost(catalog, policy.household_vat_rate);
-        visit_consumer_budgets(
+        let BudgetWalk {
+            unchanged,
+            next_household,
+            treasury,
+        } = walk;
+        visit_consumer_budgets_in(
             households,
+            range,
             allocator,
             catalog,
             tuning,
             policy,
             treasury,
             |index, members, spending| {
-                for previous in &mut self.households[next_household..index] {
-                    unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
+                for previous in &mut self.households[*next_household..index] {
+                    *unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
                     *previous = (0, 0.0);
                 }
                 let previous = self.households[index];
-                unchanged &= previous.0 == members && previous.1.to_bits() == spending.to_bits();
+                *unchanged &= previous.0 == members && previous.1.to_bits() == spending.to_bits();
                 self.households[index] = (members, spending);
-                next_household = index + 1;
+                *next_household = index + 1;
                 self.affordable_residents += if gross_basket > 0.0 {
                     (spending / gross_basket).min(f64::from(members))
                 } else {
@@ -182,7 +239,12 @@ impl ConsumerBudgets {
                 };
             },
         );
-        for previous in &mut self.households[next_household..] {
+    }
+
+    // Clears the rows after the last housed family and returns whether every row matched.
+    fn finish_budgets(&mut self, walk: &BudgetWalk) -> bool {
+        let mut unchanged = walk.unchanged;
+        for previous in &mut self.households[walk.next_household..] {
             unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
             *previous = (0, 0.0);
         }

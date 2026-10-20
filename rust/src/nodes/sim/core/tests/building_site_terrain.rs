@@ -86,7 +86,7 @@ fn place_yard_at(
         core.demand.runtime_tuning(),
     )?;
     assert!(
-        core.allocator.building_site_dirty_bounds.is_some(),
+        !core.allocator.building_site_dirty_bounds.is_empty(),
         "zoned placement must publish its own site change, just like explicit placement"
     );
     core.publish_pending_building_site_changes();
@@ -366,7 +366,7 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                 }
                 assert_eq!(core.allocator.buildings.len(), usize::from(minute));
                 assert!(
-                    core.allocator.take_pending_site_dirty_bounds().is_none(),
+                    core.allocator.take_pending_site_dirty_bounds().is_empty(),
                     "all modes must consume the shared site-change outbox"
                 );
                 assert!(
@@ -576,7 +576,7 @@ fn small_commercial_pads_leave_a_watertight_sloping_frontage() {
             core.allocator.building_sites[0].footprint_world,
             old_footprint
         );
-        assert!(core.allocator.building_site_dirty_bounds.is_some());
+        assert!(!core.allocator.building_site_dirty_bounds.is_empty());
         core.publish_pending_building_site_changes();
         assert!(settle_and_check_yards(&mut core) > 0);
     }
@@ -585,6 +585,132 @@ fn small_commercial_pads_leave_a_watertight_sloping_frontage() {
 #[test]
 fn kuopio_reference_supports_zoned_graded_yards_without_changing_fixture() {
     let _ = kuopio_yard_fixture();
+}
+
+// One render patch's ownership: road margin, site ownership, engineered margin and the two
+// sorted key lists' membership.
+fn patch_ownership(
+    core: &SimCore,
+    key: (usize, usize),
+) -> (Option<f32>, bool, Option<f32>, bool, bool) {
+    (
+        core.road_locked_terrain_patch_margins.get(&key).copied(),
+        core.building_site_owned_terrain_patch_keys.contains(&key),
+        core.engineered_terrain_patch_margins.get(&key).copied(),
+        core.road_locked_terrain_patch_keys
+            .binary_search(&key)
+            .is_ok(),
+        core.engineered_terrain_patch_keys
+            .binary_search(&key)
+            .is_ok(),
+    )
+}
+
+// `SIM-02-K`: two site changes far apart in one publication refresh the union of the patches
+// each touches. Their ownership equals what refreshing the box merged over both gives, and
+// every patch between them keeps its ownership, payload generation and render state.
+#[test]
+fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
+    use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+    let mut core = kuopio_yard_fixture();
+    let margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+        &core.heightmap,
+        ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+    );
+    let patches = |core: &SimCore, (x0, z0, x1, z1): (f32, f32, f32, f32)| {
+        core.heightmap.render_patch_keys_for_world_bounds(
+            x0 - margin_m,
+            z0 - margin_m,
+            x1 + margin_m,
+            z1 + margin_m,
+        )
+    };
+    let sites: Vec<_> = (0..core.allocator.buildings.len())
+        .map(|index| core.allocator.site_world_bounds(index).unwrap())
+        .collect();
+    let center = |b: (f32, f32, f32, f32)| Vector2::new((b.0 + b.2) * 0.5, (b.1 + b.3) * 0.5);
+    let distance = |(a, b): (usize, usize)| center(sites[a]).distance_to(center(sites[b]));
+    let (a, b) = (0..sites.len())
+        .flat_map(|a| (a + 1..sites.len()).map(move |b| (a, b)))
+        .max_by(|&x, &y| distance(x).total_cmp(&distance(y)))
+        .unwrap();
+    let mut touched = patches(&core, sites[a]);
+    touched.extend(patches(&core, sites[b]));
+    touched.sort_unstable();
+    touched.dedup();
+    let merged = patches(
+        &core,
+        (
+            sites[a].0.min(sites[b].0),
+            sites[a].1.min(sites[b].1),
+            sites[a].2.max(sites[b].2),
+            sites[a].3.max(sites[b].3),
+        ),
+    );
+    assert!(
+        merged.len() > touched.len(),
+        "the fixture's farthest sites must leave patches between them: {} of {}",
+        touched.len(),
+        merged.len()
+    );
+    let before: Vec<_> = merged
+        .iter()
+        .map(|&key| patch_ownership(&core, key))
+        .collect();
+    let generations = core.terrain_payload_patch_generations.clone();
+    let dirty = core.heightmap.dirty_render_patches().clone();
+    for index in [a.max(b), a.min(b)] {
+        assert!(core.allocator.remove_building_for_bulldoze(
+            index,
+            &mut core.zoning,
+            &mut core.agents,
+            &mut core.households,
+            &mut core.logistics,
+            &mut core.treasury.balance,
+        ));
+    }
+    assert_eq!(
+        core.allocator.building_site_dirty_bounds.len(),
+        2,
+        "each site change keeps its own box"
+    );
+    core.publish_pending_building_site_changes();
+    assert!(core.allocator.building_site_dirty_bounds.is_empty());
+
+    let after: Vec<_> = merged
+        .iter()
+        .map(|&key| patch_ownership(&core, key))
+        .collect();
+    assert_ne!(
+        after, before,
+        "removing the sites must change their patches"
+    );
+    for (index, key) in merged.iter().enumerate() {
+        let generation = core.terrain_payload_patch_generations.get(key);
+        if touched.binary_search(key).is_ok() {
+            assert_ne!(generation, generations.get(key), "touched patch {key:?}");
+            continue;
+        }
+        assert_eq!(after[index], before[index], "untouched patch {key:?}");
+        assert_eq!(generation, generations.get(key), "untouched patch {key:?}");
+        assert!(
+            dirty.contains(key) || !core.heightmap.dirty_render_patches().contains(key),
+            "untouched patch {key:?} must not be re-uploaded"
+        );
+    }
+    // The merged box's result: refreshing every patch in it changes no ownership and bumps
+    // no payload generation.
+    let generations = core.terrain_payload_patch_generations.clone();
+    core.refresh_engineered_terrain_patch_ownership_for_keys(
+        ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+        &merged,
+    );
+    let merged_result: Vec<_> = merged
+        .iter()
+        .map(|&key| patch_ownership(&core, key))
+        .collect();
+    assert_eq!(merged_result, after);
+    assert_eq!(core.terrain_payload_patch_generations, generations);
 }
 
 #[test]

@@ -62,5 +62,5 @@ pub(crate) use metrics::{
     physical_worker_capacity_for_profile, saleable_output_stock,
     scaled_input_inventory_targets_for_building, scaled_output_buffer_capacity_units_for_building,
     scaled_output_units_per_day_for_building, service_funded_worker_capacity,
-    visit_consumer_budgets, write_electricity_funding_by_building,
+    visit_consumer_budgets_in, write_electricity_funding_by_building,
 };

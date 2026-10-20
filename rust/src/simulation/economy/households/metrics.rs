@@ -247,24 +247,29 @@ pub(crate) fn consumer_basket_cost(catalog: &RuntimeEconomyCatalog, vat: f32) ->
     basket
 }
 
-/// Visits each housed family's recurring goods budget after taxes, utilities and property.
-/// The callback receives household index, desired resident count and gross spending including
-/// VAT. Savings and temporary benefits do not enter the budget. O(households + profile ports),
-/// allocation-free; finite benefit claims preserve settlement's deterministic household order.
-pub(crate) fn visit_consumer_budgets(
+/// Visits each housed family's recurring goods budget after taxes, utilities and property, for
+/// the households in `range`. The callback receives household index, desired resident count and
+/// gross spending including VAT. Savings and temporary benefits do not enter the budget; finite
+/// benefit claims draw on the walk's running `treasury` (start it at the balance clamped to
+/// zero) in settlement's deterministic household order, so consecutive ranges visited in order
+/// visit exactly what one walk over every household does, bit for bit (`SIM-02-K`).
+/// O(range + profile ports), allocation-free.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_consumer_budgets_in(
     households: &[Household],
+    range: std::ops::Range<usize>,
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
     tuning: &RuntimeEconomyTuning,
     policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
-    treasury_balance: f64,
+    treasury: &mut f64,
     mut visitor: impl FnMut(usize, u16, f64),
 ) {
     let terms = ConsumerBudgetTerms::new(catalog, tuning, policy);
-    let mut treasury = treasury_balance.max(0.0);
-    for (index, household) in households.iter().enumerate() {
-        if let Some(spending) = terms.budget(household, allocator, policy, &mut treasury) {
-            visitor(index, household.member_count, spending);
+    let first = range.start;
+    for (offset, household) in households[range].iter().enumerate() {
+        if let Some(spending) = terms.budget(household, allocator, policy, treasury) {
+            visitor(first + offset, household.member_count, spending);
         }
     }
 }

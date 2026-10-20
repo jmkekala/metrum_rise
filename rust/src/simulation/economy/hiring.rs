@@ -38,7 +38,7 @@ pub(crate) use rolling::{
     CENSUS_WINDOW_START, CensusKey, REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus,
     StructureRevisions, WindowAction, removals_allowed,
 };
-pub(crate) use steps::CensusProgress;
+pub(crate) use steps::{CensusProgress, StepWork};
 #[cfg(test)]
 pub(crate) use steps::{STEP_NAMES, STEP_NANOS};
 

@@ -9,8 +9,12 @@
 //! census stepped over any slices equals one run at once bit for bit.
 //!
 //! **Steps**, in order: route quotes and paid freight; the production market (its 256-building
-//! chunks sliced); the consumer-market refresh; setup (port offsets, supplier order, provisional
-//! shares and the household-quote preparation); the initial ceilings (sliced). Then each closure
+//! chunks sliced); the consumer-market refresh (its start; the household budgets, sliced and
+//! serial; the access rows, sliced; after a membership change the index entries, sliced, the
+//! index build and copies and the reservation positions, sliced; its finish, which resets the
+//! claims of a book not retained); setup (port offsets and counts, sliced; the import plans'
+//! layout; the supplier order and provisional shares, sliced; the household-quote preparation);
+//! the initial ceilings (sliced). Then each closure
 //! pass: import funding (sliced, parallel); household claims (sliced, serial); the input-source
 //! reset; household production (sliced); the current-staff and expansion staffing sweeps
 //! (sliced, serial in supplier order); finishing the pass's household quotes; publishing funded
@@ -28,12 +32,15 @@
 //! reaches the budget, so one slice holds at most one row past it; an unsliced step runs whole
 //! once started and starts only in a slot that has done no other step, unless the budget
 //! covers its estimate. [`CensusProgress::remaining_work`] bounds the work left from below,
-//! which the hourly driver combines with the previous census's total. Slicing never changes a
-//! result. Steps allocate nothing once the census storage has grown.
+//! which the hourly driver combines with the previous census's work per step
+//! ([`CensusProgress::planned_work`]). Slicing never changes a result; a restart inside the
+//! consumer-market refresh leaves its book torn, and the restarted refresh withdraws it, as a
+//! load does. Steps allocate nothing once the census storage has grown.
 
 use std::ops::Range;
 
 use super::*;
+use crate::simulation::economy::customers::{RefreshInputs, RefreshState};
 
 /// What a census reads besides its own books: the city (live or an input copy), the network,
 /// the catalog and the census parameters.
@@ -62,8 +69,18 @@ pub(crate) static STEP_NANOS: [std::sync::atomic::AtomicU64; STEP_COUNT] =
     [const { std::sync::atomic::AtomicU64::new(0) }; STEP_COUNT];
 
 /// Number of census steps, `Done` included.
-#[cfg(test)]
 pub(crate) const STEP_COUNT: usize = Step::Done as usize + 1;
+
+/// Work units a census used in each step, over all its closure passes (`SIM-02-K`); the next
+/// census's slices plan for them. [`Default`] is none.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StepWork([u64; STEP_COUNT]);
+
+impl Default for StepWork {
+    fn default() -> Self {
+        Self([0; STEP_COUNT])
+    }
+}
 
 /// Step names in order, for the step-cost measurement.
 #[cfg(test)]
@@ -72,8 +89,18 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
     "market_begin",
     "market_chunks",
     "market_end",
-    "customers",
-    "setup",
+    "customers_begin",
+    "customer_budgets",
+    "customer_access",
+    "customer_index_entries",
+    "customer_index_build",
+    "customer_index_copy",
+    "customer_reservations",
+    "customers_finish",
+    "setup_count",
+    "setup_plans",
+    "setup_order",
+    "setup_finish",
     "ceilings",
     "pass_start",
     "import_funding",
@@ -129,8 +156,18 @@ enum Step {
     MarketBegin,
     MarketChunks,
     MarketEnd,
-    Customers,
-    Setup,
+    CustomersBegin,
+    CustomerBudgets,
+    CustomerAccess,
+    CustomerIndexEntries,
+    CustomerIndexBuild,
+    CustomerIndexCopy,
+    CustomerReservations,
+    CustomersFinish,
+    SetupCount,
+    SetupPlans,
+    SetupOrder,
+    SetupFinish,
     Ceilings,
     PassStart,
     ImportFunding,
@@ -159,8 +196,19 @@ impl Step {
         match self {
             Routes => 60,
             MarketChunks => 10,
-            Customers => 250,
-            Setup => 60,
+            CustomersBegin => 2,
+            CustomerBudgets => 30,
+            // A row that resamples its trip ends costs about 90; most rows only compare.
+            CustomerAccess => 90,
+            CustomerIndexEntries => 15,
+            CustomerIndexBuild => 35,
+            CustomerIndexCopy => 30,
+            CustomerReservations => 10,
+            CustomersFinish => 50,
+            SetupCount => 20,
+            SetupPlans => 25,
+            SetupOrder => 15,
+            SetupFinish => 15,
             Ceilings => 10,
             ImportFunding => 20,
             HouseholdClaims | CurrentStaff | Expansion => 25,
@@ -180,7 +228,17 @@ impl Step {
         use Step::*;
         matches!(
             self,
-            Routes | Customers | Setup | Sources | Repair | BusinessSeed | Settle
+            Routes
+                | CustomersBegin
+                | CustomerIndexBuild
+                | CustomerIndexCopy
+                | CustomersFinish
+                | SetupPlans
+                | SetupFinish
+                | Sources
+                | Repair
+                | BusinessSeed
+                | Settle
         )
     }
 
@@ -198,7 +256,13 @@ impl Step {
             | Self::FinishPass
             | Self::BusinessPublish
             | Self::Done => 0,
-            Self::Customers => households,
+            Self::CustomerBudgets
+            | Self::CustomerAccess
+            | Self::CustomerIndexEntries
+            | Self::CustomerIndexBuild
+            | Self::CustomerIndexCopy
+            | Self::CustomerReservations
+            | Self::CustomersFinish => households,
             _ => buildings,
         }
     }
@@ -210,9 +274,19 @@ impl Step {
             Routes => MarketBegin,
             MarketBegin => MarketChunks,
             MarketChunks => MarketEnd,
-            MarketEnd => Customers,
-            Customers => Setup,
-            Setup => Ceilings,
+            MarketEnd => CustomersBegin,
+            CustomersBegin => CustomerBudgets,
+            CustomerBudgets => CustomerAccess,
+            CustomerAccess => CustomerIndexEntries,
+            CustomerIndexEntries => CustomerIndexBuild,
+            CustomerIndexBuild => CustomerIndexCopy,
+            CustomerIndexCopy => CustomerReservations,
+            CustomerReservations => CustomersFinish,
+            CustomersFinish => SetupCount,
+            SetupCount => SetupPlans,
+            SetupPlans => SetupOrder,
+            SetupOrder => SetupFinish,
+            SetupFinish => Ceilings,
             Ceilings => PassStart,
             PassStart => ImportFunding,
             ImportFunding => HouseholdClaims,
@@ -239,8 +313,10 @@ impl Step {
         match self {
             Routes => 0,
             MarketBegin | MarketChunks | MarketEnd => 1,
-            Customers => 2,
-            Setup | Ceilings | PassStart | ImportFunding => 3,
+            CustomersBegin | CustomerBudgets | CustomerAccess | CustomerIndexEntries
+            | CustomerIndexBuild | CustomerIndexCopy | CustomerReservations | CustomersFinish => 2,
+            SetupCount | SetupPlans | SetupOrder | SetupFinish | Ceilings | PassStart
+            | ImportFunding => 3,
             HouseholdClaims => 4,
             Sources | SourceProduction => 5,
             CurrentStaff | Expansion => 6,
@@ -260,15 +336,20 @@ pub(crate) struct CensusProgress {
     // Rows of the current step done: buildings, staffing slots or, for the market, chunks.
     cursor: usize,
     reuse_market: bool,
+    // The consumer-market refresh in progress (`SIM-02-K`).
+    customers: RefreshState,
     retained_customers: bool,
+    // Setup's running counts (`SIM-02-K`): output ports, input ports, consumer firms, their
+    // output ports and the most output ports of one consumer firm.
+    setup: [usize; 5],
     input_ports: usize,
     first_pass: bool,
     // Closure passes started; slicing only, never read by the census itself.
     passes: usize,
-    // Work units used so far, and by the current step (`SIM-02-K`); slicing only, never read
-    // by the census itself.
-    used: u64,
+    // Work units used by the current step, and by each step so far (`SIM-02-K`); slicing
+    // only, never read by the census itself.
     step_used: u64,
+    step_work: StepWork,
     reduced: bool,
     settled: bool,
     // Diagnostic step times for the `funding_detail` debug line; never read by the census.
@@ -325,9 +406,21 @@ impl CensusProgress {
         work + expected.saturating_sub(self.passes.max(1)) as u64 * pass
     }
 
-    /// Work units this census has used so far (`SIM-02-K`).
-    pub(crate) fn used_work(&self) -> u64 {
-        self.used
+    /// Work units this census has used in each step so far (`SIM-02-K`).
+    pub(crate) fn step_work(&self) -> StepWork {
+        self.step_work
+    }
+
+    /// The work left if each step takes what it took in the census that used `expected`
+    /// (`SIM-02-K`): per step, its work there less its work here, summed, so a step that takes
+    /// more than it did leaves the other steps' plans as they were. O(steps).
+    pub(crate) fn planned_work(&self, expected: &StepWork) -> u64 {
+        expected
+            .0
+            .iter()
+            .zip(&self.step_work.0)
+            .map(|(&expected, &used)| expected.saturating_sub(used))
+            .fold(0_u64, u64::saturating_add)
     }
 
     /// Closure passes started so far.
@@ -378,6 +471,20 @@ fn market_revision(
     )
 }
 
+// The consumer-market refresh's inputs: the census's own (`SIM-02-K`).
+fn refresh_inputs<'a, F>(ctx: &CensusContext<'a, F>) -> RefreshInputs<'a> {
+    RefreshInputs {
+        households: ctx.households,
+        allocator: ctx.allocator,
+        catalog: ctx.catalog,
+        tuning: ctx.tuning,
+        policy: ctx.fiscal,
+        treasury: ctx.treasury_balance,
+        network: ctx.network,
+        graph: ctx.graph,
+    }
+}
+
 fn utilities(catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning) -> [f32; 3] {
     local_utility_service_costs(catalog).map(|price| price * tuning.owa_import_price_multiplier)
 }
@@ -424,7 +531,8 @@ impl JobFunding {
                 measured.elapsed().as_nanos() as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
-            progress.used = progress.used.saturating_add(used);
+            progress.step_work.0[step as usize] =
+                progress.step_work.0[step as usize].saturating_add(used);
             if progress.step == step {
                 progress.step_used = progress.step_used.saturating_add(used);
             }
@@ -466,8 +574,63 @@ impl JobFunding {
                 return used;
             }
             Step::MarketEnd => self.census_market_end(ctx, progress),
-            Step::Customers => self.census_customers(ctx, progress),
-            Step::Setup => self.census_setup(ctx, progress),
+            Step::CustomersBegin => {
+                progress.customers = self.customers.begin_refresh(&refresh_inputs(ctx));
+            }
+            Step::CustomerIndexEntries
+                if progress.cursor == 0
+                    && !self
+                        .customers
+                        .begin_refresh_indices(&mut progress.customers) =>
+            {
+                // No rebuild: no entries, indices or reservations to write.
+                progress.advance(Step::CustomersFinish);
+                return 0;
+            }
+            Step::CustomerBudgets
+            | Step::CustomerAccess
+            | Step::CustomerIndexEntries
+            | Step::CustomerReservations => {
+                let households = ctx.households.len();
+                let rows = progress.slice(households, budget_rows);
+                let used = rows.len() as u64 * step.row_work();
+                match step {
+                    Step::CustomerBudgets => self.customers.refresh_budgets(
+                        &mut progress.customers,
+                        &refresh_inputs(ctx),
+                        rows,
+                    ),
+                    Step::CustomerAccess => self.customers.refresh_access(
+                        &mut progress.customers,
+                        &refresh_inputs(ctx),
+                        rows,
+                    ),
+                    Step::CustomerIndexEntries => self
+                        .customers
+                        .refresh_index_entries(&progress.customers, rows),
+                    _ => self
+                        .customers
+                        .refresh_reservations(&progress.customers, rows),
+                }
+                progress.finish_slice(households);
+                return used;
+            }
+            Step::CustomerIndexBuild => self.customers.build_refreshed_indices(&progress.customers),
+            Step::CustomerIndexCopy => self.customers.copy_refreshed_indices(&progress.customers),
+            Step::CustomersFinish => self.census_customers(ctx, progress),
+            Step::SetupCount | Step::SetupOrder => {
+                let rows = progress.slice(buildings, budget_rows);
+                let used = rows.len() as u64 * step.row_work();
+                if step == Step::SetupCount {
+                    self.census_setup_count(ctx, progress, rows);
+                } else {
+                    self.census_setup_order(ctx, rows);
+                }
+                progress.finish_slice(buildings);
+                return used;
+            }
+            Step::SetupPlans => self.census_setup_plans(ctx, progress),
+            Step::SetupFinish => self.census_setup_finish(ctx, progress),
             Step::HouseholdClaims | Step::CurrentStaff | Step::Expansion => {
                 let start = progress.cursor.min(buildings);
                 let (end, used) = if step == Step::HouseholdClaims {
@@ -849,27 +1012,9 @@ impl JobFunding {
     }
 
     fn census_customers<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &mut CensusProgress) {
-        let CensusContext {
-            allocator,
-            households,
-            network,
-            graph,
-            catalog,
-            tuning,
-            fiscal,
-            treasury_balance,
-            ..
-        } = *ctx;
-        progress.retained_customers = self.customers.refresh(
-            households,
-            allocator,
-            catalog,
-            tuning,
-            fiscal,
-            treasury_balance,
-            network,
-            graph,
-        );
+        progress.retained_customers = self
+            .customers
+            .finish_refresh(&mut progress.customers, &refresh_inputs(ctx));
         // A refresh that reset the book ends the recorded quotes' validity now, not at setup:
         // a census restarted before setup refreshes again, finds its inputs unchanged and
         // would otherwise replay the previous census's quotes against the reset book.
@@ -878,51 +1023,63 @@ impl JobFunding {
         }
     }
 
-    fn census_setup<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &mut CensusProgress) {
+    // Setup's first pass over buildings `rows`, in order: customer port offsets, funding-phase
+    // counts and the port counts, carried between slices (`SIM-02-K`). O(rows).
+    fn census_setup_count<F>(
+        &mut self,
+        ctx: &CensusContext<'_, F>,
+        progress: &mut CensusProgress,
+        rows: Range<usize>,
+    ) {
         let allocator = ctx.allocator;
         let catalog = ctx.catalog;
-        #[cfg(test)]
-        let CensusContext {
-            households,
-            network,
-            graph,
-            tuning,
-            fiscal,
-            treasury_balance,
-            ..
-        } = *ctx;
-        let count = allocator.buildings.len();
-        self.record_operating(&allocator.buildings);
-        self.customer_offsets.resize(count + 1, 0);
-        self.local_order.resize(count, 0);
-        self.phase_offsets.resize(catalog.funding_phase_count(), 0);
-        self.phase_offsets.fill(0);
-        let mut ports = 0;
-        let mut inputs = 0;
-        let mut consumer_firms = 0;
-        let mut consumer_ports = 0;
-        let mut maximum_consumer_ports = 0;
-        for (index, building) in allocator.buildings.iter().enumerate() {
-            self.customer_offsets[index] = ports;
+        if rows.start == 0 {
+            let count = allocator.buildings.len();
+            self.record_operating(&allocator.buildings);
+            self.customer_offsets.resize(count + 1, 0);
+            self.local_order.resize(count, 0);
+            self.phase_offsets.resize(catalog.funding_phase_count(), 0);
+            self.phase_offsets.fill(0);
+            progress.setup = [0; 5];
+        }
+        let [
+            ports,
+            inputs,
+            consumer_firms,
+            consumer_ports,
+            maximum_consumer_ports,
+        ] = &mut progress.setup;
+        for (index, building) in allocator.buildings[rows.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, building)| (rows.start + offset, building))
+        {
+            self.customer_offsets[index] = *ports;
             self.phase_offsets[catalog.funding_phase(building.economy_profile_runtime_id)] += 1;
             if let Some(profile) =
                 catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
             {
-                ports += profile.outputs.len();
-                inputs += profile.inputs.len();
+                *ports += profile.outputs.len();
+                *inputs += profile.inputs.len();
                 if profile
                     .outputs
                     .iter()
                     .any(|port| self.customers.consumes(port.resource_runtime_id))
                 {
-                    consumer_firms += 1;
-                    consumer_ports += profile.outputs.len();
-                    maximum_consumer_ports = maximum_consumer_ports.max(profile.outputs.len());
+                    *consumer_firms += 1;
+                    *consumer_ports += profile.outputs.len();
+                    *maximum_consumer_ports = (*maximum_consumer_ports).max(profile.outputs.len());
                 }
             }
         }
-        self.customer_offsets[count] = ports;
-        self.import_plans.prepare(&self.customer_offsets, catalog);
+    }
+
+    // The import plans' layout and the funding phases' first slots, between setup's passes.
+    fn census_setup_plans<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &CensusProgress) {
+        let count = ctx.allocator.buildings.len();
+        self.customer_offsets[count] = progress.setup[0];
+        self.import_plans
+            .prepare(&self.customer_offsets, ctx.catalog);
         // Immutable recipe order is prepared once, not once per closure attempt. Counts
         // and scatter cursors are dependent; stable building order keeps claims deterministic.
         let mut first = 0;
@@ -931,8 +1088,19 @@ impl JobFunding {
             *offset = first;
             first = end;
         }
-        self.potential_customers.reserve_inputs(inputs);
-        for (index, building) in allocator.buildings.iter().enumerate() {
+        self.potential_customers.reserve_inputs(progress.setup[1]);
+    }
+
+    // Setup's second pass over buildings `rows`, in order: counted buyers, the supplier order
+    // and the provisional local shares. O(rows + their output ports).
+    fn census_setup_order<F>(&mut self, ctx: &CensusContext<'_, F>, rows: Range<usize>) {
+        let allocator = ctx.allocator;
+        let catalog = ctx.catalog;
+        for (index, building) in allocator.buildings[rows.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, building)| (rows.start + offset, building))
+        {
             if self.potential_customers.counted[index] {
                 self.potential_customers.owners.push(index);
             }
@@ -960,6 +1128,35 @@ impl JobFunding {
                 }
             }
         }
+    }
+
+    // Setup's end: the port-sized books, the household-quote preparation and the closure
+    // rows. O(B + ports) in parallel.
+    fn census_setup_finish<F>(
+        &mut self,
+        ctx: &CensusContext<'_, F>,
+        progress: &mut CensusProgress,
+    ) {
+        let allocator = ctx.allocator;
+        #[cfg(test)]
+        let CensusContext {
+            households,
+            network,
+            graph,
+            catalog,
+            tuning,
+            fiscal,
+            treasury_balance,
+            ..
+        } = *ctx;
+        let count = allocator.buildings.len();
+        let [
+            ports,
+            inputs,
+            consumer_firms,
+            consumer_ports,
+            maximum_consumer_ports,
+        ] = progress.setup;
         self.customer_units.resize(ports, -1.0);
         self.import_memo_units.resize(ports, 0.0);
         #[cfg(test)]

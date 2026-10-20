@@ -13,18 +13,21 @@
 //!
 //! **Costs** (`SIM-02-K`). Work is counted in work units (`hiring/steps.rs`), never measured
 //! time. Each window slot gets ceil(R / D) work units, at least one. R is the work
-//! left: the previous census's total less the work used so far, or, if more, the estimate of
+//! left: per step, the previous census's work in the step less this census's, summed (a step
+//! that takes more than before leaves the other steps' plans as they were), or, if more, the
+//! estimate of
 //! [`CensusProgress::remaining_work`] (the rows left at their weights, a serial sweep in
 //! progress at its observed rate, as many closure passes as the previous census took). D is
 //! max(S − [`SLACK_SLOTS`], S / 4, 1), S the window slots left: the census plans to finish
 //! [`SLACK_SLOTS`] slots before the window ends, and from S = 128 on, work it did not plan for
 //! spreads over the slots left instead of landing in one. The window's last slot gets all that
 //! remains, as the whole-census fallback at publication does.
-//! A step that is not sliced (the route quotes, the consumer-market refresh, setup, the
-//! input-source reset, repair, business seeding, propagation) runs whole in the slot it starts
-//! in. A restart repeats the work done so far.
+//! A step that is not sliced (the route quotes, the consumer-market refresh's first and last
+//! phases and its index build and copies, setup's two joins, the input-source reset, repair,
+//! business seeding, propagation) runs whole in the slot it starts in. A restart repeats the
+//! work done so far.
 
-use super::{CensusInputs, CensusProgress, FILL_SLOTS, JobFunding};
+use super::{CensusInputs, CensusProgress, FILL_SLOTS, JobFunding, StepWork};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
@@ -128,9 +131,9 @@ pub(crate) struct RollingCensus {
     // Closure passes the last finished census took, which the next one's slices plan for;
     // slicing never changes a census's result.
     expected_passes: usize,
-    // Work units the last finished census used, which the next one's slices plan for
-    // (`SIM-02-K`).
-    expected_work: u64,
+    // Work units the last finished census used in each step, which the next one's slices plan
+    // for (`SIM-02-K`).
+    expected_work: StepWork,
     /// Census restarts so far, for tests.
     #[cfg(test)]
     pub(crate) restarts: usize,
@@ -219,10 +222,7 @@ impl RollingCensus {
             let rows = self
                 .progress
                 .remaining_work(buildings, households, self.expected_passes);
-            let planned = self
-                .expected_work
-                .saturating_sub(self.progress.used_work())
-                .max(rows);
+            let planned = self.progress.planned_work(&self.expected_work).max(rows);
             let divisor = slots_left
                 .saturating_sub(SLACK_SLOTS)
                 .max(slots_left / 4)
@@ -240,7 +240,7 @@ impl RollingCensus {
         );
         if done {
             self.expected_passes = self.progress.passes();
-            self.expected_work = self.progress.used_work();
+            self.expected_work = self.progress.step_work();
         }
         done
     }
@@ -321,7 +321,7 @@ impl RollingCensus {
         // As the uninterrupted game records when the same census finishes (`Self::step`, which
         // the whole run at publication goes through too).
         self.expected_passes = self.progress.passes();
-        self.expected_work = self.progress.used_work();
+        self.expected_work = self.progress.step_work();
     }
 
     /// Recomputes, at load, the census the hour's first slot published into `live`, from the
@@ -366,7 +366,16 @@ impl RollingCensus {
         funding.published = Some(key);
         *live = funding;
         self.expected_passes = progress.passes();
-        self.expected_work = progress.used_work();
+        self.expected_work = progress.step_work();
+    }
+}
+
+impl RollingCensus {
+    /// Gives the census's own book `live`'s walking proofs if it has none
+    /// ([`ConsumerMarket::adopt_walking_proofs`](crate::simulation::economy::customers::ConsumerMarket::adopt_walking_proofs)).
+    /// A function of the network alone, so no census result changes. O(network) once, at load.
+    pub(crate) fn adopt_walking_proofs(&mut self, live: &JobFunding) {
+        self.funding.customers.adopt_walking_proofs(&live.customers);
     }
 }
 

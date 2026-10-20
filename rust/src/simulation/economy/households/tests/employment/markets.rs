@@ -1775,6 +1775,47 @@ fn perf_contract_financing_locality() {
 }
 
 // A labelled fixture and the incomes its census runs at in turn.
+// `SIM-02-K`: a census restarted after any slice, inside the consumer-market refresh's household
+// phases too, equals one run bit for bit. A restart there leaves the customer book torn, and the
+// restarted refresh withdraws it, so the census is the one a loaded game computes.
+#[test]
+fn a_census_restarted_after_any_slice_equals_one_run_bit_for_bit() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // The second census's income: unchanged (the reference retains its book) or changed.
+    for second in [1_000_000.0, 7_750.0] {
+        let census = |restart: Option<usize>| {
+            let mut market = financing_chain(2, 3);
+            market.families[0].gross_daily_wages = 1_000_000.0;
+            market.families[0].budget = 1_000_000.0;
+            market.refresh(&tuning);
+            market.families[0].gross_daily_wages = second;
+            market.families[0].budget = second;
+            let slices = match restart {
+                None => {
+                    market.refresh(&tuning);
+                    0
+                }
+                Some(_) => market.refresh_in_slices(&tuning, 1, restart),
+            };
+            (market, slices)
+        };
+        let (reference, _) = census(None);
+        let (_, slices) = census(Some(usize::MAX));
+        let mut torn = 0;
+        for restart in 1..slices {
+            let (market, _) = census(Some(restart));
+            torn += market.funding.customers.torn_refreshes_for_test();
+            reference.assert_same_census(
+                &market,
+                &format!("income {second}, restart after slice {restart} of {slices}"),
+            );
+        }
+        assert!(torn > 0, "some restart must land inside the refresh");
+    }
+}
+
 type MarketCase = (String, Box<dyn Fn() -> MarketFixture>, Vec<f32>);
 
 // The census in slices of any size, and restarted part way as a network change restarts it,

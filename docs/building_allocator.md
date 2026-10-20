@@ -221,8 +221,9 @@ installs the site, bumps the building revision, invalidates derived indices/entr
 terrain bounds in the allocator's shared pending-site outbox. Demand accounting no longer carries
 a separate terrain-dirtiness result. Placement, level changes and removal own their invalidation;
 the simulation consumes it through `publish_pending_building_site_changes()`.
-Explicit sites additionally publish separate local cell-exclusion bounds. The terrain union is
-not a zoning invalidation envelope: ordinary parcel buildings cannot change cell exclusions,
+Explicit sites additionally publish separate local cell-exclusion bounds. The terrain outbox keeps
+one box per site change, never merged, and the publication refreshes the union of the terrain
+patches the boxes touch (`SIM-02-K`); the boxes are not a zoning invalidation envelope: ordinary parcel buildings cannot change cell exclusions,
 and clearing their occupancy already queues the parcel's local frontage checks. Field removal
 continues to invalidate its saved polygon before swap-remapping. Both site outboxes are derived,
 cleared with the allocator, and consumed by the same publication boundary.

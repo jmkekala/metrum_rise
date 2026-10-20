@@ -780,24 +780,37 @@ impl TerrainSystem {
         max_x: f32,
         max_z: f32,
     ) -> Vec<(usize, usize)> {
+        let mut keys = Vec::new();
+        self.append_render_patch_keys_for_world_bounds(min_x, min_z, max_x, max_z, &mut keys);
+        keys
+    }
+
+    /// Appends the render-patch keys whose sample bounds overlap the given world-space
+    /// rectangle, in [`Self::render_patch_keys_for_world_bounds`]'s order. O(patches).
+    pub(crate) fn append_render_patch_keys_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        keys: &mut Vec<(usize, usize)>,
+    ) {
         let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
             self.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
         else {
-            return Vec::new();
+            return;
         };
 
         let (min_patch_x, max_patch_x) =
             self.patch_range_for_sample_range(min_grid_x, max_grid_x, self.render_patch_cols());
         let (min_patch_z, max_patch_z) =
             self.patch_range_for_sample_range(min_grid_z, max_grid_z, self.render_patch_rows());
-        let mut keys =
-            Vec::with_capacity((max_patch_x - min_patch_x + 1) * (max_patch_z - min_patch_z + 1));
+        keys.reserve((max_patch_x - min_patch_x + 1) * (max_patch_z - min_patch_z + 1));
         for patch_z in min_patch_z..=max_patch_z {
             for patch_x in min_patch_x..=max_patch_x {
                 keys.push((patch_x, patch_z));
             }
         }
-        keys
     }
 
     /// Returns the owned world-space rectangle for one terrain render patch.

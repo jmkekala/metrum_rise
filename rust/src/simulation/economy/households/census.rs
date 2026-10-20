@@ -252,6 +252,10 @@ impl HouseholdSystem {
             &tuning,
             key,
         );
+        // The census's own book takes the walking proofs the loaded census built, as an
+        // uninterrupted game's census storage, the previous published census, holds them
+        // (`SIM-02-K`); the first window after loading then has no network-scale build.
+        self.census_run.adopt_walking_proofs(&self.job_funding);
     }
 }
 

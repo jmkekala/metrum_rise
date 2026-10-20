@@ -505,8 +505,10 @@ pub struct BuildingAllocator {
     pub(crate) entrances: Vec<BuildingEntrance>,
     /// Derived flat building-site clients keyed by building index.
     pub(crate) building_sites: Vec<BuildingSiteClient>,
-    /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode.
-    pub(crate) building_site_dirty_bounds: Option<(f32, f32, f32, f32)>,
+    /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode:
+    /// one box per site change, never merged, so changes far apart refresh only the terrain
+    /// patches each touches (`SIM-02-K`).
+    pub(crate) building_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
@@ -873,7 +875,7 @@ impl BuildingAllocator {
             entrance_ref_revision: 0,
             entrances: Vec::new(),
             building_sites: Vec::new(),
-            building_site_dirty_bounds: None,
+            building_site_dirty_bounds: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
             registry: AssetRegistry::new(),
@@ -1121,7 +1123,7 @@ impl BuildingAllocator {
         self.explicit_cell_site_count = 0;
         self.max_site_radius_m = 0.0;
         self.max_site_radius_count = 0;
-        self.building_site_dirty_bounds = None;
+        self.building_site_dirty_bounds.clear();
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;

@@ -83,7 +83,7 @@ fn explicit_roadside_site_rejects_missing_surface_without_raw_terrain_fallback()
     );
     assert!(allocator.buildings.is_empty() && allocator.building_sites.is_empty());
     assert_eq!(allocator.building_ref_revision(), revision);
-    assert!(allocator.take_pending_site_dirty_bounds().is_none());
+    assert!(allocator.take_pending_site_dirty_bounds().is_empty());
 }
 
 #[test]

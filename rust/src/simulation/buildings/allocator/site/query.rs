@@ -117,20 +117,15 @@ impl BuildingAllocator {
             .map(|site| site.lot_bounds())
     }
 
+    /// Queues one site change's bounds in the terrain outbox. Boxes stay separate: a box
+    /// merged over changes far apart would refresh every terrain patch between them
+    /// (`SIM-02-K`). O(1) amortized.
     pub(crate) fn accumulate_pending_site_dirty_bounds(
         &mut self,
         bounds: Option<(f32, f32, f32, f32)>,
     ) {
-        let Some(bounds) = bounds else {
-            return;
-        };
-        if let Some(existing) = &mut self.building_site_dirty_bounds {
-            existing.0 = existing.0.min(bounds.0);
-            existing.1 = existing.1.min(bounds.1);
-            existing.2 = existing.2.max(bounds.2);
-            existing.3 = existing.3.max(bounds.3);
-        } else {
-            self.building_site_dirty_bounds = Some(bounds);
+        if let Some(bounds) = bounds {
+            self.building_site_dirty_bounds.push(bounds);
         }
     }
 
@@ -157,8 +152,21 @@ impl BuildingAllocator {
         self.cell_site_dirty_bounds.pop()
     }
 
-    pub(crate) fn take_pending_site_dirty_bounds(&mut self) -> Option<(f32, f32, f32, f32)> {
-        self.building_site_dirty_bounds.take()
+    /// Takes the queued per-change site boxes, leaving the outbox empty; hand the storage back
+    /// with [`Self::return_site_dirty_bounds_storage`] to keep its capacity.
+    pub(crate) fn take_pending_site_dirty_bounds(&mut self) -> Vec<(f32, f32, f32, f32)> {
+        std::mem::take(&mut self.building_site_dirty_bounds)
+    }
+
+    /// Returns a drained outbox's storage when nothing was queued meanwhile. O(1).
+    pub(crate) fn return_site_dirty_bounds_storage(
+        &mut self,
+        mut storage: Vec<(f32, f32, f32, f32)>,
+    ) {
+        if self.building_site_dirty_bounds.is_empty() {
+            storage.clear();
+            self.building_site_dirty_bounds = storage;
+        }
     }
 
     pub(crate) fn sample_building_site_height(&self, pos: Vector2) -> Option<f32> {

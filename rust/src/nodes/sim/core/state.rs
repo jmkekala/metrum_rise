@@ -1586,9 +1586,11 @@ impl SimCore {
                     max: glam::DVec2::new(f64::from(bounds.2), f64::from(bounds.3)),
                 });
         }
-        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
-            self.mark_building_site_terrain_only_bounds(bounds);
+        let boxes = self.allocator.take_pending_site_dirty_bounds();
+        if !boxes.is_empty() {
+            self.mark_building_site_terrain_only_boxes(&boxes);
         }
+        self.allocator.return_site_dirty_bounds_storage(boxes);
     }
 
     /// Keeps saved production polygons aligned with allocator swap removals before further use.
@@ -1618,24 +1620,35 @@ impl SimCore {
                 min: glam::DVec2::new(f64::from(bounds.0), f64::from(bounds.1)),
                 max: glam::DVec2::new(f64::from(bounds.2), f64::from(bounds.3)),
             });
-        self.mark_building_site_terrain_only_bounds(bounds);
+        self.mark_building_site_terrain_only_boxes(&[bounds]);
     }
 
-    fn mark_building_site_terrain_only_bounds(&mut self, bounds: (f32, f32, f32, f32)) {
+    // Marks each site change's terrain and refreshes the ownership of the union of the render
+    // patches the boxes touch, each once (`SIM-02-K`). A patch's ownership is a function of the
+    // roads, sites and heightmap, so a patch no box touches keeps its state; one box merged over
+    // changes far apart would refresh and re-upload every patch between them.
+    // O(boxes × patches a box touches × log).
+    fn mark_building_site_terrain_only_boxes(&mut self, boxes: &[(f32, f32, f32, f32)]) {
         let margin_m =
             terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        self.allocator.mark_building_site_terrain_bounds_dirty(
-            &mut self.heightmap,
-            bounds,
-            margin_m,
-        );
-        let (min_x, min_z, max_x, max_z) = bounds;
-        let dirty_patch_keys = self.heightmap.render_patch_keys_for_world_bounds(
-            min_x - margin_m,
-            min_z - margin_m,
-            max_x + margin_m,
-            max_z + margin_m,
-        );
+        let mut dirty_patch_keys = Vec::new();
+        for &bounds in boxes {
+            self.allocator.mark_building_site_terrain_bounds_dirty(
+                &mut self.heightmap,
+                bounds,
+                margin_m,
+            );
+            let (min_x, min_z, max_x, max_z) = bounds;
+            self.heightmap.append_render_patch_keys_for_world_bounds(
+                min_x - margin_m,
+                min_z - margin_m,
+                max_x + margin_m,
+                max_z + margin_m,
+                &mut dirty_patch_keys,
+            );
+        }
+        dirty_patch_keys.sort_unstable();
+        dirty_patch_keys.dedup();
         self.refresh_engineered_terrain_patch_ownership_for_keys(
             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             &dirty_patch_keys,

@@ -2,7 +2,7 @@
 
 //! Spatially indexed household claims with exact directed shopping access.
 
-use super::ConsumerBudgets;
+use super::{BudgetWalk, ConsumerBudgets};
 use crate::simulation::buildings::allocator::{
     BuildingAllocator, BuildingEntrance, BuildingEntranceKey,
 };
@@ -70,6 +70,37 @@ fn trace_consumer_book_changed(marker: &str) {
     }
 }
 
+/// What a consumer-market refresh reads: the census's households and city, its catalog,
+/// tuning, policy and treasury, and the network. Fixed while a refresh is in progress.
+#[derive(Clone, Copy)]
+pub(crate) struct RefreshInputs<'a> {
+    pub(crate) households: &'a [Household],
+    pub(crate) allocator: &'a BuildingAllocator,
+    pub(crate) catalog: &'a RuntimeEconomyCatalog,
+    pub(crate) tuning: &'a RuntimeEconomyTuning,
+    pub(crate) policy: &'a CityFiscalPolicy,
+    pub(crate) treasury: f64,
+    pub(crate) network: &'a TransitNetwork,
+    pub(crate) graph: &'a RegionGraph,
+}
+
+/// A consumer-market refresh between census slices (`SIM-02-K`): what its earlier phases pass
+/// on. [`ConsumerMarket::begin_refresh`] starts one; [`Default`] is none.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RefreshState {
+    budgets: BudgetWalk,
+    budgets_unchanged: bool,
+    output_ports: usize,
+    revision: (u64, u64, u32, u64),
+    changed: bool,
+    walking_changed: bool,
+    length_changed: bool,
+    access_changed: bool,
+    membership_changed: bool,
+    rebuilds_indices: bool,
+    resamples: u64,
+}
+
 /// Finite family accounts and their reusable component/chunk candidate indices.
 /// Component membership only prunes candidates; both directed trips must still succeed.
 #[derive(Clone, Debug, Default)]
@@ -97,11 +128,18 @@ pub(crate) struct ConsumerMarket {
     access_resamples: u64,
     #[cfg(test)]
     index_builds: u64,
+    #[cfg(test)]
+    torn_refreshes: u64,
     claim_revision: u64,
     last_claim_direct: bool,
     // Households visited and trip fallbacks tried by claims so far, which the funding census
     // counts as work (`SIM-02-K`); monotonic, never read by any result.
     claim_work: [u64; 2],
+    // A refresh begun and not finished (`SIM-02-K`): its rows are partly rewritten, so the
+    // next refresh begun withdraws the book first.
+    refreshing: bool,
+    // Each mode's bucket entries for an index rebuild in progress, in household order.
+    index_entries: [Vec<ReachableBucketEntry>; 2],
 }
 
 impl ConsumerMarket {
@@ -132,6 +170,12 @@ impl ConsumerMarket {
     #[cfg(test)]
     pub(crate) fn index_builds_for_test(&self) -> u64 {
         self.index_builds
+    }
+
+    /// Refreshes begun on a book an unfinished refresh left torn; diagnostics only.
+    #[cfg(test)]
+    pub(crate) fn torn_refreshes_for_test(&self) -> u64 {
+        self.torn_refreshes
     }
 
     /// Returns the exact account/access revision for rejected direct-quote reuse.
@@ -216,6 +260,20 @@ impl ConsumerMarket {
         .then_some(&self.walking)
     }
 
+    /// Takes `source`'s walking proofs and component indices when this book has none and is not
+    /// mid-refresh (`SIM-02-K`: a loaded game's census storage). Both are functions of the
+    /// network alone, keyed by its revisions, so a later refresh finds them as its own build
+    /// would have made them. O(network) copy.
+    pub(crate) fn adopt_walking_proofs(&mut self, source: &Self) {
+        if self.refreshing || self.walking_revision.is_some() || source.walking_revision.is_none() {
+            return;
+        }
+        self.walking.clone_from(&source.walking);
+        self.walking.prepare_query();
+        self.components.clone_from(&source.components);
+        self.walking_revision = source.walking_revision;
+    }
+
     /// Reuses the census's exact home proof after checking household, door and network inputs.
     /// O(1), allocation-free; a missing or stale census leaves callers on ordinary preparation.
     pub(crate) fn household_walking_access(
@@ -281,6 +339,8 @@ impl ConsumerMarket {
     /// Refreshes base budgets and access, retaining claims only when every input is exact.
     /// Returns whether the preceding book survived. Seller entrances, requests and financing
     /// decisions must still match before quantities can be reused. O(H + recipe ports) warm checks.
+    /// The census runs the same phases in slices (`SIM-02-K`); this runs them at once.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh(
         &mut self,
@@ -293,12 +353,61 @@ impl ConsumerMarket {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> bool {
+        let inputs = RefreshInputs {
+            households,
+            allocator,
+            catalog,
+            tuning,
+            policy,
+            treasury,
+            network,
+            graph,
+        };
+        let mut state = self.begin_refresh(&inputs);
+        self.refresh_budgets(&mut state, &inputs, 0..households.len());
+        self.refresh_access(&mut state, &inputs, 0..households.len());
+        if self.begin_refresh_indices(&mut state) {
+            self.refresh_index_entries(&state, 0..households.len());
+            self.build_refreshed_indices(&state);
+            self.copy_refreshed_indices(&state);
+            self.refresh_reservations(&state, 0..households.len());
+        }
+        self.finish_refresh(&mut state, &inputs)
+    }
+
+    /// A refresh's first phase (`SIM-02-K`): the budget walk's start, the network-scale walking
+    /// proofs and component indices after a network change, and the access rows' length.
+    /// O(profile ports + B / workers), plus O(network) after a network change. The phases, in
+    /// order: this, [`Self::refresh_budgets`] and [`Self::refresh_access`] over every household
+    /// range in order; when [`Self::begin_refresh_indices`] says so,
+    /// [`Self::refresh_index_entries`] over every household range, [`Self::build_refreshed_indices`],
+    /// [`Self::copy_refreshed_indices`] and [`Self::refresh_reservations`] over every household
+    /// range; and [`Self::finish_refresh`]. Any slicing gives one refresh's result.
+    /// A refresh begun and not finished leaves the book torn: beginning another withdraws it
+    /// first, so that refresh reports the book not retained, as after a load.
+    pub(crate) fn begin_refresh(&mut self, inputs: &RefreshInputs<'_>) -> RefreshState {
+        let RefreshInputs {
+            households,
+            allocator,
+            catalog,
+            treasury,
+            network,
+            graph,
+            ..
+        } = *inputs;
+        if std::mem::replace(&mut self.refreshing, true) {
+            self.clear();
+            #[cfg(test)]
+            {
+                self.torn_refreshes += 1;
+            }
+        }
         self.bump_quote_revision();
         #[cfg(test)]
         trace_consumer_book_changed("refresh");
-        let budgets_unchanged = self
+        let budgets = self
             .budgets
-            .prepare_budgets(households, allocator, catalog, tuning, policy, treasury);
+            .begin_budgets(households.len(), catalog, treasury);
         self.query.prepare(&network.cch_graph, graph);
         let output_ports = allocator
             .buildings
@@ -329,15 +438,68 @@ impl ConsumerMarket {
                 ModeComponentIndex::build(graph, TransitFlags::CAR),
             ]);
         }
-        let components = self.components.as_ref().unwrap();
         let length_changed = self.access.len() != households.len();
         self.access.resize(households.len(), Access::default());
         self.access_entrances.resize(households.len(), None);
-        let (access_changed, membership_changed, _resamples) = self
-            .access
+        RefreshState {
+            budgets,
+            output_ports,
+            revision,
+            changed,
+            walking_changed,
+            length_changed,
+            ..RefreshState::default()
+        }
+    }
+
+    /// Prepares the budgets of households `range`, the walk's next ones, in settlement order;
+    /// the last range also clears the rows after the last housed family. O(range), serial.
+    pub(crate) fn refresh_budgets(
+        &mut self,
+        state: &mut RefreshState,
+        inputs: &RefreshInputs<'_>,
+        range: std::ops::Range<usize>,
+    ) {
+        let last = range.end == inputs.households.len();
+        self.budgets.walk_budgets(
+            &mut state.budgets,
+            inputs.households,
+            range,
+            inputs.allocator,
+            inputs.catalog,
+            inputs.tuning,
+            inputs.policy,
+        );
+        if last {
+            state.budgets_unchanged = self.budgets.finish_budgets(&state.budgets);
+        }
+    }
+
+    /// Updates the access rows of households `range` and records what changed. O(range) in
+    /// parallel; a row whose home, door or chunk changed resamples its trip ends.
+    pub(crate) fn refresh_access(
+        &mut self,
+        state: &mut RefreshState,
+        inputs: &RefreshInputs<'_>,
+        range: std::ops::Range<usize>,
+    ) {
+        let RefreshInputs {
+            households,
+            allocator,
+            network,
+            graph,
+            ..
+        } = *inputs;
+        let RefreshState {
+            changed,
+            walking_changed,
+            ..
+        } = *state;
+        let components = self.components.as_ref().unwrap();
+        let (access_changed, membership_changed, resamples) = self.access[range.clone()]
             .par_iter_mut()
-            .zip(&mut self.access_entrances)
-            .zip(households)
+            .zip(&mut self.access_entrances[range.clone()])
+            .zip(&households[range])
             .map(|((access, sampled_entrance), household)| {
                 let can_shop = household.adult_count > 0 || household.elder_count > 0;
                 if !changed
@@ -421,53 +583,154 @@ impl ConsumerMarket {
                 || (false, false, 0),
                 |a, b| (a.0 | b.0, a.1 | b.1, a.2 + b.2),
             );
+        state.access_changed |= access_changed;
+        state.membership_changed |= membership_changed;
+        state.resamples += resamples;
+    }
+
+    /// Whether the refresh rebuilds the reachable-household indices: after every access row, a
+    /// changed household count, bucket membership or category count. Starts the entries of a
+    /// rebuild. O(1); the entry buffers keep their storage.
+    pub(crate) fn begin_refresh_indices(&mut self, state: &mut RefreshState) -> bool {
+        state.rebuilds_indices = state.length_changed
+            || state.membership_changed
+            || self.indices.len() != self.budgets.categories.len();
+        if state.rebuilds_indices {
+            let households = self.access.len();
+            for entries in &mut self.index_entries {
+                entries.clear();
+                entries.reserve(households * 2);
+            }
+        }
+        state.rebuilds_indices
+    }
+
+    /// Appends both modes' bucket entries of households `range` for a rebuild. O(range), the
+    /// two modes in parallel; entry order does not matter, the build sorts them.
+    pub(crate) fn refresh_index_entries(
+        &mut self,
+        state: &RefreshState,
+        range: std::ops::Range<usize>,
+    ) {
+        if !state.rebuilds_indices {
+            return;
+        }
+        let first = range.start;
+        let access = &self.access[range];
+        let [foot, car] = &mut self.index_entries;
+        let append = |entries: &mut Vec<ReachableBucketEntry>, mode: usize| {
+            for (offset, access) in access.iter().enumerate() {
+                access.components[mode].append_bucket_entries(
+                    entries,
+                    access.chunk,
+                    first + offset,
+                );
+            }
+        };
+        rayon::join(|| append(foot, 0), || append(car, 1));
+    }
+
+    /// Builds the first category's two indices from the collected entries, in parallel, each
+    /// sorted in parallel first: the index one build over every household gives (`SIM-02-K`).
+    /// O(H log H / workers + H) for each mode.
+    pub(crate) fn build_refreshed_indices(&mut self, state: &RefreshState) {
+        if !state.rebuilds_indices {
+            return;
+        }
         #[cfg(test)]
         {
-            self.access_resamples += _resamples;
+            self.index_builds += 1;
         }
         let count = self.budgets.categories.len();
-        if length_changed || membership_changed || self.indices.len() != count {
-            #[cfg(test)]
-            {
-                self.index_builds += 1;
-            }
-            self.indices.resize_with(count, Default::default);
-            self.indices.par_iter_mut().for_each(|indices| {
-                for (mode, index) in indices.iter_mut().enumerate() {
-                    let mut entries = Vec::with_capacity(self.access.len() * 2);
-                    for (household, access) in self.access.iter().enumerate() {
-                        access.components[mode].append_bucket_entries(
-                            &mut entries,
-                            access.chunk,
-                            household,
-                        );
-                    }
-                    *index = ReachableBucketIndex::from_entries(entries);
-                    index.enable_reservations();
-                }
+        self.indices.resize_with(count, Default::default);
+        let Some(first) = self.indices.first_mut() else {
+            return;
+        };
+        first
+            .par_iter_mut()
+            .zip(&mut self.index_entries)
+            .for_each(|(index, entries)| {
+                // Sorting here leaves `from_entries` an already sorted run, which it checks
+                // in O(entries); sorted output is unique, so the index is the same.
+                entries.par_sort_unstable();
+                *index = ReachableBucketIndex::from_entries(std::mem::take(entries));
+                index.enable_reservations();
             });
-            // Every category has identical membership and stable sorted bucket positions.
-            // Availability differs, so only the immutable positions are shared across them.
-            if let Some(indices) = self.indices.first() {
-                self.access
-                    .par_iter_mut()
-                    .enumerate()
-                    .for_each(|(household, access)| {
-                        access.reservations = std::array::from_fn(|mode| {
-                            std::array::from_fn(|rank| {
-                                access.components[mode].as_slice().get(rank).and_then(
-                                    |&component| {
-                                        indices[mode].reservation(ReachableBucketEntry::new(
-                                            component,
-                                            access.chunk,
-                                            household,
-                                        ))
-                                    },
-                                )
-                            })
-                        });
+    }
+
+    /// Copies the first category's indices to every other category. Every category has the
+    /// same membership, so a copy is the index its own build would give (`SIM-02-K`).
+    /// O(K × H), the categories in parallel.
+    pub(crate) fn copy_refreshed_indices(&mut self, state: &RefreshState) {
+        if !state.rebuilds_indices {
+            return;
+        }
+        if let Some((first, rest)) = self.indices.split_first_mut() {
+            let first = &*first;
+            rest.par_iter_mut()
+                .for_each(|indices| indices.clone_from(first));
+        }
+    }
+
+    /// Writes the reservation positions of households `range` after an index rebuild; nothing
+    /// otherwise. Positions are shared by every category's index. O(range) in parallel.
+    pub(crate) fn refresh_reservations(
+        &mut self,
+        state: &RefreshState,
+        range: std::ops::Range<usize>,
+    ) {
+        if !state.rebuilds_indices {
+            return;
+        }
+        // Every category has identical membership and stable sorted bucket positions.
+        // Availability differs, so only the immutable positions are shared across them.
+        if let Some(indices) = self.indices.first() {
+            let first = range.start;
+            self.access[range]
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(offset, access)| {
+                    let household = first + offset;
+                    access.reservations = std::array::from_fn(|mode| {
+                        std::array::from_fn(|rank| {
+                            access.components[mode]
+                                .as_slice()
+                                .get(rank)
+                                .and_then(|&component| {
+                                    indices[mode].reservation(ReachableBucketEntry::new(
+                                        component,
+                                        access.chunk,
+                                        household,
+                                    ))
+                                })
+                        })
                     });
-            }
+                });
+        }
+    }
+
+    /// A refresh's last phase: whether the preceding book survived and, if not, the claims'
+    /// reset; then the owners' receipt storage and the refresh's revisions. Returns whether
+    /// the preceding book survived. O(1) when retained, O(H × K + owners) otherwise.
+    pub(crate) fn finish_refresh(
+        &mut self,
+        state: &mut RefreshState,
+        inputs: &RefreshInputs<'_>,
+    ) -> bool {
+        let RefreshState {
+            budgets_unchanged,
+            output_ports,
+            revision,
+            changed,
+            walking_changed,
+            length_changed,
+            access_changed,
+            ..
+        } = *state;
+        let network = inputs.network;
+        #[cfg(test)]
+        {
+            self.access_resamples += state.resamples;
         }
         // Walking-only claims depend on these exact home access groups and chunk order.
         // The funding quote prefix separately validates each seller's complete entrance;
@@ -498,10 +761,11 @@ impl ConsumerMarket {
             self.reset_claims();
         }
         self.budgets
-            .prepare_owners(allocator.buildings.len(), output_ports);
-        self.visited.resize(households.len(), 0);
+            .prepare_owners(inputs.allocator.buildings.len(), output_ports);
+        self.visited.resize(inputs.households.len(), 0);
         self.revision = Some(revision);
         self.frontage_revision = network.frontage_delay_revision;
+        self.refreshing = false;
         retained
     }
 
