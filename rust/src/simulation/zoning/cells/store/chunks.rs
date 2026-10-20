@@ -3,8 +3,71 @@
 //! Generation completeness and paint revisions on the existing cell spatial chunks.
 
 use super::{CellBounds, CellKey, CellStore, DVec2, RegionGraph, chunk_at, chunks_for_bounds};
+use crate::simulation::core::config::WorldConfig;
+use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::zoning::cells::CELL_DEPTH;
+use std::collections::BTreeSet;
 
 impl CellStore {
+    /// Generates at load every cold chunk within reach of a road that grows cells or holding
+    /// reserved cells, in chunk order, and completes it (`SIM-02-K`). Saves leave generated
+    /// cells out; without this the first lot region served next to a chunk generates it whole,
+    /// 25–96 ms a region at 100k residents. A chunk whose cells would need a grid frame the
+    /// store has not registered stays cold ([`Self::generate_on_known_frames`]). Returns the
+    /// chunks generated and those left cold. O(edges) plus each chunk's generation.
+    pub(crate) fn warm_cold_chunks(
+        &mut self,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> (usize, usize) {
+        let cell_m = f64::from(config.zone_cell_m);
+        // A road's candidates lie within its half-width, the sidewalk and its rear rows.
+        let mut chunks = BTreeSet::new();
+        for edge in graph.edges() {
+            if edge.deleted
+                || edge.no_building_spawn
+                || edge.primary_type != TransitType::Road
+                || edge.class != EdgeClass::Standard
+                || edge.physical_geometry.len() < 2
+            {
+                continue;
+            }
+            let reach = f64::from(edge.width) * 0.5
+                + f64::from(crate::config::SIDEWALK_WIDTH)
+                + (CELL_DEPTH + 2) as f64 * cell_m;
+            let bounds = CellBounds::from_points(
+                edge.physical_geometry
+                    .iter()
+                    .map(|point| DVec2::new(f64::from(point.x), f64::from(point.z))),
+            )
+            .expanded(reach);
+            chunks.extend(chunks_for_bounds(bounds));
+        }
+        chunks.extend(
+            self.chunks
+                .iter()
+                .filter(|(_, entry)| !entry.blocks.is_empty())
+                .map(|(&chunk, _)| chunk),
+        );
+        let [mut warmed, mut cold] = [0; 2];
+        for chunk in chunks {
+            let Some(bounds) = self.chunk_generation_bounds(chunk) else {
+                continue;
+            };
+            if self
+                .generate_on_known_frames(graph, config, bounds, &blocked)
+                .is_some()
+            {
+                self.complete_generated_chunk(chunk, bounds);
+                warmed += 1;
+            } else {
+                cold += 1;
+            }
+        }
+        (warmed, cold)
+    }
+
     /// Returns the packed overlay version and whether all empty geometry is current.
     pub(crate) fn chunk_state(&self, chunk: (i32, i32)) -> (u64, bool) {
         self.chunks

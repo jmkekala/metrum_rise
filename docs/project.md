@@ -375,6 +375,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   they are decided (save format 103). The legacy hour and day code is gone: no game code runs because
   the clock crossed an hour or a day. The render snapshot skips agents outside the camera before
   posing them, with identical instances, which halves the 100k mean frame at 1× (`SIM-02-K` part 2).
+  Loading now generates the zoning cells near every road and prepares the first frame's routing,
+  so the first lot regions and frames after a load no longer stall for 50–130 ms; a 100k load
+  takes about 1.6 s longer (`SIM-02-K` part 3).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

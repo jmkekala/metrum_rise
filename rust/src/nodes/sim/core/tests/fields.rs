@@ -808,6 +808,36 @@ fn field_cell_cache_edit_scaling() {
     }
 }
 
+// A removal keeps a clean entrance cache in step with its swap-remove, as a rebuild leaves it
+// (`SIM-02-K`), so the removal queue no longer derives every entrance again.
+#[test]
+fn building_removal_keeps_a_clean_entrance_cache_equal_to_a_rebuild() {
+    let (mut core, first, _) = farm_fixture();
+    for x in [120.0, 240.0] {
+        core.place_industry_building_internal("test:field_test", x, 8.0)
+            .unwrap();
+    }
+    let graph = &core.region_graph;
+    core.allocator
+        .rebuild_entrance_cache(graph, &core.transit_network.lane_system);
+    let revision = core.allocator.entrance_ref_revision();
+    assert!(core.allocator.remove_building_for_bulldoze(
+        first,
+        &mut core.zoning,
+        &mut core.agents,
+        &mut core.households,
+        &mut core.logistics,
+        &mut core.treasury.balance
+    ));
+    assert!(!core.allocator.entrances_dirty);
+    assert_ne!(core.allocator.entrance_ref_revision(), revision);
+    let kept = core.allocator.entrances.clone();
+    assert_eq!(kept.len(), core.allocator.buildings.len());
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    assert_eq!(kept, core.allocator.entrances);
+}
+
 #[test]
 fn ordinary_building_removal_remaps_saved_field_owner_and_reservation() {
     let (mut core, first, polygon) = farm_fixture();

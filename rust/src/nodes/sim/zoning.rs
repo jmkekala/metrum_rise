@@ -82,6 +82,27 @@ impl SimCore {
         true
     }
 
+    /// Generates the cells a loaded save left out, near every road, so the first lot regions
+    /// served after loading find them warm (`SIM-02-K`). Call once the loaded allocator, road
+    /// surface and parcels are in place.
+    pub(crate) fn warm_loaded_cells(&mut self) {
+        self.prepare_cell_site_queries();
+        let allocator = &self.allocator;
+        let roads = &self.transit_network.road_surface;
+        let cell_m = self.config.zone_cell_m;
+        let (warmed, cold) = self
+            .zoning
+            .warm_generated_cells(&self.region_graph, |corners| {
+                cell_site_blocked(allocator, roads, cell_m, corners)
+            });
+        crate::debug_log!(
+            "save",
+            "load generated cells in {} chunks; {} left cold for frames not yet registered",
+            warmed,
+            cold
+        );
+    }
+
     /// Prepares shared local queries without modifying paint, terrain or building ownership.
     fn prepare_cell_site_queries(&mut self) {
         self.allocator

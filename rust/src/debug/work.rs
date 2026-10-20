@@ -166,6 +166,25 @@ pub(crate) fn set_clock_minute(minute: u64) {
 #[inline(always)]
 pub(crate) fn set_clock_minute(_minute: u64) {}
 
+// Whether test builds run the operational hour's whole-city consistency checks (`SIM-02-K`).
+#[cfg(test)]
+static CITY_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Switches the operational hour's test-build consistency checks: the freight reservations
+/// against a fresh build, the household member lists against a rebuild and the published
+/// census's input supply. Ordinary tests keep them; the serialized timing runners
+/// (`PERF-01`, `PERF-07`) switch them off, so test-only work stays out of the timed frames.
+#[cfg(test)]
+pub(crate) fn set_city_checks(enabled: bool) {
+    CITY_CHECKS.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the operational hour's test-build consistency checks run ([`set_city_checks`]).
+#[cfg(test)]
+pub(crate) fn city_checks() -> bool {
+    CITY_CHECKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Starts or stops logging departures with their minute, for one burst-envelope run.
 #[cfg(test)]
 pub(crate) fn log_departures(enabled: bool) {

@@ -249,11 +249,16 @@ impl SimCore {
         if expired_any {
             self.finish_building_removals(observer);
         } else if cleared {
-            // As the actions slot repaired its clearances: one zone-index and entrance-cache
-            // rebuild, O(B).
+            // As the actions slot repaired its clearances: one zone-index rebuild, O(B), which
+            // also returns the vacancy lists to building order (`ALLOC-03`). Each removal kept a
+            // clean entrance cache in step (`SIM-02-K`); only a stale one is rebuilt, O(B).
             self.allocator.rebuild_zone_index();
-            self.allocator
-                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+            if self.allocator.entrances_dirty
+                || self.allocator.entrances.len() != self.allocator.buildings.len()
+            {
+                self.allocator
+                    .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+            }
             self.publish_pending_building_site_changes();
             observer.buildings_changed(self);
         }

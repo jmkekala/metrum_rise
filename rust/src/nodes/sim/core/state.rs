@@ -657,9 +657,9 @@ impl SimCore {
         observer.hourly_economy(self);
         // The residential planning slot that follows lends the census published before this
         // hour, current for the live city (`SIM-02-I`); nothing between the publication and the
-        // slot invalidates it.
+        // slot invalidates it. Timing runs skip the check.
         #[cfg(test)]
-        {
+        if crate::debug::work::city_checks() {
             let mut borders = Vec::new();
             crate::simulation::economy::logistics::collect_connected_border_nodes(
                 &self.region_graph,

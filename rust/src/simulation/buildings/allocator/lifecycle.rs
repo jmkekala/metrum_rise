@@ -1567,6 +1567,9 @@ impl BuildingAllocator {
         else {
             return false;
         };
+        // A clean entrance cache follows the swap-remove below: each entrance is derived from
+        // its own building, the network and the asset registry alone (`SIM-02-K`).
+        let entrances_clean = !self.entrances_dirty && self.entrances.len() == self.buildings.len();
         self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         zoning.clear_parcel_occupancy(parcel_id);
 
@@ -1614,7 +1617,14 @@ impl BuildingAllocator {
         self.record_building_changes([building_idx, last_idx]);
         self.dirty = true;
         self.dirty_index = true;
-        self.entrances_dirty = true;
+        if entrances_clean {
+            // As `rebuild_entrance_cache` leaves it, without deriving every entrance again.
+            self.entrances.swap_remove(building_idx);
+            self.bump_entrance_ref_revision();
+            self.dirty_zones = [true; 3];
+        } else {
+            self.entrances_dirty = true;
+        }
         true
     }
 

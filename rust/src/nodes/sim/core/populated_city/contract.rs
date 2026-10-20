@@ -45,6 +45,8 @@ pub(super) fn timing_mode() {
     // tests retain them; this serialized manual runner disables only that extra test work.
     crate::simulation::economy::demand::VERIFY_LIVE_PASSES
         .store(false, std::sync::atomic::Ordering::Relaxed);
+    // So are the operational hour's whole-city consistency checks (`SIM-02-K`).
+    crate::debug::work::set_city_checks(false);
 }
 
 #[test]

@@ -2399,10 +2399,11 @@ fn a_bulldoze_before_the_next_planning_slot_continues_identically_after_a_save_l
     assert_continues_identically_after_reload(source, "bulldoze");
 }
 
-// A removal leaves the zone index and the entrance cache for their next reader: the removed
-// building's zone entry names the building the swap-remove moved there, and the moved one's is
-// missing. The next frame's flow-field drain reads them, so it rebuilds them first and builds
-// every field from the current buildings, as a loaded game does (`SIM-02-I`).
+// A removal leaves the zone index for its next reader: the removed building's zone entry names
+// the building the swap-remove moved there, and the moved one's is missing. The next frame's
+// flow-field drain reads it, so it rebuilds it first and builds every field from the current
+// buildings, as a loaded game does (`SIM-02-I`). The entrance cache follows the swap-remove
+// (`SIM-02-K`).
 #[test]
 fn the_flow_field_drain_rebuilds_a_stale_zone_index_first() {
     use crate::simulation::network::types::TransitFlags;
@@ -2443,7 +2444,7 @@ fn the_flow_field_drain_rebuilds_a_stale_zone_index_first() {
         &mut core.logistics,
         &mut core.treasury.balance,
     ));
-    assert!(core.allocator.dirty_index && core.allocator.entrances_dirty);
+    assert!(core.allocator.dirty_index && !core.allocator.entrances_dirty);
     // A frame too short to reach the next slot: only the drain runs.
     let slot = core.time.absolute_slot();
     core.step_frame(FRAME_DT_S / 1000.0);

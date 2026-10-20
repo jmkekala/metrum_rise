@@ -92,6 +92,21 @@ impl ZoningSystem {
             })
     }
 
+    /// Generates the cells a loaded save left out near every road, on registered frames
+    /// ([`crate::simulation::zoning::cells::CellStore::warm_cold_chunks`]), with the same parcel
+    /// and caller-owned blockers as direct generation. Returns the chunks generated and those
+    /// left cold.
+    pub(crate) fn warm_generated_cells(
+        &mut self,
+        graph: &RegionGraph,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> (usize, usize) {
+        let parcels = &self.parcels;
+        self.cells.warm_cold_chunks(graph, &self.config, |corners| {
+            overlaps_parcels(parcels, corners) || blocked(corners)
+        })
+    }
+
     /// Revalidates every cell before applying one paint/erase delta; profile zero means Erase.
     /// Building-lot invalidation consumes the returned delta at the simulation transaction layer.
     pub(crate) fn paint_cells(

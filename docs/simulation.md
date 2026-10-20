@@ -16,7 +16,8 @@ permits on the published census; demand planning one zone type a slot) are done.
 `SIM-02-J` (request queues) is done: freight requests (part 1); the housing, restock, visit and
 job queues (part 2); the level-change, building-removal, departure and admission queues (part
 3). `SIM-02-K` is in progress: parts 1 (legacy hour and day paths deleted) and 2 (render
-snapshot) are done. See the
+snapshot) are done, and part 3's first commit (frame spikes: cells at load, entrance
+cache, first-frame pathing, timing-run checks) is done. See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -831,10 +832,13 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    (see [Decided while unattended](#decided-while-unattended)); site queries that skip distant
    sites, with one gather per vehicle; parallel pose and bucketing. Planned saving about 5.5 ms
    at 1× and 6.5 ms at 32× at 100k; the 100k snapshot mean fell 5.9 ms at 1× and 7.8 ms at 32×.
-3. **K3, frame spikes.** Generated cells built during loading instead of by the first lot regions
-   served (25–96 ms a region at 100k, all day); census slices budgeted by work units instead of
-   rows (up to 115 ms a slice); incremental zone-index and entrance repairs after clearances
-   (about 10 ms at 100k); the first frame after loading; test-build checks out of timed frames.
+3. **K3, frame spikes** (first commit done 2026-10-20). Done: (a) generated cells built during
+   loading instead of by the first lot regions served (25–134 ms a region at 100k, all day), the
+   entrance part of (c) (a removal keeps a clean entrance cache in step), (d) the route scratch
+   and flow fields built at load, and (e) test-build checks out of timing runs. Left for the next
+   K3 commit: (b) census slices, the zone-index part of (c) (kept as a decision), (d)'s first
+   trip events, and the clearance site publication. Every worst `PERF-07` frame of the K2 build
+   was attributed to its systems first (table in the results section).
 4. **K4, agent tick.** Lane buckets kept across appends and swap-removes instead of rebuilt each
    tick, filled in parallel; the unused per-edge `current_congestion` write removed; indoor agents
    off the per-frame movement pass (departures planned at their slot); movement shards balanced;
@@ -1778,6 +1782,111 @@ on a fresh `$ARTIFACTS` directory.
   and asset test passes with no script errors, after `agent_inspector_test` was made to wait for
   the core's route answer (`DEBUG-08`), which the first run hit.
 
+#### `SIM-02-K`, part 3 — frame spikes (2026-10-20, first commit)
+
+- **Attribution** (temporary per-system timing of every slot system and of the cell-lot, removal
+  and census steps, test build, pinned, K1 snapshots, one run each, not acceptance timing). The
+  K2 build's worst frames:
+
+  | Tier | Frame (ms) | Where it went | Item |
+  | --- | --- | --- | --- |
+  | 10k 1× | 1260, slot 4 (65.9) | one cell-lot region, 64.5 ms generating 9 cold chunks | K3 (a) |
+  | 10k 1× | 1260, slot 3→4 (12.7) | a clearance, 11.5 ms: the building site query index built for the first time since loading (10 ms), the entrance-cache rebuild (0.7) and zone index (0.3) | K3 (a), (c) |
+  | 10k 32× | 1260 (60.0) | one cold region, 57.0 ms (9 chunks) | K3 (a) |
+  | 30k 1× | 60 and 1080, slot 4 (83.4, 32.5) | cold regions, 81.8 ms (9 chunks) and 31.2 ms (4) | K3 (a) |
+  | 30k 1× | 60 and 120, slot 0 (21.4, 17.5) | residential planning 18.7 and 15.0 ms | K5 |
+  | 30k 32× | 60 (94.7), 1080 (43.7) | cold regions 86.5 and 31.9 ms; clearances 3.3 and 2.7 ms (entrance rebuild 2.1 and 1.6); planning 1.6–5.0 ms | K3 (a), (c), K5 |
+  | 100k 1× | 0, 60, 120, 240, slots 4–7 (112.2, 89.6, 86.5, 70.5) | cold regions, 65–83 ms (9 chunks each); at 00:00 also the first hour's job searches after loading, 16.5 ms | K3 (a); the job queue's first hour after loading is not a K3 item |
+  | 100k 1× | 60 and 120, slot 0 (59.2, 49.9) | residential planning 48.9 and 40.1 ms | K5 |
+  | 100k 32× | 720, 60, 120, 240, 300, 840 (174–132) | cold regions 75–134 ms (9–18 chunks); clearances 10–29 ms (entrance rebuild 5.7–5.9, zone index 2.5–2.6); planning slots 8–57 ms; agent tick 8.4–9.7 ms (24 ms at 05:00) | K3 (a), (c); K5; K4 |
+  | 100k 1× | census slots (≤ 23.0) | the unsliced consumer-market refresh (`customers`) 23.0 and 9.8 ms; `current_staff` slices 9–20.6 ms; `household_claims` 9–14 ms; `routes` 9.9 ms | K3 (b), not done |
+  | 100k 1× | first frames after loading (17.0, 15.3) | trip events 10.2 and 8.9 ms on cold route caches | K3 (d), not done |
+
+- **(a) Generated cells at load.** Saves leave generated cells out, and loading marked every chunk
+  cold, so the first lot region served next to a chunk generated it and its eight neighbours
+  whole. Loading now generates every cold chunk within reach of a road that grows cells
+  (half-width, sidewalk and eight cell rows) or holding reserved cells, in chunk order, and
+  completes it (`CellStore::warm_cold_chunks`, called from `SimCore::warm_loaded_cells`). A chunk
+  whose cells would need a grid frame the store has not registered stays cold
+  (`CellStore::generate_on_known_frames`, which checks before publishing anything): frame ids
+  follow registration order, so registering a frame at load that the saved game registers only
+  when it later generates that chunk would give the two games different ids. No save format
+  change. At 10k, 30k and 100k loading generates 38, 68 and 208 chunks and leaves none cold;
+  `PERF-07` load time rises from 1.57 to 1.77 s, 4.44 to 4.89 s and 16.93 to 18.50 s. A
+  deferred rebuild remains only for chunks needing an unregistered frame (none in the fixtures)
+  and after a catalog refresh, which invalidates every chunk as before.
+- **(c) Clearances.** A building's entrance is a function of its own building, the network and
+  the asset registry, so a clean entrance cache now follows a removal's swap-remove
+  (`remove_building_at_index`: swap-remove, entrance revision bumped, every zone's flow fields
+  marked for comparison, as the rebuild does), and the removal queue rebuilds only a stale cache:
+  −5.8 ms a clearance slot at 100k. The zone index is still rebuilt once a clearance slot, O(B),
+  2.6 ms at 100k: that rebuild is also the `ALLOC-03` reset of the vacancy lists to building
+  order, and an exact incremental equivalent still has to recompute every building's vacancy
+  membership (see Decided while unattended). Within a slot that clears several buildings, a later
+  removal's evacuation trips now read the current entrances, where they read the stale cache the
+  first removal left.
+- **(d) First frame after loading.** Loading builds what the first frame did
+  (`SimCore::prepare_loaded_pathing`): the routing hierarchy if dirty, every flow field loading
+  marked (when the loaded zone index and entrance cache are current) and the movement pass's
+  route scratch for the pool's workers: the 100k 1× day's longest agent tick fell from 33.1 to
+  22.7 ms (the first frame's scratch sizing was 31 ms of it). The first frames' trip events
+  (8.9–10.2 ms at 100k) stay: they fill route and quote caches that saves do not keep.
+- **(e) Test-build checks.** `timing_mode()` (`PERF-01`, `PERF-07`) also switches off the
+  operational hour's test-build checks (freight reservations against a fresh build, household
+  member lists against a rebuild, the published census's input supply) through
+  `debug::work::set_city_checks`, as it switches off `VERIFY_LIVE_PASSES`. Ordinary tests and the
+  envelope keep them.
+- **(b) not done** (next K3 commit). Budgeting the census by staffing operations and trials would not bound its
+  worst slot: at 100k a 20.6 ms `current_staff` slice had 2,408 trials, 2,106 operations and 973
+  CCH point searches, while a 16 ms slice had 6,576 trials, 5,099 operations and 93 searches, so
+  the cost follows the supplier routes and searches the staffing quotes trigger, not the trials;
+  and the worst census slots are the unsliced consumer-market refresh (23 ms) and route step
+  (10 ms), which no budget splits. Options in Decided while unattended.
+- **Equivalence.** Load-time generation equals the cells the store had before saving and
+  registers no frame (`warming_regenerates_saved_frames_and_leaves_unregistered_ones_cold`); a
+  removal's entrance cache equals a rebuild
+  (`building_removal_keeps_a_clean_entrance_cache_equal_to_a_rebuild`).
+- **Envelope and determinism** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass after (a) and
+  (e), and again after (c) and (d); both times the envelope is bit-identical to K2's, and
+  repeat, 1 and 3 workers and save/reload are identical. The second run's binary predates a
+  test-only fix (the flow-field drain test expected the entrance cache stale after a removal);
+  the library code is the same.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`), full day, each build
+  on its own prepared cities, in one session with K2 as the control. Milliseconds and frame
+  counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 9.2 (58.7) | 1.24 (1.25) | 1.49 (1.58) | 0.54 (0.54) | 2 (2) | 0 (1) |
+  | 10k | 32× | 11.2 (60.3) | 2.63 (2.70) | 5.29 (7.63) | 1.04 (1.09) | 2 (2) | 0 (1) |
+  | 30k | 1× | 21.3 (84.8) | 2.31 (2.28) | 4.08 (4.07) | 1.32 (1.31) | 8 (9) | 2 (5) |
+  | 30k | 32× | 23.1 (89.1) | 8.59 (9.20) | 22.60 (25.28) | 3.31 (3.38) | 33 (38) | 3 (7) |
+  | 100k | 1× | 60.1 (112.2) | 8.46 (8.38) | 18.03 (19.68) | 6.10 (6.00) | 1,429 (1,206) | 131 (178) |
+  | 100k | 32× | 81.9 (179.0) | 37.06 (39.79) | 79.87 (166.14) | 16.87 (17.17) | 2,700 (2,700) | 701 (656) |
+
+  The control repeats K2's own run within about 2% on every maximum.
+  The worst frames left: at 10k and 30k the hour's residential planning slot (8.5 and 19.7 ms of
+  slot work, K5); at 100k 1× two frames in the census window (minutes 517 and 529, 54 and 34 ms
+  of slot work outside the hour's planning slots; the instrumented runs, which covered the
+  day's first five hours at 1×, measured census slices of up to 23 ms there, in the unsliced
+  consumer-market refresh and `current_staff`) and the residential planning slot (52 ms); at
+  100k 32× the planning slots (57–62 ms in one frame) with 9–10 ms of agent tick (K5, K4).
+  Every gate limit passes for both builds.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with K2 as control: hour
+  means 2.55–2.57, 7.63–7.66, 10.35–10.89 and 31.75–31.87 ms (control 2.84–2.85, 8.62–8.67,
+  10.89–11.05 and 32.15–32.29). The baseline hours are 10–12% cheaper because the timed hours
+  no longer run the test-build checks (e); the same six work-count limits fail.
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1;
+  the `PERF-07` control is K2's retained binary. The commit gate reran the release tests,
+  envelope, determinism, clippy, `./run.sh --test` and `PERF-01` on these sources on dev.
+- **Tests:** 2,535 library tests pass in the release build and in the debug build (`./run.sh
+  --test`), with the 4 growth integration tests; clippy and rustfmt add nothing. Loading changed,
+  so the isolated `./run.sh --test` ran: every bridge and asset test passes with no script
+  errors.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -1833,7 +1942,7 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 | Render snapshot (`build_snapshot_reusing`) | 3–12 ms: a lane pose for every agent before camera culling, serial | Cull before posing; bucket in parallel | K (part 2 done: 100k mean 6.7 → 0.8 ms at 1×, 8.7 → 0.9 ms at 32×) |
 | Agent movement in departure frames | Up to 4 ms at 10k and 17 ms at 30k (32×) | Departures spread by events; `PERF-06` limits | E, K |
 | One queued construction start | 14–21 ms for a single placement | Placement split across slots | K |
-| First boundary after loading | About 10× an ordinary hour. `SIM-02-H` found most of it was the catalog refresh every load made, now skipped when the catalog is unchanged. What remains are the generated cells, which loading invalidates and the first lot regions served afterwards rebuild: 61–88 ms each at 30k | Rebuilt during loading, or in bounded parts | H (refresh, done), K |
+| First boundary after loading | About 10× an ordinary hour. `SIM-02-H` found most of it was the catalog refresh every load made, now skipped when the catalog is unchanged. What remained were the generated cells, which loading invalidated and the first lot regions served afterwards rebuilt: 25–134 ms a region at 100k, all day | Generated during loading (K3), except chunks that would register a new grid frame | H (refresh, done), K (K3 done) |
 | 100k fixture traffic (found in `SIM-02-E`) | About 45,000 of 145,000 agents moving at any time (30,000 on lanes, 15,000 in junctions) and 15,000 shopping trips in flight around the clock, on `SIM-02-D` too: the network is saturated, so movement and trip checks run for most of the city | Find why trips stall at 100k (junction throughput, routing); movement within `PERF-06` limits | K |
 
 ### Open questions
@@ -3003,6 +3112,40 @@ alternatives and the evidence. The user reviews these on return.
   copy of the in-camera agents and shared lane geometry. After the cull the whole snapshot
   averages under 1 ms at 100k (p99 1.1–1.4 ms), so the copy would cost about what it saves.
   Revisit if part 7 is short by about a millisecond.
+
+- **`SIM-02-K` part 3 — cells generated at load, not saved.** Alternatives: persist the generated
+  cells (a save format change, every cell's frontages and curve sources in the save, larger
+  saves); save which chunks were generated and regenerate those (a smaller format change, still
+  a fixture and snapshot regeneration); a deferred rebuild bounded by cells per slot (the
+  generated set would differ between a game and its reload, so a region would be served at a
+  different slot after a reload and save/reload determinism would fail unless the progress were
+  saved). Chosen: generate at load every cold chunk within reach of a road that grows cells or
+  holding reserved cells, in chunk order, and leave cold any chunk whose cells would need a grid
+  frame not yet registered. The check matters because frame ids follow registration order: a
+  frame first registered at load would shift the ids of every frame the saved game registers
+  later. Evidence: the fixtures register no new frame at load (0 chunks left cold at 10k, 30k
+  and 100k); `PERF-07` load time rises 0.2, 0.45 and 1.6 s at 10k, 30k and 100k; the envelope
+  is bit-identical and save/reload continues identically; the worst frame falls from 58.7 to
+  9.2 ms at 10k 1× and from 179 to 82 ms at 100k 32×.
+- **`SIM-02-K` part 3 — the zone-index rebuild after clearances stays.** The rebuild after a
+  clearance slot also resets the vacancy lists to building order (`ALLOC-03`: admission breaks
+  ties by vacancy position, and claims swap-remove vacancies out of order). An incremental repair
+  equal to it must sort the vacancy lists and recompute every building's vacancy membership from
+  its capacity, as the rebuild does, which leaves most of its O(B) cost (2.6 ms at 100k).
+  Dropping the reset would change which homes admission picks (a gameplay change for 2.6 ms).
+  Revisit with K5, whose per-zone lot lists replace the planning scans that read this index.
+- **`SIM-02-K` part 3 — census work units not done.** Measured at 100k (attribution table): the
+  operation and trial counters do not predict a staffing slice's cost (CCH point searches and
+  supplier candidates do), and the worst census slots are unsliced steps. Options: (1) count the
+  supplier searches, candidates and CCH point searches the staffing quotes make as work units
+  (release-build counters in the freight quote path); (2) slice the consumer-market refresh and
+  the route step; (3) run the census as a pure job off the frame, which needs its inputs frozen
+  as the copy already is. (2) is needed in any case for the census's worst slot.
+- **`SIM-02-K` part 3 — evacuations read current entrances.** Before, the clearance queue left
+  the entrance cache stale between removals in one slot, so a later removal's evacuation trips
+  could start from the entrance of the building the first removal swap-removed. The cache now
+  stays current. The envelope cities show no difference: a clearance needs an empty building,
+  so its evacuation rarely moves anyone.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

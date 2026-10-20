@@ -42,7 +42,9 @@ impl HouseholdSystem {
         // Agents a loader or tool appended directly join their lists before housing walks them.
         agents.register_appended_household_members();
         #[cfg(test)]
-        agents.assert_household_members_match_rebuild();
+        if crate::debug::work::city_checks() {
+            agents.assert_household_members_match_rebuild();
+        }
         let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         // Freight, housing, restock, visits and job search are served by their request queues

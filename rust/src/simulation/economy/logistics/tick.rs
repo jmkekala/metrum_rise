@@ -17,10 +17,12 @@ impl ShipmentSystem {
     /// Starts the next logistics hour, the clock of carrier leg timeouts
     /// (`Shipment::leg_started_hour`), after logging the finished hour's request queue counts.
     /// O(1); test builds also compare the maintained reservations with a fresh build, once an
-    /// hour as before.
+    /// hour as before, except in timing runs ([`crate::debug::work::city_checks`]).
     pub fn hourly_tick(&mut self) {
         #[cfg(test)]
-        self.assert_reservations_current();
+        if crate::debug::work::city_checks() {
+            self.assert_reservations_current();
+        }
         self.close_request_stats_hour();
         self.hour_ticks += 1;
     }

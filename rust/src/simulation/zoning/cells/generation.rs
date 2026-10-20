@@ -77,7 +77,29 @@ impl CellStore {
             return CellGeneration::default();
         }
         // Godot's main thread previews and paints cells outside any pool (CODE-17).
-        crate::thread_pools::install(|| self.generate_in_pool(graph, config, bounds, &blocked))
+        crate::thread_pools::install(|| {
+            self.generate_in_pool(graph, config, bounds, &blocked, false)
+        })
+        .expect("generation that may register frames publishes")
+    }
+
+    /// Generates as [`Self::generate_in_bounds`] does only if every accepted cell lies on a grid
+    /// frame the store has already registered; otherwise leaves the store unchanged and returns
+    /// `None`. Frame ids follow registration order, so loading warms its cells this way
+    /// (`SIM-02-K`): it must not register a frame the saved game would register later.
+    pub(crate) fn generate_on_known_frames(
+        &mut self,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+        bounds: CellBounds,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> Option<CellGeneration> {
+        if !bounds.is_valid() {
+            return Some(CellGeneration::default());
+        }
+        crate::thread_pools::install(|| {
+            self.generate_in_pool(graph, config, bounds, &blocked, true)
+        })
     }
 
     fn generate_in_pool(
@@ -86,7 +108,8 @@ impl CellStore {
         config: &WorldConfig,
         bounds: CellBounds,
         blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
-    ) -> CellGeneration {
+        known_frames_only: bool,
+    ) -> Option<CellGeneration> {
         let mut phase = crate::debug::Channel::EconomyPhases
             .enabled()
             .then(std::time::Instant::now);
@@ -286,6 +309,14 @@ impl CellStore {
                     ));
         });
         lap(4);
+        // Everything above only read the store; publication below registers new frames.
+        if known_frames_only
+            && accepted.iter().any(|&(key, valid, _)| {
+                valid && !self.has_frame(raw.frame(key.grid).expect("indexed candidate frame"))
+            })
+        {
+            return None;
+        }
 
         let mut old = Vec::new();
         self.visit_in_bounds(bounds, |key| old.push(key));
@@ -344,12 +375,12 @@ impl CellStore {
             times[4],
             times[5]
         );
-        CellGeneration {
+        Some(CellGeneration {
             roads: roads.len(),
             candidates: priorities.len(),
             comparisons,
             accepted: output.len(),
-        }
+        })
     }
 }
 

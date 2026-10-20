@@ -18,6 +18,26 @@ use crate::simulation::network::graph::RegionGraph;
 use rayon::prelude::*;
 
 impl AgentSystem {
+    /// Sizes the movement pass's route scratch, one per worker of the current pool and one for
+    /// the serial pass, for the network's current revision: loading calls it so the first frame
+    /// does not (`SIM-02-K`). Scratch never changes results. O(lanes) per scratch on a new
+    /// revision, O(1) otherwise.
+    pub(crate) fn prepare_movement_scratch(
+        &mut self,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        self.movement_query_shards
+            .resize_with(rayon::current_num_threads(), Default::default);
+        self.movement_query_shards
+            .par_iter_mut()
+            .for_each(|scratch| {
+                scratch.prepare_routes(transit_network, graph);
+            });
+        self.movement_serial_query
+            .prepare_routes(transit_network, graph);
+    }
+
     /// Dispatches the parallel per-agent movement state machine.
     pub(super) fn dispatch_movement_pass(
         &mut self,
@@ -29,6 +49,13 @@ impl AgentSystem {
         n: usize,
     ) {
         self.prepare_lane_claims(allocator, transit_network, graph, delta, n);
+        // Before the movement slices borrow the agent columns.
+        if n >= PAR_THRESHOLD {
+            self.prepare_movement_scratch(transit_network, graph);
+        } else {
+            self.movement_serial_query
+                .prepare_routes(transit_network, graph);
+        }
 
         let mut slices = MovementSlices::new(&mut self.agents);
         slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
@@ -40,16 +67,6 @@ impl AgentSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let economy_catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-
-        if n >= PAR_THRESHOLD {
-            self.movement_query_shards
-                .resize_with(rayon::current_num_threads(), Default::default);
-            self.movement_query_shards.par_iter_mut().for_each(|scratch| {
-                scratch.prepare_routes(transit_network, graph);
-            });
-        }
-        self.movement_serial_query
-            .prepare_routes(transit_network, graph);
 
         let movement_claim_modes = &self.movement_claim_modes;
         let pathfind_count = &self.pathfind_count;

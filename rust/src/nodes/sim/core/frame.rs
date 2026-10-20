@@ -146,6 +146,35 @@ impl SimCore {
         }
     }
 
+    /// Builds at load what the first frame would otherwise build (`SIM-02-K`): the routing
+    /// hierarchy if dirty, the flow fields loading marked dirty and the movement pass's route
+    /// scratch for that network. Each is a function of the loaded network, buildings and
+    /// entrances, so the first frame finds them current and has nothing left to build. The
+    /// fields wait for the first frame when the zone index or entrance cache is stale here.
+    pub(crate) fn prepare_loaded_pathing(&mut self) {
+        self.transit_network
+            .rebuild_pathing_if_dirty(&mut self.region_graph);
+        let allocator = &self.allocator;
+        if !allocator.vacancy_index_stale()
+            && !allocator.entrances_dirty
+            && allocator.entrances.len() == allocator.buildings.len()
+        {
+            self.mark_changed_zone_flow_fields();
+            let revision = self.transit_network.flow_graph_revision();
+            let alloc = &self.allocator;
+            let graph = &self.region_graph;
+            self.transit_network.flow_fields.rebuild_dirty(
+                graph,
+                revision,
+                |zone, mode_flags, sources| {
+                    alloc.collect_sources_for_zone(zone, graph, mode_flags, sources)
+                },
+            );
+        }
+        self.agents
+            .prepare_movement_scratch(&self.transit_network, &self.region_graph);
+    }
+
     /// Advances the simulation by one frame of `frame_dt_s` real seconds at the current speed.
     ///
     /// A paused clock (`speed_multiplier <= 0`) leaves all state untouched. Otherwise agents move

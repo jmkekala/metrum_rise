@@ -208,3 +208,48 @@ fn cached_geometry_and_overlay_versions_are_local_to_the_changed_chunk() {
         .len()
     );
 }
+
+// Loading warms the generated cells a save leaves out (`SIM-02-K`): a store that restored its
+// frames generates the cells it had, and one that never registered a road's frame leaves that
+// road's chunks cold rather than register it out of order.
+#[test]
+fn warming_regenerates_saved_frames_and_leaves_unregistered_ones_cold() {
+    let mut graph = RegionGraph::new();
+    let a = node(&mut graph, 0.0, 0.0);
+    let b = node(&mut graph, 1600.0, 0.0);
+    road(&mut graph, a, b);
+    let config = WorldConfig::default();
+    let bounds = CellBounds {
+        min: DVec2::new(-1024.0, -1024.0),
+        max: DVec2::new(2560.0, 1024.0),
+    };
+    let cells_of = |store: &CellStore| {
+        let mut cells = Vec::new();
+        store.visit_in_bounds(bounds, |key| {
+            cells.push((store.frame(key.grid).unwrap(), key.x, key.y))
+        });
+        cells.sort_unstable();
+        cells
+    };
+    let mut played = CellStore::default();
+    played.ensure_generated_in_bounds(&graph, &config, bounds, |_| false);
+    assert!(!cells_of(&played).is_empty());
+
+    let mut loaded = CellStore::default();
+    for (grid, frame) in played.saved_frames() {
+        assert!(loaded.restore_saved_frame(grid, frame));
+    }
+    let (warmed, cold) = loaded.warm_cold_chunks(&graph, &config, |_| false);
+    assert!(warmed > 0);
+    assert_eq!(cold, 0);
+    assert_eq!(cells_of(&loaded), cells_of(&played));
+    assert_eq!(loaded.saved_frames().count(), played.saved_frames().count());
+    assert!(loaded.chunk_state((1, 0)).1);
+
+    let mut unregistered = CellStore::default();
+    let (_, cold) = unregistered.warm_cold_chunks(&graph, &config, |_| false);
+    assert!(cold > 0);
+    assert!(cells_of(&unregistered).is_empty());
+    assert_eq!(unregistered.saved_frames().count(), 0);
+    assert!(!unregistered.chunk_state((1, 0)).1);
+}

@@ -168,6 +168,11 @@ impl CellStore {
         id
     }
 
+    /// Whether `frame` already has a persistent id.
+    pub(super) fn has_frame(&self, frame: GridFrame) -> bool {
+        self.frame_ids.contains_key(&frame)
+    }
+
     /// Resolves a grid without depending on road storage order.
     pub(crate) fn frame(&self, grid: u64) -> Option<GridFrame> {
         let index = usize::try_from(grid.checked_sub(1)?).ok()?;
