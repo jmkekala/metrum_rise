@@ -5,13 +5,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+mod agents;
+
+pub(crate) use agents::AgentPoseScratch;
+
 use super::state::{PendingDemandSpawnAction, SimCore};
-use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
 #[cfg(test)]
 use crate::nodes::sim::render::vehicle_ground::ground_vehicle_basis;
 use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
-use crate::simulation::economy::agents::{Agent, MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
+use crate::simulation::economy::agents::{Agent, MODE_CAR};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
 use crate::simulation::economy::logistics::ShipmentBuildingUndo;
 use crate::simulation::extraction::ExtractorSite;
@@ -23,7 +26,7 @@ use crate::simulation::network::surface::{
 };
 use crate::simulation::vegetation::edits::{CellEdit, VegetationCell};
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector3;
 
 const AGENT_SURFACE_CLEARANCE_M: f32 = 0.02;
 
@@ -86,12 +89,18 @@ fn default_model_basis() -> [Vector3; 3] {
     [Vector3::RIGHT, Vector3::UP, Vector3::BACK]
 }
 
-fn push_transform(buffer: &mut Vec<f32>, basis: [Vector3; 3], origin: Vector3) {
+// Row-major 3x4 `Transform3D` floats, the MultiMesh instance layout.
+fn transform_floats(basis: [Vector3; 3], origin: Vector3) -> [f32; 12] {
     let [basis_x, basis_y, basis_z] = basis;
-    buffer.extend_from_slice(&[
+    [
         basis_x.x, basis_y.x, basis_z.x, origin.x, basis_x.y, basis_y.y, basis_z.y, origin.y,
         basis_x.z, basis_y.z, basis_z.z, origin.z,
-    ]);
+    ]
+}
+
+#[cfg(test)]
+fn push_transform(buffer: &mut Vec<f32>, basis: [Vector3; 3], origin: Vector3) {
+    buffer.extend_from_slice(&transform_floats(basis, origin));
 }
 
 pub(super) fn pedestrian_lane_surface_height(lane: &Lane, lane_y: f32) -> f32 {
@@ -423,6 +432,37 @@ impl RenderSnapshot {
     }
 }
 
+#[cfg(test)]
+impl SimCore {
+    /// Builds only the agent instances of `culled` by the snapshot's path and of `full_pose` by
+    /// the serial full-pose reference, from the same state. Both are cleared first.
+    pub(in crate::nodes::sim::core) fn agent_instances_both_ways(
+        &mut self,
+        culled: &mut RenderSnapshot,
+        full_pose: &mut RenderSnapshot,
+    ) -> (std::time::Duration, std::time::Duration) {
+        crate::thread_pools::install(|| {
+            self.allocator
+                .prepare_building_site_query_index(self.config.zone_cell_m);
+            for snapshot in [&mut *culled, &mut *full_pose] {
+                snapshot
+                    .pedestrian_transforms
+                    .values_mut()
+                    .for_each(Vec::clear);
+                snapshot.car_transforms.values_mut().for_each(Vec::clear);
+                snapshot.car_render_ids.values_mut().for_each(Vec::clear);
+                snapshot.car_ground_flags.values_mut().for_each(Vec::clear);
+            }
+            let started = std::time::Instant::now();
+            self.build_agent_instances(culled);
+            let culled_time = started.elapsed();
+            let started = std::time::Instant::now();
+            self.build_agent_instances_full_pose(full_pose);
+            (culled_time, started.elapsed())
+        })
+    }
+}
+
 impl SimCore {
     /// Pre-computes all per-frame rendering data into a `RenderSnapshot`.
     ///
@@ -455,127 +495,9 @@ impl SimCore {
             flags.clear();
         }
 
-        let (aabb_x_min, aabb_x_max, aabb_z_min, aabb_z_max) = self.camera_aabb;
-        let cull = aabb_x_min < aabb_x_max; // false when default "show all"
-
-        // Stable per-bucket instance order is the interpolation identity contract; parallel
-        // folds would require sorting or merging every frame and reintroduce allocations.
-        for i in 0..self.agents.len() {
-            if !transit_is_visible(self.agents.transit[i]) {
-                continue;
-            }
-
-            let mut world_x = self.agents.pos_x[i];
-            let mut world_z = self.agents.pos_y[i];
-            let mut lane_pose = None;
-            let mut pedestrian_lane_surface_y = None;
-            let lane_id = self.agents.current_lane_id[i];
-            if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
-                let lane = &self.transit_network.lane_system.lanes[lane_id];
-                lane_pose = if self.agents.transit_mode[i] == MODE_CAR
-                    && self.agents.transit[i] == TRANSIT_NETWORK
-                    && let Some(source_lane) = self
-                        .transit_network
-                        .lane_system
-                        .lanes
-                        .get(self.agents.lane_change_from_lane_id[i] as usize)
-                    && source_lane.edge_id != usize::MAX
-                    && source_lane.edge_id == lane.edge_id
-                    && source_lane.is_fwd == lane.is_fwd
-                    && source_lane.lane_type == lane.lane_type
-                {
-                    sample_lane_change_pose(
-                        source_lane,
-                        lane,
-                        self.agents.lane_distance[i],
-                        self.agents.lane_change_start_d[i],
-                        self.agents.lane_change_length_m[i],
-                    )
-                } else {
-                    sample_lane_pose(lane, self.agents.lane_distance[i])
-                };
-                if let Some((pos, _)) = lane_pose {
-                    world_x = pos.x;
-                    world_z = pos.z;
-                    pedestrian_lane_surface_y = Some(pedestrian_lane_surface_height(lane, pos.y));
-                }
-            }
-
-            if cull
-                && (world_x < aabb_x_min
-                    || world_x > aabb_x_max
-                    || world_z < aabb_z_min
-                    || world_z > aabb_z_max)
-            {
-                continue;
-            }
-            // Lane geometry owns network height. Both off-lane modes use the same current
-            // road/pad/CDT ownership query in ingress and egress, including cut-away terrain.
-            if self.agents.transit_mode[i] != MODE_CAR {
-                // Pedestrian / walker — use variant MMI and oriented basis.
-                let p_type = self.agents.pedestrian_type[i];
-                let walk_cycle = self.agents.walk_phase[i];
-                let world_y = pedestrian_lane_surface_y.unwrap_or_else(|| {
-                    self.get_world_surface_height_internal(Vector2::new(world_x, world_z))
-                }) + AGENT_SURFACE_CLEARANCE_M;
-                let forward = lane_pose
-                    .map(|(_, tangent)| tangent)
-                    .or_else(|| access_phase_direction(self, i, world_x, world_z));
-                // GLTF export converts Blender -Y (character facing) to +Z, so the
-                // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
-                let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
-                let buffer = snapshot.pedestrian_transforms.entry(p_type).or_default();
-                push_transform(buffer, basis, Vector3::new(world_x, world_y, world_z));
-
-                // Add walk_phase in CUSTOM_DATA0.x (requires MultiMesh use_custom_data = true)
-                buffer.push(walk_cycle);
-                buffer.push(0.0);
-                buffer.push(0.0);
-                buffer.push(0.0);
-            } else {
-                // Keep stable bucket order here; solve independent off-lane footprints below.
-                let v_type = self.agents.vehicle_type[i];
-                let render_id = self.agents.render_id[i];
-                let variant_id = (render_id % 5) as u8;
-                let model_key = (v_type * 10) + variant_id;
-                snapshot
-                    .car_render_ids
-                    .entry(model_key)
-                    .or_default()
-                    .push(render_id.min(i64::MAX as u64) as i64);
-                snapshot
-                    .car_ground_flags
-                    .entry(model_key)
-                    .or_default()
-                    .push(u8::from(lane_pose.is_none()));
-                let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
-                    (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
-                } else {
-                    let heading = access_phase_direction(self, i, world_x, world_z)
-                        .map(|direction| -direction)
-                        .unwrap_or(Vector3::BACK);
-                    (0.0, model_basis(heading))
-                };
-                let buffer = snapshot.car_transforms.entry(model_key).or_default();
-                push_transform(buffer, basis, Vector3::new(world_x, world_y, world_z));
-            }
-        }
-
-        {
-            use rayon::prelude::*;
-            // Borrow buckets directly: HashMap's rayon adapter would allocate a staging Vec.
-            snapshot
-                .car_transforms
-                .iter_mut()
-                .par_bridge()
-                .for_each(|(&key, buffer)| {
-                    self.solve_vehicle_transforms(
-                        key / 10,
-                        buffer,
-                        &snapshot.car_ground_flags[&key],
-                    );
-                });
-        }
+        // Cull, pose and bucket the agents in parallel; instance order stays agent order, the
+        // interpolation identity contract (`SIM-02-K`).
+        self.build_agent_instances(&mut snapshot);
 
         let node_positions = self.network_node_positions_snapshot();
 
@@ -652,6 +574,7 @@ impl SimCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use godot::prelude::Vector2;
 
     #[test]
     fn ground_vehicle_basis_preserves_yaw_and_follows_pitch_and_roll() {

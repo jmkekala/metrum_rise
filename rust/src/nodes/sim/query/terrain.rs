@@ -4,6 +4,7 @@
 
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
+use crate::simulation::buildings::allocator::NearbySites;
 use godot::prelude::*;
 mod engineered;
 
@@ -23,10 +24,29 @@ impl SimCore {
     /// This reads owned road surfaces first, building-site top surfaces second, and the current
     /// visual terrain buffer only when no engineered surface owns the query point.
     pub fn get_world_surface_height_internal(&self, pos: Vector2) -> f32 {
+        self.world_surface_height_with_sites(pos, || {
+            self.allocator.sample_building_site_height(pos)
+        })
+    }
+
+    /// [`Self::get_world_surface_height_internal`] at `pos`, within the reach of a successful
+    /// `BuildingAllocator::gather_nearby_sites`, querying building sites among `nearby` only.
+    pub(crate) fn get_world_surface_height_near(&self, pos: Vector2, nearby: &NearbySites) -> f32 {
+        self.world_surface_height_with_sites(pos, || {
+            self.allocator.sample_building_site_height_near(pos, nearby)
+        })
+    }
+
+    // Roads first, then the building site `site_height` finds, engineered ground, terrain.
+    fn world_surface_height_with_sites(
+        &self,
+        pos: Vector2,
+        site_height: impl FnOnce() -> Option<f32>,
+    ) -> f32 {
         self.transit_network
             .road_surface
             .sample_visible_surface_height(&self.region_graph, &self.heightmap, pos.x, pos.y)
-            .or_else(|| self.allocator.sample_building_site_height(pos))
+            .or_else(site_height)
             .or_else(|| self.sample_engineered_ground_height(pos))
             .unwrap_or_else(|| {
                 self.heightmap.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE

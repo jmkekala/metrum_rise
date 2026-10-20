@@ -373,7 +373,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   buildings are cleared, families leave and newcomers arrive a few at a time through the hour
   instead of all at its start, and building upgrades and downgrades take effect a slot after
   they are decided (save format 103). The legacy hour and day code is gone: no game code runs because
-  the clock crossed an hour or a day.
+  the clock crossed an hour or a day. The render snapshot skips agents outside the camera before
+  posing them, with identical instances, which halves the 100k mean frame at 1× (`SIM-02-K` part 2).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

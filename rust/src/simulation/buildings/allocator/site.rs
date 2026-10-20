@@ -18,6 +18,7 @@ pub(crate) use grading::{
 pub(crate) use model::BuildingSiteSurfaceClient;
 pub(crate) use model::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
 pub(crate) use paving::SitePavingPartition;
+pub(crate) use query::NearbySites;
 
 #[cfg(test)]
 mod tests;

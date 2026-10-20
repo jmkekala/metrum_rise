@@ -15,7 +15,8 @@ the demand snapshot; the funding census over slots on a rolling input copy; cons
 permits on the published census; demand planning one zone type a slot) are done.
 `SIM-02-J` (request queues) is done: freight requests (part 1); the housing, restock, visit and
 job queues (part 2); the level-change, building-removal, departure and admission queues (part
-3). `SIM-02-K` is in progress: part 1 (legacy hour and day paths deleted) is done. See the
+3). `SIM-02-K` is in progress: parts 1 (legacy hour and day paths deleted) and 2 (render
+snapshot) are done. See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -724,6 +725,9 @@ moves its entities between the tiers' phase buckets.
   [`SIM-02-A`](#sim-02-a-guards-and-pre-refactor-baseline).
   The maximum varies by about 20% between runs of one build, the p99 by about 10%, so "no
   worse" allows 25% on the maximum and 10% on the p99.
+- **Snapshot columns** (from `SIM-02-K` part 2): `PERF07_DAY` also reports the render
+  snapshot's mean and p99 (`mean_snapshot_ms`, `p99_snapshot_ms`). `METRUM_PERF07_MINUTES`
+  caps the measured span for diagnostics; gate runs leave it unset and measure the full day.
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -810,7 +814,7 @@ previous step's results exactly.
 | `SIM-02-H` | Environment grids become rolling sweeps; cell-lot regeneration becomes a dirty-region queue. |
 | `SIM-02-I` | Census and demand become incremental counters and rolling snapshots. The `PERF-03` and `PERF-04` scaling fixes land here, since this step rewrites the census. |
 | `SIM-02-J` | Matching becomes request queues. |
-| `SIM-02-K` | Legacy `FixedSlot` hour and day systems, `simulate_tick_internal`, `simulate_operational_hour_internal` and every minute-0 path are deleted (part 1 done). `PERF-07` acceptance at 30k and 100k. The cadence sections in `economy.md` and `demand.md` point here. |
+| `SIM-02-K` | Legacy `FixedSlot` hour and day systems, `simulate_tick_internal`, `simulate_operational_hour_internal` and every minute-0 path are deleted (part 1 done); the render snapshot culls before posing (part 2 done). `PERF-07` acceptance at 30k and 100k. The cadence sections in `economy.md` and `demand.md` point here. |
 
 #### `SIM-02-K` parts
 
@@ -822,9 +826,11 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    the coarse-hour census callers and every minute-0 or hour-boundary path go; tests,
    benchmarks and the contract harness step the slot clock. The remaining fixed-slot systems
    state honest costs. Expected envelope: identical, or the difference explained.
-2. **K2, render snapshot.** Cull on the agents' stored positions before posing (about 9% of the
-   moving agents are in the camera), an O(1) surface query for off-lane agents, parallel
-   bucketing. Saves about 5.5 ms at 1× and 6.5 ms at 32× at 100k.
+2. **K2, render snapshot** (done 2026-10-20). Cull before posing (about 9% of the moving
+   agents are in the camera), on each lane agent's lane bounds rather than its stored position
+   (see [Decided while unattended](#decided-while-unattended)); site queries that skip distant
+   sites, with one gather per vehicle; parallel pose and bucketing. Planned saving about 5.5 ms
+   at 1× and 6.5 ms at 32× at 100k; the 100k snapshot mean fell 5.9 ms at 1× and 7.8 ms at 32×.
 3. **K3, frame spikes.** Generated cells built during loading instead of by the first lot regions
    served (25–96 ms a region at 100k, all day); census slices budgeted by work units instead of
    rows (up to 115 ms a slice); incremental zone-index and entrance repairs after clearances
@@ -1702,6 +1708,76 @@ on a fresh `$ARTIFACTS` directory.
   game writes), and editing the two tests (the bad state would stay for every other user of
   the fixture). From this fix on, every step's gate runs the debug library suite as well.
 
+#### `SIM-02-K`, part 2 — render snapshot culls before posing (2026-10-20)
+
+- **What changed:** the snapshot culls before posing and poses and buckets on the shared pool;
+  its instances are those of the serial full pose, bit for bit. Gameplay does not change.
+  - **Cull.** A lane agent's pose interpolates two consecutive points of its lane, or, while a
+    car changes lanes, blends the source and target lane at the same distance, so it lies in
+    the planar box of those lanes' points. The cull skips an agent only when that box, widened
+    1 m for interpolation rounding (valid for coordinates below 2^20 m), misses the camera. A
+    lane-less agent (egress, ingress, a border start) is posed at its stored position, which
+    the cull tests exactly. Lanes with fewer than two points or a non-finite coordinate, and
+    non-finite lane distances, are always posed. Survivors are posed by the unchanged code and
+    tested exactly. The cull tests the instance origin, as the snapshot always did, so vehicle
+    length and render extent do not enter it. Lane boxes are cached in the lane system by
+    revision and lane count and rebuilt in parallel after a lane rebuild.
+  - **Surface query.** Each site query (support height, yard plants, planting) skips a site
+    whose lot centre is farther from the point than the exact maximum site radius plus 0.5 m
+    before reading its polygons, and a vehicle's 13 contact samples share one gathered set of
+    nearby sites. The candidates, chunk ranges and lowest-index rule are unchanged, so the
+    answers are. The query stays bounded by the sites in the 512 m chunks around the point
+    (local density, not city size). The agent's own building cannot answer alone: the
+    lowest-index containing site wins, and pads may touch or overlap within the polygon test's
+    1 mm tolerance.
+  - **Parallel.** Agents are culled and posed in 2,048-agent index chunks; each bucket then
+    appends its instances in chunk order, which is agent order. Cost: O(agents) for the cull
+    (one box test each), O(agents in the camera) for posing.
+  - **Not done:** posing outside the core lock. It would need a copy of the in-camera agents
+    and shared lane geometry; after part 2 the whole snapshot averages under 1 ms at 100k.
+- **Equivalence:** a 2k populated city compares the culled snapshot with the serial full pose
+  on 5,828 frames at 1× and 32× (identical), and 292,820 surface points and vehicle poses; the
+  prepared 30k and 100k cities 3,301 frames each (identical). Lane changes do not occur in the
+  populated fixtures, so a synthetic two-lane test
+  (`culled_snapshot_matches_full_pose_through_lane_changes`) covers them. The populated-city
+  comparison is an ignored release test in `frame_budget/snapshot_cull.rs`, outside
+  `populated_city.rs`, whose bytes feed the snapshot fixture revision.
+- **Envelope and determinism** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass; the envelope is
+  bit-identical to part 1's, and repeat, 1 and 3 workers and save/reload are identical.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`), full day, in one
+  session with the part 1 build as control. Max / p99 / mean in ms, control in parentheses:
+
+  | Tier | Speed | Max | p99 | Mean | Snapshot mean |
+  | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 59.6 (63.6) | 1.25 (6.25) | 0.54 (2.47) | 0.29 |
+  | 10k | 32× | 61.0 (62.7) | 2.72 (7.17) | 1.07 (2.71) | 0.38 |
+  | 30k | 1× | 83.5 (87.8) | 2.29 (7.49) | 1.30 (3.40) | 0.41 |
+  | 30k | 32× | 89.2 (90.7) | 9.15 (13.06) | 3.32 (5.63) | 0.57 |
+  | 100k | 1× | 109.9 (117.4) | 8.45 (18.62) | 6.04 (12.96) | 0.89 |
+  | 100k | 32× | 176.8 (186.6) | 40.77 (49.71) | 17.20 (25.12) | 0.91 |
+
+  Every gate limit passes. The maxima are single slot frames the snapshot never dominated (10k
+  at 21:00, 30k at 01:00, 100k at 00:00 and 12:00; parts 3 and 5), and the 100k 32× frames
+  keep about 8.7 ms of agent tick (part 4). A diagnostic on the part 1 snapshots with the part 1
+  build plus the new columns as control measured the snapshot alone (mean / p99 ms, 1× over
+  the first 20 game minutes, 32× over the day): 100k 6.67 / 8.06 → 0.81 / 1.11 at 1× and
+  8.74 / 12.80 → 0.92 / 1.41 at 32×; 30k 1.67 / 2.25 → 0.34 / 0.64 and 2.77 / 7.25 → 0.58 /
+  1.09; 10k 1.36 / 3.20 → 0.15 / 0.19 and 1.89 / 5.65 → 0.39 / 1.04.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the control: hour means
+  2.8, 8.6–8.7, 10.9–11.4 and 31.6–31.9 ms (control 2.8–2.9, 8.6, 10.6–11.1 and 32.2); the same
+  six work-count limits fail.
+- **Build identity:** the timing runs and the first gate ran on the part's sources on part 1
+  (rustc 1.99.1); the commit gate reran the release tests, envelope, determinism, clippy and
+  `./run.sh --test` on these sources on top of the part 1 fix.
+- **Tests:** 2,533 library tests pass in the release build and in the debug build (`./run.sh
+  --test`), with the 4 growth integration tests; the benchmarks build; clippy and rustfmt add
+  nothing. The snapshot is bridge-facing, so the isolated `./run.sh --test` ran: every bridge
+  and asset test passes with no script errors, after `agent_inspector_test` was made to wait for
+  the core's route answer (`DEBUG-08`), which the first run hit.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -1754,7 +1830,7 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 
 | Today | Cost today | Target | Step |
 | --- | --- | --- | --- |
-| Render snapshot (`build_snapshot_reusing`) | 3–12 ms: a lane pose for every agent before camera culling, serial | Cull before posing; bucket in parallel | K |
+| Render snapshot (`build_snapshot_reusing`) | 3–12 ms: a lane pose for every agent before camera culling, serial | Cull before posing; bucket in parallel | K (part 2 done: 100k mean 6.7 → 0.8 ms at 1×, 8.7 → 0.9 ms at 32×) |
 | Agent movement in departure frames | Up to 4 ms at 10k and 17 ms at 30k (32×) | Departures spread by events; `PERF-06` limits | E, K |
 | One queued construction start | 14–21 ms for a single placement | Placement split across slots | K |
 | First boundary after loading | About 10× an ordinary hour. `SIM-02-H` found most of it was the catalog refresh every load made, now skipped when the catalog is unchanged. What remains are the generated cells, which loading invalidates and the first lot regions served afterwards rebuild: 61–88 ms each at 30k | Rebuilt during loading, or in bounded parts | H (refresh, done), K |
@@ -2911,6 +2987,22 @@ alternatives and the evidence. The user reviews these on return.
   builds one at once. These O(B) fallbacks stay for part 5 and are not fixed slots. Alternative:
   fail the read; rejected, a world's first hour and an edit after the last window slot reach
   them in play.
+- **`SIM-02-K` — the snapshot culls lane agents on their lanes' bounds, not their stored
+  positions (part 2).** The plan culled on movement's `pos_x`/`pos_y`. That position cannot
+  bound a lane agent's pose by any fixed margin: overlap correction moves cars back along their
+  lane without rewriting it (one car spacing per stacked car), agents waiting for a replan keep
+  it until they move, and a walker attaching to the sidewalk keeps its curb position for a
+  frame. Daily happiness reads it, so rewriting it would change gameplay, and for lane agents it
+  is not the snapshot's pose either (walker offsets, different sampling arithmetic). The cull
+  therefore tests the planar box of the lane (or both lanes during a lane change) plus 1 m, a
+  bound that holds by construction, and poses survivors with the unchanged code. Evidence:
+  identical instances against the full pose on the 2k, 30k and 100k cities and through lane
+  changes. Alternatives: a margin on the stored position (cannot be proven, so instances could
+  differ), or keeping the stored position equal to the pose (a gameplay change).
+- **`SIM-02-K` — posing stays inside the core lock (part 2).** Posing outside the lock needs a
+  copy of the in-camera agents and shared lane geometry. After the cull the whole snapshot
+  averages under 1 ms at 100k (p99 1.1–1.4 ms), so the copy would cost about what it saves.
+  Revisit if part 7 is short by about a millisecond.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

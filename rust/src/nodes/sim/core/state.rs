@@ -330,6 +330,8 @@ pub struct SimCore {
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
     pub camera_aabb: (f32, f32, f32, f32),
+    /// Per-chunk posed-agent buffers the render snapshot reuses; render scratch, not state.
+    pub(crate) snapshot_agent_scratch: super::snapshot::AgentPoseScratch,
     /// Whether the zoning cell overlay is shown; stale warm cell chunks then regenerate in the
     /// same tick as the edit that invalidated them. UI state, kept across world resets.
     pub(crate) cell_overlay_visible: bool,
@@ -420,6 +422,7 @@ impl SimCore {
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
+            snapshot_agent_scratch: Default::default(),
             cell_overlay_visible: false,
             vehicle_ground_support: Default::default(),
         }

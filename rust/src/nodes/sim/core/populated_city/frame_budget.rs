@@ -14,6 +14,9 @@ use super::contract::{cache_dir, residents, timing_mode};
 use super::snapshot;
 use std::time::Instant;
 
+// Kept out of `populated_city.rs`, whose bytes are part of the snapshot fixture revision.
+mod snapshot_cull;
+
 const BUDGET_MS: f64 = 8.0;
 const FRAME_MS: f64 = 1000.0 / 60.0;
 // A street-level camera box centred on the city; agents outside it are culled from snapshots.
@@ -98,7 +101,15 @@ fn perf07_frame_budget() {
     acknowledge_uploads(core, &published);
     let mut spare = RenderSnapshot::default();
 
-    let end_minute = absolute_minute(core) + MINUTES_PER_DAY;
+    // A shorter span is a diagnostic only; acceptance runs the whole day.
+    let minutes: u64 = std::env::var("METRUM_PERF07_MINUTES")
+        .map(|value| {
+            value
+                .parse()
+                .expect("METRUM_PERF07_MINUTES must be an integer")
+        })
+        .unwrap_or(MINUTES_PER_DAY);
+    let end_minute = absolute_minute(core) + minutes;
     let frames_per_day = (MINUTES_PER_DAY as f64 * core.time.seconds_per_minute()
         / (FRAME_DT_S * f64::from(speed)))
     .ceil() as usize;
@@ -142,6 +153,8 @@ fn perf07_frame_budget() {
         .fold(0.0, f64::max);
     let component_max =
         |value: fn(&FrameSample) -> f64| samples.iter().map(value).fold(0.0, f64::max);
+    let mut snapshot_sorted: Vec<f64> = samples.iter().map(|sample| sample.snapshot_ms).collect();
+    snapshot_sorted.sort_by(f64::total_cmp);
     eprintln!(
         "PERF07_DAY {}",
         serde_json::json!({
@@ -158,6 +171,8 @@ fn perf07_frame_budget() {
             "max_pathing_ms":component_max(|sample| sample.step.pathing_ms),
             "max_cell_ms":component_max(|sample| sample.cell_ms),
             "max_snapshot_ms":component_max(|sample| sample.snapshot_ms),
+            "mean_snapshot_ms":snapshot_sorted.iter().sum::<f64>() / snapshot_sorted.len() as f64,
+            "p99_snapshot_ms":percentile(&snapshot_sorted, 0.99),
             "worst":worst.iter().map(FrameSample::json).collect::<Vec<_>>(),
             "record":format!("{:?}", city.record()),
         })

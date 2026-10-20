@@ -2,11 +2,48 @@
 
 //! Spatial lookup and ray-query operations for derived building sites.
 
-use super::geometry::{point_in_polygon_slice, update_site_plane_ray_hit};
+use super::geometry::{point_in_polygon_slice, site_lot_center, update_site_plane_ray_hit};
 use super::model::BuildingSiteClient;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::{Vector2, Vector3};
+
+// Covers the polygon test's `SITE_POINT_EPS_M` edge tolerance and the f32 rounding of lot
+// centers, radii and distances, with a wide margin; a larger value only tests more sites.
+const SITE_REACH_SLACK_M: f32 = 0.5;
+// Covers the rounding of contact offsets around a gathered centre, with a wide margin.
+const NEARBY_REACH_SLACK_M: f32 = 1.0;
+
+/// Sites gathered around one point by [`BuildingAllocator::gather_nearby_sites`], each with the
+/// 512 m chunk it is indexed in. Fixed capacity, so gathering allocates nothing.
+pub(crate) struct NearbySites {
+    len: usize,
+    sites: [(usize, [i32; 2]); NearbySites::CAPACITY],
+}
+
+impl NearbySites {
+    /// Sites one gather holds; a denser neighbourhood falls back to per-point queries.
+    pub(crate) const CAPACITY: usize = 64;
+
+    /// An empty set, filled by [`BuildingAllocator::gather_nearby_sites`].
+    pub(crate) fn new() -> Self {
+        Self {
+            len: 0,
+            sites: [(0, [0; 2]); Self::CAPACITY],
+        }
+    }
+}
+
+// The 512 m chunks whose indexed sites a query within `margin_m` of `pos` visits.
+fn site_chunk_range(pos: Vector2, margin_m: f32) -> [i32; 4] {
+    let chunk_size = RegionGraph::CHUNK_SIZE;
+    [
+        ((pos.x - margin_m) / chunk_size).floor() as i32,
+        ((pos.x + margin_m) / chunk_size).floor() as i32,
+        ((pos.y - margin_m) / chunk_size).floor() as i32,
+        ((pos.y + margin_m) / chunk_size).floor() as i32,
+    ]
+}
 
 impl BuildingSiteClient {
     pub(crate) fn contains_point(&self, pos: Vector2) -> bool {
@@ -152,8 +189,169 @@ impl BuildingAllocator {
     }
 
     // The lowest-index site for which `probe` answers at `pos`, through the 512 m chunk index;
-    // a linear scan only while the index is being rebuilt.
+    // a linear scan only while the index is being rebuilt. Every probe needs `pos` in one of the
+    // site's footprint, surface or planting polygons, whose vertices lie within the exact
+    // `max_site_radius_m` of the lot center; the polygon test accepts points up to
+    // `SITE_POINT_EPS_M` outside an edge. Sites whose lot center is farther away than that,
+    // plus `SITE_REACH_SLACK_M` for the tolerance and f32 rounding, cannot answer and are
+    // skipped before their polygons are read (`SIM-02-K`).
     fn site_at<T>(
+        &self,
+        pos: Vector2,
+        probe: impl Fn(&BuildingSiteClient) -> Option<T>,
+    ) -> Option<T> {
+        if self.dirty_index
+            || self.building_sites.len() != self.buildings.len()
+            || self.building_chunks.is_empty()
+        {
+            return self.building_sites.iter().find_map(probe);
+        }
+
+        let margin_m = self.max_site_radius_m.max(0.0);
+        let reach_sq = (margin_m + SITE_REACH_SLACK_M) * (margin_m + SITE_REACH_SLACK_M);
+        let [min_chunk_x, max_chunk_x, min_chunk_z, max_chunk_z] = site_chunk_range(pos, margin_m);
+
+        let mut best_idx = usize::MAX;
+        let mut best = None;
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                let Some(indices) = self.building_chunks.get(&(chunk_x, chunk_z)) else {
+                    continue;
+                };
+                for &idx in indices {
+                    if idx >= best_idx || idx >= self.building_sites.len() {
+                        continue;
+                    }
+                    let site = &self.building_sites[idx];
+                    if site_lot_center(site).distance_squared_to(pos) > reach_sq {
+                        continue;
+                    }
+                    let Some(answer) = probe(site) else {
+                        continue;
+                    };
+                    best_idx = idx;
+                    best = Some(answer);
+                }
+            }
+        }
+
+        best
+    }
+
+    /// Gathers, with one chunk scan, every site that [`Self::sample_building_site_height`] can
+    /// consider at any point within `reach_m` of `center`, so a vehicle's contact points share
+    /// it (`SIM-02-K`). Returns false, leaving the per-point query in charge, while the index is
+    /// being rebuilt, for a non-finite input, or when more than [`NearbySites::CAPACITY`] sites
+    /// qualify. O(sites in the chunks within the maximum site radius of `center`).
+    pub(crate) fn gather_nearby_sites(
+        &self,
+        center: Vector2,
+        reach_m: f32,
+        nearby: &mut NearbySites,
+    ) -> bool {
+        nearby.len = 0;
+        if self.dirty_index
+            || self.building_sites.len() != self.buildings.len()
+            || self.building_chunks.is_empty()
+            || !center.x.is_finite()
+            || !center.y.is_finite()
+            || !reach_m.is_finite()
+        {
+            return false;
+        }
+        let margin_m = self.max_site_radius_m.max(0.0);
+        // Covers every per-point chunk range and lot-centre test within `reach_m`, with slack
+        // for the rounding of the caller's contact offsets.
+        let span_m = margin_m + reach_m.max(0.0) + NEARBY_REACH_SLACK_M;
+        let keep_sq = (span_m + SITE_REACH_SLACK_M) * (span_m + SITE_REACH_SLACK_M);
+        let [min_chunk_x, max_chunk_x, min_chunk_z, max_chunk_z] = site_chunk_range(center, span_m);
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                let Some(indices) = self.building_chunks.get(&(chunk_x, chunk_z)) else {
+                    continue;
+                };
+                for &idx in indices {
+                    if idx >= self.building_sites.len()
+                        || site_lot_center(&self.building_sites[idx]).distance_squared_to(center)
+                            > keep_sq
+                    {
+                        continue;
+                    }
+                    if nearby.len == NearbySites::CAPACITY {
+                        nearby.len = 0;
+                        return false;
+                    }
+                    nearby.sites[nearby.len] = (idx, [chunk_x, chunk_z]);
+                    nearby.len += 1;
+                }
+            }
+        }
+        true
+    }
+
+    /// [`Self::sample_building_site_height`] at `pos`, within the reach of a successful
+    /// [`Self::gather_nearby_sites`]: the same candidates, chunk ranges and lowest-index rule,
+    /// over the gathered sites only. O(gathered sites).
+    pub(crate) fn sample_building_site_height_near(
+        &self,
+        pos: Vector2,
+        nearby: &NearbySites,
+    ) -> Option<f32> {
+        let margin_m = self.max_site_radius_m.max(0.0);
+        let reach_sq = (margin_m + SITE_REACH_SLACK_M) * (margin_m + SITE_REACH_SLACK_M);
+        let [min_chunk_x, max_chunk_x, min_chunk_z, max_chunk_z] = site_chunk_range(pos, margin_m);
+        let mut best: Option<(usize, f32)> = None;
+        for &(idx, [chunk_x, chunk_z]) in &nearby.sites[..nearby.len] {
+            if chunk_x < min_chunk_x
+                || chunk_x > max_chunk_x
+                || chunk_z < min_chunk_z
+                || chunk_z > max_chunk_z
+                || best.is_some_and(|(best_idx, _)| idx >= best_idx)
+            {
+                continue;
+            }
+            let site = &self.building_sites[idx];
+            if site_lot_center(site).distance_squared_to(pos) > reach_sq {
+                continue;
+            }
+            if let Some(height) = site.height_at(pos) {
+                best = Some((idx, height));
+            }
+        }
+        best.map(|(_, height)| height)
+    }
+
+    /// The support height, yard-plant block and planting answers at `pos`, by `site_at` and by
+    /// the unfiltered scan it replaced, for regressions that compare the two.
+    #[cfg(test)]
+    pub(crate) fn site_answers_both_ways(&self, pos: Vector2) -> [(Option<f32>, bool, bool); 2] {
+        let blocks = |site: &BuildingSiteClient| {
+            site.contains_point(pos)
+                .then(|| site.blocks_yard_plant(pos))
+        };
+        let planting = |site: &BuildingSiteClient| {
+            site.planting_world
+                .iter()
+                .any(|area| point_in_polygon_slice(pos, area))
+                .then_some(())
+        };
+        [
+            (
+                self.site_at(pos, |site| site.height_at(pos)),
+                self.site_at(pos, blocks).unwrap_or(false),
+                self.site_at(pos, planting).is_some(),
+            ),
+            (
+                self.site_at_unfiltered(pos, |site| site.height_at(pos)),
+                self.site_at_unfiltered(pos, blocks).unwrap_or(false),
+                self.site_at_unfiltered(pos, planting).is_some(),
+            ),
+        ]
+    }
+
+    // `site_at` before the lot-centre skip (`SIM-02-K`), unchanged.
+    #[cfg(test)]
+    fn site_at_unfiltered<T>(
         &self,
         pos: Vector2,
         probe: impl Fn(&BuildingSiteClient) -> Option<T>,

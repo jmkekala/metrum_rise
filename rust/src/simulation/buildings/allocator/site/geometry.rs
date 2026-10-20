@@ -68,9 +68,14 @@ pub(super) fn polygon_slice_bounds(points: &[Vector2]) -> (f32, f32, f32, f32) {
     (min_x, min_z, max_x, max_z)
 }
 
+/// The point [`site_radius_m`] measures from: the mean of the lot corners.
+pub(super) fn site_lot_center(site: &BuildingSiteClient) -> Vector2 {
+    site.lot_footprint_world.iter().copied().sum::<Vector2>()
+        / site.lot_footprint_world.len() as f32
+}
+
 pub(super) fn site_radius_m(site: &BuildingSiteClient) -> f32 {
-    let lot_center = site.lot_footprint_world.iter().copied().sum::<Vector2>()
-        / site.lot_footprint_world.len() as f32;
+    let lot_center = site_lot_center(site);
     site.footprint_world
         .iter()
         .chain(

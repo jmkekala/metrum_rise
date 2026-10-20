@@ -13,6 +13,7 @@ use crate::simulation::network::surface::{
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
 
+mod bounds;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 /// Pedestrian sidewalk and crosswalk connection logic.
@@ -23,6 +24,7 @@ mod successors;
 /// High-level logic for vehicle connections at junctions.
 pub mod vehicle_junctions;
 
+pub(crate) use bounds::LanePlanarBox;
 pub use successors::LaneSuccessors;
 
 /// Types of travel lanes supported by the network.
@@ -116,6 +118,8 @@ pub struct LaneSystem {
     // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
     crosswalks: HashMap<usize, LaneCrosswalk>,
     revision: u64,
+    // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
+    planar_bounds: bounds::LanePlanarBounds,
 }
 
 impl Default for LaneSystem {
@@ -133,6 +137,7 @@ impl LaneSystem {
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
             revision: 0,
+            planar_bounds: Default::default(),
         }
     }
 

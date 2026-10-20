@@ -2715,6 +2715,80 @@ fn car_snapshot_keeps_lane_change_curve_in_both_directions() {
 }
 
 #[test]
+fn culled_snapshot_matches_full_pose_through_lane_changes() {
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+
+    // Key, transform bits, render ids and ground flags of one car bucket.
+    type CarBucket = (u8, Vec<u32>, Vec<i64>, Vec<u8>);
+
+    // Car instances by bucket, as bits, ignoring empty recycled buckets.
+    fn cars(snapshot: &RenderSnapshot) -> Vec<CarBucket> {
+        let mut out: Vec<_> = snapshot
+            .car_transforms
+            .iter()
+            .filter(|(_, transforms)| !transforms.is_empty())
+            .map(|(&key, transforms)| {
+                (
+                    key,
+                    transforms.iter().map(|v| v.to_bits()).collect(),
+                    snapshot.car_render_ids[&key].clone(),
+                    snapshot.car_ground_flags[&key].clone(),
+                )
+            })
+            .collect();
+        out.sort_by_key(|bucket| bucket.0);
+        out
+    }
+
+    for direction in [-1.0_f32, 1.0] {
+        let mut core = lane_change_snapshot_fixture(direction);
+        let length = core.transit_network.lane_system.lanes[0].length;
+        // Cars before, inside and after their lane-change blend, both ways between the lanes.
+        for k in 0..240 {
+            let id = core.agents.spawn_housed_agent(0, 0.0, 0.0);
+            core.agents.transit[id] = TRANSIT_NETWORK;
+            core.agents.transit_mode[id] = MODE_CAR;
+            core.agents.current_lane_id[id] = k % 2;
+            core.agents.lane_change_from_lane_id[id] = (1 - k % 2) as u32;
+            core.agents.lane_change_start_d[id] = length * (k % 7) as f32 / 10.0;
+            core.agents.lane_change_length_m[id] = length * 0.3;
+            core.agents.lane_distance[id] = length * k as f32 / 240.0;
+        }
+        let mut culled = RenderSnapshot::default();
+        let mut full = RenderSnapshot::default();
+        let mut instances = 0;
+        // Camera edges every 2.5 m along the road and across and beyond both lanes.
+        for step in 0..34 {
+            let x = direction * step as f32 * 2.5;
+            for z in [-1.5, -0.5, 0.3, 1.75, 2.9, 3.6, 4.6] {
+                let z = direction * z;
+                for camera in [
+                    (
+                        x.min(x + direction * 30.0),
+                        x.max(x + direction * 30.0),
+                        -10.0,
+                        z,
+                    ),
+                    (
+                        x.min(x + direction * 30.0),
+                        x.max(x + direction * 30.0),
+                        z,
+                        10.0,
+                    ),
+                    (-100.0, x, z.min(0.0), z.max(0.0)),
+                ] {
+                    core.camera_aabb = camera;
+                    core.agent_instances_both_ways(&mut culled, &mut full);
+                    assert_eq!(cars(&culled), cars(&full), "camera {camera:?}");
+                    instances += culled.car_render_ids.values().map(Vec::len).sum::<usize>();
+                }
+            }
+        }
+        assert!(instances > 0);
+    }
+}
+
+#[test]
 #[ignore = "unprofiled lane-change snapshot measurement; run alone with --release --ignored --nocapture"]
 fn lane_change_snapshot_benchmark() {
     use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
