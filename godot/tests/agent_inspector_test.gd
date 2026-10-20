@@ -110,13 +110,14 @@ func _run() -> void:
 	_expect(not rect.has_point(click) and rect.grow(UIStyle.CURSOR_WINDOW_GAP + 1.0).has_point(click), "the window must open beside the click %s: %s" % [click, rect])
 	_expect(not panel.has_focus(), "the window must not take the keyboard")
 	_expect(panel.value_text("Mode") == "car" and panel.value_text("Destination") == "none", "the panel must show the fields")
-	_expect(panel.value_text("Route end").begins_with("path ends at node"), "the panel must say where the route ends: %s" % panel.value_text("Route end"))
+	# The route rows fill at the first panel refresh after a route rebuild the core answered (`DEBUG-08`).
+	_expect(await _eventually(func() -> bool: return panel.value_text("Route end").begins_with("path ends at node")), "the panel must say where the route ends: %s" % panel.value_text("Route end"))
 	_expect(details.get("last_failure", null) == "" and panel.value_text("Last failure") == "none", "a car that has not failed must show no failure: %s" % details.get("last_failure"))
 	var failure := "trip failed: agent %d [row 0], resident, car, at node 3: no road path from node 3 to border node 1; retry in 5 s (failure 1 of 3)" % render_id
 	panel.show_agent(details.merged({"last_failure": failure}, true))
 	_expect(panel.value_text("Last failure") == failure, "the panel must show the agent's last trip failure")
 
-	var route: Dictionary = simulation.get_agent_route_lines(render_id)
+	var route: Dictionary = await _route_lines(simulation, render_id)
 	var points: PackedVector3Array = route.get("points", PackedVector3Array())
 	_expect(inspector.vertex_count == points.size() * 3 and points.size() >= 2, "the overlay must draw the route as a ribbon, %d vertices for %d points" % [inspector.vertex_count, points.size()])
 	if points.size() >= 2:
@@ -288,6 +289,16 @@ func _inspection(simulation: Node, render_id: int) -> Dictionary:
 		var details: Dictionary = simulation.get_agent_inspection(render_id)
 		if details.has("active"):
 			return details
+		await process_frame
+	return {}
+
+# The inspected agent's route lines once the core answers: while the simulation thread holds
+# the core they come back empty (`DEBUG-08`).
+func _route_lines(simulation: Node, render_id: int) -> Dictionary:
+	for frame in TIMEOUT_FRAMES:
+		var route: Dictionary = simulation.get_agent_route_lines(render_id)
+		if route.has("points"):
+			return route
 		await process_frame
 	return {}
 
