@@ -181,6 +181,18 @@ impl TimeSystem {
         absolute_slot(self.day_index, self.minute_of_day, self.slot_in_minute())
     }
 
+    /// Sets the clock to the middle of absolute slot `slot`, as if frames had just run it
+    /// (tests that step slots without frames).
+    #[cfg(test)]
+    pub(crate) fn set_absolute_slot_for_test(&mut self, slot: u64) {
+        use super::scheduler::SLOTS_PER_DAY;
+        self.day_index = (slot / SLOTS_PER_DAY + 1) as u32;
+        self.minute_of_day = ((slot % SLOTS_PER_DAY) / SLOTS_PER_MINUTE) as u16;
+        self.time_elapsed = ((slot % SLOTS_PER_MINUTE) as f64 + 0.5) * self.seconds_per_minute()
+            / SLOTS_PER_MINUTE as f64;
+        debug_assert_eq!(self.absolute_slot(), slot);
+    }
+
     /// Processes real delta seconds and returns any authored minute boundaries crossed.
     pub fn process_delta(&mut self, delta: f64) -> TimeAdvance {
         let start_slot = self.absolute_slot();

@@ -173,7 +173,7 @@ impl GrowthScenario {
         self.core.time.day_index
     }
 
-    /// Runs `days` daily settlements frame by frame and records the city after each one.
+    /// Runs `days` game days frame by frame and records the city after each calendar close.
     pub fn run_days(&mut self, days: u32) -> Vec<GrowthDayRecord> {
         let mut records = Vec::with_capacity(days as usize);
         while records.len() < days as usize {

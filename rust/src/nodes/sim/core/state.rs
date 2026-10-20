@@ -11,10 +11,7 @@ use super::budget::{
     RoadLengthRoll,
 };
 use super::frame::EconomyObserver;
-use super::schedule::{
-    CELL_LOT_QUOTA, FREIGHT_REQUEST_QUOTA, HOUSING_REQUEST_QUOTA, JOB_REQUEST_QUOTA,
-    RESTOCK_REQUEST_QUOTA, SimEvent, SimSystem, simulation_schedule,
-};
+use super::schedule::{SimEvent, SimSystem, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
 use super::terrain_payloads::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
@@ -28,7 +25,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::handles::{Handle, HandleTable};
 use crate::simulation::core::scheduler::{
-    SLOTS_PER_DAY, SLOTS_PER_HOUR, SLOTS_PER_MINUTE, Schedule, absolute_slot,
+    SLOTS_PER_HOUR, SLOTS_PER_MINUTE, Schedule, absolute_slot,
 };
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
@@ -600,80 +597,6 @@ impl SimCore {
 }
 
 impl SimCore {
-    /// Executes one coarse operational-hour economy step before the daily settlement boundary.
-    /// The demand pass plans on a snapshot of the whole city taken after the hour's census
-    /// instead of the one the slots would have swept. Every entity's hour runs at once after
-    /// the pass, then the cell-lot, freight, housing, restock, visit and job request queues
-    /// serve the hour's quota, the level-change, removal, departure and admission queues serve
-    /// all they hold, and whole freight supplier, household destination and job board sweeps
-    /// run, as the slots of the hour would.
-    pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
-        self.demand.discard_snapshot_front();
-        // The census runs at once on a copy taken now and publishes before the pass; a census
-        // the slots had in progress is abandoned (`SIM-02-I`).
-        self.transit_network.publish_frontage_prices();
-        self.households.census_inputs.discard_front();
-        let service_funding_by_building = self.electricity_funding_by_building();
-        self.households.refresh_funding_census(
-            &mut self.allocator,
-            &mut self.logistics,
-            &self.transit_network,
-            &self.region_graph,
-            &service_funding_by_building,
-            &self.fiscal_policy,
-            self.treasury.balance,
-            minute_of_day,
-        );
-        self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
-        // The hour's later planning slots, as slots 1 to 3 run them (`SIM-02-I`).
-        for slot in &PlanningSlot::ALL[1..] {
-            self.execute_demand_planning_slot(*slot, day_index, minute_of_day);
-        }
-        let hour_start = absolute_slot(day_index, minute_of_day - minute_of_day % 60, 0);
-        self.run_every_hour_phase(hour_start);
-        self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize * SLOTS_PER_HOUR as usize);
-        self.serve_freight_request_queue(
-            hour_start,
-            FREIGHT_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
-        );
-        self.serve_housing_request_queue(HOUSING_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize);
-        self.serve_restock_request_queue(
-            hour_start,
-            RESTOCK_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
-        );
-        for slot in hour_start..hour_start + SLOTS_PER_HOUR {
-            self.serve_visit_request_queue(slot);
-        }
-        self.serve_job_request_queue(
-            hour_start,
-            JOB_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
-        );
-        // The demand queues serve the hour's level changes, removals, departures and
-        // admissions, as the hour's slots would (`SIM-02-J`).
-        self.serve_level_change_queue(usize::MAX, &mut ());
-        self.serve_building_removal_queue(usize::MAX, &mut ());
-        self.serve_departure_queue(usize::MAX);
-        for slot in hour_start..hour_start + SLOTS_PER_HOUR {
-            self.serve_admission_queue(slot);
-        }
-        self.allocator
-            .building_handles
-            .register_appended(self.allocator.buildings.len());
-        self.logistics.run_whole_supplier_sweep(
-            &self.allocator,
-            &self.transit_network,
-            &self.region_graph,
-        );
-        self.households.run_whole_destination_sweep(
-            hour_start / SLOTS_PER_HOUR + 1,
-            &self.allocator,
-            &self.transit_network,
-            &self.region_graph,
-        );
-        self.households
-            .run_whole_job_board(hour_start / SLOTS_PER_HOUR + 1, &self.allocator);
-    }
-
     /// Slot `slot`'s chunk of the rolling freight supplier index (`SIM-02-I`) that the next
     /// hour's freight planning reads.
     pub(super) fn advance_freight_supplier_sweep(&mut self, slot: u64) {
@@ -688,7 +611,14 @@ impl SimCore {
         );
     }
 
-    pub(super) fn simulate_operational_hour_observed(
+    /// What is left of the operational hour at each hour's first slot, after the census
+    /// publication and before the hour's residential planning slot (`SIM-02-K`): the demand
+    /// snapshot front takes the entities created since its sweep began, the household hour
+    /// recounts pending arrivals and registers appended members, the logistics clock advances
+    /// and expired commute quotes leave. O(created entities + queued admissions + arrival
+    /// carriers in flight + expired quotes), none of which grows with the city's size
+    /// (`Cost::Dirty`); a debug build adds an O(agents) reference check.
+    pub(super) fn run_operational_hour(
         &mut self,
         day_index: u32,
         minute_of_day: u16,
@@ -722,9 +652,9 @@ impl SimCore {
         );
         // Capture receipts before demand can remove or replace their building.
         observer.hourly_economy(self);
-        // Planning lends the census published before this hour, current for the live city
-        // (`SIM-02-I`); nothing between the publication and the pass invalidates it. Tests
-        // that run the pass without an hour publish their own census for it.
+        // The residential planning slot that follows lends the census published before this
+        // hour, current for the live city (`SIM-02-I`); nothing between the publication and the
+        // slot invalidates it.
         #[cfg(test)]
         {
             let mut borders = Vec::new();
@@ -741,13 +671,9 @@ impl SimCore {
                         minute_of_day,
                     ),
                 ),
-                "the census published at the pass's slot is current"
+                "the census published at the planning slot is current"
             );
         }
-        // The hour's residential planning slot; commercial, industrial and the hour's actions
-        // follow at slots 1 to 3 (`SIM-02-I`).
-        self.execute_demand_planning_slot(PlanningSlot::Residential, day_index, minute_of_day);
-        observer.buildings_changed(self);
     }
 
     /// Fits every lane to the compiled road surface, for setups that build roads and borders
@@ -1042,51 +968,52 @@ impl SimCore {
         }
     }
 
-    /// Test driver of an hour's demand planning without the slot clock: publishes a census of
-    /// the live city first when the published one is not current, as the hour's first slot
-    /// does, then runs the hour's four planning slots in turn.
+    /// Runs every slot after the clock's through absolute slot `last`, in order, as frames
+    /// would without moving agents, and leaves the clock at `last` (tests). The timing wheel is
+    /// aligned to the clock first.
     #[cfg(test)]
-    pub(super) fn execute_hourly_demand_pass_for_test(
-        &mut self,
-        day_index: u32,
-        minute_of_day: u16,
-    ) {
-        self.demand.publish_census_if_stale_for_test(
-            &self.allocator,
-            &mut self.households,
+    pub(crate) fn run_slots_through_for_test(&mut self, last: u64) {
+        self.align_events_to_clock();
+        let mut report = super::frame::FrameStepReport::default();
+        for slot in self.time.absolute_slot() + 1..=last {
+            self.step_slot(slot, &mut report, &mut ());
+        }
+        self.time.set_absolute_slot_for_test(last);
+    }
+
+    /// Test driver of the census publication for a city a test built by hand: drops any census
+    /// in progress and the input copy, then publishes, at the first slot of the hour holding
+    /// `minute_of_day`, the census of a copy taken now through the publication's own
+    /// whole-census path (`census publish`). The frontage prices stay as the test left them.
+    #[cfg(test)]
+    pub(crate) fn publish_census_now_for_test(&mut self, day_index: u32, minute_of_day: u16) {
+        let slot = absolute_slot(day_index, minute_of_day - minute_of_day % 60, 0);
+        self.households.census_run.abandon();
+        self.households.census_inputs.discard_front();
+        let key = self.households.census_key(&self.transit_network);
+        let fallback = self.census_parameters(slot);
+        self.households.publish_census(
+            slot,
+            &mut self.allocator,
+            &self.logistics,
             &self.transit_network,
             &self.region_graph,
-            &mut self.logistics,
-            &self.fiscal_policy,
-            self.treasury.balance,
-            minute_of_day,
+            fallback,
+            key,
         );
-        for slot in PlanningSlot::ALL {
-            self.execute_demand_planning_slot(slot, day_index, minute_of_day);
-        }
     }
 
     /// Test driver of a planning slot's permits without its pass: a census of the live city is
-    /// published, the workforce counted and every queued spawn's permit proved, then the epoch
-    /// closes, as the hour's first slot does after planning (`SIM-02-I`).
+    /// published ([`Self::publish_census_now_for_test`]), the workforce counted and every
+    /// queued spawn's permit proved, then the epoch closes, as the hour's actions slot does
+    /// after planning (`SIM-02-I`).
     #[cfg(test)]
     pub(crate) fn prove_construction_permits_for_test(
         &mut self,
         day_index: u32,
         minute_of_day: u16,
     ) {
-        let service = self.electricity_funding_by_building();
-        self.households.census_inputs.discard_front();
-        self.households.refresh_funding_census(
-            &mut self.allocator,
-            &mut self.logistics,
-            &self.transit_network,
-            &self.region_graph,
-            &service,
-            &self.fiscal_policy,
-            self.treasury.balance,
-            minute_of_day,
-        );
+        self.publish_census_now_for_test(day_index, minute_of_day);
         self.demand.count_workforce_for_test(
             &self.allocator,
             &self.households,
@@ -1112,18 +1039,7 @@ impl SimCore {
         day_index: u32,
         minute_of_day: u16,
     ) -> Vec<Option<crate::simulation::economy::demand::ProjectProof>> {
-        let service = self.electricity_funding_by_building();
-        self.households.census_inputs.discard_front();
-        self.households.refresh_funding_census(
-            &mut self.allocator,
-            &mut self.logistics,
-            &self.transit_network,
-            &self.region_graph,
-            &service,
-            &self.fiscal_policy,
-            self.treasury.balance,
-            minute_of_day,
-        );
+        self.publish_census_now_for_test(day_index, minute_of_day);
         self.demand.count_workforce_for_test(
             &self.allocator,
             &self.households,
@@ -1322,20 +1238,6 @@ impl SimCore {
             total_ms,
         );
         true
-    }
-
-    /// Executes one full economy / daily tick (called once per in-game day).
-    /// Steps a whole day's settlement at once for tools and tests: a whole environment sweep,
-    /// every entity's daily phase in order, then the calendar close, as the slots of a day would.
-    pub fn simulate_tick_internal(&mut self, day_index: u32) {
-        #[cfg(test)]
-        let _contract_phase = crate::debug::work::phases::enter("settlement");
-        // Every chunk of one sweep in order; a sweep the slot clock had in progress restarts.
-        for slot in 0..SLOTS_PER_DAY {
-            self.advance_environment_sweep(slot);
-        }
-        self.run_every_day_phase(&mut ());
-        self.close_calendar_day(day_index, &mut ());
     }
 
     /// Slot `slot`'s chunk of the rolling environment sweep (`SIM-02-H`): a share of the

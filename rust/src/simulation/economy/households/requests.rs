@@ -185,15 +185,6 @@ impl HouseholdSystem {
         self.job_board.advance(slot, allocator, &catalog);
     }
 
-    /// One whole job board sweep at once for the searches of absolute hour `hour`, for callers
-    /// that step an hour without the slot clock; the caller registers appended buildings'
-    /// handles first. O(B) on Rayon.
-    pub(crate) fn run_whole_job_board(&mut self, hour: u64, allocator: &BuildingAllocator) {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.job_board.run_whole(hour, allocator, &catalog);
-    }
-
     /// Stamps a loaded destination roll with the loaded road graph's components, which label
     /// as the saved graph did. O(nodes + edges).
     pub(crate) fn adopt_loaded_topology(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
@@ -224,29 +215,5 @@ impl HouseholdSystem {
             services: personal_services_resource(&catalog),
         };
         self.destinations.advance(slot, &fold);
-    }
-
-    /// One whole destination sweep at once for the requests of absolute hour `hour`, for
-    /// callers that step an hour without the slot clock; the caller registers appended
-    /// buildings' handles first. O(B × outputs) on Rayon plus O(E log E).
-    pub(crate) fn run_whole_destination_sweep(
-        &mut self,
-        hour: u64,
-        allocator: &BuildingAllocator,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.destination_topology.refresh(network, graph);
-        let fold = DestinationFold {
-            allocator,
-            graph,
-            catalog: &catalog,
-            topology: &self.destination_topology,
-            supplies: household_supply_resource_runtime_id(&catalog),
-            services: personal_services_resource(&catalog),
-        };
-        self.destinations.run_whole(hour, &fold);
     }
 }

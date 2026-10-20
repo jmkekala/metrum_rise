@@ -4,14 +4,15 @@
 //! `docs/simulation.md#scheduler`).
 //!
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The timing
-//! wheel fires first, then the fixed-slot systems: the funding census's publication, until
-//! `SIM-02-K` the re-hosted operational hour, and the calendar close. The entities of the slot's
-//! hourly and daily phases follow, then the cell-lot, freight, housing, restock, visit and job
-//! request queues, the level-change, building-removal, departure and admission queues (`SIM-02-J`;
-//! removals and departures only in the hour's removal window), one chunk each of the rolling road
-//! length, environment sweep, freight supplier index, demand snapshot, household destinations and
-//! job board, at an hour's last slot the hour's city totals, one chunk of the funding census's
-//! input copy over the hour's first half and the census's share of its steps over the second half.
+//! wheel fires first, then the fixed-slot systems: the funding census's publication, what is left
+//! of the operational hour, the hour's four demand planning slots and the calendar close. The
+//! entities of the slot's hourly and daily phases follow, then the cell-lot, freight, housing,
+//! restock, visit and job request queues, the level-change, building-removal, departure and
+//! admission queues (`SIM-02-J`; removals and departures only in the hour's removal window), one
+//! chunk each of the rolling road length, environment sweep, freight supplier index, demand
+//! snapshot, household destinations and job board, at an hour's last slot the hour's city totals,
+//! one chunk of the funding census's input copy over the hour's first half and the census's share
+//! of its steps over the second half.
 
 use std::time::Instant;
 
@@ -36,8 +37,11 @@ pub(crate) enum SimSystem {
     TimedEvents,
     /// Publishes the funding census the previous hour's second half built (`SIM-02-I`).
     CensusPublish,
-    /// Today's operational hour, with the hour's residential demand planning slot.
+    /// What is left of the operational hour: the demand snapshot's new entities, pending
+    /// arrivals, the logistics clock and the commute-quote expiry (`SIM-02-K`).
     OperationalHour,
+    /// The hour's residential demand planning slot (`SIM-02-I`).
+    ResidentialPlanning,
     /// The hour's commercial demand planning slot (`SIM-02-I`).
     CommercialPlanning,
     /// The hour's industrial demand planning slot (`SIM-02-I`).
@@ -198,10 +202,11 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
         },
         // Before the operational hour, so the census and all its readers that hour (planning,
         // restock and visits, job search) share one slot no save separates. The swap is O(1);
-        // copying funded jobs and activity onto the buildings is an O(B) parallel pass, and a
+        // copying funded jobs and activity onto the buildings is an O(B/p) parallel pass, and a
         // census the window left missing, unfinished or stale (a world's first hour, a clock
-        // set directly, an edit between the window's last slot and this one) runs whole here,
-        // as every census did before `SIM-02-I`: hence the legacy boundary cost.
+        // set directly, an edit or policy change between the window's last slot and this one)
+        // runs whole here, O(census), as every census did before `SIM-02-I`. Both grow with the
+        // city: `CityScan`, `SIM-02-K` (K5) debt.
         Declaration {
             system: SimSystem::CensusPublish,
             name: "census publish",
@@ -216,9 +221,15 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
                 | state::TREASURY
                 | state::CLOCK,
             writes: state::HOUSEHOLDS | state::BUILDINGS | state::NETWORK,
-            cost: Cost::LegacyBoundary,
+            cost: Cost::CityScan,
             tier: Tier::Full,
         },
+        // The demand snapshot front folds the entities created in new handle slots since its
+        // sweep began, O(created); the household hour recounts pending arrivals from the queued
+        // admissions and the arrival carriers in flight and registers members appended since the
+        // last call; the logistics clock advances, O(1); and commute quotes added a day of hours
+        // ago expire, O(expired). None of these grows with the city's size. A debug build adds
+        // an O(agents/p) reference check.
         Declaration {
             system: SimSystem::OperationalHour,
             name: "operational hour",
@@ -226,20 +237,37 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
                 period: Period::Hour,
                 offset: 0,
             },
-            reads: state::ALL,
-            writes: state::ALL,
-            cost: Cost::LegacyBoundary,
+            reads: state::CLOCK
+                | state::BUILDINGS
+                | state::HOUSEHOLDS
+                | state::AGENTS
+                | state::LOGISTICS
+                | state::TREASURY,
+            writes: state::DEMAND | state::HOUSEHOLDS | state::AGENTS | state::LOGISTICS,
+            cost: Cost::Dirty,
             tier: Tier::Full,
         },
-        // The hour's demand planning, one zone per slot after the residential slot in the
-        // operational hour, on the census the hour's first slot published; slot 3 queues the
-        // hour's spawns and executes its plan (`SIM-02-I`). Planning lends the census's books
+        // The hour's demand planning, one zone per slot, residential after the operational
+        // hour, on the census the hour's first slot published; slot 3 queues the hour's spawns
+        // and executes its plan (`SIM-02-I`). Planning lends the census's books
         // and restores them, quotes freight and prepares site indices. Each slot pays the
         // planning setup again: the live workforce, O((H + B)/p) in parallel; the project
         // market, O(B) serial; the queue's replay, O(Q log H); and the earlier slots' plans
         // proved again, O(plan). A zone slot adds the lot scan, O(P/p) in parallel plus its
         // zone's free lots' assets, and its zone's existing buildings, O(B/p). Hence each call
-        // is O(B + H + P + Q log H), the `CityScan` bound, until `SIM-02-K`.
+        // is O(B + H + P + Q log H), the `CityScan` bound, `SIM-02-K` (K5) debt.
+        Declaration {
+            system: SimSystem::ResidentialPlanning,
+            name: "residential planning",
+            kind: SystemKind::FixedSlot {
+                period: Period::Hour,
+                offset: 0,
+            },
+            reads: state::ALL,
+            writes: state::ALL,
+            cost: Cost::CityScan,
+            tier: Tier::Full,
+        },
         Declaration {
             system: SimSystem::CommercialPlanning,
             name: "commercial planning",
@@ -280,6 +308,10 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::CityScan,
             tier: Tier::Full,
         },
+        // The city's day totals become the day's budget report, O(1), and daily road upkeep
+        // reads the rolling road length, which measures the network once, O(edges), only before
+        // its first finished sweep (a world's first day). Debug reports scan the city only with
+        // the economy channel on.
         Declaration {
             system: SimSystem::CalendarClose,
             name: "calendar close",
@@ -629,10 +661,24 @@ impl SimCore {
                     let hourly_start = Instant::now();
                     record_crash_phase_for_core(self, "operational hour tick");
                     run_sim_phase("operational hour tick", || {
-                        self.simulate_operational_hour_observed(day_index, minute_of_day, observer)
+                        self.run_operational_hour(day_index, minute_of_day, observer)
                     });
                     report.hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
                     report.hourly_ticks += 1;
+                }
+                SimSystem::ResidentialPlanning => {
+                    let planning_start = Instant::now();
+                    record_crash_phase_for_core(self, declaration.name);
+                    run_sim_phase(declaration.name, || {
+                        self.execute_demand_planning_slot(
+                            PlanningSlot::Residential,
+                            day_index,
+                            minute_of_day,
+                        )
+                    });
+                    observer.buildings_changed(self);
+                    report.hourly_ms += planning_start.elapsed().as_secs_f64() * 1000.0;
+                    // At a day's first slot the calendar close prints the summary.
                     if minute_of_day != 0 && crate::debug::Channel::Sim.enabled() {
                         self.print_sim_console_summary(day_index, minute_of_day);
                     }

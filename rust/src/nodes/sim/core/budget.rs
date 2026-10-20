@@ -1630,13 +1630,22 @@ mod tests {
     }
 
     #[test]
-    fn daily_tick_closes_household_payments_without_a_logging_call() {
+    fn the_daily_phase_closes_household_payments_without_a_logging_call() {
+        use crate::simulation::core::phases::daily_phase;
+        use crate::simulation::core::scheduler::SLOTS_PER_DAY;
         let (mut core, farm, polygon) = farm_fixture();
         core.commit_field_polygon_internal(farm, polygon).unwrap();
         let household = add_farm_household(&mut core, farm);
         core.households
             .restore_utility_payments(household, [3.0, 2.0, 1.0]);
-        core.simulate_tick_internal(1);
+        // The slots up to the one of the household's daily phase, where it settles its day.
+        let handles = &mut core.households.handles;
+        handles.register_appended(core.households.households.len());
+        let phase = u64::from(daily_phase(handles.handle(household)));
+        let next = core.time.absolute_slot() + 1;
+        core.run_slots_through_for_test(
+            next + (phase + SLOTS_PER_DAY - next % SLOTS_PER_DAY) % SLOTS_PER_DAY,
+        );
         let ledger = &core.households.daily_ledgers()[household];
         assert_eq!(ledger.power_consumption_cost, 0.0);
         assert_eq!(ledger.water_consumption_cost, 0.0);

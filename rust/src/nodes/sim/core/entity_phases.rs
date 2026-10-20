@@ -125,17 +125,4 @@ impl SimCore {
         self.households.close_city_hour(&catalog);
         self.close_demand_queue_hour();
     }
-
-    /// Every entity's hour at once, phase by phase at the slots of the hour starting at
-    /// `hour_start`, then the hour's city totals, for callers that step a whole operational hour
-    /// without the slot clock (tests and tools). The slots matter to freight cooldowns.
-    pub(super) fn run_every_hour_phase(&mut self, hour_start: u64) {
-        for phase in 0..u64::from(PHASES_PER_HOUR) {
-            let slot = hour_start + phase;
-            self.run_building_hours(slot);
-            self.run_household_hours(slot);
-            self.run_agent_hours(slot);
-        }
-        self.close_city_hour();
-    }
 }

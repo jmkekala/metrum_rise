@@ -163,16 +163,6 @@ impl SupplierRoll {
         }
     }
 
-    // Every chunk of one sweep at once, folded on Rayon and sorted; the same index as the hour's
-    // slots over unchanged state. A sweep in progress is abandoned.
-    fn run_whole(&mut self, hour_ticks: u32, components: Option<u32>, fold: &DispatchFold) {
-        let mut entries = fold.fold_all();
-        self.front = Some(SupplierCandidateIndex::from_entry_slice(&mut entries));
-        self.front_hour = Some(hour_ticks.wrapping_add(1));
-        self.front_components = components;
-        self.sweep = None;
-    }
-
     // Freezes the handle capacity and empties the back: O(back buckets), and a clear of the
     // buckets themselves after the components changed.
     fn start(&mut self, hour_ticks: u32, components: Option<u32>, fold: &DispatchFold) {
@@ -306,23 +296,6 @@ impl ShipmentSystem {
             network,
             graph,
             |roll, hour_ticks, components, fold| roll.advance(slot, hour_ticks, components, fold),
-        );
-    }
-
-    /// Runs one whole supplier sweep at once, for callers that step an operational hour
-    /// without the slot clock; the next pass reads it as it reads a finished rolling sweep.
-    /// O(handles × outputs) on Rayon plus O(E log E).
-    pub(crate) fn run_whole_supplier_sweep(
-        &mut self,
-        allocator: &BuildingAllocator,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) {
-        self.with_dispatch_fold(
-            allocator,
-            network,
-            graph,
-            |roll, hour_ticks, components, fold| roll.run_whole(hour_ticks, components, fold),
         );
     }
 

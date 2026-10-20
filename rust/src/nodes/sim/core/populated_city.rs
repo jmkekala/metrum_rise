@@ -72,14 +72,20 @@ const WARM_UP_DAYS: u32 = 2;
 // single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
 const RESIDENTS_PER_BORDER: f32 = 10_000.0;
 
-/// Wall-clock cost of the economy ticks run by one [`PopulatedCity::advance_hour`] call.
+/// Wall-clock cost of the fixed-slot systems at the start of one hour, as
+/// [`PopulatedCity::advance_hour`] and [`PopulatedCity::advance_hour_through_actions`] step it.
+/// Entity phases, queues and rolling chunks run in every slot and are not included.
 #[derive(Clone, Copy, Debug)]
 pub struct EconomyHourTimes {
-    /// Operational-hour tick; includes the hourly demand pass when `demand_pass` is set.
+    /// The census publication, what is left of the operational hour and the planning slots that
+    /// ran in the stepped frames (`SIM-02-K`).
     pub hourly: Duration,
-    /// Daily settlement tick; present only when the hour was midnight.
+    /// The calendar close; present only when the hour started a day. Daily settlement runs at
+    /// each entity's own daily phase in every slot (`SIM-02-G`).
     pub daily: Option<Duration>,
-    /// Whether the hour ran the hourly demand pass, as every hour but midnight does.
+    /// Whether the hour does not start a day. Every hour runs its four planning slots; the
+    /// economy benchmark and `PERF-01` time the 23 hours without the calendar close, as they
+    /// did before `SIM-02-K`, so their means stay comparable.
     pub demand_pass: bool,
 }
 
@@ -167,8 +173,9 @@ impl PopulatedCity {
     }
 
     /// Steps frames until the clock crosses the next whole hour and returns the cost of the
-    /// economy ticks run there: the operational hour, then daily settlement at midnight. Agent
-    /// movement and the other frame phases run but are not timed.
+    /// fixed-slot systems that frame ran: the census publication, what is left of the
+    /// operational hour, the planning slots it reached and, when a day starts, the calendar
+    /// close. Agent movement and the other frame phases run but are not timed.
     pub fn advance_hour(&mut self) -> EconomyHourTimes {
         loop {
             // One maximum-speed frame spans about half an authored minute, so it never crosses
@@ -188,14 +195,13 @@ impl PopulatedCity {
         }
     }
 
-    // `advance_hour`, then the frames up to and including the hour's actions slot.
-    // The hour's demand planning runs at its slots 0–3 and its building actions (permits,
-    // level changes, despawns) at slot 3 (`SIM-02-I`), which at maximum speed (about 8.5 slots
-    // a frame) falls in the frame after the hour's first slot in about every other hour. A
-    // window ending here holds the whole hour's planning and actions; the planning slots of
-    // the frames after the first are added to `hourly`.
-    #[cfg(test)]
-    fn advance_hour_through_actions(&mut self) -> EconomyHourTimes {
+    /// [`Self::advance_hour`], then the frames up to and including the hour's actions slot,
+    /// following the hour's slot layout. The hour's demand planning runs at its slots 0–3 and
+    /// its building actions (permits) at slot 3 (`SIM-02-I`), which at maximum speed (about 8.5
+    /// slots a frame) falls in the frame after the hour's first slot in about every other hour.
+    /// A window ending here holds the whole hour's planning and actions; the planning slots of
+    /// the frames after the first are added to `hourly`.
+    pub fn advance_hour_through_actions(&mut self) -> EconomyHourTimes {
         use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
         use crate::simulation::economy::demand::PlanningSlot;
         let mut times = self.advance_hour();

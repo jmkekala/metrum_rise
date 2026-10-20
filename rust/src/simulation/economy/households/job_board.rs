@@ -99,18 +99,6 @@ impl JobBoardRoll {
         }
     }
 
-    /// One whole sweep at once for the searches of absolute hour `hour`, for callers that step
-    /// an hour without the slot clock; a sweep in progress is abandoned. O(handles) on Rayon.
-    pub(super) fn run_whole(
-        &mut self,
-        hour: u64,
-        allocator: &BuildingAllocator,
-        catalog: &RuntimeEconomyCatalog,
-    ) {
-        self.front = Some((hour, fold_all(allocator, catalog)));
-        self.sweep = None;
-    }
-
     /// The board of absolute hour `hour`'s searches, built at once when no sweep finished one
     /// for it; the caller registers appended buildings' handles first. O(1) with a board. A
     /// sweep in progress keeps going and replaces it at the hour's end.

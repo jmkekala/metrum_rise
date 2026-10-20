@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Hourly and daily economy tick cost of fully housed cities (`ECON-13`).
+//! Hour-start and day-start economy cost of fully housed cities (`ECON-13`).
 //!
-//! Each tier builds its city once, outside the timed region, and keeps advancing it hour by
-//! hour. Only the tick under test is timed; the other ticks still run so the city keeps its real
-//! cadence. Every sample is one tick: the hourly benchmark samples each demand-pass hour of one
-//! day and the daily benchmark ten consecutive days, so the city cannot drift far from its built
+//! Each tier builds its city once, outside the timed region, and keeps advancing it frame by
+//! frame on the slot clock, an hour at a time through the hour's actions slot. Only the systems
+//! under test are timed; every other system still runs at its slots. The hourly benchmark
+//! samples the fixed-slot systems at the start of each hour without the calendar close (census
+//! publication, the rest of the operational hour and the four planning slots); the daily
+//! benchmark samples the calendar close of ten consecutive days. Settlement itself runs at each
+//! entity's daily phase in every slot (`SIM-02-G`). The city cannot drift far from its built
 //! state during a run. Criterion warns that the target time is too short; that is intended.
 //! Only the 10k tier runs by default. The 100k and 1M builds take minutes in release and hours
 //! in a debug `cargo test --all-targets`, so they run only on request:
@@ -62,7 +65,7 @@ fn bench_economy_ticks(c: &mut Criterion) {
                 let mut timed = Duration::ZERO;
                 let mut done = 0;
                 while done < iters {
-                    let hour = city.advance_hour();
+                    let hour = city.advance_hour_through_actions();
                     if hour.demand_pass {
                         timed += hour.hourly;
                         done += 1;
@@ -78,7 +81,7 @@ fn bench_economy_ticks(c: &mut Criterion) {
                 let mut timed = Duration::ZERO;
                 let mut done = 0;
                 while done < iters {
-                    if let Some(daily) = city.advance_hour().daily {
+                    if let Some(daily) = city.advance_hour_through_actions().daily {
                         timed += daily;
                         done += 1;
                     }

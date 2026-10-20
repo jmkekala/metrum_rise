@@ -3773,8 +3773,9 @@ fn a_job_board_swept_over_an_hour_equals_one_built_at_once() {
     for slot in SLOTS_PER_HOUR..2 * SLOTS_PER_HOUR {
         swept.advance(slot, &allocator, &catalog);
     }
+    // A reader with no board for its hour builds one at once.
     let mut built = JobBoardRoll::default();
-    built.run_whole(2, &allocator, &catalog);
+    built.members_for(2, &allocator, &catalog);
     let handles = &allocator.building_handles;
     assert_eq!(
         swept.members_for(2, &allocator, &catalog),

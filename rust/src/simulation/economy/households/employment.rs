@@ -32,8 +32,10 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
-use crate::simulation::economy::hiring::{CopyNow, LiveCensusParameters};
+#[cfg(test)]
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
+use crate::simulation::economy::fiscal::tax_amount;
+#[cfg(test)]
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -238,7 +240,10 @@ impl HouseholdSystem {
         );
     }
 
-    /// Funding census, then job search against it.
+    /// The funding census (`ECON-17`) of the live city with `service_funding_by_building`,
+    /// published, then job search against it: a fixture for hiring tests on a hand-built city,
+    /// which run the census on the live stores as the census tests do, not as the slots
+    /// copy, step and publish it (`SIM-02-I`).
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn assign_agent_workplaces_with_service_funding(
@@ -253,16 +258,26 @@ impl HouseholdSystem {
         treasury_balance: f64,
         minute_of_day: u16,
     ) {
-        self.refresh_funding_census(
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        self.census_run.abandon();
+        self.job_funding.refresh(
             allocator,
+            &self.households,
             logistics,
             transit_network,
             graph,
-            service_funding_by_building,
+            &catalog,
+            &tuning,
             fiscal_policy,
+            service_funding_by_building,
             treasury_balance,
             minute_of_day,
         );
+        self.job_funding.published = Some(self.census_key(transit_network));
+        self.publish_funded_job_capacities(allocator);
         self.assign_agent_workplaces_from_census(
             agents,
             allocator,
@@ -270,53 +285,6 @@ impl HouseholdSystem {
             graph,
             minute_of_day,
         );
-    }
-
-    /// Recomputes the funding census (`ECON-17`) at once and publishes it, for callers that step
-    /// an hour without the slot clock and for tests; the slots build it over each hour's second
-    /// half instead (`households/census.rs`), and this abandons such a census in progress. It
-    /// reads the finished input copy, with the parameters frozen with it (`SIM-02-I`); without
-    /// one it copies the city now, with the parameters given here.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn refresh_funding_census(
-        &mut self,
-        allocator: &mut BuildingAllocator,
-        logistics: &mut ShipmentSystem,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        service_funding_by_building: &[f32],
-        fiscal_policy: &CityFiscalPolicy,
-        treasury_balance: f64,
-        minute_of_day: u16,
-    ) {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        self.census_run.abandon();
-        allocator.prepare_production_changes();
-        crate::debug::work::add(crate::debug::work::Work::LiveCensuses, 1);
-        self.census_inputs.prepare(
-            allocator,
-            &self.households,
-            logistics,
-            &catalog,
-            CopyNow::Live(LiveCensusParameters {
-                treasury: treasury_balance,
-                fiscal: fiscal_policy,
-                service_funding: service_funding_by_building,
-                minute_of_day,
-            }),
-        );
-        self.job_funding.refresh_from_inputs(
-            &mut self.census_inputs,
-            transit_network,
-            graph,
-            &catalog,
-            &tuning,
-        );
-        self.job_funding.published = Some(self.census_key(transit_network));
-        self.publish_funded_job_capacities(allocator);
     }
 
     /// Job search of every agent who may look now, at once, in agent order, as their hourly

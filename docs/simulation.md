@@ -15,7 +15,7 @@ the demand snapshot; the funding census over slots on a rolling input copy; cons
 permits on the published census; demand planning one zone type a slot) are done.
 `SIM-02-J` (request queues) is done: freight requests (part 1); the housing, restock, visit and
 job queues (part 2); the level-change, building-removal, departure and admission queues (part
-3). `SIM-02-K` is next. See the
+3). `SIM-02-K` is in progress: part 1 (legacy hour and day paths deleted) is done. See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -138,10 +138,11 @@ A declaration names:
 - **Kind**, one of:
   - `EntityPhase { period }` — runs for entities whose phase falls in this slot (hourly or daily).
   - `FixedSlot { period, offset }` — one call at a fixed slot of each period. Allowed only for
-    work with a stated O(1), O(zones) or O(dirty) bound, and for re-hosted legacy passes during
-    migration. The hour's four demand planning slots (`SIM-02-I` part 4) declare
-    `Cost::CityScan`, O(B + H + P + Q log H) a call in buildings, households, parcels and queued
-    projects: splits of the former whole-city pass, recorded as `SIM-02-K` debt and the only
+    work with a stated O(1), O(zones) or O(dirty) bound. `Cost::Dirty` is work proportional to
+    what changed or came due since the previous call. The census publication and the hour's four
+    demand planning slots declare `Cost::CityScan`, which grows with the city (the planning slots
+    O(B + H + P + Q log H) a call in buildings, households, parcels and queued projects): splits
+    of the former whole-city pass, recorded as `SIM-02-K` debt for part 5 and the only
     `CityScan` users.
   - `Events` — consumes this slot's [timed events](#deadlines-and-timed-events).
   - `Queue { quota }` — serves up to `quota` [requests](#request-queues) per slot.
@@ -155,8 +156,7 @@ A declaration names:
 Per-slot order:
 
 1. Timed events due in this slot.
-2. `FixedSlot` systems, in declaration order. Until `SIM-02-K` these include the re-hosted
-   operational hour and daily settlement.
+2. `FixedSlot` systems, in declaration order.
 3. `EntityPhase` systems, hourly before daily.
 4. `Queue` matchers.
 5. `Rolling` chunks, then swaps for periods that ended.
@@ -168,17 +168,16 @@ serially and give the same result.
 
 **Implemented in `SIM-02-C`.** `Schedule` (`simulation/core/scheduler.rs`) holds the
 declarations in dispatch order and rejects one that breaks the contract: a fixed-slot offset
-outside its period, a fixed-slot system with neither a bounded cost nor legacy status, or an
-events system that does not cost its events. The simulation's list and its per-slot dispatch
-are in `nodes/sim/core/schedule.rs`: timed events; then the operational hour (`FixedSlot`,
-hour, offset 0) and the daily settlement (`FixedSlot`, day, offset 0), both re-hosted
-unchanged. The `sim` debug channel prints the list with costs, tiers, reads and writes.
+outside its period, a fixed-slot system without a bounded cost, or an events system that does
+not cost its events. The simulation's list and its per-slot dispatch are in
+`nodes/sim/core/schedule.rs`: timed events; the census publication, the operational hour's
+remainder, the residential, commercial and industrial planning slots and the actions slot (hour,
+offsets 0, 0, 0, 1, 2, 3); and the calendar close (day, offset 0). The `sim` debug channel prints the list with costs, tiers, reads and writes.
 
 **Implemented in `SIM-02-F`.** `EntityPhase { period }` systems cost `Phase`, the entities of
 one phase, and the schedule rejects any other cost for them. Three hourly ones follow the
 re-hosted hour in every slot (`nodes/sim/core/entity_phases.rs`): `building_hours`,
-`household_hours` and `agent_hours`. A caller that steps a whole operational hour without the
-slot clock (tests and tools) runs the pooled hour and then every phase in order.
+`household_hours` and `agent_hours`.
 
 **Implemented in `SIM-02-G`.** Three daily `EntityPhase` systems follow the hourly ones:
 `building_days`, `household_days` and `agent_days` (`nodes/sim/core/entity_days.rs`). The
@@ -188,20 +187,16 @@ runs after the 00:00 hour, which still belongs to the closing day, and before an
 of the new day: every entity has settled exactly once since the previous close. Pollution,
 noise and desirability remain a legacy midnight pass (`environment grids`), declared before the
 hour, until `SIM-02-H`. A `Rolling { period }` kind costs one `Chunk` per slot
-and runs after the phases; the rolling road length is its first system. Tools and tests that
-step a whole day run the environment grids, every entity's daily phase in order, then the
-close.
+and runs after the phases; the rolling road length is its first system.
 
 **Implemented in `SIM-02-H`.** The environment grids leave the fixed slots: `environment grids`
 is the second `Rolling { period: Day }` system, one `Chunk` per slot after the road length (see
-[Snapshots](#snapshots)). Tools and tests that step a whole day run every chunk of one sweep in
-order instead of the midnight pass.
+[Snapshots](#snapshots)).
 
 **Implemented in `SIM-02-H`.** `Queue { quota }` systems cost `Quota`: at most their quota of
 requests per slot, each bounded by its own size, and an O(1) check with nothing queued. The
 schedule rejects any other cost and a zero quota. Queues run after the daily phases and before
-the rolling chunks. The first is `cell lots`, quota 1 ([request queues](#request-queues)). Tools
-and tests that step a whole hour serve the hour's quota after every phase.
+the rolling chunks. The first is `cell lots`, quota 1 ([request queues](#request-queues)).
 
 ### Phases
 
@@ -259,7 +254,6 @@ and tests that step a whole hour serve the hour's quota after every phase.
     collections join the pool, split by resource as they were priced. Undrawn money carries.
   - **Saved:** `city_hour_state` and `service_sales_resources` as `REAL` columns, so the floats
     continue bit for bit, and each store's recorded capacity and profile on its building row.
-  - **Callers without the slot clock** run every phase in order and then the fold.
 - **Implemented in `SIM-02-G`:** slot `s` also visits the handles of daily phase `s mod 23,040`.
   Each entity settles its own 24-hour window there instead of at midnight.
   - **Buildings:** the zoning check and rezoning grace; then, in the order of
@@ -646,8 +640,7 @@ hour's actions slot (slot 3) decided on the census published at slot 0.
   permit); `building_removal_requests` (slot, building handle, kind 0 clearance or 1
   incompatible); `admission_requests` (home handle, size, composition, border node through the
   save's node numbering, none when no saved road reaches it); `household_queue_state.
-  admission_credit` and `admission_rate`. Departures keep `household_requests` kind 1. Callers
-  without the slot clock serve each queue whole after the hour's phases.
+  admission_credit` and `admission_rate`. Departures keep `household_requests` kind 1.
 
 ### Pure jobs
 
@@ -689,8 +682,8 @@ about 90 MB of lanes at 100k after every road edit.
   row; the published census stands until the next one, while service workers the new funding no
   longer pays leave at once.
 - **Publish** (`households/census.rs`): `census publish`, a fixed slot at offset 0 declared
-  before the operational hour, swaps the census in and copies funded jobs and activity onto
-  the buildings, O(buildings). A census that is missing, unfinished or stale there runs whole.
+  before the operational hour (`Cost::CityScan`), swaps the census in and copies funded jobs and
+  activity onto the buildings, O(buildings). A census that is missing, unfinished or stale there runs whole.
 - **Loading:** saves keep both copies, the deferred rows, the publish slot and whether the
   census is current. The census is a pure function of the copy and the network, so a load
   recomputes a current census whole, whatever step it had reached; a stale one restarts at the
@@ -817,7 +810,7 @@ previous step's results exactly.
 | `SIM-02-H` | Environment grids become rolling sweeps; cell-lot regeneration becomes a dirty-region queue. |
 | `SIM-02-I` | Census and demand become incremental counters and rolling snapshots. The `PERF-03` and `PERF-04` scaling fixes land here, since this step rewrites the census. |
 | `SIM-02-J` | Matching becomes request queues. |
-| `SIM-02-K` | Legacy `FixedSlot` hour and day systems, `simulate_tick_internal`, `simulate_operational_hour_internal` and every minute-0 path are deleted. `PERF-07` acceptance at 30k and 100k. The cadence sections in `economy.md` and `demand.md` point here. |
+| `SIM-02-K` | Legacy `FixedSlot` hour and day systems, `simulate_tick_internal`, `simulate_operational_hour_internal` and every minute-0 path are deleted (part 1 done). `PERF-07` acceptance at 30k and 100k. The cadence sections in `economy.md` and `demand.md` point here. |
 
 #### `SIM-02-K` parts
 
@@ -825,7 +818,7 @@ Planned 2026-10-20 from a profile of the 100k `PERF-07` day on `SIM-02-I` part 3
 timing and `perf` call stacks; an ordinary 100k frame was then 11.9 ms at 1× and 21 ms at 32×,
 about 70% of it serial). Each part is gated and committed on its own, in this order:
 
-1. **K1, legacy paths deleted.** `simulate_tick_internal`, `simulate_operational_hour_internal`,
+1. **K1, legacy paths deleted** (done 2026-10-20). `simulate_tick_internal`, `simulate_operational_hour_internal`,
    the coarse-hour census callers and every minute-0 or hour-boundary path go; tests,
    benchmarks and the contract harness step the slot clock. The remaining fixed-slot systems
    state honest costs. Expected envelope: identical, or the difference explained.
@@ -1658,6 +1651,38 @@ on a fresh `$ARTIFACTS` directory.
   rustfmt add nothing. New: a save with all four queues waiting continues identically; a removal
   requested inside the census window waits for slot 4 and restarts nothing; a stale level-change
   permit is rejected. The step does not change the Godot bridge.
+
+#### `SIM-02-K`, part 1 — legacy hour and day paths deleted (2026-10-20)
+
+- **Deleted:** `simulate_tick_internal`, `simulate_operational_hour_internal`,
+  `refresh_funding_census` with the census copy's live mode, the whole-hour drivers of the
+  rolling snapshots, `run_every_hour_phase`, `run_every_day_phase` and `Cost::LegacyBoundary`. No
+  game code runs because the clock crossed an hour or a day. Tests, benchmarks, the economy bench,
+  `populated_city_scaling` and the contract harness step the slot clock.
+- **Costs declared:** the census publication and the four planning slots `CityScan` (`SIM-02-K`
+  part 5), the operational hour's remainder `Cost::Dirty` (proportional to entities created,
+  admissions queued, arrivals in flight and expired commute quotes), the calendar close
+  `Constant`. The operational hour and residential planning are now two declarations at slot 0,
+  in the same order. See [Decided while unattended](#decided-while-unattended).
+- **Envelope and determinism** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass; the envelope is
+  bit-identical to the previous build's, and repeat, 1 and 3 workers and save/reload are identical.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`), in one session with the
+  `CODE-17` build as control. Max / p99 / mean in ms, control in parentheses: 10k 1× 61.3 / 6.21 /
+  2.44 (61.4 / 6.21 / 2.42), 10k 32× 63.3 / 7.12 (63.2 / 6.90), 30k 1× 86.0 / 7.47 / 3.40 (86.5 /
+  7.54 / 3.44), 30k 32× 90.0 / 12.99 (91.7 / 13.24), 100k 1× 116.8 / 18.29 / 12.80 (116.2 / 18.10 /
+  12.54), 100k 32× 182.7 / 48.81 / 24.70 (183.4 / 48.59 / 25.11). Every gate limit passes; level
+  with the control.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the control: hour means
+  2.8, 10.8–11.0, 8.5 and 32.2–32.3 ms (control 2.8, 10.8–10.9, 8.5 and 31.7–32.3); the same six
+  work-count limits fail. The contract's census phase now times the input copy, the window's
+  steps and the publication together, so it is not comparable with earlier steps' census phase.
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1.
+- **Tests:** 2,531 release library tests and the 4 growth integration tests pass; the benchmarks
+  build; clippy and rustfmt add nothing. Tests that drove the deleted hour now step the hour's
+  slots with the same expected numbers. The step does not change the Godot bridge.
 
 ### Phase inventory
 
@@ -2837,6 +2862,37 @@ alternatives and the evidence. The user reviews these on return.
   per-slot departure queue would pay per departure. It now takes them from the maintained member
   lists (ascending agent index, the same set and the same descending removal order), and the
   O(households) selection-flag pass is gone.
+- **`SIM-02-K` — SimCore-free subsystem test drivers stay (part 1).** Drivers that run one
+  subsystem's slot functions on hand-built state, with no `SimCore` and no slot clock, test
+  algorithms, not cadence: `DemandSystem::run_hourly_pass` and `run_planning_hour_for_test`,
+  `publish_census_if_stale_for_test`, logistics `hourly_tick_with_trips`, households
+  `run_household_operational_hour` and `assign_agent_workplaces_from_census`, and the building
+  action planner's `plan_hour_for_test`. No game path sits behind them. Alternative: move every
+  one onto a `SimCore` and the slot clock; rejected for part 1 as several thousand lines of
+  test churn against the minimal-subsystem-setup rule.
+- **`SIM-02-K` — `PERF-01` and the benchmark keep averaging 23 timed hours a day (part 1).**
+  `EconomyHourTimes::demand_pass` still marks the 23 hours that do not start a day, although
+  every hour now runs its four planning slots. The means stay comparable with earlier steps'
+  and with the control binaries'. Alternative: time all 24 hours; better once no control
+  predates part 1.
+- **`SIM-02-K` — the operational hour and residential planning are two declarations at slot 0
+  (part 1).** They were one `FixedSlot` costing `LegacyBoundary`. `operational hour` (`Dirty`)
+  and `residential planning` (`CityScan`) are declared in that order at offset 0, so the order
+  of work in slot 0 is unchanged (census publish, remainder, residential planning, then at a
+  day's start the calendar close) and each states its own cost. Alternative: one declaration
+  costing `CityScan`; rejected because it hides that the remainder does not grow with the city,
+  and the residential slot belongs with the other planning slots that `SIM-02-K` part 5
+  rewrites. `Cost::Dirty` is a new variant for the remainder: the fixed-slot rule already
+  allowed O(dirty) work but no cost named it. Alternative: a `Publish` variant for the census
+  publication; rejected, `CityScan` already means "grows with the city, `SIM-02-K` debt".
+- **`SIM-02-K` — readers keep their build-at-once fallbacks (part 1).** The whole sweeps that
+  built the supplier index, destination index and job board at once are deleted
+  (`run_whole_supplier_sweep`, `run_whole_destination_sweep`, `run_whole_job_board` and the
+  rolls' `run_whole`). A reader that finds no front for its hour still builds its own index at
+  once (`members_for` for the job board), and planning that finds no demand snapshot front
+  builds one at once. These O(B) fallbacks stay for part 5 and are not fixed slots. Alternative:
+  fail the read; rejected, a world's first hour and an edit after the last window slot reach
+  them in play.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

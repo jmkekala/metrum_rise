@@ -77,28 +77,6 @@ pub(crate) struct FrozenCensusParameters {
     pub(crate) minute_of_day: u16,
 }
 
-/// The parameters of a copy taken at once, when the census starts without a finished copy.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum CopyNow<'a> {
-    /// Live values read at once; the copy is read in the same call and never saved.
-    Live(LiveCensusParameters<'a>),
-    /// Values frozen as a finished copy freezes them, so the copy can be saved while read.
-    Frozen(FrozenCensusParameters),
-}
-
-/// The census parameters of a copy taken at once: the live values when the census starts.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct LiveCensusParameters<'a> {
-    /// City treasury balance.
-    pub(crate) treasury: f64,
-    /// Fiscal policy.
-    pub(crate) fiscal: &'a CityFiscalPolicy,
-    /// Electricity service funding by building; a missing entry funds fully.
-    pub(crate) service_funding: &'a [f32],
-    /// Minute of day.
-    pub(crate) minute_of_day: u16,
-}
-
 /// The census input copy as saved; [`CensusInputs`] owns the encoding.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SavedCensusInputs {
@@ -223,10 +201,8 @@ struct Front {
     households: Vec<Household>,
     // Paid goods and unsettled sales of each building when the copy finished.
     freight_capital: Vec<f64>,
-    // Electricity service funding by building, derived from the copy when the census starts
-    // unless given with a copy taken at once.
+    // Electricity service funding by building, derived from the copy when the census starts.
     service_funding: Vec<f32>,
-    derive_funding: bool,
     parameters: FrozenCensusParameters,
     production_floor: Option<u64>,
 }
@@ -347,7 +323,6 @@ impl CensusInputs {
             .freight_capital
             .resize(front.allocator.buildings.len(), 0.0);
         logistics.write_freight_working_capital(&mut front.freight_capital);
-        front.derive_funding = true;
         front.parameters = parameters;
         front.production_floor = back.production_floor;
         self.pending = true;
@@ -357,8 +332,9 @@ impl CensusInputs {
         self.deferred = RowChanges::default();
     }
 
-    /// Drops the finished copy, so the next census copies the city at once: for callers that
-    /// step an hour without the slot clock. A fill in progress continues.
+    /// Drops the finished copy, so the next census copies the city at once: for test drivers
+    /// that publish a census of a city they built by hand. A fill in progress continues.
+    #[cfg(test)]
     pub(crate) fn discard_front(&mut self) {
         self.pending = false;
         self.reading = false;
@@ -565,7 +541,7 @@ impl CensusInputs {
         households: &[Household],
         logistics: &ShipmentSystem,
         catalog: &RuntimeEconomyCatalog,
-        fallback: CopyNow<'_>,
+        fallback: FrozenCensusParameters,
     ) {
         self.published_front = false;
         if self.reading {
@@ -641,14 +617,12 @@ impl CensusInputs {
         self.production_revision += 1;
         copy.set_copied_production_step(since, self.production_revision, owners);
         let front = &mut self.front;
-        if front.derive_funding {
-            write_electricity_funding_by_building(
-                &front.allocator.buildings,
-                catalog,
-                front.parameters.electricity_funding,
-                &mut front.service_funding,
-            );
-        }
+        write_electricity_funding_by_building(
+            &front.allocator.buildings,
+            catalog,
+            front.parameters.electricity_funding,
+            &mut front.service_funding,
+        );
     }
 
     /// Building and household rows of the front a census reads.
@@ -686,7 +660,7 @@ impl CensusInputs {
         live: &BuildingAllocator,
         households: &[Household],
         logistics: &ShipmentSystem,
-        parameters: CopyNow<'_>,
+        parameters: FrozenCensusParameters,
     ) {
         let front = &mut self.front;
         let buildings = &mut front.allocator.buildings;
@@ -702,25 +676,7 @@ impl CensusInputs {
         front.freight_capital.clear();
         front.freight_capital.resize(live.buildings.len(), 0.0);
         logistics.write_freight_working_capital(&mut front.freight_capital);
-        match parameters {
-            CopyNow::Live(parameters) => {
-                front.service_funding.clear();
-                front
-                    .service_funding
-                    .extend_from_slice(parameters.service_funding);
-                front.derive_funding = false;
-                front.parameters = FrozenCensusParameters {
-                    treasury: parameters.treasury,
-                    fiscal: *parameters.fiscal,
-                    electricity_funding: 1.0,
-                    minute_of_day: parameters.minute_of_day,
-                };
-            }
-            CopyNow::Frozen(parameters) => {
-                front.derive_funding = true;
-                front.parameters = parameters;
-            }
-        }
+        front.parameters = parameters;
         front.production_floor = Some(live.production_revision());
         self.pending = true;
     }
@@ -736,7 +692,6 @@ impl CensusInputs {
         let front = &mut self.front;
         front.parameters.fiscal = fiscal;
         front.parameters.electricity_funding = electricity_funding;
-        front.derive_funding = true;
     }
 
     /// The census that read the front was published (or ran at once): the front is done.
@@ -750,10 +705,9 @@ impl CensusInputs {
 
     /// Keeps the front the census just published read (`SIM-02-I`): the hour's planning slots
     /// read that census, and a save before the hour's actions slot stores the copy so that a
-    /// load recomputes the census ([`Self::save_published`]). Only a copy with frozen
-    /// parameters is saved. O(1).
+    /// load recomputes the census ([`Self::save_published`]). O(1).
     pub(crate) fn keep_published_front(&mut self) {
-        self.published_front = self.front.derive_funding;
+        self.published_front = true;
     }
 
     /// Whether a census reads the front.
@@ -777,11 +731,9 @@ impl CensusInputs {
         if valid {
             // The slot clock keeps the front from the publication at the hour's first slot
             // until the fill's last slot, and every change to it or to the books' validity in
-            // between clears the books or keeps the front, so valid books in the planning slots
-            // without it come only from a census of a copy taken live (`refresh_funding_census`,
-            // callers without the slot clock and tests), whose front derives no funding.
+            // between clears the books or keeps the front.
             debug_assert!(
-                (self.published_front && !self.pending) || !self.front.derive_funding,
+                self.published_front && !self.pending,
                 "valid books in the hour's planning slots must keep the copy their census read"
             );
             if !self.published_front || self.pending {
@@ -832,7 +784,6 @@ impl CensusInputs {
             electricity_funding: reader.f32()?,
             minute_of_day: reader.u16()?,
         };
-        front.derive_funding = true;
         Ok(())
     }
 
@@ -844,10 +795,6 @@ impl CensusInputs {
         edge: impl Fn(usize) -> u64,
     ) -> SavedCensusInputs {
         let front = self.pending.then(|| {
-            debug_assert!(
-                self.front.derive_funding,
-                "a copy taken now is read at once"
-            );
             let mut out = Writer(Vec::new());
             self.put_front(&mut out, &edge);
             out.0
@@ -1065,8 +1012,9 @@ fn read_households(reader: &mut Reader<'_>) -> Result<Vec<Household>, String> {
 
 impl JobFunding {
     /// Runs the census on the front [`CensusInputs::prepare`] readied, with its parameters and
-    /// its own freight route cache, then marks the front done. Its outputs are indexed by the
-    /// front's rows, which are the live dense order.
+    /// its own freight route cache, then marks the front done, in one call (tests). Its outputs
+    /// are indexed by the front's rows, which are the live dense order.
+    #[cfg(test)]
     pub(crate) fn refresh_from_inputs(
         &mut self,
         inputs: &mut CensusInputs,

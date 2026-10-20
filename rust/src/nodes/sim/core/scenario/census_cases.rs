@@ -10,7 +10,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::hiring::{
-    CENSUS_WINDOW_START, CopyNow, FILL_SLOTS, JobFunding, LiveCensusParameters,
+    CENSUS_WINDOW_START, FILL_SLOTS, FrozenCensusParameters, JobFunding,
 };
 
 // A town busy with homes, businesses and freight on the road.
@@ -60,12 +60,10 @@ fn the_census_on_the_input_copy_equals_the_live_census_over_an_unchanged_hour() 
         &core.households.households,
         &core.logistics,
         &catalog,
-        CopyNow::Live(LiveCensusParameters {
+        FrozenCensusParameters {
             treasury: -1.0,
-            fiscal: &Default::default(),
-            service_funding: &[],
-            minute_of_day: 0,
-        }),
+            ..Default::default()
+        },
     );
     let mut copied = JobFunding::default();
     copied.refresh_from_inputs(
@@ -159,17 +157,8 @@ fn the_input_copy_follows_building_and_household_removals() {
     core.households
         .census_inputs
         .assert_aligned(&core.allocator, &core.households.households);
-    let service_funding = core.electricity_funding_by_building();
-    core.households.refresh_funding_census(
-        &mut core.allocator,
-        &mut core.logistics,
-        &core.transit_network,
-        &core.region_graph,
-        &service_funding,
-        &core.fiscal_policy,
-        core.treasury.balance,
-        core.time.minute_of_day,
-    );
+    // The next hour's first slot runs the census the window did not and publishes it.
+    core.publish_census(start + SLOTS_PER_HOUR);
     assert!(!core.households.census_inputs.has_pending_front());
     assert_eq!(
         core.households.job_funding.capacities.len(),

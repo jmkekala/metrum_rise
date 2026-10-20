@@ -310,7 +310,7 @@ impl ShipmentSystem {
     }
 
     /// Every building's phase check at once, in dense order, stamped `slot`: what one hour of
-    /// building phases queues, for callers that step a logistics hour without the slot clock.
+    /// building phases queues, for logistics tests that step an hour without the slot clock.
     #[cfg(test)]
     pub(crate) fn request_freight_for_every_building(
         &mut self,

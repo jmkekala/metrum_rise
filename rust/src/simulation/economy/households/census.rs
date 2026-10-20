@@ -14,7 +14,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{
-    CENSUS_WINDOW_START, CensusKey, CopyNow, FrozenCensusParameters, WindowAction,
+    CENSUS_WINDOW_START, CensusKey, FrozenCensusParameters, WindowAction,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -136,13 +136,8 @@ impl HouseholdSystem {
             allocator.rebuild_entrance_cache(graph, &network.lane_system);
         }
         allocator.prepare_production_changes();
-        self.census_inputs.prepare(
-            allocator,
-            &self.households,
-            logistics,
-            catalog,
-            CopyNow::Frozen(fallback),
-        );
+        self.census_inputs
+            .prepare(allocator, &self.households, logistics, catalog, fallback);
         self.census_run.begin(publish, key);
     }
 

@@ -214,15 +214,13 @@ fn copies_follow_swap_removes_on_both_sides_of_the_cursor() {
         &households,
         &ShipmentSystem::new(),
         &catalog,
-        CopyNow::Live(LiveCensusParameters {
-            treasury: 0.0,
-            fiscal: &CityFiscalPolicy::default(),
-            service_funding: &[],
-            minute_of_day: 0,
-        }),
+        FrozenCensusParameters {
+            treasury: -1.0,
+            ..Default::default()
+        },
     );
-    assert!(
-        inputs.front.derive_funding,
+    assert_eq!(
+        inputs.front.parameters.treasury, 0.0,
         "the finished copy is read, not a new one"
     );
     assert_eq!(
@@ -381,7 +379,7 @@ fn a_read_front_defers_rows_changed_in_place_until_a_restart() {
             &households,
             &ShipmentSystem::new(),
             &catalog,
-            CopyNow::Frozen(FrozenCensusParameters::default()),
+            FrozenCensusParameters::default(),
         );
     };
     prepare(&mut inputs, &mut allocator);

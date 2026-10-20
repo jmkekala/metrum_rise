@@ -14,9 +14,10 @@ use std::time::Instant;
 const TARGET_RESIDENTS: u32 = 1_000_000;
 const DEFAULT_TIERS: &str = "10000,30000,100000";
 // `economy_tick_benchmark` with one-nanosecond warm-up and measurement times runs one warm-up
-// iteration and one per sample: 24 demand-pass hours (25 hours with the midnight they cross),
-// then 11 days of hours ending in a settlement. Settlement cost varies by day, so each tier
-// runs this whole sequence.
+// iteration and one per sample: 24 hours without a calendar close (25 hours with the midnight
+// they cross), then 11 days of hours ending in a calendar close. Each hour is stepped on the
+// slot clock through its actions slot, as the benchmark steps it, so each tier runs this whole
+// sequence.
 const BENCH_HOURS: usize = 25 + 11 * 24;
 
 struct Tier {
@@ -109,7 +110,7 @@ fn measure(residents: u32) -> Tier {
     let peak_rss_mb = status_mb("VmHWM:");
     let (mut hours, mut hour_s, mut settlements, mut settlement_s) = (0, 0.0, 0, 0.0);
     for _ in 0..BENCH_HOURS {
-        let times = city.advance_hour();
+        let times = city.advance_hour_through_actions();
         hours += 1;
         hour_s += times.hourly.as_secs_f64();
         if let Some(daily) = times.daily {

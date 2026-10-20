@@ -33,10 +33,7 @@ mod inputs;
 mod rolling;
 mod steps;
 
-pub(crate) use inputs::{
-    CensusInputs, CopyNow, FILL_SLOTS, FrozenCensusParameters, LiveCensusParameters,
-    SavedCensusInputs,
-};
+pub(crate) use inputs::{CensusInputs, FILL_SLOTS, FrozenCensusParameters, SavedCensusInputs};
 pub(crate) use rolling::{
     CENSUS_WINDOW_START, CensusKey, REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus,
     StructureRevisions, WindowAction, removals_allowed,

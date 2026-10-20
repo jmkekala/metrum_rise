@@ -23,6 +23,7 @@ use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, Placement
 use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::scheduler::{SLOTS_PER_HOUR, SLOTS_PER_MINUTE};
 use crate::simulation::economy::agents::{
     AgentSystem, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
 };
@@ -54,6 +55,11 @@ fn temp_save_path(name: &str) -> std::path::PathBuf {
             .expect("system clock before unix epoch")
             .as_nanos()
     ))
+}
+
+// The first slot of the hour after the clock's.
+fn next_hour_slot(core: &SimCore) -> u64 {
+    (core.time.absolute_slot() / SLOTS_PER_HOUR + 1) * SLOTS_PER_HOUR
 }
 
 fn test_core() -> SimCore {
@@ -1378,7 +1384,9 @@ fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
     place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
 
     core.apply_money_and_max_demand_cheat(1_000_000.0);
-    core.execute_hourly_demand_pass_for_test(1, 0);
+    // The next hour's planning slots, through its actions slot, which queues the spawns.
+    let hour = next_hour_slot(&core);
+    core.run_slots_through_for_test(hour + PlanningSlot::Actions as u64);
 
     assert!(
         core.pending_demand_spawns
@@ -1396,14 +1404,12 @@ fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
             .any(|pending| pending.zone_type == ZoneType::Industrial)
     );
 
-    let queued_spawn_count = core.pending_demand_spawns.len();
-    let mut executed_spawn_count = 0_usize;
-    for minute_offset in 1..=queued_spawn_count {
-        executed_spawn_count +=
-            core.execute_pending_demand_spawns_for_minute(1, minute_offset as u16);
-    }
-
-    assert_eq!(executed_spawn_count, queued_spawn_count);
+    // One start a minute, each at its construction-start event, within the hour.
+    let queued_spawn_count = core.pending_demand_spawns.len() as u64;
+    assert!(queued_spawn_count < 56);
+    core.run_slots_through_for_test(
+        hour + PlanningSlot::Actions as u64 + (queued_spawn_count + 1) * SLOTS_PER_MINUTE,
+    );
     assert!(core.pending_demand_spawns.is_empty());
     assert!(
         core.allocator
@@ -1442,13 +1448,15 @@ fn hourly_planning_does_not_queue_the_same_parcel_twice() {
     place_test_parcel_run(&mut core, ZoneType::Residential, 10.0, 50.0);
     place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
     core.apply_money_and_max_demand_cheat(1_000_000.0);
-    core.execute_hourly_demand_pass_for_test(1, 0);
+    let hour = next_hour_slot(&core);
+    core.run_slots_through_for_test(hour + PlanningSlot::Actions as u64);
     assert!(!core.pending_demand_spawns.is_empty());
     // Keep the first batch queued while another hour plans. Other parcels may still grow.
     for pending in &mut core.pending_demand_spawns {
         pending.due_minute += 120;
     }
-    core.execute_hourly_demand_pass_for_test(1, 60);
+    core.reschedule_construction_events();
+    core.run_slots_through_for_test(hour + SLOTS_PER_HOUR + PlanningSlot::Actions as u64);
     let mut parcels: Vec<_> = core
         .pending_demand_spawns
         .iter()
@@ -1459,8 +1467,7 @@ fn hourly_planning_does_not_queue_the_same_parcel_twice() {
 }
 
 #[test]
-fn hourly_passes_read_the_previous_hours_demand_sweep_and_whole_hours_the_current_city() {
-    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+fn hourly_passes_read_the_previous_hours_demand_sweep() {
     let mut core = test_core();
     add_test_border_road(&mut core);
     let home = register_test_asset(&mut core.allocator, "swept_home", ZoneType::Residential);
@@ -1496,12 +1503,6 @@ fn hourly_passes_read_the_previous_hours_demand_sweep_and_whole_hours_the_curren
     assert_eq!(vacant(&core), 2 * capacity);
     step_to(&mut core, hour + 2 * SLOTS_PER_HOUR + actions);
     assert_eq!(vacant(&core), capacity);
-    // A whole hour without the slot clock plans on the city as it is.
-    let last = core.allocator.buildings.len() - 1;
-    core.allocator.buildings[last].broken = true;
-    let (day_index, minute_of_day) = super::schedule::slot_calendar(hour + 3 * SLOTS_PER_HOUR);
-    core.simulate_operational_hour_internal(day_index, minute_of_day);
-    assert_eq!(vacant(&core), 0);
 }
 
 fn construction_execution_fixture() -> (SimCore, Vec<DemandSpawnAction>, Vec<DemandSpawnAction>) {
@@ -1587,9 +1588,10 @@ fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
             .spawn_housed_agent_with_age_group(usize::MAX, 0.0, 0.0, AGE_ADULT);
         core.agents.assign_household_id(agent, household);
     }
-    // The home completes at its slot, before the hour that rehouses its residents.
+    // The home completes at its slot, before the hour whose phases rehouse its residents.
     core.allocator.complete_construction(0);
-    core.simulate_operational_hour_internal(1, 60);
+    let hour = next_hour_slot(&core);
+    core.run_slots_through_for_test(hour + SLOTS_PER_HOUR - 1);
     assert!(!core.allocator.buildings[0].is_under_construction());
     assert_eq!(core.allocator.buildings[0].occupancy, slots);
     assert!(
@@ -2243,13 +2245,14 @@ fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
 fn business_planning_prices_the_actual_freight_route() {
     for expensive in [false, true] {
         let (mut core, _, _) = construction_execution_fixture();
+        // The hour's census start publishes the live delays as prices.
         if expensive {
             for lane in &mut core.transit_network.lane_system.lanes {
-                lane.frontage_delay_penalty_s = 1_000_000.0;
+                lane.live_frontage_delay_s = 1_000_000.0;
             }
-            core.transit_network.frontage_delay_revision += 1;
         }
-        core.execute_hourly_demand_pass_for_test(1, 0);
+        let hour = next_hour_slot(&core);
+        core.run_slots_through_for_test(hour + PlanningSlot::Actions as u64);
         let factories = core
             .pending_demand_spawns
             .iter()

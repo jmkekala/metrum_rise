@@ -213,7 +213,7 @@ impl DemandSystem {
         network.lane_system.rebuild(&mut routing_graph);
         let graph = &routing_graph;
         network.rebuild_cch_and_check(graph);
-        // A whole hour without the slot clock plans on a snapshot of the current state.
+        // Planning without the slot clock reads a snapshot of the current state.
         self.discard_snapshot_front();
         self.run_planning_hour_for_test(
             allocator,
@@ -678,8 +678,9 @@ impl DemandSystem {
         })
     }
 
-    /// Drops the snapshot front, so the next hourly pass builds one from the current state: for
-    /// callers that step a whole hour without the slot clock (`SIM-02-I`).
+    /// Drops the snapshot front, so the next planning slot builds one from the current state:
+    /// for subsystem tests that plan on hand-built state without the slot clock (`SIM-02-I`).
+    #[cfg(test)]
     pub(crate) fn discard_snapshot_front(&mut self) {
         self.snapshot_sweep.discard_front();
     }

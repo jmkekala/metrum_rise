@@ -160,14 +160,4 @@ impl SimCore {
         }
         self.agent_phase_scratch = phase;
     }
-
-    /// Every entity's day at once, phase by phase, for callers that step a whole day without
-    /// the slot clock (tests and tools).
-    pub(super) fn run_every_day_phase(&mut self, observer: &mut impl EconomyObserver) {
-        for phase in 0..u64::from(PHASES_PER_DAY) {
-            self.run_building_days(phase, observer);
-            self.run_household_days(phase, observer);
-            self.run_agent_days(phase, observer);
-        }
-    }
 }

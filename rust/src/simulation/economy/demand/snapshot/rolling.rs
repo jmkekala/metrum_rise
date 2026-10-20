@@ -180,8 +180,9 @@ impl DemandSnapshotSweep {
         self.front = Some(front);
     }
 
-    /// Drops the front so that the next pass builds a current one, for callers that step an
-    /// hour without the slot clock. A sweep in progress continues.
+    /// Drops the front so that the next pass builds a current one, for subsystem tests that
+    /// plan on hand-built state without the slot clock. A sweep in progress continues.
+    #[cfg(test)]
     pub(in crate::simulation::economy::demand) fn discard_front(&mut self) {
         self.front = None;
     }

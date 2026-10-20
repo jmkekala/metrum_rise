@@ -407,18 +407,6 @@ impl DestinationRoll {
         }
     }
 
-    /// One whole sweep at once for the requests of absolute hour `hour`, for callers that step
-    /// an hour without the slot clock; a sweep in progress is abandoned. O(handles × outputs)
-    /// on Rayon plus O(E log E).
-    pub(super) fn run_whole(&mut self, hour: u64, fold: &DestinationFold) {
-        self.front = Some(DestinationFront::new(
-            hour,
-            fold.topology.generation(),
-            fold.fold_all(),
-        ));
-        self.sweep = None;
-    }
-
     /// Lends the front for the requests of absolute hour `hour`, built at once when none was
     /// finished for that hour and the fold's components; [`Self::restore_front`] takes it back.
     /// A sweep in progress keeps going and replaces it at the hour's end. O(1) with a front.

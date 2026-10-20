@@ -68,7 +68,8 @@ pub(crate) enum PlanningSlot {
 }
 
 impl PlanningSlot {
-    /// Every planning slot, in order.
+    /// Every planning slot, in order (test drivers of the four slots).
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 4] = [
         Self::Residential,
         Self::Commercial,

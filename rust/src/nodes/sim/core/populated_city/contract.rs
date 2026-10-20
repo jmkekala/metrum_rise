@@ -4,6 +4,7 @@
 
 use super::snapshot;
 use crate::debug::work::{WORK_COUNT, WORK_NAMES, phases, snapshot as work_snapshot};
+use crate::simulation::core::scheduler::{SLOTS_PER_DAY, SLOTS_PER_HOUR};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -266,7 +267,6 @@ fn perf_contract_phase() {
     }
     let catalog = crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
     let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
-    let service = core.electricity_funding_by_building();
     let mut route_scratch = crate::simulation::pathing::cch::CchQueryScratch::default();
     if name == "routing" {
         route_scratch.prepare(&core.transit_network.cch_graph, &core.region_graph);
@@ -284,19 +284,18 @@ fn perf_contract_phase() {
     let before = work_snapshot();
     let started = Instant::now();
     match name.as_str() {
-        "census" => core.households.job_funding.refresh(
-            &core.allocator,
-            &core.households.households,
-            &mut core.logistics,
-            &core.transit_network,
-            &core.region_graph,
-            &catalog,
-            &tuning,
-            &core.fiscal_policy,
-            &service,
-            core.treasury.balance,
-            60,
-        ),
+        // One hour's census as the slots run it: the input copy over the hour's first half,
+        // the census's steps over its second half and the next hour's publication.
+        "census" => {
+            let hour = core.time.absolute_slot() / SLOTS_PER_HOUR * SLOTS_PER_HOUR;
+            for slot in core.time.absolute_slot() + 1..hour + SLOTS_PER_HOUR {
+                core.allocator.now_slot = slot;
+                core.advance_census_inputs(slot);
+                core.advance_census(slot);
+            }
+            core.allocator.now_slot = hour + SLOTS_PER_HOUR;
+            core.publish_census(hour + SLOTS_PER_HOUR);
+        }
         "planning" => core.demand.run_planning_hour_for_test(
             &core.allocator,
             &mut core.households,
@@ -335,25 +334,52 @@ fn perf_contract_phase() {
                 &core.region_graph,
             );
         }
-        // One hour of freight requests at once: every building's phase check, then the queue.
+        // One hour of freight requests as the slots run them: the freight checks of each
+        // slot's hourly building phase, then the queue's quota.
         "logistics" => {
-            core.logistics.hourly_tick();
-            let slot = core.time.absolute_slot();
-            core.logistics
-                .request_freight_for_every_building(slot, &mut core.allocator);
-            core.logistics.serve_freight_requests(
-                usize::MAX,
-                &mut core.allocator,
-                &core.transit_network,
-                &core.region_graph,
-                60,
-                &mut core.treasury.balance,
-            );
+            let start = core.time.absolute_slot() + 1;
+            let mut phase = Vec::new();
+            for slot in start..start + SLOTS_PER_HOUR {
+                core.allocator.now_slot = slot;
+                let handles = &mut core.allocator.building_handles;
+                handles.register_appended(core.allocator.buildings.len());
+                handles
+                    .phases()
+                    .hourly((slot % SLOTS_PER_HOUR) as u32, &mut phase);
+                for &handle in &phase {
+                    if let Some(building) = core.allocator.building_handles.resolve(handle) {
+                        core.logistics.request_freight_at_phase(
+                            slot,
+                            building,
+                            &core.allocator,
+                            &catalog,
+                            &tuning,
+                        );
+                    }
+                }
+                core.serve_freight_request_queue(
+                    slot,
+                    crate::nodes::sim::core::schedule::FREIGHT_REQUEST_QUOTA as usize,
+                );
+            }
         }
         "lots" => {
             std::hint::black_box(core.prepare_cell_lots_internal());
         }
-        "settlement" => core.simulate_tick_internal(day + 1),
+        // One day of settlement as the slots run it: each slot's daily building, household and
+        // agent phases and environment sweep chunk, then the next day's calendar close.
+        "settlement" => {
+            let first = u64::from(day - 1) * SLOTS_PER_DAY;
+            for slot in first..first + SLOTS_PER_DAY {
+                core.allocator.now_slot = slot;
+                core.run_building_days(slot, &mut ());
+                core.run_household_days(slot, &mut ());
+                core.run_agent_days(slot, &mut ());
+                core.advance_environment_sweep(slot);
+            }
+            core.allocator.now_slot = first + SLOTS_PER_DAY;
+            core.close_calendar_day(day + 1, &mut ());
+        }
         "routing" => {
             let nodes = core.region_graph.node_count() as u32;
             assert!(nodes > 1);

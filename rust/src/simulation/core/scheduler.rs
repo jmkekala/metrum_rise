@@ -156,7 +156,7 @@ pub(crate) enum SystemKind {
     /// Consumes the slot's timed events.
     Events,
     /// One call at slot `offset` of every `period`. Only for work with a stated O(1), O(zones)
-    /// or O(dirty) bound, and for passes re-hosted unchanged during the migration.
+    /// or O(dirty) bound, and for the whole-city passes `Cost::CityScan` lists.
     FixedSlot { period: Period, offset: u64 },
     /// One call per slot for the entities whose `period` phase falls in it, so each entity is
     /// visited once per period (`docs/simulation.md#phases`).
@@ -203,12 +203,11 @@ impl SystemKind {
 pub(crate) enum Cost {
     /// Proportional to the events due in the slot.
     Events,
-    /// A pass over the whole city re-hosted unchanged; removed by `SIM-02-K`.
-    LegacyBoundary,
-    /// A pass over the whole city split out of a legacy one (`SIM-02-I` demand planning
-    /// slots): each call O(B + H + P + Q log H) in buildings B, households H, lots P and queued
-    /// constructions Q, with each slot's terms stated at its declaration. `SIM-02-K` replaces
-    /// its scans with maintained totals and indices.
+    /// A fixed-slot pass that grows with the city, its terms stated at its declaration: the
+    /// census publication, O(B) plus a whole census when none is ready, and the hour's four
+    /// demand planning slots, each O(B + H + P + Q log H) in buildings B, households H, lots P
+    /// and queued constructions Q. `SIM-02-K` (K5) replaces their scans with maintained totals
+    /// and indices.
     CityScan,
     /// Proportional to the entities whose phase falls in the slot: O(N / slots per period).
     Phase,
@@ -219,6 +218,9 @@ pub(crate) enum Cost {
     Quota,
     /// Independent of the city's size: O(1) or O(zones).
     Constant,
+    /// Proportional to what changed or came due since the previous call (entities created,
+    /// requests waiting, entries expiring), not to the city's size.
+    Dirty,
 }
 
 /// Simulation tier a declaration serves.
@@ -246,7 +248,7 @@ pub(crate) mod state {
     pub(crate) const NETWORK: StateSet = 1 << 8;
     pub(crate) const GRIDS: StateSet = 1 << 9;
     pub(crate) const EVENTS: StateSet = 1 << 10;
-    /// Every domain, for re-hosted legacy passes.
+    /// Every domain, for passes that touch most of the city (the demand planning slots).
     pub(crate) const ALL: StateSet = (1 << 11) - 1;
 
     /// Domain names in bit order, for descriptions.
@@ -299,7 +301,8 @@ pub(crate) struct Schedule<S> {
 impl<S: Copy> Schedule<S> {
     /// Orders `declarations` by kind, keeping declaration order within a kind. Panics on a
     /// declaration that breaks the scheduling contract: a fixed-slot offset outside its period,
-    /// a fixed-slot system without a bounded cost or legacy status, a queue without a quota, or
+    /// a fixed-slot system without a constant, dirty or listed city-scan cost, a queue without
+    /// a quota, or
     /// an events, entity-phase, queue or rolling system whose cost is not its events, its
     /// phase's entities, its quota or one chunk.
     pub(crate) fn new(mut declarations: Vec<Declaration<S>>) -> Self {
@@ -314,7 +317,7 @@ impl<S: Copy> Schedule<S> {
                     assert!(
                         matches!(
                             declaration.cost,
-                            Cost::LegacyBoundary | Cost::CityScan | Cost::Constant
+                            Cost::CityScan | Cost::Constant | Cost::Dirty
                         ),
                         "{} runs at a fixed slot without a bounded cost",
                         declaration.name
@@ -498,7 +501,7 @@ mod tests {
             writes: state::ALL,
             cost: match kind {
                 SystemKind::Events => Cost::Events,
-                SystemKind::FixedSlot { .. } => Cost::LegacyBoundary,
+                SystemKind::FixedSlot { .. } => Cost::Constant,
                 SystemKind::EntityPhase { .. } => Cost::Phase,
                 SystemKind::Queue { .. } => Cost::Quota,
                 SystemKind::Rolling { .. } => Cost::Chunk,
