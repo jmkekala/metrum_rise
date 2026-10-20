@@ -24,6 +24,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_tuning,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
+use crate::simulation::economy::hiring::{CensusKey, JobFunding};
 use crate::simulation::economy::households::{HouseholdExitPolicy, HouseholdSystem};
 use crate::simulation::economy::logistics::{ShipmentSystem, collect_connected_border_nodes};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
@@ -349,6 +350,7 @@ impl DemandSystem {
             self.freight_border_nodes = borders;
             return false;
         }
+        live_households.job_funding.planning_prepared = true;
         let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
         #[cfg(test)]
         let before = VERIFY_LIVE_PASSES
@@ -502,6 +504,86 @@ impl DemandSystem {
                 .reserve_worker_homes(self.workforce_reservations.unreserved_ready_homes());
         }
         true
+    }
+
+    /// Prepares on `funding`'s books what a planning slot prepares before it plans
+    /// (`SIM-02-K`): the border carrier tables, the supplier and buyer site rows and their
+    /// layouts, the pass's owner rows and the books' planning storage. Saves keep none of it,
+    /// so the first slot to lend each book after loading built it all in one frame; the live
+    /// book is prepared at load and a fresh census book once it is finished, in a window slot
+    /// of its own. The books are lent and restored exactly as a planning slot does, and what
+    /// is prepared is derived from the city and keyed by its revisions, so no result changes.
+    /// Books not valid for the live `key` at `minute_of_day` (the minute they serve) are left
+    /// alone. O(B + P) and the books' storage.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_planning_books(
+        &mut self,
+        funding: &mut JobFunding,
+        key: CensusKey,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        fiscal_policy: &CityFiscalPolicy,
+        network: &TransitNetwork,
+        logistics: &mut ShipmentSystem,
+        minute_of_day: u16,
+    ) {
+        // Attempted once per book: an invalid one is left to its first planning slot.
+        funding.planning_prepared = true;
+        let catalog = Arc::clone(&self.runtime_catalog);
+        let economy_tuning = Arc::clone(&self.runtime_tuning);
+        let mut borders = std::mem::take(&mut self.freight_border_nodes);
+        collect_connected_border_nodes(graph, &mut borders);
+        let phase = crate::simulation::economy::logistics::freight_price_phase(
+            &economy_tuning,
+            minute_of_day,
+        );
+        if funding.has_current_input_supply(key, &borders, phase) {
+            logistics.prepare_site_carrier_quotes(allocator, network, graph, &borders);
+            #[cfg(test)]
+            let before = VERIFY_LIVE_PASSES
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then(|| live_fingerprint(funding));
+            let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
+            let mut inputs = super::execution::lend_live_books(&mut reservations, funding);
+            reservations.begin_live_pass(
+                funding,
+                &mut inputs,
+                allocator,
+                graph,
+                &catalog,
+                &economy_tuning,
+                fiscal_policy,
+                minute_of_day,
+            );
+            // Preparing the rows and storage is all a new supply does before its first quote.
+            SiteSupply::new(
+                &mut inputs,
+                &mut reservations,
+                allocator,
+                zoning,
+                network,
+                graph,
+                logistics,
+                &economy_tuning,
+                &borders,
+                &catalog,
+                minute_of_day,
+                fiscal_policy.household_vat_rate,
+            );
+            reservations.end_live_pass(&mut inputs, allocator, graph);
+            super::execution::return_live_books(inputs, &mut reservations, funding);
+            #[cfg(test)]
+            if let Some(before) = before {
+                assert_eq!(
+                    live_fingerprint(funding),
+                    before,
+                    "preparing the planning books must return them exactly"
+                );
+            }
+            self.construction_execution.reservations = reservations;
+        }
+        self.freight_border_nodes = borders;
     }
 
     /// Counts the live workforce as a planning pass does, for epochs opened without one.

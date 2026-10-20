@@ -595,7 +595,7 @@ impl DemandSystem {
                 catalog,
                 economy_tuning,
                 residential_occupants,
-                zone_type,
+                Some(zone_type),
                 ExistingActions::ZONE_SLOT,
             );
             if let Some(begin) = existing_begin {
@@ -842,26 +842,23 @@ impl DemandSystem {
             let mut retirable_homes = snapshot
                 .vacant_household_slots
                 .saturating_sub(protected_homes);
+            let existing_begin = timing.then(std::time::Instant::now);
+            let mut downgrades_by_use = self.collect_downgrades_by_use(
+                allocator,
+                catalog,
+                economy_tuning,
+                residential_occupants,
+            );
+            if let Some(begin) = existing_begin {
+                existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
+            }
             // Business replacements also claim ready homes before residential capacity can shrink.
             for use_kind in [
                 DemandUse::Commercial,
                 DemandUse::Industrial,
                 DemandUse::Residential,
             ] {
-                let existing_begin = timing.then(std::time::Instant::now);
-                let candidates = self
-                    .collect_existing_actions(
-                        allocator,
-                        catalog,
-                        economy_tuning,
-                        residential_occupants,
-                        use_kind.zone_type(),
-                        ExistingActions::ACTIONS_SLOT,
-                    )
-                    .downgrades;
-                if let Some(begin) = existing_begin {
-                    existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
-                }
+                let candidates = std::mem::take(&mut downgrades_by_use[use_kind as usize]);
                 let downgrade_candidate_count = candidates.len();
                 let downgrade_budget_units = if self.cheat_max_demands_enabled {
                     0.0
@@ -1039,19 +1036,84 @@ impl DemandSystem {
             catalog,
             economy_tuning,
             residential_occupants,
-            zone_type,
+            Some(zone_type),
             ExistingActions::ALL,
         )
     }
 
-    // The `kinds` of existing-building actions of `zone_type`'s buildings. O(B / p), parallel.
+    // Slot 3's downgrade candidates of every zone from one scan, indexed by `DemandUse`
+    // (`SIM-02-K`). A building's candidacy reads only the city the pass holds immutably, and the
+    // attachment order is total, so each zone's list equals its own scan's. O(B / p), parallel,
+    // once instead of once per zone.
+    fn collect_downgrades_by_use(
+        &self,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+    ) -> [Vec<LevelChangeCandidate>; 3] {
+        let mut by_use: [Vec<LevelChangeCandidate>; 3] = Default::default();
+        for candidate in self
+            .collect_existing_actions(
+                allocator,
+                catalog,
+                economy_tuning,
+                residential_occupants,
+                None,
+                ExistingActions::ACTIONS_SLOT,
+            )
+            .downgrades
+        {
+            let use_kind = match allocator.buildings[candidate.building_idx].zone_type {
+                ZoneType::Residential => DemandUse::Residential,
+                ZoneType::Commercial => DemandUse::Commercial,
+                ZoneType::Industrial => DemandUse::Industrial,
+                _ => continue,
+            };
+            by_use[use_kind as usize].push(candidate);
+        }
+        // Test builds: each zone's list equals that zone's own scan, as slot 3 ran it.
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            for use_kind in [
+                DemandUse::Residential,
+                DemandUse::Commercial,
+                DemandUse::Industrial,
+            ] {
+                let own = self
+                    .collect_existing_actions(
+                        allocator,
+                        catalog,
+                        economy_tuning,
+                        residential_occupants,
+                        Some(use_kind.zone_type()),
+                        ExistingActions::ACTIONS_SLOT,
+                    )
+                    .downgrades;
+                let key = |list: &[LevelChangeCandidate]| {
+                    list.iter()
+                        .map(|candidate| (candidate.action.clone(), candidate.building_idx))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    key(&by_use[use_kind as usize]),
+                    key(&own),
+                    "one downgrade scan must equal {use_kind:?}'s own"
+                );
+            }
+        }
+        by_use
+    }
+
+    // The `kinds` of existing-building actions of `zone_type`'s buildings, or of every zone's
+    // with `None`. O(B / p), parallel.
     fn collect_existing_actions(
         &self,
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
         economy_tuning: &RuntimeEconomyTuning,
         residential_occupants: &ResidentialOccupantSnapshot,
-        zone_type: ZoneType,
+        zone_type: Option<ZoneType>,
         kinds: ExistingActions,
     ) -> ExistingBuildingCandidates {
         let mut candidates = allocator
@@ -1060,7 +1122,7 @@ impl DemandSystem {
             .enumerate()
             .flat_map_iter(|(building_idx, building)| {
                 let mut result = [None, None];
-                if building.zone_type != zone_type
+                if zone_type.is_some_and(|zone_type| building.zone_type != zone_type)
                     || building.broken
                     || building.economy_broken
                     || building.pending_redevelopment

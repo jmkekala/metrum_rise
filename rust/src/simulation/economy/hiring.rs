@@ -95,6 +95,10 @@ pub(crate) struct JobFunding {
     /// The live city's key when the census started, for readers that lend its books; `None`
     /// for a census not run on the live city or since invalidated (`SIM-02-I`).
     pub(crate) published: Option<CensusKey>,
+    /// Whether a planning pass, or its preparation alone, has lent these books since the
+    /// storage was created (`SIM-02-K`): their site rows and planning storage then persist
+    /// across censuses, and a fresh book is prepared before it is published.
+    pub(crate) planning_prepared: bool,
     border_nodes: Vec<u32>,
     quoted_border_nodes: Vec<u32>,
     // Resource slots contain full output capacity and recurring local demand, respectively.

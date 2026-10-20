@@ -211,6 +211,8 @@ impl SimCore {
         self.warm_loaded_cells();
         // So are the flow fields and the movement scratch the first frame would build.
         self.prepare_loaded_pathing();
+        // And what the first planning slot would prepare on the live books (`SIM-02-K`).
+        self.warm_loaded_planning();
     }
 
     fn refresh_loaded_demand_state_and_log(&mut self) {

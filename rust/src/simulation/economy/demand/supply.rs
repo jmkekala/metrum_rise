@@ -140,6 +140,8 @@ pub(super) struct ProjectReservations {
     pub(super) business: BusinessMarket,
     pub(super) building_workers: Vec<u32>,
     pub(super) queued_workers: Vec<(u64, u32)>,
+    // The constructing buildings a pass replays, in building order; reused scratch.
+    constructing: Vec<usize>,
     /// Accepted live/project plans indexed by the same owner as the reservation books.
     pub(super) operations: Vec<Option<FundedOperation>>,
     // Only accepted project slots need clearing between passes; unused slots stay empty.
@@ -464,6 +466,15 @@ impl<'a> SiteSupply<'a> {
             // A pass can replay a queue and select at most one new project per parcel.
             // Existing construction and replacements retain their live building owner.
             let owners = allocator.buildings.len() + 2 * zoning.parcels().len();
+            // New projects open only on free lots, so the warm-start storage estimates count
+            // their owner slots alone (`SIM-02-K`); the census book already holds the live
+            // buildings' rows, and a replacement grows through the exact preflight
+            // (`supply/storage.rs`). Estimates never change a result. O(parcels / p).
+            let project_owners = 2 * zoning
+                .parcels()
+                .par_iter()
+                .filter(|parcel| parcel.is_available())
+                .count();
             crate::debug::work::add(crate::debug::work::Work::OwnerSlotsPrepared, owners as u64);
             let outputs = catalog
                 .all_profiles()
@@ -559,7 +570,7 @@ impl<'a> SiteSupply<'a> {
             });
             let suppliers_ms = lap();
             book.prepare_customer_deliveries(reservations.business.receipt_count());
-            book.prepare_owners(owners, owners * inputs);
+            book.prepare_owners(owners, project_owners * inputs);
             let supply_storage_ms = lap();
             if let Some(components) = book.freight_components() {
                 let assets = std::sync::OnceLock::new();
@@ -690,13 +701,13 @@ impl<'a> SiteSupply<'a> {
             let buyers_ms = lap();
             reservations
                 .business
-                .prepare_owners(owners, owners * outputs);
-            reservations
-                .business
-                .prepare_project_inputs(book.project_input_tranche_capacity(owners * inputs));
+                .prepare_owners(owners, project_owners * outputs);
+            reservations.business.prepare_project_inputs(
+                book.project_input_tranche_capacity(project_owners * inputs),
+            );
             reservations
                 .customers
-                .prepare_project_owners(owners, owners * outputs);
+                .prepare_project_owners(owners, project_owners * outputs);
             reservations.output_prices.reserve(outputs);
             if reservations.operations.len() < owners {
                 reservations.operations.resize(owners, None);
@@ -805,7 +816,7 @@ impl<'a> SiteSupply<'a> {
         policy: &CityFiscalPolicy,
         service_capacities: &[u32],
         freight_capital: &[f64],
-        census_complete: impl Fn(usize) -> bool,
+        census_complete: impl Fn(usize) -> bool + Sync,
     ) {
         let projects = projects.filter(|project| project.active);
         self.prepare_project_market(
@@ -882,7 +893,7 @@ impl<'a> SiteSupply<'a> {
         policy: &CityFiscalPolicy,
         service_capacities: &[u32],
         freight_capital: &[f64],
-        census_complete: &dyn Fn(usize) -> bool,
+        census_complete: &(dyn Fn(usize) -> bool + Sync),
     ) {
         self.reservations
             .building_workers
@@ -893,10 +904,20 @@ impl<'a> SiteSupply<'a> {
             .queued_workers
             .reserve(projects.clone().count());
         replay.copy_from(market);
+        // The constructing buildings, found in parallel and kept in building order for the
+        // ordered updates below and the replay (`SIM-02-K`): O(B / p) plus O(constructing).
+        let allocator = self.allocator;
+        let mut rows = std::mem::take(&mut self.reservations.constructing);
+        rows.clear();
+        rows.par_extend(
+            (0..allocator.buildings.len())
+                .into_par_iter()
+                .filter(|&index| constructing(&allocator.buildings[index], census_complete(index))),
+        );
         // Ordered capacity updates share resource totals, like the subsequent finite claims.
-        for (index, building) in self.allocator.buildings.iter().enumerate() {
-            if constructing(building, census_complete(index))
-                && !self.allocator.is_city_service_building(building)
+        for &index in &rows {
+            let building = &allocator.buildings[index];
+            if !allocator.is_city_service_building(building)
                 && let Some(profile) =
                     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
             {
@@ -910,29 +931,29 @@ impl<'a> SiteSupply<'a> {
             }
         }
         self.reserve_constructing(
+            &rows,
             catalog,
             replay,
             policy,
             service_capacities,
             freight_capital,
-            census_complete,
         );
+        self.reservations.constructing = rows;
     }
 
+    // Replays the constructing buildings `rows`, in building order.
+    #[allow(clippy::too_many_arguments)]
     fn reserve_constructing(
         &mut self,
+        rows: &[usize],
         catalog: &RuntimeEconomyCatalog,
         market: &mut OutputAbsorptionContext,
         policy: &CityFiscalPolicy,
         service_capacities: &[u32],
         freight_capital: &[f64],
-        census_complete: &dyn Fn(usize) -> bool,
     ) {
-        for index in 0..self.allocator.buildings.len() {
+        for &index in rows {
             let building = &self.allocator.buildings[index];
-            if !constructing(building, census_complete(index)) {
-                continue;
-            }
             let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
             else {
                 continue;

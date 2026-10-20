@@ -1290,6 +1290,7 @@ impl SimCore {
         if slot % SLOTS_PER_HOUR < CENSUS_WINDOW_START {
             return;
         }
+        self.prepare_census_book_for_planning(slot);
         if self
             .households
             .census_starts_at(slot, self.households.census_key(&self.transit_network))
@@ -1330,6 +1331,49 @@ impl SimCore {
             &self.region_graph,
             fallback,
             key,
+        );
+    }
+
+    /// Prepares at load what the first planning slot would prepare on the live books: the
+    /// building site index, then the planning rows and storage (`SIM-02-K`).
+    pub(crate) fn warm_loaded_planning(&mut self) {
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let key = self.households.census_key(&self.transit_network);
+        self.demand.prepare_planning_books(
+            &mut self.households.job_funding,
+            key,
+            &self.allocator,
+            &self.region_graph,
+            &self.zoning,
+            &self.fiscal_policy,
+            &self.transit_network,
+            &mut self.logistics,
+            self.time.minute_of_day,
+        );
+    }
+
+    // A finished census whose book no planning pass has prepared (the first census after
+    // loading, on fresh storage) is prepared for the hour it serves in the next window slot,
+    // not by the planning slot that first lends it (`SIM-02-K`). O(1) otherwise.
+    fn prepare_census_book_for_planning(&mut self, slot: u64) {
+        let key = self.households.census_key(&self.transit_network);
+        let Some(funding) = self.households.unprepared_census_book() else {
+            return;
+        };
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        let (_, minute_of_day) = super::schedule::slot_calendar(next_hour(slot));
+        self.demand.prepare_planning_books(
+            funding,
+            key,
+            &self.allocator,
+            &self.region_graph,
+            &self.zoning,
+            &self.fiscal_policy,
+            &self.transit_network,
+            &mut self.logistics,
+            minute_of_day,
         );
     }
 

@@ -187,6 +187,11 @@ impl RollingCensus {
         self.progress.is_done()
     }
 
+    /// The finished census's book while no planning pass has prepared it (`SIM-02-K`). O(1).
+    pub(crate) fn unprepared_finished_book(&mut self) -> Option<&mut JobFunding> {
+        (self.progress.is_done() && !self.funding.planning_prepared).then_some(&mut self.funding)
+    }
+
     /// Whether a census for `publish_slot` started on the front, current or stale.
     pub(crate) fn has_run(&self, publish_slot: u64) -> bool {
         matches!(self.run, Some(run) if run.publish_slot == publish_slot)

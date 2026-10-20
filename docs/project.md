@@ -381,7 +381,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   through the hour's second half, so no census slot holds the core for more than about 4 ms at
   100k (`SIM-02-K` part 3). The agent tick no longer rebuilds its lane occupancy from every
   agent when agents spawn or leave, and moves agents in balanced shards: the 100k mean frame
-  falls by about 1.5 ms at 1× and 2.6 ms at 32× (`SIM-02-K` part 4).
+  falls by about 1.5 ms at 1× and 2.6 ms at 32× (`SIM-02-K` part 4). The first hours after
+  loading no longer stall in demand planning: loading prepares what the first planning slot used
+  to build, and the first census book is prepared in a slot of its own (`SIM-02-K` part 5).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -14,7 +14,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{
-    CENSUS_WINDOW_START, CensusKey, FrozenCensusParameters, WindowAction,
+    CENSUS_WINDOW_START, CensusKey, FrozenCensusParameters, JobFunding, WindowAction,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -146,6 +146,12 @@ impl HouseholdSystem {
     /// prices first, as at a census start.
     pub(crate) fn census_ready(&self, slot: u64, key: CensusKey) -> bool {
         self.census_run.is_ready(slot, key)
+    }
+
+    /// The finished census's book while no planning pass has prepared it, as after loading
+    /// (`SIM-02-K`). O(1).
+    pub(crate) fn unprepared_census_book(&mut self) -> Option<&mut JobFunding> {
+        self.census_run.unprepared_finished_book()
     }
 
     /// Publishes the hour's census at its first slot `slot`, before the operational hour

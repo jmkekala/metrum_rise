@@ -550,9 +550,13 @@ rebuilt after load, never saved.
   tie-breaks. Parallel reductions merge in input order, and the applicant stream depends only on
   simulation time.
 - **Costs:**
-  - snapshots and candidate collection are O(B) parallel passes;
+  - snapshots and candidate collection are O(B) parallel passes (slot 3 collects every zone's
+    downgrade candidates in one O(B/p) pass, `SIM-02-K` part 5);
   - residential selection is O(candidates);
   - each project check is bounded by its recipe ports, home-calendar size and indexed customer
     and supplier work.
 - **No city scans:** there is no per-project city scan or per-agent search. Reservation scratch
-  is reused across passes.
+  is reused across passes. It is prepared at load and, for a fresh census book, in a window slot
+  after the book finishes, so no planning slot builds it from cold (`SIM-02-K` part 5). Its
+  warm-start estimates count new projects on free lots only; a shortfall replays the proposal
+  after growing storage exactly, so estimates never change a result.
