@@ -22,10 +22,11 @@
 //! [`SLACK_SLOTS`] slots before the window ends, and from S = 128 on, work it did not plan for
 //! spreads over the slots left instead of landing in one. The window's last slot gets all that
 //! remains, as the whole-census fallback at publication does.
-//! A step that is not sliced (the route quotes, the consumer-market refresh's first and last
-//! phases and its index build and copies, setup's two joins, the input-source reset, repair,
-//! business seeding, propagation) runs whole in the slot it starts in. A restart repeats the
-//! work done so far.
+//! A step that is not sliced (the starts of the route quotes and the input-source reset and
+//! the reset's supplier index entries, the consumer-market refresh's first phase and its
+//! finish's decision and end, setup's two joins, repair, business seeding's start, its
+//! layout's start, index entries and account availability, propagation) runs whole in the
+//! slot it starts in. A restart repeats the work done so far.
 
 use super::{CensusInputs, CensusProgress, FILL_SLOTS, JobFunding, StepWork};
 use crate::simulation::buildings::allocator::BuildingAllocator;

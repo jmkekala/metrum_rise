@@ -8,7 +8,7 @@ mod buyers;
 mod repricing;
 mod revalidation;
 mod routing;
-pub(crate) use routing::{BusinessMarket, PreparedBusinessSite};
+pub(crate) use routing::{BusinessMarket, PreparedBusinessSite, SeedingLayout};
 
 #[derive(Clone, Copy, Debug)]
 struct Account {
@@ -137,7 +137,10 @@ impl BusinessBudgets {
         self.finance_staged.resize(buyers, false);
         self.finance_staged.fill(false);
         self.committed.clear();
-        self.committed.reserve(2 * (input_ports + output_ports));
+        crate::utils::storage::reserve_cleared(
+            &mut self.committed,
+            2 * (input_ports + output_ports),
+        );
         self.owners.resize(sellers, usize::MAX);
         self.owners.fill(usize::MAX);
         self.free_receipt = usize::MAX;

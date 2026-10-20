@@ -16,9 +16,10 @@ permits on the published census; demand planning one zone type a slot) are done.
 `SIM-02-J` (request queues) is done: freight requests (part 1); the housing, restock, visit and
 job queues (part 2); the level-change, building-removal, departure and admission queues (part
 3). `SIM-02-K` is in progress: parts 1 (legacy hour and day paths deleted) and 2 (render
-snapshot) are done, and part 3's first commit (frame spikes: cells at load, entrance
-cache, first-frame pathing, timing-run checks), second commit (census slices in work units) and
-third commit (clearance patches and census refresh slices) are done. See the
+snapshot) are done, and part 3 (frame spikes) is done in four commits: the first (cells at
+load, entrance cache, first-frame pathing, timing-run checks), the second (census slices in
+work units), the third (clearance patches and census refresh slices) and the fourth (the
+census's whole steps in slices). See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -684,16 +685,28 @@ about 90 MB of lanes at 100k after every road edit.
   previous census's work per step less this census's, summed, or, if more, the rows left at
   their weights with a sweep in progress at its observed rate; D = max(S − 96, S / 4, 1), S the window
   slots left. The census so plans to finish 96 slots before the window ends; from S = 128 on,
-  work it did not plan for spreads over the slots left. Slot 959 takes the rest. The other
-  consumer-market refresh runs as eight steps (its start; the household budgets, sliced and
+  work it did not plan for spreads over the slots left. Slot 959 takes the rest. The
+  consumer-market refresh runs as eleven (its start; the household budgets, sliced and
   serial, with the walk's running treasury carried; the access rows, sliced; after a membership
-  change the index entries, sliced, the index build, its copies to the other categories and the
-  reservation positions, sliced; its finish) and setup as four (the port counts and the supplier
-  order sliced, the import plans' layout and the end whole). A census restarted inside the
-  refresh leaves the customer book torn, and the restarted refresh withdraws it first, as a load
-  does. The remaining whole steps (route quotes, the refresh's start, index build, copies and
-  finish, setup's layout and end, the input-source reset, repair, business seeding,
-  propagation) start only in a slot that has run no other step. Frontage prices publish when a census starts. A
+  change the index entries, sliced, each mode's index build and each copy to another category,
+  one at least a slice, and the reservation positions, sliced; the finish's decision, and for a
+  book not retained the claims' accounts in household ranges and each index's availability, one
+  at least a slice; its end) and setup as four (the port counts and the supplier order sliced,
+  the import plans' layout and the end whole). Route quotes run as four steps (their start with
+  the route cache's storage; after a routing or border change the border sweeps; when the quote
+  inputs changed the door access and the quotes, in building ranges, named current only once
+  every row is written). Each closure pass's input-source reset runs as five (its start; after
+  a geometry change the supplier layout in source ranges, the index entries sorted into one run
+  per resource, and the index one resource at least a slice; the rates and availability in
+  source ranges), and business seeding as eight (its start; the buyers in ranges, serial; the
+  book's layout start; after a layout change the buyers' access and recipe ports in ranges, the
+  index entries and the indices one resource at least a slice; the accounts' availability). A
+  census restarted inside the refresh leaves the customer book torn, and the restarted refresh
+  withdraws it first, as a load does; one restarted inside the quotes, the supplier index or
+  the business layout redoes them, since none is named current part way. The remaining whole
+  steps (repair, propagation, and the starts and ends the sliced steps run whole: the setup's
+  layout and end, the supplier index entries, the business layout's start, entries and
+  accounts) start only in a slot that has run no other step. Frontage prices publish when a census starts. A
   change of the network revisions (CCH build and metric, lanes, frontage) or of the building
   or household structure revisions restarts the census, even after it finished early; appends
   and in-place changes do not. A fiscal or service funding change also restarts it, after
@@ -849,19 +862,31 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    (see [Decided while unattended](#decided-while-unattended)); site queries that skip distant
    sites, with one gather per vehicle; parallel pose and bucketing. Planned saving about 5.5 ms
    at 1× and 6.5 ms at 32× at 100k; the 100k snapshot mean fell 5.9 ms at 1× and 7.8 ms at 32×.
-3. **K3, frame spikes** (three commits done 2026-10-20). Done: (a) generated cells built during
+3. **K3, frame spikes** (done 2026-10-20, four commits). Done: (a) generated cells built during
    loading instead of by the first lot regions served (25–134 ms a region at 100k, all day), the
    entrance part of (c) (a removal keeps a clean entrance cache in step), (d) the route scratch
    and flow fields built at load, (e) test-build checks out of timing runs, (b) for the sliced
    census steps, budgeted in work units (results section, part 3, second commit), the clearance
    site publication (one terrain box per site change, refreshing only the patches the changes
    touch), the consumer-market refresh and setup sliced, the slot plan taken per step, and the
-   first census after loading (results section, part 3, third commit). Left: the census's route
-   quotes (about 10 ms at 100k after a frontage price change), business seeding, the input-source
-   reset, repair, the refresh's remaining whole phases (finish, index build, copies; 1.2–2.7 ms),
-   and (d)'s first trip events. The zone-index part of (c) stays as a decision. Every worst
-   `PERF-07` frame of the K2 build was attributed to its systems first (table in the results
-   section).
+   first census after loading (results section, part 3, third commit), and the route quotes,
+   business seeding and its layout, the input-source reset, the refresh's finish, index build
+   and copies, and cleared storage growth (results section, part 3, fourth commit). The
+   zone-index part of (c) stays as a decision. Every worst `PERF-07` frame of the K2 build was
+   attributed to its systems first (table in the results section).
+
+   Left, carried as findings in [Decided while unattended](#decided-while-unattended):
+   - repair's preparation (2.2 ms at 100k);
+   - setup's import-plan layout (1.7 ms);
+   - each customer index mode's build (1.35 ms);
+   - business seeding's start (1.4 ms);
+   - the first census after loading (its refresh start 1.8 ms, the route cache's first growth
+     2.1 ms, the staffing catch-up);
+   - the census window's first slot outside the steps (0.3–1.8 ms);
+   - (d)'s first trip events.
+
+   K3 closes with these left; `SIM-02-K` part 7 (acceptance) revisits them if they stand between
+   a tier and the 8 ms limit.
 4. **K4, agent tick.** Lane buckets kept across appends and swap-removes instead of rebuilt each
    tick, filled in parallel; the unused per-edge `current_congestion` write removed; indoor agents
    off the per-frame movement pass (departures planned at their slot); movement shards balanced;
@@ -2153,6 +2178,135 @@ on a fresh `$ARTIFACTS` directory.
   `asset_document.rs` remain); rustfmt adds nothing in the touched lines. The site publication feeds the terrain payloads the
   bridge reads, so the isolated `./run.sh --test` ran: 2,538 debug library tests, the 4 growth
   tests and every bridge, asset and shader test pass, with no script errors.
+
+#### `SIM-02-K`, part 3 — the census's whole steps in slices (2026-10-20, fourth commit)
+
+- **What changed.** Every census step that ran whole and cost over 1.5 ms at 100k in the third
+  commit, except repair, is split into phases that keep their order and results, with what the
+  earlier phases pass on carried in the census progress ([Pure jobs](#pure-jobs)):
+  - **Route quotes.** The start (the route cache's revisions and storage), the border sweeps,
+    the door access and the quotes (`ShipmentSystem::begin_border_carrier_quotes`,
+    `sweep_carrier_borders`, `prepare_border_carrier_access`, `write_border_carrier_quotes_in`).
+    Each building's access and quote depend on its own entrance and the prepared border
+    minimum alone, so ranges give the whole call's rows. The census names its quotes current
+    (`quote_revision`) only after the last range. The route cache's new and cleared tables are
+    filled in parallel (`resize_in_parallel`, `clear`), so a first growth's page faults spread
+    over the workers.
+  - **Consumer-market refresh.** The index build one mode a slice and the copies one category
+    a slice; the finish as its decision, the claims' accounts in household ranges, each of the
+    2 × K indices' availability and its end (`begin_refresh_finish`, `reset_refresh_claims`,
+    `reset_refresh_availability`, `end_refresh`). A retained book skips to the end.
+  - **Input-source reset** (`RecurringSupply::begin_reset`, `reset_layout`, `reset_entries`,
+    `build_reset_index`, `reset_rates`). The supplier index's entries are sorted once and split
+    into one run per resource; each resource's index is built from its own sorted run, which is
+    the index `from_entries` gives for that resource's entries in any order (sorted output is
+    unique). The book names no layout from the start of a rebuild until its last resource is
+    built, so a reset begun again after a restart rebuilds it. The rates and availability run
+    in source ranges: a source's rate and its availability toggle depend on that source alone,
+    and the toggles keep source order.
+  - **Business seeding.** The start (`begin_business_seeding`, the accounts' reset), the buyers
+    in ranges (`seed_business_rows`, serial in buyer order, the source receipts linking buyers
+    in the same order) and the book's layout (`BusinessMarket::begin_layout`, `layout_access`,
+    `layout_ports`, `collect_layout_entries`, `build_layout_indices`, `finish_layout`). The
+    layout was rebuilt by most censuses, since appended buildings change the buyer profiles.
+    A rebuild clears the layout's name at its start and writes it last, so propagation after a
+    restart sees no layout and lays one out itself, as before.
+  - **Cleared storage grows without copying** (`utils::storage::reserve_cleared`). The census
+    storage and the live books swap at publication, and planning reserves the live input book's
+    receipt arena at about 1.4 million receipts at 100k, so a cleared arena, withdrawal list or
+    consumer receipt book often needs more capacity than it holds. `Vec::reserve` then
+    reallocated and copied the whole old allocation although no row survived (the consumer
+    receipt book's reserve at the refresh's end took 1.8 ms at 100k, from 363,540 to 727,080
+    receipts' capacity with none kept). An empty vector now takes fresh storage of the
+    capacity `reserve` would give.
+  - **Planning.** `CensusProgress::remaining_work` no longer claims to bound the work left: it
+    counts steps the census may skip once it reaches them, and later sweeps' searches it does
+    not count. The driver takes the larger of it and the previous census's work per step, so
+    either error moves work between slots, never a result.
+- **Census cost per slot** (`perf07_census_slot_costs`, two consecutive windows of the prepared
+  `PERF-07` city, `RAYON_NUM_THREADS=8`, pinned; window 0 is the first after loading;
+  diagnostic timing). Before is the third commit's binary, run in the same session:
+
+  | Tier | Window | Total ms | Max slot ms | Slots > 1 ms | Last slot with work |
+  | --- | --- | --- | --- | --- | --- |
+  | 100k | 0 | 137.9 → 137.7 | 12.7 → 3.9 | 27 → 31 | 938 → 935 |
+  | 100k | 1 | 90.9 → 88.0 | 5.4 → 2.2 | 9 → 9 | 749 → 760 |
+  | 30k | 0 | 33.4 → 30.4 | 4.9 → 1.6 | 3 → 1 | 935 → 931 |
+  | 30k | 1 | 19.1 → 18.7 | 2.7 → 0.6 | 2 → 0 | 741 → 753 |
+
+  The slowest slot of each step at 100k, window 0 / window 1, before → after ("—" not among
+  the window's 12 slowest slots, which end at 1.31 and 0.87 ms after the change; "under 1.3"
+  a slot below the window 0 cut-off):
+
+  | Step | Before ms | After ms |
+  | --- | --- | --- |
+  | route quotes | 10.9 / 1.3 | 2.1 / 0.8 (the start; the sweeps, access and quotes —) |
+  | business seeding | 5.3 / 5.4 | under 1.3 / 1.4 (the start); accounts 1.0, layout indices 0.9 |
+  | input-source reset | 3.3 / 4.1 | under 1.3 / 1.0 (the index entries); rates 0.8 |
+  | refresh finish | 1.6 / 2.5 | 0.4 / 0.3 (the end / the availability) |
+  | refresh index build | 1.5 / 1.8 | 1.35 / 1.34 (one mode) |
+  | refresh copies | — / 1.2 | — / — |
+  | repair (unsliced) | 1.7 / 3.9 | under 1.3 / 2.2 |
+
+  At 30k every census slot is under 1 ms except the window's first in window 0 (1.6 ms: the
+  route quotes' start 0.9 ms after loading, and the census start outside the steps).
+  More slots exceed 1 ms in 100k window 0 (31 against 27): the staffing catch-up at slots
+  910–930 (1.3–1.8 ms, unchanged; that census's `current_staff` does 68 ms against the
+  previous census's 37) now holds most of them.
+- **What is left above 1 ms at 100k** (findings and options in
+  [Decided while unattended](#decided-while-unattended)): repair 2.2 ms in window 1, mostly
+  its storage preparation; setup's import-plan layout 1.7; each customer index mode's build
+  1.35; business seeding's start 1.4 (the accounts' reset); the refresh's start 1.8 in window 0
+  only; the route cache's first growth after loading 2.1 in window 0 only; window 0's staffing
+  catch-up; and the window's first slot also spends 0.3–1.8 ms outside the census steps (the
+  census start's frontage price publication and input-copy swap, not attributed further).
+- **Equivalence.** A census restarted after any slice of 1 work unit equals one run bit for bit,
+  with an unchanged income (the reference retains its book), a changed one and now on a cold
+  book, where the census rewrites its route quotes, builds its supplier index and lays out its
+  business book; the test checks that restarts land inside the route access and quotes, the
+  customer index build and availability reset, the supplier layout, index and rates, the
+  buyer seeding and the business layout's access, ports and indices
+  (`a_census_restarted_after_any_slice_equals_one_run_bit_for_bit`). The existing slice,
+  restart, window and save/load tests pass.
+- **Envelope and determinism** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass after each change;
+  the envelope is bit-identical to the third commit's, and repeat, 1 and 3 workers and
+  save/reload are identical.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the third commit's build
+  as control: hour means 2.55–2.58, 7.75–8.23, 10.41–10.64 and 31.20–31.83 ms (control 2.53–2.61,
+  7.63–7.87, 10.62–10.63 and 31.55–31.62); the same six work-count limits fail. The 30k census's
+  day total rose about 4% (589–592 against 564–572 ms, 8,674 calls against 8,420): the extra
+  slice starts of the newly sliced steps. Its worst slot fell, which is what this commit is for.
+- **`PERF-07`**: `tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline`, `RAYON_NUM_THREADS=8`), full day, in one
+  session with the third commit as the control; the save format is unchanged, so this build ran
+  on the cities the control prepared. Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 9.4 (8.9) | 1.21 (1.25) | 1.44 (1.49) | 0.54 (0.54) | 2 (1) | 0 (0) |
+  | 10k | 32× | 10.0 (10.7) | 2.16 (2.29) | 4.78 (5.22) | 1.02 (1.05) | 2 (2) | 0 (0) |
+  | 30k | 1× | 20.3 (20.1) | 2.25 (2.28) | 3.38 (3.41) | 1.29 (1.30) | 4 (4) | 1 (2) |
+  | 30k | 32× | 23.6 (23.9) | 7.22 (7.57) | 22.97 (22.01) | 3.28 (3.35) | 22 (24) | 3 (3) |
+  | 100k | 1× | 57.2 (57.3) | 8.21 (8.30) | 16.19 (16.32) | 6.06 (6.09) | 1,215 (1,402) | 73 (75) |
+  | 100k | 32× | 81.3 (83.9) | 33.25 (33.25) | 58.74 (63.49) | 16.85 (16.94) | 2,700 (2,700) | 1,005 (1,018) |
+
+  Every gate limit passes for both builds. At 100k 1× frames over 8 ms fall from 1,402 to
+  1,215; at 100k 32× the p99.9 falls from 63.5 to 58.7 ms and frames over 16.7 ms from 1,018 to
+  1,005. No census-window frame is among either build's 12 slowest at 100k; those are the
+  hour's planning slots (`K5`: minutes 60 and 120, the maxima at every tier), the day's first
+  frame and other hourly frames at 32×, and the 1× frames at minutes 300–312, 787 and 1260
+  (not census work). The 10k 1× maximum (9.4 against 8.9 ms) is the same 01:00 planning frame
+  in both builds, within the run-to-run variation the gate allows. Load time is unchanged
+  (100k 18.5 s).
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1;
+  the `PERF-07` control is the third commit's gate binary.
+- **Tests:** 2,538 release and 2,538 debug library tests and the 4 growth integration tests pass
+  after each change; clippy adds nothing after the second change (the first left three
+  dead-code warnings on the whole-call forms only tests now use, which the second marks test
+  only; the 59 warnings in `agents/data.rs` and `asset_document.rs` remain); rustfmt adds
+  nothing in the touched lines. The change does not touch the Godot bridge.
 
 ### Phase inventory
 
@@ -3522,6 +3676,64 @@ alternatives and the evidence. The user reviews these on return.
   availability a slot); the refresh's index build 1.8–1.9 ms and copies 1.2–1.3 ms (one mode or
   one category a slot would halve them); setup's import-plan layout 0.9–1.7 ms. For the refresh
   and setup this supersedes "the unsliced census steps stay whole for now (findings)" above.
+- **`SIM-02-K` part 3 — route quotes in phases, named current at the end.** Alternatives: one
+  border sweep a slot with the rest whole (the door projections and quotes cost 3–4 ms after a
+  routing change at 100k); keep the quotes' revision through a rewrite and record a dirty
+  range (more state for the same restart). Chosen: four steps, the quote revision cleared when
+  a rewrite starts and set after its last range, so a restarted census rewrites every row.
+  The border sweeps count work only for borders actually swept, so a warm cache's census does
+  not plan for sweeps it never makes.
+- **`SIM-02-K` part 3 — the supplier and business indices one resource a slice.**
+  Alternatives: incremental insertion into the bucket indices for appended buildings (the
+  reservation positions of every later item move, so it is a rebuild in disguise); one slice
+  for the whole build (1–3 ms at 100k). Chosen: entries collected and sorted once, each
+  resource's index built from its own sorted run in a later slice; a resource's index is a
+  function of its entries alone.
+- **`SIM-02-K` part 3 — a torn supplier or business layout is unnamed, not rolled back.** As
+  for the customer book (third commit): the layout's revision is cleared when a rebuild starts
+  and written when it ends, so any restart rebuilds it; no journal, no double buffer.
+- **`SIM-02-K` part 3 — cleared storage takes fresh allocations.** Alternatives: keep each
+  book's capacity stable across the publication swap (swap contents, not storage: a full copy
+  every hour); shrink the live book's planning reserve (planning's own bound). Chosen: an empty
+  vector that must grow takes a new allocation of the capacity `reserve` would give, so
+  capacities, and every path that reads them, stay as before; nothing is copied for rows that
+  no longer exist.
+- **`SIM-02-K` part 3 — route cache tables filled in parallel.** The census's route cache is
+  empty after loading and its first growth (door access and pair tables, about 18 MB at
+  100k) and every routing change's clear filled them on one thread (5 ms of the route
+  quotes' start in window 0). Alternatives: an epoch tag on each door projection so a clear
+  needs no fill (changes the cache's validity rules, shared with dispatch); slicing the fills
+  (a half-filled table is read by nothing, but the clear's callers are not all the census).
+  Chosen: the same rows written in parallel; the start's first growth after loading fell to
+  2.1 ms, and a clear in dispatch is faster too.
+- **`SIM-02-K` part 3 — a slice still gets the slot's whole budget.** Each step called in a slot
+  receives the slot's budget, not what is left of it (since part 3's second commit), so a slot
+  can do up to about two budgets (about 0.6 ms at 100k). Kept: it bounds the slot well under
+  the remaining whole steps, and changing it moves the census's finishing slot.
+- **`SIM-02-K` part 3 — `PERF-07` on shared cities.** The save format is unchanged, so this
+  commit's build ran on the cities its control prepared, in the same session; the comparison
+  is then on identical cities and saves the build's own preparation.
+- **`SIM-02-K` part 3 — repair stays whole (findings).** This supersedes "the remaining whole
+  census steps (findings)" above for every step but repair. At 100k repair costs 1.7–2.2 ms in
+  window 1 after the storage change (3.9 before). A timing build put the requote loop at
+  0.2–0.6 ms; the rest is its preparation, `RecurringSupply::prepare_owners`: the receipt
+  arena's and withdrawal list's reserve (1–2.1 ms) and the revalidation journal's storage
+  (0.5 ms), sized to the arena's capacity, which alternates between the census's and the live
+  book's (about 63,000 and 1.4 million receipts at 100k). Options: size the revalidation
+  journal to the receipts the repair can touch rather than the arena's capacity; keep the
+  census storage's capacity apart from planning's reserve; then, if the loop still exceeds
+  1 ms, an ordered resumable requote whose journal survives between slots and is discarded at
+  a restart (`begin_reset` would abort an active revalidation).
+- **`SIM-02-K` part 3 — the other slots still above 1 ms (findings).** At 100k: each customer
+  index mode's build 1.3 ms (about 0.3 ms of it the parallel sort; splitting sort and bucket
+  build into two slices would leave about 1 ms); setup's import-plan layout 1.4–1.7 ms
+  (`import_plans.prepare`, not sliced); business seeding's start 1.0–1.4 ms (the accounts'
+  reset: fills of buyer-sized rows); the refresh's start 1.8 ms in window 0 only (the
+  household budgets' start and the query scratch on the census's first use after loading);
+  the route cache's first growth after loading 2.1 ms in window 0 only; window 0's staffing
+  catch-up (1.3–1.8 ms at slots 910–930; its census did 68 ms of current-staff work against
+  the previous census's 37, more than its own step's plan); and 0.3–1.8 ms of the window's
+  first slot outside the steps (frontage price publication and the input copy's swap).
 
 ### Corrections to part 2's statements (merge with the entries above)
 

@@ -656,146 +656,149 @@ impl JobFunding {
 
     /// Provisional operations may depend on one another. Only this complete-set check can
     /// publish them: each business purchase has one staffed buyer and one financing account.
-    /// The census runs it as steps (`SIM-02-I`): this seeding of every buyer's accounts,
-    /// [`Self::claim_business_customers`] over every seller in order (a storage shortfall
-    /// grows the arena between attempts and seeds again; warm passes need no retry), then
-    /// [`Self::prove_business_customers`] over every building and
-    /// [`Self::publish_business_financing`]. Returns false, a failed proof, when the input
-    /// book has no freight components. O(buyers + input tranches).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn seed_business_accounts(
+    /// The census runs it as steps (`SIM-02-I`): this start of the seeding of every buyer's
+    /// accounts, [`Self::seed_business_rows`] over every building range in order and the
+    /// business book's layout phases (`SIM-02-K`), [`Self::claim_business_customers`] over
+    /// every seller in order (a storage shortfall grows the arena between attempts and seeds
+    /// again; warm passes need no retry), then [`Self::prove_business_customers`] over every
+    /// building and [`Self::publish_business_financing`]. Returns false, a failed proof, when
+    /// the input book has no freight components. O(B) fills.
+    pub(super) fn begin_business_seeding(
         &mut self,
         allocator: &BuildingAllocator,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
+        inputs: usize,
+    ) -> bool {
+        if self.input_supply.freight_components().is_none() {
+            return false;
+        }
+        // Financial limits can split a buyer among more sellers than the initial linear
+        // preparation estimate; see the retry above.
+        let input_slots = self.input_supply.input_tranche_capacity(inputs);
+        self.business.begin_seeding(
+            allocator.buildings.len(),
+            input_slots,
+            self.customer_units.len(),
+        );
+        true
+    }
+
+    /// Seeds the accounts of buyers `rows`, the seeding's next ones, in buyer order
+    /// (`SIM-02-K`). O(rows + their input tranches), serial.
+    pub(super) fn seed_business_rows(
+        &mut self,
+        allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
         fiscal: &CityFiscalPolicy,
         minute: u16,
-        inputs: usize,
-    ) -> bool {
-        let Some(components) = self.input_supply.freight_components() else {
-            return false;
-        };
-        let input_slots = self.input_supply.input_tranche_capacity(inputs);
+        rows: std::ops::Range<usize>,
+    ) {
         let supplies = &self.input_supply;
         let capacities = &self.capacities;
         let activities = &self.activities;
         let headroom = &self.headroom;
         let carriers = &self.carrier_quotes;
+        let service_flags = &self.service_flags;
         let utilities = local_utility_service_costs(catalog)
             .map(|price| price * tuning.owa_import_price_multiplier);
-        // Financial limits can split a buyer among more sellers than the initial linear
-        // preparation estimate; see the retry above.
-        self.business.reset(
-            allocator,
-            network,
-            graph,
-            components,
-            catalog,
-            input_slots,
-            self.customer_units.len(),
-            |book| {
-                // Source receipts link distinct buyers, so their ordered seeding is dependent.
-                for (index, building) in allocator.buildings.iter().enumerate() {
-                    if capacities[index] == 0 || !live(building) {
-                        continue;
-                    }
-                    let Some(profile) =
-                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    else {
-                        continue;
+        let book = self.business.seeding_book();
+        // Source receipts link distinct buyers, so their ordered seeding is dependent.
+        for (index, building) in allocator.buildings[rows.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, building)| (rows.start + offset, building))
+        {
+            if capacities[index] == 0 || !live(building) {
+                continue;
+            }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            let service = service_flags[index];
+            book.set_finance(
+                index,
+                if service {
+                    [f64::INFINITY; 2]
+                } else {
+                    headroom[index]
+                },
+            );
+            if building.worker_count == 0 {
+                continue;
+            }
+            let physical = physical_worker_capacity_for_profile(building, profile).max(1);
+            let activity = if service {
+                capacities[index] as f32 / physical as f32
+            } else {
+                activities[index]
+            };
+            if activity <= 0.0 {
+                continue;
+            }
+            let staffed = (building.worker_count as f32 / physical as f32).min(activity) / activity;
+            let multiplier = freight_goods_multiplier(profile, building.zone_type, tuning, minute);
+            let outside = carriers[index].filter(|_| multiplier.is_finite());
+            let prices = operation_prices(building, outside, multiplier, utilities, tuning, fiscal);
+            OperatingCosts::for_plan_with_input_quotes(
+                profile,
+                OperationPlan {
+                    workers: capacities[index],
+                    activity,
+                    area: output_area_scale_for_building(building, profile),
+                },
+                prices,
+                |_, _| 0.0,
+                |input| {
+                    let imported = super::super::logistics::imported_input_unit_price(
+                        catalog,
+                        tuning,
+                        input.resource,
+                        multiplier,
+                    );
+                    let mut supplied = 0.0;
+                    let staffed_input = super::super::operation::InputRequirement {
+                        daily_units: input.daily_units * staffed,
+                        ..input
                     };
-                    let service = self.service_flags[index];
-                    book.set_finance(
+                    let complete = supplies.visit_input_sources(
                         index,
-                        if service {
-                            [f64::INFINITY; 2]
-                        } else {
-                            headroom[index]
-                        },
-                    );
-                    if building.worker_count == 0 {
-                        continue;
-                    }
-                    let physical = physical_worker_capacity_for_profile(building, profile).max(1);
-                    let activity = if service {
-                        capacities[index] as f32 / physical as f32
-                    } else {
-                        activities[index]
-                    };
-                    if activity <= 0.0 {
-                        continue;
-                    }
-                    let staffed =
-                        (building.worker_count as f32 / physical as f32).min(activity) / activity;
-                    let multiplier =
-                        freight_goods_multiplier(profile, building.zone_type, tuning, minute);
-                    let outside = carriers[index].filter(|_| multiplier.is_finite());
-                    let prices =
-                        operation_prices(building, outside, multiplier, utilities, tuning, fiscal);
-                    OperatingCosts::for_plan_with_input_quotes(
-                        profile,
-                        OperationPlan {
-                            workers: capacities[index],
-                            activity,
-                            area: output_area_scale_for_building(building, profile),
-                        },
-                        prices,
-                        |_, _| 0.0,
-                        |input| {
-                            let imported = super::super::logistics::imported_input_unit_price(
-                                catalog,
-                                tuning,
-                                input.resource,
-                                multiplier,
-                            );
-                            let mut supplied = 0.0;
-                            let staffed_input = super::super::operation::InputRequirement {
-                                daily_units: input.daily_units * staffed,
-                                ..input
-                            };
-                            let complete = supplies.visit_input_sources(
+                        staffed_input,
+                        imported,
+                        outside,
+                        |source, units, goods, carrier| {
+                            supplied += units;
+                            if let Some(slot) = book.push_input(
                                 index,
-                                staffed_input,
-                                imported,
-                                outside,
-                                |source, units, goods, carrier| {
-                                    supplied += units;
-                                    if let Some(slot) = book.push_input(
-                                        index,
-                                        input,
-                                        goods,
-                                        carrier,
-                                        building.inventory_units(input.resource),
-                                        units,
-                                        multiplier,
-                                    ) && let Some(source) = source
-                                    {
-                                        book.seed_for(source, slot);
-                                    }
-                                },
-                            );
-                            // A funded public invoice can seek a first local supplier without
-                            // currently receiving its input. Private accounts never get this seed.
-                            if service && !complete {
-                                book.push_input(
-                                    index,
-                                    input,
-                                    imported,
-                                    0.0,
-                                    building.inventory_units(input.resource),
-                                    f64::from(staffed_input.daily_units) - supplied,
-                                    multiplier,
-                                );
+                                input,
+                                goods,
+                                carrier,
+                                building.inventory_units(input.resource),
+                                units,
+                                multiplier,
+                            ) && let Some(source) = source
+                            {
+                                book.seed_for(source, slot);
                             }
-                            Default::default()
                         },
                     );
-                }
-            },
-        );
-        true
+                    // A funded public invoice can seek a first local supplier without
+                    // currently receiving its input. Private accounts never get this seed.
+                    if service && !complete {
+                        book.push_input(
+                            index,
+                            input,
+                            imported,
+                            0.0,
+                            building.inventory_units(input.resource),
+                            f64::from(staffed_input.daily_units) - supplied,
+                            multiplier,
+                        );
+                    }
+                    Default::default()
+                },
+            );
+        }
     }
 
     /// Claims the customers of sellers `rows`, in building order after the seeding. A storage

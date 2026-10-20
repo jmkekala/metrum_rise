@@ -132,6 +132,14 @@ pub(crate) struct JobFunding {
     household_detail: [f64; 3],
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Where each restart of [`JobFunding::refresh_in_slices_for_test`] on this thread left
+    /// its census: the next step's name and its rows done.
+    pub(crate) static RESTARTED_AT: std::cell::RefCell<Vec<(&'static str, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl JobFunding {
     /// Reports exact cross-census import plan hits in the latest refresh.
     #[cfg(test)]
@@ -204,7 +212,7 @@ impl JobFunding {
     /// [`Self::refresh`] run in slices of `budget` work units, as the slots run it (`SIM-02-I`,
     /// `SIM-02-K`); after
     /// `restart_after` slices it starts again from its first step, as a network or structural
-    /// change makes it. Returns the slices run.
+    /// change makes it, and records where in [`RESTARTED_AT`]. Returns the slices run.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh_in_slices_for_test(
@@ -247,6 +255,7 @@ impl JobFunding {
                 return slices;
             }
             if restart_after == Some(slices) {
+                RESTARTED_AT.with_borrow_mut(|at| at.push(progress.position_for_test()));
                 progress = steps::CensusProgress::default();
             }
         }

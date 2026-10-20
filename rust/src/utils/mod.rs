@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Planar geometry shared by simulation and rendering.
+//! Planar geometry shared by simulation and rendering, and storage helpers ([`storage`]).
 
 use godot::prelude::Vector2;
+
+pub(crate) mod storage;
 
 /// Tests ray-crossing parity for a nonempty polygon, without a boundary tolerance halo.
 /// Near-horizontal crossings retain the production-area predicate's epsilon exclusion.

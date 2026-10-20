@@ -251,15 +251,37 @@ impl ConsumerBudgets {
         unchanged
     }
 
+    #[cfg(test)]
     fn reset_claims(&mut self) {
+        self.begin_reset_claims();
+        self.reset_claim_funds(0..self.households.len());
+    }
+
+    // The claims' reset without the accounts (`SIM-02-K`): the account rows' length and the
+    // receipt books. Then `reset_claim_funds` over every household range. O(owners).
+    fn begin_reset_claims(&mut self) {
         debug_assert!(!self.revalidation.is_active());
         let count = self.categories.len();
         self.funds
             .resize(self.households.len() * count, Funds::default());
+        self.staged.clear();
+        self.staged.reserve(self.funds.len());
+        self.staged_slots.resize(self.funds.len(), usize::MAX);
+        self.staged_slots.fill(usize::MAX);
+        self.committed.clear();
+        self.owners.fill(usize::MAX);
+        self.free_receipt = usize::MAX;
+        self.releasing_owner = None;
+    }
+
+    // Returns the accounts of households `range` to their prepared budgets. O(range × K) in
+    // parallel.
+    fn reset_claim_funds(&mut self, range: std::ops::Range<usize>) {
+        let count = self.categories.len();
         if count > 0 {
-            self.funds
+            self.funds[range.start * count..range.end * count]
                 .par_chunks_mut(count)
-                .zip(&self.households)
+                .zip(&self.households[range])
                 .for_each(|(accounts, &(members, spending))| {
                     let mut remainder = spending;
                     for (index, (account, category)) in
@@ -283,14 +305,6 @@ impl ConsumerBudgets {
                     }
                 });
         }
-        self.staged.clear();
-        self.staged.reserve(self.funds.len());
-        self.staged_slots.resize(self.funds.len(), usize::MAX);
-        self.staged_slots.fill(usize::MAX);
-        self.committed.clear();
-        self.owners.fill(usize::MAX);
-        self.free_receipt = usize::MAX;
-        self.releasing_owner = None;
     }
 
     fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
@@ -303,8 +317,10 @@ impl ConsumerBudgets {
             self.committed.shrink_to_fit();
             return;
         }
-        self.committed
-            .reserve(2 * (self.funds.len() + output_ports));
+        crate::utils::storage::reserve_cleared(
+            &mut self.committed,
+            2 * (self.funds.len() + output_ports),
+        );
     }
 
     // Test forks of the live book; planning lends it instead.

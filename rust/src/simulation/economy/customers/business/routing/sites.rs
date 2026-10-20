@@ -258,6 +258,13 @@ impl BusinessMarket {
     /// Rebuilds the live-port or proposed-site resource/component/chunk indices, each only
     /// when its own geometry changes. O(ports log ports) over the selected port range.
     pub(super) fn rebuild_indices(&mut self, resources: usize, sites: bool) {
+        self.collect_index_entries(resources, sites);
+        self.build_index_resources(0..resources, sites);
+    }
+
+    /// [`Self::rebuild_indices`]'s first phase (`SIM-02-K`): each resource's bucket entries of
+    /// the selected ports, into storage kept between rebuilds. O(ports), serial.
+    pub(super) fn collect_index_entries(&mut self, resources: usize, sites: bool) {
         #[cfg(test)]
         {
             self.index_builds += 1;
@@ -267,12 +274,12 @@ impl BusinessMarket {
         } else {
             0..self.indices.live_ports
         };
-        let mut entries: Vec<Vec<ReachableBucketEntry>> =
-            (0..resources).map(|_| Vec::new()).collect();
+        self.index_entries.resize_with(resources, Vec::new);
+        self.index_entries.iter_mut().for_each(Vec::clear);
         for port in ports {
             let access = self.port_access[port];
             access.components.append_bucket_entries(
-                &mut entries[self.identities[port].1 as usize],
+                &mut self.index_entries[self.identities[port].1 as usize],
                 access.chunk,
                 port,
             );
@@ -283,11 +290,21 @@ impl BusinessMarket {
             &mut self.indices.live
         };
         indices.resize_with(resources, Default::default);
-        indices
+    }
+
+    /// Builds the indices of resources `range` from the collected entries, in parallel
+    /// (`SIM-02-K`). O(entries log entries) for those resources.
+    pub(super) fn build_index_resources(&mut self, range: std::ops::Range<usize>, sites: bool) {
+        let indices = if sites {
+            &mut self.indices.sites
+        } else {
+            &mut self.indices.live
+        };
+        indices[range.clone()]
             .par_iter_mut()
-            .zip(entries)
+            .zip(&mut self.index_entries[range])
             .for_each(|(index, entries)| {
-                *index = ReachableBucketIndex::from_entries(entries);
+                *index = ReachableBucketIndex::from_entries(std::mem::take(entries));
                 index.enable_reservations();
             });
     }

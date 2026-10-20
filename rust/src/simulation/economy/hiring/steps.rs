@@ -8,19 +8,26 @@
 //! and a slice of a loop processes the same rows in the same order as the whole loop, so a
 //! census stepped over any slices equals one run at once bit for bit.
 //!
-//! **Steps**, in order: route quotes and paid freight; the production market (its 256-building
-//! chunks sliced); the consumer-market refresh (its start; the household budgets, sliced and
-//! serial; the access rows, sliced; after a membership change the index entries, sliced, the
-//! index build and copies and the reservation positions, sliced; its finish, which resets the
-//! claims of a book not retained); setup (port offsets and counts, sliced; the import plans'
-//! layout; the supplier order and provisional shares, sliced; the household-quote preparation);
-//! the initial ceilings (sliced). Then each closure
-//! pass: import funding (sliced, parallel); household claims (sliced, serial); the input-source
-//! reset; household production (sliced); the current-staff and expansion staffing sweeps
-//! (sliced, serial in supplier order); finishing the pass's household quotes; publishing funded
-//! activity and household production (both sliced); the provisional-input repair; business
-//! validation (seeding the accounts, the claims sliced by seller, the proof sliced, publishing
-//! the financing); and settling, or propagating impossible customers into the next pass.
+//! **Steps**, in order: route quotes (their start with the border sweeps; when the quote
+//! inputs changed, the door access and the quotes, both sliced) and paid freight; the
+//! production market (its 256-building chunks sliced); the consumer-market refresh (its start;
+//! the household budgets, sliced and serial; the access rows, sliced; after a membership change
+//! the index entries, sliced, the index build one mode and the copies one category at least a
+//! slice, and the reservation positions, sliced; its finish, which resets the claims of a book
+//! not retained); setup (port offsets and counts, sliced; the import plans' layout; the
+//! supplier order and provisional shares, sliced; the household-quote preparation); the
+//! initial ceilings (sliced). Then each closure pass: import funding (sliced, parallel);
+//! household claims (sliced, serial); the input-source reset (its start; after a geometry
+//! change the supplier layout, sliced, the index's entries and the index one resource at least
+//! a slice; the production rates and availability, sliced); household production (sliced); the
+//! current-staff and expansion staffing sweeps (sliced, serial in supplier order); finishing
+//! the pass's household quotes; publishing funded activity and household production (both
+//! sliced); the provisional-input repair; business validation (seeding the accounts: its start
+//! and the buyers, sliced and serial; the book's layout: its start, after a layout change the
+//! buyers' access and recipe ports, sliced, the index entries and the indices one resource at
+//! least a slice, and the accounts' availability; the claims sliced by seller, the proof
+//! sliced, publishing the financing); and settling, or propagating impossible customers into
+//! the next pass.
 //!
 //! **Costs** (`SIM-02-K`). Work is counted in work units, a deterministic estimate of census
 //! work in nominal nanoseconds made from counts alone, never from measured time: each step's
@@ -31,15 +38,19 @@
 //! uniform sliced step takes its budget's rows; a serial sweep runs rows until their work
 //! reaches the budget, so one slice holds at most one row past it; an unsliced step runs whole
 //! once started and starts only in a slot that has done no other step, unless the budget
-//! covers its estimate. [`CensusProgress::remaining_work`] bounds the work left from below,
-//! which the hourly driver combines with the previous census's work per step
+//! covers its estimate. [`CensusProgress::remaining_work`] estimates the work left, which the
+//! hourly driver combines with the previous census's work per step
 //! ([`CensusProgress::planned_work`]). Slicing never changes a result; a restart inside the
 //! consumer-market refresh leaves its book torn, and the restarted refresh withdraws it, as a
-//! load does. Steps allocate nothing once the census storage has grown.
+//! load does; route quotes and a supplier index left part way are named valid only once
+//! complete, and a business seeding always begins with its book's reset, so a restart redoes
+//! each. Steps allocate nothing once the census storage has grown, except the supplier index's
+//! buckets after a geometry change.
 
 use std::ops::Range;
 
 use super::*;
+use crate::simulation::economy::customers::business::SeedingLayout;
 use crate::simulation::economy::customers::{RefreshInputs, RefreshState};
 
 /// What a census reads besides its own books: the city (live or an input copy), the network,
@@ -86,6 +97,9 @@ impl Default for StepWork {
 #[cfg(test)]
 pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
     "routes",
+    "route_borders",
+    "route_access",
+    "route_quotes",
     "market_begin",
     "market_chunks",
     "market_end",
@@ -97,6 +111,9 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
     "customer_index_copy",
     "customer_reservations",
     "customers_finish",
+    "customer_claim_funds",
+    "customer_claim_availability",
+    "customers_end",
     "setup_count",
     "setup_plans",
     "setup_order",
@@ -106,6 +123,10 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
     "import_funding",
     "household_claims",
     "sources",
+    "sources_layout",
+    "sources_entries",
+    "sources_index",
+    "sources_rates",
     "source_production",
     "current_staff",
     "expansion",
@@ -114,6 +135,13 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
     "publish_production",
     "repair",
     "business_seed",
+    "business_seed_rows",
+    "business_layout",
+    "business_layout_access",
+    "business_layout_ports",
+    "business_layout_entries",
+    "business_layout_indices",
+    "business_accounts",
     "business_claims",
     "business_proof",
     "business_publish",
@@ -153,6 +181,9 @@ fn counted_work(funding: &JobFunding, logistics: &ShipmentSystem) -> u64 {
 enum Step {
     #[default]
     Routes,
+    RouteBorders,
+    RouteAccess,
+    RouteQuotes,
     MarketBegin,
     MarketChunks,
     MarketEnd,
@@ -164,6 +195,9 @@ enum Step {
     CustomerIndexCopy,
     CustomerReservations,
     CustomersFinish,
+    CustomerClaimFunds,
+    CustomerClaimAvailability,
+    CustomersEnd,
     SetupCount,
     SetupPlans,
     SetupOrder,
@@ -173,6 +207,10 @@ enum Step {
     ImportFunding,
     HouseholdClaims,
     Sources,
+    SourcesLayout,
+    SourcesEntries,
+    SourcesIndex,
+    SourcesRates,
     SourceProduction,
     CurrentStaff,
     Expansion,
@@ -181,6 +219,13 @@ enum Step {
     PublishProduction,
     Repair,
     BusinessSeed,
+    BusinessSeedRows,
+    BusinessLayout,
+    BusinessLayoutAccess,
+    BusinessLayoutPorts,
+    BusinessLayoutEntries,
+    BusinessLayoutIndices,
+    BusinessAccounts,
     BusinessClaims,
     BusinessProof,
     BusinessPublish,
@@ -194,7 +239,13 @@ impl Step {
     fn row_work(self) -> u64 {
         use Step::*;
         match self {
-            Routes => 60,
+            // The route quotes' start: the cache's storage after a routing change.
+            Routes => 10,
+            // Per border swept after a routing change; the estimate counts none.
+            RouteBorders => 400_000,
+            // A door projected after an entrance change costs about 130; most rows only check.
+            RouteAccess => 100,
+            RouteQuotes => 20,
             MarketChunks => 10,
             CustomersBegin => 2,
             CustomerBudgets => 30,
@@ -204,7 +255,11 @@ impl Step {
             CustomerIndexBuild => 35,
             CustomerIndexCopy => 30,
             CustomerReservations => 10,
-            CustomersFinish => 50,
+            // The finish's decision and, for a book not retained, the receipt books' reset.
+            CustomersFinish => 5,
+            CustomerClaimFunds => 15,
+            CustomerClaimAvailability => 30,
+            CustomersEnd => 2,
             SetupCount => 20,
             SetupPlans => 25,
             SetupOrder => 15,
@@ -212,10 +267,24 @@ impl Step {
             Ceilings => 10,
             ImportFunding => 20,
             HouseholdClaims | CurrentStaff | Expansion => 25,
-            Sources => 50,
+            Sources => 3,
+            SourcesLayout => 15,
+            // The supplier index's entries, sorted, after a geometry change.
+            SourcesEntries => 15,
+            // Per supplier index entry built; the estimate counts one a building.
+            SourcesIndex => 15,
+            // After a geometry change most rows toggle their availability.
+            SourcesRates => 40,
             SourceProduction | PublishActivity | PublishProduction => 10,
             Repair => 40,
-            BusinessSeed => 65,
+            BusinessSeed => 2,
+            BusinessSeedRows => 50,
+            BusinessLayout => 3,
+            BusinessLayoutAccess => 20,
+            BusinessLayoutPorts => 10,
+            BusinessLayoutEntries => 5,
+            BusinessLayoutIndices => 15,
+            BusinessAccounts => 10,
             BusinessClaims => 20,
             BusinessProof => 10,
             Settle => 20,
@@ -230,14 +299,17 @@ impl Step {
             self,
             Routes
                 | CustomersBegin
-                | CustomerIndexBuild
-                | CustomerIndexCopy
                 | CustomersFinish
+                | CustomersEnd
                 | SetupPlans
                 | SetupFinish
                 | Sources
+                | SourcesEntries
                 | Repair
                 | BusinessSeed
+                | BusinessLayout
+                | BusinessLayoutEntries
+                | BusinessAccounts
                 | Settle
         )
     }
@@ -250,7 +322,8 @@ impl Step {
     // Rows of work: buildings for building passes, households for the consumer market.
     fn rows(self, buildings: usize, households: usize) -> usize {
         match self {
-            Self::MarketBegin
+            Self::RouteBorders
+            | Self::MarketBegin
             | Self::MarketEnd
             | Self::PassStart
             | Self::FinishPass
@@ -262,7 +335,10 @@ impl Step {
             | Self::CustomerIndexBuild
             | Self::CustomerIndexCopy
             | Self::CustomerReservations
-            | Self::CustomersFinish => households,
+            | Self::CustomersFinish
+            | Self::CustomerClaimFunds
+            | Self::CustomerClaimAvailability
+            | Self::CustomersEnd => households,
             _ => buildings,
         }
     }
@@ -271,7 +347,10 @@ impl Step {
     fn next(self) -> Self {
         use Step::*;
         match self {
-            Routes => MarketBegin,
+            Routes => RouteBorders,
+            RouteBorders => RouteAccess,
+            RouteAccess => RouteQuotes,
+            RouteQuotes => MarketBegin,
             MarketBegin => MarketChunks,
             MarketChunks => MarketEnd,
             MarketEnd => CustomersBegin,
@@ -282,7 +361,10 @@ impl Step {
             CustomerIndexBuild => CustomerIndexCopy,
             CustomerIndexCopy => CustomerReservations,
             CustomerReservations => CustomersFinish,
-            CustomersFinish => SetupCount,
+            CustomersFinish => CustomerClaimFunds,
+            CustomerClaimFunds => CustomerClaimAvailability,
+            CustomerClaimAvailability => CustomersEnd,
+            CustomersEnd => SetupCount,
             SetupCount => SetupPlans,
             SetupPlans => SetupOrder,
             SetupOrder => SetupFinish,
@@ -291,7 +373,11 @@ impl Step {
             PassStart => ImportFunding,
             ImportFunding => HouseholdClaims,
             HouseholdClaims => Sources,
-            Sources => SourceProduction,
+            Sources => SourcesLayout,
+            SourcesLayout => SourcesEntries,
+            SourcesEntries => SourcesIndex,
+            SourcesIndex => SourcesRates,
+            SourcesRates => SourceProduction,
             SourceProduction => CurrentStaff,
             CurrentStaff => Expansion,
             Expansion => FinishPass,
@@ -299,7 +385,14 @@ impl Step {
             PublishActivity => PublishProduction,
             PublishProduction => Repair,
             Repair => BusinessSeed,
-            BusinessSeed => BusinessClaims,
+            BusinessSeed => BusinessSeedRows,
+            BusinessSeedRows => BusinessLayout,
+            BusinessLayout => BusinessLayoutAccess,
+            BusinessLayoutAccess => BusinessLayoutPorts,
+            BusinessLayoutPorts => BusinessLayoutEntries,
+            BusinessLayoutEntries => BusinessLayoutIndices,
+            BusinessLayoutIndices => BusinessAccounts,
+            BusinessAccounts => BusinessClaims,
             BusinessClaims => BusinessProof,
             BusinessProof => BusinessPublish,
             BusinessPublish => Settle,
@@ -311,18 +404,38 @@ impl Step {
     fn timing_slot(self) -> usize {
         use Step::*;
         match self {
-            Routes => 0,
+            Routes | RouteBorders | RouteAccess | RouteQuotes => 0,
             MarketBegin | MarketChunks | MarketEnd => 1,
-            CustomersBegin | CustomerBudgets | CustomerAccess | CustomerIndexEntries
-            | CustomerIndexBuild | CustomerIndexCopy | CustomerReservations | CustomersFinish => 2,
+            CustomersBegin
+            | CustomerBudgets
+            | CustomerAccess
+            | CustomerIndexEntries
+            | CustomerIndexBuild
+            | CustomerIndexCopy
+            | CustomerReservations
+            | CustomersFinish
+            | CustomerClaimFunds
+            | CustomerClaimAvailability
+            | CustomersEnd => 2,
             SetupCount | SetupPlans | SetupOrder | SetupFinish | Ceilings | PassStart
             | ImportFunding => 3,
             HouseholdClaims => 4,
-            Sources | SourceProduction => 5,
+            Sources | SourcesLayout | SourcesEntries | SourcesIndex | SourcesRates
+            | SourceProduction => 5,
             CurrentStaff | Expansion => 6,
             FinishPass | PublishActivity | PublishProduction => 7,
             Repair => 8,
-            BusinessSeed | BusinessClaims | BusinessProof | BusinessPublish => 9,
+            BusinessSeed
+            | BusinessSeedRows
+            | BusinessLayout
+            | BusinessLayoutAccess
+            | BusinessLayoutPorts
+            | BusinessLayoutEntries
+            | BusinessLayoutIndices
+            | BusinessAccounts
+            | BusinessClaims
+            | BusinessProof
+            | BusinessPublish => 9,
             Settle | Done => 10,
         }
     }
@@ -336,8 +449,13 @@ pub(crate) struct CensusProgress {
     // Rows of the current step done: buildings, staffing slots or, for the market, chunks.
     cursor: usize,
     reuse_market: bool,
+    // The revision the route quotes are being rewritten for, `None` when they are kept
+    // (`SIM-02-K`).
+    quote_revision: Option<(u64, u64, u32, u64, u64)>,
     // The consumer-market refresh in progress (`SIM-02-K`).
     customers: RefreshState,
+    // The business book's layout in progress after seeding (`SIM-02-K`).
+    business_layout: SeedingLayout,
     retained_customers: bool,
     // Setup's running counts (`SIM-02-K`): output ports, input ports, consumer firms, their
     // output ports and the most output ports of one consumer firm.
@@ -366,8 +484,12 @@ impl CensusProgress {
     /// as the previous one did (`SIM-02-I`): the rows of the current pass's steps and those
     /// after it, and whole passes for the ones still expected, at each step's row weight
     /// (`SIM-02-K`). A serial sweep in progress prices its rows left at the rate its rows done
-    /// used, searches included; later sweeps' searches are not counted, so it is a lower bound
-    /// of their work. O(steps).
+    /// used, searches included. It is not a bound either way: later sweeps' searches are not
+    /// counted, and every step the census may still run is, including steps it decides to
+    /// skip once it reaches them (the route quotes and the source index when their inputs are
+    /// unchanged, the customer index steps without a rebuild, the steps after a failed repair
+    /// or seeding). The hourly driver takes the larger of this and the previous census's work
+    /// per step; either error only moves work between slots, never a result. O(steps).
     pub(crate) fn remaining_work(
         &self,
         buildings: usize,
@@ -426,6 +548,12 @@ impl CensusProgress {
     /// Closure passes started so far.
     pub(crate) fn passes(&self) -> usize {
         self.passes
+    }
+
+    /// The next step's name and its rows done, for restart tests.
+    #[cfg(test)]
+    pub(crate) fn position_for_test(&self) -> (&'static str, usize) {
+        (STEP_NAMES[self.step as usize], self.cursor)
     }
 
     fn advance(&mut self, step: Step) {
@@ -563,7 +691,70 @@ impl JobFunding {
             .unwrap_or(usize::MAX)
             .max(1);
         match step {
-            Step::Routes => self.census_routes(ctx, logistics),
+            Step::Routes => {
+                self.census_routes(ctx, logistics, progress);
+                if progress.quote_revision.is_none() {
+                    progress.advance(Step::MarketBegin);
+                    return whole;
+                }
+            }
+            Step::RouteBorders => {
+                // Borders until their sweeps reach the budget, one at least; a border swept
+                // since the last routing change costs nothing. The last border's slice, or an
+                // empty one without borders, takes their minimum.
+                let borders = self.border_nodes.len();
+                let mut used = 0;
+                loop {
+                    let range = progress.cursor..(progress.cursor + 1).min(borders);
+                    progress.cursor = range.end;
+                    let swept = logistics.sweep_carrier_borders(
+                        ctx.network,
+                        ctx.graph,
+                        &self.border_nodes,
+                        range,
+                    );
+                    used += swept as u64 * step.row_work();
+                    if progress.cursor >= borders || used >= budget {
+                        break;
+                    }
+                }
+                progress.finish_slice(borders);
+                return used;
+            }
+            Step::RouteAccess | Step::RouteQuotes => {
+                let rows = progress.slice(buildings, budget_rows);
+                let used = rows.len() as u64 * step.row_work();
+                let CensusContext {
+                    allocator,
+                    network,
+                    graph,
+                    catalog,
+                    tuning,
+                    ..
+                } = *ctx;
+                if step == Step::RouteAccess {
+                    logistics
+                        .prepare_border_carrier_access(allocator, network, graph, catalog, rows);
+                } else {
+                    logistics.write_border_carrier_quotes_in(
+                        allocator,
+                        network,
+                        graph,
+                        catalog,
+                        tuning,
+                        rows.clone(),
+                        &mut self.carrier_quotes[rows],
+                    );
+                    if progress.cursor >= buildings {
+                        // Valid only once every row is written: a census restarted inside
+                        // the quotes rewrites them.
+                        self.quote_revision = progress.quote_revision;
+                        self.quoted_border_nodes.clone_from(&self.border_nodes);
+                    }
+                }
+                progress.finish_slice(buildings);
+                return used;
+            }
             Step::MarketBegin => self.census_market_begin(ctx, progress),
             Step::MarketChunks => {
                 let chunks = buildings.div_ceil(MARKET_CHUNK);
@@ -590,7 +781,8 @@ impl JobFunding {
             Step::CustomerBudgets
             | Step::CustomerAccess
             | Step::CustomerIndexEntries
-            | Step::CustomerReservations => {
+            | Step::CustomerReservations
+            | Step::CustomerClaimFunds => {
                 let households = ctx.households.len();
                 let rows = progress.slice(households, budget_rows);
                 let used = rows.len() as u64 * step.row_work();
@@ -608,16 +800,58 @@ impl JobFunding {
                     Step::CustomerIndexEntries => self
                         .customers
                         .refresh_index_entries(&progress.customers, rows),
-                    _ => self
+                    Step::CustomerReservations => self
                         .customers
                         .refresh_reservations(&progress.customers, rows),
+                    _ => self
+                        .customers
+                        .reset_refresh_claims(&progress.customers, rows),
                 }
                 progress.finish_slice(households);
                 return used;
             }
-            Step::CustomerIndexBuild => self.customers.build_refreshed_indices(&progress.customers),
-            Step::CustomerIndexCopy => self.customers.copy_refreshed_indices(&progress.customers),
-            Step::CustomersFinish => self.census_customers(ctx, progress),
+            Step::CustomerIndexBuild
+            | Step::CustomerIndexCopy
+            | Step::CustomerClaimAvailability => {
+                // One mode's build, one category's copy or one index's availability a slice
+                // at least (`SIM-02-K`).
+                let items = match step {
+                    Step::CustomerIndexBuild => 2,
+                    Step::CustomerIndexCopy => self.customers.refreshed_index_copies(),
+                    _ => self.customers.claim_availability_indices(),
+                };
+                let item_work = (whole / items.max(1) as u64).max(1);
+                let count = usize::try_from(budget / item_work)
+                    .unwrap_or(usize::MAX)
+                    .max(1);
+                let range = progress.slice(items, count);
+                let used = range.len() as u64 * item_work;
+                match step {
+                    Step::CustomerIndexBuild => self
+                        .customers
+                        .build_refreshed_modes(&progress.customers, range),
+                    Step::CustomerIndexCopy => self
+                        .customers
+                        .copy_refreshed_categories(&progress.customers, range),
+                    _ => self
+                        .customers
+                        .reset_refresh_availability(&progress.customers, range),
+                }
+                progress.finish_slice(items);
+                return used;
+            }
+            Step::CustomersFinish => {
+                self.census_customers(ctx, progress);
+                if progress.retained_customers {
+                    // A retained book keeps its claims: nothing to reset.
+                    progress.advance(Step::CustomersEnd);
+                    return whole;
+                }
+            }
+            Step::CustomersEnd => {
+                self.customers
+                    .end_refresh(&progress.customers, &refresh_inputs(ctx));
+            }
             Step::SetupCount | Step::SetupOrder => {
                 let rows = progress.slice(buildings, budget_rows);
                 let used = rows.len() as u64 * step.row_work();
@@ -740,13 +974,61 @@ impl JobFunding {
                 progress.first_pass = false;
             }
             Step::Sources => {
-                self.input_supply.reset(
+                if !self.input_supply.begin_reset(
                     ctx.allocator,
                     ctx.graph,
                     ctx.network,
                     ctx.catalog,
-                    &self.offered_activity,
-                );
+                ) {
+                    // The supplier layout and index stand: only the rates change.
+                    progress.advance(Step::SourcesRates);
+                    return whole;
+                }
+            }
+            Step::SourcesEntries => {
+                self.input_supply
+                    .reset_entries(ctx.allocator, ctx.graph, ctx.catalog);
+            }
+            Step::SourcesIndex => {
+                // Whole resources until their entries reach the budget, one at least.
+                let resources = self.input_supply.reset_index_resources();
+                let mut used = 0;
+                while progress.cursor < resources && used < budget {
+                    let built = self
+                        .input_supply
+                        .build_reset_index(progress.cursor..progress.cursor + 1);
+                    progress.cursor += 1;
+                    used += built as u64 * step.row_work();
+                }
+                progress.finish_slice(resources);
+                return used;
+            }
+            Step::SourcesLayout | Step::SourcesRates | Step::BusinessSeedRows => {
+                let rows = progress.slice(buildings, budget_rows);
+                let used = rows.len() as u64 * step.row_work();
+                if step == Step::SourcesLayout {
+                    self.input_supply
+                        .reset_layout(ctx.allocator, ctx.catalog, rows);
+                } else if step == Step::SourcesRates {
+                    self.input_supply.reset_rates(
+                        ctx.allocator,
+                        ctx.graph,
+                        ctx.catalog,
+                        &self.offered_activity,
+                        rows,
+                    );
+                } else {
+                    self.seed_business_rows(
+                        ctx.allocator,
+                        ctx.catalog,
+                        ctx.tuning,
+                        ctx.fiscal,
+                        ctx.minute_of_day,
+                        rows,
+                    );
+                }
+                progress.finish_slice(buildings);
+                return used;
             }
             Step::FinishPass => {
                 let household_census = household_claims::Census::new(
@@ -783,21 +1065,70 @@ impl JobFunding {
                 }
             }
             Step::BusinessSeed => {
-                if !self.seed_business_accounts(
-                    ctx.allocator,
-                    ctx.network,
-                    ctx.graph,
-                    ctx.catalog,
-                    ctx.tuning,
-                    ctx.fiscal,
-                    ctx.minute_of_day,
-                    progress.input_ports,
-                ) {
+                if !self.begin_business_seeding(ctx.allocator, progress.input_ports) {
                     progress.settled = false;
                     progress.advance(Step::Settle);
                     return whole;
                 }
                 progress.reduced = false;
+            }
+            Step::BusinessLayout => {
+                progress.business_layout =
+                    self.business
+                        .begin_layout(ctx.allocator, ctx.network, ctx.catalog);
+                if !progress.business_layout.rebuilds() {
+                    progress.advance(Step::BusinessAccounts);
+                    return whole;
+                }
+                if !progress.business_layout.changes_access() {
+                    progress.advance(Step::BusinessLayoutPorts);
+                    return whole;
+                }
+            }
+            Step::BusinessLayoutAccess | Step::BusinessLayoutPorts => {
+                let rows = progress.slice(buildings, budget_rows);
+                let used = rows.len() as u64 * step.row_work();
+                let layout = progress.business_layout;
+                if step == Step::BusinessLayoutAccess {
+                    let components = self
+                        .input_supply
+                        .freight_components()
+                        .expect("seeding begins only with freight components");
+                    self.business.layout_access(
+                        &layout,
+                        ctx.allocator,
+                        ctx.graph,
+                        components,
+                        rows,
+                    );
+                } else {
+                    self.business
+                        .layout_ports(&layout, ctx.allocator, ctx.catalog, rows);
+                }
+                progress.finish_slice(buildings);
+                return used;
+            }
+            Step::BusinessLayoutEntries => {
+                self.business
+                    .collect_layout_entries(&progress.business_layout);
+            }
+            Step::BusinessLayoutIndices => {
+                // One resource's index a slice at least.
+                let items = progress.business_layout.resources();
+                let item_work = (whole / items.max(1) as u64).max(1);
+                let count = usize::try_from(budget / item_work)
+                    .unwrap_or(usize::MAX)
+                    .max(1);
+                let range = progress.slice(items, count);
+                let used = range.len() as u64 * item_work;
+                self.business
+                    .build_layout_indices(&progress.business_layout, range);
+                progress.finish_slice(items);
+                return used;
+            }
+            Step::BusinessAccounts => {
+                self.business
+                    .finish_layout(&progress.business_layout, ctx.allocator);
             }
             Step::BusinessPublish => {
                 self.publish_business_financing();
@@ -826,7 +1157,15 @@ impl JobFunding {
         whole
     }
 
-    fn census_routes<F>(&mut self, ctx: &CensusContext<'_, F>, logistics: &mut ShipmentSystem) {
+    // The route quotes' start: the census's rows, the pricing phase and the connected borders;
+    // when the quote inputs changed, the quotes' first phase, the rows to rewrite recorded in
+    // `progress` (`SIM-02-K`). O(B) resizes, plus the border sweeps after a routing change.
+    fn census_routes<F>(
+        &mut self,
+        ctx: &CensusContext<'_, F>,
+        logistics: &mut ShipmentSystem,
+        progress: &mut CensusProgress,
+    ) {
         #[cfg(test)]
         {
             self.import_quote_replays = 0;
@@ -836,7 +1175,6 @@ impl JobFunding {
             allocator,
             network,
             graph,
-            catalog,
             tuning,
             minute_of_day,
             ..
@@ -861,22 +1199,15 @@ impl JobFunding {
             graph,
             &mut self.border_nodes,
         );
+        progress.quote_revision = None;
         if self.quote_revision != Some(revision)
             || self.carrier_quotes.len() != count
             || self.border_nodes != self.quoted_border_nodes
         {
+            self.quote_revision = None;
             self.carrier_quotes.resize(count, None);
-            logistics.write_border_carrier_quotes(
-                allocator,
-                network,
-                graph,
-                &self.border_nodes,
-                catalog,
-                tuning,
-                &mut self.carrier_quotes,
-            );
-            self.quote_revision = Some(revision);
-            self.quoted_border_nodes.clone_from(&self.border_nodes);
+            logistics.begin_border_carrier_quotes(allocator, network, graph);
+            progress.quote_revision = Some(revision);
         }
         match ctx.freight_capital {
             Some(capital) => {
@@ -1014,7 +1345,7 @@ impl JobFunding {
     fn census_customers<F>(&mut self, ctx: &CensusContext<'_, F>, progress: &mut CensusProgress) {
         progress.retained_customers = self
             .customers
-            .finish_refresh(&mut progress.customers, &refresh_inputs(ctx));
+            .begin_refresh_finish(&mut progress.customers, &refresh_inputs(ctx));
         // A refresh that reset the book ends the recorded quotes' validity now, not at setup:
         // a census restarted before setup refreshes again, finds its inputs unchanged and
         // would otherwise replay the previous census's quotes against the reset book.

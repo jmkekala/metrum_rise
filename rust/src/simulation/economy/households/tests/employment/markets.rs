@@ -1777,19 +1777,27 @@ fn perf_contract_financing_locality() {
 // A labelled fixture and the incomes its census runs at in turn.
 // `SIM-02-K`: a census restarted after any slice, inside the consumer-market refresh's household
 // phases too, equals one run bit for bit. A restart there leaves the customer book torn, and the
-// restarted refresh withdraws it, so the census is the one a loaded game computes.
+// restarted refresh withdraws it, so the census is the one a loaded game computes. On a cold
+// book the census also rewrites its route quotes, builds its supplier index and lays out its
+// business book, and restarts land inside each of those slices.
 #[test]
 fn a_census_restarted_after_any_slice_equals_one_run_bit_for_bit() {
+    use crate::simulation::economy::hiring::RESTARTED_AT;
+
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_import_price_multiplier = 10.0;
     tuning.owa_export_price_multiplier = 0.0;
-    // The second census's income: unchanged (the reference retains its book) or changed.
-    for second in [1_000_000.0, 7_750.0] {
+    RESTARTED_AT.with_borrow_mut(Vec::clear);
+    // The second census's income: unchanged (the reference retains its book) or changed; or
+    // the census on a cold book, the first of its fixture.
+    for (second, cold) in [(1_000_000.0, false), (7_750.0, false), (7_750.0, true)] {
         let census = |restart: Option<usize>| {
             let mut market = financing_chain(2, 3);
-            market.families[0].gross_daily_wages = 1_000_000.0;
-            market.families[0].budget = 1_000_000.0;
-            market.refresh(&tuning);
+            if !cold {
+                market.families[0].gross_daily_wages = 1_000_000.0;
+                market.families[0].budget = 1_000_000.0;
+                market.refresh(&tuning);
+            }
             market.families[0].gross_daily_wages = second;
             market.families[0].budget = second;
             let slices = match restart {
@@ -1809,10 +1817,35 @@ fn a_census_restarted_after_any_slice_equals_one_run_bit_for_bit() {
             torn += market.funding.customers.torn_refreshes_for_test();
             reference.assert_same_census(
                 &market,
-                &format!("income {second}, restart after slice {restart} of {slices}"),
+                &format!("income {second}, cold {cold}, restart after slice {restart} of {slices}"),
             );
         }
-        assert!(torn > 0, "some restart must land inside the refresh");
+        if !cold {
+            assert!(torn > 0, "some restart must land inside the refresh");
+        }
+    }
+    // The fixture has one family, so its claims' accounts reset in one slice; restarts land
+    // inside the availability reset after them.
+    let restarted = RESTARTED_AT.with_borrow_mut(std::mem::take);
+    for step in [
+        "route_access",
+        "route_quotes",
+        "customer_index_build",
+        "customer_claim_availability",
+        "sources_layout",
+        "sources_index",
+        "sources_rates",
+        "business_seed_rows",
+        "business_layout_access",
+        "business_layout_ports",
+        "business_layout_indices",
+    ] {
+        assert!(
+            restarted
+                .iter()
+                .any(|&(name, done)| name == step && done > 0),
+            "some restart must land inside {step}"
+        );
     }
 }
 

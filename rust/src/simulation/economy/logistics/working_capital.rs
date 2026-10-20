@@ -223,6 +223,11 @@ impl ShipmentSystem {
     /// border sweeps. Their exact minima cost O(N*K) once per routing/border revision for N
     /// road nodes and K borders. Warm work is O(B), parallel across buildings.
     /// The caller reuses quote storage. No per-building path search or allocation is added.
+    /// The census runs the same phases in slices (`SIM-02-K`): [`Self::begin_border_carrier_quotes`],
+    /// [`Self::sweep_carrier_borders`] over every range of the borders in order,
+    /// [`Self::prepare_border_carrier_access`] over every building range and
+    /// [`Self::write_border_carrier_quotes_in`] over every building range.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_border_carrier_quotes(
         &mut self,
@@ -234,24 +239,96 @@ impl ShipmentSystem {
         tuning: &RuntimeEconomyTuning,
         quotes: &mut [Option<f32>],
     ) {
+        let buildings = allocator.buildings.len();
+        self.begin_border_carrier_quotes(allocator, network, graph);
+        self.sweep_carrier_borders(network, graph, borders, 0..borders.len());
+        self.prepare_border_carrier_access(allocator, network, graph, catalog, 0..buildings);
+        self.write_border_carrier_quotes_in(
+            allocator,
+            network,
+            graph,
+            catalog,
+            tuning,
+            0..quotes.len(),
+            quotes,
+        );
+    }
+
+    /// Border quotes' first phase (`SIM-02-K`): the route cache's revisions, its building
+    /// slots, query scratch and quote storage. O(new building slots) warm, plus O(cache
+    /// storage) after a routing change.
+    pub(crate) fn begin_border_carrier_quotes(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
         self.refresh_freight_route_cache(allocator, network);
         self.freight_route_cache
             .prepare_buildings(allocator.buildings.len());
-        self.freight_route_cache.prepare_border_costs(
-            borders,
-            allocator.buildings.len(),
-            network,
-            graph,
-        );
         self.freight_route_cache
-            .prepare_access_for(allocator, network, graph, |index| {
+            .prepare_border_storage(allocator.buildings.len(), network, graph);
+    }
+
+    /// Sweeps `borders[range]` not swept since the last routing change; the range ending at
+    /// the last border then takes every border's minimum (`SIM-02-K`). One CCH sweep a border
+    /// swept, plus O(N × K) in parallel for N road nodes and K borders at the end after a
+    /// routing or border change. Returns the borders swept.
+    pub(crate) fn sweep_carrier_borders(
+        &mut self,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        borders: &[u32],
+        range: std::ops::Range<usize>,
+    ) -> usize {
+        let last = range.end == borders.len();
+        let swept = self
+            .freight_route_cache
+            .sweep_borders(&borders[range], network, graph);
+        if last {
+            self.freight_route_cache
+                .prepare_border_minimum(borders, graph);
+        }
+        swept
+    }
+
+    /// Projects the doors of the quoted buildings in `range` once per entrance revision
+    /// (`SIM-02-K`). O(range) tag checks in parallel; only changed doors project.
+    pub(crate) fn prepare_border_carrier_access(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        range: std::ops::Range<usize>,
+    ) {
+        self.freight_route_cache
+            .prepare_access_in(range, allocator, network, graph, |index| {
                 catalog
                     .profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
                     .is_some_and(|profile| profile.worker_capacity > 0)
             });
+    }
+
+    /// Writes the border quotes of buildings `range` into `quotes`, the quote rows of that
+    /// range, after both earlier phases (`SIM-02-K`). O(range) in parallel.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_border_carrier_quotes_in(
+        &self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        range: std::ops::Range<usize>,
+        quotes: &mut [Option<f32>],
+    ) {
+        debug_assert_eq!(quotes.len(), range.len());
+        let first = range.start;
         quotes
             .par_iter_mut()
             .enumerate()
+            .map(|(offset, quote)| (first + offset, quote))
             .for_each(|(index, quote)| {
                 *quote = None;
                 let building = &allocator.buildings[index];

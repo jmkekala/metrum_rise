@@ -54,6 +54,8 @@ pub(crate) struct BusinessMarket {
     pass_ports: PassPorts,
     port_available: Vec<usize>,
     indices: PortIndices,
+    // Each resource's bucket entries between an index rebuild's collection and its build.
+    index_entries: Vec<Vec<ReachableBucketEntry>>,
     revision: Option<(u64, u64, u32)>,
     visited: Vec<u64>,
     visit: u64,
@@ -72,6 +74,34 @@ pub(crate) struct BusinessMarket {
     census_buyers: Option<CensusBuyers>,
     #[cfg(test)]
     disable_finance_masks: bool,
+}
+
+/// A business layout after seeding between census slices (`SIM-02-K`): the revision it lays
+/// out for, whether the buyers' access changed, whether the ports and indices are rebuilt and
+/// the resource count. [`BusinessMarket::begin_layout`] starts one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SeedingLayout {
+    revision: (u64, u64, u32),
+    changed: bool,
+    rebuilds: bool,
+    resources: usize,
+}
+
+impl SeedingLayout {
+    /// Whether the buyers' door chunks and components are recomputed.
+    pub(crate) fn changes_access(&self) -> bool {
+        self.changed
+    }
+
+    /// Whether the recipe ports and live indices are rebuilt.
+    pub(crate) fn rebuilds(&self) -> bool {
+        self.rebuilds
+    }
+
+    /// Resources whose live index a rebuild builds.
+    pub(crate) fn resources(&self) -> usize {
+        self.resources
+    }
 }
 
 /// The census's buyer count, live port count and live index, kept aside while a lent book
@@ -376,13 +406,63 @@ impl BusinessMarket {
         output_ports: usize,
         seed: impl FnOnce(&mut BusinessBudgets),
     ) {
-        self.budgets.reset(
-            allocator.buildings.len(),
-            input_tranches,
-            allocator.buildings.len(),
-            output_ports,
-        );
+        self.begin_seeding(allocator.buildings.len(), input_tranches, output_ports);
         seed(&mut self.budgets);
+        self.finish_seeding(allocator, network, graph, components, catalog);
+    }
+
+    /// Seeding's first phase (`SIM-02-K`): the sparse accounts' reset for `buildings` buyers
+    /// and sellers. Then the caller seeds buyers through [`Self::seeding_book`] in buyer
+    /// order, in any number of calls, and [`Self::finish_seeding`] prepares the layout and the
+    /// availability; [`Self::reset`] runs the three at once. O(B) fills.
+    pub(crate) fn begin_seeding(
+        &mut self,
+        buildings: usize,
+        input_tranches: usize,
+        output_ports: usize,
+    ) {
+        self.budgets
+            .reset(buildings, input_tranches, buildings, output_ports);
+    }
+
+    /// The accounts being seeded between [`Self::begin_seeding`] and [`Self::finish_seeding`].
+    pub(crate) fn seeding_book(&mut self) -> &mut BusinessBudgets {
+        &mut self.budgets
+    }
+
+    /// Seeding's last phases at once (`SIM-02-K`): price classes, the buyer and recipe-port
+    /// layout and spatial buckets after a geometry or profile change, and every account's
+    /// availability; see [`Self::begin_layout`]. O(B + accounts), plus O(ports log ports)
+    /// after a layout change.
+    pub(crate) fn finish_seeding(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        let buyers = allocator.buildings.len();
+        let layout = self.begin_layout(allocator, network, catalog);
+        self.layout_access(&layout, allocator, graph, components, 0..buyers);
+        self.layout_ports(&layout, allocator, catalog, 0..buyers);
+        self.collect_layout_entries(&layout);
+        self.build_layout_indices(&layout, 0..layout.resources);
+        self.finish_layout(&layout, allocator);
+    }
+
+    /// The layout's first phase after seeding (`SIM-02-K`): price classes and whether the
+    /// buyer and recipe-port layout changed. Then [`Self::layout_access`] and
+    /// [`Self::layout_ports`] over every buyer range in order, [`Self::collect_layout_entries`],
+    /// [`Self::build_layout_indices`] over every resource range and [`Self::finish_layout`]; any
+    /// slicing gives one call's layout. A rebuild names no layout until it finishes, so one
+    /// left part way is rebuilt by the next seeding. O(B).
+    pub(crate) fn begin_layout(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> SeedingLayout {
         self.prepare_price_classes(catalog);
         debug_assert!(self.budgets.staged.is_empty());
         let revision = (
@@ -398,61 +478,137 @@ impl BusinessMarket {
         let resources = catalog.resource_count() + 1;
         self.access
             .resize(allocator.buildings.len(), Access::default());
-        if changed {
-            self.access
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(buyer, access)| {
-                    *access = Access {
-                        chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
-                            chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
-                        }),
-                        components: components.building_components(
-                            allocator,
-                            graph,
-                            buyer,
-                            TransitFlags::CAR,
-                        ),
-                    };
-                });
-        }
-        if changed || self.indices.live.len() != resources {
+        let rebuilds = changed || self.indices.live.len() != resources;
+        if rebuilds {
+            self.revision = None;
             self.profiles.clear();
+            self.identities.clear();
+            self.port_access.clear();
+            self.port_sites.clear();
+            self.sites.invalidate_layout();
+            self.buyer_ports.resize(allocator.buildings.len(), 0..0);
+        }
+        SeedingLayout {
+            revision,
+            changed,
+            rebuilds,
+            resources,
+        }
+    }
+
+    /// Each buyer's door chunk and freight components for buyers `range` after a layout
+    /// change (`SIM-02-K`). O(range) in parallel.
+    pub(crate) fn layout_access(
+        &mut self,
+        layout: &SeedingLayout,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        range: std::ops::Range<usize>,
+    ) {
+        if !layout.changed {
+            return;
+        }
+        let first = range.start;
+        self.access[range]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, access)| {
+                let buyer = first + offset;
+                *access = Access {
+                    chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
+                        chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
+                    }),
+                    components: components.building_components(
+                        allocator,
+                        graph,
+                        buyer,
+                        TransitFlags::CAR,
+                    ),
+                };
+            });
+    }
+
+    /// The recipe ports of buyers `range`, the next ones, in buyer order, after a layout
+    /// change (`SIM-02-K`); the last range finishes the port tables. O(range + their ports),
+    /// serial.
+    pub(crate) fn layout_ports(
+        &mut self,
+        layout: &SeedingLayout,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        range: std::ops::Range<usize>,
+    ) {
+        if !layout.rebuilds {
+            return;
+        }
+        let last = range.end == allocator.buildings.len();
+        let ports = self.identities.len();
+        // Prefix ranges depend on the previous buyer; catalogue input order is stable.
+        for (buyer, building) in allocator.buildings[range.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, building)| (range.start + offset, building))
+        {
+            let first = self.identities.len();
+            if let Some(profile) =
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            {
+                self.identities.extend(
+                    profile
+                        .inputs
+                        .iter()
+                        .map(|input| (buyer, input.resource_runtime_id)),
+                );
+            }
+            self.buyer_ports[buyer] = first..self.identities.len();
+        }
+        self.port_access.extend(
+            self.identities[ports..]
+                .iter()
+                .map(|&(buyer, _)| self.access[buyer]),
+        );
+        if last {
+            self.port_sites.resize(self.identities.len(), None);
+            self.indices.live_ports = self.identities.len();
+            self.indices.sites.clear();
+        }
+    }
+
+    /// Every resource's bucket entries of the live ports after a layout change (`SIM-02-K`).
+    /// O(ports), serial.
+    pub(crate) fn collect_layout_entries(&mut self, layout: &SeedingLayout) {
+        if layout.rebuilds {
+            self.collect_index_entries(layout.resources, false);
+        }
+    }
+
+    /// Builds the live indices of resources `range` after a layout change (`SIM-02-K`).
+    /// O(entries log entries) for those resources, in parallel.
+    pub(crate) fn build_layout_indices(
+        &mut self,
+        layout: &SeedingLayout,
+        range: std::ops::Range<usize>,
+    ) {
+        if layout.rebuilds {
+            self.build_index_resources(range, false);
+        }
+    }
+
+    /// The layout's end (`SIM-02-K`): the buyers' profiles after a rebuild, every account's
+    /// availability and finance masks, and the layout's revision. O(B + accounts + ports).
+    pub(crate) fn finish_layout(&mut self, layout: &SeedingLayout, allocator: &BuildingAllocator) {
+        if layout.rebuilds {
+            // `begin_layout` cleared them; written last, they name the finished layout.
             self.profiles.extend(
                 allocator
                     .buildings
                     .iter()
                     .map(|building| building.economy_profile_runtime_id),
             );
-            self.identities.clear();
-            self.port_access.clear();
-            self.port_sites.clear();
-            self.sites.invalidate_layout();
-            self.buyer_ports.resize(allocator.buildings.len(), 0..0);
-            // Prefix ranges depend on the previous buyer; catalogue input order is stable.
-            for (buyer, building) in allocator.buildings.iter().enumerate() {
-                let first = self.identities.len();
-                if let Some(profile) =
-                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                {
-                    self.identities.extend(
-                        profile
-                            .inputs
-                            .iter()
-                            .map(|input| (buyer, input.resource_runtime_id)),
-                    );
-                }
-                self.buyer_ports[buyer] = first..self.identities.len();
-            }
-            self.port_access
-                .extend(self.identities.iter().map(|&(buyer, _)| self.access[buyer]));
-            self.port_sites.resize(self.identities.len(), None);
-            self.indices.live_ports = self.identities.len();
-            self.indices.sites.clear();
-            self.rebuild_indices(resources, false);
         }
         self.reset_accounts();
-        self.revision = Some(revision);
+        self.revision = Some(layout.revision);
     }
 
     /// Fixed recipe-port count and spatial rebuild count for allocation/invalidation checks.

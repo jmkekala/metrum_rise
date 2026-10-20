@@ -187,6 +187,7 @@ impl SupplierCandidateIndex {
     /// Builds the same component/chunk index with caller-owned resource eligibility and dense
     /// building indices as items. Recurring forecasts must test production; dispatch continues
     /// to test physical stock.
+    #[cfg(test)]
     pub(super) fn build_filtered(
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
@@ -195,7 +196,32 @@ impl SupplierCandidateIndex {
         operational_only: bool,
         eligible: impl Fn(usize, ResourceRuntimeId) -> bool + Sync,
     ) -> Self {
-        let entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)> =
+        let mut entries = Vec::new();
+        Self::collect_filtered(
+            allocator,
+            graph,
+            catalog,
+            freight_components,
+            operational_only,
+            eligible,
+            &mut entries,
+        );
+        Self::from_entries(entries)
+    }
+
+    /// The entries [`Self::build_filtered`] indexes, in building order, into `entries`, which
+    /// keeps its storage (`SIM-02-K`). O(B × outputs) on Rayon.
+    pub(super) fn collect_filtered(
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        freight_components: &ModeComponentIndex,
+        operational_only: bool,
+        eligible: impl Fn(usize, ResourceRuntimeId) -> bool + Sync,
+        entries: &mut Vec<SupplierEntry>,
+    ) {
+        entries.clear();
+        entries.par_extend(
             (0..allocator.buildings.len())
                 .into_par_iter()
                 .filter_map(|idx| {
@@ -225,9 +251,18 @@ impl SupplierCandidateIndex {
                                 )
                             })
                         })
-                })
-                .collect();
-        Self::from_entries(entries)
+                }),
+        );
+    }
+
+    /// Drops every resource's buckets, keeping the map for [`Self::insert`] (`SIM-02-K`).
+    pub(super) fn clear(&mut self) {
+        self.by_resource.clear();
+    }
+
+    /// Indexes `resource`'s suppliers as `buckets`, replacing any it had (`SIM-02-K`).
+    pub(super) fn insert(&mut self, resource: ResourceRuntimeId, buckets: ReachableBucketIndex) {
+        self.by_resource.insert(resource, buckets);
     }
 
     /// Groups prepared source identities using the same resource/component/chunk index.
@@ -308,16 +343,6 @@ impl SupplierCandidateIndex {
     pub(super) fn enable_reservations(&mut self) {
         for buckets in self.by_resource.values_mut() {
             buckets.enable_reservations();
-        }
-    }
-
-    /// Adds door bounds so nearest-source scans can skip regions that cannot beat a route.
-    pub(super) fn enable_spatial_bounds(
-        &mut self,
-        door: impl Fn(usize) -> Option<[f32; 2]> + Sync,
-    ) {
-        for buckets in self.by_resource.values_mut() {
-            buckets.enable_spatial_bounds(&door);
         }
     }
 

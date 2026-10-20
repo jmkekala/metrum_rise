@@ -99,6 +99,7 @@ pub(crate) struct RefreshState {
     membership_changed: bool,
     rebuilds_indices: bool,
     resamples: u64,
+    retained: bool,
 }
 
 /// Finite family accounts and their reusable component/chunk candidate indices.
@@ -368,8 +369,9 @@ impl ConsumerMarket {
         self.refresh_access(&mut state, &inputs, 0..households.len());
         if self.begin_refresh_indices(&mut state) {
             self.refresh_index_entries(&state, 0..households.len());
-            self.build_refreshed_indices(&state);
-            self.copy_refreshed_indices(&state);
+            self.build_refreshed_modes(&state, 0..2);
+            let copies = self.refreshed_index_copies();
+            self.copy_refreshed_categories(&state, 0..copies);
             self.refresh_reservations(&state, 0..households.len());
         }
         self.finish_refresh(&mut state, &inputs)
@@ -380,9 +382,10 @@ impl ConsumerMarket {
     /// O(profile ports + B / workers), plus O(network) after a network change. The phases, in
     /// order: this, [`Self::refresh_budgets`] and [`Self::refresh_access`] over every household
     /// range in order; when [`Self::begin_refresh_indices`] says so,
-    /// [`Self::refresh_index_entries`] over every household range, [`Self::build_refreshed_indices`],
-    /// [`Self::copy_refreshed_indices`] and [`Self::refresh_reservations`] over every household
-    /// range; and [`Self::finish_refresh`]. Any slicing gives one refresh's result.
+    /// [`Self::refresh_index_entries`] over every household range, [`Self::build_refreshed_modes`]
+    /// over both modes, [`Self::copy_refreshed_categories`] over every copy and
+    /// [`Self::refresh_reservations`] over every household range, each range in order; and
+    /// [`Self::finish_refresh`]. Any slicing gives one refresh's result.
     /// A refresh begun and not finished leaves the book torn: beginning another withdraws it
     /// first, so that refresh reports the book not retained, as after a load.
     pub(crate) fn begin_refresh(&mut self, inputs: &RefreshInputs<'_>) -> RefreshState {
@@ -630,15 +633,19 @@ impl ConsumerMarket {
         rayon::join(|| append(foot, 0), || append(car, 1));
     }
 
-    /// Builds the first category's two indices from the collected entries, in parallel, each
-    /// sorted in parallel first: the index one build over every household gives (`SIM-02-K`).
-    /// O(H log H / workers + H) for each mode.
-    pub(crate) fn build_refreshed_indices(&mut self, state: &RefreshState) {
+    /// Builds modes `modes` (0 foot, 1 car) of the first category's indices from the collected
+    /// entries, in parallel, each sorted in parallel first: the index one build over every
+    /// household gives (`SIM-02-K`). O(H log H / workers + H) for each mode.
+    pub(crate) fn build_refreshed_modes(
+        &mut self,
+        state: &RefreshState,
+        modes: std::ops::Range<usize>,
+    ) {
         if !state.rebuilds_indices {
             return;
         }
         #[cfg(test)]
-        {
+        if modes.start == 0 && !modes.is_empty() {
             self.index_builds += 1;
         }
         let count = self.budgets.categories.len();
@@ -646,9 +653,9 @@ impl ConsumerMarket {
         let Some(first) = self.indices.first_mut() else {
             return;
         };
-        first
+        first[modes.clone()]
             .par_iter_mut()
-            .zip(&mut self.index_entries)
+            .zip(&mut self.index_entries[modes])
             .for_each(|(index, entries)| {
                 // Sorting here leaves `from_entries` an already sorted run, which it checks
                 // in O(entries); sorted output is unique, so the index is the same.
@@ -658,16 +665,26 @@ impl ConsumerMarket {
             });
     }
 
-    /// Copies the first category's indices to every other category. Every category has the
-    /// same membership, so a copy is the index its own build would give (`SIM-02-K`).
-    /// O(K × H), the categories in parallel.
-    pub(crate) fn copy_refreshed_indices(&mut self, state: &RefreshState) {
+    /// Copies the refresh makes after its build: one for each category after the first.
+    pub(crate) fn refreshed_index_copies(&self) -> usize {
+        self.indices.len().saturating_sub(1)
+    }
+
+    /// Copies the first category's indices to categories `copies` after it (copy `c` is
+    /// category `c + 1`). Every category has the same membership, so a copy is the index its
+    /// own build would give (`SIM-02-K`). O(copies × H), the categories in parallel.
+    pub(crate) fn copy_refreshed_categories(
+        &mut self,
+        state: &RefreshState,
+        copies: std::ops::Range<usize>,
+    ) {
         if !state.rebuilds_indices {
             return;
         }
         if let Some((first, rest)) = self.indices.split_first_mut() {
             let first = &*first;
-            rest.par_iter_mut()
+            rest[copies]
+                .par_iter_mut()
                 .for_each(|indices| indices.clone_from(first));
         }
     }
@@ -709,18 +726,35 @@ impl ConsumerMarket {
         }
     }
 
-    /// A refresh's last phase: whether the preceding book survived and, if not, the claims'
-    /// reset; then the owners' receipt storage and the refresh's revisions. Returns whether
-    /// the preceding book survived. O(1) when retained, O(H × K + owners) otherwise.
+    /// A refresh's last phases at once: [`Self::begin_refresh_finish`], the claims' reset of a
+    /// book not retained ([`Self::reset_refresh_claims`] over every household range and
+    /// [`Self::reset_refresh_availability`] over every index) and [`Self::end_refresh`].
+    /// Returns whether the preceding book survived. O(1) when retained, O(H × K + owners)
+    /// otherwise.
+    #[cfg(test)]
     pub(crate) fn finish_refresh(
+        &mut self,
+        state: &mut RefreshState,
+        inputs: &RefreshInputs<'_>,
+    ) -> bool {
+        self.begin_refresh_finish(state, inputs);
+        self.reset_refresh_claims(state, 0..inputs.households.len());
+        self.reset_refresh_availability(state, 0..self.claim_availability_indices());
+        self.end_refresh(state, inputs)
+    }
+
+    /// The refresh's finish (`SIM-02-K`): whether the preceding book survived and, if not, the
+    /// start of the claims' reset. Then [`Self::reset_refresh_claims`] over every household
+    /// range, [`Self::reset_refresh_availability`] over every index and [`Self::end_refresh`].
+    /// Returns whether the preceding book survived. O(1) when retained, O(owners + H × K)
+    /// fills otherwise.
+    pub(crate) fn begin_refresh_finish(
         &mut self,
         state: &mut RefreshState,
         inputs: &RefreshInputs<'_>,
     ) -> bool {
         let RefreshState {
             budgets_unchanged,
-            output_ports,
-            revision,
             changed,
             walking_changed,
             length_changed,
@@ -756,40 +790,93 @@ impl ConsumerMarket {
         ]) {
             *count += u64::from(occurred);
         }
+        state.retained = retained;
         if !retained {
             self.frontage_sensitive = false;
-            self.reset_claims();
+            self.begin_claims_reset();
         }
-        self.budgets
-            .prepare_owners(inputs.allocator.buildings.len(), output_ports);
-        self.visited.resize(inputs.households.len(), 0);
-        self.revision = Some(revision);
-        self.frontage_revision = network.frontage_delay_revision;
-        self.refreshing = false;
         retained
+    }
+
+    /// Returns the accounts of households `range` to their prepared budgets when the book is
+    /// not retained (`SIM-02-K`). O(range × K) in parallel.
+    pub(crate) fn reset_refresh_claims(
+        &mut self,
+        state: &RefreshState,
+        range: std::ops::Range<usize>,
+    ) {
+        if !state.retained {
+            self.budgets.reset_claim_funds(range);
+        }
+    }
+
+    /// Refills the availability of indices `range` (index `i` is category `i / 2`, mode
+    /// `i % 2`) from the reset accounts when the book is not retained (`SIM-02-K`). O(H) an
+    /// index, the indices in parallel.
+    pub(crate) fn reset_refresh_availability(
+        &mut self,
+        state: &RefreshState,
+        range: std::ops::Range<usize>,
+    ) {
+        if !state.retained {
+            self.reset_claim_availability(range);
+        }
+    }
+
+    /// The refresh's end (`SIM-02-K`): the owners' receipt storage and the refresh's
+    /// revisions; the book is whole again. Returns whether the preceding book survived. O(1)
+    /// amortized.
+    pub(crate) fn end_refresh(&mut self, state: &RefreshState, inputs: &RefreshInputs<'_>) -> bool {
+        self.budgets
+            .prepare_owners(inputs.allocator.buildings.len(), state.output_ports);
+        self.visited.resize(inputs.households.len(), 0);
+        self.revision = Some(state.revision);
+        self.frontage_revision = inputs.network.frontage_delay_revision;
+        self.refreshing = false;
+        state.retained
     }
 
     /// Returns all accounts to their prepared recurring budgets in O(H*K + owners).
     /// The caller must keep this census's household, basket and access inputs immutable.
     /// Receipt and bucket storage remain allocated; no budgets or routes are requoted.
     pub(crate) fn reset_claims(&mut self) {
+        self.begin_claims_reset();
+        self.budgets
+            .reset_claim_funds(0..self.budgets.households.len());
+        self.reset_claim_availability(0..self.claim_availability_indices());
+    }
+
+    // The claims' reset's start: the quote revision and the receipt books. O(owners).
+    fn begin_claims_reset(&mut self) {
         self.bump_quote_revision();
         #[cfg(test)]
         trace_consumer_book_changed("reset_claims");
-        self.budgets.reset_claims();
+        self.budgets.begin_reset_claims();
+    }
+
+    /// Indices whose availability a claims' reset refills: two modes for each category.
+    pub(crate) fn claim_availability_indices(&self) -> usize {
+        self.indices.len() * 2
+    }
+
+    // Refills indices `range` (category `i / 2`, mode `i % 2`) from the accounts. O(H) an
+    // index, in parallel.
+    fn reset_claim_availability(&mut self, range: std::ops::Range<usize>) {
         let count = self.budgets.categories.len();
-        self.indices
+        let first = range.start;
+        let budgets = &self.budgets;
+        let access = &self.access;
+        self.indices.as_flattened_mut()[range]
             .par_iter_mut()
             .enumerate()
-            .for_each(|(category, indices)| {
-                for (mode, index) in indices.iter_mut().enumerate() {
-                    index.reset_available(|household| {
-                        let funds = self.budgets.funds[household * count + category];
-                        funds.units > 0.0
-                            && funds.gross_spending > 0.0
-                            && (mode == 0 || self.access[household].has_car)
-                    });
-                }
+            .for_each(|(offset, index)| {
+                let (category, mode) = ((first + offset) / 2, (first + offset) % 2);
+                index.reset_available(|household| {
+                    let funds = budgets.funds[household * count + category];
+                    funds.units > 0.0
+                        && funds.gross_spending > 0.0
+                        && (mode == 0 || access[household].has_car)
+                });
             });
     }
 
