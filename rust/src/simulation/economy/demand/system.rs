@@ -585,6 +585,14 @@ impl DemandSystem {
                 );
             }
             self.construction_execution.reservations = reservations;
+            // The census published every buyer's financing, which the hour's first masked
+            // business claim would refresh, one buyer at a time, in the residential slot
+            // (0.8 ms at 100k). The same refresh here leaves that claim only the buyers changed
+            // since. Masks only prune unclaimable buyers, so no result changes (`SIM-02-K`).
+            // O(changed buyers' tranches and their bucket paths).
+            if !suppliers_only {
+                funding.business.refresh_finance_masks();
+            }
         }
         self.freight_border_nodes = borders;
     }

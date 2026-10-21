@@ -128,6 +128,12 @@ impl BusinessMarket {
         self.rejection_causes
     }
 
+    /// Buyers whose finance masks wait for the next refresh, for tests.
+    #[cfg(test)]
+    pub(crate) fn changed_finance_buyers_for_test(&self) -> usize {
+        self.dirty_buyers.len()
+    }
+
     /// Uses the original complete candidate scan as an independent transactional oracle.
     #[cfg(test)]
     pub(crate) fn disable_finance_masks_for_test(&mut self) {

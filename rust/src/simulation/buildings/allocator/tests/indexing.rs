@@ -455,3 +455,49 @@ fn test_admission_order_matches_vacancy_scan() {
         }
     }
 }
+
+// The chunk lists hold each chunk's buildings in building order, whether a rebuild fills them
+// over the dense grid of the chunk bounds or, for chunks spread far apart, the map directly
+// (`SIM-02-K`).
+#[test]
+fn rebuilt_chunk_lists_hold_each_chunks_buildings_in_building_order() {
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.chunk_lists",
+        ZoneClass::Residential,
+    );
+    let centers = [
+        (3000.0, 0.0),
+        (10.0, -900.0),
+        (3000.0, 0.0),
+        (-700.0, 40.0),
+        (10.0, 5.0),
+    ];
+    for (idx, (x, z)) in centers.into_iter().enumerate() {
+        let mut building = indexed_test_building(asset.clone(), ZoneType::Residential, idx as i32);
+        building.center_x = x;
+        building.center_y = z;
+        allocator.buildings.push(building);
+    }
+    let direct = |allocator: &BuildingAllocator| {
+        let mut chunks = std::collections::HashMap::<(i32, i32), Vec<usize>>::new();
+        for (idx, b) in allocator.buildings.iter().enumerate() {
+            let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+            chunks.entry(chunk).or_default().push(idx);
+        }
+        chunks
+    };
+    allocator.rebuild_zone_index();
+    assert_eq!(allocator.building_chunks, direct(&allocator));
+    assert_eq!(allocator.building_chunks.len(), 4);
+    // Far apart, the grid would hold more than four cells a building; then back again.
+    allocator.buildings[4].center_x = 4.0e6;
+    allocator.rebuild_zone_index();
+    assert_eq!(allocator.building_chunks, direct(&allocator));
+    allocator.buildings[4].center_x = 3000.0;
+    allocator.rebuild_zone_index();
+    assert_eq!(allocator.building_chunks, direct(&allocator));
+    assert_eq!(allocator.building_chunks.len(), 3);
+}

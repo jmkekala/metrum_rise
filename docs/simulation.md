@@ -23,7 +23,7 @@ census's whole steps in slices). Part 4 (agent tick) has two commits done (lane 
 across appends and swap-removes with interleaved movement shards; then commute departures leaving
 over their minute's slots, the unused per-edge congestion deleted, save format 105, and the first
 tick after loading prepared at load), and part 5 (planning slots)
-has seven commits done (planning storage estimates from free lots, one downgrade scan, and
+has eight commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
 slots' trips on one owned route scratch that loading prepares with the job search's scratch;
@@ -34,7 +34,9 @@ lot it keeps derives the lots without regenerating the lot's generated cells; th
 finished census's book prepared for planning at minute 59 of the hour before it serves, while
 the zone index is current, with large row growth filled on the pool; then a book's pass rows kept
 across its lendings, admission's border arrival costs kept per routing revision, the minute-59
-preparation in two halves, and the removal slot's scans and zone-index rebuild on the pool).
+preparation in two halves, and the removal slot's scans and zone-index rebuild on the pool; then
+the census book's finance masks refreshed in the minute-59 preparation's second half, and the
+zone-index chunk lists filled over a dense chunk grid).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
@@ -948,7 +950,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    Planned for all of K4: about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4
    and 2.5 ms. Part 5 (planning slots) ran before part 4's remaining items, because the planning
    slots set the maximum at every tier.
-5. **K5, planning slots** (seven commits done 2026-10-21; results sections, part 5). Measured first:
+5. **K5, planning slots** (eight commits done 2026-10-21; results sections, part 5). Measured first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
    not those scans. Done: storage estimates from free lots; one downgrade scan in the actions slot;
@@ -986,22 +988,37 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    first slot 4.62 → 3.46 ms and the minute-59 preparation 4.91 → 3.77 + 2.44 ms (diagnostic). In
    `PERF-07` the 100k 1× maximum falls from 14.6 to 12.9 ms (the first hour after loading) and the
    steady worst frames are 10.3–11.0 ms (slot work 5.7–6.9, agent tick 3.4–4.0); 30k 32× p99.9 is
-   5.32 ms. **The 100k 1× target is not reached.** Nothing in the way needs a spec decision except
-   the exact form of maintained workforce totals. Done in the seventh commit: removal scans and
-   the zone-index rebuild on the pool; border arrival costs kept; pass rows kept across
-   lendings; the minute-59 preparation in two halves. Left, with findings in
-   [Decided while unattended](#decided-while-unattended):
-   - **The residential slot's re-proof of constructing buildings.** It costs 1.1–1.3 ms at 100k,
-     against 0.13 ms one slot later. The cause is probably cold freight-route-cache quotes after
-     the census republishes frontage prices; this is unverified.
+   5.32 ms. The eighth commit found the residential slot's re-proof of constructing buildings to
+   be mostly the business book's finance-mask refresh of every buyer, which the census's
+   financing publication left for the hour's first masked claim (0.8 ms at 100k); the minute-59
+   preparation's second half now runs that refresh, and the residential slot falls from 4.22 to
+   3.42 ms at 100k and from 1.33 to 1.07 ms at 30k (diagnostic). The zone-index rebuild fills the
+   chunk lists over a dense chunk grid instead of sorting every building (2.10 → 1.51 ms at
+   100k). In `PERF-07` the 100k 1× maximum stays 13.0 ms (the first hour after loading) and the
+   steady hour-slot frames 10.4–11.6 ms. **The 100k 1× target is not reached.** In steady hours,
+   every 100k 1× frame over 8 ms that is not preemption falls in one of the hour's six slot
+   minutes (:59 to :04). Each holds 4.2–4.9 ms of slot work (the minute's system plus restock
+   requests and timed events, 0.3–1.4 ms) on top of a 3.6 ms agent tick and a 0.8 ms snapshot.
+   Every such slot's work must be at or under about 3.5 ms. The next commit takes the simplest
+   scheduling choice first: the per-slot request queues (restock, job and freight requests)
+   kept out of those six slots. Then the first hour after loading: the first construction
+   start's placement (2.9–3.1 ms at 00:04, against 0.5–0.6 ms an hour later) and the slot's
+   freight requests (2.1–2.2 ms), prepared at load. Slicing a planning pass over two slots of
+   its minute follows if needed. These are scheduling choices with a gameplay side, taken under
+   the run's rule (keep the envelope closest, prefer the simpler option); they are not decisions
+   of the spec. Nothing in the way needs a spec decision except the exact form of maintained
+   workforce totals. Done in the seventh commit: removal scans and the zone-index rebuild on the
+   pool; border arrival costs kept; pass rows kept across lendings; the minute-59 preparation in
+   two halves. Done in the eighth commit: the census book's finance masks refreshed in the
+   minute-59 preparation; the zone-index chunk lists filled over a dense grid. Left, with
+   findings in [Decided while unattended](#decided-while-unattended):
    - **Zone lists** for existing buildings (0.45–0.85 ms) and the lot scan (0.23–1.1 ms).
-   - **The zone-index derivation**, 1.1–1.5 ms.
+   - **The zone-index derivation**, now 0.74 ms of 1.51 at 100k: every building read on the
+     pool, about 0.1 ms of it registry lookups by asset id; the ordered fill 0.29 ms and the
+     admission order 0.37 ms.
    - **Maintained workforce and calendar totals.** The open-job wage sum is an `f32` sum in chunk
      order, so exact maintenance needs fixed-point sums. That is a rounding choice with a
      gameplay side, which the run's rules let the coordinator make; it is deferred.
-   - **The first hour after loading at 100k.** The first construction start places in 2.46 ms
-     (0.24 ms an hour later). The first freight request builds the supplier index at once
-     (2.1 ms), because the supplier roll has no front yet.
    - The job board and destination fallbacks, and the per-building commute-quote clear (narrowing
      it changes which quotes are reused).
 
@@ -3776,6 +3793,125 @@ about 0.9 ms at 32× and 0.5 ms at 1× (an estimate: the two cities differ in mo
 walkers). The rest of the agent tick is per-agent passes over all
 115,000 agents and trip planning (6.7 ms of CPU a 32× frame), which shorter trips do not remove.
 
+#### `SIM-02-K`, part 5 — finance masks and zone-index fill (2026-10-21, eighth commit)
+
+- **Attribution first.** The residential slot's re-proof of the constructing buildings
+  (`reserve_projects`, 1.34–1.53 ms at 100k against 0.32–0.40 ms in the hour's later slots;
+  diagnostic, pinned, 8 workers, 100k 1× over 190 game minutes on the `PERF-07` cities) was
+  timed inside: of the 21 constructing buildings' proofs (1.1–1.3 ms), 0.79–0.85 ms is the
+  business book's finance-mask refresh in the hour's first masked business claim. A census
+  publishes every buyer's financing (`BusinessMarket::publish_financing`) and marks every buyer's
+  finance masks for refresh, 76,127 at 100k, and nothing refreshed them before the residential
+  slot's first claim, which refreshed them one buyer at a time; later lendings find 41. The
+  rest, 0.12–0.33 ms, is the freight route cache repricing the 128–197 retained
+  building-to-building quotes whose frontage prices the census start republished (geometry
+  unchanged, 2–11 network searches). The earlier guess, cold freight-route quotes, is that
+  remainder: the prices really changed. The removal slot's zone-index rebuild (2.10 ms at 100k)
+  was split as well: the parallel derivation 1.27 ms, of it 0.65 ms collecting and sorting every
+  building's (chunk, building) pair; registry lookups by asset id are about 0.1 ms of it.
+- **What changed:**
+  1. **The minute-59 preparation refreshes the census book's finance masks.** The preparation's
+     second half (slot 953, or a full preparation) runs the same dirty-buyer refresh on the
+     census book that the hour's first masked claim would run, so the residential slot refreshes
+     only the buyers changed since (20–41). Finance masks only prune buyers that cannot claim at
+     a price class (test builds assert after every pass that they are never narrower than
+     exact), so no result changes. O(changed buyers' tranches and their bucket paths), moved
+     from slot 0 to slot 953.
+  2. **The zone-index rebuild fills the chunk lists over a dense chunk grid.** Instead of
+     collecting every building's (chunk, building) pair and sorting them on the pool, the
+     rebuild moves each chunk list into a dense grid over the chunk bounds (bounds reduced on
+     the pool), pushes each building in building order in the ordered fill it already makes,
+     and moves the lists back into the map, keeping their storage; a grid of more than four
+     cells a building falls back to direct map fills. The lists equal the sorted fill's (each
+     chunk's buildings in building order); test builds compare them with a direct fill at every
+     rebuild. O(B/p + chunks) plus the O(B) ordered fill, against O(B/p + B log B / p).
+- **Per slot** (diagnostic as above; before = the seventh commit's code with the same timing
+  points, 100k hours 1–3 and 30k 32× hours 1–23; after = this commit with a timing point per
+  scheduled system, 100k 1× over the full day, and with the finer points over the same spans as
+  before for the split rows), means in ms:
+
+  | Tier | Slot | Before | After |
+  | --- | --- | --- | --- |
+  | 100k 1× | residential (slot 0) | 4.22 | 3.42 |
+  | 100k 1× | · its re-proof of constructing buildings | 1.34–1.53 | 0.57–0.72 |
+  | 100k 1× | commercial (slot 16) | 2.93 | 3.06 |
+  | 100k 1× | industrial (slot 32) | 3.86 | 3.74 |
+  | 100k 1× | actions (slot 48) | 4.24 | 4.16 |
+  | 100k 1× | removal window's first slot (`building removals`, slot 64) | 3.56 | 3.44 |
+  | 100k 1× | · of it the zone-index rebuild | 2.10 | 1.51 |
+  | 100k 1× | census book's preparation (slot 944) | 3.49 | 3.70 |
+  | 100k 1× | its second half (slot 953) | 2.66 | 3.35 |
+  | 30k 32× | residential | 1.33 | 1.07 |
+  | 30k 32× | removal window's first slot | 1.17 | 0.93 |
+  | 30k 32× | · of it the zone-index rebuild | 0.55 | 0.31 |
+  | 30k 32× | census book's second half (slot 953) | 0.87 | 1.11 |
+
+  Commercial, industrial, actions and slot 944 run unchanged code and vary by about ±0.3 ms
+  between runs; slot 953 carries the moved refresh. The remaining 0.12–0.33 ms of the re-proof is
+  the route cache repricing the quotes whose frontage prices really changed.
+- **Not taken, with findings** (see [Decided while unattended](#decided-while-unattended)):
+  registry rows kept across zone-index rebuilds (built, measured at about 0.1 ms, reverted); the
+  zone lists for existing buildings and the lot scan; maintained workforce totals; the first
+  hour after loading (below); slicing a slot further.
+- **The first hour after loading at 100k** (diagnostic, not changed): 00:04 holds the first
+  construction start (`demand spawn tick` 2.9–3.1 ms, against 0.5–0.6 ms an hour later) and the
+  slot's freight requests (2.1–2.2 ms, against 0.25–1.2 ms in other slots of the hour) on top of
+  the removal slot. The supplier roll has no front yet, so the first freight request builds the
+  supplier index at once.
+- **Attribution of the 100k 1× frames over 8 ms** (diagnostic day with the threads' scheduler
+  statistics, the final tree with a timing point per scheduled system, pinned, full day): 191
+  frames, of them 126 work frames, every one in the hour's slot minutes (:59 to :04, one at
+  :30), with slot work of 4.2–4.9 ms (the minute's system 3.0–4.4 ms, restock requests and timed
+  events 0.3–1.4 ms) on an agent tick of 3.6 ms and a snapshot of 0.8 ms, 8.0–10.7 ms; 53
+  preempted frames (a pool worker waited 1.0–5.6 ms for a CPU; 8.0–20.5 ms); and 12 frames of
+  about 10.5 ms of slot time outside every timed system, which are the diagnostic build's log
+  writes waiting on writeback (`PERF-07` logs nothing and has none).
+- **Equivalence** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, no failures; every `envelope` metric
+  and every burst share bit-identical to the seventh commit's gate report; determinism shows no
+  differences.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`
+  against the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one session with the
+  seventh commit as the control, both on copies of the same prepared cities (save format 105,
+  unchanged). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 4.6 (9.5) | 1.12 (1.14) | 1.36 (1.42) | 0.48 (0.48) | 0 (1) |
+  | 10k | 32× | 3.6 (2.4) | 1.91 (1.96) | 2.46 (2.32) | 0.90 (0.91) | 0 (0) |
+  | 30k | 1× | 7.3 (4.7) | 1.90 (1.84) | 2.41 (2.44) | 0.90 (0.89) | 0 (0) |
+  | 30k | 32× | 7.3 (5.3) | 4.74 (4.71) | 5.25 (5.22) | 2.83 (2.79) | 0 (0) |
+  | 100k | 1× | 13.0 (13.0) | 6.35 (6.26) | 8.78 (8.91) | 4.07 (4.06) | 163 (159) |
+  | 100k | 32× | 27.2 (25.3) | 20.70 (20.49) | 24.74 (23.18) | 13.65 (13.48) | 2,700 (2,700) |
+
+  Every gate limit passes for both builds. **100k 1×:** the hour frames' hourly part falls from
+  4.8 to 3.7–3.9 ms, but those frames still total 10.4–11.6 ms, so the count over 8 ms and p99
+  do not move (163 against 159; p99.9 8.78 against 8.91 ms). The maximum, 13.0 ms at 00:04, is
+  the first hour after loading. **10k and 30k:** the full-day maxima above the control's were
+  single agent frames (the preemption pattern of [Frame budget](#frame-budget-perf-07)). A
+  recheck of the 10k and 30k tiers in the same session (two rounds alternating the control and
+  this build, each on a fresh copy of the same cities), max ms round 1 / round 2, control in
+  parentheses: 10k 1× 3.66 / 3.07 (7.66 / 4.06), 10k 32× 2.35 / 2.35 (2.76 / 2.35), 30k 1×
+  3.93 / 5.00 (4.98 / 7.19), 30k 32× 5.43 / 6.25 (5.92 / 5.48); no frame over 8 ms in any round.
+  10k and 30k meet 8 ms at both speeds. **100k 32×:** 27.2 ms (25.3), within the run-to-run
+  variation of that tier (the seventh commit measured 25.4 and 26.6 ms), open question 6.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the seventh commit as
+  control: hour means 1.13–1.16, 4.07–4.08, 7.93–8.16 and 27.38–27.81 ms (control 1.20–1.40,
+  4.33–4.46, 8.14–8.34 and 27.38–27.43); level to slightly lower, and the same work-count limits
+  fail.
+- **Build identity:** rustc 1.99.1; the gate, the suites, `PERF-07`, its recheck and
+  `./run.sh --test` ran on the committed sources, `PERF-01` on the same binary in the
+  coordinator's session; `PERF-07` pinned with `--cpus 0,2,4,6,8,10,12,14`,
+  `RAYON_NUM_THREADS=8`, the control on the same prepared cities.
+- **Tests.** 2,550 release and 2,550 debug library tests (two new) and the 4 growth integration
+  tests pass; clippy adds nothing new. `./run.sh --test` in an isolated profile passes, with no
+  script error. New: `the_census_books_preparation_refreshes_its_business_finance_masks` (the
+  census leaves changed buyers; the preparation's first half keeps them, its second half
+  refreshes them all) and `rebuilt_chunk_lists_hold_each_chunks_buildings_in_building_order` (the
+  grid path, the direct path for chunks far apart, and back).
+- **Save format:** 105, unchanged; nothing new is saved (the masks and the grid are derived).
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -5894,6 +6030,50 @@ alternatives and the evidence. The user reviews these on return.
   economy design choice worth 0.4–0.9 ms of agent tick at 100k, and open question 6 stands with
   or without it; the entry claim removes stacked trucks but not the border queue. The order
   continues with part 5's remaining 100k 1× items, then part 7 (acceptance).
+- **`SIM-02-K` part 5 (eighth commit) — the census book's finance masks refreshed at the
+  minute-59 preparation.** A census publishes every buyer's financing and marks every buyer's
+  finance masks for refresh (76,127 at 100k); the hour's first masked business claim, in the
+  residential slot's re-proof of the constructing buildings, refreshed them one at a time
+  (0.79–0.85 ms). Options: (a) the same dirty-buyer refresh in the preparation's second half
+  (taken: the same function in the same order, moved from slot 0 to slot 953, which has room;
+  results unchanged because masks only prune buyers that cannot claim, and test builds assert
+  after every pass that masks are never narrower than exact); (b) a parallel full mask reset
+  when most buyers are dirty (exact masks, probably cheaper, but narrower masks change scan
+  costs and the test builds' quote counters; not needed for the slot); (c) the refresh inside
+  the census step that publishes the financing (unbudgeted work in a work-unit-sliced census
+  slot, and a census publishes after every proof slice). Evidence: dirty buyers at the first
+  claim 76,127 before, 20 after; residential slot 4.22 → 3.42 ms at 100k, slot 953
+  2.66 → 3.35 ms (diagnostic).
+- **`SIM-02-K` part 5 (eighth commit) — the chunk lists filled over a dense grid, not kept
+  registry rows.** The zone-index derivation was first given registry rows kept across rebuilds
+  where the building change log names what changed (exact, with a test-build comparison); it
+  saved about 0.1 ms, because the lookups by asset id are a small part of reading every
+  building, and it would have tied the zone index to every asset and zone change being logged,
+  so it was reverted. A counting sort of the (chunk, building) pairs saved only 0.24 ms (its two
+  serial passes cost 0.35 ms); filling the chunk lists in the ordered fill over a dense grid of
+  the chunk bounds saves 0.59 ms and needs no sort at all. Same lists, no gameplay side.
+- **`SIM-02-K` part 5 (eighth commit) — whole-city test-build checks in timing runs.** `PERF-07`
+  and the diagnostic runs execute the library test binary, so `#[cfg(test)]` code runs in them;
+  a new whole-city check must be gated by `debug::work::city_checks()` (switched off by the
+  populated runs), as the kept pass rows' check is. Found when an ungated check doubled the
+  zone-index rebuild in a diagnostic run.
+- **`SIM-02-K` part 5 (eighth commit) — the 100k 1× target not reached; scheduling choices
+  next.** After this commit the 100k 1× frames over 8 ms that are not preemption all fall in the
+  hour's six slot minutes (:59 census-book preparation, :00 residential, :01 commercial, :02
+  industrial, :03 actions, :04 removals): slot work 4.2–4.9 ms (the minute's system 3.0–4.4 ms
+  plus restock requests and timed events 0.3–1.4 ms) on a 3.6 ms agent tick and a 0.8 ms
+  snapshot. No remaining single setup cost is large enough: the largest left are the zone lists
+  and lot scan (0.45–1.1 ms a zone slot), the zone-index derivation (0.74 ms) and the maintained
+  workforce totals (about 0.9 ms a lending, needing fixed-point wage sums). Options: (a) slice
+  each planning pass over two slots of its minute (preparation and snapshot, then the plan), a
+  scheduling change of a few game seconds; (b) keep the queues (restock, job, freight requests)
+  out of the six heavy slots, costing them six of 1,024 slots an hour; (c) the agent-tick items
+  of part 4 (indoor agents off the per-frame pass, 0.3–0.5 ms a frame). These are scheduling
+  choices with a gameplay side, which the run's rules let the coordinator make (keep the
+  envelope closest, prefer the simpler option), not decisions of the spec. Chosen order: (b)
+  first, the simplest, in the next commit; then the first hour after loading; then (a) if
+  needed. Not taken in this commit: each changes gameplay timing and none was needed to show the
+  attribution.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

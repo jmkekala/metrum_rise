@@ -426,9 +426,11 @@ Regenerated rows still reuse entrance geometry only when exact door coordinates,
 edge/side, lane revision and CCH generation match. Rows keep the full rebuild's owner/key order,
 so candidate order, financing and job-lock expiry are unchanged. Each census's book is merged
 and laid out again in two halves in minute 59 of the hour before the one it serves (the supplier
-rows at its first slot, the buyer rows nine slots later), once the census is done and while the
-zone index is current, so the residential slot finds its rows current unless a building or
-occupancy changed in that last minute. A lending of the same book keeps the live operation and
+rows at its first slot, the buyer rows nine slots later; the second half also refreshes the
+business book's finance masks, which the census's financing publication marks for every buyer,
+so the residential slot's first business claim refreshes only buyers changed since), once the
+census is done and while the zone index is current, so the residential slot finds its rows
+current unless a building or occupancy changed in that last minute. A lending of the same book keeps the live operation and
 site rows of the previous one and derives again only the rows of buildings changed or appended
 since and those the previous pass overwrote (`SIM-02-K` part 5).
 

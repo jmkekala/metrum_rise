@@ -30,8 +30,62 @@ struct IndexedBuilding {
 #[derive(Clone, Default)]
 pub(crate) struct IndexScratch {
     entries: Vec<IndexedBuilding>,
-    // (chunk, building) pairs sorted by chunk, then building.
-    by_chunk: Vec<((i32, i32), u32)>,
+    // The chunk lists during a rebuild, by cell of the dense grid over the chunk bounds;
+    // empty between rebuilds, some keeping storage.
+    grid_lists: Vec<Vec<usize>>,
+}
+
+// The dense grid over chunk bounds `[min x, min z, max x, max z]`, x-major, so cells follow
+// chunk order. None for no chunks or a grid of more than four cells a building, which fills
+// the map directly.
+struct ChunkGrid {
+    bounds: [i32; 4],
+    depth: usize,
+    cells: usize,
+}
+
+impl ChunkGrid {
+    fn new(bounds: Option<[i32; 4]>, buildings: usize) -> Option<Self> {
+        let bounds = bounds?;
+        let width = (i64::from(bounds[2]) - i64::from(bounds[0]) + 1) as usize;
+        let depth = (i64::from(bounds[3]) - i64::from(bounds[1]) + 1) as usize;
+        let cells = width.checked_mul(depth)?;
+        (cells <= 4 * buildings + 64).then_some(Self {
+            bounds,
+            depth,
+            cells,
+        })
+    }
+
+    fn contains(&self, (x, z): (i32, i32)) -> bool {
+        (self.bounds[0]..=self.bounds[2]).contains(&x)
+            && (self.bounds[1]..=self.bounds[3]).contains(&z)
+    }
+
+    // A chunk within the bounds; O(1).
+    fn cell(&self, (x, z): (i32, i32)) -> usize {
+        (x - self.bounds[0]) as usize * self.depth + (z - self.bounds[1]) as usize
+    }
+
+    fn chunk(&self, cell: usize) -> (i32, i32) {
+        (
+            self.bounds[0] + (cell / self.depth) as i32,
+            self.bounds[1] + (cell % self.depth) as i32,
+        )
+    }
+}
+
+fn merge_chunk_bounds(a: Option<[i32; 4]>, b: Option<[i32; 4]>) -> Option<[i32; 4]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        ]),
+        (a, None) => a,
+        (None, b) => b,
+    }
 }
 
 /// The vacancy lists as a save holds them (`SIM-02`): claims and releases leave them out of
@@ -88,10 +142,10 @@ impl BuildingAllocator {
 
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
     ///
-    /// Each building's entries are derived on the pool, then filled in building order, and
-    /// each chunk's list is filled from a chunk-sorted copy of the building order with one
-    /// map lookup a chunk, keeping the lists' storage: the indices equal a serial pass's
-    /// (`SIM-02-K`). O(B/p + B log B / p) plus an O(B) ordered fill.
+    /// Each building's entries are derived on the pool, then filled in building order, the
+    /// chunk lists too: each list moves into a dense grid over the chunk bounds for the fill
+    /// and back into the map, keeping its storage. The indices equal a serial pass's
+    /// (`SIM-02-K`). O(B/p + chunks) plus an O(B) ordered fill.
     pub fn rebuild_zone_index(&mut self) {
         for list in &mut self.zone_index {
             list.clear();
@@ -101,18 +155,15 @@ impl BuildingAllocator {
         }
         self.vacancy_pos.clear();
         self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
-        for list in self.building_chunks.values_mut() {
-            list.clear();
-        }
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
         self.explicit_cell_site_count = 0;
 
         let mut entries = std::mem::take(&mut self.index_scratch.entries);
-        let mut by_chunk = std::mem::take(&mut self.index_scratch.by_chunk);
+        let mut grid_lists = std::mem::take(&mut self.index_scratch.grid_lists);
         // Main-thread index repair reaches here outside any pool (CODE-17).
-        crate::thread_pools::install(|| {
+        let bounds = crate::thread_pools::install(|| {
             self.buildings
                 .par_iter()
                 .enumerate()
@@ -120,11 +171,23 @@ impl BuildingAllocator {
                 .collect_into_vec(&mut entries);
             entries
                 .par_iter()
-                .enumerate()
-                .map(|(idx, entry)| (entry.chunk, idx as u32))
-                .collect_into_vec(&mut by_chunk);
-            by_chunk.par_sort_unstable();
+                .map(|entry| Some([entry.chunk.0, entry.chunk.1, entry.chunk.0, entry.chunk.1]))
+                .reduce(|| None, merge_chunk_bounds)
         });
+        let grid = ChunkGrid::new(bounds, entries.len());
+        if let Some(grid) = &grid {
+            grid_lists.resize_with(grid.cells, Vec::new);
+            for (chunk, mut list) in self.building_chunks.drain() {
+                if grid.contains(chunk) {
+                    list.clear();
+                    grid_lists[grid.cell(chunk)] = list;
+                }
+            }
+        } else {
+            for list in self.building_chunks.values_mut() {
+                list.clear();
+            }
+        }
         for (idx, entry) in entries.iter().enumerate() {
             self.explicit_cell_site_count += usize::from(entry.explicit_site);
             include_chunk(&mut self.building_chunk_bounds, entry.chunk);
@@ -137,15 +200,39 @@ impl BuildingAllocator {
                 self.vacancy_pos[idx] = self.vacancy_index[zi].len();
                 self.vacancy_index[zi].push(idx);
             }
+            match &grid {
+                Some(grid) => grid_lists[grid.cell(entry.chunk)].push(idx),
+                None => self
+                    .building_chunks
+                    .entry(entry.chunk)
+                    .or_default()
+                    .push(idx),
+            }
         }
-        for run in by_chunk.chunk_by(|a, b| a.0 == b.0) {
-            self.building_chunks
-                .entry(run[0].0)
-                .or_default()
-                .extend(run.iter().map(|&(_, idx)| idx as usize));
+        if let Some(grid) = &grid {
+            for (cell, list) in grid_lists.iter_mut().enumerate() {
+                if !list.is_empty() {
+                    self.building_chunks
+                        .insert(grid.chunk(cell), std::mem::take(list));
+                }
+            }
         }
         self.building_chunks.retain(|_, list| !list.is_empty());
-        self.index_scratch = IndexScratch { entries, by_chunk };
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            let mut direct = HashMap::<(i32, i32), Vec<usize>>::new();
+            for (idx, entry) in entries.iter().enumerate() {
+                direct.entry(entry.chunk).or_default().push(idx);
+            }
+            assert!(
+                direct == self.building_chunks,
+                "the chunk lists hold each chunk's buildings in building order"
+            );
+        }
+        self.index_scratch = IndexScratch {
+            entries,
+            grid_lists,
+        };
         self.rebuild_admission_order();
         self.dirty_index = false;
         // The zone lists name the flow fields' sources (`SIM-02-I`): the next frame compares
