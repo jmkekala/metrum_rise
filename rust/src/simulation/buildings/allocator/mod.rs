@@ -514,6 +514,10 @@ pub struct BuildingAllocator {
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
     // Geometry-only feasibility, independent of demand and dropped on allocator snapshots.
     site_feasibility: placement::SiteFeasibilityCache,
+    // Admission's border arrival sweeps, kept per routing revision; derived, never saved.
+    border_arrival: lifecycle::BorderArrivalCosts,
+    // The zone-index rebuild's reused storage.
+    index_scratch: index::IndexScratch,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
@@ -878,6 +882,8 @@ impl BuildingAllocator {
             building_site_dirty_bounds: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
+            border_arrival: Default::default(),
+            index_scratch: Default::default(),
             registry: AssetRegistry::new(),
         }
     }

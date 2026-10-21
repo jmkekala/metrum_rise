@@ -158,6 +158,42 @@ pub(super) struct ProjectReservations {
     staged_site: Option<OperationSite>,
     replacement_proof: ReplacementProof,
     prepared: bool,
+    // What the live operation and site rows were derived from at the last pass's start, so
+    // the next lending of the same book recomputes only what changed (`SIM-02-K`).
+    kept_rows: Option<KeptPassRows>,
+    // Live owners whose rows a pass overwrote (an accepted replacement, its affected
+    // financing), recomputed by the next pass's start.
+    touched_live: Vec<usize>,
+    // Rows a kept pass start recomputes; reused scratch.
+    changed_rows: Vec<usize>,
+    // Set by a split minute-59 preparation: the next site preparation prepares the supplier
+    // rows and their layout alone and leaves the rest unprepared (`SIM-02-K`). Cleared by it.
+    pub(super) suppliers_only: bool,
+    // Pass starts that kept the previous rows, for tests.
+    #[cfg(test)]
+    pub(super) kept_row_starts: usize,
+}
+
+// The inputs of every live operation and site row besides the buildings' own (`SIM-02-K`):
+// the lent book's funded rows, the freight price phase of the pass's minute, the catalog,
+// tuning and fiscal policy. Catalog and tuning are compared by address: a reload builds new
+// ones, and a census of their book (a new rows generation) precedes any lending on them.
+#[derive(Clone, Copy, PartialEq)]
+struct PassRowsKey {
+    funding: u64,
+    phase: u16,
+    catalog: usize,
+    tuning: usize,
+    fiscal: CityFiscalPolicy,
+}
+
+// Kept rows: their key, the building and entrance revisions they cover and the live count.
+#[derive(Clone, Copy)]
+struct KeptPassRows {
+    key: PassRowsKey,
+    buildings: u64,
+    entrances: u64,
+    live: usize,
 }
 
 /// Prepared project proof: workers, financing headroom bits and input receipts.
@@ -308,7 +344,12 @@ impl ProjectReservations {
         self.prepared = false;
     }
 
-    // Per-pass owner rows; neither book is copied here.
+    // Per-pass owner rows; neither book is copied here. A lending of the book the previous
+    // pass started on, at the same price phase, catalog, tuning and policy, recomputes only
+    // the rows of buildings the allocator's change log names since then, buildings appended
+    // since and rows that pass overwrote, plus every site after an entrance change:
+    // O(changed) then, instead of O(B/p) (`SIM-02-K`). Every row is a function of its own
+    // building, entrance and those inputs, so the rows equal a full recomputation.
     fn prepare_pass_rows(
         &mut self,
         funding: &crate::simulation::economy::hiring::JobFunding,
@@ -322,23 +363,109 @@ impl ProjectReservations {
         self.staged_owner = None;
         self.staged_operation = None;
         self.staged_committed = false;
-        self.reset_owner_slots(allocator.buildings.len());
+        let live = allocator.buildings.len();
+        let key = PassRowsKey {
+            funding: funding.rows_generation(),
+            phase: crate::simulation::economy::logistics::freight_price_phase(tuning, minute),
+            catalog: std::ptr::from_ref(catalog) as usize,
+            tuning: std::ptr::from_ref(tuning) as usize,
+            fiscal: *fiscal,
+        };
+        let kept = self
+            .kept_rows
+            .take()
+            .filter(|kept| kept.key == key)
+            .filter(|kept| {
+                allocator.building_changes_since(kept.buildings, &mut self.changed_rows)
+            });
+        self.reset_owner_slots(live);
         let utilities =
             local_utility_service_costs(catalog).map(|p| p * tuning.owa_import_price_multiplier);
-        self.operations[..allocator.buildings.len()]
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(index, operation)| {
-                let building = &allocator.buildings[index];
-                *operation = catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .and_then(|profile| {
-                        funding.funded_operation(
-                            index, building, profile, utilities, tuning, fiscal, minute,
-                        )
-                    });
+        let operation_row = |index: usize| {
+            let building = &allocator.buildings[index];
+            catalog
+                .profile_by_runtime_id(building.economy_profile_runtime_id)
+                .and_then(|profile| {
+                    funding.funded_operation(
+                        index, building, profile, utilities, tuning, fiscal, minute,
+                    )
+                })
+        };
+        if let Some(kept) = &kept {
+            self.changed_rows.append(&mut self.touched_live);
+            self.changed_rows.extend(kept.live.min(live)..live);
+            self.changed_rows.retain(|&row| row < live);
+            self.changed_rows.sort_unstable();
+            self.changed_rows.dedup();
+        }
+        // A long change set recomputes in full, on the pool.
+        let changed = kept.filter(|_| self.changed_rows.len() <= (live / 8).max(64));
+        self.touched_live.clear();
+        match changed {
+            Some(kept) => {
+                #[cfg(test)]
+                {
+                    self.kept_row_starts += 1;
+                }
+                for &index in &self.changed_rows {
+                    self.operations[index] = operation_row(index);
+                }
+                if kept.entrances == allocator.entrance_ref_revision() {
+                    for &owner in &self.changed_rows {
+                        self.sites[owner] =
+                            Self::site_row(allocator, catalog, tuning, minute, owner);
+                    }
+                    self.prepare_site_scratch(funding);
+                } else {
+                    self.reset_sites(funding, allocator, catalog, tuning, minute);
+                }
+            }
+            None => {
+                self.operations[..live]
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(index, operation)| *operation = operation_row(index));
+                self.reset_sites(funding, allocator, catalog, tuning, minute);
+            }
+        }
+        self.kept_rows = Some(KeptPassRows {
+            key,
+            buildings: allocator.building_ref_revision(),
+            entrances: allocator.entrance_ref_revision(),
+            live,
+        });
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            self.assert_rows_current(&operation_row, allocator, catalog, tuning, minute);
+        }
+    }
+
+    // Test builds: the kept rows equal a full recomputation, bit for bit.
+    #[cfg(test)]
+    fn assert_rows_current(
+        &self,
+        operation_row: &(impl Fn(usize) -> Option<FundedOperation> + Sync),
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        minute: u16,
+    ) {
+        (0..allocator.buildings.len())
+            .into_par_iter()
+            .for_each(|index| {
+                assert_eq!(
+                    self.operations[index].as_ref().map(operation_bits),
+                    operation_row(index).as_ref().map(operation_bits),
+                    "kept operation row {index} went stale"
+                );
+                assert!(
+                    site_matches(
+                        self.sites[index].as_ref(),
+                        Self::site_row(allocator, catalog, tuning, minute, index).as_ref()
+                    ),
+                    "kept site row {index} went stale"
+                );
             });
-        self.reset_sites(funding, allocator, catalog, tuning, minute);
     }
 
     // Retain initialized backing rows. The old live suffix and accepted projects are
@@ -380,6 +507,8 @@ impl ProjectReservations {
         self.accept_replacement_finance();
         if owner >= self.owner_base && self.operations[owner].is_none() {
             self.project_owners.push(owner);
+        } else if owner < self.owner_base {
+            self.touched_live.push(owner);
         }
         self.operations[owner] = self.staged_operation.take();
         self.sites[owner] = self.staged_site.take();
@@ -568,7 +697,10 @@ impl<'a> SiteSupply<'a> {
             book.prepare_customer_deliveries(reservations.business.receipt_count());
             book.prepare_owners(owners, project_owners * inputs);
             let supply_storage_ms = lap();
-            if let Some(components) = book.freight_components() {
+            let suppliers_only = std::mem::take(&mut reservations.suppliers_only);
+            if let Some(components) = book.freight_components()
+                && !suppliers_only
+            {
                 let assets = std::sync::OnceLock::new();
                 // Previous rows are looked up under `old_owner`, their numbering when prepared.
                 let parcel_buyers =
@@ -713,7 +845,7 @@ impl<'a> SiteSupply<'a> {
                 .reserve(owners - allocator.buildings.len());
             reservations.replacement_proof.prepare(owners);
             reservations.owner_base = allocator.buildings.len();
-            reservations.prepared = true;
+            reservations.prepared = !suppliers_only;
             let owner_storage_ms = lap();
             crate::debug_log!(
                 "economy_phases",
@@ -1457,6 +1589,46 @@ fn par_collect_rows<T: Send>(owners: usize, fill: impl Fn(usize, &mut Vec<T>) + 
             rows.append(&mut more);
             rows
         })
+}
+
+// Every field of an operation row, as bits, for test builds' kept-row checks.
+#[cfg(test)]
+fn operation_bits(operation: &FundedOperation) -> [u64; 13] {
+    let prices = operation.prices;
+    [
+        u64::from(operation.profile),
+        u64::from(operation.plan.workers),
+        u64::from(operation.plan.activity.to_bits()),
+        u64::from(operation.plan.area.to_bits()),
+        u64::from(prices.utilities[0].to_bits()),
+        u64::from(prices.utilities[1].to_bits()),
+        u64::from(prices.utilities[2].to_bits()),
+        u64::from(prices.property_tax.to_bits()),
+        u64::from(prices.imports.to_bits()),
+        u64::from(prices.carrier_quote.to_bits()),
+        u64::from(prices.truck_payload.to_bits()),
+        operation.headroom[0].to_bits(),
+        operation.headroom[1].to_bits(),
+    ]
+}
+
+// Whether two site rows are equal, floats by bits, for test builds' kept-row checks.
+#[cfg(test)]
+fn site_matches(left: Option<&OperationSite>, right: Option<&OperationSite>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.entrance == right.entrance
+                && left.buyer == right.buyer
+                && left.buyer_site == right.buyer_site
+                && left.source == right.source
+                && left.goods_multiplier.to_bits() == right.goods_multiplier.to_bits()
+                && left.exports.to_bits() == right.exports.to_bits()
+                && left.future == right.future
+                && left.public == right.public
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

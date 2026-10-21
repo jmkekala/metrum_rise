@@ -293,19 +293,48 @@ impl BuildingAllocator {
             }
             by_size[group].push(position as u32);
         }
+        // The rehousing homes, keyed on the pool and sorted by level, chunk and building, so
+        // every level's sets are bulk-built as `set_home` would fill them one by one from an
+        // empty order (`SIM-02-K`). O(V log V / p) plus the bulk builds.
+        let (homes, keyed): (Vec<_>, Vec<RehousingHome>) = crate::thread_pools::install(|| {
+            let homes: Vec<Option<RehousingHome>> = self.vacancy_index[slot]
+                .par_iter()
+                .map(|&building_idx| self.rehousing_key(building_idx))
+                .collect();
+            let mut keyed: Vec<RehousingHome> = homes.par_iter().filter_map(|home| *home).collect();
+            keyed.par_sort_unstable();
+            (homes, keyed)
+        });
+        let levels = keyed.last().map_or(0, |home| usize::from(home.0) + 1);
+        let mut by_level = vec![BTreeSet::new(); levels];
+        let mut by_level_chunk = vec![HomesByChunk::new(); levels];
+        let mut level_bounds = vec![None; levels];
+        for run in keyed.chunk_by(|a, b| a.0 == b.0) {
+            let level = usize::from(run[0].0);
+            by_level[level] = run.iter().map(|home| home.2).collect();
+            by_level_chunk[level] = run
+                .chunk_by(|a, b| a.1 == b.1)
+                .map(|homes| (homes[0].1, homes.iter().map(|home| home.2).collect()))
+                .collect();
+            level_bounds[level] = run.iter().fold(None, |bounds: Option<ChunkBounds>, home| {
+                let chunk = home.1;
+                Some(bounds.map_or((chunk, chunk), |(low, high)| {
+                    (
+                        (low.0.min(chunk.0), low.1.min(chunk.1)),
+                        (high.0.max(chunk.0), high.1.max(chunk.1)),
+                    )
+                }))
+            });
+        }
         // Positions arrive ascending, so each set is bulk-built without re-sorting work.
         self.admission_order = AdmissionOrder {
             sizes,
             by_size: by_size.into_iter().map(BTreeSet::from_iter).collect(),
-            homes: vec![None; self.vacancy_index[slot].len()],
-            by_level: Vec::new(),
-            by_level_chunk: Vec::new(),
-            level_bounds: Vec::new(),
+            homes,
+            by_level,
+            by_level_chunk,
+            level_bounds,
         };
-        for position in 0..self.vacancy_index[slot].len() {
-            let home = self.rehousing_key(self.vacancy_index[slot][position]);
-            self.admission_order.set_home(position, home);
-        }
     }
 
     pub(super) fn clear_admission_order(&mut self) {

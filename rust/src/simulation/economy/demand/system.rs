@@ -514,7 +514,8 @@ impl DemandSystem {
     /// of its own. The books are lent and restored exactly as a planning slot does, and what
     /// is prepared is derived from the city and keyed by its revisions, so no result changes.
     /// Books not valid for the live `key` at `minute_of_day` (the minute they serve) are left
-    /// alone. O(B + P) and the books' storage.
+    /// alone. With `suppliers_only` only the supplier rows and their layout are prepared and the
+    /// book stays unprepared for a later call (`SIM-02-K`). O(B + P) and the books' storage.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_planning_books(
         &mut self,
@@ -527,9 +528,10 @@ impl DemandSystem {
         network: &TransitNetwork,
         logistics: &mut ShipmentSystem,
         minute_of_day: u16,
+        suppliers_only: bool,
     ) {
         // Attempted once per book: an invalid one is left to its first planning slot.
-        funding.planning_prepared = true;
+        funding.planning_prepared = !suppliers_only;
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
         let mut borders = std::mem::take(&mut self.freight_border_nodes);
@@ -557,6 +559,7 @@ impl DemandSystem {
                 minute_of_day,
             );
             // Preparing the rows and storage is all a new supply does before its first quote.
+            reservations.suppliers_only = suppliers_only;
             SiteSupply::new(
                 &mut inputs,
                 &mut reservations,
@@ -693,7 +696,7 @@ impl DemandSystem {
             Some(&previous),
             minute_of_day,
         );
-        funding.published = Some(key);
+        funding.set_published(Some(key));
     }
 
     /// Slot `slot`'s chunk of the hour-long demand snapshot sweep (`SIM-02-I`): a share of the

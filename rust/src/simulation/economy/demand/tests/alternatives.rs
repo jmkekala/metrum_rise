@@ -2654,6 +2654,102 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
 }
 
 #[test]
+fn kept_pass_rows_equal_a_full_recomputation_across_lendings() {
+    use super::super::supply::ProjectReservations;
+    use crate::simulation::economy::hiring::JobFunding;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::network::TransitNetwork;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let mut graph = graph_with_connected_border();
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.rebuild_cch_and_check(&graph);
+    let mut allocator = BuildingAllocator::new();
+    let home_asset = register_test_asset(&mut allocator, "kept_rows_home", ZoneType::Residential);
+    let shop_asset = register_test_asset(&mut allocator, "kept_rows_shop", ZoneType::Commercial);
+    for (index, (zone, asset, workers)) in [
+        (ZoneType::Residential, home_asset, 0),
+        (ZoneType::Commercial, shop_asset.clone(), 15),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut site = building(zone, 0.0, 0, workers, asset);
+        site.center_x = 10.0 + index as f32 * 20.0;
+        site.center_y = 20.0;
+        site.frontage_t = site.center_x / 50.0;
+        site.operating_budget = 100_000.0;
+        allocator.buildings.push(site);
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut family = housed_household(0, 200, 0.0, 0.0);
+    family.employed_adults = 200;
+    family.gross_daily_wages = 100_000.0;
+    let mut funding = JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    funding.refresh(
+        &allocator,
+        std::slice::from_ref(&family),
+        &mut logistics,
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &policy,
+        &[],
+        0.0,
+        420,
+    );
+    assert!(
+        funding.capacities[1] > 0,
+        "the shop must hold a funded operation row"
+    );
+    // Test builds compare the rows of every pass start with a full recomputation.
+    let mut reservations = ProjectReservations::default();
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 420);
+    assert_eq!(
+        reservations.kept_row_starts, 0,
+        "a first lending derives every row"
+    );
+    // The same book, phase and policy, with a recorded edit and an appended building.
+    allocator.set_service_funding_override(1, 0.5);
+    let mut appended = building(ZoneType::Commercial, 0.0, 0, 15, shop_asset);
+    appended.center_x = 50.0;
+    appended.center_y = 20.0;
+    allocator.buildings.push(appended);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 421);
+    assert_eq!(
+        reservations.kept_row_starts, 1,
+        "a later lending keeps the unchanged rows"
+    );
+    // Another price phase, policy or book derives every row again.
+    let mut taxed = policy;
+    taxed.income_tax_rate += 0.01;
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &taxed, 421);
+    assert_eq!(reservations.kept_row_starts, 1);
+    funding.refresh(
+        &allocator,
+        std::slice::from_ref(&family),
+        &mut logistics,
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &taxed,
+        &[],
+        0.0,
+        421,
+    );
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &taxed, 421);
+    assert_eq!(reservations.kept_row_starts, 1);
+    reservations.reset(&funding, &allocator, &catalog, &tuning, &taxed, 422);
+    assert_eq!(reservations.kept_row_starts, 2);
+}
+
+#[test]
 fn service_projects_share_live_customers_and_replacement_rollback() {
     use super::super::spawn_need::replacement_market_covers_operation;
     use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};

@@ -61,7 +61,7 @@ pub(crate) struct FiscalRevenue {
 }
 
 /// Player-controlled fiscal policy used by live economy systems.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CityFiscalPolicy {
     /// Currency paid per unemployed adult per day while benefit duration remains.
     pub(crate) unemployment_benefit_per_adult_per_day: f32,

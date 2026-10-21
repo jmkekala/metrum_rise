@@ -286,7 +286,9 @@ promised to a new employer's staff.
 over the following hour, paced by a credit that starts at one whole admission, and launches each
 family's arrival carrier from the border to its home. The carrier waits at the border for a
 departure slot paced from its creation (`SIM-02-E`). A family whose home left before its turn is
-dropped; one whose border has lost its car road releases its home. Families still in the queue count
+dropped; one whose border has lost its car road releases its home. The border arrival sweeps are kept
+while the routing hierarchy, its metric and the graph's node roles are unchanged (`SIM-02-K`
+part 5). Families still in the queue count
 as pending arrivals. Its approved adult, elder and child composition travels with the carrier,
 survives arrival reordering and save/load, and materializes when the carrier reaches its home.
 Pending adults count as labor supply in the next forecast; each hour recounts them from the carriers
@@ -423,9 +425,12 @@ count changes. Registry, zoning-overlay, parcel-layout, lane and CCH changes reg
 Regenerated rows still reuse entrance geometry only when exact door coordinates, frontage
 edge/side, lane revision and CCH generation match. Rows keep the full rebuild's owner/key order,
 so candidate order, financing and job-lock expiry are unchanged. Each census's book is merged
-and laid out again at minute 59's first slot of the hour before the one it serves, once the
-census is done and while the zone index is current, so the residential slot finds its rows
-current unless a building or occupancy changed in that last minute (`SIM-02-K` part 5).
+and laid out again in two halves in minute 59 of the hour before the one it serves (the supplier
+rows at its first slot, the buyer rows nine slots later), once the census is done and while the
+zone index is current, so the residential slot finds its rows current unless a building or
+occupancy changed in that last minute. A lending of the same book keeps the live operation and
+site rows of the previous one and derives again only the rows of buildings changed or appended
+since and those the previous pass overwrote (`SIM-02-K` part 5).
 
 Each planning slot plans directly on the live customer, business and input books of the census
 published at the hour's first slot. A later slot first offers the residential slot's homes to

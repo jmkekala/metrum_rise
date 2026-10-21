@@ -628,8 +628,22 @@ impl HouseholdSystem {
             .operational_clock
             .household_replenishment_terminal_failure_count;
         self.ensure_daily_ledger_len();
+        // Only households whose home or reserved store is the removed building change; they
+        // are found on the pool and updated in household order. O(H/p) (`SIM-02-K`).
+        let referencing: Vec<usize> = crate::thread_pools::install(|| {
+            self.households
+                .par_iter()
+                .enumerate()
+                .filter(|(_, household)| {
+                    household.home_building_id == removed_building
+                        || household.reserved_store_building_id == removed_building
+                })
+                .map(|(household_id, _)| household_id)
+                .collect()
+        });
         let daily_ledgers = &mut self.daily_ledgers;
-        for (household_id, household) in self.households.iter_mut().enumerate() {
+        for household_id in referencing {
+            let household = &mut self.households[household_id];
             let removed_home = household.home_building_id == removed_building;
             if removed_home {
                 household.home_building_id = usize::MAX;

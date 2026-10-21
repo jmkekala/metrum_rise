@@ -634,6 +634,8 @@ impl JobFunding {
     {
         #[cfg(test)]
         let _contract_phase = crate::debug::work::phases::enter("census");
+        // The steps rewrite the funded rows (`SIM-02-K`).
+        self.rows_generation = super::RowsGeneration::next();
         let timing = timing_category().enabled();
         let mut left = budget;
         while progress.step != Step::Done && left > 0 {

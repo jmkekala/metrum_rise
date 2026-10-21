@@ -16,9 +16,35 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector2;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 impl AgentSystem {
+    // Agents any of whose building references name `building_id`, ascending: the only agents
+    // a removal's eviction and evacuation change, found on the pool. O(A/p) (`SIM-02-K`).
+    fn agents_referencing_building(&self, building_id: usize) -> Vec<usize> {
+        let agents = &self.agents;
+        crate::thread_pools::install(|| {
+            (0..agents.len())
+                .into_par_iter()
+                .filter(|&i| {
+                    [
+                        &agents.home_building,
+                        &agents.work_building,
+                        &agents.current_building,
+                        &agents.target_building,
+                        &agents.planned_target_building,
+                        &agents.next_departure_origin_building,
+                        &agents.next_departure_target_building,
+                        &agents.cached_schedule_work_building,
+                    ]
+                    .iter()
+                    .any(|column| column[i] == building_id)
+                })
+                .collect()
+        })
+    }
+
     /// Clears schedule-derived building cache fields for one agent.
     pub(crate) fn clear_schedule_building_cache(&mut self, agent_idx: usize) {
         self.agents.cached_commute_minutes[agent_idx] = 0;
@@ -240,9 +266,10 @@ impl AgentSystem {
         self.agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 
-    /// Forcefully removes all agents from a building that has been deleted.
+    /// Forcefully removes all agents from a building that has been deleted. O(A/p) to find
+    /// them, then O(1) each.
     pub fn evict_building(&mut self, building_id: usize) {
-        for i in 0..self.agents.len() {
+        for i in self.agents_referencing_building(building_id) {
             let cache_touches_building = self.agents.next_departure_origin_building[i]
                 == building_id
                 || self.agents.next_departure_target_building[i] == building_id
@@ -302,8 +329,10 @@ impl AgentSystem {
             return;
         }
 
+        // Agents that reference no removed building are left as they are, in both passes.
+        let referencing = self.agents_referencing_building(building_id);
         let mut household_targets: HashMap<usize, Option<usize>> = HashMap::new();
-        for agent_idx in 0..self.agents.len() {
+        for &agent_idx in &referencing {
             if self.agents.home_building[agent_idx] != building_id {
                 continue;
             }
@@ -328,7 +357,7 @@ impl AgentSystem {
         // Most business removals only need trips home. Resolve a border exit once,
         // and only if a physically displaced occupant has no surviving home.
         let mut border_plan = None;
-        for agent_idx in 0..self.agents.len() {
+        for &agent_idx in &referencing {
             let household_id = self.agents.household_id[agent_idx];
             let mut home_after_removal = self.agents.home_building[agent_idx];
             if home_after_removal == building_id {

@@ -476,7 +476,9 @@ fn census_books_prepared_in_the_window_play_as_books_the_planning_slots_prepare(
 // the vacancy order admission reads, so it waits for the index's own reader.
 #[test]
 fn a_stale_zone_index_defers_the_census_books_preparation() {
-    use crate::simulation::economy::hiring::PLANNING_PREPARATION_SLOT;
+    use crate::simulation::economy::hiring::{
+        PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
+    };
     let mut scenario = busy_town();
     let core = &mut scenario.core;
     step_to_chunk(core, PLANNING_PREPARATION_SLOT - 1);
@@ -487,9 +489,9 @@ fn a_stale_zone_index_defers_the_census_books_preparation() {
     core.advance_census(slot);
     assert!(core.allocator.dirty_index);
     assert!(!core.households.census_run.funding().planning_prepared);
-    // Its reader rebuilds it; the next window slot prepares the book.
+    // Its reader rebuilds it; the preparation's second-half slot prepares the book.
     core.allocator.rebuild_zone_index();
-    core.advance_census(slot + 1);
+    core.advance_census(slot + PLANNING_PREPARATION_REST_SLOT - PLANNING_PREPARATION_SLOT);
     assert!(core.households.census_run.funding().planning_prepared);
 }
 

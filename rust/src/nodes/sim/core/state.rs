@@ -36,7 +36,8 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{
-    CENSUS_WINDOW_START, FrozenCensusParameters, PLANNING_PREPARATION_SLOT,
+    CENSUS_WINDOW_START, FrozenCensusParameters, PLANNING_PREPARATION_REST_SLOT,
+    PLANNING_PREPARATION_SLOT,
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -1299,10 +1300,15 @@ impl SimCore {
         }
         // A stale zone index waits for its own reader: its rebuild resets the vacancy order
         // admission reads, which the preparation must not move (`SIM-02-K`).
-        if slot % SLOTS_PER_HOUR >= PLANNING_PREPARATION_SLOT
+        // The window's first preparation slot prepares the supplier rows alone; everything
+        // else waits for the second half's slot, so the two never share a 32× frame
+        // (`SIM-02-K`).
+        let slot_of_hour = slot % SLOTS_PER_HOUR;
+        if (slot_of_hour == PLANNING_PREPARATION_SLOT
+            || slot_of_hour >= PLANNING_PREPARATION_REST_SLOT)
             && !self.allocator.zone_index_needs_rebuild()
         {
-            self.prepare_census_book_for_planning(slot);
+            self.prepare_census_book_for_planning(slot, slot_of_hour == PLANNING_PREPARATION_SLOT);
         }
         if self
             .households
@@ -1367,8 +1373,9 @@ impl SimCore {
             &self.transit_network,
             &mut self.logistics,
             self.time.minute_of_day,
+            false,
         );
-        self.prepare_census_book_for_planning(self.time.absolute_slot());
+        self.prepare_census_book_for_planning(self.time.absolute_slot(), false);
         // The copy is exact to its rows; preparing it again gives its storage the spare rows
         // the live books took (`utils/storage.rs`).
         if let Some(funding) = self.households.warm_census_storage() {
@@ -1382,6 +1389,7 @@ impl SimCore {
                 &self.transit_network,
                 &mut self.logistics,
                 self.time.minute_of_day,
+                false,
             );
         }
     }
@@ -1390,8 +1398,10 @@ impl SimCore {
     // prepared for the hour it serves, from minute 59's first slot (`PLANNING_PREPARATION_SLOT`)
     // in the window while the zone index is current, and at load, not by the planning slot that
     // first lends it (`SIM-02-K`): the census refilled a book whose site rows were laid out two
-    // hours before. O(1) otherwise.
-    fn prepare_census_book_for_planning(&mut self, slot: u64) {
+    // hours before. With `suppliers_only` the lending prepares the supplier rows and their
+    // layout alone and leaves the book unprepared, so the next window slot prepares the rest
+    // on current supplier rows. O(1) otherwise.
+    fn prepare_census_book_for_planning(&mut self, slot: u64, suppliers_only: bool) {
         let key = self.households.census_key(&self.transit_network);
         let Some(funding) = self.households.unprepared_census_book() else {
             return;
@@ -1412,6 +1422,7 @@ impl SimCore {
             &self.transit_network,
             &mut self.logistics,
             minute_of_day,
+            suppliers_only,
         );
         if let Some(start) = timing {
             debug_log!(

@@ -56,6 +56,12 @@ pub(crate) const REMOVAL_WINDOW_START: u64 = 4 * SLOTS_PER_MINUTE;
 pub(crate) const PLANNING_PREPARATION_SLOT: u64 = SLOTS_PER_HOUR - SLOTS_PER_MINUTE;
 const _: () = assert!(PLANNING_PREPARATION_SLOT >= CENSUS_WINDOW_START);
 
+/// First slot of the hour at which the preparation's second half runs (`SIM-02-K`): the first
+/// slot prepares the supplier rows alone, and this one, nine slots later, everything else. A
+/// 32× frame crosses about 8.5 slots, so the two halves never share a frame.
+pub(crate) const PLANNING_PREPARATION_REST_SLOT: u64 = PLANNING_PREPARATION_SLOT + 9;
+const _: () = assert!(PLANNING_PREPARATION_REST_SLOT < SLOTS_PER_HOUR);
+
 /// Whether building and household swap-removes may run at absolute `slot` (`SIM-02-J`): slots
 /// [`REMOVAL_WINDOW_START`] to [`CENSUS_WINDOW_START`] − 1 of its hour. A removal earlier in the
 /// hour would invalidate the published books the planning slots read; one in the census window
@@ -236,7 +242,7 @@ impl RollingCensus {
             publish_slot,
             key: Some(key),
         });
-        self.funding.published = Some(key);
+        self.funding.set_published(Some(key));
         // The census refills the book: it is prepared again once finished (`SIM-02-K`).
         self.funding.planning_prepared = false;
         self.complete_on_load = false;
@@ -403,7 +409,7 @@ impl RollingCensus {
         inputs.consume();
         inputs.keep_published_front();
         funding.service_capacities.extend_from_slice(adopted);
-        funding.published = Some(key);
+        funding.set_published(Some(key));
         *live = funding;
         self.expected_passes = progress.passes();
         self.expected_work = progress.step_work();

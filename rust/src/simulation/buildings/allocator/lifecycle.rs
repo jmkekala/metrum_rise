@@ -119,17 +119,48 @@ pub(crate) struct BuildingRemovalRequest {
     pub(crate) kind: BuildingRemovalKind,
 }
 
-// Car costs from every car-connected border node, built once per admission batch: one sweep
-// per border instead of one route query per border per household (`ALLOC-04`).
-struct BorderArrivalCosts {
+// Car costs from every car-connected border node: one sweep per border instead of one route
+// query per border per household (`ALLOC-04`). Kept across admission batches while the routing
+// hierarchy, its metric and the graph's node roles are those it was swept on (`SIM-02-K`).
+#[derive(Clone, Default)]
+pub(super) struct BorderArrivalCosts {
+    // CCH build generation, metric revision and node-role revision of the tables; `None` when
+    // never swept or swept while a topology edit waited for its CCH rebuild.
+    key: Option<(u32, u64, u64)>,
     // Ascending node ids.
     borders: Vec<u32>,
     costs: Vec<CchCostsFrom>,
 }
 
 impl BorderArrivalCosts {
-    // O(nodes) border scan, then `CchGraph::costs_from_each` over the borders.
-    fn new(transit_network: &TransitNetwork, graph: &RegionGraph) -> Self {
+    // The revisions the tables follow, or `None` while edited chunks wait for the CCH rebuild:
+    // the sweeps read the CCH alone and the border set the graph's node roles and edges, and
+    // every topology edit marks chunks and rebuilds the CCH, moving its build generation.
+    fn revision(transit_network: &TransitNetwork, graph: &RegionGraph) -> Option<(u32, u64, u64)> {
+        let cch = &transit_network.cch_graph;
+        transit_network.cch_dirty_chunks.is_empty().then_some((
+            cch.build_generation,
+            cch.metric_revision,
+            graph.node_role_revision(),
+        ))
+    }
+
+    // O(1) when the revisions match; otherwise the O(nodes) border scan, then
+    // `CchGraph::costs_from_each` over the borders, as every admission batch did before.
+    fn refresh(&mut self, transit_network: &TransitNetwork, graph: &RegionGraph) {
+        let key = Self::revision(transit_network, graph);
+        if key.is_some() && self.key == key {
+            #[cfg(test)]
+            if crate::debug::work::city_checks() {
+                self.assert_current(transit_network, graph);
+            }
+            return;
+        }
+        *self = Self::sweep(transit_network, graph);
+        self.key = key;
+    }
+
+    fn sweep(transit_network: &TransitNetwork, graph: &RegionGraph) -> Self {
         let borders: Vec<u32> = (0..graph.node_count() as u32)
             .into_par_iter()
             .filter(|&node| {
@@ -145,7 +176,30 @@ impl BorderArrivalCosts {
         let costs = transit_network
             .cch_graph
             .costs_from_each(&borders, graph, TransitFlags::CAR);
-        Self { borders, costs }
+        Self {
+            key: None,
+            borders,
+            costs,
+        }
+    }
+
+    // Test builds: the kept tables equal a fresh sweep, bit for bit.
+    #[cfg(test)]
+    fn assert_current(&self, transit_network: &TransitNetwork, graph: &RegionGraph) {
+        let fresh = Self::sweep(transit_network, graph);
+        assert_eq!(
+            self.borders, fresh.borders,
+            "kept arrival borders went stale"
+        );
+        for (kept, fresh) in self.costs.iter().zip(&fresh.costs) {
+            for node in 0..graph.node_count() as u32 {
+                assert_eq!(
+                    kept.cost_to(node).map(f32::to_bits),
+                    fresh.cost_to(node).map(f32::to_bits),
+                    "kept arrival costs went stale"
+                );
+            }
+        }
     }
 }
 
@@ -455,7 +509,9 @@ impl BuildingAllocator {
             );
         }
         let mut launched = 0;
-        let mut arrival = None;
+        // The kept sweeps, refreshed by the batch's first applicant offer as they were built.
+        let mut arrival = std::mem::take(&mut self.border_arrival);
+        let mut arrival_current = false;
         // Each lookup is O(1) over the existing vacancy index; rejection neither
         // reserves income nor prevents another home/family from being considered.
         let attempt_limit = applicant_offer_limit(households_to_spawn);
@@ -479,10 +535,12 @@ impl BuildingAllocator {
             ) else {
                 continue;
             };
-            let arrival =
-                arrival.get_or_insert_with(|| BorderArrivalCosts::new(transit_network, graph));
+            if !arrival_current {
+                arrival.refresh(transit_network, graph);
+                arrival_current = true;
+            }
             let Some(border_node) =
-                self.household_arrival_border_node(home_idx, arrival, transit_network, graph)
+                self.household_arrival_border_node(home_idx, &arrival, transit_network, graph)
             else {
                 for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
                     debug_log!(
@@ -512,6 +570,7 @@ impl BuildingAllocator {
                 );
             }
         }
+        self.border_arrival = arrival;
         launched
     }
 
@@ -1675,5 +1734,76 @@ mod clearance_tests {
         allocator.buildings[0].worker_count = 0;
         allocator.buildings[0].set_construction_hours_left(1);
         assert!(!allocator.can_demand_despawn(0));
+    }
+}
+
+#[cfg(test)]
+mod border_arrival_tests {
+    use super::*;
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::network::types::EdgeClass;
+
+    // The border list and every cost of kept tables, as bits.
+    fn tables(arrival: &BorderArrivalCosts, graph: &RegionGraph) -> (Vec<u32>, Vec<Option<u32>>) {
+        let costs = arrival
+            .costs
+            .iter()
+            .flat_map(|costs| (0..graph.node_count() as u32).map(|node| costs.cost_to(node)))
+            .map(|cost| cost.map(f32::to_bits))
+            .collect();
+        (arrival.borders.clone(), costs)
+    }
+
+    #[test]
+    fn kept_border_arrival_costs_follow_the_routing_revisions() {
+        let mut allocator = BuildingAllocator::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        network.add_road(
+            &mut graph,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            1,
+            1,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        graph.set_node_type(0, NodeType::Border);
+        network.rebuild_pathing(&mut graph);
+        let mut arrival = BorderArrivalCosts::default();
+        arrival.refresh(&network, &graph);
+        assert!(arrival.key.is_some(), "a current network keeps its sweeps");
+        assert_eq!(arrival.borders, [0]);
+        assert_eq!(
+            tables(&arrival, &graph),
+            tables(&BorderArrivalCosts::sweep(&network, &graph), &graph)
+        );
+
+        // A border role set without a topology edit moves the node-role revision only.
+        let far_end = graph.edge(0).end_node;
+        graph.set_node_type(far_end, NodeType::Border);
+        arrival.refresh(&network, &graph);
+        assert_eq!(arrival.borders, [0, far_end]);
+        assert_eq!(
+            tables(&arrival, &graph),
+            tables(&BorderArrivalCosts::sweep(&network, &graph), &graph)
+        );
+
+        // While an edit waits for its CCH rebuild the sweeps are taken fresh and not kept.
+        network.mark_point_dirty(Vector3::new(0.0, 0.0, 0.0));
+        arrival.refresh(&network, &graph);
+        assert!(arrival.key.is_none());
+        network.rebuild_pathing(&mut graph);
+        let generation = network.cch_graph.build_generation;
+        arrival.refresh(&network, &graph);
+        assert_eq!(
+            arrival.key,
+            Some((
+                generation,
+                network.cch_graph.metric_revision,
+                graph.node_role_revision()
+            ))
+        );
     }
 }

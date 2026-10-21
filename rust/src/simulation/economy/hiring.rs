@@ -35,8 +35,9 @@ mod steps;
 
 pub(crate) use inputs::{CensusInputs, FILL_SLOTS, FrozenCensusParameters, SavedCensusInputs};
 pub(crate) use rolling::{
-    CENSUS_WINDOW_START, CensusKey, PLANNING_PREPARATION_SLOT, REMOVAL_WINDOW_START, RollingCensus,
-    SavedRollingCensus, StructureRevisions, WindowAction, removals_allowed,
+    CENSUS_WINDOW_START, CensusKey, PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
+    REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus, StructureRevisions, WindowAction,
+    removals_allowed,
 };
 pub(crate) use steps::{CensusProgress, StepWork};
 #[cfg(test)]
@@ -95,6 +96,8 @@ pub(crate) struct JobFunding {
     /// The live city's key when the census started, for readers that lend its books; `None`
     /// for a census not run on the live city or since invalidated (`SIM-02-I`).
     pub(crate) published: Option<CensusKey>,
+    // Identifies the funded rows `published` covers; see [`Self::rows_generation`].
+    rows_generation: RowsGeneration,
     /// Whether a planning pass, or its preparation alone, has lent these books since a census
     /// last started refilling them (`SIM-02-K`): their site rows and planning storage persist
     /// across censuses, and a finished census's book is prepared again before it is published.
@@ -134,6 +137,50 @@ pub(crate) struct JobFunding {
     // line.
     #[cfg(test)]
     household_detail: [f64; 3],
+}
+
+// Unique per book state: drawn afresh for every new or cloned book, by every run of the
+// census steps (the only writers of the funded rows besides the invalidations) and at every
+// change of `published`, which every invalidation makes (`SIM-02-K`). Compared for equality
+// only; never saved and never read by a result.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct RowsGeneration(u64);
+
+static NEXT_ROWS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl RowsGeneration {
+    pub(super) fn next() -> Self {
+        Self(NEXT_ROWS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Default for RowsGeneration {
+    fn default() -> Self {
+        Self::next()
+    }
+}
+
+impl Clone for RowsGeneration {
+    fn clone(&self) -> Self {
+        Self::next()
+    }
+}
+
+impl JobFunding {
+    /// Sets the key the book's funded rows are published under; every change draws a new
+    /// [`Self::rows_generation`]. O(1).
+    pub(crate) fn set_published(&mut self, key: Option<CensusKey>) {
+        self.published = key;
+        self.rows_generation = RowsGeneration::next();
+    }
+
+    /// Identifies this book's funded rows (capacities, activities, carrier quotes, headroom
+    /// and freight capital) while it stays published: equal generations mean equal rows, so
+    /// planning keeps the operation rows it derived from them across the book's lendings
+    /// (`SIM-02-K`). O(1).
+    pub(crate) fn rows_generation(&self) -> u64 {
+        self.rows_generation.0
+    }
 }
 
 #[cfg(test)]
@@ -491,6 +538,7 @@ impl JobFunding {
     /// Stands in for a census that accepted `activity` at building `index`.
     #[cfg(test)]
     pub(crate) fn set_activity(&mut self, index: usize, activity: f32) {
+        self.rows_generation = RowsGeneration::next();
         self.activities
             .resize(self.activities.len().max(index + 1), 0.0);
         self.activities[index] = activity;
@@ -549,7 +597,7 @@ impl JobFunding {
             &[funding],
         );
         self.quote_revision = None;
-        self.published = None;
+        self.set_published(None);
     }
 
     /// Whether the census saw building `index` complete (`SIM-02-I`): a building that
@@ -632,7 +680,7 @@ impl JobFunding {
 
     /// Clears the live view without discarding reusable forecast storage.
     pub(crate) fn clear(&mut self) {
-        self.published = None;
+        self.set_published(None);
         self.saw_operating.clear();
         self.import_plans.clear();
         self.market_revision = None;
@@ -648,7 +696,7 @@ impl JobFunding {
 
     /// Withdraws a removed employer immediately, before the next hourly forecast.
     pub(crate) fn invalidate_building(&mut self, index: usize) {
-        self.published = None;
+        self.set_published(None);
         self.import_plans.invalidate(index);
         self.market_revision = None;
         if let Some(capacity) = self.capacities.get_mut(index) {
@@ -675,7 +723,7 @@ impl JobFunding {
     /// Scratch is reused; unmoved buildings need no scan or copy.
     pub(crate) fn remap_buildings(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
         if !mapping.is_empty() {
-            self.published = None;
+            self.set_published(None);
         }
         self.import_plans.remap(mapping);
         self.market_revision = None;

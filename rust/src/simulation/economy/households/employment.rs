@@ -276,7 +276,8 @@ impl HouseholdSystem {
             treasury_balance,
             minute_of_day,
         );
-        self.job_funding.published = Some(self.census_key(transit_network));
+        self.job_funding
+            .set_published(Some(self.census_key(transit_network)));
         self.publish_funded_job_capacities(allocator);
         self.assign_agent_workplaces_from_census(
             agents,

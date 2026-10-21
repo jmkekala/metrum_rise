@@ -648,10 +648,11 @@ impl SimCore {
         );
         // A census of the live city; the hour's census still publishes at the next hour's
         // first slot (`SIM-02-I`).
-        self.households.job_funding.published = match published {
+        let published = match published {
             Some(None) => None,
             _ => Some(self.households.census_key(&self.transit_network)),
         };
+        self.households.job_funding.set_published(published);
     }
 
     fn log_fiscal_policy_change(
