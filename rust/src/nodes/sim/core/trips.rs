@@ -16,7 +16,7 @@
 //! every few minutes. Each event costs O(1) plus the arrival it settles.
 
 use super::frame::EconomyObserver;
-use super::schedule::SimEvent;
+use super::schedule::{SimEvent, event_slot};
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::Handle;
@@ -130,9 +130,10 @@ impl SimCore {
     }
 
     // Schedules `trip` of shipment `shipment` at `slot`, or the wheel's next slot if that is
-    // later, and records the slot on the shipment as its one live trip event. O(log S).
+    // later, moved out of a queue-free slot (`event_slot`), and records the slot on the shipment
+    // as its one live trip event. O(log S).
     fn schedule_freight_trip(&mut self, slot: u64, shipment: u64, trip: TripEvent) {
-        let slot = slot.max(self.events.next_slot());
+        let slot = event_slot(slot.max(self.events.next_slot()));
         self.logistics.set_trip_event_slot(shipment, slot);
         self.schedule_trip(slot, trip);
     }
@@ -188,7 +189,10 @@ impl SimCore {
         self.agents.held_arrivals = arrivals;
     }
 
+    /// Schedules `trip` at `slot`, or the wheel's next slot if that is later, moved out of a
+    /// queue-free slot (`event_slot`, `SIM-02-K`). O(log S).
     pub(super) fn schedule_trip(&mut self, slot: u64, trip: TripEvent) {
+        let slot = event_slot(slot.max(self.events.next_slot()));
         self.events.schedule(slot, SimEvent::Trip(trip));
     }
 

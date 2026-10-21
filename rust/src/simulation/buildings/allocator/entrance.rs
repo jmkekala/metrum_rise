@@ -227,6 +227,7 @@ impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
         let old_entrances = traffic_debug.then(|| self.entrances.clone());
+        reserve_entrance_rows(&mut self.entrances, self.buildings.len());
         // Main-thread network and asset edits reach here outside any pool (CODE-17).
         crate::thread_pools::install(|| {
             self.buildings
@@ -253,6 +254,7 @@ impl BuildingAllocator {
         lanes: &LaneSystem,
         registry: &crate::assets::AssetRegistry,
     ) {
+        reserve_entrance_rows(&mut self.entrances, self.buildings.len());
         self.buildings
             .par_iter()
             .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
@@ -555,6 +557,15 @@ impl BuildingAllocator {
 
         best.map(|candidate| candidate.total_time_s)
     }
+}
+
+// Empties the entrance cache with room for `buildings` rows and the spare rows of
+// `reserve_rows`, so the next rebuild fills it in place and the first building appended after
+// a load, whose rebuild sized it exactly, does not copy it (`SIM-02-K`). Capacity never changes
+// a result. O(1) unless it grows.
+fn reserve_entrance_rows(entrances: &mut Vec<BuildingEntrance>, buildings: usize) {
+    entrances.clear();
+    crate::utils::storage::reserve_rows(entrances, buildings);
 }
 
 fn log_entrance_cache_rebuild(

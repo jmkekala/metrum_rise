@@ -1429,6 +1429,29 @@ fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
     );
 }
 
+// Loading rebuilds the entrance cache, the site clients and the zone index at once; the first
+// building appended after it must not copy them (`SIM-02-K`).
+#[test]
+fn rebuilt_building_tables_keep_spare_rows_for_the_next_building() {
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    let home = register_test_asset(&mut core.allocator, "spare_home", ZoneType::Residential);
+    for _ in 0..16 {
+        add_test_complete_building(&mut core, home.clone(), ZoneType::Residential);
+    }
+    let allocator = &mut core.allocator;
+    allocator.rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    allocator.rebuild_building_site_clients(core.config.zone_cell_m);
+    allocator.rebuild_zone_index();
+    let len = allocator.buildings.len();
+    assert_eq!(allocator.entrances.len(), len);
+    assert_eq!(allocator.building_sites.len(), len);
+    assert_eq!(allocator.vacancy_pos.len(), len);
+    assert!(allocator.entrances.capacity() > len);
+    assert!(allocator.building_sites.capacity() > len);
+    assert!(allocator.vacancy_pos.capacity() > len);
+}
+
 #[test]
 fn hourly_planning_does_not_queue_the_same_parcel_twice() {
     let mut core = test_core();

@@ -87,9 +87,9 @@ crossed:
 2. Each whole hour: the **operational hour**: the pooled household hour (below), then the **hourly
    demand pass**: project planning, the household admission decision and the building actions'
    proofs ([`demand.md`](demand.md#cadence-and-handoff)). The households whose exit was claimed at
-   their daily phase leave through the `departures` queue in slots 64–479, the admitted households
+   their daily phase leave through the `departures` queue in slots 65–479, the admitted households
    are created over the hour by the `admissions` queue, and level changes and clearances are applied
-   by their queues from slot 64 (`SIM-02-J`). 00:00 is an ordinary hour (`SIM-02-G`).
+   by their queues from slot 64 for clearances and slot 65 for level changes (`SIM-02-J`). 00:00 is an ordinary hour (`SIM-02-G`).
 3. At 00:00, after the hour, the **calendar close**: the day's running totals become the
    budget report, the tax window rolls, road upkeep is charged from the rolling road length and
    the day's exit budget resets. It costs O(zones); the 00:00 hour still belongs to the closing
@@ -105,7 +105,8 @@ crossed:
 
 Household hour (`households/tick.rs`): count the households still arriving; logistics clock;
 the commute-quote expiry. Freight, housing, restock, visits and job search are request queues
-served each slot (`SIM-02-J`, [`simulation.md`](simulation.md#request-queues)).
+served each slot, except in the hour's seven queue-free slots, whose share the next slot serves
+(`SIM-02-J`, `SIM-02-K`, [`simulation.md`](simulation.md#request-queues)).
 The funding census is no longer part of the hour (`SIM-02-I`,
 [`simulation.md`](simulation.md#pure-jobs)): its inputs are copied over each hour's first half,
 it runs in steps over the second half, and it publishes at the next hour's first slot, just
@@ -150,7 +151,7 @@ Daily phases (`nodes/sim/core/entity_days.rs`), each over the entity's own 24-ho
    window, and the daily happiness update.
 
 The `housing requests` queue serves the housing reviews a few per slot, and the `departures` queue
-removes the claimed exits, one a slot in slots 64–479, each walking the household's member list
+removes the claimed exits, one a slot in slots 65–479, each walking the household's member list
 (`SIM-02-J`). Wages read
 the funded jobs the last hourly census copied onto each building; water and sewage coverage is
 whether a provider settled operational in the last closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded

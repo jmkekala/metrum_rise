@@ -169,7 +169,9 @@ pub(crate) enum SystemKind {
     /// visited once per period (`docs/simulation.md#phases`).
     EntityPhase { period: Period },
     /// One call per slot that serves up to `quota` pending requests, oldest first
-    /// (`docs/simulation.md#request-queues`).
+    /// (`docs/simulation.md#request-queues`). The simulation's dispatch leaves a few heavy slots
+    /// of the hour without queue work and serves their share in the slot after
+    /// (`nodes/sim/core/schedule.rs`, `SIM-02-K`).
     Queue { quota: u32 },
     /// One chunk per slot of a sum or grid sweep over the whole city that finishes once per
     /// `period` (`docs/simulation.md#snapshots`).

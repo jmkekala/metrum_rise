@@ -186,6 +186,9 @@ impl FreightRouteCache {
     }
 
     pub(super) fn prepare_buildings(&mut self, buildings: usize) {
+        // Spare rows, so the first building appended after a load, which sized the table
+        // exactly, does not copy it (`SIM-02-K`).
+        crate::utils::storage::reserve_rows(&mut self.access, buildings);
         resize_in_parallel(&mut self.access, buildings, None);
     }
 
@@ -782,6 +785,21 @@ impl FreightRouteCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Loading sizes the table at once; the first building appended after it must not copy it
+    // (`SIM-02-K`).
+    #[test]
+    fn building_access_rows_keep_spare_capacity_for_the_next_building() {
+        let mut cache = FreightRouteCache::default();
+        cache.prepare_buildings(1_000);
+        let rows = cache.access.as_ptr();
+        assert!(cache.access.capacity() > 1_000);
+        cache.prepare_buildings(1_001);
+        assert_eq!(cache.access.len(), 1_001);
+        assert_eq!(cache.access.as_ptr(), rows);
+        cache.prepare_buildings(999);
+        assert_eq!(cache.access.len(), 999);
+    }
 
     #[test]
     fn colliding_node_quotes_keep_exact_bits_and_replace_old_demand_without_growth() {

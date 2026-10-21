@@ -8,7 +8,8 @@
 //! of the operational hour, the hour's four demand planning slots and the calendar close. The
 //! entities of the slot's hourly and daily phases follow, then the cell-lot, freight, housing,
 //! restock, visit and job request queues, the level-change, building-removal, departure and
-//! admission queues (`SIM-02-J`; removals and departures only in the hour's removal window), one
+//! admission queues (`SIM-02-J`; removals and departures only in the hour's removal window, and
+//! no queue but the building removals in the hour's queue-free slots, [`QUEUE_FREE_SLOTS`]), one
 //! chunk each of the rolling road length, environment sweep, freight supplier index, demand
 //! snapshot, household destinations and job board, at an hour's last slot the hour's city totals,
 //! one chunk of the funding census's input copy over the hour's first half and the census's share
@@ -28,11 +29,78 @@ use crate::simulation::core::scheduler::{
 use crate::simulation::core::timing_wheel::TimedEvent;
 use super::trips::TripEvent;
 use crate::simulation::economy::demand::PlanningSlot;
-use crate::simulation::economy::hiring::{REMOVAL_WINDOW_START, removals_allowed};
+use crate::simulation::economy::hiring::{
+    PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT, REMOVAL_WINDOW_START,
+    removals_allowed,
+};
 
 // Removals and level changes wait until the hour's planning slots have read the census its
 // first slot published (`SIM-02-J`).
 const _: () = assert!(REMOVAL_WINDOW_START > PlanningSlot::Actions as u64);
+
+/// Slots of the hour in which the request queues serve nothing (`SIM-02-K`): the hour's four
+/// planning slots, the removal window's first slot, which serves the hour's first building
+/// removals, and the census book's two preparation slots. Each holds 3–4 ms of its own work at
+/// 100k residents, so at 1× a queue's share there would put the frame over its budget. The slot
+/// after one serves the skipped slot's share first, then its own, so every queue serves the
+/// same quota and accrues the same credit per hour. The removal window's first slot keeps its
+/// building removals, the slot's own work. Trip events and construction starts due in one fire
+/// in the next slot ([`event_slot`]).
+pub(crate) const QUEUE_FREE_SLOTS: [u64; 7] = [
+    PlanningSlot::Residential as u64,
+    PlanningSlot::Commercial as u64,
+    PlanningSlot::Industrial as u64,
+    PlanningSlot::Actions as u64,
+    REMOVAL_WINDOW_START,
+    PLANNING_PREPARATION_SLOT,
+    PLANNING_PREPARATION_REST_SLOT,
+];
+
+// No two queue-free slots are adjacent, so a skipped share always lands in a slot that serves.
+const _: () = {
+    let mut i = 0;
+    while i < QUEUE_FREE_SLOTS.len() {
+        let mut j = 0;
+        while j < QUEUE_FREE_SLOTS.len() {
+            assert!((QUEUE_FREE_SLOTS[i] + 1) % SLOTS_PER_HOUR != QUEUE_FREE_SLOTS[j]);
+            j += 1;
+        }
+        i += 1;
+    }
+};
+
+// Every queue-free slot's next slot is in the same game minute, so an event moved there keeps
+// its minute.
+const _: () = {
+    let mut i = 0;
+    while i < QUEUE_FREE_SLOTS.len() {
+        let slot = QUEUE_FREE_SLOTS[i];
+        assert!((slot + 1) / SLOTS_PER_MINUTE == slot / SLOTS_PER_MINUTE);
+        i += 1;
+    }
+};
+
+/// The slot a trip event or construction start due at absolute `slot` fires in (`SIM-02-K`):
+/// one due in a queue-free slot fires in the next, in the same game minute, so that slot holds
+/// its own system alone ([`QUEUE_FREE_SLOTS`]). Construction completions keep their deadlines.
+/// O(1).
+pub(crate) fn event_slot(slot: u64) -> u64 {
+    slot + u64::from(QUEUE_FREE_SLOTS.contains(&(slot % SLOTS_PER_HOUR)))
+}
+
+/// Shares of queue work absolute `slot` serves (`QUEUE_FREE_SLOTS`): none in a queue-free slot,
+/// two in the slot after one (the skipped slot's, then its own), else one. O(1).
+pub(crate) fn queue_shares(slot: u64) -> usize {
+    let of_hour = slot % SLOTS_PER_HOUR;
+    let previous = (of_hour + SLOTS_PER_HOUR - 1) % SLOTS_PER_HOUR;
+    if QUEUE_FREE_SLOTS.contains(&of_hour) {
+        0
+    } else if QUEUE_FREE_SLOTS.contains(&previous) {
+        2
+    } else {
+        1
+    }
+}
 
 /// One system the dispatcher can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -649,6 +717,7 @@ impl SimCore {
         let (day_index, minute_of_day) = slot_calendar(slot);
         self.allocator.now_slot = slot;
         crate::debug::work::set_clock_minute(slot / SLOTS_PER_MINUTE);
+        let queue_shares = queue_shares(slot);
         for index in 0..self.schedule.declarations().len() {
             let declaration = self.schedule.declarations()[index];
             if !declaration.kind.due(slot) {
@@ -724,25 +793,17 @@ impl SimCore {
                 SimSystem::BuildingDays => self.run_building_days(slot, observer),
                 SimSystem::HouseholdDays => self.run_household_days(slot, observer),
                 SimSystem::AgentDays => self.run_agent_days(slot, observer),
-                SimSystem::CellLots => {
-                    self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize);
-                }
-                SimSystem::FreightRequests => {
-                    self.serve_freight_request_queue(slot, FREIGHT_REQUEST_QUOTA as usize);
-                }
-                SimSystem::HousingRequests => {
-                    self.serve_housing_request_queue(HOUSING_REQUEST_QUOTA as usize);
-                }
-                SimSystem::RestockRequests => {
-                    self.serve_restock_request_queue(slot, RESTOCK_REQUEST_QUOTA as usize);
-                }
-                SimSystem::VisitRequests => self.serve_visit_request_queue(slot),
-                SimSystem::JobRequests => {
-                    self.serve_job_request_queue(slot, JOB_REQUEST_QUOTA as usize);
-                }
-                SimSystem::LevelChanges => {
-                    if slot % SLOTS_PER_HOUR >= REMOVAL_WINDOW_START {
-                        self.serve_level_change_queue(LEVEL_CHANGE_QUOTA as usize, observer);
+                SimSystem::CellLots
+                | SimSystem::FreightRequests
+                | SimSystem::HousingRequests
+                | SimSystem::RestockRequests
+                | SimSystem::VisitRequests
+                | SimSystem::JobRequests
+                | SimSystem::LevelChanges
+                | SimSystem::Departures
+                | SimSystem::Admissions => {
+                    for _ in 0..queue_shares {
+                        self.serve_queue_share(declaration.system, slot, observer);
                     }
                 }
                 SimSystem::BuildingRemovals => {
@@ -753,12 +814,6 @@ impl SimCore {
                         );
                     }
                 }
-                SimSystem::Departures => {
-                    if removals_allowed(slot) {
-                        self.serve_departure_queue(DEPARTURE_QUOTA as usize);
-                    }
-                }
-                SimSystem::Admissions => self.serve_admission_queue(slot),
                 SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
                 SimSystem::EnvironmentGrids => self.advance_environment_sweep(slot),
                 SimSystem::FreightSuppliers => self.advance_freight_supplier_sweep(slot),
@@ -771,6 +826,47 @@ impl SimCore {
             }
         }
         self.schedule_construction_completions();
+    }
+
+    // One share of queue `system`'s work in `slot`: its quota of requests, or one slot of its
+    // credit (`QUEUE_FREE_SLOTS`). Level changes and departures serve only from the removal
+    // window's start, departures only within it.
+    fn serve_queue_share(
+        &mut self,
+        system: SimSystem,
+        slot: u64,
+        observer: &mut impl EconomyObserver,
+    ) {
+        match system {
+            SimSystem::CellLots => {
+                self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize);
+            }
+            SimSystem::FreightRequests => {
+                self.serve_freight_request_queue(slot, FREIGHT_REQUEST_QUOTA as usize);
+            }
+            SimSystem::HousingRequests => {
+                self.serve_housing_request_queue(HOUSING_REQUEST_QUOTA as usize);
+            }
+            SimSystem::RestockRequests => {
+                self.serve_restock_request_queue(slot, RESTOCK_REQUEST_QUOTA as usize);
+            }
+            SimSystem::VisitRequests => self.serve_visit_request_queue(slot),
+            SimSystem::JobRequests => {
+                self.serve_job_request_queue(slot, JOB_REQUEST_QUOTA as usize);
+            }
+            SimSystem::LevelChanges => {
+                if slot % SLOTS_PER_HOUR >= REMOVAL_WINDOW_START {
+                    self.serve_level_change_queue(LEVEL_CHANGE_QUOTA as usize, observer);
+                }
+            }
+            SimSystem::Departures => {
+                if removals_allowed(slot) {
+                    self.serve_departure_queue(DEPARTURE_QUOTA as usize);
+                }
+            }
+            SimSystem::Admissions => self.serve_admission_queue(slot),
+            _ => unreachable!("{system:?} is not a request queue"),
+        }
     }
 
     fn fire_timed_events(
@@ -816,6 +912,37 @@ impl SimCore {
         for (building, slot) in self.allocator.pending_construction.drain(..) {
             self.events
                 .schedule(slot, SimEvent::ConstructionComplete { building });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_free_slots_pass_their_share_to_the_next_slot() {
+        let hour = 5 * SLOTS_PER_HOUR;
+        let shares: Vec<usize> = (hour..hour + SLOTS_PER_HOUR).map(queue_shares).collect();
+        // Every hour serves one share a slot in all.
+        assert_eq!(shares.iter().sum::<usize>(), SLOTS_PER_HOUR as usize);
+        for offset in QUEUE_FREE_SLOTS {
+            assert_eq!(shares[offset as usize], 0);
+            assert_eq!(shares[(offset as usize + 1) % shares.len()], 2);
+        }
+        assert_eq!(
+            shares.iter().filter(|&&share| share == 1).count(),
+            SLOTS_PER_HOUR as usize - 2 * QUEUE_FREE_SLOTS.len()
+        );
+        // The day's first slot is queue-free too.
+        assert_eq!(queue_shares(0), 0);
+        assert_eq!(queue_shares(1), 2);
+        // Trips and construction starts due in a queue-free slot fire in the next one.
+        for slot in hour..hour + SLOTS_PER_HOUR {
+            let fires = event_slot(slot);
+            assert_eq!(fires, slot + u64::from(shares[(slot - hour) as usize] == 0));
+            assert_ne!(shares[(fires - hour) as usize % shares.len()], 0);
+            assert_eq!(fires / SLOTS_PER_MINUTE, slot / SLOTS_PER_MINUTE);
         }
     }
 }

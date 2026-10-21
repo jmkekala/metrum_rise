@@ -154,6 +154,8 @@ impl BuildingAllocator {
             list.clear();
         }
         self.vacancy_pos.clear();
+        // Spare rows, so the first building appended after a load does not copy them.
+        crate::utils::storage::reserve_rows(&mut self.vacancy_pos, self.buildings.len());
         self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;

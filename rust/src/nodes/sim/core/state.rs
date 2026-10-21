@@ -11,7 +11,7 @@ use super::budget::{
     RoadLengthRoll,
 };
 use super::frame::EconomyObserver;
-use super::schedule::{SimEvent, SimSystem, simulation_schedule};
+use super::schedule::{SimEvent, SimSystem, event_slot, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
 use super::terrain_payloads::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
@@ -87,7 +87,8 @@ pub(crate) struct PendingDemandSpawnAction {
 }
 
 // Construction starts of `pending`, in queue order, at their due minute and at most one per
-// minute after `current_minute`.
+// minute after `current_minute`, each at its minute's first slot or, when that slot is
+// queue-free, the next (`event_slot`).
 fn reschedule_construction_starts(
     events: &mut TimingWheel<SimEvent>,
     pending: &VecDeque<PendingDemandSpawnAction>,
@@ -98,7 +99,7 @@ fn reschedule_construction_starts(
     for spawn in pending {
         let minute = spawn.due_minute.max(previous + 1);
         events.schedule(
-            minute * SLOTS_PER_MINUTE,
+            event_slot(minute * SLOTS_PER_MINUTE),
             SimEvent::ConstructionStart { id: spawn.id },
         );
         previous = minute;
@@ -820,7 +821,7 @@ impl SimCore {
                 let id = self.next_spawn_id;
                 self.next_spawn_id += 1;
                 self.events.schedule(
-                    due_minute * SLOTS_PER_MINUTE,
+                    event_slot(due_minute * SLOTS_PER_MINUTE),
                     SimEvent::ConstructionStart { id },
                 );
                 self.pending_demand_spawns
@@ -1134,7 +1135,7 @@ impl SimCore {
     ) -> usize {
         let now = absolute_operational_minute(day_index, minute_of_day);
         // As the minute's start event would see the clock.
-        self.allocator.now_slot = now * SLOTS_PER_MINUTE;
+        self.allocator.now_slot = event_slot(now * SLOTS_PER_MINUTE);
         let mut executed_this_minute = 0_usize;
         while executed_this_minute < DEMAND_SPAWN_ACTIONS_PER_MINUTE {
             let Some(pending) = self.pending_demand_spawns.front() else {
