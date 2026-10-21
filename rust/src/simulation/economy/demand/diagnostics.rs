@@ -295,3 +295,106 @@ impl HouseholdRemovalDiagnostics {
         }
     }
 }
+
+// A diagnostics field of four bytes, saved little-endian (`f32` by its bits).
+trait SavedField: Sized {
+    fn from_saved(bytes: [u8; 4]) -> Self;
+}
+
+impl SavedField for u32 {
+    fn from_saved(bytes: [u8; 4]) -> Self {
+        u32::from_le_bytes(bytes)
+    }
+}
+
+impl SavedField for f32 {
+    fn from_saved(bytes: [u8; 4]) -> Self {
+        f32::from_le_bytes(bytes)
+    }
+}
+
+// The saved form of a diagnostics struct: every listed field in order, four bytes each. A field
+// left out of the list is not saved and loads as its default.
+macro_rules! saved_diagnostics {
+    ($name:ident { $($field:ident),* $(,)? }) => {
+        impl $name {
+            fn to_saved(self) -> Vec<u8> {
+                let mut out = Vec::new();
+                $(out.extend_from_slice(&self.$field.to_le_bytes());)*
+                out
+            }
+
+            fn from_saved(bytes: &[u8]) -> Option<Self> {
+                let mut rest = bytes;
+                let mut value = Self::default();
+                $(
+                    let (head, tail) = rest.split_first_chunk::<4>()?;
+                    value.$field = SavedField::from_saved(*head);
+                    rest = tail;
+                )*
+                rest.is_empty().then_some(value)
+            }
+        }
+    };
+}
+
+saved_diagnostics!(HouseholdAdmissionDiagnostics {
+    total_household_count,
+    vacant_household_slots,
+    connected_border_count,
+    incoming_household_need,
+    open_job_slots,
+    move_in_job_slots,
+    physical_worker_capacity,
+    funded_worker_capacity,
+    open_jobs_unfunded,
+    existing_unemployed_member_count,
+    planned_households,
+    launched_households,
+    examined_candidates,
+    income_rejections,
+    worker_housing_rejections,
+});
+
+saved_diagnostics!(HouseholdRemovalDiagnostics {
+    total_household_count,
+    housed_household_count,
+    unhoused_household_count,
+    zero_budget_household_count,
+    persistent_exit_eligible_household_count,
+    unhoused_household_ratio,
+    zero_budget_household_ratio,
+    removed_household_ratio,
+    persistent_exit_credit_before,
+    persistent_exit_credit_after,
+    persistent_exit_planned_households,
+    max_actionable_households,
+    planned_households,
+    removed_households,
+});
+
+impl DemandSystem {
+    /// The saved forms of the last admission and removal diagnostics (`SIM-02-K`): the actions
+    /// slot and the daily removal pass set them from the state of their slot, which a load
+    /// cannot recompute later in the hour, so a save keeps them and a loaded game shows what
+    /// the saved one showed.
+    pub(crate) fn saved_household_diagnostics(&self) -> [Vec<u8>; 2] {
+        [
+            self.last_admission_diagnostics.to_saved(),
+            self.last_removal_diagnostics.to_saved(),
+        ]
+    }
+
+    /// Restores [`Self::saved_household_diagnostics`]; a malformed buffer is an error.
+    pub(crate) fn restore_household_diagnostics(
+        &mut self,
+        admission: &[u8],
+        removal: &[u8],
+    ) -> Result<(), String> {
+        self.last_admission_diagnostics = HouseholdAdmissionDiagnostics::from_saved(admission)
+            .ok_or("malformed saved admission diagnostics")?;
+        self.last_removal_diagnostics = HouseholdRemovalDiagnostics::from_saved(removal)
+            .ok_or("malformed saved removal diagnostics")?;
+        Ok(())
+    }
+}

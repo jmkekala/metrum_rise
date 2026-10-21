@@ -55,6 +55,13 @@ pub(crate) fn spare_capacity(required: usize, capacity: usize) -> usize {
     }
 }
 
+/// Reserves at least `capacity` rows in `rows` (`SIM-02-K`): for storage copied from a book a
+/// census filled, which [`Clone`] gives exactly its rows, so that the copy's next census finds
+/// the room the original's held. Capacity never changes a result. O(1) without growth.
+pub(crate) fn reserve_capacity<T>(rows: &mut Vec<T>, capacity: usize) {
+    rows.reserve_exact(capacity.saturating_sub(rows.len()));
+}
+
 /// [`Vec::resize`] to `len` rows, with the spare capacity of [`reserve_rows`].
 pub(crate) fn resize_rows<T: Clone>(rows: &mut Vec<T>, len: usize, value: T) {
     reserve_rows(rows, len);

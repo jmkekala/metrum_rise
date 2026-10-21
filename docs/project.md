@@ -386,7 +386,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   to build, and the census storage gets a prepared copy of the live books at load, with spare row
   capacity so appended buildings no longer reallocate it in a planning slot (`SIM-02-K` part 5). Loading also prepares the route scratch the first trips and job
   searches after it used to build, so the first minutes after a load no longer stall for 8–15 ms
-  frames at 100k (`SIM-02-K` part 5).
+  frames at 100k (`SIM-02-K` part 5). The hour's planning now runs a game minute apart,
+  residential, commercial, industrial, then admissions and actions (minutes 0 to 3), and
+  removals, departures and level changes start at minute 4, so at 32× no frame carries two of
+  them (`SIM-02-K` part 5, save format 104).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

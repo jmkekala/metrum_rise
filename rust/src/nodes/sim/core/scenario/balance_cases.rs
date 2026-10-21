@@ -3,6 +3,7 @@
 //! Opt-in economic experiments using ordinary placement, production, freight and settlement.
 
 use super::*;
+use crate::simulation::economy::demand::PlanningSlot;
 
 #[test]
 #[ignore = "manual saved-city diagnosis; requires METRUM_DIAG_SAVE, METRUM_DIAG_MODS and METRUM_DIAG_REPORT"]
@@ -1200,8 +1201,8 @@ fn queue_clearance(
 
 // The demand queues carry out the actions slot's decisions over the hour (`SIM-02-J`): a town
 // saved right after an hour's actions slot, with admissions, a level change, a planned
-// clearance and a departure waiting, serves them from slot 4 on and continues identically every
-// frame for a day. The departure is a household the player's bulldozer left unhoused long
+// clearance and a departure waiting, serves them from the removal window's start on and
+// continues identically every frame for a day. The departure is a household the player's bulldozer left unhoused long
 // enough to leave.
 #[test]
 fn a_save_with_the_demand_queues_waiting_continues_identically() {
@@ -1211,7 +1212,10 @@ fn a_save_with_the_demand_queues_waiting_continues_identically() {
     loop {
         assert!(source.day() < 6, "no hour left admissions waiting");
         let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
-        step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 3);
+        step_to_slot(
+            &mut source.core,
+            hour * SLOTS_PER_HOUR + PlanningSlot::Actions as u64,
+        );
         if source.core.households.admission_requests.len() >= 2
             && source.core.households.households.len() >= 8
         {
@@ -1246,7 +1250,8 @@ fn a_save_with_the_demand_queues_waiting_continues_identically() {
             assert_eq!(source.allocator.buildings.len(), buildings);
         },
     );
-    // Served from slot 4: the household left, the home was cleared, the change was applied.
+    // Served from the removal window: the household left, the home was cleared, the change was
+    // applied.
     let core = &source.core;
     assert!(
         core.households.handles.resolve(leaving).is_none(),
@@ -1268,15 +1273,15 @@ fn a_save_with_the_demand_queues_waiting_continues_identically() {
 }
 
 // Removals wait for the hour's removal window (`SIM-02-J`): a planned clearance queued while
-// the census runs over the hour's second half stays until the next hour's slot 4, while a level
-// change queued then is applied at once, an in-place change. The census runs on without a
-// restart and is ready at its publishing slot, the next hour's planning slots lend the books it
-// published, and slot 4 removes the building; the next census, over the copy that followed the
-// removal, runs without a restart.
+// the census runs over the hour's second half stays until the next hour's removal window, while
+// a level change queued then is applied at once, an in-place change. The census runs on without
+// a restart and is ready at its publishing slot, the books it published stay lent through the
+// next hour's planning slots, and the window's first slot removes the building; the next census,
+// over the copy that followed the removal, runs without a restart.
 #[test]
-fn a_removal_requested_in_the_census_window_waits_for_slot_4_and_restarts_nothing() {
+fn a_removal_requested_in_the_census_window_waits_for_the_removal_window_and_restarts_nothing() {
     use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
-    use crate::simulation::economy::hiring::CENSUS_WINDOW_START;
+    use crate::simulation::economy::hiring::{CENSUS_WINDOW_START, REMOVAL_WINDOW_START};
     let mut scenario = super::census_cases::busy_town();
     let core = &mut scenario.core;
     let hour = core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
@@ -1305,7 +1310,7 @@ fn a_removal_requested_in_the_census_window_waits_for_slot_4_and_restarts_nothin
         core.households.census_ready(next, key),
         "the census is current at its publication"
     );
-    for slot in next..next + 4 {
+    for slot in next..next + REMOVAL_WINDOW_START {
         step_to_slot(core, slot);
         assert!(
             core.allocator.building_handles.resolve(building).is_some(),
@@ -1322,10 +1327,10 @@ fn a_removal_requested_in_the_census_window_waits_for_slot_4_and_restarts_nothin
         core.households.census_run.restarts, restarts,
         "no census restarted"
     );
-    step_to_slot(core, next + 4);
+    step_to_slot(core, next + REMOVAL_WINDOW_START);
     assert!(
         core.allocator.building_handles.resolve(building).is_none(),
-        "removed at slot 4"
+        "removed at the removal window's first slot"
     );
     // The filling input copy followed the swap-remove: the census over it runs through the
     // window without a restart and is current at its publication.
@@ -1586,14 +1591,22 @@ fn queued_business_permits_continue_identically_after_a_mid_hour_save_load() {
     );
 }
 
-// The hour's plan lives between its planning slots (`SIM-02-I`): a game saved after slot 0, 1
-// or 2 of an hour whose slots planned spawns continues identically every frame for a day, its
-// saved plan proved again by the later slots on the restored published census and queued and
-// executed at slot 3 as the uninterrupted game does, with the same flow fields.
+// The hour's plan lives between its planning slots (`SIM-02-I`): a game saved after the
+// residential, commercial or industrial slot of an hour whose slots planned spawns continues
+// identically every frame for a day, its saved plan proved again by the later slots on the
+// restored published census and queued and executed at the actions slot as the uninterrupted
+// game does, with the same flow fields.
 #[test]
 fn the_hours_plan_continues_identically_after_a_save_between_its_slots() {
     use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
-    for saved_after in 0..3 {
+    let industrial = PlanningSlot::Industrial as u64;
+    for saved_after in [
+        PlanningSlot::Residential,
+        PlanningSlot::Commercial,
+        PlanningSlot::Industrial,
+    ]
+    .map(|slot| slot as u64)
+    {
         let mut source = GrowthScenario::starter_town();
         loop {
             assert!(
@@ -1606,9 +1619,10 @@ fn the_hours_plan_continues_identically_after_a_save_between_its_slots() {
                 core.step_frame(FRAME_DT_S / 16.0);
             }
             let plan = &core.demand.building_actions;
-            // Slot 2's save also needs a business spawn of slot 2 to prove at slot 3.
+            // The industrial slot's save also needs a business spawn to prove at the actions
+            // slot.
             let business = !plan.commercial.spawns.is_empty() || !plan.industrial.spawns.is_empty();
-            if !plan.residential.spawns.is_empty() && (saved_after < 2 || business) {
+            if !plan.residential.spawns.is_empty() && (saved_after < industrial || business) {
                 break;
             }
         }
@@ -1631,7 +1645,8 @@ fn step_to_slot(core: &mut SimCore, slot: u64) {
 // a fiscal stress change at that slot (commercial and industrial property taxes at 500 a day),
 // a census of the loaded city would fund the new policy's books while the published one keeps
 // the policy its copy froze: a busy town saved at slot 1 restores the published books, plans
-// slot 2's industry, proves slot 3's permits and continues as the uninterrupted game does.
+// the commercial and industrial slots, proves the actions slot's permits and continues as the
+// uninterrupted game does.
 #[test]
 fn a_save_at_slot_1_after_a_fiscal_change_plans_on_the_published_census() {
     use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
@@ -1655,9 +1670,9 @@ fn a_save_at_slot_1_after_a_fiscal_change_plans_on_the_published_census() {
     );
 }
 
-// A game saved after the hour's actions slot, before the first queued start at slot 16
-// (`SIM-02-I`): the queue's permits and counted flags, the arrivals paced from slot 3, the
-// cleared plan, the hour's admission and the indices slot 3's actions rebuilt continue as the
+// A game saved after the hour's actions slot, before the first queued start a minute later
+// (`SIM-02-I`): the queue's permits and counted flags, the arrivals paced from the actions slot,
+// the cleared plan, the hour's admission and the indices the actions rebuilt continue as the
 // uninterrupted game's.
 #[test]
 fn a_save_after_the_actions_slot_before_the_first_start_continues_identically() {
@@ -1669,14 +1684,23 @@ fn a_save_after_the_actions_slot_before_the_first_start_continues_identically() 
             "no hour queued a business spawn under its permit"
         );
         let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
-        step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 3);
+        step_to_slot(
+            &mut source.core,
+            hour * SLOTS_PER_HOUR + PlanningSlot::Actions as u64,
+        );
         if business_permit_queued(&source.core) {
             break;
         }
     }
     let core = &source.core;
-    assert!(core.time.absolute_slot() % SLOTS_PER_HOUR < SLOTS_PER_MINUTE);
-    assert!(hour_plan(core).is_empty(), "slot 3 cleared the hour's plan");
+    assert_eq!(
+        core.time.absolute_slot() % SLOTS_PER_HOUR / SLOTS_PER_MINUTE,
+        PlanningSlot::Actions as u64 / SLOTS_PER_MINUTE
+    );
+    assert!(
+        hour_plan(core).is_empty(),
+        "the actions slot cleared the hour's plan"
+    );
     assert_continues_identically_after_checked_reload(source, "after-actions", |source, loaded| {
         assert!(hour_plan(loaded).is_empty());
         assert_eq!(
@@ -2476,13 +2500,19 @@ fn the_flow_field_drain_rebuilds_a_stale_zone_index_first() {
 // A starter town at the first hour whose commercial slot planned a store, just after that slot,
 // with a power plant placed then: a service placed after the publication withdraws the
 // published books (`SIM-02-I`).
-fn town_with_a_service_placed_after_slot_1() -> GrowthScenario {
+fn town_with_a_service_placed_after_the_commercial_slot() -> GrowthScenario {
     use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
     let mut source = GrowthScenario::starter_town();
     loop {
-        assert!(source.day() < 4, "no hour planned a store at slot 1");
+        assert!(
+            source.day() < 4,
+            "no hour planned a store at the commercial slot"
+        );
         let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
-        step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 1);
+        step_to_slot(
+            &mut source.core,
+            hour * SLOTS_PER_HOUR + PlanningSlot::Commercial as u64,
+        );
         if !source
             .core
             .demand
@@ -2504,16 +2534,19 @@ fn town_with_a_service_placed_after_slot_1() -> GrowthScenario {
 }
 
 // A save in the hour's planning slots on books not valid for the live city (`SIM-02-I`): the
-// save keeps that they were not valid, so in both games slots 2 and 3 skip, slot 3 queues the
-// store slot 1 planned with its permit void until the next hour's epoch, and the loaded game
-// continues every frame as the saved one does.
+// save keeps that they were not valid, so in both games the industrial and actions slots skip,
+// the actions slot queues the store the commercial slot planned with its permit void until the
+// next hour's epoch, and the loaded game continues every frame as the saved one does.
 #[test]
 fn a_save_in_the_planning_slots_on_invalid_books_skips_the_hour_identically() {
     use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
-    // The uninterrupted game: slot 3 queues the store without a permit.
-    let mut town = town_with_a_service_placed_after_slot_1();
+    // The uninterrupted game: the actions slot queues the store without a permit.
+    let mut town = town_with_a_service_placed_after_the_commercial_slot();
     let hour = town.core.time.absolute_slot() / SLOTS_PER_HOUR;
-    step_to_slot(&mut town.core, hour * SLOTS_PER_HOUR + 3);
+    step_to_slot(
+        &mut town.core,
+        hour * SLOTS_PER_HOUR + PlanningSlot::Actions as u64,
+    );
     assert!(!super::census_cases::published_books_lent(&town.core));
     let stores: Vec<_> = town
         .core
@@ -2521,17 +2554,20 @@ fn a_save_in_the_planning_slots_on_invalid_books_skips_the_hour_identically() {
         .iter()
         .filter(|pending| pending.zone_type == ZoneType::Commercial)
         .collect();
-    assert!(!stores.is_empty(), "slot 3 queues the planned store");
+    assert!(
+        !stores.is_empty(),
+        "the actions slot queues the planned store"
+    );
     assert!(
         stores
             .iter()
             .all(|pending| pending.permit.granted().is_none()),
         "the skipped epoch grants no business permit"
     );
-    // Saved at slot 1, the loaded game skips and voids alike.
+    // Saved after the commercial slot, the loaded game skips and voids alike.
     assert_continues_identically_after_checked_reload(
-        town_with_a_service_placed_after_slot_1(),
-        "invalid-books-slot-1",
+        town_with_a_service_placed_after_the_commercial_slot(),
+        "invalid-books-commercial",
         super::census_cases::assert_same_published_census,
     );
 }

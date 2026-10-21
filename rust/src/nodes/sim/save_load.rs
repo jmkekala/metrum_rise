@@ -218,13 +218,8 @@ impl SimCore {
     fn refresh_loaded_demand_state_and_log(&mut self) {
         self.demand
             .set_admission_candidate_hour(self.time.day_index, self.time.minute_of_day);
-        self.demand.refresh_household_diagnostics(
-            &self.allocator,
-            &self.households,
-            &self.region_graph,
-            self.treasury.balance,
-            &self.fiscal_policy,
-        );
+        // The household diagnostics are the saved ones, as the saved game showed them; a
+        // recount here would differ from the uninterrupted game's (`SIM-02-K`).
         if !crate::debug::Channel::Spawn.enabled() {
             return;
         }

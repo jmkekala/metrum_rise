@@ -3,18 +3,18 @@
 //! The demand request queues (`SIM-02-J`, `docs/simulation.md#request-queues`): level changes,
 //! building removals, household departures and admissions.
 //!
-//! The hour's actions slot (slot 3) proves the hour's level changes and decides its admissions
-//! on the census published at slot 0; these queues carry them out over the hour, after the
-//! household queues. Building and household swap-removes run only in the hour's removal window,
-//! slots 4 to 479 ([`removals_allowed`]): earlier they would invalidate the published books
-//! planning slots 1 to 3 read, later they would restart the census in its window. Over the
-//! window the census input copy is filling and mirrors each swap-remove. A removal requested at
-//! any other slot waits for the next slot 4.
+//! The hour's actions slot (minute 3's first slot) proves the hour's level changes and decides
+//! its admissions on the census published at slot 0; these queues carry them out over the hour,
+//! after the household queues. Building and household swap-removes run only in the hour's
+//! removal window, slots 64 (minute 4) to 479 ([`removals_allowed`]): earlier they would
+//! invalidate the published books the later planning slots read, later they would restart the
+//! census in its window. Over the window the census input copy is filling and mirrors each
+//! swap-remove. A removal requested at any other slot waits for the window's next start.
 //!
-//! - `level changes` applies proved changes from slot 4 on, oldest first, each only while its
-//!   building still has the door, profile, level and asset its permit was proved for. An
-//!   in-place change is a changed row for the census input copy, not a structural change, so it
-//!   restarts no census.
+//! - `level changes` applies proved changes from the removal window's start on, oldest first,
+//!   each only while its building still has the door, profile, level and asset its permit was
+//!   proved for. An in-place change is a changed row for the census input copy, not a
+//!   structural change, so it restarts no census.
 //! - `building removals` removes planned clearances and buildings whose compatibility expired at
 //!   their daily phase, each after checking again that it still should go, with every reference
 //!   repair of a removal.

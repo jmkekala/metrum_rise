@@ -4,6 +4,7 @@
 
 use super::types::DemandUse;
 use crate::simulation::buildings::allocator::Building;
+use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
 use crate::simulation::zoning::ZoneType;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,19 +53,22 @@ pub(crate) struct DemandUseActionPlan {
     pub(crate) spawns: Vec<DemandSpawnAction>,
 }
 
-/// The hour's demand planning slots, in order (`SIM-02-I`): residential, commercial and
-/// industrial plan their zone at the hour's slots 0, 1 and 2; slot 3 plans the downgrades and
-/// the hour's admission, then the hour's plan is executed.
+/// The hour's demand planning slots, in order (`SIM-02-I`), one a game minute (`SIM-02-K`):
+/// residential, commercial and industrial plan their zone at the first slot of the hour's
+/// minutes 0, 1 and 2; minute 3's first slot plans the downgrades and the hour's admission,
+/// then the hour's plan is executed. The discriminant is the slot of the hour, so at 32× (about
+/// 8.5 slots a frame) each slot falls in a frame of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
 pub(crate) enum PlanningSlot {
-    /// Slot 0, after the operational hour: homes.
-    Residential,
-    /// Slot 1: shops and services.
-    Commercial,
-    /// Slot 2: industry.
-    Industrial,
-    /// Slot 3: downgrades, admission and the hour's actions.
-    Actions,
+    /// The hour's first slot, after the operational hour: homes.
+    Residential = 0,
+    /// Minute 1's first slot: shops and services.
+    Commercial = SLOTS_PER_MINUTE,
+    /// Minute 2's first slot: industry.
+    Industrial = 2 * SLOTS_PER_MINUTE,
+    /// Minute 3's first slot: downgrades, admission and the hour's actions.
+    Actions = 3 * SLOTS_PER_MINUTE,
 }
 
 impl PlanningSlot {

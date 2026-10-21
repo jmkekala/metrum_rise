@@ -1528,12 +1528,12 @@ impl SimCore {
         false
     }
 
-    // Slot 3 of the hour (`SIM-02-I`): the hour's admission between its plans and its actions,
-    // as the single pass ran it, then the hour's spawns queued in the single pass's order
-    // (homes, the optional homes the workforce claimed, shops, industry), the permits of the
-    // whole queue and the hour's level changes in one construction epoch, and the despawns
+    // The hour's actions slot (`SIM-02-I`): the hour's admission between its plans and its
+    // actions, as the single pass ran it, then the hour's spawns queued in the single pass's
+    // order (homes, the optional homes the workforce claimed, shops, industry), the permits of
+    // the whole queue and the hour's level changes in one construction epoch, and the despawns
     // last, after it closes. Admissions, level changes and despawns are queued for their
-    // request queues (`SIM-02-J`). Without slot 3's planning or epoch (books not valid for the
+    // request queues (`SIM-02-J`). Without the slot's planning or epoch (books not valid for the
     // live city) no business level change is queued and the queue's business permits wait an
     // hour; residential level changes and despawns are still queued.
     fn execute_demand_actions_slot(
@@ -1545,7 +1545,8 @@ impl SimCore {
         plan_ms: f64,
     ) {
         let actions_start = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
-        let actions_slot = absolute_slot(day_index, minute_of_day, PlanningSlot::Actions as u64);
+        let hour_minute = minute_of_day - minute_of_day % 60;
+        let actions_slot = absolute_slot(day_index, hour_minute, PlanningSlot::Actions as u64);
         // The hour's admissions are decided here and created over the hour by the
         // `admissions` queue, each carrier departing paced from its creation (`SIM-02-J`).
         let launched_households = self.decide_hour_admissions();
@@ -1572,7 +1573,8 @@ impl SimCore {
         }
         let queue_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         // The level changes are proved in the epoch and applied by the `level changes` queue
-        // from slot 4; the clearances wait for the `building removals` queue (`SIM-02-J`).
+        // from the removal window's start; the clearances wait for the `building removals`
+        // queue (`SIM-02-J`).
         if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
             self.demand.queue_level_changes(
                 &immediate_building_plan,

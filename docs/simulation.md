@@ -21,10 +21,13 @@ load, entrance cache, first-frame pathing, timing-run checks), the second (censu
 work units), the third (clearance patches and census refresh slices) and the fourth (the
 census's whole steps in slices). Part 4 (agent tick) has its first commit done (lane buckets
 kept across appends and swap-removes, interleaved movement shards), and part 5 (planning slots)
-has three commits done (planning storage estimates from free lots, one downgrade scan, and
+has four commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
-slots' trips on one owned route scratch that loading prepares with the job search's scratch).
+slots' trips on one owned route scratch that loading prepares with the job search's scratch;
+then the hour's four planning slots a game minute apart, with removals, departures and level
+changes from slot 64, saves that keep the admission and removal diagnostics (save format 104),
+and a census storage copy that keeps the live books' arena capacity).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -176,13 +179,14 @@ Per-slot order:
 Slices above a size threshold use Rayon with fixed chunks and ordered merges; smaller slices run
 serially and give the same result.
 
-**Implemented in `SIM-02-C`.** `Schedule` (`simulation/core/scheduler.rs`) holds the
-declarations in dispatch order and rejects one that breaks the contract: a fixed-slot offset
-outside its period, a fixed-slot system without a bounded cost, or an events system that does
-not cost its events. The simulation's list and its per-slot dispatch are in
-`nodes/sim/core/schedule.rs`: timed events; the census publication, the operational hour's
-remainder, the residential, commercial and industrial planning slots and the actions slot (hour,
-offsets 0, 0, 0, 1, 2, 3); and the calendar close (day, offset 0). The `sim` debug channel prints the list with costs, tiers, reads and writes.
+**Implemented in `SIM-02-C`.** `Schedule` (`simulation/core/scheduler.rs`) holds the declarations in
+dispatch order and rejects one that breaks the contract: a fixed-slot offset outside its period, a
+fixed-slot system without a bounded cost, or an events system that does not cost its events. The
+simulation's list and its per-slot dispatch are in `nodes/sim/core/schedule.rs`: timed events; the
+census publication, the operational hour's remainder, the residential, commercial and industrial
+planning slots and the actions slot (hour, offsets 0, 0, 0, 16, 32, 48: one planning slot a game
+minute since `SIM-02-K` part 5); and the calendar close (day, offset 0). The `sim` debug channel
+prints the list with costs, tiers, reads and writes.
 
 **Implemented in `SIM-02-F`.** `EntityPhase { period }` systems cost `Phase`, the entities of
 one phase, and the schedule rejects any other cost for them. Three hourly ones follow the
@@ -564,11 +568,11 @@ moves onto the timing wheel.
   (`Building::funded_job_capacity`). A searcher who keeps its job, including one whose better
   jobs filled first or who finds no open or reachable job, is locked again; the lock stays a
   day deadline.
-- **Planning slots:** the queues serve in the hour's planning slots 0–2 too, after the slot's
-  fixed systems. They change the live city between the planning slots (hires, moves,
-  purchases) but remove no building or household, so they never invalidate the published
-  books and never mark a flow field; the later slots' live workforce counts and re-proofs see
-  the hires.
+- **Planning slots:** the queues serve in and between the hour's planning slots too (slots 0–47, the
+  first slots of minutes 0–3 holding the planning slots), after the slot's fixed systems. They
+  change the live city between the planning slots (hires, moves, purchases) but remove no building
+  or household, so they never invalidate the published books and never mark a flow field; the later
+  slots' live workforce counts and re-proofs see the hires.
 - **Gone from the hour:** freight creation and the shipment progress scan; the export hold
   pass; the parallel O(households) unhoused check and the rehousing pass; the reviews'
   per-batch vacancy planner; the O(households) restock scan, the O(agents) shopper scan and the
@@ -589,63 +593,66 @@ moves onto the timing wheel.
 `demand/execution/level_change.rs`, `households/admission.rs`, `households/removal.rs`,
 `buildings/allocator/lifecycle.rs`): four more queues follow `job requests`, in this order:
 `level changes`, `building removals`, `departures` and `admissions`. They carry out what the
-hour's actions slot (slot 3) decided on the census published at slot 0.
+hour's actions slot (slot 48, minute 3's first) decided on the census published at slot 0.
 
-- **Removal window:** building and household swap-removes run only in slots 4–479 of each hour
-  (`hiring::removals_allowed`). A swap-remove in the census window (480–959) restarts the
-  census, because the structure revisions are part of its key; one in slots 1–3 leaves the
-  published books invalid for the live city, so the planning slot reading them skips. Over slots
-  4–479 nothing reads the published books and no census runs, and the census input copy is
+- **Removal window:** building and household swap-removes run only in slots 64–479 of each hour
+  (minute 4 to the census window; slots 4–479 before `SIM-02-K` part 5, fourth commit;
+  `hiring::removals_allowed`). A swap-remove in the census window (480–959) restarts the
+  census, because the structure revisions are part of its key; one before
+  slot 64 leaves the published books invalid for the live city, so a later planning slot reading
+  them skips, and the window starts a game minute after the actions slot so that at 32× a removal
+  and the cell-lot region it dirties never share a frame with a planning slot. Over slots
+  64–479 nothing reads the published books and no census runs, and the census input copy is
   filling: `CensusInputs::remove_building` and `remove_household` mirror each swap-remove into
   it in O(1), plus the O(households) parallel retargeting of copied home and store references.
-  A removal requested in slots 480–959 or 0–3 waits for slot 4, at most 484 slots. A removal's
+  A removal requested in slots 480–959 or 0–63 waits for slot 64, at most 544 slots (34 game
+  minutes). A removal's
   dependent work (agents evicted or evacuated, households left unhoused, shipments and caches)
   happens with it, through the existing lifecycle helpers.
-- **`level changes`** (quota 8, slots 4–959): slot 3 still proves the hour's business level
-  changes in its construction epoch and checks that each target fits (lot, occupants, workers,
-  economy profile, site), but no longer applies them. A proved change keeps its claims in the
-  epoch for the changes after it and is queued with a permit: a digest of the building's asset,
-  level, economy profile and, for a business, its door (`level_change_permit`). The door is
-  derived afresh at both ends from save-stable identities, not read from the entrance cache, so
-  a loaded game, whose cache is rebuilt, compares the same digest. A residential change needs no
-  proof; its permit leaves out the door. The queue applies a change only while the building's
-  digest equals its permit and the target still fits; a stale permit is rejected and nothing is
-  proved again (`Work::LevelChangePermitRejections`). After a slot that applied any, the zone
-  index and the entrance cache are rebuilt once, as slot 3 rebuilt them. A level change is an
-  in-place change: `record_building_changes` names its row for the census input copy, which
-  copies it again over slots 0–479 and defers it while a census reads the front, so it restarts
-  no census. The queue does not serve slots 0–3, so the planning slots never see a building
-  change under them.
-- **`building removals`** (quota 8, slots 4–479): planned clearances from slot 3's hour plan
-  and buildings whose compatibility expired at their daily phase, as generation-checked
-  building handles, oldest first. Each is checked again when served: a clearance only while the
-  site may still be cleared (`can_demand_despawn`), its remaining occupants evacuated first; an
+- **`level changes`** (quota 8, slots 64–959): the actions slot still proves the hour's business
+  level changes in its construction epoch and checks that each target fits (lot, occupants, workers,
+  economy profile, site), but no longer applies them. A proved change keeps its claims in the epoch
+  for the changes after it and is queued with a permit: a digest of the building's asset, level,
+  economy profile and, for a business, its door (`level_change_permit`). The door is derived afresh
+  at both ends from save-stable identities, not read from the entrance cache, so a loaded game,
+  whose cache is rebuilt, compares the same digest. A residential change needs no proof; its permit
+  leaves out the door. The queue applies a change only while the building's digest equals its permit
+  and the target still fits; a stale permit is rejected and nothing is proved again
+  (`Work::LevelChangePermitRejections`). After a slot that applied any, the zone index and the
+  entrance cache are rebuilt once, as the actions slot rebuilt them. A level change is an in-place
+  change: `record_building_changes` names its row for the census input copy, which copies it again
+  over slots 0–479 and defers it while a census reads the front, so it restarts no census. The queue
+  does not serve slots 0–63, so the planning slots never see a building change under them.
+- **`building removals`** (quota 8, slots 64–479): planned clearances from the actions slot's hour
+  plan and buildings whose compatibility expired at their daily phase, as generation-checked
+  building handles, oldest first. Each is checked again when served: a clearance only while the site
+  may still be cleared (`can_demand_despawn`), its remaining occupants evacuated first; an
   incompatible building only while the check, run again with no elapsed day, still says so, so a
-  building that recovered stays. A slot of clearances then rebuilds the zone index and the
-  entrance cache once, as slot 3 did; a slot that removed an incompatible building bumps the
+  building that recovered stays. A slot of clearances then rebuilds the zone index and the entrance
+  cache once, as the actions slot did; a slot that removed an incompatible building bumps the
   building revision (`finish_phase_removals`), as daily phases did. A building whose daily phase
-  queues its removal skips that day's settlement, as the immediate removal skipped it. Editing
-  paths (`allocator.maintain` after a player's edit, the bulldozer, undo) still remove at once.
-- **`departures`** (quota 1, slots 4–479): the households whose daily phase claimed a departure
+  queues its removal skips that day's settlement, as the immediate removal skipped it. Editing paths
+  (`allocator.maintain` after a player's edit, the bulldozer, undo) still remove at once.
+- **`departures`** (quota 1, slots 64–479): the households whose daily phase claimed a departure
   from the daily exit credit (at most 48 a day), oldest first, each removed only if it may still
   leave (`HouseholdExitPolicy::is_eligible` on live state). The credit already paces the
   claims, so the queue adds no second one. A removal finds the household's members from its
   maintained member list instead of scanning every agent (O(members) plus the existing
   parallel O(agents) household remap).
-- **`admissions`** (one per whole credit): slot 3 still decides the hour's admissions against
-  the workforce calendar and claims each admitted family's home; the queue creates the
-  households and their arrival carriers. The decided households wait in order (home handle,
-  size, composition, arrival border). The credit, in slots, starts at one whole admission (960)
-  at slot 3 and accrues the waiting count per slot, so the k-th of n is created at slot
-  2 + ceil(k·960/n) (the first at slot 3) and the last before the next hour's slot 3. Each
-  slot's carriers depart paced from their creation, so a lone carrier leaves at the next slot:
-  the departure profile is the old one, about a slot later. An admission whose home left is
-  dropped; one whose border no longer has a car road releases its home
-  (`Work::AdmissionsDropped`). Queued admissions count as pending arrivals in the hourly recount.
-  Appends neither restart the census nor invalidate the books.
-- **Gone from the hour and slot 3:** the departures at slot 0 before the household hour
-  (`remove_queued_exits`); slot 3's level-change application, despawns and carrier spawns; the
-  building phase's immediate compatibility removal.
+- **`admissions`** (one per whole credit): the actions slot (slot 48) still decides the hour's
+  admissions against the workforce calendar and claims each admitted family's home; the queue
+  creates the households and their arrival carriers. The decided households wait in order (home
+  handle, size, composition, arrival border). The credit, in slots, starts at one whole admission
+  (960) at slot 48 and accrues the waiting count per slot, so the k-th of n is created at slot 47 +
+  ceil(k·960/n) (the first at slot 48) and the last before the next hour's slot 48. Each slot's
+  carriers depart paced from their creation, so a lone carrier leaves at the next slot: the
+  departure profile is the old one, about a slot later. An admission whose home left is dropped; one
+  whose border no longer has a car road releases its home (`Work::AdmissionsDropped`). Queued
+  admissions count as pending arrivals in the hourly recount. Appends neither restart the census nor
+  invalidate the books.
+- **Gone from the hour and the actions slot:** the departures at slot 0 before the household hour
+  (`remove_queued_exits`); the actions slot's level-change application, despawns and carrier spawns;
+  the building phase's immediate compatibility removal.
 - **Saved** (save format 103): `level_change_requests` (slot, building handle, target asset,
   permit); `building_removal_requests` (slot, building handle, kind 0 clearance or 1
   incompatible); `admission_requests` (home handle, size, composition, border node through the
@@ -733,10 +740,11 @@ about 90 MB of lanes at 100k after every road edit.
   copied onto each workplace (`SIM-02-J`). Demand planning lends the published books, with the
   buildings started since the copy appended as buyers, and runs no census of its own.
   Commercial and industrial construction is proved once an hour, in the hour's actions slot, on the same books, and keeps
-  a saved permit until it starts (`SIM-02-I` parts 3 and 4). Planning slots 0–2 and the actions
-  slot 3 all read the census published at slot 0; a save in those slots keeps what restores it
-  exactly (`census_inputs.published`), so a load there plans on the same books (part 4). A load
-  from slot 3 on runs a census of the loaded city, which nothing reads before the next hour's
+  a saved permit until it starts (`SIM-02-I` parts 3 and 4). The planning slots (slots 0, 16 and
+  32) and the actions slot (48) all read the census published at slot 0; a save in slots 0–47
+  keeps what restores it exactly (`census_inputs.published`), so a load there plans on the same
+  books (part 4; the span was slots 0–2 until `SIM-02-K` part 5, save format 104). A load from
+  slot 48 on runs a census of the loaded city, which nothing reads before the next hour's
   first slot publishes.
 
 ### Simulation tiers
@@ -904,31 +912,33 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4 and 2.5 ms. Part 5
    (planning slots) runs before part 4's remaining items, because the planning slots set the
    maximum at every tier.
-5. **K5, planning slots** (three commits done 2026-10-21; results sections, part 5). Measured
-   first: the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold
-   planning books after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms;
-   30k 17 and 14 ms), not those scans. Done: storage estimates from free lots; one downgrade scan
-   in slot 3; the parallel constructing filter; planning books prepared at load and when a fresh
-   census book finishes (first commit); the census storage copied from the prepared live books at
-   load (the census-book preparation after loading is gone); row storage grown with spare
-   capacity (the second storage growth after the first appended building is gone) (second
-   commit); the first frame after loading. It was cold route scratch: each pool worker's
-   thread-local `TripQueryScratch` costs 7–9 ms at 100k. Now one owned scratch is installed
-   around the frame's slot loop, and loading prepares it together with the job search's shards
-   and leg storage (third commit). Left, for a fourth commit:
-   - the 30k 32× hour frames (11.5–13.2 ms). The first frame of every even hour holds planning
-     slots 0–3 (about 4.5–5 ms), one building removal at slot 4 (1.1–1.3 ms), the cell-lot region
-     that removal dirtied (2.2–3.4 ms of generated-cell regeneration that creates no lot), the
-     agent tick (1.2–2.0 ms), trip events and the snapshot. The per-slot setup is only about
-     1–1.5 ms of that. Options: start the removal window later than slot 4, space the four
-     planning slots apart so each lands in its own 32× frame, make that cell-lot regeneration
-     cheaper, or make the setup incremental. A scheduling choice with a gameplay side, which the
-     rules for this run let the coordinator decide (keep the envelope closest, prefer the simpler
-     option);
-   - the 01:00 slot at 100k (17.6 ms frame). The census's refill grows the copied book's business
-     receipt arena (46,280 → 99,342) and allocates customer staging, so the 01:00 planning
-     doubles the receipt journals. Fix options: copy the live books with their capacities, or
-     grow the receipt journals by the spare-capacity rule;
+5. **K5, planning slots** (four commits done 2026-10-21; results sections, part 5). Measured first:
+   the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
+   after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
+   not those scans. Done: storage estimates from free lots; one downgrade scan in the actions slot;
+   the parallel constructing filter; planning books prepared at load and when a fresh census book
+   finishes (first commit); the census storage copied from the prepared live books at load (the
+   census-book preparation after loading is gone); row storage grown with spare capacity (the second
+   storage growth after the first appended building is gone) (second commit); the first frame after
+   loading. It was cold route scratch: each pool worker's thread-local `TripQueryScratch` costs 7–9
+   ms at 100k. Now one owned scratch is installed around the frame's slot loop, and loading prepares
+   it together with the job search's shards and leg storage (third commit). The hour's four planning
+   slots then ran a game minute apart (slots 0, 16, 32, 48) and the removal window, departures and
+   level changes moved to slot 64, so at 32× no frame holds two planning slots or a planning slot
+   and a removal; saves keep the admission and removal diagnostics (save format 104); and the census
+   storage copy keeps the live books' receipt-arena and claim-staging capacity
+   (`JobFunding::reserve_census_arenas_like`) while the census's receipt estimate keeps spare
+   capacity, so the 01:00 slot after a load grows no journal (fourth commit). The spacing is a
+   scheduling choice with a gameplay side, taken under the run's rule (keep the envelope closest,
+   prefer the simpler option). Left, for a fifth commit, with findings in [Decided while
+   unattended](#decided-while-unattended):
+   - the 30k 32× minute-4 frames, 8.0–8.2 ms. Each holds the hour's clearances at slot 64
+     (1.0–1.2 ms), their cell-lot regions at slot 65 (2.5–3.7 ms) and the hour's first
+     construction start (0.65–0.83 ms). Options: serve a dirtied region at least a game minute
+     later; an exact, cheaper regeneration after a removal; or separate the first construction
+     start from the removals;
+   - the 100k residential slot, about 9–9.5 ms, of which site preparation is 3.6–5.0 ms. It needs
+     the setup and site rows to follow what changed;
    - the job board and destination fallbacks;
    - the per-building commute-quote clear (narrowing it changes which quotes are reused).
 
@@ -1615,6 +1625,8 @@ on a fresh `$ARTIFACTS` directory.
   build. The starter town and the scarce-labour case equal the first part 4 build's.
 - **Found and recorded:** `ROAD-54`, a race in the road preview's poll that predates this part
   (about one `./run.sh --test` run in 15 on parts 3 and 4).
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 
 #### `SIM-02-J`, parts 1 and 2 — freight requests and the household queues (2026-10-19)
 
@@ -1746,6 +1758,8 @@ on a fresh `$ARTIFACTS` directory.
   rustfmt add nothing. New: a save with all four queues waiting continues identically; a removal
   requested inside the census window waits for slot 4 and restarts nothing; a stale level-change
   permit is rejected. The step does not change the Godot bridge.
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 
 #### `SIM-02-K`, part 1 — legacy hour and day paths deleted (2026-10-20)
 
@@ -2882,6 +2896,144 @@ on a fresh `$ARTIFACTS` directory.
 - **Memory:** one more route scratch (the slots'), the size of a worker's; the job search's
   shards and leg storage exist from load on, as they do after the first search.
 
+#### `SIM-02-K`, part 5 — planning a minute apart (2026-10-21, fourth commit)
+
+- **What set the 30k 32× maximum.** The third commit's full-day trace (pinned, 8 workers,
+  diagnostic): the even hours' first frames (11.1–14.0 ms) held slots 0–4, that is the four
+  planning slots (residential 2.2–2.6, commercial 0.7–0.9, industrial 0.6–1.2, actions 0.6–0.8
+  ms), one building removal at slot 4 (1.1–1.3 ms) and the cell-lot region it dirtied (2.2–3.4
+  ms of generated-cell regeneration that creates no lot), with the agent tick (1.2–2.0 ms),
+  trip events and the snapshot. Hours without a removal still reached 8.1–9.0 ms. A 32× frame
+  crosses about 8.5 slots, so any two systems fewer than 9 slots apart can share one.
+- **What changed** (first commit, a scheduling change; see
+  [Decided while unattended](#decided-while-unattended)):
+  1. **Planning slots a game minute apart.** Residential, commercial and industrial planning and
+     the actions slot run at the first slots of the hour's minutes 0, 1, 2 and 3 (slots 0, 16,
+     32, 48; `PlanningSlot` is the slot of the hour) instead of slots 0–3, so at 32× each runs in
+     a frame of its own. Every slot still plans on the census published at slot 0.
+  2. **Removals a minute after the actions slot.** The removal window (`building removals`,
+     `departures`) and the `level changes` queue start at slot 64 (`REMOVAL_WINDOW_START`,
+     minute 4) instead of slot 4; the window still ends before the census window (slot 480), so
+     no removal restarts a census or invalidates the books a later planning slot lends. A
+     compile-time check keeps the window after the actions slot.
+  3. **Saves** (format 104, the only one that loads): a save in slots 0–47 keeps the published
+     census the remaining planning slots read (`census_inputs.published`; slots 0–2 before), and
+     every save keeps the last admission and removal diagnostics (`demand_diagnostics`), which
+     a load used to recount from the loaded city. The Kuopio fixture gained the table (default
+     diagnostics, what a re-save writes) and its version, and its hash in `placements.json`
+     follows.
+
+  Second commit (identical results): the census storage copy made at load keeps the live
+  books' capacity for the arenas a census refills (business receipts, consumer claim staging;
+  `JobFunding::reserve_census_arenas_like`), and the census's receipt estimate keeps spare
+  capacity (`spare_capacity`), as the arenas grown by request already did.
+- **Targeted costs** (diagnostic; the same instrumentation, pinned, 8 workers; third commit on
+  its cities, fourth commit on its own; ms):
+
+  | Tier | Cost | Third commit | Fourth commit |
+  | --- | --- | --- | --- |
+  | 30k 32× | worst frame of the day | 14.0 | 8.5 |
+  | 30k 32× | worst planning frame (hours' first frames) | 14.0 | 6.7 (residential slot 2.7–3.2) |
+  | 30k 32× | removal frame (minute 4: removal 1.0–1.2, its cell-lot region 2.5–3.7) | shared the hour frame | 6.7–8.5 |
+  | 100k 1× | 01:00 residential slot (planning on the copied book) | 10.9–11.9 | 9.3 (02:00: 9.6) |
+  | 100k 1× | receipt journal growth at 01:00 (entries) | 99,316 → 198,632 | none |
+  | 100k 1× | census refill growth of the copy (receipts; claim staging) | 46,280 → 99,342; 0 → 163,290 | none |
+
+  The 30k 32× worst frames are now the hours' removal frames (minute 4), which carry the hour's
+  clearances and the cell-lot regions they dirtied in one frame (the region is served at the
+  next slot); the planning frames peak at 6.7 ms. At 100k the receipt arena is 124,075 from load
+  on (the load-time census's estimate with spare rows), and the copy keeps it.
+- **Envelope** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, no failures; the second commit's
+  envelope is bit-identical to the first's. Against the third commit (control in parentheses):
+
+  | City | Net income per resident day | Employment rate | Households per target | Jobs per target | Bankruptcies per 1k buildings day | Deliveries per 1k buildings day | Out-of-stock rate | Trip failures per 1k residents day |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | baseline 10k | 13.60 (13.58) | 0.6775 (0.6767) | 0.5309 (0.5306) | 1.386 (1.387) | 0.058 (0.039) | 172.9 (172.1) | 0.0935 (0.0930) | 0 (0) |
+  | fiscal 10k | 27.24 (27.31) | 0.0743 (0.0743) | 0.5299 (0.5295) | 1.032 (1.034) | 15.16 (15.15) | 8.63 (8.57) | 0.784 (0.784) | 0.020 (0.007) |
+  | baseline 30k | 12.87 (12.97) | 0.6720 (0.6733) | 0.5060 (0.5060) | 1.328 (1.328) | 0.316 (0.298) | 174.3 (175.0) | 0.184 (0.183) | 0.007 (0.007) |
+  | fiscal 30k | 28.35 (28.36) | 0.0769 (0.0771) | 0.5059 (0.5059) | 0.995 (0.995) | 15.75 (15.79) | 10.58 (10.30) | 0.775 (0.774) | 0.014 (0) |
+  | arrivals 30k | 12.85 (12.90) | 0.6751 (0.6759) | 0.5037 (0.5036) | 1.329 (1.329) | 0.277 (0.256) | 174.2 (174.3) | 0.175 (0.175) | 0 (0.014) |
+
+  Every difference follows from the hour's planning and removals moving by up to 60 slots:
+  money-like metrics move by at most 0.8% (baseline 30k net income per resident 12.87 against
+  12.97), employment and stock metrics by at most 0.3%, households, jobs and buildings by at
+  most 0.2%. The relative changes in bankruptcies (baseline 10k +50%, 30k +6–8%) and trip
+  failures are counts of a few events over the measured fortnight (bankruptcies: baseline 10k 6
+  against 4, baseline 30k 90 against 85, arrivals 30k 79 against 73; trip failures 0–6 events a
+  city), inside their bands. The eight notes are the earlier
+  steps' (fiscal-stress deliveries and employment, fiscal 10k net income, the baseline 30k
+  out-of-stock rate below its band), with values within 3% of the third commit's except the
+  fiscal 30k final employment rate (0.0069 against 0.0080, both above its band as before).
+  Bursts: the busiest minute holds at most 4.1% of an hour's departures (third commit 3.75%), the
+  busiest settlement hour 7.4% (unchanged).
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days). The reload check found the household diagnostics difference above before the
+  diagnostics were saved.
+- **Tests:** 2,543 release and 2,543 debug library tests and the 4 growth integration tests pass
+  on the final commit; clippy adds nothing (61 warning lines, all in `agents/data.rs` and
+  `asset_document.rs`); rustfmt adds nothing on the touched lines. The planning-slot tests now
+  name the slots by `PlanningSlot` and `REMOVAL_WINDOW_START`; the census continuation test saves
+  after each planning slot and just before the next (slots 0, 1, 16, 31, 32 and 47); the census
+  copy test runs the census on a copy with reserved arenas
+  (`the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage`); a business book test
+  that needed an exactly sized first arena to force a replay sizes its reset smaller.
+  `./run.sh --test` in an isolated profile passes on the final commit (2,548 Rust tests, the Godot
+  bridge tests, no script error, no segfault; the rendered vegetation tests skip without a
+  Forward+ display); the save format changed, which the bridge's save and load tests exercise.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one
+  session with the third commit's binary as the control; the save format changed, so each build
+  ran on cities it prepared itself (the control on the third commit's). Milliseconds and frame
+  counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms | Load s |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 5.0 (4.4) | 1.17 (1.17) | 1.43 (1.42) | 0.50 (0.51) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 10k | 32× | 4.7 (4.7) | 2.00 (2.07) | 2.44 (3.16) | 0.94 (0.94) | 0 (0) | 0 (0) | 1.7 (1.8) |
+  | 30k | 1× | 8.1 (7.6) | 2.06 (2.05) | 3.07 (2.93) | 1.06 (1.06) | 1 (0) | 0 (0) | 4.9 (4.9) |
+  | 30k | 32× | 8.2 (13.4) | 5.38 (5.69) | 8.01 (12.51) | 2.91 (2.92) | 3 (17) | 0 (0) | 4.9 (4.9) |
+  | 100k | 1× | 16.5 (19.1) | 6.50 (6.66) | 11.30 (11.14) | 4.44 (4.58) | 281 (296) | 0 (2) | 18.6 (18.6) |
+  | 100k | 32× | 27.9 (53.1) | 23.03 (29.15) | 25.98 (49.17) | 14.01 (14.14) | 2,700 (2,700) | 406 (344) | 18.6 (18.6) |
+
+  Every gate limit passes for both builds. 30k 32×: the hour frames are gone from the worst
+  frames (the hour's first frame, with the residential slot, peaks at 6.3 ms against 13.4, and
+  no frame with a planning slot is among the worst, all minute-4 frames down to 7.3 ms); the
+  maximum is now the hours'
+  minute-4 frames (8.0–8.2 ms: 5.3–6.3 ms of slot work, the hour's clearances at slot 64, the
+  cell-lot regions they dirtied at slot 65 and the hour's first construction start, also due at
+  minute 4, 0.65–0.83 ms; agent tick 1.1–1.7; snapshot 0.5–1.1), 3 frames over 8 ms against 17,
+  p99.9 8.0 against 12.5 ms. The 8 ms target is missed by 0.2 ms there (see
+  [Decided while unattended](#decided-while-unattended) for the options). 30k 1×: both builds'
+  maxima are render-snapshot frames (8.1 ms with a 6.9 ms snapshot at 04:36; control 7.6 ms, 4.9
+  ms snapshot), not slot work; at 1× every slot already ran in a frame of its own. 100k 1×: the
+  control's 00:00 and 01:00 frames (19.1 and 16.7 ms) are gone; the maximum is an agent-tick
+  frame (05:42, 16.5 ms, agent tick 15.1 ms, part 4), then the hour frames (15.2–16.4 ms:
+  residential slot about 9–9.5 ms with an ordinary frame). 100k 32×: the hour frames (control
+  45–53 ms, 23 ms of them the hour's slots) are split into one frame a slot, so the maximum
+  falls to 27.9 ms (minute-4 frames, 25–28 ms) and p99 from 29.2 to 23.0 ms; more frames pass
+  16.7 ms (406 against 344), each lighter (open question 6). Means are equal or lower (100k 1×
+  −3%); 10k and 30k p99 equal or lower. Load times are level.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the third commit as
+  control, each build on cities it prepared: hour means 1.59–1.72, 6.25–6.30, 9.79–9.87 and
+  29.88–30.74 ms (control 1.56–1.73, 5.51–5.63, 9.91–10.18 and 29.48–29.69). The 30k baseline
+  hour is about 12% dearer because the timed hours do more work, not because work got dearer:
+  workplace queries 3,646 calls against 2,248 (about 12 µs a call in both), building actions 16
+  against 11, lot runs 17 against 12. The new schedule moves which actions fall inside the
+  contract's timed hours. The work-count limits fail as before (the fiscal-stress `cch_searches`
+  limit, at its edge, passed in both runs of this build).
+
+- **Build identity:** the gate, `PERF-07` and the test suites ran on the committed sources built
+  with rustc 1.99.1 (`$TEST_BINARY`). The first commit was amended after its gate for one clippy
+  warning (a `to_saved` taking its `Copy` self by value); its tree was checked with clippy again,
+  and the second commit's gate covers both. The control is the third commit's gate binary.
+- **Save format:** 104. New: `demand_diagnostics` (the last admission and removal diagnostics);
+  `census_inputs.published` kept for saves in slots 0–47.
+- **Memory:** the business receipt arena keeps up to a quarter of spare capacity (about 25,000
+  receipts at 100k); the census storage copy holds the live books' receipt and claim staging
+  capacity from load on, as the second book does after an hour of play.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -2913,11 +3065,11 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | Job search | Gated by the job lock (`job_lock_until_day`) | Search queued at the agent's hourly phase; `job requests` queue on the rolling job board; the lock stays a day deadline | J (done) |
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H (done) |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot; entities created since its start folded before the next hour's job search; workforce counted live at the pass (`K` maintains it) | I (done) |
-| Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | One slot per zone type (slots 0–2) into a saved hour plan; slot 3 admits, queues and executes; each slot `Cost::CityScan` (per-zone lot lists are a `K` item) | I (done) |
-| Household admission | Bounded; all carriers leave on the hour | Admission decided at slot 3; `admissions` queue paced by a credit over the hour; departure events | E (departures done), J (done) |
+| Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | One slot per zone type (slots 0, 16, 32) into a saved hour plan; the actions slot (48) admits, queues and executes; each slot `Cost::CityScan` (per-zone lot lists are a `K` item) | I (done) |
+| Household admission | Bounded; all carriers leave on the hour | Admission decided at the actions slot; `admissions` queue paced by a credit over the hour; departure events | E (departures done), J (done) |
 | Construction queue | One start per minute | Timed events | C (done) |
-| `execute_building_actions` | Plan-bounded | Proved at slot 3 with a saved permit; `level changes` queue with quota from slot 4 | J (done) |
-| `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued, served in slots 4–479. `cleanup_stale_buildings` stays immediate: it runs only from editing paths, which delete the parcels in the same edit | G (done), J (done) |
+| `execute_building_actions` | Plan-bounded | Proved at the actions slot with a saved permit; `level changes` queue with quota from slot 64 | J (done) |
+| `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued, served in slots 64–479. `cleanup_stale_buildings` stays immediate: it runs only from editing paths, which delete the parcels in the same edit | G (done), J (done) |
 | Pollution, noise, desirability | O(grid) plus O(buildings + edges) emission | Rolling grid sweeps | H (done) |
 | Daily ledger begin and finish, `reset_daily_ledgers`, `reset_daily_input_accumulators` | O(households), O(buildings) | Each entity rolls its own window at its phase | G (done) |
 | `job_lock_days` decrement | O(agents) | Passive deadline | D (done) |
@@ -2926,7 +3078,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `resolve_household_housing` | Serial over households | Check at phase enqueues housing reviews, served by the `housing requests` queue | G (done), J (done) |
 | `workplace_route_cache.clear` | Daily clear | Entries expire 24 passes after they were added | G (done) |
 | Road upkeep sum | O(edges) | Rolling road-length sum; upkeep charged at the calendar close | G (done) |
-| `run_daily_pass`, `execute_demand_household_removal` | O(households) | Exit check at phase, paced by the daily exit credit; `departures` queue in slots 4–479 | G (done), J (done) |
+| `run_daily_pass`, `execute_demand_household_removal` | O(households) | Exit check at phase, paced by the daily exit credit; `departures` queue in slots 64–479 | G (done), J (done) |
 | `finalize_daily_tax_window`, `record_daily_budget_ledger` | Serial over ledgers | Calendar close over running sums, O(zones) | G (done) |
 | `agents.daily_update` | O(agents), par | `EntityPhase` daily | G (done) |
 
@@ -2943,13 +3095,14 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 ### Open questions
 
 1. **Demand planning slicing.** Resolved in `SIM-02-I` part 4: residential, commercial and
-   industrial plan in slots 0, 1 and 2 of the hour into a saved hour plan, and slot 3 admits,
-   queues the hour's spawns in the single pass's order and runs the actions; see
-   [Decided while unattended](#decided-while-unattended). Per-district planning remains an
-   option for `SIM-02-K` if a zone slot grows past its budget. `SIM-02-K` part 5 found the slots'
-   cost at 100k to be setup that each split slot would pay again (about 4 ms), not decisions
-   (0.1–2 ms), so per-district planning is not reopened; it stays an option for after the setup
-   follows what changed.
+   industrial plan in the first slots of the hour's minutes 0, 1 and 2 into a saved hour plan, and
+   minute 3's first slot admits, queues the hour's spawns in the single pass's order and runs the
+   actions; see [Decided while unattended](#decided-while-unattended). `SIM-02-K` part 5 spaced the
+   slots a game minute apart so that at 32× each runs in a frame of its own. Per-district planning
+   remains an option for `SIM-02-K` if a zone slot grows past its budget. `SIM-02-K` part 5 found
+   the slots' cost at 100k to be setup that each split slot would pay again (about 4 ms), not
+   decisions (0.1–2 ms), so per-district planning is not reopened; it stays an option for after the
+   setup follows what changed.
 2. **Hot dense references.** Resolved in `SIM-02-B`; see
    [Entity handles](#entity-handles).
 3. **Pure-job latency and pool size** per job.
@@ -2982,7 +3135,8 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
    sub-stepping; GPU compute (deferred by decision). Part 6 (the 100k traffic stalls: about
    45,000 of 145,000 agents always moving) may shrink the problem and runs first. Part 7
    decides under the stop rule: findings, options, `needs_revalidation`, stop for review. 30k at
-   both speeds and 100k at 1× remain within reach.
+   both speeds and 100k at 1× remain within reach. After part 5's fourth commit the 100k 32×
+   maximum is 27.9 ms (the minute-4 frames and agent-heavy frames, 25–28 ms), p99 23.0 ms.
 
 ### Decided while unattended
 
@@ -3625,6 +3779,8 @@ alternatives and the evidence. The user reviews these on return.
   residents, 109/119 jobs, 25 empty household-days in year 1, none in year 2, no failed
   shopping trips (part 3: 80, 153, 109/119, 24/0/0); the scarce-labour case's entrants equal
   part 3's (machinery on parcels 101, 103 and 104, a food processor on 102 at 99.87%).
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-I` — admission's arrivals depart paced from slot 3.** Admission runs at slot 3,
   between the plans and the actions, as the single pass ran it before its actions. Its carriers
   wait at the border for paced departures, which slot 0 schedules for the hour's other trips;
@@ -3638,6 +3794,8 @@ alternatives and the evidence. The user reviews these on return.
   hour's slots 0–2. Alternative: schedule every held trip at slot 3 (the hour's shoppers,
   visitors and freight would wait three slots, and a save between slots 0 and 3 would need the
   held lists).
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-I` — a flow field is a function of its sources and the road graph.** A field
   equals `FlowField::build` of its zone's current sources (completed buildings of the zone in
   zone-index order, with their entrance-legal edge endpoints) on the current graph, which is
@@ -3717,6 +3875,8 @@ alternatives and the evidence. The user reviews these on return.
   starter town (5 epochs).
 - **`SIM-02-I` — no business start before slot 3's permits.** Slot 3 queues every spawn, due
   from minute 1 (slot 16).
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 
 - **`SIM-02-I` — a save in the hour's planning slots keeps the census they read**.
   The census the hour's first slot publishes is read by planning slots 1–3, slot 3's permit
@@ -3756,6 +3916,8 @@ alternatives and the evidence. The user reviews these on return.
   case's funded jobs: the loaded city's census funds the new policy's books). The starter-town
   between-slots test passes even without the restore, as on the first part 4 build: its decisions coincide
   on the two censuses, which is why the census comparison at load is the check.
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-I` — a failed re-proof leaves the hour's plan**. A later slot proves
   the earlier slots' business spawns and upgrades again, in the single pass's order, before its
   own decisions. One that fails there (budgets, stock or workforce moved in the slots between,
@@ -3929,6 +4091,8 @@ alternatives and the evidence. The user reviews these on return.
   which moves with the building) instead of `JobFunding::capacities` by dense index; at the
   hour's first slot the two are equal. The household destination index reads only live building
   state.
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-J` — job searches from a per-slot queue.** An agent's hourly phase first ends an
   assignment to a workplace that stopped operating or of an agent who cannot work (the hour's
   O(agents) ejection scan), then queues its search when it is in a building and unemployed,
@@ -4010,6 +4174,8 @@ alternatives and the evidence. The user reviews these on return.
   (2) remove at slot 0 before planning, as exits did (a city-sized batch in one slot again).
   Evidence: 168 hours of the 10k fiscal-stress city removed 420 buildings, all outside the
   window, with 0 census restarts and 0 planning or epoch skips in 672 planning passes.
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-J` — level changes applied by a queue under a saved permit, in slots 4–959.** Slot 3
   proves them in its epoch as before and checks that the target fits; the queue applies them
   from slot 4. The permit digests the building's asset, level and economy profile and, for a
@@ -4026,6 +4192,8 @@ alternatives and the evidence. The user reviews these on return.
   asset, which only matters when two changes in one hour depend on each other's live profile.
   Evidence: `a_stale_level_change_permit_is_rejected` and the census-window test; the envelope
   cities ship level-1 assets only and never exercise level changes.
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-J` — compatibility removals queued at the building's phase; `cleanup_stale_buildings`
   stays immediate.** The phase advances the rezoning grace as before and queues the removal when
   the attachment is gone or the grace ran out; the queue checks again with no elapsed day. The
@@ -4058,6 +4226,8 @@ alternatives and the evidence. The user reviews these on return.
   that admission (releasing its home) when it comes up. Evidence: the arrivals burst is 3.23%
   of departures in the busiest minute on both builds; admissions up to 16 an hour in the build
   hours and 1–3 once grown at 10k, busiest slot 1.
+  Moved in `SIM-02-K` part 5 (fourth commit): the planning slots are now slots 0, 16, 32 and 48, and
+  removals, departures and level changes start at slot 64; see its results section.
 - **`SIM-02-J` — queued clearances repair the caches as slot 3 did.** The first build repaired
   every slot that removed a building with `finish_phase_removals`, as daily phases repaired
   compatibility removals. Its `bump_building_ref_revision` marks every building row changed, so
@@ -4595,6 +4765,104 @@ alternatives and the evidence. The user reviews these on return.
   `seen` arrays are cleared only when their generation counter wraps, and only the receipt
   journals follow arena capacity, and only when the arena grows. The remaining suspect is the
   larger arrays' memory footprint, which was not measured.
+- **`SIM-02-K` part 5 (fourth commit) — the hour's planning slots a game minute apart, and the
+  removal window a minute after them.** The 30k 32× maximum (13.4 ms in `PERF-07`) was the even
+  hours' first frame, which crossed slots 0–4 together: the four planning slots (about 4.5–5 ms),
+  one building removal at slot 4 (1.1–1.3 ms) and the cell-lot region it dirtied (2.2–3.4 ms), with
+  the agent tick (1.2–2.0 ms), trip events and the snapshot. Hours without a removal still reached
+  8.1–9.0 ms (diagnostic): the four planning slots alone, with an ordinary frame's agent tick and
+  snapshot, exceed 8 ms. This is a scheduling choice with a gameplay side, taken under the run's
+  rule (keep the envelope closest, prefer the simpler option). Alternatives rejected: (a) only start
+  the removal window later: removes the removal and its region (about 4.5 ms) but leaves the 8–9 ms
+  planning frame; (b) space the planning slots but start removals right after the actions slot (slot
+  49): the actions slot, the removal and its region share a frame again (about 8–9 ms); (c) a
+  cheaper cell-lot regeneration after a removal: exact, but the region's generated cells are rebuilt
+  by the zoning completeness cache over the vacated envelope's halo, and skipping work that creates
+  no lot needs a proof that the removal changed no blocker, zoning work beyond this part; alone it
+  leaves the 8–9 ms planning frame; (d) the incremental setup: at most 1.5 ms at 30k, alone not
+  enough, and the larger change. Chosen: the residential, commercial and industrial slots and the
+  actions slot at the first slots of the hour's minutes 0, 1, 2 and 3 (slots 0, 16, 32, 48;
+  `PlanningSlot` gives the offsets), and the removal window and the level-change queue from minute 4
+  (slot 64, `REMOVAL_WINDOW_START`). One slot a game minute does not depend on `SLOTS_PER_MINUTE`
+  and clears a 32× frame's 8.5 slots with room; a speed above 32× would put two slots in one frame
+  again. Removals still wait out the census window (slots 480–959) for the reason `SIM-02-J` part 3
+  records, and still never run between the planning slots, where a swap-remove would invalidate the
+  published books the later slots lend (a compile-time check keeps the window after the actions
+  slot). Gameplay: the commercial, industrial and actions slots plan 16, 32 and 48 slots later on
+  the same published census (the freight price phase's authored boundaries are on the hour or half
+  hour, so the books stay current); the hour's spawns are queued from minute 4 instead of minute 1;
+  clearances, compatibility removals, departures and level changes are served from slot 64 instead
+  of slot 4 (3.75 game minutes later); the hour's admissions are created from slot 48. The removal
+  window shrinks from 476 to 416 slots an hour, far above the queues' rates (quota 8 removals and 1
+  departure a slot; at most 48 departures a day). Evidence: the envelope passes with no failures
+  against the third commit: net income within 0.8% (baseline 30k 12.87 against 12.97), employment
+  and stock metrics within 0.3%, households, jobs and buildings within 0.2%, bankruptcies small
+  counts (6 against 4, 90 against 85, 79 against 73 events), trip failures 0–6 events a city, the
+  same 8 notes. Bursts pass: the worst minute holds 4.1% of an hour's departures (3.75% before), the
+  worst settlement hour 7.4% (unchanged). Determinism shows no differences. `PERF-07`: the 30k 32×
+  maximum falls from 13.4 to 8.2 ms.
+- **`SIM-02-K` part 5 (fourth commit) — saves keep the planning span's census and the household
+  diagnostics; save format 104.** A save before the actions slot keeps the census the hour's
+  first slot published (`census_inputs.published`); the span grows from slots 0–2 to 0–47, so a
+  save at slots 3–47, which the old build saved without it, is not loadable by the new rules:
+  `SAVE_VERSION` and the only loadable version become 104. The reload continuation check then
+  found the hour's first record after a load at 13:37 differing in net open jobs (1 against 0):
+  the load recounted the admission and removal diagnostics from the loaded city
+  (`refresh_household_diagnostics`), while the uninterrupted game shows the actions slot's count,
+  taken at slot 48 now and 45 slots of job searches earlier than slot 3 was. It matched before
+  by chance. Alternatives: (1) recount at load and exclude the diagnostics from the comparison
+  (hides a real difference: the shown housing balance and the records differ after a load);
+  (2) recount them at load from saved inputs (the live workforce of slot 48 is gone). Chosen:
+  save both diagnostics (`demand_diagnostics`, every field, four bytes each) and restore them at
+  load; the load no longer recounts them, a policy change still does. The Kuopio fixture gains
+  the table with default diagnostics, what a re-save of it writes, and its hash follows.
+- **`SIM-02-K` part 5 (fourth commit) — the census storage copy keeps the live books' arena
+  capacity, and the census's receipt estimate keeps spare capacity.** At 100k the 01:00
+  residential slot cost 10.9–11.9 ms against 8–9.2 ms steady (diagnostic, third commit): the
+  load-time copy (`Clone`, exact to its rows) of the business receipt arena (capacity 46,280
+  after preparation) and the consumer claim staging (0) were grown by the census that refilled
+  the copy (to 99,342 and 163,290), and the 01:00 planning slot lending the copy then doubled the
+  receipt journals sized by the arena (99,316 → 198,632) and wrote fresh pages. Copying with
+  capacities alone would not do: the census reset sized the arena exactly to its estimate
+  (`reserve_cleared(2 × (input ports + output ports))`), so the load-time census left the live
+  arena exact (99,316) and the next census, whose estimate was 26 receipts larger, doubled it
+  and then every journal it sizes. Alternatives: (1) grow the journals by the spare rule when
+  the arena grows (they already do: `spare_capacity` doubles them, the growth itself is the
+  cost); (2) a capacity-preserving clone of every book (dozens of arrays, most of which the
+  preparation already grows with spare rows). Chosen: the reset's estimate takes the spare rule
+  the other arenas grown by request have (`spare_capacity`), and the copy reserves the live
+  books' capacity for the two arenas the census refills (`JobFunding::reserve_census_arenas_like`).
+  Capacity never changes a result; memory grows by at most a quarter of the receipt arena.
+  One unit test that relied on an exactly sized first arena to force a replay
+  (`finite_finance_replay_preserves_every_receipt`) sizes its reset smaller.
+- **`SIM-02-K` part 5 (fourth commit) — the 30k 32× minute-4 frames (findings, not taken).** After
+  the spacing the 30k 32× maximum is the frame that crosses slots 64–65 of an hour with clearances
+  (`PERF-07` 8.0–8.2 ms, three frames over 8 ms; diagnostic 6.7–8.5 ms): the hour's clearances at
+  slot 64 (1.0–1.2 ms with the zone-index and entrance-cache repair), the cell-lot regions they
+  dirtied, served at slot 65 (2.5–3.7 ms, generated-cell regeneration that creates no lot), and the
+  hour's first queued construction start, due at minute 4 too (0.65–0.83 ms), with the agent tick
+  (1.1–1.7) and snapshot (0.5–1.1). Options, cheapest first: (a) start the queued spawns a minute
+  later than the removals, or the removals a minute later than the first spawn (each queued spawn
+  starts one a minute, so with several spawns an hour one still shares the removal frame; worth
+  about 0.7 ms); (b) let the `cell lots` queue serve a region no sooner than a game minute after it
+  was dirtied, which splits the clearances and their regions into separate 32× frames (worth 2.5–3.7
+  ms; lots appear up to a minute later, a gameplay change); (c) make the regeneration after a
+  removal cheaper and exact: the removal marks the vacated envelope dirty in the cell store's
+  completeness cache, and the region regenerates every generated cell of the envelope's halo,
+  probably although no blocker of those cells changed (not verified; zoning work, identical
+  results); (d) the incremental per-slot setup does not help this frame. (b) or (c) alone brings the
+  frame to about 5 ms.
+- **`SIM-02-K` part 5 (fourth commit) — the 100k 1× hour frames (findings, not taken).** The
+  remaining 15.2–16.4 ms hour frames at 100k 1× (`PERF-07`) are each hour's residential slot
+  (about 9–9.5 ms; 8.0–9.2 ms in the third commit's 300-minute trace, diagnostic) with an
+  ordinary frame's agent tick
+  (3.6–4.4 ms), restock requests (0.4–1.0), trip events (about 0.5) and snapshot (about 1). The
+  residential slot is its site preparation (`SiteSupply::new`: the hour's supplier and buyer
+  site-row merge and layout and the owner storage, 3.6–5.0 ms), the queued projects' replay
+  (1.2–1.4), the decisions (1.6–1.8), the pass's reservations (0.75–0.8) and the snapshots
+  (0.46–0.54). No cheap identical fix: the site rows and the setup would have to follow what
+  changed (the per-slot setup item); spacing the slots does not change 1× frames, each of which
+  already holds at most one slot.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

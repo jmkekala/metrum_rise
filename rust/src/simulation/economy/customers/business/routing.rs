@@ -170,6 +170,11 @@ impl BusinessMarket {
         self.reset_accounts();
     }
 
+    /// Gives this copy of `live` the capacity of the arenas a census refills (`SIM-02-K`).
+    pub(crate) fn reserve_like(&mut self, live: &Self) {
+        self.budgets.reserve_like(&live.budgets);
+    }
+
     /// Prepares live and temporary project owner slots outside the proposal loop.
     pub(crate) fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
         // Owner rows follow the city; spare rows keep an appended building from reallocating

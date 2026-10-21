@@ -561,7 +561,9 @@ mod tests {
         for pass_count in &mut passes {
             loop {
                 *pass_count += 1;
-                book.reset(16, 16, 32, 32);
+                // The reset's receipt estimate, with its spare rows, stays short of the 112
+                // receipts, so the first pass replays.
+                book.reset(16, 16, 32, 24);
                 for buyer in 0..16 {
                     book.set_finance(buyer, [100.0, 1_000_000.0]);
                     book.push_input(

@@ -30,6 +30,10 @@ use super::trips::TripEvent;
 use crate::simulation::economy::demand::PlanningSlot;
 use crate::simulation::economy::hiring::{REMOVAL_WINDOW_START, removals_allowed};
 
+// Removals and level changes wait until the hour's planning slots have read the census its
+// first slot published (`SIM-02-J`).
+const _: () = assert!(REMOVAL_WINDOW_START > PlanningSlot::Actions as u64);
+
 /// One system the dispatcher can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SimSystem {
@@ -248,8 +252,9 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         // The hour's demand planning, one zone per slot, residential after the operational
-        // hour, on the census the hour's first slot published; slot 3 queues the hour's spawns
-        // and executes its plan (`SIM-02-I`). Planning lends the census's books
+        // hour, on the census the hour's first slot published; the actions slot queues the
+        // hour's spawns and executes its plan (`SIM-02-I`). The slots are a game minute apart
+        // (`PlanningSlot`), so at 32× each runs in a frame of its own (`SIM-02-K`). Planning lends the census's books
         // and restores them, quotes freight and prepares site indices. Each slot pays the
         // planning setup again: the live workforce, O((H + B)/p) in parallel; the project
         // market, O(B) serial; the queue's replay, O(Q log H); and the earlier slots' plans
@@ -261,7 +266,7 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             name: "residential planning",
             kind: SystemKind::FixedSlot {
                 period: Period::Hour,
-                offset: 0,
+                offset: PlanningSlot::Residential as u64,
             },
             reads: state::ALL,
             writes: state::ALL,
@@ -273,7 +278,7 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             name: "commercial planning",
             kind: SystemKind::FixedSlot {
                 period: Period::Hour,
-                offset: 1,
+                offset: PlanningSlot::Commercial as u64,
             },
             reads: state::ALL,
             writes: state::ALL,
@@ -285,23 +290,23 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             name: "industrial planning",
             kind: SystemKind::FixedSlot {
                 period: Period::Hour,
-                offset: 2,
+                offset: PlanningSlot::Industrial as u64,
             },
             reads: state::ALL,
             writes: state::ALL,
             cost: Cost::CityScan,
             tier: Tier::Full,
         },
-        // Slot 3 pays the same setup and every zone's downgrade candidates, O(B/p) each, then
-        // admits a bounded applicant batch, queues the hour's spawns, opens the construction
-        // epoch, O(B + Q log H), and runs the level changes and despawns: O(B + H + Q log H),
-        // within the `CityScan` bound.
+        // The actions slot pays the same setup and every zone's downgrade candidates, O(B/p)
+        // each, then admits a bounded applicant batch, queues the hour's spawns, opens the
+        // construction epoch, O(B + Q log H), and runs the level changes and despawns:
+        // O(B + H + Q log H), within the `CityScan` bound.
         Declaration {
             system: SimSystem::DemandActions,
             name: "demand actions",
             kind: SystemKind::FixedSlot {
                 period: Period::Hour,
-                offset: 3,
+                offset: PlanningSlot::Actions as u64,
             },
             reads: state::ALL,
             writes: state::ALL,

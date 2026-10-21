@@ -144,6 +144,11 @@ pub(crate) struct ConsumerMarket {
 }
 
 impl ConsumerMarket {
+    /// Gives this copy of `live` the capacity of the arenas a census refills (`SIM-02-K`).
+    pub(crate) fn reserve_like(&mut self, live: &Self) {
+        self.budgets.reserve_like(&live.budgets);
+    }
+
     /// Households visited and trip fallbacks tried by claims so far, for the funding census's
     /// work units (`SIM-02-K`). Monotonic counters; O(1).
     pub(crate) fn claim_work(&self) -> [u64; 2] {

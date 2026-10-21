@@ -210,6 +210,11 @@ pub(super) fn save_world(
             bool_to_db(demand.exit_eligible_today),
         ],
     )?;
+    let [admission, removal] = demand.saved_household_diagnostics();
+    tx.execute(
+        "INSERT INTO demand_diagnostics(singleton, admission, removal) VALUES (1, ?1, ?2)",
+        params![admission, removal],
+    )?;
     let mut pending_spawn_stmt = tx.prepare(
         "INSERT INTO pending_demand_spawns(sequence, due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id, permit, counted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;

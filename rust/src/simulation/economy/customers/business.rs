@@ -108,6 +108,12 @@ impl BusinessBudgets {
         );
     }
 
+    /// Gives this copy of `live` the capacity of the receipt arena a census refills
+    /// (`SIM-02-K`, [`crate::utils::storage::reserve_capacity`]). O(1) without growth.
+    pub(crate) fn reserve_like(&mut self, live: &Self) {
+        crate::utils::storage::reserve_capacity(&mut self.committed, live.committed.capacity());
+    }
+
     /// Prepares sparse storage before visiting input ports. `input_ports` includes all live
     /// and projected account slots. Output ports size the initial receipt estimate; financial
     /// fragmentation can require a larger arena, prepared between complete matching attempts.
@@ -137,10 +143,15 @@ impl BusinessBudgets {
         self.finance_staged.resize(buyers, false);
         self.finance_staged.fill(false);
         self.committed.clear();
-        crate::utils::storage::reserve_cleared(
-            &mut self.committed,
+        // The census's receipt estimate keeps spare capacity, as the arenas grown by request do
+        // (`SIM-02-K`): reserved exactly, a census whose estimate passed the last one's by a few
+        // receipts doubled the arena, and the next planning slot to lend the book grew every
+        // journal it sizes.
+        let receipts = crate::utils::storage::spare_capacity(
             2 * (input_ports + output_ports),
+            self.committed.capacity(),
         );
+        crate::utils::storage::reserve_cleared(&mut self.committed, receipts);
         self.owners.resize(sellers, usize::MAX);
         self.owners.fill(usize::MAX);
         self.free_receipt = usize::MAX;

@@ -30,7 +30,7 @@
 
 use super::{CensusInputs, CensusProgress, FILL_SLOTS, JobFunding, StepWork};
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+use crate::simulation::core::scheduler::{SLOTS_PER_HOUR, SLOTS_PER_MINUTE};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 
@@ -42,8 +42,11 @@ pub(crate) const CENSUS_WINDOW_START: u64 = FILL_SLOTS;
 pub(crate) const SLACK_SLOTS: u64 = 96;
 
 /// First slot of the hour at which building and household swap-removes run (`SIM-02-J`): the
-/// hour's planning slots 0 to 3 read the census published at slot 0 before it.
-pub(crate) const REMOVAL_WINDOW_START: u64 = 4;
+/// hour's planning slots, up to the actions slot at minute 3, read the census published at
+/// slot 0 before it. It is minute 4's first slot, a game minute after the actions slot, so at
+/// 32× a removal and the cell-lot region it dirties never share a frame with planning
+/// (`SIM-02-K`).
+pub(crate) const REMOVAL_WINDOW_START: u64 = 4 * SLOTS_PER_MINUTE;
 
 /// Whether building and household swap-removes may run at absolute `slot` (`SIM-02-J`): slots
 /// [`REMOVAL_WINDOW_START`] to [`CENSUS_WINDOW_START`] − 1 of its hour. A removal earlier in the
@@ -199,12 +202,16 @@ impl RollingCensus {
     /// than on fresh storage that its first planning pass grows in one slot. What a census's
     /// storage held never changes its result: what it reuses from earlier content is keyed by
     /// exactly its inputs, as with the previous census an uninterrupted game's storage holds.
+    /// The copy keeps the live books' capacity for the arenas a census refills (the business
+    /// receipts and the consumer claim staging): [`Clone`] gives a copy exact to its rows, so
+    /// the next census grew them and the planning slot after it grew the journals they size.
     /// Call at load only; a finished census keeps its book. O(books) once.
     pub(crate) fn warm_storage_from(&mut self, live: &JobFunding) -> Option<&mut JobFunding> {
         if self.progress.is_done() || self.funding.planning_prepared {
             return None;
         }
         self.funding.clone_from(live);
+        self.funding.reserve_census_arenas_like(live);
         Some(&mut self.funding)
     }
 

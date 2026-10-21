@@ -605,6 +605,14 @@ pub(crate) fn load_from_sqlite(
         demand_row.cheat_max_demands_enabled,
     );
     demand.exit_eligible_today = demand_row.exit_eligible_today;
+    let (admission, removal): (Vec<u8>, Vec<u8>) = conn.query_row(
+        "SELECT admission, removal FROM demand_diagnostics WHERE singleton = 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    demand
+        .restore_household_diagnostics(&admission, &removal)
+        .map_err(SaveLoadError::custom)?;
     world::load_demand_hour_plan(&conn, &mut demand)?;
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let scheduler = scheduler::load(&conn)?;

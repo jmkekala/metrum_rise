@@ -329,8 +329,8 @@ fn the_census_stepped_over_the_window_equals_one_run_on_its_copy_and_restarts_on
 }
 
 // Loading gives census storage that holds no census a copy of the live books, as an
-// uninterrupted game's holds the previous published census (`SIM-02-K`): what the storage held
-// never changes the census.
+// uninterrupted game's holds the previous published census, with the capacity of the arenas a
+// census refills (`SIM-02-K`): what the storage held never changes the census.
 #[test]
 fn the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage() {
     let mut scenario = busy_town();
@@ -341,7 +341,9 @@ fn the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage() {
         .households
         .census_of_front_for_test(&core.transit_network, &core.region_graph);
     assert!(fresh.capacities.iter().any(|&jobs| jobs > 0));
-    let copy = core.households.job_funding.clone();
+    let live = &core.households.job_funding;
+    let mut copy = live.clone();
+    copy.reserve_census_arenas_like(live);
     let warm = core.households.census_of_front_on_for_test(
         copy,
         &core.transit_network,
@@ -435,13 +437,19 @@ fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_b
     assert_census_continues_after_reload(&mut source, "before-publish");
 }
 
-// The hour's planning slots read the census its first slot published (`SIM-02-I`): a save after
-// slot 0, 1 or 2 keeps its copy, and the loaded game recomputes the same census, books and all,
-// saves the same copy again and runs the next censuses as the saved game does.
+// The hour's planning slots read the census its first slot published (`SIM-02-I`): a save
+// anywhere before the actions slot (after the residential slot, between two planning slots a
+// game minute apart, just after the commercial or industrial slot) keeps its copy, and the
+// loaded game recomputes the same census, books and all, saves the same copy again and runs the
+// next censuses as the saved game does.
 #[test]
 fn the_published_census_continues_identically_after_save_load_in_the_planning_slots() {
+    use crate::simulation::economy::demand::PlanningSlot;
     let mut source = busy_town();
-    for chunk in 0..3 {
+    let commercial = PlanningSlot::Commercial as u64;
+    let industrial = PlanningSlot::Industrial as u64;
+    let actions = PlanningSlot::Actions as u64;
+    for chunk in [0, 1, commercial, industrial - 1, industrial, actions - 1] {
         step_to_chunk(&mut source.core, chunk);
         assert_census_continues_after_reload(&mut source, &format!("planning-slot-{chunk}"));
     }
@@ -879,8 +887,8 @@ fn a_policy_change_in_the_census_window_reaches_the_next_census_and_survives_sav
 // A building that leaves between the hour's planning slots moves the published books' indices,
 // so the later slots never read their rows: a skipped commercial or industrial slot plans
 // nothing for its zone this hour (the residential slot's homes, planned before the removal,
-// are still queued at slot 3), and a skipped slot 3 leaves every queued business permit
-// voided, to wait for the next hour's slot (`SIM-02-I`).
+// are still queued at the actions slot), and a skipped actions slot leaves every queued
+// business permit voided, to wait for the next hour's slot (`SIM-02-I`).
 #[test]
 fn a_building_removed_between_the_planning_slots_skips_the_later_slots() {
     use crate::simulation::economy::demand::SpawnPermit;
@@ -896,10 +904,12 @@ fn a_building_removed_between_the_planning_slots_skips_the_later_slots() {
     let queued = core.pending_demand_spawns.len();
     // The last building moves into the removed one's index.
     assert!(core.bulldoze_building(0));
-    while core.time.absolute_slot() < hour * SLOTS_PER_HOUR + 3 {
+    let actions = crate::simulation::economy::demand::PlanningSlot::Actions as u64;
+    while core.time.absolute_slot() < hour * SLOTS_PER_HOUR + actions {
         core.step_frame(FRAME_DT_S / 16.0);
     }
-    let (day, minute) = slot_calendar(hour * SLOTS_PER_HOUR);
+    // Spawns are queued at the actions slot, with its minute.
+    let (day, minute) = slot_calendar(hour * SLOTS_PER_HOUR + actions);
     assert!(
         core.pending_demand_spawns
             .iter()

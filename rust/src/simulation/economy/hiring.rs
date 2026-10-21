@@ -145,6 +145,14 @@ thread_local! {
 }
 
 impl JobFunding {
+    /// Gives this copy of `live` the capacity of the arenas a census refills, the business
+    /// receipts and the consumer claim staging (`SIM-02-K`): [`Clone`] gives a copy exact to
+    /// its rows. Capacity never changes a result. O(1) without growth.
+    pub(crate) fn reserve_census_arenas_like(&mut self, live: &Self) {
+        self.business.reserve_like(&live.business);
+        self.customers.reserve_like(&live.customers);
+    }
+
     /// Reports exact cross-census import plan hits in the latest refresh.
     #[cfg(test)]
     pub(crate) fn import_plan_replays(&self) -> usize {

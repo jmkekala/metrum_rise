@@ -180,9 +180,11 @@ later viable proposal is not hidden.
 This section describes the current cadence. Its replacement is planned in
 [`simulation.md`](simulation.md#sim-02-scheduler-refactor) (`SIM-02`).
 
-- **Hourly demand planning:** four slots of every hour, 00:00 included (`SIM-02-I` part 4).
-  Slots 0, 1 and 2 plan residential, commercial and industrial projects into a saved hour plan,
-  each on the published census books; slot 3 plans downgrades, decides the hour's admissions,
+- **Hourly demand planning:** four slots of every hour, 00:00 included, a game minute apart
+  (`SIM-02-I` part 4, `SIM-02-K` part 5). The first slots of minutes 0, 1 and 2 (slots 0, 16 and
+  32) plan residential, commercial and industrial projects into a saved hour plan, each on the
+  published census books; minute 3's first slot (the actions slot, slot 48) plans downgrades,
+  decides the hour's admissions,
   queues the hour's spawns in the single pass's order (homes, claimed optional homes, shops,
   industry), proves the queue's permits and the level changes, and queues the level changes,
   admissions and clearances for their request queues (`SIM-02-J`). Its proposals are provisional: the live
@@ -192,10 +194,11 @@ This section describes the current cadence. Its replacement is planned in
 - **Household exits:** each household checks its own exit eligibility at its daily phase, after
   its settlement, and claims its share of the day's exit budget
   ([Household removal](#household-removal)). The `departures` queue removes the claimed
-  households, one a slot, in slots 4–479 of the hour (`SIM-02-J`). There is no daily pass
+  households, one a slot, in slots 64–479 of the hour (`SIM-02-J`). There is no daily pass
   (`SIM-02-G`).
 - **Construction queue:** new construction is queued and started one project per authored minute,
-  each start a timed event (`SIM-02-C`). A site completes at its own slot, its duration after the
+  each start a timed event (`SIM-02-C`); the hour's queued spawns start one a minute from minute 4
+  (from minute 1 before `SIM-02-K` part 5). A site completes at its own slot, its duration after the
   start (`SIM-02-D`). The workforce calendar counts every site, placed, queued or proposed, as
   ready at the first hour boundary at or after its completion.
 - **Frozen inputs:** a pass's inputs are fixed. Its changes affect the next operational hour and
@@ -279,14 +282,15 @@ an adult. Families without workers use only unreserved ready homes, so they cann
 promised to a new employer's staff.
 
 **Arrival.** An accepted family claims its home at once and waits in the `admissions` queue
-(`SIM-02-J`). Slot 3 decides the whole batch; the queue creates the households over the following
-hour, paced by a credit that starts at one whole admission, and launches each family's arrival
-carrier from the border to its home. The carrier waits at the border for a departure slot paced
-from its creation (`SIM-02-E`). A family whose home left before its turn is dropped; one whose
-border has lost its car road releases its home. Families still in the queue count as pending
-arrivals. Its approved adult, elder and child composition travels with the carrier, survives arrival
-reordering and save/load, and materializes when the carrier reaches its home. Pending adults count as labor supply in the next forecast; each hour recounts them from
-the carriers still on their way.
+(`SIM-02-J`). The actions slot (slot 48) decides the whole batch; the queue creates the households
+over the following hour, paced by a credit that starts at one whole admission, and launches each
+family's arrival carrier from the border to its home. The carrier waits at the border for a
+departure slot paced from its creation (`SIM-02-E`). A family whose home left before its turn is
+dropped; one whose border has lost its car road releases its home. Families still in the queue count
+as pending arrivals. Its approved adult, elder and child composition travels with the carrier,
+survives arrival reordering and save/load, and materializes when the carrier reaches its home.
+Pending adults count as labor supply in the next forecast; each hour recounts them from the carriers
+still on their way.
 
 The **empty-town bootstrap** offers the first home when the city has a border and no households.
 
@@ -305,7 +309,7 @@ an eligible household adds 0.25 (`persistent_exit_daily_fraction`) to the exit c
 unit of credit releases the household that completed it, at most 48 per calendar day. The
 credit lapses at a calendar close when no household was eligible that day. Each claim is O(1)
 (`SIM-02-G`). The `departures` queue (`SIM-02-J`) removes the released households in release
-order, one a slot in slots 4–479 of each hour, through the existing lifecycle, after rechecking
+order, one a slot in slots 64–479 of each hour, through the existing lifecycle, after rechecking
 the same policy against live state. The window is the one in which a swap-remove neither
 restarts the census nor invalidates the published books
 ([`simulation.md`](simulation.md#request-queues)).
@@ -435,16 +439,16 @@ index returns with the rollback. There is no planner census: under the slot cloc
 census is current (test builds assert it, and `planner_censuses` counts any pass that would not
 be). Test builds compare full book fingerprints after every slot.
 
-After slot 3 queues the hour's spawns, it opens one construction epoch on the same published
-books, under the same journal: the planner's snapshot (rolling front, live workforce,
+After the actions slot queues the hour's spawns, it opens one construction epoch on the same
+published books, under the same journal: the planner's snapshot (rolling front, live workforce,
 queue capacity) and a replay of every constructing building and queued project in queue order,
-counting queued homes' applicants as the planner does. A building the census did not see
-operating still counts as under construction. Each queued commercial or industrial spawn gets a
-permit when its proof funds and staffs it: a digest of its door, with its profile and level.
-Permits are saved with the queue. The hour's business level changes are proved in the same epoch
-and queued with a permit (their building's asset, level, profile and door); the `level changes`
-queue applies them from slot 4 while the building still matches, and the hour's clearances wait
-for the `building removals` queue (`SIM-02-J`).
+counting queued homes' applicants as the planner does. A building the census did not see operating
+still counts as under construction. Each queued commercial or industrial spawn gets a permit when
+its proof funds and staffs it: a digest of its door, with its profile and level. Permits are saved
+with the queue. The hour's business level changes are proved in the same epoch and queued with a
+permit (their building's asset, level, profile and door); the `level changes` queue applies them
+from slot 64, a game minute after the actions slot, while the building still matches, and the hour's
+clearances wait for the `building removals` queue (`SIM-02-J`).
 
 At its start minute a business spawn places and spends its owner equity only with a permit for
 its current door, profile and level; otherwise it is rejected and its queue entry retires.
@@ -460,7 +464,7 @@ once placed. Residential spawns need no permit. Construction itself is owned by
 
 `demand/viability.rs` and `demand/execution/level_change.rs`. Upgrades and downgrades are instant
 replacements by the asset one level up or down. Planned at the hour's slots, they are applied by
-the `level changes` queue (quota 8, slots 4–959) under a permit (`SIM-02-J`); a change whose
+the `level changes` queue (quota 8, slots 64–959) under a permit (`SIM-02-J`); a change whose
 building no longer has the asset, level, profile or (for a business) door it was proved for is
 rejected. Level is a wealth tier; a target may hold more
 households or workers but need not. The target comes from the asset registry
@@ -506,7 +510,7 @@ Clearance is paced at half of the eligible sites per day, in deterministic attac
 is independent of any market signal. Recovery demolition evacuates remaining occupants through the
 street handoff before removing the building. A cleared site can host a new business; the bankrupt
 company and its cash do not return. Planned clearances are removed by the `building removals`
-queue in slots 4–479 of the hour, after checking the site may still be cleared (`SIM-02-J`); the
+queue in slots 64–479 of the hour, after checking the site may still be cleared (`SIM-02-J`); the
 zone index and entrance cache are repaired once after a slot of clearances.
 
 Deserted buildings render through a parallel gray MultiMesh (`nodes/sim/render/buildings.rs`,
@@ -534,15 +538,17 @@ The save stores:
 - the households released to leave (the `departures` queue) and queued for a housing review, in
   order, by handle (`household_requests`);
 - the level changes (with their permits), building removals and admissions waiting for their
-  queues, and the admission credit and rate (save format 103, `SIM-02-J`);
+  queues, and the admission credit and rate (save format 104, `SIM-02-J`);
 - the upgrade, downgrade and clearance credits per use;
 - the cheat flag;
 - the pending construction queue;
 - the hour plan between its slots (`demand_hour_plan`: upgrades, despawns, optional homes and
-  spawns by parcel and building key); a key whose road edge the save drops is skipped.
+  spawns by parcel and building key); a key whose road edge the save drops is skipped;
+- the last admission and removal diagnostics (`demand_diagnostics`, save format 104), because a
+  load cannot recount what the actions slot saw.
 
-Reservation books, the workforce calendar, execution proofs and diagnostics are derived. They are
-rebuilt after load, never saved.
+Reservation books, the workforce calendar, execution proofs and the other diagnostics are derived.
+They are rebuilt after load, never saved.
 
 ## Determinism and complexity
 
@@ -550,8 +556,8 @@ rebuilt after load, never saved.
   tie-breaks. Parallel reductions merge in input order, and the applicant stream depends only on
   simulation time.
 - **Costs:**
-  - snapshots and candidate collection are O(B) parallel passes (slot 3 collects every zone's
-    downgrade candidates in one O(B/p) pass, `SIM-02-K` part 5);
+  - snapshots and candidate collection are O(B) parallel passes (the actions slot collects every
+    zone's downgrade candidates in one O(B/p) pass, `SIM-02-K` part 5);
   - residential selection is O(candidates);
   - each project check is bounded by its recipe ports, home-calendar size and indexed customer
     and supplier work.

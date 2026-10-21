@@ -257,6 +257,12 @@ impl ConsumerBudgets {
         self.reset_claim_funds(0..self.households.len());
     }
 
+    /// Gives this copy of `live` the capacity of the claim staging a census refills
+    /// (`SIM-02-K`, [`crate::utils::storage::reserve_capacity`]). O(1) without growth.
+    pub(crate) fn reserve_like(&mut self, live: &Self) {
+        crate::utils::storage::reserve_capacity(&mut self.staged, live.staged.capacity());
+    }
+
     // The claims' reset without the accounts (`SIM-02-K`): the account rows' length and the
     // receipt books. Then `reset_claim_funds` over every household range. O(owners).
     fn begin_reset_claims(&mut self) {

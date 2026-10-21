@@ -196,9 +196,9 @@ impl PopulatedCity {
     }
 
     /// [`Self::advance_hour`], then the frames up to and including the hour's actions slot,
-    /// following the hour's slot layout. The hour's demand planning runs at its slots 0–3 and
-    /// its building actions (permits) at slot 3 (`SIM-02-I`), which at maximum speed (about 8.5
-    /// slots a frame) falls in the frame after the hour's first slot in about every other hour.
+    /// following the hour's slot layout. The hour's demand planning runs at the first slots of
+    /// its minutes 0–3 and its building actions (permits) at minute 3's (`SIM-02-I`,
+    /// `PlanningSlot`), each in a frame of its own at maximum speed (about 8.5 slots a frame).
     /// A window ending here holds the whole hour's planning and actions; the planning slots of
     /// the frames after the first are added to `hourly`.
     pub fn advance_hour_through_actions(&mut self) -> EconomyHourTimes {

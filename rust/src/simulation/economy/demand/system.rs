@@ -47,8 +47,8 @@ pub struct DemandSystem {
     pub(crate) downgrade_action_credit: UseTuningF32,
     pub(crate) despawn_action_credit: UseTuningF32,
     /// The hour's plan (`SIM-02-I`): each zone slot's spawns, upgrades and despawns, with the
-    /// actions slot's downgrades and claimed optional homes, until slot 3 queues the spawns and
-    /// executes the rest. Saved between the slots.
+    /// actions slot's downgrades and claimed optional homes, until the actions slot queues the
+    /// spawns and executes the rest. Saved between the slots.
     pub(crate) building_actions: DemandBuildingActionPlan,
     /// Homes the residential slot offers employers without selecting them (`DEM-02-C`):
     /// later slots count them as optional housing and the actions slot queues those the
@@ -278,7 +278,7 @@ impl DemandSystem {
         }
     }
 
-    /// Ends the hour's plan after slot 3 executed it (`SIM-02-I`).
+    /// Ends the hour's plan after the actions slot executed it (`SIM-02-I`).
     pub(crate) fn clear_hour_plan(&mut self) {
         self.building_actions = DemandBuildingActionPlan::default();
         self.optional_homes.clear();
