@@ -196,7 +196,6 @@ mod tests {
                 speed_limit,
                 base_cost: 0.0,
                 physical_length: 160.0,
-                current_congestion: 0.0,
                 start_clip: 0.0,
                 end_clip: 0.0,
                 geometry: points.clone(),

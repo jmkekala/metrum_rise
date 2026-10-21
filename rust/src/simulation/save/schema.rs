@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 104;
+pub const SAVE_VERSION: i64 = 105;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -209,7 +209,6 @@ CREATE TABLE network_edges(
     speed_limit REAL NOT NULL,
     base_cost REAL NOT NULL,
     physical_length REAL NOT NULL,
-    current_congestion REAL NOT NULL,
     start_clip REAL NOT NULL,
     end_clip REAL NOT NULL,
     no_building_spawn INTEGER NOT NULL DEFAULT 0,

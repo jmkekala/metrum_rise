@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Lane bucket maintenance, overlap correction, and congestion aggregation.
+//! Lane bucket maintenance and overlap correction.
 
-mod congestion;
 mod occupancy;
 
-use super::super::TRANSIT_NETWORK;
 use super::traffic::live_lane_bucket_transit;
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::RegionGraph;
 pub(crate) use occupancy::LaneBucketScratch;
 
 impl AgentSystem {
@@ -42,36 +39,16 @@ impl AgentSystem {
         (lane_count, self.lane_bucket_live_agent_count)
     }
 
-    /// Rebuilds lane buckets after movement, fixes overlaps, then writes edge congestion.
-    pub(super) fn rebuild_lanes_and_congestion(
-        &mut self,
-        graph: &mut RegionGraph,
-        lane_count: usize,
-        n: usize,
-    ) {
+    /// Rebuilds lane buckets after movement and fixes overlaps.
+    pub(super) fn rebuild_lanes(&mut self, lane_count: usize, n: usize) {
         self.ensure_lane_bucket_buffers(lane_count);
         let live_lane_agent_count = self.fill_lane_buckets(lane_count, n, true);
 
-        let edge_count = graph.edge_count();
-        self.ensure_edge_congestion_buffers(edge_count);
-        self.clear_dirty_edge_congestion();
-        // Sums in agent order, as before the parallel fill.
-        for i in 0..n {
-            if self.agents.transit[i] == TRANSIT_NETWORK {
-                let eid = self.agents.current_edge[i];
-                if eid < edge_count {
-                    self.push_dirty_edge_speed(eid, self.agents.speed[i]);
-                }
-            }
-        }
-
         #[cfg(test)]
         {
-            super::contract::add(super::contract::Phase::CongestionAgents, n);
             self.count_lane_bucket_entries();
             self.lane_bucket_patched = false;
         }
-        self.commit_edge_congestion(graph, edge_count);
         self.mark_lane_bucket_snapshot_valid(lane_count, n, live_lane_agent_count);
     }
 

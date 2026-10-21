@@ -391,7 +391,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   removals, departures and level changes start at minute 4, so at 32× no frame carries two of
   them (`SIM-02-K` part 5, save format 104). A building leaving a lot it keeps no longer
   regenerates the lot's cells, so the 30k 32× minute-4 frames fall to at most 5.7 ms; the 1×
-  render-snapshot spikes are scheduler preemption, not snapshot work.
+  render-snapshot spikes are scheduler preemption, not snapshot work. Commute departures now leave over
+  their minute's slots instead of all at its first, so the 100k departure waves no longer stall
+  the agent tick, and the unused per-edge congestion value is gone (`SIM-02-K` part 4, save
+  format 105).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

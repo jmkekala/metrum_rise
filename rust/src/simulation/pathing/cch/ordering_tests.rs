@@ -40,7 +40,6 @@ fn grid(side: u32) -> RegionGraph {
                     speed_limit: 15.0,
                     base_cost: 6.0,
                     physical_length: 90.0,
-                    current_congestion: 0.0,
                     start_clip: 0.0,
                     end_clip: 0.0,
                     physical_geometry: geometry.clone(),
@@ -242,27 +241,6 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
             .0,
         12.0
     );
-}
-
-#[test]
-fn rebuilding_with_live_congestion_preserves_free_flow_costs() {
-    let mut graph = grid(3);
-    let mut original = CchGraph::build(&graph);
-    let expected = original.find_path(0, 8, usize::MAX, usize::MAX, &graph, TransitFlags::CAR);
-    for edge in graph.edges_iter_mut() {
-        edge.current_congestion = 100.0;
-    }
-    let restored = CchGraph::build(&graph);
-    assert_eq!(
-        restored.find_path(0, 8, usize::MAX, usize::MAX, &graph, TransitFlags::CAR),
-        expected
-    );
-    original.customize(&graph);
-    assert_eq!(
-        original.find_path(0, 8, usize::MAX, usize::MAX, &graph, TransitFlags::CAR),
-        expected
-    );
-    assert_costs_from_match_queries(&restored, &graph, TransitFlags::CAR);
 }
 
 #[test]

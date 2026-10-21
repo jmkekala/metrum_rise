@@ -213,6 +213,9 @@ impl SimCore {
         self.prepare_loaded_pathing();
         // And what the first planning slot would prepare on the live books (`SIM-02-K`).
         self.warm_loaded_planning();
+        // And the first agent tick's scrub and lane buckets.
+        self.agents
+            .prepare_loaded_tick(&self.allocator, &self.transit_network);
     }
 
     fn refresh_loaded_demand_state_and_log(&mut self) {

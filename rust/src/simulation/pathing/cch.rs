@@ -367,7 +367,6 @@ mod tests {
             speed_limit: 20.0,
             base_cost: 30.0,
             physical_length: 600.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: Vec::new(),

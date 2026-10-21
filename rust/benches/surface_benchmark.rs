@@ -260,7 +260,6 @@ fn bench_edge(start_node: u32, end_node: u32, x: usize, z: usize, horizontal: bo
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: points.clone(),

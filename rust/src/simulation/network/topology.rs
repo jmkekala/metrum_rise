@@ -938,7 +938,6 @@ pub fn split_edge(
     let fwd_lanes = old_edge.fwd_lanes;
     let bkw_lanes = old_edge.bkw_lanes;
     let speed_limit = old_edge.speed_limit;
-    let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
@@ -972,7 +971,6 @@ pub fn split_edge(
         speed_limit,
         base_cost: 0.0,
         physical_length: 0.0,
-        current_congestion,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: part2_geo,

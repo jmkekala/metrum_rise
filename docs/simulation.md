@@ -19,8 +19,10 @@ job queues (part 2); the level-change, building-removal, departure and admission
 snapshot) are done, and part 3 (frame spikes) is done in four commits: the first (cells at
 load, entrance cache, first-frame pathing, timing-run checks), the second (census slices in
 work units), the third (clearance patches and census refresh slices) and the fourth (the
-census's whole steps in slices). Part 4 (agent tick) has its first commit done (lane buckets
-kept across appends and swap-removes, interleaved movement shards), and part 5 (planning slots)
+census's whole steps in slices). Part 4 (agent tick) has two commits done (lane buckets kept
+across appends and swap-removes with interleaved movement shards; then commute departures leaving
+over their minute's slots, the unused per-edge congestion deleted, save format 105, and the first
+tick after loading prepared at load), and part 5 (planning slots)
 has five commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
@@ -787,7 +789,9 @@ moves its entities between the tiers' phase buckets.
   diagnostic 10k day, was a 10.0 ms frame whose 9.5 ms agent tick held a 9.6 ms wait. That is
   noise on the 1× maxima at 10k and 30k (up to about 3.6–5.3 ms in the gate runs), not
   simulation work; the count over 8 ms and p99.9 are robust to it, a single maximum is not. Timing runs keep the machine quiet, the
-  run's own monitoring included.
+  run's own monitoring included. At 100k 1× a full day of per-phase timing with the same
+  statistics found 59 of the 184 agent ticks over 6 ms preempted (a worker waiting 1.1–7.8 ms);
+  the others were departure waves, removed by `SIM-02-K` part 4's second commit.
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -917,15 +921,26 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
 
    K3 closes with these left; `SIM-02-K` part 7 (acceptance) revisits them if they stand between
    a tier and the 8 ms limit.
-4. **K4, agent tick** (first commit done 2026-10-20). Done: lane buckets kept across appends and
-   swap-removes instead of rebuilt each tick and filled on the pool; movement shards interleaved
-   (results section, part 4). Left: the unused per-edge `current_congestion` deleted (needs a
-   save bump); indoor agents off the per-frame movement pass (a departure wheel with wake
-   calls); fewer agents in the serial handoff set (changes a contested-lane tie-break, a
-   gameplay change); cheaper pose sampling; passes over every agent. Planned for all of K4:
-   about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4 and 2.5 ms. Part 5
-   (planning slots) runs before part 4's remaining items, because the planning slots set the
-   maximum at every tier.
+4. **K4, agent tick** (two commits done, 2026-10-20 and 2026-10-21). Done: lane buckets kept
+   across appends and swap-removes instead of rebuilt each tick and filled on the pool; movement
+   shards interleaved (results section, part 4, first commit). Second commit: the 100k 1×
+   agent-tick peaks were departure waves (every agent due in a minute planned its trip in the
+   frame that crossed into it), and a minute's departures now leave over its 16 slots, a gameplay
+   change of under a game minute; the unused per-edge `current_congestion` deleted (save format
+   105); the first tick after loading prepared at load (results section, part 4, second commit).
+   The 100k 1× agent tick now stays under 6 ms in every frame without preemption. Left, with
+   findings in [Decided while unattended](#decided-while-unattended):
+   - indoor agents off the per-frame movement pass (a departure wheel, worth 0.3–0.5 ms a frame,
+     which does not touch the waves);
+   - the serial handoff set;
+   - pose sampling;
+   - passes over every agent;
+   - the trip-plan cost, about 120 µs a plan and 6.7 ms of CPU per 100k 32× frame, which is
+     routing work and bears on open question 6.
+
+   Planned for all of K4: about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4
+   and 2.5 ms. Part 5 (planning slots) ran before part 4's remaining items, because the planning
+   slots set the maximum at every tier.
 5. **K5, planning slots** (five commits done 2026-10-21; results sections, part 5). Measured first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
@@ -3160,6 +3175,157 @@ on a fresh `$ARTIFACTS` directory.
   with rustc 1.99.1 (`$TEST_BINARY`); the control is the fourth commit's gate binary.
 - **Save format:** 104, unchanged; the Kuopio fixture is unchanged.
 
+#### `SIM-02-K`, part 4 — departures over the minute (2026-10-21, second commit)
+
+- **Measured first** (temporary per-phase timing of the agent tick, never committed: every phase,
+  the trip plans and commute estimates the movement pass makes and their CPU time summed over the
+  workers, the slowest shard, and each thread's scheduler statistics per frame
+  (`/proc/self/task/*/schedstat`, the run-queue wait of each pool worker); the fifth part-5
+  commit's prepared cities, `RAYON_NUM_THREADS=8`, pinned to the performance cores, full day;
+  diagnostic, not acceptance). At 100k 1× the agent tick exceeded 6 ms in 184 frames; 59 of them
+  had a pool worker waiting 1.1–7.8 ms for a CPU (preemption, see `PERF-07`), and 124 of the other
+  125 were departure waves:
+  - every one fell in the frame that crossed into a minute of 04:47–05:59, 13:04–13:59 or
+    21:00–21:57, the three-shift windows' departures;
+  - each held 78–405 trip plans in the parallel movement pass (`plan_building_origin_trip`, CCH
+    point searches and the exact path), 24–50 ms of CPU at 90–190 µs a plan;
+  - neither the serial handoff set (0.35–0.6 ms) nor the commute estimates caused them;
+  - the parallel movement pass took 2.7–9.9 ms (slowest shard 1.1–2.5× the mean), the rest of
+    the tick 2.2–3.6 ms; ticks 6.0–12.4 ms (13.9 ms with preemption).
+
+  Every agent due to leave in an authored minute planned its trip in the first tick after the
+  clock crossed into that minute: about 370 agents a minute in the waves. At 1× that is one frame
+  in 60. 30k 1× had no wave frame over 2.5 ms of agent tick; its 13 frames over 2.5 ms are
+  preemption (11 with waits of 2.2–4.8 ms).
+- **A minute's departures leave over its slots.** A cached work or home departure now leaves at
+  its agent's slot of the minute, `floor(frac(seed/φ) × 16)` (`slot_in_minute_for_key`, the
+  golden-ratio fraction `spread_slot` uses within the hour), in the first tick at or after it, so
+  the departures of one minute spread over its 16 slots. The day's last minute keeps slot 0, so a
+  32× frame that spans midnight cannot carry a departure into the next day. This is a gameplay
+  change: a departure leaves up to 15/16 of a game minute later than before, within the same
+  minute, so each departure keeps its minute. Alternatives and evidence in
+  [Decided while unattended](#decided-while-unattended).
+- **`current_congestion` deleted** (save format 105). The per-edge field was written by a serial
+  pass over every agent at the end of each tick (0.34 ms at 100k, 0.07 ms at 30k) and saved, and
+  read only by tests and the road-edit copy. The field, its setter, the save column, the pass,
+  its five per-edge scratch arrays and the `PERF-06` contract's `congestion_agents` phase are
+  gone; `rebuild_lanes_and_congestion` is `rebuild_lanes`. Three tests that only checked the
+  congestion values are deleted (`rebuilding_with_live_congestion_preserves_free_flow_costs`,
+  `test_congestion_zero_at_free_flow_speed`, `test_congestion_proportional_to_speed_deficit`);
+  four others lose their congestion assertions. The Kuopio fixture drops the column (its hash in
+  `placements.json` follows).
+- **The first agent tick after loading.** It measured 9.4 ms of agent tick at 100k (frame 10.3
+  ms): 166 trip plans and 26 commute estimates due at the save's first tick, a full lane-bucket
+  rebuild (1.6 ms; the snapshot is not saved) and the building-reference scrub (0.2 ms; its
+  revision is not saved). Loading now runs the scrub and the bucket rebuild
+  (`AgentSystem::prepare_loaded_tick`, after the planning warm-up): both are functions of the
+  loaded state the first tick would read unchanged, so results are identical. The first frame
+  after loading is now 6.6 ms at 100k (agent tick 5.7 ms: 98 trip plans and 26 estimates, which
+  the uninterrupted game makes in the same tick).
+- **After** (same measurement on this build's cities, ms per ordinary frame; before in
+  parentheses):
+
+  | Phase | 30k 1× | 30k 32× | 100k 1× | 100k 32× |
+  | --- | --- | --- | --- | --- |
+  | **Agent tick** | **0.55** (0.68) | **1.26** (1.32) | **3.07** (3.43) | **6.76** (7.11) |
+  | · tick-start buckets and claim reset | 0.01 (0.01) | 0.02 (0.02) | 0.04 (0.04) | 0.05 (0.05) |
+  | · IDM speed | 0.07 (0.08) | 0.11 (0.11) | 0.34 (0.35) | 0.37 (0.38) |
+  | · claim classification | 0.09 (0.11) | 0.15 (0.15) | 0.51 (0.51) | 0.54 (0.53) |
+  | · parallel movement | 0.21 (0.22) | 0.47 (0.46) | 1.26 (1.26) | 2.83 (2.83) |
+  | · · trip plans in it, CPU over the workers | 0.03 (0.03) | 0.78 (0.77) | 0.26 (0.24) | 6.73 (6.76) |
+  | · · commute estimates in it, CPU | 0.01 (0.01) | 0.23 (0.23) | 0.08 (0.08) | 1.74 (1.76) |
+  | · serial Dynamic movement | 0.04 (0.04) | 0.24 (0.23) | 0.25 (0.25) | 1.92 (1.87) |
+  | · end-of-tick fill | 0.11 (0.20) | 0.15 (0.24) | 0.62 (0.99) | 0.65 (1.04) |
+  | · · of it, the congestion pass | — (0.07) | — (0.08) | — (0.34) | — (0.35) |
+  | · frontage | 0.00 (0.00) | 0.09 (0.09) | 0.01 (0.01) | 0.37 (0.38) |
+  | Render snapshot | 0.33 (0.37) | 0.55 (0.54) | 0.75 (0.77) | 0.86 (0.86) |
+  | Slot work | 0.04 (0.04) | 0.94 (0.94) | 0.23 (0.22) | 5.95 (5.98) |
+  | Frame | 0.93 (1.11) | 2.80 (2.85) | 4.09 (4.48) | 13.64 (14.02) |
+
+  Waves (agent tick per frame): at 100k 1× no agent tick exceeds 6 ms without a pool worker
+  waiting at least 1.9 ms for a CPU (17 frames of 6.0–7.8 ms, all preempted; before: 125 frames of
+  6.0–12.4 ms without preemption, and a peak of 13.9 ms); a wave frame holds at most 34 trip plans
+  (405). At 100k 32× a frame covers about half a minute, so spreading within the minute only
+  halves its waves: a wave frame still holds 171–258 plans (254–431), 22–33 ms of CPU, and its
+  agent tick is 11.1–12.3 ms without preemption (11.0–16.7). At 30k neither speed has an agent
+  tick over 2.5 ms (1×) or 3 ms (32×) without preemption.
+- **Equivalence and targeted tests:** `due_departures_leave_at_their_seeds_slot_of_the_minute`
+  (no departure before the seed's slot, one at it and in the next minute; the day's last minute at
+  slot 0; the seeds that share a departure minute of a shift window spread over all 16 slots,
+  each within half to twice the even share) and `lane_buckets_prepared_at_load_equal_the_first_ticks`
+  (the prepared snapshot is valid with the scrub revision current, and six ticks move every agent
+  bit for bit as without the preparation).
+- **Envelope** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): passes with no failures. The congestion
+  deletion alone is bit-identical to the fifth part-5 commit's envelope; the departure slots move
+  every city a little, within tolerance: net income per resident within 0.46%, employment within
+  0.3% (the fiscal-stress cities' final employment rates, 0.5–0.8%, already outside their bands
+  before), jobs, households, residents and buildings within 0.15%, deliveries within 0.7% at
+  baseline (fiscal stress 2.1–4.6%, already outside its band before), stock-outs within 1.1%.
+  Larger relative changes are of rates near zero, a few events in the measured window: unhoused
+  5e-5 to 1.4e-3, vacancy at 30k baseline 3.8e-5 → 5.2e-5, bankruptcies at 30k baseline 0.316 →
+  0.291 per 1,000 buildings a day, trip failures 0–0.04 per 1,000 residents a day. The same 8
+  notes as before (the fiscal-stress and 30k baseline stock-out metrics outside the `SIM-02-A`
+  bands since earlier steps). Bursts: worst freight minute 3.1% (3.0%), shopping 2.7% (2.7%),
+  arrivals 3.2% (3.2%), worst settlement hour 7.3% (7.3%), all within the limits.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation show no differences
+  (10k, 3 days).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`), full day, in one session
+  with the fifth part-5 commit as the control: the control on copies of its cities (save format
+  104), this build on its own (save format 105, the same city table by table). Milliseconds and
+  frame counts, control in parentheses:
+
+  | Tier | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 10k 1× | 3.4 (4.8) | 1.13 (1.19) | 1.35 (1.44) | 0.48 (0.51) | 0 (0) | 0 (0) |
+  | 10k 32× | 2.8 (2.8) | 2.06 (2.00) | 2.52 (2.37) | 0.91 (0.94) | 0 (0) | 0 (0) |
+  | 30k 1× | 10.3 (9.8) | 1.84 (2.07) | 2.41 (3.02) | 0.89 (1.05) | 1 (1) | 0 (0) |
+  | 30k 32× | 7.3 (6.8) | 5.33 (5.43) | 6.29 (6.65) | 2.85 (2.94) | 0 (0) | 0 (0) |
+  | 100k 1× | 18.4 (17.3) | 6.11 (6.60) | 9.72 (11.39) | 4.04 (4.46) | 128 (293) | 1 (2) |
+  | 100k 32× | 26.3 (29.0) | 22.10 (21.79) | 25.05 (25.23) | 13.68 (13.90) | 2,700 (2,700) | 347 (403) |
+
+  Every gate limit passes for both builds; load time is unchanged (100k 18.6 s). At 100k 1× the
+  frames over 8 ms fall from 293 to 128, p99.9 from 11.4 to 9.7 ms and the mean from 4.46 to 4.04
+  ms. The means fall 3–15% at 10k and 30k. What sets each maximum:
+  - 10k: a render-snapshot frame at 1× (3.4 ms, snapshot 3.0) and an agent-tick frame at 32× (2.8);
+  - 30k 1×: one agent-tick frame (10.3 ms at 22:44, tick 9.8 ms; the control's maximum is the same
+    kind of frame, 9.8 ms at 17:17); in the profile run every 30k 1× agent tick over 2.5 ms had a
+    worker waiting 2.2–4.8 ms for a CPU, so these are preemption, not simulation work; the 8 ms
+    target holds at 30k except for preempted frames;
+  - 30k 32×: the 22:00 and 06:00 hour frames (7.1–7.3 ms: planning slot work 3.9–4.2, agent tick
+    1.7–2.2, snapshot 1.1–1.2; part 5's per-slot setup);
+  - 100k 1×: the hour's planning-slot frames (14.4–18.4 ms, slot work 9.8–12.1 ms; part 5), plus
+    one agent-tick frame of 14.9 ms with the preemption pattern (the profile found no 100k 1×
+    agent tick over 6 ms without a waiting worker);
+  - 100k 32×: agent-heavy and slot-heavy frames of 23.5–26.3 ms (open question 6).
+
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with part 5's fifth commit as
+  control, each build on cities it prepared: hour means 1.59–1.62, 6.06–6.12, 9.13–9.18 and
+  29.46–29.93 ms (control 1.61–1.62, 6.21–6.22, 9.48–9.63 and 28.74–29.22); level, and the same
+  work-count limits fail.
+
+- **`PERF-06`** (`benchmark_agent_tick_contract`, three alternating process pairs with the control,
+  pinned, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`): every work count equals the control's except the
+  deleted `congestion_agents`, and every count grows exactly 3× from 10k to 30k (lane counts 16).
+  The single timed tick per tier, median [range] ms, control then this build: network 0.24
+  [0.23–0.30] / 0.40 [0.33–0.40] at 10k and 0.78 [0.48–0.79] / 0.45 [0.42–0.58] at 30k; egress 0.68
+  [0.49–0.99] / 0.47 [0.44–0.49] and 1.28 [1.21–1.28] / 1.25 [1.20–1.31]; ingress 0.27 [0.24–0.34]
+  / 0.32 [0.22–0.62] and 0.31 [0.27–0.42] / 0.46 [0.45–0.52]. The ranges overlap or swap direction
+  between tiers; routine regression signals, not a speedup claim.
+- **Tests:** 2,543 release and 2,543 debug library tests and the 4 growth integration tests pass
+  (three congestion tests deleted, two added); clippy adds nothing (the 59 warnings in
+  `agents/data.rs` and `asset_document.rs` remain); rustfmt adds nothing in the touched lines. The
+  save format and the agent columns the render snapshot reads changed, so the isolated
+  `./run.sh --test` ran: the Rust suites and every headless bridge, asset and shader test pass with
+  no script errors (run without a display, so the rendered vegetation tests skip).
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1; the
+  per-phase tables on temporary timing builds of the same sources.
+- **Save format:** 105; `SAVE_VERSION` is the only version constant and the only one that loads.
+  Each build prepares its own `PERF-07` cities; this build's equal the control's table by table
+  except the version row and the unordered row order of `lane_connections` (compared at 10k).
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -3263,7 +3429,11 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
    decides under the stop rule: findings, options, `needs_revalidation`, stop for review. 30k at
    both speeds and 100k at 1× remain within reach. After part 5's fourth commit the 100k 32×
    maximum is 27.9 ms (the minute-4 frames and agent-heavy frames, 25–28 ms), p99 23.0 ms; after the
-fifth commit 26.4 ms (agent-tick frames), p99 22.7 ms.
+fifth commit 26.4 ms (agent-tick frames), p99 22.7 ms. After part 4's second commit the 100k 32×
+ordinary frame averages 13.6 ms (agent tick 6.8: trip plans 6.7 ms of CPU in the movement pass;
+slot work 6.0) and its wave frames carry 22–33 ms of planning CPU; spreading departures over a
+minute's slots halves the waves at 32× but cannot spread them further, since a 32× frame covers
+about half a minute. The cost of a trip plan is routing work.
 
 ### Decided while unattended
 
@@ -4654,14 +4824,13 @@ alternatives and the evidence. The user reviews these on return.
   per small shard (64+ scratches at several MB each at 100k). Interleaving balances the
   structural imbalance (moving agents clustered by index) without either: 1.11–1.38× after
   1.64–1.71×. What is left is random hot spots (trip plans at 32×).
-- **`SIM-02-K` part 4 — `current_congestion` kept (findings).** It is written each frame and
-  saved, and read only by tests and the road-edit copy. Deleting it removes the serial
-  congestion pass, 0.32–0.35 ms a frame at 100k and 0.06–0.08 ms at 30k, and the per-edge
-  scratch. It was not done in this part: it bumps `SAVE_VERSION` and the minimum, rewrites the
-  Kuopio fixture's `network_edges` and its hash in `placements.json`, touches about 40 files
-  (mostly test edges) and needs each build's own `PERF-07` cities, which did not fit the part's
-  timing session. Next: delete the field, the column, `set_edge_congestion`, the edge scratch and
-  the pass; the tests that assert congestion values go with it.
+- **`SIM-02-K` part 4 — `current_congestion` kept (findings).** Resolved in part 4's second
+  commit (entry "`SIM-02-K` part 4 (second commit) — `current_congestion` deleted, save format
+  105"). The first commit kept it: it was written each frame and saved, and read only by tests
+  and the road-edit copy, and deleting it (0.32–0.35 ms a frame at 100k, 0.06–0.08 ms at 30k, and
+  the per-edge scratch) bumps `SAVE_VERSION`, rewrites the Kuopio fixture's `network_edges` and
+  its hash in `placements.json`, touches about 40 files (mostly test edges) and needs each build's
+  own `PERF-07` cities, which did not fit that part's timing session.
 - **`SIM-02-K` part 4 — indoor agents stay in the movement pass (findings).** About 61% of the
   agents are indoors. An indoor agent with a cached departure that is not yet due costs a few
   loads in each per-agent pass (claims, speed, dispatch, the fill's grouping), and one whose
@@ -5034,6 +5203,63 @@ alternatives and the evidence. The user reviews these on return.
   own monitoring started only three short commands ten minutes apart, still had them (largest
   snapshot 3.6 ms at 30k 1× and 6.3 ms at 100k 1×; control 4.7 and 6.1 ms), so they come from the
   machine, not from the run.
+
+- **`SIM-02-K` part 4 (second commit) — a minute's departures leave over its slots.** This is a
+  gameplay change, taken under the run's rule for gameplay-side choices (keep the envelope
+  closest, prefer the simpler option) because the envelope stays within tolerance (net income
+  within 0.46%, employment within 0.3%; results section). The 100k 1× agent-tick peaks
+  (10–14 ms) were the departure waves: 250–405 trip plans of about 120 µs each in the movement
+  pass of the frame that crossed into the minute. Alternatives:
+  1. *Plan the wave on the pool in a balanced batch and apply in agent order* (identical): 40–50
+     ms of planning CPU over 8 workers still leaves at least 5–6 ms plus the tick's other
+     2–3.5 ms, so it cannot reach the target.
+  2. *A departure wheel or active-agent list* (identical): removes the per-frame visits of about
+     62,000 indoor agents at 100k (0.3–0.5 ms a frame over the claim, speed and movement passes),
+     but the wave's plans happen in the same frame as before, so it does not touch the waves; it
+     also needs wake calls in every writer of what an indoor agent reads (households, logistics,
+     hiring, the building store).
+  3. *Plan ahead, in the frames before the minute*: not identical, since a plan reads the live
+     frontage delays, and it keeps a second copy of each plan alive.
+  4. *Cheaper plans*: routing work (`NET-05`), not attempted in this part.
+  5. *Spread each minute's departures over its 16 slots by the agent's seed* (taken): the
+     simplest change; departures leave within the same minute, up to 15/16 of a minute later, so
+     each departure keeps its minute and the minute-based burst counts see no new peak.
+
+  The slot is `floor(frac(seed/φ) × 16)` (`slot_in_minute_for_key`): the schedule seeds that
+  share a departure minute (the minute is the seed modulo the window span) spread evenly over
+  all 16 slots, which a plain `seed mod 16` would not (with a span that is a multiple of 16 the
+  slot would be a function of the minute). The day's last minute leaves at its first slot, so a
+  32× frame (about 8.5 slots) that spans midnight cannot skip a departure; elsewhere a frame that
+  passes the slot leaves at the next tick, still in the minute or in the next one, as before. At
+  100k 32× a frame covers about half a minute, so the waves only halve there (open question 6).
+- **`SIM-02-K` part 4 (second commit) — `current_congestion` deleted, save format 105.** Nothing
+  in gameplay read it; the frontage delay cache, which plans do read, is separate and unchanged.
+  The Kuopio fixture drops the column by SQL (`ALTER TABLE … DROP COLUMN`, version 105).
+- **`SIM-02-K` part 4 (second commit) — loading prepares the first tick's scrub and lane
+  buckets.** Alternative: save the lane-bucket snapshot (a save change for derived state the load
+  rebuilds in about 1.6 ms). The preparation runs last in the load, after the planning warm-up, so
+  nothing between it and the first tick changes agents or building references; a later revision
+  or invalidation makes the tick scrub or rebuild as before. The 98 trip plans left in the first
+  tick are ones the uninterrupted game makes too.
+- **`SIM-02-K` part 4 (second commit) — indoor agents stay in the per-frame passes (findings).**
+  The profile shows the indoor visits are cheap per frame (part of the 1.26 ms parallel movement,
+  0.51 ms claims and 0.34 ms speed at 100k 1×) and not the source of any peak. The exact wheel
+  design of the entry "`SIM-02-K` part 4 — indoor agents stay in the movement pass (findings)"
+  stands (an active-agent list kept by the transit transitions, a departure wheel keyed by
+  absolute slot now that departures have a slot, wake calls in the household, logistics, hiring
+  and building-reference mutators). With slot departures the wheel key is simpler: `(day, minute
+  × 16 + seed slot)`. Worth 0.3–0.5 ms a frame; it does not touch the waves.
+- **`SIM-02-K` part 4 (second commit) — the cost of a trip plan (findings).** A building-origin
+  plan costs 90–190 µs (about 120 µs typical) at 100k: walking and driving candidates over the
+  node-rank pairs, then the exact path. At 100k 32× plans are 6.7 ms of CPU per ordinary frame
+  (51 plans) and commute estimates 1.7 ms (35); wave frames still carry 171–258 plans because a
+  32× frame covers half a minute of departures. Halving the plan cost would take about 0.4 ms off
+  the 32× ordinary tick and 1.5–2 ms off its wave frames; it is routing work for `NET-05`, and
+  bears on open question 6.
+- **`SIM-02-K` part 4 (second commit) — the remaining 100k 1× agent-tick frames over 6 ms are
+  preemption.** All 17 had a pool worker waiting 1.9–4.7 ms for a CPU in that frame, as in the
+  entry "`SIM-02-K` part 5 (fifth commit) — the render-snapshot spikes are preemption (findings,
+  no code change)".
 
 ### Corrections to part 2's statements (merge with the entries above)
 

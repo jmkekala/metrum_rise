@@ -31,8 +31,6 @@ pub(super) enum Phase {
     ClaimAgents,
     /// Agent rows dispatched through movement or access states.
     MovementAgents,
-    /// Agent rows scanned while rebuilding congestion and occupancy.
-    CongestionAgents,
     /// Agent rows contributing to the cadence-controlled frontage update.
     FrontageAgents,
     /// Lane rows updated when the frontage cadence fires.
@@ -356,7 +354,6 @@ fn work_json(work: [u64; PHASE_COUNT]) -> serde_json::Value {
         "speed_agents": work[Phase::SpeedAgents as usize],
         "claim_agents": work[Phase::ClaimAgents as usize],
         "movement_agents": work[Phase::MovementAgents as usize],
-        "congestion_agents": work[Phase::CongestionAgents as usize],
         "frontage_agents": work[Phase::FrontageAgents as usize],
         "frontage_lanes": work[Phase::FrontageLanes as usize],
     })
@@ -471,7 +468,6 @@ fn benchmark_agent_tick_contract() {
             ("speed_agents", Phase::SpeedAgents),
             ("claim_agents", Phase::ClaimAgents),
             ("movement_agents", Phase::MovementAgents),
-            ("congestion_agents", Phase::CongestionAgents),
             ("frontage_agents", Phase::FrontageAgents),
             ("frontage_lanes", Phase::FrontageLanes),
         ] {

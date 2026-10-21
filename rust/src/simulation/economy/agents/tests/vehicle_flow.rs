@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! IDM following and overlap correction; congestion lifecycle is covered in lane_dynamics.
+//! IDM following and overlap correction; the lane-bucket lifecycle is covered in lane_dynamics.
 
 use super::support::*;
 use super::*;

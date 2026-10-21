@@ -397,12 +397,10 @@ fn adoption_preserves_remote_geometry_and_live_metadata_and_rejects_missing_sour
             .is_none()
     );
     assert_eq!(counts, (stale.node_count(), stale.edge_count()));
-    fixture.graph.set_edge_congestion(1, 7.0);
     fixture.graph.edges[1].no_building_spawn = true;
     fixture.graph.edges[1].speed_limit = 9.0;
     fixture.adopt(&plan, reuse);
     assert_eq!(fixture.graph.edge(0).geometry, remote);
-    assert_eq!(fixture.graph.edge(1).current_congestion, 7.0);
     assert!(fixture.graph.edge(1).no_building_spawn);
     let split = plan
         .splits
@@ -411,7 +409,6 @@ fn adoption_preserves_remote_geometry_and_live_metadata_and_rejects_missing_sour
         .unwrap();
     let split_local = split.new_edge_id;
     // All source edges precede the candidate; this fixture has one omitted remote edge.
-    assert_eq!(fixture.graph.edge(split_local + 1).current_congestion, 7.0);
     for id in [1, split_local + 1] {
         let edge = fixture.graph.edge(id);
         assert_eq!(edge.speed_limit, 9.0);

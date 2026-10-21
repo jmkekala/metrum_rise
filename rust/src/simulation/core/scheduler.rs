@@ -50,6 +50,13 @@ pub(crate) fn spread_slot(slot: u64, key: u64) -> u64 {
     slot + (offset + SLOTS_PER_HOUR - slot % SLOTS_PER_HOUR - 1) % SLOTS_PER_HOUR + 1
 }
 
+/// `key`'s slot within a minute, `floor(frac(key/φ) × S)` of the minute's `S` slots: the slot
+/// at which a trip due in an authored minute leaves (`SIM-02-K` part 4), so the trips of one
+/// minute leave over its slots instead of all in the frame that crosses into it. O(1).
+pub(crate) fn slot_in_minute_for_key(key: u64) -> u64 {
+    ((u128::from(key.wrapping_mul(GOLDEN_GAMMA)) * u128::from(SLOTS_PER_MINUTE)) >> 64) as u64
+}
+
 /// Minutes a [`MinuteLeveler`] remembers: the hour a departure may wait plus its window.
 pub(crate) const LEVELER_MINUTES: usize = 128;
 // Minutes on either side of a target a levelled departure may move to.

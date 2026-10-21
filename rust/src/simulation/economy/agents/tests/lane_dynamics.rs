@@ -179,46 +179,6 @@ fn test_lane_bucket_dirty_lanes_no_duplicates() {
     );
 }
 
-/// An agent at exactly `speed_limit` must produce zero congestion.
-#[test]
-fn test_congestion_zero_at_free_flow_speed() {
-    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
-    let speed_limit = graph.edge(edge_idx).speed_limit;
-    let mut agents = AgentSystem::new();
-    let allocator = BuildingAllocator::new();
-
-    place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit);
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
-
-    assert_eq!(
-        graph.edge(edge_idx).current_congestion,
-        0.0,
-        "agent at speed_limit must produce zero congestion"
-    );
-}
-
-/// An agent at 50 % of `speed_limit` must produce congestion ≈ 0.5.
-#[test]
-fn test_congestion_proportional_to_speed_deficit() {
-    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
-    let speed_limit = graph.edge(edge_idx).speed_limit;
-    let mut agents = AgentSystem::new();
-    let allocator = BuildingAllocator::new();
-
-    place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
-    // Force speed to stay at 50 % and tick again so congestion is written.
-    agents.speed[0] = speed_limit * 0.5;
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
-
-    let c = graph.edge(edge_idx).current_congestion;
-    assert!(
-        (c - 0.5).abs() < 0.05,
-        "expected congestion ≈ 0.5 at half speed_limit, got {c:.3}"
-    );
-}
-
 #[test]
 fn test_frontage_delay_cache_respects_fixed_cadence() {
     let (mut network, graph, edge_idx, fwd_lane) = setup_straight_road();
@@ -287,7 +247,7 @@ fn test_frontage_delay_cache_applies_multiple_fixed_cadence_steps() {
 
 #[test]
 fn test_frontage_delay_cache_decays_without_agents() {
-    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let (mut network, mut graph, _edge_idx, fwd_lane) = setup_straight_road();
     network.lane_system.lanes[fwd_lane].live_frontage_delay_s = 10.0;
 
     let mut agents = AgentSystem::new();
@@ -299,7 +259,6 @@ fn test_frontage_delay_cache_decays_without_agents() {
         (penalty - 7.5).abs() < 0.01,
         "expected empty-lane penalty to decay toward zero, got {penalty:.3}"
     );
-    assert_eq!(graph.edge(edge_idx).current_congestion, 0.0);
 }
 
 /// Running many ticks with a platoon of cars must not compress distances to zero.
@@ -345,10 +304,9 @@ fn test_overlap_correction_stable_over_many_ticks() {
     );
 }
 
-/// Both arrival and final-agent removal clear retained occupancy and congestion.
+/// Both arrival and final-agent removal clear retained occupancy.
 #[test]
 fn test_lane_bucket_cleared_after_agent_leaves_edge() {
-
     for remove_last_agent in [false, true] {
         let mut graph = RegionGraph::new();
         let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
@@ -363,7 +321,6 @@ fn test_lane_bucket_cleared_after_agent_leaves_edge() {
         let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0, 5.0);
         agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
         assert!(!agents.lane_buckets[fwd_lane].is_empty());
-        assert!(graph.edge(edge_idx).current_congestion > 0.0);
 
         if remove_last_agent {
             agents.kill_agent(i, &mut allocator);
@@ -377,7 +334,6 @@ fn test_lane_bucket_cleared_after_agent_leaves_edge() {
             assert!(agents.dirty_lanes.is_empty());
             assert!(agents.lane_buckets[fwd_lane].is_empty());
             assert_eq!(agents.lane_bucket_live_agent_count, 0);
-            assert_eq!(graph.edge(edge_idx).current_congestion, 0.0);
         }
     }
 }
@@ -408,7 +364,6 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             speed_limit: 14.0,
             base_cost: 1.0,
             physical_length: 100.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
@@ -525,6 +480,43 @@ fn lane_buckets_kept_across_appends_and_swap_removes_equal_a_rebuild() {
         (buckets, state)
     };
     assert_eq!(run(false), run(true));
+}
+
+/// The scrub and lane buckets prepared at load leave the first tick nothing to build, and the
+/// ticks after it move every agent as without the preparation, bit for bit (`SIM-02-K`).
+#[test]
+fn lane_buckets_prepared_at_load_equal_the_first_ticks() {
+    let run = |prepare: bool| {
+        let (mut network, mut graph, lanes) = build_two_edge_road(2, 0);
+        let mut agents = AgentSystem::new();
+        let allocator = BuildingAllocator::new();
+        for k in 0..8 {
+            place_on_lane(&mut agents, 0, lanes[k % 2], 6.0 + 9.0 * k as f32, 8.0);
+            agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        }
+        if prepare {
+            agents.prepare_loaded_tick(&allocator, &network);
+            assert!(agents.lane_bucket_snapshot_valid);
+            assert_eq!(
+                agents.last_building_ref_scrub_revision,
+                allocator.building_ref_revision()
+            );
+        }
+        for _ in 0..6 {
+            agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+        }
+        (0..agents.agents.len())
+            .map(|i| {
+                (
+                    agents.transit[i],
+                    agents.current_lane_id[i],
+                    agents.lane_distance[i].to_bits(),
+                    agents.speed[i].to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(run(true), run(false));
 }
 
 /// The parallel bucket fill, its overlap correction and the movement after it give the same

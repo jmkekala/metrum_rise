@@ -73,7 +73,6 @@ pub(in crate::simulation::network) fn build_surface_edge(
         speed_limit: config::DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 0.0,
         physical_length,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: points.clone(),

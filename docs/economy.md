@@ -175,8 +175,10 @@ Work and freight timing are authored as minute windows in
 
 Workers hold stable offsets inside their windows. Departure is
 `target_arrival − estimated_travel − reliability_buffer`; the estimate is cached and refreshed
-every `travel_estimate_refresh_minutes` (360), never re-queried per frame. Rush hour emerges from
-overlapping windows.
+every `travel_estimate_refresh_minutes` (360), never re-queried per frame. A cached departure leaves
+at its seed's slot of its minute, `floor(frac(seed/φ) × 16)` of the minute's 16 slots, so the
+agents due in one minute plan over the minute instead of all in its first frame; the day's last
+minute keeps slot 0. Rush hour emerges from overlapping windows.
 
 ## Authored data
 

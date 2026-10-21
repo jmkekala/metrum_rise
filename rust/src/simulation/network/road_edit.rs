@@ -405,7 +405,6 @@ impl TransitNetwork {
             let mut edge = geometry.clone();
             if let Some(source) = runtime_source {
                 let live = graph.edge(source);
-                edge.current_congestion = live.current_congestion;
                 edge.no_building_spawn = live.no_building_spawn;
                 edge.vehicle_frontage_access = live.vehicle_frontage_access;
                 let speed_changed = edge.speed_limit != live.speed_limit;

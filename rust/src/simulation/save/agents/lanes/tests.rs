@@ -36,7 +36,6 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             speed_limit: 10.0,
             base_cost: 10.0,
             physical_length: 100.0,
-            current_congestion: 0.0,
             start_clip: 5.0,
             end_clip: 5.0,
             geometry: geometry.clone(),

@@ -154,7 +154,6 @@ mod tests {
             speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS, // Should emit '1.0' units
             base_cost: 0.0,
             physical_length: 50.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![
@@ -240,7 +239,6 @@ mod tests {
             bkw_lanes: 1,
             base_cost: 0.0,
             physical_length: 10.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],

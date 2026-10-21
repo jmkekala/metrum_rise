@@ -78,7 +78,6 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: 20.0,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::ZERO, Vector3::new(20.0, 0.0, 0.0)],

@@ -507,7 +507,6 @@ mod tests {
             speed_limit: 50.0,
             base_cost: cost,
             physical_length: cost * 50.0,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(cost * 50.0, 0.0, 0.0)],

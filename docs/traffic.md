@@ -151,8 +151,8 @@ into their source lane bucket while the S-curve is still active. This lets cars 
 to the crossing car during the IDM speed pass. Post-movement overlap correction clamps the current
 authoritative lane.
 
-Removing the last agent also retires dirty lane occupancy and road-edge congestion before the
-empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane/edge lists and
+Removing the last agent also retires dirty lane occupancy before the
+empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane list and
 buffers. Once these are empty, later empty ticks skip the occupancy rebuild. The separate
 low-frequency frontage-delay cache continues its existing decay from live agent speeds.
 Save format 75 preserves that smoothed delay and its fractional update clock, restoring lane
@@ -521,7 +521,7 @@ Routine traffic changes use the ignored release test
 `simulation::economy::agents::tick::contract::benchmark_agent_tick_contract`. It warms each isolated
 lane fixture once, then records one setup-free timed tick for the 10k and 30k agent tiers. The
 test emits one `PERF_AGENT` JSON line per mode and tier with deterministic row counts for lane
-bucket preparation, speed updates, lane claims, movement, congestion rebuild and frontage-delay
+bucket preparation, speed updates, lane claims, movement, the end-of-tick lane fill and frontage-delay
 aggregation. The fixture uses one long straight lane, fixed 16 m spacing and no route-planning
 work; construction and buffer allocation stay outside the timed tick.
 

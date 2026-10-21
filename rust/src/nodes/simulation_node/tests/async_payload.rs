@@ -781,7 +781,6 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: end_z - start_z,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![

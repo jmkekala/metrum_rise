@@ -863,7 +863,6 @@ mod tests {
             speed_limit: 14.0,
             base_cost: 1.0,
             physical_length: (end_x - start_x).abs(),
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![

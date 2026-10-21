@@ -81,8 +81,6 @@ pub struct Edge {
     pub base_cost: f32,
     /// Arc length of `physical_geometry` in metres.
     pub physical_length: f32,
-    /// Dynamic congestion multiplier in `[0, ∞)`. `0.0` = free-flow. Applied on top of `base_cost`.
-    pub current_congestion: f32,
     /// Fraction of `geometry` clipped from the start end at junctions (for junction mesh rendering).
     pub start_clip: f32,
     /// Fraction of `geometry` clipped from the end at junctions (for junction mesh rendering).
@@ -450,11 +448,6 @@ impl RegionGraph {
     /// Returns a mutable reference to the edge at `id`.
     pub fn edge_mut(&mut self, id: usize) -> &mut Edge {
         &mut self.edges[id]
-    }
-
-    /// Sets the congestion value for edge `eid`.
-    pub fn set_edge_congestion(&mut self, eid: usize, value: f32) {
-        self.edges[eid].current_congestion = value;
     }
 
     /// Sets the [`NodeType`] of the node at `node_id`.

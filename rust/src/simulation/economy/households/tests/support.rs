@@ -112,7 +112,6 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         speed_limit: 5.0,
         base_cost: 10.0,
         physical_length: 100.0,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
@@ -138,7 +137,6 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         speed_limit: 50.0,
         base_cost: length.max(1.0),
         physical_length: length.max(1.0),
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![

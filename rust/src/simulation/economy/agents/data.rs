@@ -221,16 +221,6 @@ pub struct AgentSystem {
     pub lane_claim_owner: Vec<AtomicUsize>,
     /// Prepared movement categories used to dispatch claims and skip redundant lateral decisions.
     pub(crate) movement_claim_modes: Vec<MovementClaimMode>,
-    /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
-    pub edge_speed_sum: Vec<f32>,
-    /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
-    pub edge_agent_cnt: Vec<u32>,
-    /// Dedup flag for edges touched by live traffic in the latest congestion pass.
-    pub edge_is_dirty: Vec<bool>,
-    /// Compact list of edge IDs touched by live traffic in the latest congestion pass.
-    pub dirty_edges: Vec<usize>,
-    /// Scratch list of previously dirty edges used to reset congestion when traffic leaves.
-    pub stale_dirty_edges: Vec<usize>,
     /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
@@ -310,11 +300,6 @@ impl AgentSystem {
             lane_bucket_patched: false,
             lane_claim_owner: Vec::new(),
             movement_claim_modes: Vec::new(),
-            edge_speed_sum: Vec::new(),
-            edge_agent_cnt: Vec::new(),
-            edge_is_dirty: Vec::new(),
-            dirty_edges: Vec::new(),
-            stale_dirty_edges: Vec::new(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
             next_render_id: 0,

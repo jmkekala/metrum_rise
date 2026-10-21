@@ -4,7 +4,8 @@
 
 use super::planning::estimate_building_origin_trip_seconds;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::scheduler::slot_in_minute_for_key;
+use crate::simulation::core::time::{MINUTES_PER_DAY, TimeSystem};
 use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING, ACTIVITY_WORK};
 use crate::simulation::economy::definitions::{
     MinuteWindow, OperationalClockRuntimeTuning, RuntimeEconomyCatalog, WorkTimingProfile,
@@ -143,7 +144,7 @@ pub(super) fn maybe_schedule_work_trip(
     {
         if time.day_index < *cache.next_departure_day
             || (time.day_index == *cache.next_departure_day
-                && time.minute_of_day < *cache.next_departure_minute)
+                && !departure_slot_reached(time, *cache.next_departure_minute, schedule_seed))
         {
             return None;
         }
@@ -227,11 +228,30 @@ pub(super) fn maybe_schedule_work_trip(
     *cache.next_departure_target_building = target_building;
     *cache.next_departure_activity = activity;
 
-    if departure_day == time.day_index && time.minute_of_day >= scheduled_minute {
+    if departure_day == time.day_index
+        && departure_slot_reached(time, scheduled_minute, schedule_seed)
+    {
         return Some((target_building, activity));
     }
 
     None
+}
+
+// Whether the clock has reached the departure slot of an agent due to leave in authored minute
+// `minute` (`SIM-02-K` part 4): the slot of the minute its seed keys, so one minute's departures
+// leave over the minute's slots and not all in the frame that crosses into it. The day's last
+// minute leaves at its first slot, so a frame spanning midnight cannot skip the departure.
+fn departure_slot_reached(time: &TimeSystem, minute: u16, schedule_seed: u32) -> bool {
+    time.minute_of_day > minute
+        || (time.minute_of_day == minute
+            && time.slot_in_minute() >= departure_slot_in_minute(minute, schedule_seed))
+}
+
+fn departure_slot_in_minute(minute: u16, schedule_seed: u32) -> u64 {
+    if minute + 1 >= MINUTES_PER_DAY {
+        return 0;
+    }
+    slot_in_minute_for_key(u64::from(schedule_seed))
 }
 
 // A resident farmer starts/ends the authored shift in place, including overnight shifts.
@@ -602,6 +622,90 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn due_departures_leave_at_their_seeds_slot_of_the_minute() {
+        use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
+        let tuning =
+            crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let allocator = BuildingAllocator::new();
+        let network = TransitNetwork::new();
+        let graph = RegionGraph::new();
+        let pathfind_count = AtomicU32::new(0);
+        let at = |minute: u16, slot: u64| {
+            let mut time = test_clock(1, minute);
+            time.set_absolute_slot_for_test(u64::from(minute) * SLOTS_PER_MINUTE + slot);
+            time
+        };
+        let seed = (1..)
+            .find(|&seed| departure_slot_in_minute(480, seed) >= 2)
+            .unwrap();
+        let slot = departure_slot_in_minute(480, seed);
+        for (time, due) in [
+            (at(479, SLOTS_PER_MINUTE - 1), false),
+            (at(480, 0), false),
+            (at(480, slot - 1), false),
+            (at(480, slot), true),
+            (at(481, 0), true),
+        ] {
+            with_schedule_cache(|cache| {
+                *cache.next_departure_day = 1;
+                *cache.next_departure_minute = 480;
+                *cache.next_departure_origin_building = 0;
+                *cache.next_departure_target_building = 1;
+                *cache.next_departure_activity = ACTIVITY_WORK;
+                let trip = maybe_schedule_work_trip(
+                    0,
+                    ACTIVITY_HOME,
+                    0,
+                    1,
+                    false,
+                    seed,
+                    cache,
+                    0.0,
+                    &time,
+                    &allocator,
+                    &network,
+                    &graph,
+                    &pathfind_count,
+                    &tuning.operational_clock,
+                    &catalog,
+                );
+                assert_eq!(
+                    trip.is_some(),
+                    due,
+                    "minute {} slot {}",
+                    time.minute_of_day,
+                    time.slot_in_minute()
+                );
+            });
+        }
+        // The day's last minute leaves at its first slot, so no frame can carry it past midnight.
+        assert_eq!(departure_slot_in_minute(MINUTES_PER_DAY - 1, seed), 0);
+
+        // Agents due in one minute of a shift window leave over all of its slots.
+        let profile = &tuning.operational_clock.work_profiles[0];
+        let window = &profile.arrival_windows[0];
+        let minute = stable_minute_in_window(profile, window, 0);
+        let mut per_slot = [0_u32; SLOTS_PER_MINUTE as usize];
+        for seed in 0..200_000 {
+            if stable_minute_in_window(profile, window, seed) == minute {
+                per_slot[departure_slot_in_minute(minute, seed) as usize] += 1;
+            }
+        }
+        let total: u32 = per_slot.iter().sum();
+        let fair = total / SLOTS_PER_MINUTE as u32;
+        assert!(fair >= 50, "{total} seeds in the minute");
+        assert!(
+            per_slot
+                .iter()
+                .all(|&count| count >= fair / 2 && count <= fair * 2),
+            "{per_slot:?}"
+        );
+        assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]

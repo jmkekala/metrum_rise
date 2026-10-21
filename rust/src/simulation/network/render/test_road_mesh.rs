@@ -142,7 +142,6 @@ mod tests {
             speed_limit: 13.0,
             base_cost: 0.0,
             physical_length,
-            current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: points.to_vec(),

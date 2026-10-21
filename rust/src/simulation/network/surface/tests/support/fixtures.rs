@@ -37,7 +37,6 @@ pub(in crate::simulation::network::surface::tests) fn test_edge(
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: length,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: points.clone(),

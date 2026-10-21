@@ -138,7 +138,6 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: length / DEFAULT_URBAN_ROAD_SPEED_MS,
         physical_length: length,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: points.clone(),
@@ -193,7 +192,6 @@ fn snapshot_test_graph() -> (RegionGraph, usize) {
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 40.0,
         physical_length: 40.0,
-        current_congestion: 0.1,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
@@ -1587,7 +1585,6 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 120.0,
         physical_length: 120.0,
-        current_congestion: 0.0,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
@@ -1761,8 +1758,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         )
         .expect("insert crossing end node");
         conn.execute(
-            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access)
-             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges WHERE edge_id = 0",
+            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, start_clip, end_clip, no_building_spawn, vehicle_frontage_access)
+             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges WHERE edge_id = 0",
             [],
         )
         .expect("insert crossing edge");
