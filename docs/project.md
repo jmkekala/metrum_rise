@@ -384,7 +384,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   falls by about 1.5 ms at 1× and 2.6 ms at 32× (`SIM-02-K` part 4). The first hours after
   loading no longer stall in demand planning: loading prepares what the first planning slot used
   to build, and the census storage gets a prepared copy of the live books at load, with spare row
-  capacity so appended buildings no longer reallocate it in a planning slot (`SIM-02-K` part 5).
+  capacity so appended buildings no longer reallocate it in a planning slot (`SIM-02-K` part 5). Loading also prepares the route scratch the first trips and job
+  searches after it used to build, so the first minutes after a load no longer stall for 8–15 ms
+  frames at 100k (`SIM-02-K` part 5).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

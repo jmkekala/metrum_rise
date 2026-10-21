@@ -576,7 +576,9 @@ Two caches serve the search:
   CCH change. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
 - **Network legs** (`SharedNetworkQuotes`): the road-network part of each commute, shared by
   every worker thread across hours. A car leg uses the cost-only CCH query; a walking leg keeps
-  the path for the pedestrian connector check. It is emptied on a CCH or lane change.
+  the path for the pedestrian connector check. It is emptied on a CCH or lane change. Loading
+  sizes it and prepares the search's per-worker route scratch, so the first search after a load
+  prepares nothing (`SIM-02-K` part 5).
 
 Neither cache changes a result.
 

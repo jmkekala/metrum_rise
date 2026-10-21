@@ -21,9 +21,11 @@ load, entrance cache, first-frame pathing, timing-run checks), the second (censu
 work units), the third (clearance patches and census refresh slices) and the fourth (the
 census's whole steps in slices). Part 4 (agent tick) has its first commit done (lane buckets
 kept across appends and swap-removes, interleaved movement shards), and part 5 (planning slots)
-has two commits done (planning storage estimates from free lots, one downgrade scan, and
+has three commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
-copied from the prepared live books at load and spare capacity for row storage). See the
+copied from the prepared live books at load and spare capacity for row storage; then the
+slots' trips on one owned route scratch that loading prepares with the job search's scratch).
+See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -888,7 +890,8 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    - the first census after loading (its refresh start 1.8 ms, the route cache's first growth
      2.1 ms, the staffing catch-up);
    - the census window's first slot outside the steps (0.3–1.8 ms);
-   - (d)'s first trip events.
+   - (d)'s first trip events (done by part 5's third commit: the slots' trips run on one owned
+     route scratch that loading prepares).
 
    K3 closes with these left; `SIM-02-K` part 7 (acceptance) revisits them if they stand between
    a tier and the 8 ms limit.
@@ -901,7 +904,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4 and 2.5 ms. Part 5
    (planning slots) runs before part 4's remaining items, because the planning slots set the
    maximum at every tier.
-5. **K5, planning slots** (two commits done 2026-10-21; results sections, part 5). Measured
+5. **K5, planning slots** (three commits done 2026-10-21; results sections, part 5). Measured
    first: the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold
    planning books after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms;
    30k 17 and 14 ms), not those scans. Done: storage estimates from free lots; one downgrade scan
@@ -909,15 +912,23 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    census book finishes (first commit); the census storage copied from the prepared live books at
    load (the census-book preparation after loading is gone); row storage grown with spare
    capacity (the second storage growth after the first appended building is gone) (second
-   commit). Left for a third commit:
-   - the first frame after loading, 28–30 ms at 100k. Its parts: the job search's
-     `build_home_job_options` 13.1 ms; `workplace_network_quotes.sync` 4.5 ms; the restock
-     queue's `apply_replenishment_plan` 9.3 ms, twice; single trip events of 8–9.5 ms
-     (`FreightDispatch`, `ShopperCheck`, `FreightCheck`). Only state that is a pure function of
-     the loaded network and city can be warmed at load; commute quotes read live congestion;
-   - the per-slot O(B/p) setup (about 4 ms at 100k): maintained totals, lot lists and owner rows
-     on demand. It now sets the 30k 32× and 100k hour frames;
-   - the 01:00 slot at 100k: 12.3 ms, planning on the copied book after its first refill;
+   commit); the first frame after loading. It was cold route scratch: each pool worker's
+   thread-local `TripQueryScratch` costs 7–9 ms at 100k. Now one owned scratch is installed
+   around the frame's slot loop, and loading prepares it together with the job search's shards
+   and leg storage (third commit). Left, for a fourth commit:
+   - the 30k 32× hour frames (11.5–13.2 ms). The first frame of every even hour holds planning
+     slots 0–3 (about 4.5–5 ms), one building removal at slot 4 (1.1–1.3 ms), the cell-lot region
+     that removal dirtied (2.2–3.4 ms of generated-cell regeneration that creates no lot), the
+     agent tick (1.2–2.0 ms), trip events and the snapshot. The per-slot setup is only about
+     1–1.5 ms of that. Options: start the removal window later than slot 4, space the four
+     planning slots apart so each lands in its own 32× frame, make that cell-lot regeneration
+     cheaper, or make the setup incremental. A scheduling choice with a gameplay side, which the
+     rules for this run let the coordinator decide (keep the envelope closest, prefer the simpler
+     option);
+   - the 01:00 slot at 100k (17.6 ms frame). The census's refill grows the copied book's business
+     receipt arena (46,280 → 99,342) and allocates customer staging, so the 01:00 planning
+     doubles the receipt journals. Fix options: copy the live books with their capacities, or
+     grow the receipt journals by the spare-capacity rule;
    - the job board and destination fallbacks;
    - the per-building commute-quote clear (narrowing it changes which quotes are reused).
 
@@ -2769,6 +2780,108 @@ on a fresh `$ARTIFACTS` directory.
   uninterrupted game; spare capacity reserves up to twice the length of the owner-indexed arrays,
   untouched until rows are written.
 
+#### `SIM-02-K`, part 5 — route scratch prepared at load (2026-10-21, third commit)
+
+- **Attribution first.** The second commit's build was traced over the first 70 game minutes at
+  100k and 10 at 30k, 1×, and over the full day at 30k 32× (pinned, `RAYON_NUM_THREADS=8`,
+  instrumented, with every route-scratch preparation printed with its pool worker). Everything
+  the second commit's handoff measured in the day's first frame and minutes was cold route
+  scratch, not cold simulation state:
+  1. **Each pool worker's thread-local trip scratch** (`TripQueryScratch`: lane labels, the
+     pedestrian connector table and its completeness proof, the search heap, the CCH labels)
+     costs 7–9 ms to prepare at 100k, O(lanes + connections). Serial slot work prices and plans
+     trips on whichever worker runs the frame's install, so each of the eight workers paid it
+     the first time it ran such work after loading: the restock queue's reservations
+     (`apply_replenishment_plan` → the shopping leg's timeout budget, 7.2 ms of its 7.7 ms) and,
+     one per worker over the first seven minutes, single freight dispatches (7.9–8.9 ms, four
+     times) and shopper checks (7.3–7.6 ms, twice).
+  2. **The job search's eight shard scratches** (`build_home_job_options`, 9.6 ms in parallel:
+     each shard's `prepare_deferred_quotes` prepares the same storage, 9.1–9.4 ms) and **its
+     shared network-leg storage** (`SharedNetworkQuotes::sync`, 4.3 ms: one bucket pair per lane,
+     allocated at the first search). The legs themselves are exact per CCH and lane revision.
+
+  The movement pass's shards were already prepared at load (part 3).
+- **What changed:**
+  1. **One owned route scratch for the slots.** The frame runs its slots with
+     `SimCore::slot_route_scratch` installed as the thread's route scratch
+     (`TripQueryScratch::with_owned`, as the movement pass installs its shards), so the slots'
+     serial trip pricing and planning use one scratch whichever pool worker runs the frame.
+     Parallel work inside a slot keeps each worker's own scratch, as before (work the frame's
+     own thread steals uses the slot scratch). Scratch only memoizes storage and exact
+     per-revision quotes, so which scratch serves a query never changes its result (the
+     determinism checks' 1 and 3 workers already cross threads). Besides the first frames, a
+     road edit now re-prepares one slot scratch instead of each worker's as it next runs a slot.
+  2. **Prepared at load.** `SimCore::prepare_loaded_pathing` prepares the slot scratch with its
+     route buffers, and `HouseholdSystem::prepare_job_search_scratch` sizes the job search's
+     network-leg storage and prepares one shard scratch per worker of the pool, as the first
+     search would. Both are functions of the loaded network only. Cost at load: about 20 ms at
+     100k (the shards in parallel about 9 ms, the slot scratch about 6.0 ms, the leg storage
+     4.4 ms; instrumented).
+- **Targeted costs** (instrumented; the same city, pinned, second commit → third commit; ms):
+
+  | Tier | Cost | Second commit | Third commit |
+  | --- | --- | --- | --- |
+  | 100k | first slot frame after loading | 28.2 | 6.8 |
+  | 100k | its job requests (shard scratch, leg storage, supply) | 14.8 (9.6, 4.3, 0.8) | 1.1 (0.4, 0, 0.6) |
+  | 100k | its restock requests (scratch in the leg budget) | 7.8 (7.2) | 0.3 (0) |
+  | 100k | cold trip events in minutes 0–7, each with a worker's scratch | six of 7.3–8.9 | none |
+  | 100k | route scratch prepared in any frame of the first 70 minutes | 16 times, 6.7–9.4 | none |
+  | 30k | first slot frame after loading | 6.6 | under 3.0 (largest frame of the first 10 minutes) |
+
+  The first frame after loading at 100k is now its agent tick's first frame (10.8 ms, agent
+  tick 10.0 ms against about 3 ms steady), probably the first tick's building-reference scrub
+  and lane-bucket snapshot rebuild, which loading leaves for it (not measured; `SIM-02-K` part
+  4's territory, not taken here).
+- **Equivalence.** Envelope bit-identical to the second commit (every `envelope` metric of the
+  gate report equals the K5 reference report and the second commit's gate report);
+  determinism identical (repeat, save/reload, 1 and 3 workers); burst limits pass. Every reload
+  of the determinism check runs on the prepared scratch, against the continuous game whose
+  scratch was prepared lazily. A new test loads one save twice, discards one game's slot and
+  job-search scratch, and compares both games every frame for three hours
+  (`route_scratch_prepared_at_load_runs_as_cold_scratch_does`).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one
+  session with the second commit's binary as the control, both on copies of the same prepared
+  cities (the save format is unchanged). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms | Load s |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 6.7 (5.9) | 1.18 (1.18) | 1.44 (1.46) | 0.51 (0.52) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 10k | 32× | 4.9 (5.0) | 2.07 (2.13) | 4.00 (4.17) | 0.94 (0.93) | 0 (0) | 0 (0) | 1.7 (1.8) |
+  | 30k | 1× | 5.4 (10.0) | 2.07 (2.07) | 2.90 (2.99) | 1.07 (1.07) | 0 (1) | 0 (0) | 4.9 (4.9) |
+  | 30k | 32× | 13.2 (13.5) | 5.69 (5.71) | 13.06 (13.31) | 2.92 (2.97) | 13 (16) | 0 (0) | 4.9 (5.0) |
+  | 100k | 1× | 17.9 (29.1) | 6.69 (6.76) | 11.08 (11.24) | 4.58 (4.57) | 303 (302) | 2 (5) | 18.6 (18.6) |
+  | 100k | 32× | 52.5 (52.6) | 29.45 (29.85) | 50.14 (49.22) | 14.15 (14.18) | 2,700 (2,700) | 354 (363) | 18.7 (18.6) |
+
+  Every gate limit passes for both builds. The day's first frame after loading is gone at every
+  tier: at 100k 1× it set the control's maximum (29.1 ms: job and restock queues), and the
+  maximum is now an agent-tick frame (05:09, 17.9 ms, of it agent tick 16.3 ms), then the 01:00
+  frame (17.6 ms, the residential slot on the copied book) and hour frames of 15.5–16.6 ms; at
+  30k 1× the control's first frame (7.0 ms) is gone, and both builds' largest frames are single
+  render-snapshot or agent-tick frames (the control's 10.0 ms at 23:44 is a snapshot of
+  9.0 ms; this build's 5.4 ms an agent-tick frame), so 30k 1× now meets 8 ms, as does 10k at
+  both speeds; the 10k 1× maximum of 6.7 ms (control 5.9) is a snapshot frame (6.2 ms of render
+  snapshot), within run-to-run variation. 30k 32× and 100k 32× are level: hour frames (30k
+  11.5–13.2 ms: planning slots, the removal window's first slots and the cell-lot region a
+  removal dirtied; 100k 45–52.5 ms, open question 6). Means are equal (within 1.7%) and p99
+  equal or lower; 100k 1× frames over 16.7 ms 2 (5). Load times are level (100k 18.57 against
+  18.56 s): the prepared scratch costs about 20 ms at 100k.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the second commit as
+  control: hour means 1.56–1.58, 5.46–5.54, 9.48–9.78 and 29.23–29.74 ms (control 1.53–1.55,
+  5.38–5.42, 9.52–9.93 and 29.51–30.53); level, and the same work-count limits fail. The
+  control's 30k fiscal-stress hour spread (29.51–30.53 ms) covers most of the second commit's
+  3% rise, which was therefore largely run-to-run variation.
+- **Build identity:** the gate, `PERF-07` and the test suites ran on the committed sources built
+  with rustc 1.99.1 (`$TEST_BINARY`). The control is the second commit's gate binary.
+- **Tests:** 2,543 release and 2,543 debug library tests (one new) and the 4 growth integration
+  tests pass; clippy adds nothing (the 59 warnings in `agents/data.rs` and `asset_document.rs`
+  remain). `./run.sh --test` in an isolated profile passes with no script error; the change
+  alters what loading prepares, which the bridge's load tests exercise.
+- **Save format:** unchanged (103). Nothing new is saved: the scratch is prepared at load.
+- **Memory:** one more route scratch (the slots'), the size of a worker's; the job search's
+  shards and leg storage exist from load on, as they do after the first search.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -4417,6 +4530,71 @@ alternatives and the evidence. The user reviews these on return.
   (about 4 ms a slot at 100k: owner rows, live workforce, calendar reset, existing buildings, lot
   scan, snapshot compose). With the census-book preparation and the storage growth gone, this
   setup now sets the 30k 32× and 100k hour frames.
+- **`SIM-02-K` part 5 (third commit) — one owned route scratch for the slots, rather than
+  warming every worker's.** The day's first frames after loading paid each pool worker's
+  thread-local trip scratch (7–9 ms at 100k) the first time that worker ran serial slot work,
+  eight times over the first minutes (instrumented). Alternatives: (a) prepare every worker's
+  thread-local scratch at load with `rayon::broadcast`: the same frames, but a broadcast waits
+  for every worker, so a worker blocked outside Rayon during a load would stall it, and every
+  road edit still re-prepares up to eight scratches over the following frames; (b) make the
+  preparation itself cheaper (the connector table and its completeness proof are
+  O(lanes + connections) per scratch); (c) leave it, as the cost falls once per worker per
+  network revision. Chosen: install one owned scratch for the slots' duration, as the movement
+  pass installs its shards, and prepare it at load. A query's result never depends on which
+  scratch serves it (the scratch memoizes storage and exact per-revision quotes; the
+  determinism checks already run 1 and 3 workers), so the envelope stays bit-identical. Cost:
+  one more scratch (a worker's size); parallel work inside slots keeps the workers' own.
+- **`SIM-02-K` part 5 (third commit) — the job search's scratch and leg storage prepared at
+  load.** The first search after loading built its eight shard scratches (9.6 ms at 100k) and
+  its network-leg storage (4.3 ms). Both are functions of the loaded network: the shards are
+  sized by the pool and prepared as the search prepares them, and the leg storage is emptied
+  per CCH and lane revision, its legs exact per revision. The legs themselves are not warmed:
+  which legs the next searches need is not known at load, and warming the complete commute
+  quotes, which carry a historical frontage price, would change which quotes later searches
+  reuse (a gameplay change). Alternative: build the hour's job supply (its arrival targets,
+  0.6–0.8 ms) at load too; not done, it is keyed by the hour and cheap.
+- **`SIM-02-K` part 5 (third commit) — the 30k 32× hour frames left for the fourth commit.**
+  Full-day trace after the third commit (instrumented): the worst 30k 32× frames (11.5–13.2 ms
+  in `PERF-07`; 11.1–14.0 ms traced) are the even hours' first frames, each holding the hour's
+  planning slots 0–3 (about 4.5–5 ms: residential 2.2–2.6, commercial 0.7–0.9, industrial
+  0.6–1.2, actions 0.6–0.8 ms), one building removal at slot 4 (1.1–1.3 ms), the cell-lot region
+  that removal dirtied (2.2–3.4 ms of generated-cell regeneration over the vacated envelope's
+  halo, which creates no lot), the agent tick (1.2–2.0 ms), trip events (about 0.4 ms) and the
+  snapshot. The per-slot setup is only about 1–1.5 ms of such a frame (pass rows 0.5–0.7, live
+  workforce 0.35–0.4, owner storage about 0.3, summed over its slots). Hours without a removal
+  peak at 9.5–10.2 ms, so no setup work alone reaches 8 ms. Options: (a) start the removal
+  window (`REMOVAL_WINDOW_START`, slot 4) later than slot 4, one 32× frame or more after the
+  planning slots (for example slot 16), so removals and their cell-lot regions leave the hour
+  frame; buildings are removed about 45 game seconds later; (b) space the four planning slots
+  apart (offsets 0, 0, 0, 1, 2, 3 → for example 0, 16, 32, 48) so each lands in its own 32×
+  frame; each slot then plans on a city some slots older or newer than now; (c) make the
+  cell-lot regeneration after a removal cheaper: the halo of a small vacated envelope
+  regenerates about 1,000–2,000 cell candidates along 40–50 roads (zoning work, exact); (d) make
+  the setup incremental (maintained totals, lot lists, owner rows on demand), worth at most
+  1.5 ms at 30k and 2–3 ms a planning slot at 100k. With (a) or (b) and (d) the 30k 32× hour
+  frame would be about 7–8.5 ms. (a) and (b) are scheduling choices with a gameplay side (the
+  timing of removals, or the age of the city a slot plans on); the rules for this run let the
+  coordinator decide them (keep the envelope closest, prefer the simpler option), so this is
+  not a decision of this document. Left for the fourth commit.
+- **`SIM-02-K` part 5 (third commit) — the 01:00 residential slot at 100k left for the fourth
+  commit.** A storage trace (instrumented) shows the census storage's copy prepared at load
+  with the live books' row counts and spare rows, but the census's refill of the copy in the
+  next window then grows its business receipt arena (capacity 46,280 → 99,342) and allocates
+  its customer staging rows (0 → 163,290), so the 01:00 planning on that book grows the business
+  book's receipt journals, which follow the arena's capacity (99,316 → 198,632 entries), and
+  writes fresh pages: the residential slot costs 10.9–11.9 ms there against 8–9.2 ms steady
+  (owner storage 1.6–2.1 against 0.35 ms), and the frame 17.6 ms. Options: copy the live books
+  into census storage with their capacities rather than their lengths (`Clone` gives exact
+  capacity), so the census refill finds what an uninterrupted game's census storage holds; or
+  grow the receipt journals by the spare-capacity rule when the arena grows during a census.
+  Worth about 2 ms on one frame a load.
+- **`SIM-02-K` — the `PERF-01` planning cost at 30k fiscal stress (part 5).** The second
+  commit's 3% planning rise (729–744 against 710–715 ms a day) was checked. No planning-setup
+  loop walks capacity instead of length: the owner rows grow from the live length to the owner
+  count each slot (O(owners − live) writes in about five arrays a book, as before), the journals'
+  `seen` arrays are cleared only when their generation counter wraps, and only the receipt
+  journals follow arena capacity, and only when the arena grows. The remaining suspect is the
+  larger arrays' memory footprint, which was not measured.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

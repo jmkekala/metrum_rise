@@ -431,6 +431,42 @@ impl HouseholdSystem {
         }
     }
 
+    /// Prepares what the first job search after loading would for the network's current
+    /// revision (`SIM-02-K`): the network-leg storage and one route scratch per worker of the
+    /// current pool, as [`Self::serve_job_requests`] sizes them. Neither changes a result:
+    /// legs are exact under one revision and the scratch only memoizes storage. O(lanes) per
+    /// scratch on a new revision, O(1) otherwise.
+    pub(crate) fn prepare_job_search_scratch(
+        &mut self,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        self.workplace_network_quotes.sync(transit_network);
+        self.workplace_query_shards
+            .resize_with(rayon::current_num_threads(), WorkplaceQueryShard::default);
+        self.workplace_query_shards
+            .par_iter_mut()
+            .for_each(|shard| shard.query.prepare(transit_network, graph));
+    }
+
+    /// Whether [`Self::prepare_job_search_scratch`] left its storage current for `network`.
+    #[cfg(test)]
+    pub(crate) fn job_search_scratch_prepared_for_test(&self, network: &TransitNetwork) -> bool {
+        self.workplace_network_quotes.synced_for_test(network)
+            && !self.workplace_query_shards.is_empty()
+            && self
+                .workplace_query_shards
+                .iter()
+                .all(|shard| shard.query.prepared_for_test(network, false))
+    }
+
+    /// Drops the job search's scratch and network-leg storage, as before the first search.
+    #[cfg(test)]
+    pub(crate) fn discard_job_search_scratch_for_test(&mut self) {
+        self.workplace_network_quotes = Default::default();
+        self.workplace_query_shards.clear();
+    }
+
     // The searches of `batch`, agents in queue order: each eligible agent's best options from
     // its home, ranked as before, against the hour's job board with live funded jobs and
     // workers; homes shared within the batch are searched once. Plans apply resident workers

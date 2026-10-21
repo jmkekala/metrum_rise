@@ -341,6 +341,12 @@ impl SharedNetworkQuotes {
         searches
     }
 
+    /// Whether the leg storage is sized for the network's current revision.
+    #[cfg(test)]
+    pub(crate) fn synced_for_test(&self, network: &TransitNetwork) -> bool {
+        self.revision == Some(network_quote_revision(network))
+    }
+
     /// Retained leg count.
     pub(crate) fn len(&self) -> usize {
         self.quotes
@@ -541,6 +547,18 @@ impl TripQueryScratch {
             values.reserve(links);
         }
         self.revision = Some(revision);
+    }
+
+    /// Whether this scratch is prepared for the network's current revision, and with its route
+    /// buffers when `routes`.
+    #[cfg(test)]
+    pub(crate) fn prepared_for_test(&self, network: &TransitNetwork, routes: bool) -> bool {
+        let revision = (
+            network.cch_graph.build_generation,
+            network.lane_system.lanes.len(),
+            network.lane_system.revision(),
+        );
+        self.revision == Some(revision) && (!routes || self.route_revision == self.revision)
     }
 
     /// Prepares predecessor and retained-path buffers only for full route work. Cost-only

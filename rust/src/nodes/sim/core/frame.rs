@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use super::state::SimCore;
 use crate::debug::CrashSimSnapshot;
+use crate::simulation::economy::agents::tick::TripQueryScratch;
 use godot::prelude::godot_error;
 
 /// Real seconds per sim-thread frame (~60 Hz); agents move this times the speed multiplier.
@@ -147,10 +148,11 @@ impl SimCore {
     }
 
     /// Builds at load what the first frame would otherwise build (`SIM-02-K`): the routing
-    /// hierarchy if dirty, the flow fields loading marked dirty and the movement pass's route
-    /// scratch for that network. Each is a function of the loaded network, buildings and
-    /// entrances, so the first frame finds them current and has nothing left to build. The
-    /// fields wait for the first frame when the zone index or entrance cache is stale here.
+    /// hierarchy if dirty, the flow fields loading marked dirty, and the route scratch of the
+    /// movement pass, the slots' trips and the job search with its network-leg storage for
+    /// that network. Each is a function of the loaded network, buildings and entrances, so the
+    /// first frame finds them current and has nothing left to build. The fields wait for the
+    /// first frame when the zone index or entrance cache is stale here.
     pub(crate) fn prepare_loaded_pathing(&mut self) {
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);
@@ -173,6 +175,10 @@ impl SimCore {
         }
         self.agents
             .prepare_movement_scratch(&self.transit_network, &self.region_graph);
+        self.slot_route_scratch
+            .prepare_routes(&self.transit_network, &self.region_graph);
+        self.households
+            .prepare_job_search_scratch(&self.transit_network, &self.region_graph);
     }
 
     /// Advances the simulation by one frame of `frame_dt_s` real seconds at the current speed.
@@ -248,9 +254,16 @@ impl SimCore {
         self.align_events_to_clock();
         let time_advance = self.time.process_delta(frame_dt_s);
         report.elapsed_minutes = time_advance.elapsed_minutes;
-        for slot in time_advance.crossed_slots() {
-            self.step_slot(slot, &mut report, observer);
-        }
+        // The slots' serial trip pricing and planning use one owned route scratch, whichever
+        // pool worker runs this frame: each worker's own scratch cost about 8 ms at 100k to
+        // prepare the first time it ran a slot (`SIM-02-K`). Scratch never changes a result.
+        let mut route_scratch = std::mem::take(&mut self.slot_route_scratch);
+        TripQueryScratch::with_owned(&mut route_scratch, || {
+            for slot in time_advance.crossed_slots() {
+                self.step_slot(slot, &mut report, observer);
+            }
+        });
+        self.slot_route_scratch = route_scratch;
         report.minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
         report
     }

@@ -350,6 +350,68 @@ fn the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage() {
     assert_same_census(&warm, &fresh, "copy of the live books");
 }
 
+// Loading prepares the route scratch of the slots' trips and of the job search, and the job
+// search's network-leg storage, which the first slots after it built (`SIM-02-K`). Scratch
+// only memoizes storage, so a loaded game runs the same on it as on cold scratch.
+#[test]
+fn route_scratch_prepared_at_load_runs_as_cold_scratch_does() {
+    let source = busy_town();
+    let saved = std::env::temp_dir().join(format!(
+        "metrum-route-scratch-{}.sqlite",
+        std::process::id()
+    ));
+    let path = saved.to_str().unwrap();
+    source.core.save_game_internal(path, None).unwrap();
+    let load = || {
+        let mut loaded = GrowthScenario::starter_town();
+        loaded.core.load_game_internal(path).unwrap();
+        loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+        loaded
+    };
+    let (mut warm, mut cold) = (load(), load());
+    std::fs::remove_file(&saved).unwrap();
+    let core = &warm.core;
+    assert!(
+        core.slot_route_scratch
+            .prepared_for_test(&core.transit_network, true)
+    );
+    assert!(
+        core.households
+            .job_search_scratch_prepared_for_test(&core.transit_network)
+    );
+    cold.core.slot_route_scratch = Default::default();
+    cold.core.households.discard_job_search_scratch_for_test();
+    let fingerprint = |core: &SimCore| {
+        (
+            core.treasury.balance.to_bits(),
+            core.agents.work_building.clone(),
+            core.agents
+                .pos_x
+                .iter()
+                .map(|x| x.to_bits())
+                .collect::<Vec<_>>(),
+            core.households
+                .households
+                .iter()
+                .map(|household| (household.budget.to_bits(), household.employed_adults))
+                .collect::<Vec<_>>(),
+            core.logistics.shipments.len(),
+        )
+    };
+    let end = warm.core.time.absolute_slot() + 3 * SLOTS_PER_HOUR;
+    while warm.core.time.absolute_slot() < end {
+        warm.core.step_frame(FRAME_DT_S);
+        cold.core.step_frame(FRAME_DT_S);
+        assert_eq!(fingerprint(&warm.core), fingerprint(&cold.core));
+    }
+    // The cold game's slots priced and planned trips on the scratch they prepared.
+    let core = &cold.core;
+    assert!(
+        core.slot_route_scratch
+            .prepared_for_test(&core.transit_network, true)
+    );
+}
+
 #[test]
 fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_before_publishing() {
     let mut source = busy_town();
