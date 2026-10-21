@@ -217,17 +217,24 @@ impl RecurringSupply {
         projected.index.disable_all();
         projected.enabled = true;
         let end = *projected.offsets.last().unwrap();
-        self.remaining.resize(end, 0.0);
+        // Source rows follow the city, with spare capacity (`SIM-02-K`).
+        use crate::utils::storage::resize_rows;
+        resize_rows(&mut self.remaining, end, 0.0);
         self.remaining[first_slot..].fill(0.0);
-        self.production.resize(end, 0.0);
+        resize_rows(&mut self.production, end, 0.0);
         self.production[first_slot..].fill(0.0);
-        self.active.resize(end, false);
+        resize_rows(&mut self.active, end, false);
         self.active[first_slot..].fill(false);
-        self.source_receipts.resize(end, usize::MAX);
+        resize_rows(&mut self.source_receipts, end, usize::MAX);
         self.source_receipts[first_slot..].fill(usize::MAX);
-        self.staged.reserve(end);
-        self.released.reserve(end);
-        self.offers.reserve(end);
+        let (staged, released, offers) = (
+            self.staged.len() + end,
+            self.released.len() + end,
+            self.offers.len() + end,
+        );
+        crate::utils::storage::reserve_rows(&mut self.staged, staged);
+        crate::utils::storage::reserve_rows(&mut self.released, released);
+        crate::utils::storage::reserve_rows(&mut self.offers, offers);
     }
 
     /// Finds the prepared variant in this owner's range, without a city or catalogue scan.

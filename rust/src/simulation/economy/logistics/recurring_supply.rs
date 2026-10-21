@@ -133,12 +133,15 @@ impl RecurringSupply {
 
     /// Prepares temporary project owners outside input quotation loops.
     pub(crate) fn prepare_owners(&mut self, owners: usize, input_ports: usize) {
-        if self.owner_receipts.len() < owners {
-            self.owner_receipts.resize(owners, usize::MAX);
-            self.owner_tails.resize(owners, usize::MAX);
-        }
+        // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::grow_rows(&mut self.owner_receipts, owners, usize::MAX);
+        crate::utils::storage::grow_rows(&mut self.owner_tails, owners, usize::MAX);
         let receipts = self.committed.len() + 2 * (self.remaining.len() + input_ports);
-        self.reserve_receipts(receipts);
+        // With spare capacity, which also sizes the receipt journals (`SIM-02-K`).
+        self.reserve_receipts(crate::utils::storage::spare_capacity(
+            receipts,
+            self.committed.capacity(),
+        ));
         self.revalidation.prepare(
             self.remaining.len(),
             self.owner_receipts.len(),
@@ -971,7 +974,10 @@ impl RecurringSupply {
 
     /// Prepares at most one extra source receipt per matched customer before publication.
     pub(crate) fn prepare_customer_deliveries(&mut self, receipts: usize) {
-        self.reserve_receipts(self.committed.len() + receipts);
+        self.reserve_receipts(crate::utils::storage::spare_capacity(
+            self.committed.len() + receipts,
+            self.committed.capacity(),
+        ));
     }
 
     /// Publishes the currently staffed part of a financed seller-to-buyer promise.

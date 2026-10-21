@@ -45,13 +45,15 @@ impl ReplacementProof {
     /// Sizes owner-indexed marks once per pass, never inside a candidate quote.
     pub(super) fn prepare(&mut self, owners: usize) {
         self.clear();
-        self.marked.resize(owners, false);
-        self.before.resize(owners, ([0.0; 2], [0.0; 2]));
-        self.buyer_marked.resize(owners, false);
-        self.repair_marked.resize(owners, false);
-        self.affected.reserve(owners);
-        self.buyers.reserve(owners);
-        self.repairs.reserve(owners);
+        // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+        use crate::utils::storage::{reserve_rows, resize_rows};
+        resize_rows(&mut self.marked, owners, false);
+        resize_rows(&mut self.before, owners, ([0.0; 2], [0.0; 2]));
+        resize_rows(&mut self.buyer_marked, owners, false);
+        resize_rows(&mut self.repair_marked, owners, false);
+        reserve_rows(&mut self.affected, owners);
+        reserve_rows(&mut self.buyers, owners);
+        reserve_rows(&mut self.repairs, owners);
     }
 
     /// Resets only the owners touched by the preceding proposal.

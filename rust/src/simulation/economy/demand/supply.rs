@@ -356,12 +356,8 @@ impl ProjectReservations {
                 .par_iter_mut()
                 .for_each(|row| *row = None);
         }
-        if self.operations.len() < live {
-            self.operations.resize(live, None);
-        }
-        if self.sites.len() < live {
-            self.sites.resize(live, None);
-        }
+        crate::utils::storage::grow_rows(&mut self.operations, live, None);
+        crate::utils::storage::grow_rows(&mut self.sites, live, None);
         self.live_owners = live;
     }
 
@@ -709,12 +705,9 @@ impl<'a> SiteSupply<'a> {
                 .customers
                 .prepare_project_owners(owners, project_owners * outputs);
             reservations.output_prices.reserve(outputs);
-            if reservations.operations.len() < owners {
-                reservations.operations.resize(owners, None);
-            }
-            if reservations.sites.len() < owners {
-                reservations.sites.resize(owners, None);
-            }
+            // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+            crate::utils::storage::grow_rows(&mut reservations.operations, owners, None);
+            crate::utils::storage::grow_rows(&mut reservations.sites, owners, None);
             reservations
                 .project_owners
                 .reserve(owners - allocator.buildings.len());

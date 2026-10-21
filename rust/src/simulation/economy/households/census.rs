@@ -154,6 +154,14 @@ impl HouseholdSystem {
         self.census_run.unprepared_finished_book()
     }
 
+    /// At load, gives census storage that holds no census a copy of the live books
+    /// (`SIM-02-K`, [`RollingCensus::warm_storage_from`](crate::simulation::economy::hiring::RollingCensus::warm_storage_from))
+    /// and returns the copy, for the caller to prepare as it prepared the live books.
+    /// O(books) once.
+    pub(crate) fn warm_census_storage(&mut self) -> Option<&mut JobFunding> {
+        self.census_run.warm_storage_from(&self.job_funding)
+    }
+
     /// Publishes the hour's census at its first slot `slot`, before the operational hour
     /// (`SIM-02-I`): swaps the census the window built into the live one and copies funded jobs
     /// and activity onto the buildings. A census that is missing, unfinished or stale for the
@@ -273,9 +281,18 @@ impl HouseholdSystem {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> crate::simulation::economy::hiring::JobFunding {
+        self.census_of_front_on_for_test(Default::default(), network, graph)
+    }
+
+    /// The same census run at once into `funding`, storage holding an earlier book.
+    pub(crate) fn census_of_front_on_for_test(
+        &mut self,
+        mut funding: crate::simulation::economy::hiring::JobFunding,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> crate::simulation::economy::hiring::JobFunding {
         let catalog = load_runtime_economy_catalog().unwrap();
         let tuning = load_runtime_economy_tuning().unwrap();
-        let mut funding = crate::simulation::economy::hiring::JobFunding::default();
         funding.step_from_inputs(
             &mut self.census_inputs,
             &mut Default::default(),

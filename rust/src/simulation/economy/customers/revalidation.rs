@@ -55,15 +55,12 @@ impl ConsumerBudgets {
     pub(super) fn prepare_revalidation(&mut self) {
         debug_assert!(!self.revalidation.is_active());
         let journal = &mut self.revalidation;
-        journal.funds_seen.resize(self.funds.len(), 0);
-        journal.owner_seen.resize(self.owners.len(), 0);
+        // Rows that follow the book's row counts keep spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut journal.funds_seen, self.funds.len(), 0);
+        crate::utils::storage::resize_rows(&mut journal.owner_seen, self.owners.len(), 0);
         journal.receipt_seen.resize(self.committed.capacity(), 0);
-        journal
-            .funds
-            .reserve(self.funds.len().saturating_sub(journal.funds.len()));
-        journal
-            .owners
-            .reserve(self.owners.len().saturating_sub(journal.owners.len()));
+        crate::utils::storage::reserve_rows(&mut journal.funds, self.funds.len());
+        crate::utils::storage::reserve_rows(&mut journal.owners, self.owners.len());
         journal.receipts.reserve(
             self.committed
                 .capacity()
@@ -193,9 +190,10 @@ impl ConsumerBudgets {
             pass.receipt_seen.fill(0);
             pass.generation = 1;
         }
-        pass.funds_seen.resize(self.funds.len(), 0);
-        pass.owner_seen.resize(self.owners.len(), 0);
-        pass.receipt_seen.resize(self.committed.len(), 0);
+        // Journals follow the book's row counts, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut pass.funds_seen, self.funds.len(), 0);
+        crate::utils::storage::resize_rows(&mut pass.owner_seen, self.owners.len(), 0);
+        crate::utils::storage::resize_rows(&mut pass.receipt_seen, self.committed.len(), 0);
         pass.checkpoint = Some((self.committed.len(), self.free_receipt, self.owners.len()));
     }
 

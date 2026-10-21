@@ -1335,7 +1335,11 @@ impl SimCore {
     }
 
     /// Prepares at load what the first planning slot would prepare on the live books: the
-    /// building site index, then the planning rows and storage (`SIM-02-K`).
+    /// building site index, then the planning rows and storage (`SIM-02-K`). A census the load
+    /// finished (one current at the save) is prepared now too, not in a window slot; census
+    /// storage that holds no census takes a copy of the prepared live books, as an
+    /// uninterrupted game's census storage holds the previous published census, so the first
+    /// census after loading finishes on warm planning storage and site rows.
     pub(crate) fn warm_loaded_planning(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
@@ -1351,11 +1355,27 @@ impl SimCore {
             &mut self.logistics,
             self.time.minute_of_day,
         );
+        self.prepare_census_book_for_planning(self.time.absolute_slot());
+        // The copy is exact to its rows; preparing it again gives its storage the spare rows
+        // the live books took (`utils/storage.rs`).
+        if let Some(funding) = self.households.warm_census_storage() {
+            self.demand.prepare_planning_books(
+                funding,
+                key,
+                &self.allocator,
+                &self.region_graph,
+                &self.zoning,
+                &self.fiscal_policy,
+                &self.transit_network,
+                &mut self.logistics,
+                self.time.minute_of_day,
+            );
+        }
     }
 
-    // A finished census whose book no planning pass has prepared (the first census after
-    // loading, on fresh storage) is prepared for the hour it serves in the next window slot,
-    // not by the planning slot that first lends it (`SIM-02-K`). O(1) otherwise.
+    // A finished census whose book no planning pass has prepared (a new world's first census,
+    // on fresh storage) is prepared for the hour it serves in the next window slot, not by the
+    // planning slot that first lends it (`SIM-02-K`). O(1) otherwise.
     fn prepare_census_book_for_planning(&mut self, slot: u64) {
         let key = self.households.census_key(&self.transit_network);
         let Some(funding) = self.households.unprepared_census_book() else {

@@ -6,7 +6,7 @@ use super::*;
 
 /// Conservative staffed-buyer membership, independent of provisional purchases. A buyer
 /// with a positive ceiling remains possible even if this pass could not finance it.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct PotentialCustomers {
     /// Membership written by the census and withdrawn when a buyer's ceiling reaches zero.
     pub(super) counted: Vec<bool>,

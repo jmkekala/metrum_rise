@@ -556,7 +556,9 @@ rebuilt after load, never saved.
   - each project check is bounded by its recipe ports, home-calendar size and indexed customer
     and supplier work.
 - **No city scans:** there is no per-project city scan or per-agent search. Reservation scratch
-  is reused across passes. It is prepared at load and, for a fresh census book, in a window slot
-  after the book finishes, so no planning slot builds it from cold (`SIM-02-K` part 5). Its
+  is reused across passes. It is prepared at load and, for the census storage, on a copy of the
+  live books made at load, so no planning slot builds it from cold. Row storage that follows the
+  city keeps spare capacity, so an appended building does not reallocate it in a planning slot
+  (`SIM-02-K` part 5). Its
   warm-start estimates count new projects on free lots only; a shortfall replays the proposal
   after growing storage exactly, so estimates never change a result.

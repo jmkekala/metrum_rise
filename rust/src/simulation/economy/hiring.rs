@@ -43,7 +43,7 @@ pub(crate) use steps::{CensusProgress, StepWork};
 pub(crate) use steps::{STEP_NAMES, STEP_NANOS};
 
 /// Reused building/resource scratch. Employment and admission read the same funded capacities.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct JobFunding {
     /// Maximum live employees supported by both recurring sales and working capital.
     pub(crate) capacities: Vec<u32>,

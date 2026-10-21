@@ -328,6 +328,28 @@ fn the_census_stepped_over_the_window_equals_one_run_on_its_copy_and_restarts_on
     );
 }
 
+// Loading gives census storage that holds no census a copy of the live books, as an
+// uninterrupted game's holds the previous published census (`SIM-02-K`): what the storage held
+// never changes the census.
+#[test]
+fn the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage() {
+    let mut scenario = busy_town();
+    let core = &mut scenario.core;
+    step_to_chunk(core, SLOTS_PER_HOUR - 1);
+    assert!(core.households.job_funding.planning_prepared);
+    let fresh = core
+        .households
+        .census_of_front_for_test(&core.transit_network, &core.region_graph);
+    assert!(fresh.capacities.iter().any(|&jobs| jobs > 0));
+    let copy = core.households.job_funding.clone();
+    let warm = core.households.census_of_front_on_for_test(
+        copy,
+        &core.transit_network,
+        &core.region_graph,
+    );
+    assert_same_census(&warm, &fresh, "copy of the live books");
+}
+
 #[test]
 fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_before_publishing() {
     let mut source = busy_town();

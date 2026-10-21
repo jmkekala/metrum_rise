@@ -20,9 +20,10 @@ impl<T> Default for Rows<T> {
 }
 
 impl<T: Copy> Rows<T> {
+    // Rows follow the book's row counts, with spare capacity (`SIM-02-K`).
     fn prepare(&mut self, size: usize) {
-        self.seen.resize(size, 0);
-        self.saved.reserve(size.saturating_sub(self.saved.len()));
+        crate::utils::storage::resize_rows(&mut self.seen, size, 0);
+        crate::utils::storage::reserve_rows(&mut self.saved, size);
     }
 
     fn record(&mut self, index: usize, value: T, generation: u64) {

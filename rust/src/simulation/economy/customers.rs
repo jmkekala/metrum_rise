@@ -308,7 +308,8 @@ impl ConsumerBudgets {
     }
 
     fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
-        self.owners.resize(owners, usize::MAX);
+        // Owner rows follow the city, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut self.owners, owners, usize::MAX);
         // Warm-start estimate only. Every commit preflights reusable cells: census commits
         // grow exactly, and enclosing proofs grow between attempts and replay.
         #[cfg(test)]
@@ -317,10 +318,12 @@ impl ConsumerBudgets {
             self.committed.shrink_to_fit();
             return;
         }
-        crate::utils::storage::reserve_cleared(
-            &mut self.committed,
-            2 * (self.funds.len() + output_ports),
-        );
+        // With spare capacity, which also sizes the receipt journals (`SIM-02-K`).
+        let additional = crate::utils::storage::spare_capacity(
+            self.committed.len() + 2 * (self.funds.len() + output_ports),
+            self.committed.capacity(),
+        ) - self.committed.len();
+        crate::utils::storage::reserve_cleared(&mut self.committed, additional);
     }
 
     // Test forks of the live book; planning lends it instead.

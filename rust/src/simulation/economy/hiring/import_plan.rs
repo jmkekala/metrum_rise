@@ -87,7 +87,7 @@ impl Proof<'_> {
 }
 
 /// Reusable per-owner import-only proofs and their flat output-share storage.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Book {
     /// Per-owner proof rows; callers fill and invalidate these during census setup.
     pub(super) rows: Vec<Row>,

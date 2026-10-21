@@ -50,12 +50,12 @@ impl BusinessMarket {
 
     /// Reserves one dirty-list entry per buyer before any transactional mutation.
     pub(super) fn prepare_finance_mask_storage(&mut self) {
-        self.buyer_dirty.resize(self.budgets.finance.len(), false);
-        self.dirty_buyers.reserve(
-            self.buyer_dirty
-                .len()
-                .saturating_sub(self.dirty_buyers.len()),
+        crate::utils::storage::resize_rows(
+            &mut self.buyer_dirty,
+            self.budgets.finance.len(),
+            false,
         );
+        crate::utils::storage::reserve_rows(&mut self.dirty_buyers, self.buyer_dirty.len());
         self.account_masks.reserve(
             self.budgets
                 .accounts

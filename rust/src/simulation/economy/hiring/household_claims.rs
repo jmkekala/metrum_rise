@@ -80,7 +80,7 @@ struct OutputRequest {
 /// prefix reads cached quantities without resetting budgets, searching routes or mutating
 /// receipt trees. The first changed request or decision reconstructs its accepted prefix
 /// through ordinary quotation, then records the rest normally. No hashes or tolerances.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct HouseholdQuotes {
     quotes: Vec<Quote>,
     units: Vec<f64>,

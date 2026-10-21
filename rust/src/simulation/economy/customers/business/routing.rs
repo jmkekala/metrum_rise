@@ -172,19 +172,20 @@ impl BusinessMarket {
 
     /// Prepares live and temporary project owner slots outside the proposal loop.
     pub(crate) fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
-        if self.budgets.owners.len() < owners {
-            self.budgets.owners.resize(owners, usize::MAX);
-        }
-        if self.budgets.finance.len() < owners {
-            self.budgets.finance.resize(owners, [0.0; 2]);
-            self.budgets.buyer_accounts.resize(owners, usize::MAX);
-            self.budgets.buyer_tails.resize(owners, usize::MAX);
-            self.budgets.finance_staged.resize(owners, false);
-            self.budgets
-                .staged_finance
-                .reserve(owners.saturating_sub(self.budgets.staged_finance.len()));
-        }
-        let receipts = 2 * (self.budgets.accounts.len() + output_ports);
+        // Owner rows follow the city; spare rows keep an appended building from reallocating
+        // them all in one planning slot (`SIM-02-K`).
+        use crate::utils::storage::{grow_rows, reserve_rows};
+        let budgets = &mut self.budgets;
+        grow_rows(&mut budgets.owners, owners, usize::MAX);
+        grow_rows(&mut budgets.finance, owners, [0.0; 2]);
+        grow_rows(&mut budgets.buyer_accounts, owners, usize::MAX);
+        grow_rows(&mut budgets.buyer_tails, owners, usize::MAX);
+        grow_rows(&mut budgets.finance_staged, owners, false);
+        reserve_rows(&mut budgets.staged_finance, owners);
+        let receipts = crate::utils::storage::spare_capacity(
+            2 * (self.budgets.accounts.len() + output_ports),
+            self.budgets.committed.capacity(),
+        );
         self.budgets
             .committed
             .reserve(receipts.saturating_sub(self.budgets.committed.len()));
@@ -208,9 +209,20 @@ impl BusinessMarket {
 
     /// Prepares the pass's bounded new-buyer tranches and their source-owned receipts.
     /// Existing replacement buyers still use the exact reseeding preflight.
+    /// Both arenas keep spare capacity past the request (`SIM-02-K`).
     pub(crate) fn prepare_project_inputs(&mut self, additional_tranches: usize) {
-        self.reserve_receipts(self.budgets.committed.len() + additional_tranches);
-        self.reserve_accounts(self.budgets.accounts.len() + additional_tranches);
+        use crate::utils::storage::spare_capacity;
+        let budgets = &self.budgets;
+        let receipts = spare_capacity(
+            budgets.committed.len() + additional_tranches,
+            budgets.committed.capacity(),
+        );
+        let accounts = spare_capacity(
+            budgets.accounts.len() + additional_tranches,
+            budgets.accounts.capacity(),
+        );
+        self.reserve_receipts(receipts);
+        self.reserve_accounts(accounts);
     }
 
     /// Starts an enclosing replacement proof over preallocated account/receipt snapshots.

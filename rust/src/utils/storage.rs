@@ -20,3 +20,74 @@ pub(crate) fn reserve_cleared<T>(rows: &mut Vec<T>, additional: usize) {
         rows.reserve(additional);
     }
 }
+
+/// Makes room for `len` rows in storage indexed by rows that follow the city (buildings,
+/// parcels, planning owners and the journals sized by them), keeping spare capacity: when
+/// fewer than `len / 8` spare rows would remain, the capacity grows to the larger of `len +
+/// len / 4` and twice the old capacity, the amortized growth `reserve` gives. Sized exactly
+/// at its first use, such storage otherwise reallocated, copying every row, in the planning
+/// slot after one building or parcel was appended, every row array of a book at once
+/// (`SIM-02-K`). An empty vector takes a fresh allocation, as [`reserve_cleared`] does.
+/// Capacity never changes a result. O(1) without growth, O(len) to grow.
+pub(crate) fn reserve_rows<T>(rows: &mut Vec<T>, len: usize) {
+    let capacity = spare_capacity(len, rows.capacity());
+    if capacity <= rows.capacity() {
+        return;
+    }
+    if rows.is_empty() {
+        *rows = Vec::with_capacity(capacity);
+    } else {
+        rows.reserve_exact(capacity - rows.len());
+    }
+}
+
+/// The capacity to request for `required` rows of storage now holding `capacity`, with the
+/// spare rows of [`reserve_rows`]: `capacity` itself while at least `required / 8` rows
+/// would stay spare, else the larger of `required + required / 4` and `2 * capacity`. For
+/// arenas grown by request (input tranches, receipts), whose capacity also sizes their
+/// journals: requested exactly, the next hour's request a few rows larger doubled the arena and
+/// every journal it sizes in one planning slot (`SIM-02-K`). O(1).
+pub(crate) fn spare_capacity(required: usize, capacity: usize) -> usize {
+    if capacity >= required + required / 8 {
+        capacity
+    } else {
+        (required + required / 4).max(2 * capacity)
+    }
+}
+
+/// [`Vec::resize`] to `len` rows, with the spare capacity of [`reserve_rows`].
+pub(crate) fn resize_rows<T: Clone>(rows: &mut Vec<T>, len: usize, value: T) {
+    reserve_rows(rows, len);
+    rows.resize(len, value);
+}
+
+/// Grows `rows` to at least `len` rows, never shrinking it, with the spare capacity of
+/// [`reserve_rows`] checked whether or not it grows: storage copied at its length (a loaded
+/// book's copy) takes its spare rows at its next preparation.
+pub(crate) fn grow_rows<T: Clone>(rows: &mut Vec<T>, len: usize, value: T) {
+    reserve_rows(rows, len.max(rows.len()));
+    if rows.len() < len {
+        rows.resize(len, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_storage_keeps_spare_capacity_and_grows_amortized() {
+        let mut rows = vec![0u64; 800];
+        assert_eq!(rows.capacity(), 800);
+        resize_rows(&mut rows, 800, 0);
+        assert_eq!((rows.len(), rows.capacity()), (800, 1600));
+        // Appended rows land in spare capacity without reallocating.
+        let ptr = rows.as_ptr();
+        resize_rows(&mut rows, 1400, 7);
+        assert_eq!((rows.as_ptr(), rows.capacity()), (ptr, 1600));
+        assert!(rows[..800].iter().all(|&row| row == 0) && rows[800..].iter().all(|&row| row == 7));
+        let mut empty: Vec<u64> = Vec::new();
+        reserve_rows(&mut empty, 100);
+        assert_eq!(empty.capacity(), 125);
+    }
+}

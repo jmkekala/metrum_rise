@@ -68,13 +68,12 @@ impl Revalidation {
     /// Prepares at most one undo entry per original source, owner and receipt arena slot.
     pub(super) fn prepare(&mut self, sources: usize, owners: usize, receipts: usize) {
         debug_assert!(self.checkpoint.is_none());
-        self.source_seen.resize(sources, 0);
-        self.owner_seen.resize(owners, 0);
+        // Rows that follow the book's row counts keep spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut self.source_seen, sources, 0);
+        crate::utils::storage::resize_rows(&mut self.owner_seen, owners, 0);
         self.receipt_seen.resize(receipts, 0);
-        self.sources
-            .reserve(sources.saturating_sub(self.sources.len()));
-        self.owners
-            .reserve(owners.saturating_sub(self.owners.len()));
+        crate::utils::storage::reserve_rows(&mut self.sources, sources);
+        crate::utils::storage::reserve_rows(&mut self.owners, owners);
         self.receipts
             .reserve(receipts.saturating_sub(self.receipts.len()));
     }
@@ -270,9 +269,10 @@ impl RecurringSupply {
             pass.receipt_seen.fill(0);
             pass.generation = 1;
         }
-        pass.source_seen.resize(self.remaining.len(), 0);
-        pass.owner_seen.resize(self.owner_receipts.len(), 0);
-        pass.receipt_seen.resize(self.committed.len(), 0);
+        // Journals follow the book's row counts, with spare capacity (`SIM-02-K`).
+        crate::utils::storage::resize_rows(&mut pass.source_seen, self.remaining.len(), 0);
+        crate::utils::storage::resize_rows(&mut pass.owner_seen, self.owner_receipts.len(), 0);
+        crate::utils::storage::resize_rows(&mut pass.receipt_seen, self.committed.len(), 0);
         pass.nearest_incumbents.clone_from(&self.nearest_incumbents);
         pass.checkpoint = Some(PassCheckpoint {
             receipts: self.committed.len(),

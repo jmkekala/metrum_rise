@@ -192,6 +192,22 @@ impl RollingCensus {
         (self.progress.is_done() && !self.funding.planning_prepared).then_some(&mut self.funding)
     }
 
+    /// Gives census storage that holds no census, as after loading, a copy of the live books
+    /// `live` (`SIM-02-K`): an uninterrupted game's census storage holds the previous
+    /// published census, with the planning storage, site rows and walking proofs its planning
+    /// passes prepared, so the first census after loading finishes on warm storage rather
+    /// than on fresh storage that its first planning pass grows in one slot. What a census's
+    /// storage held never changes its result: what it reuses from earlier content is keyed by
+    /// exactly its inputs, as with the previous census an uninterrupted game's storage holds.
+    /// Call at load only; a finished census keeps its book. O(books) once.
+    pub(crate) fn warm_storage_from(&mut self, live: &JobFunding) -> Option<&mut JobFunding> {
+        if self.progress.is_done() || self.funding.planning_prepared {
+            return None;
+        }
+        self.funding.clone_from(live);
+        Some(&mut self.funding)
+    }
+
     /// Whether a census for `publish_slot` started on the front, current or stale.
     pub(crate) fn has_run(&self, publish_slot: u64) -> bool {
         matches!(self.run, Some(run) if run.publish_slot == publish_slot)
