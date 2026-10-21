@@ -35,6 +35,7 @@ finished census's book prepared for planning at minute 59 of the hour before it 
 the zone index is current, with large row growth filled on the pool; then a book's pass rows kept
 across its lendings, admission's border arrival costs kept per routing revision, the minute-59
 preparation in two halves, and the removal slot's scans and zone-index rebuild on the pool).
+Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -1005,9 +1006,18 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
      it changes which quotes are reused).
 
    The planning slots still declare `Cost::CityScan`.
-6. **K6, 100k traffic.** Find why trips stall in the 100k fixture (about 45,000 of 145,000
-   agents always moving; junction throughput, routing) and keep movement within the `PERF-06`
-   limits.
+6. **K6, 100k traffic** (diagnosed 2026-10-21; findings, no code; results section, part 6).
+   No gridlock: the lane wait-for graph has no cycle at any tier, and the cars flow. The always-moving agents are
+   shoppers walking 2 km (30k) to 3.2 km (100k) to the few stocked groceries, all in the city's
+   first-built strip, because the funding census lets stores, in building order, claim the
+   nearest households with no distance bound, and the fixture's store capacity is six times
+   demand (`ECON-22`). Border imports also queue on the trunks, and a truck entering a lane at a
+   border node skips the entry-slot check, so the queues stack trucks at one point
+   (`TRAFFIC-03`). A 600 m claim bound prototype passes the envelope and removes 17,000–18,000 of
+   the 100k city's 49,000–53,000 agents on the road, but saves only 0.4 ms (1×) and 0.7 ms (32×)
+   of agent tick, and its 100k city failed the fixture's continuation check. Neither fix is
+   landed: the census claim rule is an economy design decision. Open question 6 is not shrunk by
+   traffic.
 7. **K7, acceptance.** `PERF-07` max at most 8 ms at 30k and 100k, at 1× and 32×, over a full game
    day; envelope and burst limits; `SIM-02` and `PERF-07` marked done.
 
@@ -3654,6 +3664,118 @@ on a fresh `$ARTIFACTS` directory.
 - **Memory:** the kept border sweeps (one cost table per car-connected border, about 2,200 nodes
   each at 100k) and the zone-index scratch (about 3.6 MB at 100k).
 
+#### `SIM-02-K`, part 6 — 100k traffic (2026-10-21, findings)
+
+Measured first, on copies of the prepared `PERF-07` cities (save format 105, day 12 00:00),
+with a temporary diagnostic test that is not committed: every frame it follows each agent by
+its render id from departure to arrival; every 1–8 game hours it counts agents by transit state,
+mode and purpose, bins car speeds, sorts stopped cars by where they wait, measures each lane's
+occupancy, builds the lane wait-for graph (a lane whose head car waits at its end for a lane
+whose entry slot is taken) and looks for cycles in it, and reads every grocery's staff, stock
+and position. Pinned (`taskset -c 0,2,…,14`), `RAYON_NUM_THREADS=8`, release, 32× over a full
+day (two days for the prototype) and 1× over four hours.
+
+**There is no gridlock.** The wait-for graph had no cycle in any sample at 10k, 30k or 100k,
+over two days at 100k. Cars flow: at 100k 00:00, of 9,500 cars on lanes 4,100 run at 10 m/s or
+more and 2,400 at 5–10 m/s; 1,300 stand in queues and 73 wait at a connector's end. The phase
+inventory's "15,000 in junctions" are pedestrians: at 100k 17,600 agents are on junction
+connectors and 1,900 of them are cars; the other 15,700 are walkers on crossings, where a
+walker going north along a cross street spends about a third of its path (a junction every
+50 m).
+
+**The always-moving population is shoppers on foot, walking kilometres.** Day 12, 32×:
+
+| | 10k | 30k | 100k |
+| --- | --- | --- | --- |
+| Agents | 11,100 | 31,400–32,400 | 114,500–117,200 |
+| On the road (cars / walkers) | 2,600 (800 / 1,800), day mean | 8,700–14,900 (1,900–5,400 / 6,700–9,700) | 48,400–62,900 (9,100–16,600 / 39,000–46,300), day mean 52,900 |
+| Of them on a shopping leg | 1,200 | 4,300–4,900 | 21,700–23,100 |
+| Shopping legs completed in the day (walk) | — | 11,614, mean 503 game minutes | 35,306, mean 825 game minutes, 5,461 over 24 h |
+| Home–store distance of legs in flight (walk) | — | mean 2.0 km | mean 3.2 km; 5,600 over 4 km, 660 under 500 m |
+| Groceries / staffed / with stock | — | 882 / 145 / 92–115 | 3,023 / 525 / 362–420 |
+| Homes with a grocery within 250 m | — | 100% | 97% |
+| Homes with a stocked grocery within 250 m / beyond 1 km (1 home in 20) | — | 19% / 31–47% | 15% / 59–70% |
+| Wait-for cycles (gridlock) | 0 | 0 | 0 |
+
+A walking trip costs one game minute per second of movement at 4 m/s, so a 3.2 km shopping
+walk takes about 13 game hours each way. Households wait meanwhile: at 100k 15,500 are on the
+way to a store, 3,600 on the way home and 11,900 wait for a shopper to come home.
+
+**Cause: the funding census funds only the stores first in building order.** Every staffed
+grocery at 100k lies in the northernmost 1.6 km of the 6.4 km city (the first rows the fixture
+filled); at 30k in the northernmost 0.8–1.6 km. In `reserve_consumer_outputs` each store, in
+stable building order, claims its whole net output (200 units a day) from the households
+nearest to it that still have budget (`ConsumerMarket::claim_reachable`, nearest-first by
+512 m chunk ring, no distance bound; exhausted households leave the availability index, so the
+next store's scan reaches past them). The fixture fills every commercial lot, so grocery
+capacity is about six times demand (3,023 × 200 units a day against about 109,000): the first
+sixth of the stores in building order claims every household in the city, nearest-first from
+the north, and the rest get no customers, no funded jobs (7,360 of 45,345 at 100k, mean funded
+activity 0.16), no workers and no stock. Shoppers then walk to the nearest stocked store, in the
+north strip. Any city with more store capacity than demand behaves the same way: the oldest
+stores take every customer, however far.
+
+**Prototype, not landed:** the same scan stopped at the first chunk ring beyond 600 m
+(`K6_CLAIM_CAP_M`, an environment variable read by the diagnostic build only).
+- On the saved 100k city over two days at 32× (control in parentheses at the same clock):
+  staffed groceries 830–890 through day 13 and 701 at its end (507–525); homes with a stocked
+  grocery within 500 m 83% (20%); shopping legs over 4 km 3,154 (5,753) and under 500 m 1,623
+  (642); walkers 37,700 (41,200). The saved city changes slowly: a leg takes most of a day.
+- On cities grown under it (the fixture's 12 days, `perf_contract_prepare` with the variable set):
+  30k built and passed the fixture's continuation check; 100k built but **failed the
+  save/reload continuation check** ("snapshot agent state differs at continuation hour"),
+  unexplained; its straight-through save was used for diagnostics only. On the grown 100k city,
+  same pinned settings, one session, control first:
+
+  | 100k | On the road | Walkers | On crossings | Agent tick mean (max) | Slot work mean |
+  | --- | --- | --- | --- | --- | --- |
+  | 1×, 00:00–04:00, control | 48,800 | 39,400 | 17,700 | 2.83 ms (7.8) | 0.23 ms |
+  | 1×, 00:00–04:00, grown with cap | 30,900 | 22,300 | 8,500 | 2.41 ms (6.8) | 0.22 ms |
+  | 32×, full day, control | 52,900 | 41,300 | 18,300 | 7.19 ms (15.9) | 5.97 ms |
+  | 32×, full day, grown with cap | 36,100 | 25,000 | 9,500 | 6.46 ms (26.2) | 5.63 ms |
+
+  Shopping legs in flight still average 2.0 km there: with production equal to the forecast and
+  no stock buffer, a household's nearest stores are often sold out at the moment it reserves.
+- Envelope (`tools/sim02_gate.py envelope --bursts departures,settlements`, fresh cities, the
+  variable set): PASS, no failures, the same eight notes as `SIM-02-K` part 5's seventh commit;
+  baseline 30k out-of-stock rate 0.184 → 0.137 (arrivals 0.175 → 0.114), net income per
+  resident +2.3%, employment +0.3%, deliveries −1.1%, bankruptcies 0.29 → 0.22 per 1,000
+  buildings a day, vacancy and unhoused rates 5e-5 → 8e-5 and 1.1e-4 → 2.2e-4 (a few
+  households), the rest within ±0.5%; the eight notes are the base build's own (the collapsed
+  fiscal-stress cities' employment and deliveries, and the 30k out-of-stock rate, now lower
+  still); bursts within limits.
+
+**Second finding: imports queue at the borders, and network entry stacks them.** Inbound trunk
+lanes (the 538 m outside the city at 100k) fill over the PERF-07 day: 974 cars at 00:00–04:00,
+2,869 at 24:00 (1,871 stopped), and freight on the road grows from 5,700 to 8,400 (9,500 by day
+13). The queues' heads wait at the trunk's first junction, mostly for the turn onto a 39 m
+cross-street block whose entry is taken. A truck that starts at a border node enters its first
+lane at distance 0 without the entry-slot check every other lane acquisition makes
+(`tick/movement/network/lane_entry.rs`, `prepare_lane_entry`), so once the lane is full the end
+of tick overlap correction clamps the newcomers to distance 0: the saved cities already hold 8
+(10k), 78 (30k) and 382 (100k) freight trucks stacked at one point of a trunk lane (max 78 on
+one lane), and one 100k trunk lane held 421 cars at 24:00 where 199 fit. A prototype that makes network
+entry check and claim the entry slot (a car that cannot enter waits at its node; not landed)
+removes the stacks but not the queue: at 24:00 the 100k inbound trunk lanes hold 719 cars (60 stopped)
+and 2,108 freight trucks wait at border nodes, against 2,869 cars (1,871 stopped) and 38
+waiting without it; 10k: 323 waiting at its border against 374 cars on its trunk. Imports
+exceed the borders' throughput at every tier, one single-lane trunk per 10,000 residents, and
+the queue grows through the day. The waiting trucks are serial handoff agents every tick:
+agent tick 7.37 against 7.19 ms at 32× and 2.91 against 2.83 ms at 1× (same session). Its
+envelope passes with no determinism differences, but adds two notes at 10k: out-of-stock rate
+0.095 → 0.122 (band up to 0.114) and fiscal stress 0.786 → 0.811 (up to 0.787), not yet
+explained; 30k metrics move under 1%. Not landed (see "Decided while unattended").
+
+**Frame budget after part 6** (no code landed; `SIM-02-K` part 5's seventh commit stands): 100k
+`PERF-07` max 12.9 ms at 1× and 25.4 ms at 32×, p99 6.06 and 20.23 ms; the ordinary 100k 32×
+frame is about 13.5 ms (agent tick 6.8, slot work 6.0, snapshot 0.9). Bearing on open question
+6: the two runs above put the moving agents' share of the 32× agent tick at about 0.043 ms per
+thousand agents on the road (0.023 ms at 1×). At 100k that is about 2.3 of 7.2 ms at 32×; a
+healthy city with shopping trips of a few hundred metres (about 20,000 fewer walkers) would save
+about 0.9 ms at 32× and 0.5 ms at 1× (an estimate: the two cities differ in more than their
+walkers). The rest of the agent tick is per-agent passes over all
+115,000 agents and trip planning (6.7 ms of CPU a 32× frame), which shorter trips do not remove.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -3710,7 +3832,7 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 | Agent movement in departure frames | Up to 4 ms at 10k and 17 ms at 30k (32×) | Departures spread by events; `PERF-06` limits | E, K |
 | One queued construction start | 14–21 ms for a single placement | Placement split across slots | K |
 | First boundary after loading | About 10× an ordinary hour. `SIM-02-H` found most of it was the catalog refresh every load made, now skipped when the catalog is unchanged. What remained were the generated cells, which loading invalidated and the first lot regions served afterwards rebuilt: 25–134 ms a region at 100k, all day | Generated during loading (K3), except chunks that would register a new grid frame | H (refresh, done), K (K3 done) |
-| 100k fixture traffic (found in `SIM-02-E`) | About 45,000 of 145,000 agents moving at any time (30,000 on lanes, 15,000 in junctions) and 15,000 shopping trips in flight around the clock, on `SIM-02-D` too: the network is saturated, so movement and trip checks run for most of the city | Find why trips stall at 100k (junction throughput, routing); movement within `PERF-06` limits | K |
+| 100k fixture traffic (found in `SIM-02-E`) | About 49,000–56,000 of 115,000 agents on the road at any time (2026-10-21; 9,000–14,000 cars, 39,000–46,000 walkers), 15,700 of them walkers on junction crossings; about 22,000 on shopping legs, mean 3.2 km on foot (about 13 game hours a leg); no gridlock (no wait-for cycle); border imports queue on the trunks (up to 2,900 cars) and stack at lane start | Census claims bounded by locality (`ECON-22`), worth about 0.4 ms (1×) and 0.7 ms (32×) of agent tick at 100k; network entry checks the entry slot (`TRAFFIC-03`), no gain | K (part 6 diagnosed, not fixed) |
 
 ### Open questions
 
@@ -3763,6 +3885,16 @@ ordinary frame averages 13.6 ms (agent tick 6.8: trip plans 6.7 ms of CPU in the
 slot work 6.0) and its wave frames carry 22–33 ms of planning CPU; spreading departures over a
 minute's slots halves the waves at 32× but cannot spread them further, since a 32× frame covers
 about half a minute. The cost of a trip plan is routing work.
+
+Part 6 (2026-10-21) found no stalled traffic: the 100k city's 49,000–56,000 agents on the road
+are mostly shoppers walking 3.2 km to the few stocked groceries (`ECON-22`), not trips stuck in
+junctions. A city grown with a 600 m bound on the census's store claims (prototype) has about
+36,000 agents on the road at 32× and an agent tick of 6.46 ms against 7.19 ms on the control
+(2.41 against 2.83 ms at 1×, 00:00–04:00), diagnostic runs in one session. Moving agents cost
+about 0.04 ms per thousand at 32×, so even a healthy city keeps about 5 ms of 32× agent tick in
+passes over every agent and in trip planning. The 32× arithmetic of this question therefore
+stands: about 6.5 ms of agent tick plus about 5.6 ms of slot work. 100k 32× within 8 ms still
+needs one of the options above.
 
 ### Decided while unattended
 
@@ -3877,6 +4009,9 @@ alternatives and the evidence. The user reviews these on return.
   arrival settles within minutes and a stuck trip is checked every eight. Alternatives: a callback
   from the movement pass (new `unsafe`), or checks at the estimated arrival (congestion moves it,
   so it still needs polling).
+  Correction (`SIM-02-K` part 6, 2026-10-21): the fixture is not gridlocked, and the lane
+  wait-for graph has no cycle. The in-flight trips are long walking shopping trips (3.2 km,
+  about 13 game hours a leg at 100k); the back-off still fits them.
 - **`SIM-02-E` — timeouts stay hourly.** Freight `queued_hours` and the shopping leg allowance
   still count operational hours in the hourly passes, so timeouts and their tests keep their
   meaning. A trip that leaves later in the hour gets up to one hour more allowance than one that
@@ -5723,6 +5858,42 @@ alternatives and the evidence. The user reviews these on return.
   and a "nothing changed" key would miss every slot, because the job queue hires every slot.
   Exact maintenance needs integer (fixed-point) wage sums, a rounding choice with a gameplay
   side, which the run's rules let the coordinator make; deferred.
+- **`SIM-02-K` part 6 — the stall is not traffic; no junction, fixture or census change.**
+  Diagnosed with a lane wait-for graph and trip tracking (results section, part 6). Alternatives considered for the long trips: (a) a
+  junction or gridlock fix: rejected, there is no cycle and cars flow; (b) a fixture change
+  (fewer commercial lots, demand-grown commerce): rejected as the fix, because the census flaw
+  shows in any city with spare store capacity and a fixture change would hide it, and it would
+  change every later baseline; (c) a bound on the census's store claims (`ECON-22`): prototyped,
+  envelope passes, but it needs an authored radius (a new gameplay parameter), leaves households
+  beyond it unforecast in sparse cities, does not make replenishment shop locally while stores
+  hold no buffer, and its 100k city failed the fixture's continuation check; (d) a
+  household-major claim (each household's demand to its nearest store with capacity, then the
+  rest): the honest rule, but it restructures the census sweep (resumable slices, journals,
+  rejection and retry). Both (c) and (d) are economy design decisions with a measured benefit of
+  0.4–0.9 ms of agent tick at 100k, so part 6 lands no code and records the findings.
+- **`SIM-02-K` part 6 — network entry without an entry claim, not fixed here.**
+  `prepare_lane_entry` puts an agent that starts at a node (border-origin freight, arrival
+  carriers, a replan at a node) on its first lane at distance 0 without
+  `lane_entry_slot_clear` and `claim_lane_entry`, unlike connector entry and exit, direct
+  continuations and building egress (`TRAFFIC-02` leaves claims to the requesting subsystem).
+  Agents without a lane are already classified `Dynamic`, so the check fits the serial handoff
+  phase. Prototyped (results section, part 6): stacks gone, the same queue now waits at the
+  border nodes as serial agents (+0.1–0.2 ms of agent tick at 100k), envelope passes but with two
+  new 10k out-of-stock notes not yet explained. Not landed in part 6: it needs that explanation,
+  a border hold that keeps waiting trucks off the per-tick serial pass, render-visible checks
+  (`./run.sh --test`) and own `PERF-07` cities, and it does not shorten the queue, which is the
+  borders' throughput (`TRAFFIC-03`).
+- **`SIM-02-K` part 6 — pedestrians keep car spacing.** Walkers are in the lane buckets, so the
+  connector entry claim and the end-of-tick overlap correction space them by `CAR_LENGTH +
+  IDM_S_MIN` (2.7 m), one walker per 0.7 s per crossing at 4 m/s. The measured walking trips run
+  at about free speed (825 game minutes for about 4 km of path), so this is not what makes them
+  long; recorded as a limit in `traffic.md`.
+- **`SIM-02-K` — part 6 closes as findings.** `ECON-22` (the census's unbounded store claims) and
+  `TRAFFIC-03` (network entry without an entry claim) are filed as roadmap bugs outside
+  `SIM-02`'s path, because neither changes what `SIM-02` must reach: the census change is an
+  economy design choice worth 0.4–0.9 ms of agent tick at 100k, and open question 6 stands with
+  or without it; the entry claim removes stacked trucks but not the border queue. The order
+  continues with part 5's remaining 100k 1× items, then part 7 (acceptance).
 
 ### Corrections to part 2's statements (merge with the entries above)
 

@@ -430,6 +430,9 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
   shopper's real trip planner. Walking proofs answer most candidates from cached pedestrian
   components with identical results. Store discovery continues past depleted nearest stores
   through a deterministic cursor that wraps.
+- A household shops at the nearest stocked store whatever the census claimed for it, so a
+  household the census assigned to a distant store walks there when its own neighbourhood's
+  stores are unfunded (`ECON-22`).
 - An unaffordable full refill becomes the largest affordable partial basket.
 - The reservation moves stock and money; supplies rise only when the shopper returns home.
   Shopping owns both legs and the wait for pickup and delivery acknowledgement; the work
@@ -502,9 +505,12 @@ answer to "how much of this operation can run":
   (`operation.rs`). Owner equity is capital, never sales.
 - **Activities:** accepted recipe activity, as a share of full output. Sales-scaled stores,
   service stores, farms and mines produce, restock and staff to it.
-- **Customers:** households claim finite quantities from reachable stores with exact directed
-  shopping access (`customers/routing.rs`), from recurring after-tax wages and funded permanent
-  transfers after housing and utility costs. Savings and temporary benefits are excluded.
+- **Customers:** each store, in stable building order, claims its output from the nearest
+  reachable households with exact directed shopping access (`reserve_consumer_outputs` →
+  `ConsumerMarket::claim_reachable`, `customers/routing.rs`), with no distance bound, from
+  recurring after-tax wages and funded permanent transfers after housing and utility costs.
+  Savings and temporary benefits are excluded. With spare store capacity the first-built stores
+  claim every household in the city (`ECON-22`).
 - **Business buyers:** business buyers claim inputs from local suppliers in recipe order, with
   jointly checked financing (`customers/business.rs`). Suppliers of buyers that cannot pay are
   withdrawn; cyclic groups resolve in stable building order (`hiring/closure.rs`).

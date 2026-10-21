@@ -396,7 +396,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   about 4 ms less at 100k and 1.2 ms less at 30k (`SIM-02-K` part 5). The seventh commit keeps each book's pass rows and admission's border sweeps by what changed, splits the minute-59 preparation and moves the removal slot's scans onto the pool: the 100k actions slot falls from 6.5 to 4.2 ms and the removal slot from 4.6 to 3.5 ms (`SIM-02-K` part 5). Commute departures now leave over
   their minute's slots instead of all at its first, so the 100k departure waves no longer stall
   the agent tick, and the unused per-edge congestion value is gone (`SIM-02-K` part 4, save
-  format 105).
+  format 105). The 100k city's busy streets are not jammed: shoppers walk several kilometres
+  because only the oldest stores get customers (`ECON-22`; `SIM-02-K` part 6).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -710,3 +710,5 @@ The measured ignored tests are
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
+- network entry at a node does not claim the entry slot (`TRAFFIC-03`)
+- walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction
