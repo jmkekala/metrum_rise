@@ -389,7 +389,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   frames at 100k (`SIM-02-K` part 5). The hour's planning now runs a game minute apart,
   residential, commercial, industrial, then admissions and actions (minutes 0 to 3), and
   removals, departures and level changes start at minute 4, so at 32× no frame carries two of
-  them (`SIM-02-K` part 5, save format 104).
+  them (`SIM-02-K` part 5, save format 104). A building leaving a lot it keeps no longer
+  regenerates the lot's cells, so the 30k 32× minute-4 frames fall to at most 5.7 ms; the 1×
+  render-snapshot spikes are scheduler preemption, not snapshot work.
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

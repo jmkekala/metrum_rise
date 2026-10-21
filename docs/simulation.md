@@ -21,13 +21,14 @@ load, entrance cache, first-frame pathing, timing-run checks), the second (censu
 work units), the third (clearance patches and census refresh slices) and the fourth (the
 census's whole steps in slices). Part 4 (agent tick) has its first commit done (lane buckets
 kept across appends and swap-removes, interleaved movement shards), and part 5 (planning slots)
-has four commits done (planning storage estimates from free lots, one downgrade scan, and
+has five commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
 slots' trips on one owned route scratch that loading prepares with the job search's scratch;
 then the hour's four planning slots a game minute apart, with removals, departures and level
 changes from slot 64, saves that keep the admission and removal diagnostics (save format 104),
-and a census storage copy that keeps the live books' arena capacity).
+and a census storage copy that keeps the live books' arena capacity; then a building leaving a
+lot it keeps derives the lots without regenerating the lot's generated cells).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -774,6 +775,19 @@ moves its entities between the tiers' phase buckets.
 - **Snapshot columns** (from `SIM-02-K` part 2): `PERF07_DAY` also reports the render
   snapshot's mean and p99 (`mean_snapshot_ms`, `p99_snapshot_ms`). `METRUM_PERF07_MINUTES`
   caps the measured span for diagnostics; gate runs leave it unset and measure the full day.
+- **Preemption** (`SIM-02-K` part 5): the eight pinned CPUs are shared with the rest of the
+  machine, and a pool worker that another task keeps off its CPU stalls the parallel phase it
+  holds work in, in whichever phase was running (render snapshot or agent tick), at a different
+  minute in every run. A spike frame is attributed by reading the threads' scheduler statistics
+  (`/proc/self/task/*/schedstat`: time on a CPU, time runnable but waiting for one) around it in
+  a diagnostic build: a preemption frame has the phase's ordinary work plus one pool worker's
+  run-queue wait, while the test's own thread runs about 0.07 ms a frame. Every snapshot frame
+  over 2 ms and the agent-tick spikes at 10k and 30k held one worker waiting 1.0–5.4 ms for a CPU
+  taken by another task on the pinned CPUs, at different minutes in every run; the largest, in a
+  diagnostic 10k day, was a 10.0 ms frame whose 9.5 ms agent tick held a 9.6 ms wait. That is
+  noise on the 1× maxima at 10k and 30k (up to about 3.6–5.3 ms in the gate runs), not
+  simulation work; the count over 8 ms and p99.9 are robust to it, a single maximum is not. Timing runs keep the machine quiet, the
+  run's own monitoring included.
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -912,7 +926,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4 and 2.5 ms. Part 5
    (planning slots) runs before part 4's remaining items, because the planning slots set the
    maximum at every tier.
-5. **K5, planning slots** (four commits done 2026-10-21; results sections, part 5). Measured first:
+5. **K5, planning slots** (five commits done 2026-10-21; results sections, part 5). Measured first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
    not those scans. Done: storage estimates from free lots; one downgrade scan in the actions slot;
@@ -930,15 +944,14 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    (`JobFunding::reserve_census_arenas_like`) while the census's receipt estimate keeps spare
    capacity, so the 01:00 slot after a load grows no journal (fourth commit). The spacing is a
    scheduling choice with a gameplay side, taken under the run's rule (keep the envelope closest,
-   prefer the simpler option). Left, for a fifth commit, with findings in [Decided while
+   prefer the simpler option). A building leaving a lot it keeps now derives the lots without
+   regenerating the lot's generated cells, which reproduced them, so the 30k 32× minute-4 frames
+   fall from 6.9–8.7 to at most 5.7 ms (fifth commit; the 1× render-snapshot spikes were
+   attributed to preemption of a pool worker, not snapshot work). 10k and 30k now meet 8 ms at
+   both speeds in this run. Left, with findings in [Decided while
    unattended](#decided-while-unattended):
-   - the 30k 32× minute-4 frames, 8.0–8.2 ms. Each holds the hour's clearances at slot 64
-     (1.0–1.2 ms), their cell-lot regions at slot 65 (2.5–3.7 ms) and the hour's first
-     construction start (0.65–0.83 ms). Options: serve a dirtied region at least a game minute
-     later; an exact, cheaper regeneration after a removal; or separate the first construction
-     start from the removals;
-   - the 100k residential slot, about 9–9.5 ms, of which site preparation is 3.6–5.0 ms. It needs
-     the setup and site rows to follow what changed;
+   - the per-slot setup and the site-row layout, which set the 30k 32× maximum (6.8 ms, the
+     hour's first frame) and the 100k 1× hour frames (about 16.4 ms);
    - the job board and destination fallbacks;
    - the per-building commute-quote clear (narrowing it changes which quotes are reused).
 
@@ -3034,6 +3047,119 @@ on a fresh `$ARTIFACTS` directory.
   receipts at 100k); the census storage copy holds the live books' receipt and claim staging
   capacity from load on, as the second book does after an hour of play.
 
+#### `SIM-02-K`, part 5 — lots derived without regenerating cells (2026-10-21, fifth commit)
+
+- **What set the 30k maxima.** 32×: the hours' minute-4 frames (8.0–8.2 ms, all twelve worst
+  frames of the fourth commit's day), which cross slots 64–65: the hour's clearances at slot 64
+  (1.0–1.2 ms), the cell-lot regions those clearances dirtied, served at slot 65 (2.5–3.7 ms),
+  and the hour's first construction start, also due at minute 4 (0.65–0.83 ms), with the agent
+  tick (1.1–1.7) and the snapshot (0.5–1.1). Each region spent 2.2–3.2 ms regenerating generated
+  cells and 0.34–0.53 ms deriving lots, with no candidate and no lot created (diagnostic,
+  `economy_phases` channel). 1×: single render-snapshot frames (8.1 ms with a 6.9 ms snapshot at
+  04:36, 7.8 ms with 6.3 ms at 13:51; snapshot mean 0.36 ms, p99 0.88 ms).
+- **The cell regeneration reproduced the cache.** A cleared building's lot keeps its claims when
+  its paint is intact, but the release marked the lot with `mark_cell_lots_dirty`, which also
+  invalidates the generated cells of the lot and a halo of `CELL_DEPTH + 1` cells, the
+  invalidation meant for edits that change what generation reads. Generation reads the roads and
+  their alignments, paint, lot claims, the cells outside the regenerated envelope, curve sources,
+  authored parcels and the caller's blockers (compiled roads, explicit sites, fields). A building
+  leaving a lot it keeps changes none of these: occupancy is parcel-store state, a cell-lot
+  building is no explicit site, and a removed field invalidates its own polygon
+  (`publish_pending_production_site_removals`). A comparison of the cell store around every
+  regeneration of the 30k 32× day (17 regions: cells, paint, claims and frontages over the
+  region's chunks and their neighbours, the store revision and the curve sources) found every
+  one identical before and after (diagnostic).
+- **What changed** (identical results): `release_invalid_empty_cell_lot` calls
+  `ZoningSystem::mark_cell_lots_for_derivation` when the lot keeps its claims. It queues the
+  lot's region for derivation alone: the queue mark and the cell-tool epoch, no invalidation of
+  generated cells. A release that frees the claims (paint erased while occupied) still calls
+  `mark_cell_lots_dirty` and invalidates the halo, as do roads, paint, sites and fields. The
+  region still refreshes the vacated lot's frontage and retires it if its road is gone, so the
+  contract in `zoning.md` holds. Cost: the region's generation step is O(chunks) lookups when
+  nothing else dirtied it; derivation is unchanged.
+- **The render-snapshot spikes are preemption, not snapshot work** (no code change; see
+  [Decided while unattended](#decided-while-unattended)). An instrumented test build recorded,
+  for every frame of a full 1× day at 30k and 10k (pinned, 8 workers), the snapshot's phases, its
+  rebuild flags and every thread's scheduler statistics (`/proc/self/task/*/schedstat`: time on
+  a CPU, time runnable but waiting for one). Every snapshot frame over 2 ms held one pool worker
+  that waited 1.0–2.8 ms for a CPU, and the stretched phase was a different one each time
+  (entering the pool, bucket fill, grounding off-lane cars); no frame rebuilt anything (site and
+  zone index clean, lane boxes current — the lane revision changes only with a road edit —, node
+  positions, terrain and water clean). The agent-tick spikes show the same: the 30k frames with a
+  4.2–6.3 ms tick held worker waits of 3.6–5.4 ms. Every 4096th frame, sampled, held no wait over
+  0.5 ms. The spikes fall at different minutes in every run (fourth commit 04:36 and 13:51, its
+  control 20:58 and 13:02, this diagnostic 00:56, 13:46, 20:02 and 21:19). The test's own thread
+  ran about 0.07 ms a frame, so another task on the eight pinned CPUs held the worker's CPU.
+- **Targeted costs** (ms; diagnostic where marked, both builds on the fourth commit's cities):
+
+  | Tier | Cost | Fourth commit | Fifth commit |
+  | --- | --- | --- | --- |
+  | 30k 32× | worst frame of the day (`PERF-07`) | 8.7 (control run) | 6.8 (an hour frame) |
+  | 30k 32× | minute-4 frames (`PERF-07`, worst) | 6.9–8.7 | at most 5.7 |
+  | 30k 32× | a clearance's cell-lot region: generation (diagnostic) | 2.2–3.2 | 0.001 (no generation) |
+  | 30k 32× | a clearance's cell-lot region: derivation (diagnostic) | 0.34–0.53 | 0.34–0.53 |
+  | 30k 32× | cell-generation calls over the day (diagnostic) | 83 | 68 |
+  | 30k 1× | largest render snapshot of the day (`PERF-07`) | 4.7 (control run) | 3.6 |
+  | 10k 1× | largest render snapshot of the day (`PERF-07`) | 2.6 (control run) | 2.9 |
+
+- **Envelope** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, no failures, bit-identical to the
+  fourth commit's envelope; the same eight notes. Bursts: identical (busiest minute 4.1% of an
+  hour's departures, busiest settlement hour 7.4%).
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days); the gate shows no differences.
+- **Tests:** 2,544 release and 2,544 debug library tests and the 4 growth integration tests pass;
+  clippy adds nothing (61 warning lines, all in `agents/data.rs` and `asset_document.rs`);
+  rustfmt adds nothing on the touched files. New:
+  `releasing_an_occupied_lot_with_intact_paint_derives_without_regenerating_cells` frees one of
+  four occupied lots on a painted road at three angles and serves the queued region twice, as
+  this commit does and with the former halo invalidation: this commit generates no cell, and both
+  give the same derivations, cells, frontages, store revision and parcels. No bridge-facing code
+  changed, so `./run.sh --test` was not required; it ran anyway, in an isolated profile on the
+  committed tree: the Rust tests and the Godot bridge tests pass, no script error, no segfault
+  (the rendered vegetation tests skip without a Forward+ display).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one
+  session with the fourth commit's binary as the control, both on copies of the same prepared
+  cities (save format 104, unchanged). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms | Load s |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 5.3 (4.6) | 1.18 (1.16) | 1.43 (1.40) | 0.51 (0.50) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 10k | 32× | 3.7 (4.6) | 1.98 (2.00) | 2.73 (3.80) | 0.96 (0.96) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 30k | 1× | 7.1 (8.0) | 2.05 (2.06) | 2.97 (3.16) | 1.05 (1.03) | 0 (1) | 0 (0) | 4.9 (4.9) |
+  | 30k | 32× | 6.8 (8.7) | 5.25 (5.45) | 6.34 (8.23) | 2.89 (2.88) | 0 (4) | 0 (0) | 5.0 (4.9) |
+  | 100k | 1× | 16.4 (17.3) | 6.65 (6.58) | 11.44 (11.30) | 4.49 (4.44) | 294 (279) | 0 (2) | 19.0 (18.6) |
+  | 100k | 32× | 26.4 (28.1) | 22.70 (23.97) | 25.11 (27.45) | 14.07 (14.05) | 2,700 (2,700) | 438 (405) | 18.9 (18.6) |
+
+  Every gate limit passes for both builds; neither prepared a city (both loaded the same
+  snapshots). 10k and 30k meet 8 ms at both speeds in this run. 30k 32×: no frame over 8 ms
+  (control 4), p99.9 6.34 ms (8.23); the minute-4 frames are gone from the worst (the highest,
+  14:04, 5.7 ms; the control's twelve worst were all minute-4 frames, 6.9–8.7 ms), and the
+  maximum is now the 06:00 hour frame (6.8 ms: 4.0 ms of slot work, 3.0 of it the hour's first
+  slot with the residential planning slot, agent tick 1.6, snapshot 1.2), then the other hour
+  frames (5.8–6.5 ms). 30k 1×: the cell-lot frames of minute 4 (control 06:04, 5.1 ms with 3.4 ms
+  of slot work) are gone too; the maximum is a single frame at 21:44 with 4.1 ms of slot work,
+  which a repeat run of the same binary on the same city did not have (its largest frames were
+  two render-snapshot frames at 21:43, 6.5 and 6.1 ms with 3.4 and 4.0 ms of snapshot), so it is
+  noise, not simulation work; then an agent-tick spike (10:26, 6.8 ms, tick 6.4 ms); the
+  control's maximum is its 15:00 hour frame (8.0 ms, 6.0 ms of slot work). The largest render
+  snapshot of the day: 2.9 ms at 10k 1× (control 2.6), 3.6 ms at 30k 1× (4.7; one frame over 3
+  ms against three), 6.3 ms at 100k 1× (6.1), 1.2–2.5 ms at 32×; snapshot means and p99 equal
+  (30k 1× 0.36 and 0.88 ms). 100k: the maxima are an hour frame at 1× (06:00, 16.4 ms:
+  residential slot plus an ordinary frame, and a 15.5 ms agent-tick frame) and agent-tick frames
+  at 32× (26.4 ms, open question 6), within the control's variation. Means are level (within
+  2%). Load times are level.
+
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the fourth commit as
+  control: hour means 1.60–1.69, 6.29–6.36, 9.54–9.55 and 29.21–29.22 ms (control 1.63–1.71,
+  6.23, 9.48–9.62 and 29.38–30.27); level, and the same work-count limits fail.
+
+- **Build identity:** the gate, `PERF-07` and the test suites ran on the committed sources built
+  with rustc 1.99.1 (`$TEST_BINARY`); the control is the fourth commit's gate binary.
+- **Save format:** 104, unchanged; the Kuopio fixture is unchanged.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -3136,7 +3262,8 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
    45,000 of 145,000 agents always moving) may shrink the problem and runs first. Part 7
    decides under the stop rule: findings, options, `needs_revalidation`, stop for review. 30k at
    both speeds and 100k at 1× remain within reach. After part 5's fourth commit the 100k 32×
-   maximum is 27.9 ms (the minute-4 frames and agent-heavy frames, 25–28 ms), p99 23.0 ms.
+   maximum is 27.9 ms (the minute-4 frames and agent-heavy frames, 25–28 ms), p99 23.0 ms; after the
+fifth commit 26.4 ms (agent-tick frames), p99 22.7 ms.
 
 ### Decided while unattended
 
@@ -4851,7 +4978,7 @@ alternatives and the evidence. The user reviews these on return.
   completeness cache, and the region regenerates every generated cell of the envelope's halo,
   probably although no blocker of those cells changed (not verified; zoning work, identical
   results); (d) the incremental per-slot setup does not help this frame. (b) or (c) alone brings the
-  frame to about 5 ms.
+  frame to about 5 ms. Taken in the fifth commit: option (c).
 - **`SIM-02-K` part 5 (fourth commit) — the 100k 1× hour frames (findings, not taken).** The
   remaining 15.2–16.4 ms hour frames at 100k 1× (`PERF-07`) are each hour's residential slot
   (about 9–9.5 ms; 8.0–9.2 ms in the third commit's 300-minute trace, diagnostic) with an
@@ -4863,6 +4990,50 @@ alternatives and the evidence. The user reviews these on return.
   (0.46–0.54). No cheap identical fix: the site rows and the setup would have to follow what
   changed (the per-slot setup item); spacing the slots does not change 1× frames, each of which
   already holds at most one slot.
+- **`SIM-02-K` part 5 (fifth commit) — a building leaving a lot it keeps derives the lots
+  without regenerating cells.** The 30k 32× maximum (8.2 ms) was every hour's minute-4 frame:
+  the hour's clearances (1.0–1.2 ms), the cell-lot regions they dirtied (2.5–3.7 ms, of it
+  2.2–3.2 ms regenerating generated cells that a comparison found identical before and after
+  in all 17 regions of the day, and 0.34–0.53 ms deriving lots, creating none) and the hour's
+  first construction start (0.65–0.83 ms), with the agent tick and snapshot. Alternatives, in
+  the order this run's rules prefer them: (c) an exact, cheaper regeneration: either bound the
+  regeneration by the cells the removal touched (it touched none: no input of generation
+  changed, so any bound regenerates cells that cannot change) or skip the regeneration that
+  provably changes nothing; (b) serve a dirtied region at least a game minute after it was
+  dirtied: splits the frame but keeps the 2.2–3.2 ms of work in minute 5's frame, next to the
+  hour's second construction start, and lots appear up to a minute later (a gameplay change);
+  (a) start the hour's first construction a minute away from the removals: 0.65–0.83 ms, not
+  enough alone. Chosen (c), the skip, with its proof by inputs: cell generation reads roads and
+  their alignments, paint, lot claims, cells outside the envelope, curve sources, authored
+  parcels and the caller's blockers (compiled roads, explicit sites, fields), and a building
+  leaving a lot whose paint is intact changes none of them (occupancy is parcel-store state; a
+  cell-lot building is no explicit site; a removed field invalidates its own polygon). A
+  release that frees the claims still invalidates the halo. The region's derivation is kept, so
+  the vacated lot's frontage is still refreshed and a lot left on a removed road retired. The
+  skip relies on the completeness cache's own invariant (a complete chunk holds what generation
+  of its area produces from current inputs), which every ready-chunk lookup already relies on.
+  Evidence: envelope and bursts bit-identical to the fourth commit, determinism shows no
+  differences, the new unit test, the cell store compared before and after all 17 regenerations
+  of the 30k 32× day (every one identical), and the `PERF-07` table.
+- **`SIM-02-K` part 5 (fifth commit) — the render-snapshot spikes are preemption (findings, no
+  code change).** The 30k 1× maximum (8.1 ms, of it 6.9 ms of render snapshot) and earlier
+  snapshot maxima (10k 6.2 ms on the third commit, 30k 9.0 ms on the second's control) were
+  single frames at different minutes in every run, against a snapshot mean of 0.36 ms. Per-frame
+  phase timing and scheduler statistics (results section) put every snapshot frame over 2 ms on a
+  pool worker that waited 1.0–2.8 ms for a CPU, in a different phase each time, with no rebuild;
+  the agent tick has the same spikes (worker waits of 3.6–5.4 ms in the 30k frames with a
+  4.2–6.3 ms tick). None of the suspected snapshot causes applies: the lane boxes rebuild only
+  after a road edit, the site and zone index were clean, and each stretched phase took its
+  ordinary time plus the worker's wait. Alternatives: (1) run the snapshot's small phases
+  serially: the stalled thread time is the same, so the expected count is too; (2) fewer workers
+  than pinned CPUs, so other tasks find an idle CPU: a change of the gate's configuration (8
+  workers on the 8 performance cores) for every step's comparison; (3) reserved CPUs or
+  real-time priority: machine configuration, outside the project. Chosen: no code change; the
+  frame budget section states the effect and how to attribute a frame, and timing runs keep the
+  machine quiet, their own monitoring included. The final `PERF-07` run, during which the run's
+  own monitoring started only three short commands ten minutes apart, still had them (largest
+  snapshot 3.6 ms at 30k 1× and 6.3 ms at 100k 1×; control 4.7 and 6.1 ms), so they come from the
+  machine, not from the run.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

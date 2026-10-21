@@ -1174,7 +1174,10 @@ explicit sites contribute exclusion envelopes, kept separately until they enter 
 512 m dirty-chunk set. Ordinary parcel buildings do not exclude cells, so placing or resizing
 them does not regenerate the rectangle spanning unrelated sites. Clearing a cell-lot occupant
 still queues its local frontage revalidation through the parcel lifecycle, including erased
-paint and roads lost during occupied grace. Field removals retain their full-polygon invalidation.
+paint and roads lost during occupied grace. When the lot keeps its claims (intact paint), the
+region derives the lots without invalidating the generated cells, since no input of their
+generation changed; a release that frees the claims invalidates their halo (`SIM-02-K`). Field
+removals retain their full-polygon invalidation.
 
 The parcel store maintains an authored-parcel count alongside its existing indices. When that
 count is zero, generated-cell exclusion skips parcel lookup in O(1): cell-derived lots never
@@ -1291,7 +1294,9 @@ Demand lot preparation uses this same completeness cache. Each requested chunk g
 cold contents or recorded local dirty envelope, then publishes completion; ready chunks require
 only a lookup. Cost is `O(requested chunks + generation in dirty envelopes)`, using existing
 indices. Lot derivation still runs for every dirty lot region, even when geometry is already
-current. Occupancy release and road/frontage invalidation retain their existing semantics.
+current. Road/frontage invalidation retains its existing semantics; an occupancy release that
+keeps its lot queues only lot derivation, and one that frees the claims also invalidates their
+halo (`SIM-02-K`).
 
 The renderer polls visible chunk metadata in one nonblocking call and uploads at most two changed
 chunks per frame. Each full cell and authored parcel belongs to its centre's 512 m chunk. Derived
@@ -1777,7 +1782,8 @@ broader memory acceptance remain open.
 Road removal previously detached occupied cell lots before their buildings were removed. It now
 keeps those claims, including erased occupied cells, until the allocator clears the occupant.
 The road-removal inverse captures the same subset of detached records. Occupancy release queues
-only the lot's bounds for frontage revalidation, so intact paint cannot leave an empty lot
+only the lot's bounds for frontage revalidation (without invalidating generated cells while the
+lot keeps its claims, `SIM-02-K`), so intact paint cannot leave an empty lot
 attached to a deleted road indefinitely. Existing manual-parcel removal behavior is unchanged.
 The added removal predicate costs O(1) per visited parcel; it does not change the existing
 parcel-removal scan's complexity. This is not full bulldoze locality acceptance.

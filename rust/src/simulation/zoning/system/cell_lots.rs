@@ -192,14 +192,22 @@ impl ZoningSystem {
         if !parcel.is_available() {
             return;
         }
+        let released =
+            self.cells.lot_profile(lot).is_none() && self.cells.release_lot(lot, id.raw());
         // A road may have disappeared while the occupied coverage was pinned. Even intact
         // paint needs a local frontage refresh once the building releases its footprint.
         if let Some(frame) = self.cells.frame(lot.origin().grid) {
-            self.mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds::from_points(
-                lot.corners(frame),
-            ));
+            let bounds =
+                crate::simulation::zoning::cells::CellBounds::from_points(lot.corners(frame));
+            if released {
+                // Released claims are an input of cell generation: their halo regenerates.
+                self.mark_cell_lots_dirty(bounds);
+            } else {
+                // A kept lot changes no input of cell generation, so only its lots derive again.
+                self.mark_cell_lots_for_derivation(bounds);
+            }
         }
-        if self.cells.lot_profile(lot).is_none() && self.cells.release_lot(lot, id.raw()) {
+        if released {
             self.parcels.remove_local(id);
             self.bump_overlay_revision();
         }

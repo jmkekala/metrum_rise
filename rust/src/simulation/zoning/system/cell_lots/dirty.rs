@@ -130,6 +130,19 @@ impl ZoningSystem {
         self.cell_lot_queue.mark(bounds);
     }
 
+    /// Queues an area for lot derivation alone, keeping its generated cells: for a change that
+    /// alters no input of cell generation (roads, paint, lot claims, authored parcels, explicit
+    /// sites and fields), such as a building leaving a lot it keeps (`SIM-02-K`). Regenerating
+    /// those cells would reproduce them; the region still refreshes the lots' frontage, as
+    /// [`Self::mark_cell_lots_dirty`] queues it. O(touched chunks).
+    pub(in crate::simulation::zoning::system) fn mark_cell_lots_for_derivation(
+        &mut self,
+        bounds: CellBounds,
+    ) {
+        self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
+        self.cell_lot_queue.mark(bounds);
+    }
+
     /// Queues the supplied topology edit's road corridors, including retained deleted geometry.
     pub(crate) fn mark_cell_lots_for_roads(
         &mut self,

@@ -289,6 +289,74 @@ fn occupied_lots_follow_split_and_restored_roads_without_moving() {
 }
 
 #[test]
+fn releasing_an_occupied_lot_with_intact_paint_derives_without_regenerating_cells() {
+    use crate::simulation::zoning::{CellLotGeneration, MAX_PARCEL_FRONTAGE_M};
+    // Serves every queued region as the `cell lots` queue does; returns the roads that cell
+    // generation queried (zero when no generation ran) and each region's derivation.
+    fn serve(graph: &RegionGraph, zoning: &mut ZoningSystem) -> (usize, Vec<CellLotGeneration>) {
+        let (mut roads, mut reports) = (0, Vec::new());
+        while let Some(region) = zoning.pop_dirty_cell_lot_region() {
+            let wide = region.expanded(f64::from(MAX_PARCEL_FRONTAGE_M));
+            roads += zoning.prepare_generated_cells(graph, wide, |_| false).roads;
+            reports.push(zoning.derive_cell_lots(graph, region, &[size()], |_, _| false));
+        }
+        (roads, reports)
+    }
+    let cells = |zoning: &ZoningSystem| {
+        keys(&zoning.cells, extent().expanded(512.0))
+            .into_iter()
+            .map(|key| {
+                let store = &zoning.cells;
+                (
+                    key,
+                    store.profile(key),
+                    store.lot(key),
+                    store.frontages(key).to_vec(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for angle in [0.0, 0.35, 0.8] {
+        let (graph, mut zoning) = painted_road(angle);
+        let lots = zoning
+            .derive_cell_lots(&graph, extent(), &[size()], |_, _| false)
+            .created;
+        for (index, id) in lots.iter().enumerate() {
+            assert!(zoning.occupy_parcel(id.raw(), index));
+        }
+        serve(&graph, &mut zoning);
+        zoning.prepare_generated_cells(&graph, extent().expanded(1024.0), |_| false);
+        let released = lots[1];
+        let lot = zoning.parcels.get(released).unwrap().cell_lot().unwrap();
+        let frame = zoning.cells.frame(lot.origin().grid).unwrap();
+        assert!(zoning.clear_parcel_occupancy(released.raw()));
+        assert!(zoning.has_dirty_cell_lots());
+        // Before `SIM-02-K` part 5 the release also invalidated the lot's halo of generated
+        // cells, which the region then regenerated.
+        let mut regenerated = zoning.clone();
+        regenerated.cells.invalidate_generated_cells(
+            CellBounds::from_points(lot.corners(frame))
+                .expanded((CELL_DEPTH + 1) as f64 * f64::from(zoning.config.zone_cell_m)),
+        );
+        let (kept_roads, kept) = serve(&graph, &mut zoning);
+        let (regenerated_roads, again) = serve(&graph, &mut regenerated);
+        assert_eq!(
+            kept_roads, 0,
+            "angle {angle}: the release regenerated cells"
+        );
+        assert!(regenerated_roads > 0, "angle {angle}");
+        assert_eq!(format!("{kept:?}"), format!("{again:?}"), "angle {angle}");
+        assert_eq!(cells(&zoning), cells(&regenerated), "angle {angle}");
+        assert_eq!(zoning.cells.revision(), regenerated.cells.revision());
+        assert_eq!(
+            format!("{:?}", zoning.parcels.parcels()),
+            format!("{:?}", regenerated.parcels.parcels())
+        );
+        assert!(zoning.parcels.get(released).unwrap().is_available());
+    }
+}
+
+#[test]
 fn erased_split_grid_can_be_undone_after_empty_cells_are_regenerated() {
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::network::{TransitNetwork, topology};
