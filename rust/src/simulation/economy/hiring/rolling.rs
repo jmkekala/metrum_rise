@@ -48,6 +48,14 @@ pub(crate) const SLACK_SLOTS: u64 = 96;
 /// (`SIM-02-K`).
 pub(crate) const REMOVAL_WINDOW_START: u64 = 4 * SLOTS_PER_MINUTE;
 
+/// First slot of the hour at which a finished census's book is prepared for the planning slots
+/// of the hour it serves (`SIM-02-K`): minute 59's first slot. Every census refills its book,
+/// whose site rows were last merged and laid out two hours before, at its previous planning;
+/// preparing it this late leaves few building changes for the residential slot to merge again,
+/// and a game minute before that slot, so at 32× the two never share a frame.
+pub(crate) const PLANNING_PREPARATION_SLOT: u64 = SLOTS_PER_HOUR - SLOTS_PER_MINUTE;
+const _: () = assert!(PLANNING_PREPARATION_SLOT >= CENSUS_WINDOW_START);
+
 /// Whether building and household swap-removes may run at absolute `slot` (`SIM-02-J`): slots
 /// [`REMOVAL_WINDOW_START`] to [`CENSUS_WINDOW_START`] − 1 of its hour. A removal earlier in the
 /// hour would invalidate the published books the planning slots read; one in the census window
@@ -190,7 +198,8 @@ impl RollingCensus {
         self.progress.is_done()
     }
 
-    /// The finished census's book while no planning pass has prepared it (`SIM-02-K`). O(1).
+    /// The finished census's book while no planning pass has prepared it since the census
+    /// started (`SIM-02-K`). O(1).
     pub(crate) fn unprepared_finished_book(&mut self) -> Option<&mut JobFunding> {
         (self.progress.is_done() && !self.funding.planning_prepared).then_some(&mut self.funding)
     }
@@ -228,6 +237,8 @@ impl RollingCensus {
             key: Some(key),
         });
         self.funding.published = Some(key);
+        // The census refills the book: it is prepared again once finished (`SIM-02-K`).
+        self.funding.planning_prepared = false;
         self.complete_on_load = false;
     }
 

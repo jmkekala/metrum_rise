@@ -23,14 +23,16 @@ census's whole steps in slices). Part 4 (agent tick) has two commits done (lane 
 across appends and swap-removes with interleaved movement shards; then commute departures leaving
 over their minute's slots, the unused per-edge congestion deleted, save format 105, and the first
 tick after loading prepared at load), and part 5 (planning slots)
-has five commits done (planning storage estimates from free lots, one downgrade scan, and
+has six commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
 slots' trips on one owned route scratch that loading prepares with the job search's scratch;
 then the hour's four planning slots a game minute apart, with removals, departures and level
 changes from slot 64, saves that keep the admission and removal diagnostics (save format 104),
 and a census storage copy that keeps the live books' arena capacity; then a building leaving a
-lot it keeps derives the lots without regenerating the lot's generated cells).
+lot it keeps derives the lots without regenerating the lot's generated cells; then each
+finished census's book prepared for planning at minute 59 of the hour before it serves, while
+the zone index is current, with large row growth filled on the pool).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -736,7 +738,8 @@ about 90 MB of lanes at 100k after every road edit.
   census is current. The census is a pure function of the copy and the network, so a load
   recomputes a current census whole, whatever step it had reached; a stale one restarts at the
   next window slot, or runs at slot 0. Loading also gives census storage that holds no census a
-  prepared copy of the live books (`SIM-02-K` part 5).
+  prepared copy of the live books (`SIM-02-K` part 5), and a finished census's book is prepared
+  for planning from slot 944 of the hour before it serves (sixth commit).
 - **Readers:** buildings take funded jobs and activity from their copies at their phases, and
   the demand snapshot sweep reads the same copies. Restock and visit requests read only the
   published census's walking proofs and household access rows, and job search the funded jobs
@@ -941,7 +944,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    Planned for all of K4: about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4
    and 2.5 ms. Part 5 (planning slots) ran before part 4's remaining items, because the planning
    slots set the maximum at every tier.
-5. **K5, planning slots** (five commits done 2026-10-21; results sections, part 5). Measured first:
+5. **K5, planning slots** (six commits done 2026-10-21; results sections, part 5). Measured first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
    not those scans. Done: storage estimates from free lots; one downgrade scan in the actions slot;
@@ -963,10 +966,22 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    regenerating the lot's generated cells, which reproduced them, so the 30k 32× minute-4 frames
    fall from 6.9–8.7 to at most 5.7 ms (fifth commit; the 1× render-snapshot spikes were
    attributed to preemption of a pool worker, not snapshot work). 10k and 30k now meet 8 ms at
-   both speeds in this run. Left, with findings in [Decided while
-   unattended](#decided-while-unattended):
-   - the per-slot setup and the site-row layout, which set the 30k 32× maximum (6.8 ms, the
-     hour's first frame) and the 100k 1× hour frames (about 16.4 ms);
+   both speeds in this run. Each finished census's book is then prepared for planning at minute
+   59's first slot of every hour, once its census is done (the window-slot preparation a new
+   world's first census already had), so the residential slot no longer merges two hours of
+   site-row changes and lays the supplier and buyer indices out again; the preparation waits
+   while the zone index is stale; and large row growth is filled on the pool (sixth commit): the
+   residential slot falls from 8.95 to 4.87 ms at 100k and from 2.59 to 1.37 ms at 30k, the
+   actions slot from 7.03 to 6.46 ms at 100k (diagnostic), and the 30k 32× hour frames are 5.1–5.6
+   ms. The 100k 1× target is not reached: planning frames up to about 12 ms, set by every
+   lending's O(B/p) setup. Nothing in the way needs a spec decision. Left, with findings in
+   [Decided while unattended](#decided-while-unattended):
+   - pass rows kept across a book's lendings, which also removes most of the construction epoch's
+     second preparation;
+   - border arrival costs, reusing the route cache's border sweeps;
+   - maintained workforce and calendar totals;
+   - zone lists for existing buildings and lots;
+   - splitting the minute-59 preparation;
    - the job board and destination fallbacks;
    - the per-building commute-quote clear (narrowing it changes which quotes are reused).
 
@@ -2601,6 +2616,8 @@ on a fresh `$ARTIFACTS` directory.
      prepares the live books (`DemandSystem::prepare_planning_books`), and a finished census
      whose book no planning pass has prepared (the first after loading, on fresh storage;
      `JobFunding::planning_prepared`) is prepared for the hour it serves in the next window slot.
+     Since the sixth commit every census start clears its book's flag, so this runs every hour,
+     from slot 944 (minute 59's first slot), while the zone index is current.
      The books are lent and restored exactly as a planning slot does (test builds compare their
      fingerprints), and what is prepared is derived and keyed by the city's revisions.
 - **Planning slot costs** (diagnostic; `PERF-07` city, 1×, `RAYON_NUM_THREADS=8`, pinned, one run
@@ -2735,7 +2752,7 @@ on a fresh `$ARTIFACTS` directory.
      storage held: what it reuses from earlier content (household quote prefixes, retained
      customer accounts, site rows, walking proofs) is keyed by exactly its inputs, as with the
      previous census in an uninterrupted game. The window-slot preparation of a fresh census book
-     stays for a new world's first census. `JobFunding` and three of its parts derive `Clone`.
+     stays for a new world's first census (every census since the sixth commit). `JobFunding` and three of its parts derive `Clone`.
   2. **Spare row capacity** (`utils/storage.rs`: `reserve_rows`, `resize_rows`, `grow_rows`,
      `spare_capacity`). Storage indexed by rows that follow the city, and the arenas grown by
      request whose capacity also sizes their journals, keep spare capacity: when fewer than
@@ -3326,6 +3343,160 @@ on a fresh `$ARTIFACTS` directory.
   Each build prepares its own `PERF-07` cities; this build's equal the control's table by table
   except the version row and the unordered row order of `lane_connections` (compared at 10k).
 
+#### `SIM-02-K`, part 5 — the census's book prepared at minute 59 (2026-10-21, sixth commit)
+
+- **Attribution first.** Every planning slot was timed per phase on part 4's second commit (the
+  `economy_phases` channel, which already splits each slot into its setup phases and the site
+  preparation into its row merges, layouts and storage; diagnostic, pinned, 8 workers; 100k 1×
+  over 250 game minutes and 30k 32× over the full day on the `PERF-07` cities). Steady hours,
+  slot means in ms (maxima in parentheses):
+
+  | Tier | Phase | Residential | Commercial | Industrial | Actions |
+  | --- | --- | --- | --- | --- | --- |
+  | 100k 1× | whole slot | 8.95 (9.91) | 3.85 (4.14) | 4.66 (4.96) | 7.03 (7.19) |
+  | 100k 1× | pass rows (`begin_live_pass`) | 0.77 | 0.83 | 0.84 | 0.86 |
+  | 100k 1× | snapshots (front, live workforce, compose) | 0.52 | 0.59 | 0.50 | 0.51 |
+  | 100k 1× | site preparation | 4.27 | 0.77 | 0.78 | 0.81 |
+  | 100k 1× | · of it supplier and buyer row merges | 1.27 | — | — | — |
+  | 100k 1× | · of it supplier and buyer layouts | 2.21 | — | — | — |
+  | 100k 1× | queued projects' replay | 1.55 | 0.32 | 0.33 | 0.33 |
+  | 100k 1× | planning (calendar, existing buildings, lots, decisions) | 1.79 | 1.29 | 2.17 | 1.13 |
+  | 100k 1× | admissions / spawn queue and construction epoch | — | — | — | 1.04 / 2.29 |
+  | 30k 32× | whole slot | 2.59 (2.73) | 1.10 (1.33) | 1.58 (2.05) | 1.40 (2.26) |
+  | 30k 32× | site preparation | 1.43 | 0.24 | 0.23 | 0.23 |
+  | 30k 32× | · of it row merges and layouts | 1.19 | — | — | — |
+  | 30k 32× | queued projects' replay | 0.34 | 0.10 | 0.10 | 0.10 |
+
+  The residential slot is the only one that merges site rows and lays them out again: a book is
+  lent in every slot of one hour and refilled by the census of the next, so its residential slot
+  finds rows two hours old (every building and occupancy change of two hours) and a census book
+  whose row base and port offsets moved, and rebuilt both layouts (supplier
+  `SupplierCandidateIndex`, buyer port index) in full. The later slots of the hour found the rows
+  current (no building change between minutes 0 and 3: removals start at minute 4 and the queue's
+  construction starts from minute 4 too). Every slot pays the same O(B/p) setup, about 3.8 ms at
+  100k, which is the whole commercial slot (its decisions take 0.002 ms). Finer timing points in
+  a test build (100k, ms per lending of the books): pass rows 0.26–0.30 (funded operations) plus
+  0.49–0.51 (operation sites); owner storage 0.36–0.38 (business book), 0.12 (input book), 0.07
+  (customer book); live workforce 0.45–0.56; workforce calendar reset 0.39–0.42; actions slot
+  admissions 1.19, construction epoch 2.28 (begin, front and compose 0.62, site preparation 0.79,
+  replay 0.85).
+- **What changed:**
+  1. **Each finished census's book is prepared for planning before its hour.** A census start
+     now clears its book's `planning_prepared` (`RollingCensus::begin`), so the existing
+     window-slot preparation (`SimCore::prepare_census_book_for_planning`, which lends the books
+     once as a planning slot does) runs for every census, every hour, not only for a new world's
+     first: from minute 59's first slot (`PLANNING_PREPARATION_SLOT`, slot 944) once the census
+     is done. It merges the two hours' site-row changes and lays both indices out on the refilled
+     book, so the residential slot at slot 0 finds them current unless a building or occupancy
+     changed in between, and then merges only those changes. Minute 59 leaves only that minute's
+     events (a construction start or completion) to invalidate the rows, and is a game minute
+     before the residential slot, so at 32× the two never share a frame. A census that finishes
+     later (the window's last slot gets what remains) is prepared at its next window slot, or by
+     its residential slot as before. What is prepared is derived and keyed by the city's
+     revisions, as for the first-census preparation, so no result changes. One input of the
+     preparation is not derived: it prepares the building site index first, and a stale zone
+     index's rebuild also resets the vacancy lists to building order, which admission's
+     tie-breaks read (`ALLOC-03`; a load re-marks a saved stale index for the same reason). The
+     window therefore waits while the zone index is stale
+     (`BuildingAllocator::zone_index_needs_rebuild`) and prepares at the first window slot after
+     the index's own reader rebuilt it.
+  2. **Large row growth is filled on the pool** (`utils/storage.rs`: `resize_rows`,
+     `grow_rows`). A planning pass truncates the owner rows it appended to its three books
+     (business owners, finance, buyer heads and tails, staging; the input book's owner receipt
+     chains; the customer book's owners) and the next pass appends them again: about 190,000 rows
+     an array at 100k, written by one thread in 0.07–0.38 ms a book. An append of at least 16,384
+     rows now uses `par_extend` with `rayon::iter::repeat_n`, so the rows equal a serial fill's.
+     O(appended rows / p).
+- **Targeted costs** (diagnostic, same cities, pinned, 8 workers, steady hours; ms):
+
+  | Tier | Cost | Before | First change | Both changes |
+  | --- | --- | --- | --- | --- |
+  | 100k 1× | residential slot | 8.95 (9.91) | 5.13 (5.15) | 4.87 (4.88) |
+  | 100k 1× | · its site preparation | 4.27 | 0.79 | 0.47 |
+  | 100k 1× | commercial / industrial slot | 3.85 / 4.66 | 3.79 / 4.73 | 3.71 / 4.54 |
+  | 100k 1× | actions slot | 7.03 | 7.13 | 6.46 |
+  | 100k 1× | census book's preparation (slot 944, own slot) | — | 5.1–6.4 | 4.4–6.4 |
+  | 30k 32× | residential slot | 2.59 (2.73) | 1.40 (1.65) | 1.37 (1.45) |
+  | 30k 32× | census book's preparation | — | 1.72 (2.03) | 1.4–2.0 |
+
+  (Diagnostic builds with timing points; the zone-index guard came after these runs.) In every
+  steady hour of these runs the residential slot found the site rows and layouts current (no row
+  merge or layout ran in it). Still in every lending at 100k: pass rows 0.8, live workforce 0.5,
+  calendar 0.4, existing buildings 0.5–0.78, lot scan 0.27–0.94, snapshot and storage about 0.5.
+  A full day with the final code and more timing points (100k and 30k 1×; every hour's book was
+  prepared at slot 944, and no hour waited for a stale zone index) attributes the rest: the
+  residential slot's replay of the constructing buildings is their re-proof, 1.19 ms for 21
+  buildings against 0.14 ms for the same buildings in the commercial slot (30k: 0.29 against
+  0.05 ms for 7), because the hour's first quotes on the book are cold; the actions slot's
+  admissions take 1.17 ms, of it 1.13 ms `BorderArrivalCosts::new` (one CCH sweep per border), a
+  function of the network alone. Two census-book preparations of these runs took far longer than
+  their phases (14.4 ms with 5.0 ms inside the timed phases at 100k, 11.2 ms at 30k 1× just after
+  loading, with 0.7 ms of work in a stretched parallel phase), on hours that took 5.4 and 1.7–1.8
+  ms in a run of the same simulation: the preemption pattern of `PERF-07`.
+- **Equivalence** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, no failures; every `envelope` metric and
+  every burst share bit-identical to part 4's second commit's gate report; determinism shows no
+  differences (repeat, save/reload continuation, 1 and 3 workers; 10k, three days). The window
+  preparation runs every hour of every gate city, and the reload checks load saves taken across
+  the window and the planning span.
+
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with part 4's second commit as
+  control: hour means 1.44–1.46, 4.92–4.98, 8.46–8.94 and 28.03–28.34 ms (control 1.57–1.58,
+  6.03–6.10, 9.06–9.22 and 29.53–29.76): the 30k baseline hour is about 18% cheaper, and the
+  same work-count limits fail.
+
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`
+  against the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day), in one session with part
+  4's second commit as the control, both on copies of the same prepared cities (save format 105,
+  unchanged). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 4.2 (3.2) | 1.11 (1.10) | 1.35 (1.31) | 0.47 (0.48) | 0 (0) |
+  | 10k | 32× | 6.7 (2.9) | 1.97 (1.90) | 2.38 (2.20) | 0.90 (0.89) | 0 (0) |
+  | 30k | 1× | 10.7 (6.3) | 1.83 (1.85) | 2.52 (2.61) | 0.89 (0.91) | 1 (0) |
+  | 30k | 32× | 10.6 (7.0) | 4.77 (5.20) | 5.53 (6.22) | 2.81 (2.83) | 1 (0) |
+  | 100k | 1× | 13.7 (18.0) | 6.14 (6.14) | 9.88 (9.74) | 4.05 (4.05) | 168 (139) |
+  | 100k | 32× | 25.8 (27.6) | 20.76 (21.97) | 23.29 (25.22) | 13.66 (13.69) | 2,700 (2,700) |
+
+  **Recheck** (the coordinator, the same session, `--perf07-tiers 10000,30000`, two rounds
+  alternating the control and this build, each on a fresh copy of the same prepared cities,
+  every lock held, no backup running). Max ms, round 1 / round 2, control in parentheses: 10k 1×
+  3.59 / 3.02 (7.24 / 3.86), 10k 32× 2.44 / 2.55 (3.21 / 3.13), 30k 1× 5.59 / 7.21 (7.50 / 7.48),
+  30k 32× 5.86 / 6.35 (6.85 / 8.57); p99 4.77–4.84 ms at 30k 32× (5.15–5.22). This build's
+  maxima are at or below the control's in every tier and round, so the first run's 6.7, 10.7
+  and 10.6 ms were stalls, as attributed; 10k and 30k meet 8 ms at both speeds in all four of
+  this build's days.
+
+  Every gate limit passes for both builds. **100k 1×:** the hour frames are gone from the worst
+  frames (control 14.3–18.0 ms at :00, of it 8.8–11.1 ms the hour's slots); the maximum is now a
+  removal frame at minute 4 (13.7 ms), then minute-3 actions frames (12.0 ms, slot work 6.8–7.2).
+  Frames over 8 ms rise from 139 to 168, because the census book's preparation adds about one
+  9–10 ms frame an hour (an ordinary frame plus about 5 ms), each below the old hour frames; p99
+  is equal and p99.9 1.4% higher. **30k 32×:** p99 −8% and p99.9 −11%; the hour frames fall from
+  6.0–7.0 ms to 5.1–5.6 ms. The maxima at 10k 32× (6.7 ms), 30k 1× (10.7 ms) and 30k 32×
+  (10.6 ms) did not reproduce in the run's repeat or in a day with per-thread scheduler
+  statistics, whose slow frames all held pool-worker run-queue waits of 0.4–3.7 ms: the
+  simulation is deterministic, so a frame that is 10 ms in one run and under 5 ms in another
+  holds the same work plus a stall, the preemption pattern of
+  [Frame budget](#frame-budget-perf-07). Means are level everywhere. Load times are level (100k
+  18.8 against 18.6 s).
+- **Tests.** 2,546 release and 2,546 debug library tests (three new) and the 4 growth
+  integration tests pass; clippy adds nothing. `./run.sh --test` in an isolated profile passes
+  with no script errors (the change touches `nodes/sim/core`, which the bridge's load and save
+  tests exercise). New: `a_stale_zone_index_defers_the_census_books_preparation`,
+  `census_books_prepared_in_the_window_play_as_books_the_planning_slots_prepare` (two games
+  loaded from one save; one marks each finished census book prepared so its residential slot
+  prepares it as before; both are compared every frame for three game hours, and the window
+  prepared at least two books in the first game only), and
+  `large_row_growth_fills_on_the_pool_as_a_serial_fill_does`.
+- **Build identity:** the gate, `PERF-07` and the test suites ran on the committed sources built
+  with rustc 1.99.1 (`$TEST_BINARY`); the control is part 4's second commit's gate binary.
+- **Save format:** 105, unchanged; nothing new is saved (`planning_prepared` is derived; a loaded
+  census book is prepared at load as before).
+- **Memory:** unchanged; the census book's planning storage was already kept between hours.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -3394,7 +3565,8 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
    remains an option for `SIM-02-K` if a zone slot grows past its budget. `SIM-02-K` part 5 found
    the slots' cost at 100k to be setup that each split slot would pay again (about 4 ms), not
    decisions (0.1–2 ms), so per-district planning is not reopened; it stays an option for after the
-   setup follows what changed.
+   setup follows what changed. After part 5's sixth commit the 100k slots' decisions are 0.002–0.35
+   ms of each slot, so slicing them is not needed, and a split slot would pay the setup again.
 2. **Hot dense references.** Resolved in `SIM-02-B`; see
    [Entity handles](#entity-handles).
 3. **Pure-job latency and pool size** per job.
@@ -4918,8 +5090,8 @@ alternatives and the evidence. The user reviews these on return.
   (`PERF-07` load 18.6 against 18.5 s), and the census book's preparation takes one window slot
   once per fresh book: 34.5 ms at 100k and 11.5 ms at 30k (diagnostic), the new maxima at 30k
   and 100k 1×. Since the second commit a load gives empty census storage a prepared copy of the
-  live books and prepares a census the load finished, so the window-slot preparation serves only a
-  new world's first census.
+  live books and prepares a census the load finished, so the window-slot preparation served only a
+  new world's first census until the sixth commit made it run every hour.
 - **`SIM-02-K` part 5 — what is left in the planning slots (findings).** (1) The census book's
   preparation after loading (34.5 ms at 100k, 11.5 ms at 30k, once): it is the cold storage
   growth (owner and supply storage 5.6 ms at 30k, about 13 ms at 100k), the full site-row build
@@ -5260,6 +5432,81 @@ alternatives and the evidence. The user reviews these on return.
   preemption.** All 17 had a pool worker waiting 1.9–4.7 ms for a CPU in that frame, as in the
   entry "`SIM-02-K` part 5 (fifth commit) — the render-snapshot spikes are preemption (findings,
   no code change)".
+- **`SIM-02-K` part 5 (sixth commit) — each census's book prepared for planning at minute 59.**
+  The residential slot was the only planning slot that merged site rows and laid them out (100k
+  4.27 ms of its 8.95: row merges 1.27, layouts 2.21; 30k 1.43 of 2.59; diagnostic): a book is
+  lent in one hour's slots and refilled by the next census, so its residential slot met rows two
+  hours old and a refilled census book whose source base and port offsets had moved, and rebuilt
+  the supplier index and the buyer port index in full. Alternatives: (a) keep one set of site
+  rows across the census swap (rejected in the entry "`SIM-02-K` part 5 — planning books
+  prepared at load and when a fresh census book finishes": the business book's port maps belong
+  to its layout; it would also still merge an hour of changes and lay out again every hour,
+  because the refilled book's offsets move); (b) incremental layouts that insert and remove only
+  the changed rows in both indices: source handles are numbered after the census's live slots, so
+  every append shifts them, a deep change in two books (the planned "site rows kept
+  incrementally" item, left); (c) prepare in the window slot right after the census finishes, as
+  for a new world's first census: the census plans to finish 96 slots early, so up to six game
+  minutes of construction starts (one a minute from minute 4 while the queue lasts) would
+  invalidate the rows and layouts again; (d) prepare at the hour's last slot: at 32× it would
+  share a frame with slot 0's residential slot; (e) slice the preparation over two slots
+  (supplier rows, buyer rows): two lendings, each with its pass rows, for about 2 + 2 ms, not
+  needed while the actions slot is the larger frame. Chosen: a census start clears its book's
+  `planning_prepared`, and the existing window-slot preparation runs from minute 59's first slot
+  (`PLANNING_PREPARATION_SLOT`, 944) once the census is done; a census done later is prepared at
+  its next window slot or by its residential slot, as before. Minute 59 leaves only that
+  minute's events (its construction start, a completion) to invalidate the rows, and is a game
+  minute before slot 0, so at 32× the two are in different frames. Evidence: in every steady hour
+  of the diagnostic runs (100k 1× over 250 minutes, 30k 32× over the day) the residential slot
+  found its rows and layouts current; the preparation takes 4.4–6.4 ms at 100k and 1.4–2.0 ms at
+  30k in its own slot; the envelope and bursts are bit-identical to part 4's second commit; a new
+  test plays a game whose window prepares the books against one whose residential slots prepare
+  them, frame by frame for three hours. Results never depend on when the derived rows are
+  prepared: they are keyed by the city's revisions (the first-census preparation's argument, now
+  exercised every hour).
+- **`SIM-02-K` part 5 (sixth commit) — the preparation waits while the zone index is stale.** The
+  preparation first prepares the building site index, and a stale zone index's rebuild also
+  resets the vacancy lists to building order, which admission's tie-breaks read (`ALLOC-03`; a
+  load re-marks a saved stale index for the same reason). Alternative: let the window rebuild the
+  index; it would move the vacancy order at minute 59 instead of where the index's own reader
+  puts it, a gameplay change. Chosen: the window waits while
+  `BuildingAllocator::zone_index_needs_rebuild` holds and prepares at the first window slot after
+  the index's own reader rebuilt it; a book still unprepared at its hour is prepared by its
+  residential slot. A new test checks that a stale index defers the preparation. No hour of the
+  full-day runs waited.
+- **`SIM-02-K` part 5 (sixth commit) — large row growth filled on the pool.** Every pass truncates
+  the owner rows it appended to its three books (the business book's owners, finance, buyer heads
+  and tails and staging; the input book's owner receipt chains; the customer book's owners) and
+  the next pass appends them again: about 190,000 rows an array at 100k, 0.56 ms of serial fills
+  a lending (business 0.37, input 0.12, customer 0.07; timing points in a test build).
+  Alternatives: keep the appended rows across passes, restoring them to their defaults through a
+  journal of the rows a pass wrote (the books' row counts would then differ between passes, which
+  the census refill, the test-build fingerprints and every reader of the lengths see; not taken);
+  keep the serial fill. Chosen: `resize_rows` and `grow_rows` append 16,384 rows or more with
+  `par_extend` over `rayon::iter::repeat_n`; every appended row is the fill value, so the rows
+  equal a serial fill's. The fills fell to 0.15, 0.08–0.11 and 0.03 ms a lending; the actions
+  slot, which lends twice, by 0.6 ms.
+- **`SIM-02-K` part 5 (sixth commit) — the 100k 1× slot target not reached (findings).** After
+  this commit (diagnostic, 100k, steady hours): residential 4.87 ms, commercial 3.71, industrial
+  4.54, actions 6.46 and the census book's preparation 4.4–6.4 ms in their own slots, planning
+  frames up to about 12 ms. Every lending pays about 3 ms of O(B/p) setup at 100k, each part a
+  parallel pass over about 60,000 buildings or 45,000 households at 0.3–0.9 ms: the pass's
+  funded operations (0.24–0.31) and operation sites (0.49–0.55), the live workforce (0.45–0.56),
+  the workforce calendar's reset (0.39–0.42), the zone's existing buildings (0.48–0.78), the lot
+  scan (0.27 commercial, 0.86–0.94 industrial), and the snapshot and storage (about 0.5). The
+  decisions are 0.002–0.35 ms. Slot-specific: the actions slot's admissions (1.17 ms, of it 1.13
+  ms `BorderArrivalCosts::new`, one CCH sweep per car-connected border, which depends on the
+  network alone and could reuse the route cache's border sweeps, kept per CCH generation and
+  metric revision) and its construction epoch (1.9 ms: a second lending with its own pass rows,
+  front, compose and site storage, 1.05 ms, and its replay, 0.84 ms); the residential slot's
+  re-proof of the constructing buildings (1.19 ms for 21 buildings, against 0.14 ms for the same
+  buildings in the next slot: the hour's first quotes on the book are cold). None of these needs a
+  decision of this document: the next step keeps them by what changed — pass rows kept across the
+  lendings of a book (which also removes most of the construction epoch's second preparation;
+  keyed by the book's census, the building log, the entrance revision, policy and the freight
+  price phase, with the live rows a pass wrote recomputed), border arrival costs reusing the
+  route cache's border sweeps, workforce and calendar totals maintained by the job, household and
+  building mutators, and the zone lists for existing buildings and free lots. Slicing the
+  decisions (open question 1) would not help: each split slot would pay the setup again.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

@@ -391,7 +391,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   removals, departures and level changes start at minute 4, so at 32× no frame carries two of
   them (`SIM-02-K` part 5, save format 104). A building leaving a lot it keeps no longer
   regenerates the lot's cells, so the 30k 32× minute-4 frames fall to at most 5.7 ms; the 1×
-  render-snapshot spikes are scheduler preemption, not snapshot work. Commute departures now leave over
+  render-snapshot spikes are scheduler preemption, not snapshot work. Each census's planning books are now prepared at minute 59 of the hour
+  before they serve, so the hour's residential planning slot no longer rebuilds their site rows:
+  about 4 ms less at 100k and 1.2 ms less at 30k (`SIM-02-K` part 5). Commute departures now leave over
   their minute's slots instead of all at its first, so the 100k departure waves no longer stall
   the agent tick, and the unused per-edge congestion value is gone (`SIM-02-K` part 4, save
   format 105).

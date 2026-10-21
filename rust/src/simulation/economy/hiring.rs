@@ -35,8 +35,8 @@ mod steps;
 
 pub(crate) use inputs::{CensusInputs, FILL_SLOTS, FrozenCensusParameters, SavedCensusInputs};
 pub(crate) use rolling::{
-    CENSUS_WINDOW_START, CensusKey, REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus,
-    StructureRevisions, WindowAction, removals_allowed,
+    CENSUS_WINDOW_START, CensusKey, PLANNING_PREPARATION_SLOT, REMOVAL_WINDOW_START, RollingCensus,
+    SavedRollingCensus, StructureRevisions, WindowAction, removals_allowed,
 };
 pub(crate) use steps::{CensusProgress, StepWork};
 #[cfg(test)]
@@ -95,9 +95,9 @@ pub(crate) struct JobFunding {
     /// The live city's key when the census started, for readers that lend its books; `None`
     /// for a census not run on the live city or since invalidated (`SIM-02-I`).
     pub(crate) published: Option<CensusKey>,
-    /// Whether a planning pass, or its preparation alone, has lent these books since the
-    /// storage was created (`SIM-02-K`): their site rows and planning storage then persist
-    /// across censuses, and a fresh book is prepared before it is published.
+    /// Whether a planning pass, or its preparation alone, has lent these books since a census
+    /// last started refilling them (`SIM-02-K`): their site rows and planning storage persist
+    /// across censuses, and a finished census's book is prepared again before it is published.
     pub(crate) planning_prepared: bool,
     border_nodes: Vec<u32>,
     quoted_border_nodes: Vec<u32>,

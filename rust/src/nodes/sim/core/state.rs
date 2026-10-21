@@ -35,7 +35,9 @@ use crate::simulation::economy::demand::{
     StartRefusal,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
-use crate::simulation::economy::hiring::{CENSUS_WINDOW_START, FrozenCensusParameters};
+use crate::simulation::economy::hiring::{
+    CENSUS_WINDOW_START, FrozenCensusParameters, PLANNING_PREPARATION_SLOT,
+};
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::extraction::ResourceExtractionSystem;
@@ -1295,7 +1297,13 @@ impl SimCore {
         if slot % SLOTS_PER_HOUR < CENSUS_WINDOW_START {
             return;
         }
-        self.prepare_census_book_for_planning(slot);
+        // A stale zone index waits for its own reader: its rebuild resets the vacancy order
+        // admission reads, which the preparation must not move (`SIM-02-K`).
+        if slot % SLOTS_PER_HOUR >= PLANNING_PREPARATION_SLOT
+            && !self.allocator.zone_index_needs_rebuild()
+        {
+            self.prepare_census_book_for_planning(slot);
+        }
         if self
             .households
             .census_starts_at(slot, self.households.census_key(&self.transit_network))
@@ -1378,14 +1386,19 @@ impl SimCore {
         }
     }
 
-    // A finished census whose book no planning pass has prepared (a new world's first census,
-    // on fresh storage) is prepared for the hour it serves in the next window slot, not by the
-    // planning slot that first lends it (`SIM-02-K`). O(1) otherwise.
+    // A finished census whose book no planning pass has prepared since the census started is
+    // prepared for the hour it serves, from minute 59's first slot (`PLANNING_PREPARATION_SLOT`)
+    // in the window while the zone index is current, and at load, not by the planning slot that
+    // first lends it (`SIM-02-K`): the census refilled a book whose site rows were laid out two
+    // hours before. O(1) otherwise.
     fn prepare_census_book_for_planning(&mut self, slot: u64) {
         let key = self.households.census_key(&self.transit_network);
         let Some(funding) = self.households.unprepared_census_book() else {
             return;
         };
+        let timing = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(Instant::now);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
         let (_, minute_of_day) = super::schedule::slot_calendar(next_hour(slot));
@@ -1400,6 +1413,14 @@ impl SimCore {
             &mut self.logistics,
             minute_of_day,
         );
+        if let Some(start) = timing {
+            debug_log!(
+                "economy_phases",
+                "census_book_preparation_detail slot_of_hour={} ms={:.3}",
+                slot % SLOTS_PER_HOUR,
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 
     /// Slot `slot`'s chunk of the hour-long demand snapshot sweep (`SIM-02-I`).

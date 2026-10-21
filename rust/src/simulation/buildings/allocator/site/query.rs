@@ -106,9 +106,17 @@ impl BuildingAllocator {
         if self.building_sites.len() != self.buildings.len() {
             self.rebuild_building_site_clients(zone_cell_m);
         }
-        if self.dirty_index || (self.building_chunks.is_empty() && !self.buildings.is_empty()) {
+        if self.zone_index_needs_rebuild() {
             self.rebuild_zone_index();
         }
+    }
+
+    /// Whether [`Self::prepare_building_site_query_index`] would rebuild the zone index. The
+    /// rebuild also resets the vacancy lists to building order, which admission reads, so work
+    /// that may run before the index's next reader (the census book's preparation for planning,
+    /// `SIM-02-K`) waits until that reader has rebuilt it. O(1).
+    pub(crate) fn zone_index_needs_rebuild(&self) -> bool {
+        self.dirty_index || (self.building_chunks.is_empty() && !self.buildings.is_empty())
     }
 
     pub(crate) fn site_world_bounds(&self, building_idx: usize) -> Option<(f32, f32, f32, f32)> {

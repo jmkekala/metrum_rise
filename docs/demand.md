@@ -422,7 +422,10 @@ are regenerated; other rows move unchanged, and parcel rows are renumbered when 
 count changes. Registry, zoning-overlay, parcel-layout, lane and CCH changes regenerate every row.
 Regenerated rows still reuse entrance geometry only when exact door coordinates, frontage
 edge/side, lane revision and CCH generation match. Rows keep the full rebuild's owner/key order,
-so candidate order, financing and job-lock expiry are unchanged.
+so candidate order, financing and job-lock expiry are unchanged. Each census's book is merged
+and laid out again at minute 59's first slot of the hour before the one it serves, once the
+census is done and while the zone index is current, so the residential slot finds its rows
+current unless a building or occupancy changed in that last minute (`SIM-02-K` part 5).
 
 Each planning slot plans directly on the live customer, business and input books of the census
 published at the hour's first slot. A later slot first offers the residential slot's homes to
@@ -565,6 +568,7 @@ They are rebuilt after load, never saved.
   is reused across passes. It is prepared at load and, for the census storage, on a copy of the
   live books made at load, so no planning slot builds it from cold. Row storage that follows the
   city keeps spare capacity, so an appended building does not reallocate it in a planning slot
-  (`SIM-02-K` part 5). Its
+  (`SIM-02-K` part 5). A pass's appended owner rows are filled on the pool when they number
+  16,384 or more. Its
   warm-start estimates count new projects on free lots only; a shortfall replays the proposal
   after growing storage exactly, so estimates never change a result.

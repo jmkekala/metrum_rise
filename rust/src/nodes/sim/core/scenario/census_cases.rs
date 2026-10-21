@@ -414,6 +414,85 @@ fn route_scratch_prepared_at_load_runs_as_cold_scratch_does() {
     );
 }
 
+// Every finished census's book is prepared for planning again from minute 59's first slot
+// (`SIM-02-K`), so the residential slot finds its site rows laid out: a game whose window
+// prepares the refilled books plays as one whose planning slots prepare them.
+#[test]
+fn census_books_prepared_in_the_window_play_as_books_the_planning_slots_prepare() {
+    let source = busy_town();
+    let saved = std::env::temp_dir().join(format!(
+        "metrum-census-book-preparation-{}.sqlite",
+        std::process::id()
+    ));
+    let path = saved.to_str().unwrap();
+    source.core.save_game_internal(path, None).unwrap();
+    let load = || {
+        let mut loaded = GrowthScenario::starter_town();
+        loaded.core.load_game_internal(path).unwrap();
+        loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+        loaded
+    };
+    let (mut window, mut planning) = (load(), load());
+    std::fs::remove_file(&saved).unwrap();
+    let fingerprint = |core: &SimCore| {
+        (
+            core.treasury.balance.to_bits(),
+            core.allocator.buildings.len(),
+            core.agents.work_building.clone(),
+            core.households
+                .households
+                .iter()
+                .map(|household| (household.budget.to_bits(), household.employed_adults))
+                .collect::<Vec<_>>(),
+            core.logistics.shipments.len(),
+            core.pending_demand_spawns.len(),
+        )
+    };
+    // Window preparations of a finished census's book in each game.
+    let prepared_in_window = |core: &SimCore, before: bool| {
+        let census = &core.households.census_run;
+        usize::from(census.is_done() && !before && census.funding().planning_prepared)
+    };
+    let (mut window_preparations, mut planning_preparations) = (0, 0);
+    let end = window.core.time.absolute_slot() + 3 * SLOTS_PER_HOUR;
+    while window.core.time.absolute_slot() < end {
+        // The other game marks each finished book prepared, so its residential slot prepares it.
+        if let Some(book) = planning.core.households.unprepared_census_book() {
+            book.planning_prepared = true;
+        }
+        let before = [&window, &planning]
+            .map(|game| game.core.households.census_run.funding().planning_prepared);
+        window.core.step_frame(FRAME_DT_S);
+        planning.core.step_frame(FRAME_DT_S);
+        window_preparations += prepared_in_window(&window.core, before[0]);
+        planning_preparations += prepared_in_window(&planning.core, before[1]);
+        assert_eq!(fingerprint(&window.core), fingerprint(&planning.core));
+    }
+    assert!(window_preparations >= 2, "{window_preparations}");
+    assert!(planning_preparations < window_preparations);
+}
+
+// The window's preparation never rebuilds a stale zone index (`SIM-02-K`): the rebuild resets
+// the vacancy order admission reads, so it waits for the index's own reader.
+#[test]
+fn a_stale_zone_index_defers_the_census_books_preparation() {
+    use crate::simulation::economy::hiring::PLANNING_PREPARATION_SLOT;
+    let mut scenario = busy_town();
+    let core = &mut scenario.core;
+    step_to_chunk(core, PLANNING_PREPARATION_SLOT - 1);
+    let census = &core.households.census_run;
+    assert!(census.is_done() && !census.funding().planning_prepared);
+    let slot = core.time.absolute_slot() + 1;
+    core.allocator.dirty_index = true;
+    core.advance_census(slot);
+    assert!(core.allocator.dirty_index);
+    assert!(!core.households.census_run.funding().planning_prepared);
+    // Its reader rebuilds it; the next window slot prepares the book.
+    core.allocator.rebuild_zone_index();
+    core.advance_census(slot + 1);
+    assert!(core.households.census_run.funding().planning_prepared);
+}
+
 #[test]
 fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_before_publishing() {
     let mut source = busy_town();
