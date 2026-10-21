@@ -35,8 +35,8 @@ mod steps;
 
 pub(crate) use inputs::{CensusInputs, FILL_SLOTS, FrozenCensusParameters, SavedCensusInputs};
 pub(crate) use rolling::{
-    CENSUS_WINDOW_START, CensusKey, PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
-    REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus, StructureRevisions, WindowAction,
+    CENSUS_WINDOW_START, CensusKey, PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_ROWS_SLOT,
+    PLANNING_PREPARATION_SLOT, REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus, StructureRevisions, WindowAction,
     removals_allowed,
 };
 pub(crate) use steps::{CensusProgress, StepWork};

@@ -37,7 +37,7 @@ use crate::simulation::economy::demand::{
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{
     CENSUS_WINDOW_START, FrozenCensusParameters, PLANNING_PREPARATION_REST_SLOT,
-    PLANNING_PREPARATION_SLOT,
+    PLANNING_PREPARATION_ROWS_SLOT, PLANNING_PREPARATION_SLOT,
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -1305,6 +1305,12 @@ impl SimCore {
         // else waits for the second half's slot, so the two never share a 32× frame
         // (`SIM-02-K`).
         let slot_of_hour = slot % SLOTS_PER_HOUR;
+        // Half a minute earlier the book's pass rows, which the supplier half then keeps.
+        if slot_of_hour == PLANNING_PREPARATION_ROWS_SLOT
+            && !self.allocator.zone_index_needs_rebuild()
+        {
+            self.prepare_census_book_pass_rows(slot);
+        }
         if (slot_of_hour == PLANNING_PREPARATION_SLOT
             || slot_of_hour >= PLANNING_PREPARATION_REST_SLOT)
             && !self.allocator.zone_index_needs_rebuild()
@@ -1391,6 +1397,36 @@ impl SimCore {
                 &mut self.logistics,
                 self.time.minute_of_day,
                 false,
+            );
+        }
+    }
+
+    // The pass rows of a finished census's book no planning pass has prepared since the census
+    // started, built for the hour it serves (`PLANNING_PREPARATION_ROWS_SLOT`); the book stays
+    // unprepared for the preparation's halves. O(1) without such a book.
+    fn prepare_census_book_pass_rows(&mut self, slot: u64) {
+        let key = self.households.census_key(&self.transit_network);
+        let Some(funding) = self.households.unprepared_census_book() else {
+            return;
+        };
+        let timing = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(Instant::now);
+        let (_, minute_of_day) = super::schedule::slot_calendar(next_hour(slot));
+        self.demand.prepare_planning_pass_rows(
+            funding,
+            key,
+            &self.allocator,
+            &self.region_graph,
+            &self.fiscal_policy,
+            minute_of_day,
+        );
+        if let Some(start) = timing {
+            debug_log!(
+                "economy_phases",
+                "census_book_preparation_detail slot_of_hour={} ms={:.3}",
+                slot % SLOTS_PER_HOUR,
+                start.elapsed().as_secs_f64() * 1000.0
             );
         }
     }
@@ -1483,6 +1519,56 @@ impl SimCore {
             .pathfind_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
         self.last_tick_duration = close_start.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    // Planning slot `slot`'s setup at absolute slot `setup_at`, its minute's first slot
+    // (`SIM-02-K`): the site index, road surface and construction queue prepared as its plan
+    // prepares them, then the live workforce counted and the zone's lots and existing buildings
+    // scanned for the plan `PLANNING_SETUP_LEAD` slots later.
+    pub(super) fn execute_demand_planning_setup(
+        &mut self,
+        slot: PlanningSlot,
+        setup_at: u64,
+        day_index: u32,
+        minute_of_day: u16,
+    ) {
+        let timing = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(Instant::now);
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::SimCommit,
+        );
+        self.refresh_demand_construction_queue(day_index, minute_of_day);
+        self.demand.prepare_planning_setup(
+            slot,
+            setup_at,
+            &self.allocator,
+            &self.households,
+            &self.region_graph,
+            &self.zoning,
+            self.treasury.balance,
+            &self.fiscal_policy,
+            &self.transit_network,
+            crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                road_surface: &self.transit_network.road_surface,
+                terrain: &self.heightmap,
+            },
+            minute_of_day,
+        );
+        if let Some(start) = timing {
+            debug_log!(
+                "economy_phases",
+                "demand_setup_detail day={} minute={} slot={:?} total_ms={:.3}",
+                day_index,
+                minute_of_day,
+                slot,
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 
     // The hour's demand planning slot `slot` (`SIM-02-I`), on the cell lots the `cell lots`

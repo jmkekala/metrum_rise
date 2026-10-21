@@ -32,6 +32,7 @@ pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use lifecycle::{BuildingRemovalKind, BuildingRemovalRequest};
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
 pub(crate) use site::BuildingSiteGradingRequest;
 pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};

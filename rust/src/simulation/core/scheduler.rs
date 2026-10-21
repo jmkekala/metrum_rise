@@ -214,8 +214,8 @@ pub(crate) enum Cost {
     Events,
     /// A fixed-slot pass that grows with the city, its terms stated at its declaration: the
     /// census publication, O(B) plus a whole census when none is ready, and the hour's four
-    /// demand planning slots, each O(B + H + P + Q log H) in buildings B, households H, lots P
-    /// and queued constructions Q. `SIM-02-K` (K5) replaces their scans with maintained totals
+    /// demand planning slots and their setups, each O(B + H + P + Q log H) in buildings B,
+    /// households H, lots P and queued constructions Q. `SIM-02-K` (K5) replaces their scans with maintained totals
     /// and indices.
     CityScan,
     /// Proportional to the entities whose phase falls in the slot: O(N / slots per period).

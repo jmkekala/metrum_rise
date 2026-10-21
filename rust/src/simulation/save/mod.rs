@@ -30,7 +30,7 @@ use crate::simulation::vegetation::{VegetationConfig, edits::VegetationEdits};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
 use chrono::Utc;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -614,6 +614,13 @@ pub(crate) fn load_from_sqlite(
         .restore_household_diagnostics(&admission, &removal)
         .map_err(SaveLoadError::custom)?;
     world::load_demand_hour_plan(&conn, &mut demand)?;
+    let planning_setup: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT setup FROM demand_planning_setup WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let scheduler = scheduler::load(&conn)?;
     demand
@@ -644,6 +651,11 @@ pub(crate) fn load_from_sqlite(
         handles::load(&conn, handles::HandleKind::Households, households.households.len())?;
     agents.handles = handles::load(&conn, handles::HandleKind::Agents, agents.len())?;
     demand_queues::load(&conn, &mut allocator, &mut households, &mut demand)?;
+    if let Some(setup) = planning_setup {
+        demand
+            .restore_planning_setup(&setup, &allocator)
+            .map_err(SaveLoadError::custom)?;
+    }
     type TreasuryRow = (
         f64,
         f64,

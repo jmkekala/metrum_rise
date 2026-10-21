@@ -11,6 +11,7 @@ mod diagnostics;
 mod display;
 mod execution;
 mod queued;
+mod setup;
 mod snapshot;
 mod spawn_need;
 mod supply;

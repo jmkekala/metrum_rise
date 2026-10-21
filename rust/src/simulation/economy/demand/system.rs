@@ -61,6 +61,9 @@ pub struct DemandSystem {
     pub(super) snapshot_sweep: DemandSnapshotSweep,
     // The live workforce each pass composes its snapshot with; storage only, not saved.
     pub(super) workforce_view: WorkforceView,
+    // What a planning slot's setup slot counted and scanned for its plan (`SIM-02-K`); saved
+    // between the two.
+    pub(super) planning_setup: Option<super::setup::PlanningSetup>,
     pub(super) workforce_reservations: super::workforce::WorkforceReservations,
     pub(super) construction_execution: super::execution::ConstructionExecution,
     pub(super) queued_construction: Vec<super::queued::QueuedConstruction>,
@@ -69,7 +72,7 @@ pub struct DemandSystem {
     pub(super) queued_reference_hour: u64,
     pub(super) next_construction_start_hour: u64,
     pub(super) admission_budget: HouseholdAdmissionBudget,
-    freight_border_nodes: Vec<u32>,
+    pub(super) freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
     /// Level changes the hour's actions slot proved, oldest first, until the `level changes`
@@ -136,6 +139,7 @@ impl DemandSystem {
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
             snapshot_sweep: DemandSnapshotSweep::default(),
             workforce_view: WorkforceView::default(),
+            planning_setup: None,
             workforce_reservations: super::workforce::WorkforceReservations::default(),
             construction_execution: super::execution::ConstructionExecution::default(),
             queued_construction: Vec::new(),
@@ -291,7 +295,9 @@ impl DemandSystem {
     /// customer, business and input books inside one first-touch transaction and restores them
     /// before returning, so its cost follows the rows it touches rather than a copy of every
     /// book. Books not valid for the live city are never lent: the slot is skipped and
-    /// counted, and returns `false`.
+    /// counted, and returns `false`. The plan decides on the live workforce and the scans its
+    /// setup slot held ([`Self::prepare_planning_setup`], `SIM-02-K`); without a held setup it
+    /// counts and scans itself.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_planning_slot(
         &mut self,
@@ -320,6 +326,9 @@ impl DemandSystem {
             }
         };
         crate::debug::work::add(crate::debug::work::Work::PlanningPasses, 1);
+        // What this slot's setup slot counted and scanned, if it is held for this plan
+        // (`SIM-02-K`); any other held setup is dropped.
+        let setup = self.take_planning_setup(slot, allocator.now_slot);
         // The hour's plan starts at its first slot.
         if slot == PlanningSlot::Residential {
             self.building_actions = DemandBuildingActionPlan::default();
@@ -385,14 +394,24 @@ impl DemandSystem {
             policy: fiscal_policy,
             treasury: treasury_balance,
         });
-        // The workforce as the hour's job search left it, not as the sweep found each entity.
-        self.workforce_view.count_live(
-            allocator,
-            households,
-            catalog.as_ref(),
-            economy_tuning.as_ref(),
-            fiscal_policy.income_tax_rate,
-        );
+        // The workforce as the hour's job search left it, not as the sweep found each entity:
+        // counted at this slot's setup slot, or now without one (`SIM-02-K`).
+        let scans = match setup {
+            Some((workforce, scans)) => {
+                self.workforce_view = workforce;
+                Some(scans)
+            }
+            None => {
+                self.workforce_view.count_live(
+                    allocator,
+                    households,
+                    catalog.as_ref(),
+                    economy_tuning.as_ref(),
+                    fiscal_policy.income_tax_rate,
+                );
+                None
+            }
+        };
         let mut snapshot = DailyDemandSnapshot::compose(
             &front.totals,
             &self.workforce_view,
@@ -469,6 +488,7 @@ impl DemandSystem {
             DEMAND_HOURLY_CADENCE_FRACTION,
             environment,
             &mut supply,
+            scans,
         );
         self.snapshot_sweep.restore_front(front);
         lap(6);
@@ -593,6 +613,62 @@ impl DemandSystem {
             if !suppliers_only {
                 funding.business.refresh_finance_masks();
             }
+        }
+        self.freight_border_nodes = borders;
+    }
+
+    /// Builds the planning pass rows of `funding`'s books (`SIM-02-K`): lends them and opens and
+    /// closes a pass, as a planning slot does before it plans, so the next lending of the same
+    /// books keeps the rows and recomputes only those of the buildings changed since. The rows
+    /// are derived and keyed by the books' generation, the price phase and the policies, so no
+    /// result changes. Books not valid for the live `key` at `minute_of_day` are left alone.
+    /// O(B/p) in parallel.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_planning_pass_rows(
+        &mut self,
+        funding: &mut JobFunding,
+        key: CensusKey,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        fiscal_policy: &CityFiscalPolicy,
+        minute_of_day: u16,
+    ) {
+        let catalog = Arc::clone(&self.runtime_catalog);
+        let economy_tuning = Arc::clone(&self.runtime_tuning);
+        let mut borders = std::mem::take(&mut self.freight_border_nodes);
+        collect_connected_border_nodes(graph, &mut borders);
+        let phase = crate::simulation::economy::logistics::freight_price_phase(
+            &economy_tuning,
+            minute_of_day,
+        );
+        if funding.has_current_input_supply(key, &borders, phase) {
+            #[cfg(test)]
+            let before = VERIFY_LIVE_PASSES
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then(|| live_fingerprint(funding));
+            let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
+            let mut inputs = super::execution::lend_live_books(&mut reservations, funding);
+            reservations.begin_live_pass(
+                funding,
+                &mut inputs,
+                allocator,
+                graph,
+                &catalog,
+                &economy_tuning,
+                fiscal_policy,
+                minute_of_day,
+            );
+            reservations.end_live_pass(&mut inputs, allocator, graph);
+            super::execution::return_live_books(inputs, &mut reservations, funding);
+            #[cfg(test)]
+            if let Some(before) = before {
+                assert_eq!(
+                    live_fingerprint(funding),
+                    before,
+                    "building the pass rows must return the books exactly"
+                );
+            }
+            self.construction_execution.reservations = reservations;
         }
         self.freight_border_nodes = borders;
     }

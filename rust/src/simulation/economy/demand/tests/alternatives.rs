@@ -4919,6 +4919,7 @@ fn plan_slot(
             terrain: &terrain,
         },
         &mut |_: u64, _: &str| Some(fee),
+        None,
     );
 }
 

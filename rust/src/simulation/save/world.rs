@@ -234,6 +234,14 @@ pub(super) fn save_world(
     }
 
     save_demand_hour_plan(tx, demand, maps)?;
+    // A planning slot's setup held for its plan, `PLANNING_SETUP_LEAD` slots later
+    // (`SIM-02-K`); no row without one.
+    if let Some(setup) = demand.saved_planning_setup() {
+        tx.execute(
+            "INSERT INTO demand_planning_setup(singleton, setup) VALUES (1, ?1)",
+            params![setup],
+        )?;
+    }
 
     // Grids: the front every reader uses and the back of the rolling sweep (`SIM-02-H`).
     tx.execute(

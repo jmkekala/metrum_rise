@@ -3,8 +3,8 @@
 //! Private building growth, level-change, and despawn planning.
 
 use super::actions::{
-    DemandBuildingActionKey, DemandLevelChangeAction, DemandSpawnAction, PlanningSlot,
-    demand_building_action_key,
+    DemandBuildingActionKey, DemandLevelChangeAction, DemandSpawnAction, DemandSpawnCandidate,
+    PlanningSlot, SpawnSiteAvailability, demand_building_action_key,
 };
 use super::credits::advance_building_action_credit;
 use super::diagnostics::BuildingActionDiagnostics;
@@ -22,9 +22,12 @@ use super::viability::{
 };
 use super::workforce::WorkforceReservations;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, BuildingSiteEnvironment, construction_duration_hours,
+    BuildingAllocator, BuildingSiteEnvironment, SpawnProfileAssetCandidates,
+    construction_duration_hours,
 };
-use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
+use crate::simulation::economy::definitions::{
+    ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+};
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax};
 use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::households::{
@@ -34,6 +37,7 @@ use crate::simulation::economy::operation::OperationPrices;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ParcelId, ZoneType, ZoningSystem};
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub(super) struct LevelChangeCandidate {
@@ -74,6 +78,113 @@ impl ExistingActions {
         downgrades: true,
         despawns: false,
     };
+}
+
+/// What a planning slot's scans of the live city found (`SIM-02-K`): a zone slot's legal spawn
+/// sites on free lots, their site availability, and its existing buildings' upgrade and despawn
+/// candidates; the actions slot's downgrade candidates of every zone, indexed by `DemandUse`.
+/// The planning slot's setup slot scans and holds them for its plan
+/// (`PLANNING_SETUP_LEAD` slots later); a plan without a setup scans them itself.
+#[derive(Debug, Default)]
+pub(super) struct PlanningScans {
+    spawns: Vec<DemandSpawnCandidate>,
+    availability: SpawnSiteAvailability,
+    existing: ExistingBuildingCandidates,
+    downgrades: [Vec<LevelChangeCandidate>; 3],
+}
+
+impl PlanningScans {
+    // Appends the saved form of a planning setup's scans (`SIM-02-K`): the spawn sites by parcel
+    // and asset, the zone's site availability, and the building candidates by dense index with
+    // their targets, each list in its order.
+    pub(super) fn write_saved(&self, out: &mut Vec<u8>) {
+        use super::setup::{put_len, put_str, put_u64};
+        put_len(out, self.spawns.len());
+        for spawn in &self.spawns {
+            put_u64(out, spawn.action.parcel_id);
+            put_str(out, &spawn.action.asset_id);
+        }
+        let availability = &self.availability;
+        put_u64(out, u64::from(availability.has_assets));
+        put_len(out, availability.free_lots);
+        put_len(out, availability.missing_asset_lots);
+        put_len(out, availability.unusable_lots);
+        let level_changes = |out: &mut Vec<u8>, candidates: &[LevelChangeCandidate]| {
+            put_len(out, candidates.len());
+            for candidate in candidates {
+                put_len(out, candidate.building_idx);
+                put_str(out, &candidate.action.target_asset_id);
+            }
+        };
+        level_changes(out, &self.existing.upgrades);
+        level_changes(out, &self.existing.downgrades);
+        put_len(out, self.existing.despawns.len());
+        for despawn in &self.existing.despawns {
+            put_len(out, despawn.building_idx);
+        }
+        for downgrades in &self.downgrades {
+            level_changes(out, downgrades);
+        }
+    }
+
+    // Reads what [`Self::write_saved`] wrote on the loaded `allocator`: each building
+    // candidate's key is its building's, which the setup took between the slots that change
+    // no building's key. `None` on a malformed buffer or a building the city does not hold.
+    pub(super) fn read_saved(
+        reader: &mut super::setup::SavedReader<'_>,
+        allocator: &BuildingAllocator,
+    ) -> Option<Self> {
+        let mut scans = Self::default();
+        for _ in 0..reader.count()? {
+            scans.spawns.push(DemandSpawnCandidate {
+                action: DemandSpawnAction {
+                    parcel_id: reader.u64()?,
+                    asset_id: reader.string()?,
+                },
+            });
+        }
+        scans.availability = SpawnSiteAvailability {
+            has_assets: reader.u64()? != 0,
+            free_lots: usize::try_from(reader.u64()?).ok()?,
+            missing_asset_lots: usize::try_from(reader.u64()?).ok()?,
+            unusable_lots: usize::try_from(reader.u64()?).ok()?,
+        };
+        let key = |building_idx: usize| {
+            allocator
+                .buildings
+                .get(building_idx)
+                .map(demand_building_action_key)
+        };
+        let level_changes = |reader: &mut super::setup::SavedReader<'_>| {
+            let count = reader.count()?;
+            let mut candidates = Vec::with_capacity(count);
+            for _ in 0..count {
+                let building_idx = usize::try_from(reader.u64()?).ok()?;
+                candidates.push(LevelChangeCandidate {
+                    action: DemandLevelChangeAction {
+                        building: key(building_idx)?,
+                        target_asset_id: reader.string()?,
+                    },
+                    building_idx,
+                });
+            }
+            Some(candidates)
+        };
+        scans.existing.upgrades = level_changes(reader)?;
+        scans.existing.downgrades = level_changes(reader)?;
+        let despawns = reader.count()?;
+        for _ in 0..despawns {
+            let building_idx = usize::try_from(reader.u64()?).ok()?;
+            scans.existing.despawns.push(DespawnCandidate {
+                action: key(building_idx)?,
+                building_idx,
+            });
+        }
+        for downgrades in &mut scans.downgrades {
+            *downgrades = level_changes(reader)?;
+        }
+        Some(scans)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -411,6 +522,7 @@ impl DemandSystem {
         cadence_fraction: f32,
         environment: BuildingSiteEnvironment<'_>,
         supply: &mut impl ProjectSupply,
+        scans: Option<PlanningScans>,
     ) {
         let timing = crate::debug::Channel::EconomyPhases.enabled();
         let begin = timing.then(std::time::Instant::now);
@@ -424,23 +536,7 @@ impl DemandSystem {
         };
         let utility_prices = local_utility_service_costs(catalog)
             .map(|price| price * economy_tuning.owa_import_price_multiplier);
-        let mut commercial_spawn_resource_priorities = snapshot
-            .committed_unmet_commercial_consumer_demand_by_resource
-            .clone();
-        // Pantry replenishment can exceed a shop's daily output temporarily. Select a new
-        // category from recurring unreserved sales, the same market used by entry itself.
-        // Currency rather than raw units makes ordering invariant to a resource's unit size.
-        for (resource, priority) in &mut commercial_spawn_resource_priorities {
-            *priority = snapshot.output_absorption.unmet_units(*resource)
-                * catalog.unit_price_for_resource(*resource).unwrap_or(0.0);
-        }
-        commercial_spawn_resource_priorities.retain(|(_, unmet_units)| *unmet_units > EPSILON);
-        commercial_spawn_resource_priorities.sort_by(|left, right| {
-            right
-                .1
-                .total_cmp(&left.1)
-                .then_with(|| left.0.cmp(&right.0))
-        });
+        let commercial_spawn_resource_priorities = commercial_spawn_priorities(snapshot, catalog);
         let zone = slot.zone();
         let spawn_assets = if zone.is_some() {
             allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog)
@@ -448,18 +544,28 @@ impl DemandSystem {
             Default::default()
         };
         lap(0);
-        let mut spawn_candidates_by_use = match zone {
-            Some(use_kind) => allocator.collect_demand_spawn_candidates_from_assets(
-                zoning,
+        // The setup slot's scans, or this slot's own (`SIM-02-K`).
+        let scan_begin = timing.then(std::time::Instant::now);
+        let PlanningScans {
+            spawns: zone_spawn_candidates,
+            availability: zone_availability,
+            existing: zone_existing_candidates,
+            downgrades: scanned_downgrades,
+        } = scans.unwrap_or_else(|| {
+            self.scan_with(
+                slot,
+                allocator,
                 graph,
+                zoning,
                 catalog,
-                &commercial_spawn_resource_priorities,
+                economy_tuning,
+                residential_occupants,
                 environment,
+                &commercial_spawn_resource_priorities,
                 &spawn_assets,
-                Some(use_kind.zone_type()),
-            ),
-            None => Default::default(),
-        };
+            )
+        });
+        let scan_ms = scan_begin.map_or(0.0, |begin| begin.elapsed().as_secs_f64() * 1_000.0);
         lap(1);
         let mut absorption_context = snapshot.output_absorption.clone();
         self.workforce_reservations.reset(
@@ -579,28 +685,16 @@ impl DemandSystem {
             }
         }
         lap(2);
-        let mut existing_ms = 0.0;
         if let Some(use_kind) = zone {
             let mut optional_homes = Vec::new();
             let zone_type = use_kind.zone_type();
-            let mut spawn_candidates = spawn_candidates_by_use.take_zone_type(zone_type);
+            let mut spawn_candidates = zone_spawn_candidates;
             spawn_candidates.retain(|candidate| {
                 self.queued_construction
                     .binary_search_by_key(&candidate.action.parcel_id, |project| project.parcel_id)
                     .map_or(true, |index| !self.queued_construction[index].active)
             });
-            let existing_begin = timing.then(std::time::Instant::now);
-            let existing_candidates = self.collect_existing_actions(
-                allocator,
-                catalog,
-                economy_tuning,
-                residential_occupants,
-                Some(zone_type),
-                ExistingActions::ZONE_SLOT,
-            );
-            if let Some(begin) = existing_begin {
-                existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
-            }
+            let existing_candidates = zone_existing_candidates;
             let spawn_candidate_count = spawn_candidates.len();
             let upgrade_candidate_count = existing_candidates.upgrades.len();
             let despawn_candidate_count = existing_candidates.despawns.len();
@@ -796,7 +890,7 @@ impl DemandSystem {
             *self.last_building_action_diagnostics.use_mut(use_kind) = BuildingActionDiagnostics {
                 spawn_candidates: spawn_candidate_count,
                 assessed: true,
-                sites: spawn_candidates_by_use.availability[use_kind as usize],
+                sites: zone_availability,
                 constructing: snapshot.constructing_by_use[use_kind as usize],
                 queued: snapshot.queued_by_use[use_kind as usize],
                 housing_needed_slots,
@@ -842,16 +936,7 @@ impl DemandSystem {
             let mut retirable_homes = snapshot
                 .vacant_household_slots
                 .saturating_sub(protected_homes);
-            let existing_begin = timing.then(std::time::Instant::now);
-            let mut downgrades_by_use = self.collect_downgrades_by_use(
-                allocator,
-                catalog,
-                economy_tuning,
-                residential_occupants,
-            );
-            if let Some(begin) = existing_begin {
-                existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
-            }
+            let mut downgrades_by_use = scanned_downgrades;
             // Business replacements also claim ready homes before residential capacity can shrink.
             for use_kind in [
                 DemandUse::Commercial,
@@ -974,13 +1059,101 @@ impl DemandSystem {
         lap(3);
         crate::debug_log!(
             "economy_phases",
-            "demand_planning_detail assets_ms={:.3} spawn_sites_ms={:.3} workforce_ms={:.3} existing_ms={:.3} decisions_ms={:.3}",
+            "demand_planning_detail assets_ms={:.3} scans_ms={:.3} workforce_ms={:.3} decisions_ms={:.3}",
             times[0],
-            times[1],
+            scan_ms,
             times[2],
-            existing_ms,
-            times[3] - existing_ms
+            times[3]
         );
+    }
+
+    /// Scans the live city for planning slot `slot` (`SIM-02-K`): a zone slot's legal spawn sites
+    /// on free lots, ranked by the commercial priorities `snapshot`'s committed demand sets, and
+    /// its existing buildings' upgrade and despawn candidates; the actions slot's downgrade
+    /// candidates of every zone. It reads only the city, the catalog and those priorities, so the
+    /// setup slot's scan of a city its plan finds unchanged equals the plan's own.
+    /// O(P/p + B/p) in parallel, plus the zone's free lots' assets.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn scan_for_planning(
+        &self,
+        slot: PlanningSlot,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        snapshot: &DailyDemandSnapshot,
+        catalog: &RuntimeEconomyCatalog,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        environment: BuildingSiteEnvironment<'_>,
+    ) -> PlanningScans {
+        let priorities = commercial_spawn_priorities(snapshot, catalog);
+        let spawn_assets = if slot.zone().is_some() {
+            allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog)
+        } else {
+            Default::default()
+        };
+        self.scan_with(
+            slot,
+            allocator,
+            graph,
+            zoning,
+            catalog,
+            economy_tuning,
+            residential_occupants,
+            environment,
+            &priorities,
+            &spawn_assets,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scan_with(
+        &self,
+        slot: PlanningSlot,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        catalog: &RuntimeEconomyCatalog,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        environment: BuildingSiteEnvironment<'_>,
+        priorities: &[(ResourceRuntimeId, f32)],
+        spawn_assets: &BTreeMap<u16, SpawnProfileAssetCandidates>,
+    ) -> PlanningScans {
+        let mut scans = PlanningScans::default();
+        match slot.zone() {
+            Some(use_kind) => {
+                let zone_type = use_kind.zone_type();
+                let mut by_use = allocator.collect_demand_spawn_candidates_from_assets(
+                    zoning,
+                    graph,
+                    catalog,
+                    priorities,
+                    environment,
+                    spawn_assets,
+                    Some(zone_type),
+                );
+                scans.spawns = by_use.take_zone_type(zone_type);
+                scans.availability = by_use.availability[use_kind as usize];
+                scans.existing = self.collect_existing_actions(
+                    allocator,
+                    catalog,
+                    economy_tuning,
+                    residential_occupants,
+                    Some(zone_type),
+                    ExistingActions::ZONE_SLOT,
+                );
+            }
+            None => {
+                scans.downgrades = self.collect_downgrades_by_use(
+                    allocator,
+                    catalog,
+                    economy_tuning,
+                    residential_occupants,
+                );
+            }
+        }
+        scans
     }
 
     /// Test driver of the hour's four planning slots on one `supply` without the slot clock or
@@ -1017,6 +1190,7 @@ impl DemandSystem {
                 cadence_fraction,
                 environment,
                 &mut supply,
+                None,
             );
         }
     }
@@ -1217,6 +1391,32 @@ impl DemandSystem {
         });
         candidates
     }
+}
+
+// The resources a new shop may sell, by the currency of the recurring unreserved sales
+// `snapshot` leaves for them, largest first. Pantry replenishment can exceed a shop's daily
+// output temporarily, so a new category is selected from recurring unreserved sales, the same
+// market entry itself uses; currency rather than raw units makes the order invariant to a
+// resource's unit size.
+fn commercial_spawn_priorities(
+    snapshot: &DailyDemandSnapshot,
+    catalog: &RuntimeEconomyCatalog,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    let mut priorities = snapshot
+        .committed_unmet_commercial_consumer_demand_by_resource
+        .clone();
+    for (resource, priority) in &mut priorities {
+        *priority = snapshot.output_absorption.unmet_units(*resource)
+            * catalog.unit_price_for_resource(*resource).unwrap_or(0.0);
+    }
+    priorities.retain(|(_, unmet_units)| *unmet_units > EPSILON);
+    priorities.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    priorities
 }
 
 fn action_attachment_sort_key(

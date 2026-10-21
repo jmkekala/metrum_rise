@@ -42,10 +42,9 @@ pub(crate) const CENSUS_WINDOW_START: u64 = FILL_SLOTS;
 pub(crate) const SLACK_SLOTS: u64 = 96;
 
 /// First slot of the hour at which building and household swap-removes run (`SIM-02-J`): the
-/// hour's planning slots, up to the actions slot at minute 3, read the census published at
-/// slot 0 before it. It is minute 4's first slot, a game minute after the actions slot, so at
-/// 32× a removal and the cell-lot region it dirties never share a frame with planning
-/// (`SIM-02-K`).
+/// hour's planning slots, up to the actions slot in minute 3, read the census published at
+/// slot 0 before it. It is minute 4's first slot, a game minute after the actions slot's setup
+/// and half a minute after its plan (`SIM-02-K`).
 pub(crate) const REMOVAL_WINDOW_START: u64 = 4 * SLOTS_PER_MINUTE;
 
 /// First slot of the hour at which a finished census's book is prepared for the planning slots
@@ -55,6 +54,13 @@ pub(crate) const REMOVAL_WINDOW_START: u64 = 4 * SLOTS_PER_MINUTE;
 /// and a game minute before that slot, so at 32× the two never share a frame.
 pub(crate) const PLANNING_PREPARATION_SLOT: u64 = SLOTS_PER_HOUR - SLOTS_PER_MINUTE;
 const _: () = assert!(PLANNING_PREPARATION_SLOT >= CENSUS_WINDOW_START);
+
+/// Slot of the hour at which a finished census's book has its planning pass rows built
+/// (`SIM-02-K`), half a minute before the preparation's first slot: a lending that only opens and
+/// closes a pass, so the supplier half that follows keeps the rows and recomputes only those of
+/// the buildings changed since, as every lending of the book the previous pass started on does.
+pub(crate) const PLANNING_PREPARATION_ROWS_SLOT: u64 = PLANNING_PREPARATION_SLOT - 8;
+const _: () = assert!(PLANNING_PREPARATION_ROWS_SLOT >= CENSUS_WINDOW_START);
 
 /// First slot of the hour at which the preparation's second half runs (`SIM-02-K`): the first
 /// slot prepares the supplier rows alone, and this one, nine slots later, everything else. A

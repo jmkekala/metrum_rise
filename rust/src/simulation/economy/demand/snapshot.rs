@@ -386,6 +386,48 @@ pub(super) struct WorkforceView {
 }
 
 impl WorkforceView {
+    // Appends the saved form of a planning setup's workforce (`SIM-02-K`).
+    pub(super) fn write_saved(&self, out: &mut Vec<u8>) {
+        use super::setup::{put_f32, put_len, put_u32};
+        put_u32(out, self.housed_unemployed);
+        put_len(out, self.unhoused.len());
+        for unhoused in &self.unhoused {
+            put_f32(out, unhoused.reserve_days);
+            put_u32(out, unhoused.workers);
+        }
+        let jobs = &self.jobs;
+        put_u32(out, jobs.open_job_slots);
+        put_f32(out, jobs.open_job_wage_sum);
+        put_u32(out, jobs.physical_worker_capacity);
+        put_u32(out, jobs.funded_worker_capacity);
+        put_u32(out, jobs.open_jobs_unfunded);
+    }
+
+    // Reads what [`Self::write_saved`] wrote; `None` on a malformed buffer.
+    pub(super) fn read_saved(reader: &mut super::setup::SavedReader<'_>) -> Option<Self> {
+        let housed_unemployed = reader.u32()?;
+        let count = reader.count()?;
+        let mut unhoused = Vec::with_capacity(count);
+        for _ in 0..count {
+            unhoused.push(UnhousedWorkforce {
+                reserve_days: reader.f32()?,
+                workers: reader.u32()?,
+            });
+        }
+        let jobs = JobTotals {
+            open_job_slots: reader.u32()?,
+            open_job_wage_sum: reader.f32()?,
+            physical_worker_capacity: reader.u32()?,
+            funded_worker_capacity: reader.u32()?,
+            open_jobs_unfunded: reader.u32()?,
+        };
+        Some(Self {
+            housed_unemployed,
+            unhoused,
+            jobs,
+        })
+    }
+
     /// The workforce `totals` folded.
     pub(super) fn of_totals(totals: &SnapshotTotals) -> Self {
         Self {

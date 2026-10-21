@@ -5,7 +5,8 @@
 //!
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The timing
 //! wheel fires first, then the fixed-slot systems: the funding census's publication, what is left
-//! of the operational hour, the hour's four demand planning slots and the calendar close. The
+//! of the operational hour, the hour's four demand planning slots, each with its setup half a
+//! minute before it, and the calendar close. The
 //! entities of the slot's hourly and daily phases follow, then the cell-lot, freight, housing,
 //! restock, visit and job request queues, the level-change, building-removal, departure and
 //! admission queues (`SIM-02-J`; removals and departures only in the hour's removal window, and
@@ -39,17 +40,21 @@ use crate::simulation::economy::hiring::{
 const _: () = assert!(REMOVAL_WINDOW_START > PlanningSlot::Actions as u64);
 
 /// Slots of the hour in which the request queues serve nothing (`SIM-02-K`): the hour's four
-/// planning slots, the removal window's first slot, which serves the hour's first building
-/// removals, and the census book's two preparation slots. Each holds 3–4 ms of its own work at
-/// 100k residents, so at 1× a queue's share there would put the frame over its budget. The slot
-/// after one serves the skipped slot's share first, then its own, so every queue serves the
-/// same quota and accrues the same credit per hour. The removal window's first slot keeps its
-/// building removals, the slot's own work. Trip events and construction starts due in one fire
-/// in the next slot ([`event_slot`]).
-pub(crate) const QUEUE_FREE_SLOTS: [u64; 7] = [
+/// planning slots' setups and plans, the removal window's first slot, which serves the hour's
+/// first building removals, and the census book's two preparation slots. Each holds 1.5–3.5 ms
+/// of its own work at 100k residents, so at 1× a queue's share there would put the frame over
+/// its budget. The slot after one serves the skipped slot's share first, then its own, so every
+/// queue serves the same quota and accrues the same credit per hour. The removal window's first
+/// slot keeps its building removals, the slot's own work. Trip events and construction starts
+/// due in one fire in the next slot ([`event_slot`]).
+pub(crate) const QUEUE_FREE_SLOTS: [u64; 11] = [
+    PlanningSlot::Residential.setup_slot(),
     PlanningSlot::Residential as u64,
+    PlanningSlot::Commercial.setup_slot(),
     PlanningSlot::Commercial as u64,
+    PlanningSlot::Industrial.setup_slot(),
     PlanningSlot::Industrial as u64,
+    PlanningSlot::Actions.setup_slot(),
     PlanningSlot::Actions as u64,
     REMOVAL_WINDOW_START,
     PLANNING_PREPARATION_SLOT,
@@ -112,6 +117,9 @@ pub(crate) enum SimSystem {
     /// What is left of the operational hour: the demand snapshot's new entities, pending
     /// arrivals, the logistics clock and the commute-quote expiry (`SIM-02-K`).
     OperationalHour,
+    /// A planning slot's setup at its minute's first slot: the live workforce and the plan's
+    /// scans of lots and existing buildings, held for the plan (`SIM-02-K`).
+    PlanningSetup(PlanningSlot),
     /// The hour's residential demand planning slot (`SIM-02-I`).
     ResidentialPlanning,
     /// The hour's commercial demand planning slot (`SIM-02-I`).
@@ -319,16 +327,27 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::Dirty,
             tier: Tier::Full,
         },
-        // The hour's demand planning, one zone per slot, residential after the operational
-        // hour, on the census the hour's first slot published; the actions slot queues the
-        // hour's spawns and executes its plan (`SIM-02-I`). The slots are a game minute apart
-        // (`PlanningSlot`), so at 32× each runs in a frame of its own (`SIM-02-K`). Planning lends the census's books
-        // and restores them, quotes freight and prepares site indices. Each slot pays the
-        // planning setup again: the live workforce, O((H + B)/p) in parallel; the project
-        // market, O(B) serial; the queue's replay, O(Q log H); and the earlier slots' plans
-        // proved again, O(plan). A zone slot adds the lot scan, O(P/p) in parallel plus its
-        // zone's free lots' assets, and its zone's existing buildings, O(B/p). Hence each call
-        // is O(B + H + P + Q log H), the `CityScan` bound, `SIM-02-K` (K5) debt.
+        // The setups of the hour's four planning slots, at their minutes' first slots
+        // (`SIM-02-K`), residential's after the operational hour: the live workforce,
+        // O((H + B)/p) in parallel, and the plan's scans, held for the plan
+        // `PLANNING_SETUP_LEAD` slots later. A zone's setup scans its free lots, O(P/p) in
+        // parallel plus its zone's free lots' assets, and its existing buildings, O(B/p); the
+        // actions slot's setup every zone's downgrade candidates, O(B/p). O(B + H + P) a call,
+        // the `CityScan` bound, `SIM-02-K` (K5) debt.
+        planning_setup_declaration(PlanningSlot::Residential, "residential setup"),
+        planning_setup_declaration(PlanningSlot::Commercial, "commercial setup"),
+        planning_setup_declaration(PlanningSlot::Industrial, "industrial setup"),
+        planning_setup_declaration(PlanningSlot::Actions, "actions setup"),
+        // The hour's demand planning, one zone per slot, on the census the hour's first slot
+        // published; the actions slot queues the hour's spawns and executes its plan
+        // (`SIM-02-I`). The slots are a game minute apart (`PlanningSlot`), so at 32× each runs
+        // in a frame of its own, each `PLANNING_SETUP_LEAD` slots after its setup (`SIM-02-K`).
+        // Planning lends the census's books and restores them, quotes freight and prepares site
+        // indices. Each slot pays the books' preparation again: the project market, O(B)
+        // serial; the queue's replay, O(Q log H); and the earlier slots' plans proved again,
+        // O(plan); without a held setup (a world's first hour, a clock set directly) it counts
+        // the workforce and scans itself. Hence each call is O(B + H + P + Q log H), the
+        // `CityScan` bound, `SIM-02-K` (K5) debt.
         Declaration {
             system: SimSystem::ResidentialPlanning,
             name: "residential planning",
@@ -699,6 +718,22 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
     ])
 }
 
+// The declaration of planning slot `slot`'s setup, at its minute's first slot.
+fn planning_setup_declaration(slot: PlanningSlot, name: &'static str) -> Declaration<SimSystem> {
+    Declaration {
+        system: SimSystem::PlanningSetup(slot),
+        name,
+        kind: SystemKind::FixedSlot {
+            period: Period::Hour,
+            offset: slot.setup_slot(),
+        },
+        reads: state::ALL,
+        writes: state::DEMAND | state::BUILDINGS | state::NETWORK,
+        cost: Cost::CityScan,
+        tier: Tier::Full,
+    }
+}
+
 /// Day index and authored minute of absolute `slot`.
 pub(crate) fn slot_calendar(slot: u64) -> (u32, u16) {
     let day_index = (slot / SLOTS_PER_DAY + 1) as u32;
@@ -739,6 +774,14 @@ impl SimCore {
                     });
                     report.hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
                     report.hourly_ticks += 1;
+                }
+                SimSystem::PlanningSetup(planning) => {
+                    let setup_start = Instant::now();
+                    record_crash_phase_for_core(self, declaration.name);
+                    run_sim_phase(declaration.name, || {
+                        self.execute_demand_planning_setup(planning, slot, day_index, minute_of_day)
+                    });
+                    report.hourly_ms += setup_start.elapsed().as_secs_f64() * 1000.0;
                 }
                 SimSystem::ResidentialPlanning => {
                     let planning_start = Instant::now();

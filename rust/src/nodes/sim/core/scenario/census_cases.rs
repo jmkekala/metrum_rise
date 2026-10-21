@@ -186,9 +186,29 @@ fn the_input_copy_follows_building_and_household_removals() {
         core.households
             .remove_households(&mut ids, &mut core.agents, &mut core.allocator);
     };
+    // A household whose shopper is out advances its search cursor and drops its store when its
+    // home or store goes, live state the copy taken before keeps as copied: the buildings
+    // removed are the first at or after each index that no such household uses.
+    let unused_by_shoppers = |core: &SimCore, from: usize| {
+        use crate::simulation::economy::households::{
+            REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
+        };
+        (from..core.allocator.buildings.len())
+            .find(|&index| {
+                !core.households.households.iter().any(|household| {
+                    matches!(
+                        household.replenishment_state,
+                        REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+                    ) && (household.home_building_id == index
+                        || household.reserved_store_building_id == index)
+                })
+            })
+            .unwrap()
+    };
     // Half the fill is copied: rows on both sides of the cursor, and the last rows.
     let buildings = core.allocator.buildings.len();
     for index in [1, buildings / 2 - 1, buildings / 2 + 1, buildings - 4] {
+        let index = unused_by_shoppers(core, index);
         remove_building(core, index);
         core.households
             .census_inputs
@@ -209,7 +229,8 @@ fn the_input_copy_follows_building_and_household_removals() {
     assert!(inputs.has_pending_front());
     inputs.assert_aligned(&core.allocator, &core.households.households);
     // Between the swap and the census.
-    remove_building(core, 2);
+    let index = unused_by_shoppers(core, 2);
+    remove_building(core, index);
     remove_household(core, 3);
     core.households
         .census_inputs
@@ -557,6 +578,138 @@ fn the_published_census_continues_identically_after_save_load_in_the_planning_sl
         step_to_chunk(&mut source.core, chunk);
         assert_census_continues_after_reload(&mut source, &format!("planning-slot-{chunk}"));
     }
+}
+
+// A planning slot's setup is held for its plan eight slots later and kept by a save in between
+// (`SIM-02-K`): at each setup slot and just before each plan, the loaded game holds and saves
+// the same setup, and both games plan the slot, and run the rest of its minute, to the same
+// hour plan, construction queue, demand queues and diagnostics.
+#[test]
+fn a_planning_setup_continues_identically_after_save_load_inside_its_span() {
+    use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
+    use crate::simulation::economy::demand::PlanningSlot;
+    let mut source = busy_town();
+    for planning in [
+        PlanningSlot::Residential,
+        PlanningSlot::Commercial,
+        PlanningSlot::Industrial,
+        PlanningSlot::Actions,
+    ] {
+        for chunk in [planning.setup_slot(), planning as u64 - 1] {
+            step_to_chunk(&mut source.core, chunk);
+            let label = format!("setup-slot-{chunk}");
+            let held = source.core.demand.saved_planning_setup();
+            assert!(held.is_some(), "{label}: no setup held");
+            let mut loaded = reloaded(&source.core, &label);
+            assert_eq!(loaded.core.demand.saved_planning_setup(), held, "{label}");
+            // The minute's last slot: its plan has run, the next setup not yet.
+            let minute_end = planning.setup_slot() + SLOTS_PER_MINUTE - 1;
+            for core in [&mut source.core, &mut loaded.core] {
+                step_to_chunk(core, minute_end);
+            }
+            assert!(
+                loaded.core.demand.saved_planning_setup().is_none(),
+                "{label}"
+            );
+            assert_eq!(
+                planning_tables(&source.core, &format!("{label}-source")),
+                planning_tables(&loaded.core, &format!("{label}-loaded")),
+                "{label}: the plan differs after loading"
+            );
+        }
+    }
+}
+
+// The plan on a setup taken in an unchanged city equals the plan that counts and scans itself
+// (`SIM-02-K`): two copies of a game at each planning slot's setup slot plan the slot at once,
+// one on the held setup and one without, to the same hour plan, construction queue, demand
+// queues and diagnostics.
+#[test]
+fn a_plan_on_its_setup_equals_one_that_scans_an_unchanged_city_itself() {
+    use crate::simulation::economy::demand::PlanningSlot;
+    let mut source = busy_town();
+    for planning in [
+        PlanningSlot::Residential,
+        PlanningSlot::Commercial,
+        PlanningSlot::Industrial,
+        PlanningSlot::Actions,
+    ] {
+        step_to_chunk(&mut source.core, planning.setup_slot());
+        let label = format!("frozen-{planning:?}");
+        let mut games = [
+            reloaded(&source.core, &label),
+            reloaded(&source.core, &label),
+        ];
+        games[1].core.demand.drop_planning_setup_for_test();
+        let tables = games.each_mut().map(|game| {
+            let core = &mut game.core;
+            let slot = core.time.absolute_slot();
+            core.allocator.now_slot = slot - planning.setup_slot() + planning as u64;
+            let (day_index, minute_of_day) = slot_calendar(slot);
+            core.execute_demand_planning_slot(planning, day_index, minute_of_day);
+            planning_tables(core, &label)
+        });
+        assert_eq!(tables[0], tables[1], "{label}: the sliced plan differs");
+        // The plan read its setup.
+        assert!(
+            games[0].core.demand.saved_planning_setup().is_none(),
+            "{label}"
+        );
+    }
+}
+
+// A copy of `core` through a save and a load.
+fn reloaded(core: &SimCore, label: &str) -> GrowthScenario {
+    let path = std::env::temp_dir().join(format!(
+        "metrum-planning-setup-{label}-{}.sqlite",
+        std::process::id()
+    ));
+    core.save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    loaded.core.time.speed_multiplier = core.time.speed_multiplier;
+    std::fs::remove_file(path).unwrap();
+    loaded
+}
+
+// The rows a save writes for the hour's plan and what the actions slot queues from it.
+fn planning_tables(core: &SimCore, label: &str) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+    let path = std::env::temp_dir().join(format!(
+        "metrum-planning-tables-{label}-{}.sqlite",
+        std::process::id()
+    ));
+    core.save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let tables = [
+        "demand_hour_plan",
+        "pending_demand_spawns",
+        "demand_diagnostics",
+        "demand_state",
+        "level_change_requests",
+        "building_removal_requests",
+        "admission_requests",
+    ]
+    .map(|table| {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
+        let columns = stmt.column_count();
+        stmt.query_map([], |row| {
+            (0..columns)
+                .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    })
+    .to_vec();
+    drop(conn);
+    std::fs::remove_file(path).unwrap();
+    tables
 }
 
 // A census the window left stale runs whole at the hour's first slot (`SIM-02-I`): after a

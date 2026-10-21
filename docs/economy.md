@@ -130,7 +130,7 @@ Trips do not leave when they are decided (`SIM-02-E`,
 [`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers and shoppers leave
 near a target slot in the hour ahead, in the least busy minute within 15 minutes of it, and a
 visible service visitor leaves at the next slot (`SIM-02-J`). Household arrival carriers leave paced
-from their household's creation: the actions slot (minute 3's first slot) decides the admissions and
+from their household's creation: the actions slot (minute 3, slot 56) decides the admissions and
 the `admissions` queue creates the households evenly over the hour that follows (`SIM-02-I` part 4,
 `SIM-02-J` part 3). Each trip is then checked as it travels (every one to eight minutes, growing
 with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's
