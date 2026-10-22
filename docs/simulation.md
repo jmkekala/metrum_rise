@@ -23,7 +23,7 @@ census's whole steps in slices). Part 4 (agent tick) has two commits done (lane 
 across appends and swap-removes with interleaved movement shards; then commute departures leaving
 over their minute's slots, the unused per-edge congestion deleted, save format 105, and the first
 tick after loading prepared at load), and part 5 (planning slots)
-has eleven commits done (planning storage estimates from free lots, one downgrade scan, and
+has twelve commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
 slots' trips on one owned route scratch that loading prepares with the job search's scratch;
@@ -41,7 +41,10 @@ construction starts kept out of the hour's seven heavy slots, and the building t
 rebuilds kept with spare rows; then each planning slot run as two halves of its game minute, a
 setup and a plan half a minute apart, and the census book's pass rows built at slot 936, save
 format 106; then the census's business claims counted by their scan events and carrier quotes, and
-the zone index kept across the removal slot's swap-removes).
+the zone index kept across the removal slot's swap-removes; then each removal's agents and
+households found in one scan, the removal slot's terrain boxes refreshed in later slots, the
+census book's preparation in four parts with slot 936 queue-free, the expansion sweep's priced
+routes weighed, and admission's border sweeps prepared at load).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
@@ -596,9 +599,9 @@ moves onto the timing wheel.
   day deadline.
 - **Queue-free slots** (`SIM-02-K` part 5, ninth commit; `QUEUE_FREE_SLOTS` in
   `nodes/sim/core/schedule.rs`): the hour's four planning setups (0, 16, 32, 48) and plans (8, 24,
-  40, 56), the removal window's first slot (64) and the census book's two preparation slots (944,
-  953), eleven slots, each hold 1.2–3.5 ms of their own system at 100k residents. In them no queue
-  serves except the `building removals`, slot 64's
+  40, 56), the removal window's first slot (64) and the census book's three preparation slots
+  (936, 944, 953), twelve slots, each hold 1.2–2.6 ms of their own system at 100k residents (936
+  since part 5's twelfth commit). In them no queue serves except the `building removals`, slot 64's
   own work: the slot after one serves the skipped slot's share first, then its own (two calls, so
   two batches when a queue is full), so every queue keeps its quota per hour and every credit
   (visits, admissions) accrues and pays out exactly as before, a slot later. No two queue-free
@@ -668,9 +671,12 @@ hour's actions slot (slot 56, in minute 3) decided on the census published at sl
   building handles, oldest first. Each is checked again when served: a clearance only while the site
   may still be cleared (`can_demand_despawn`), its remaining occupants evacuated first; an
   incompatible building only while the check, run again with no elapsed day, still says so, so a
-  building that recovered stays. A slot of clearances then rebuilds the zone index and the entrance
-  cache once, as the actions slot did; a slot that removed an incompatible building bumps the
-  building revision (`finish_phase_removals`), as daily phases did. A building whose daily phase
+  building that recovered stays. Each clearance finds the agents and households naming the removed
+  or the moved building in one scan each and repairs only those, and the slot's site boxes refresh
+  their terrain render patches one a light slot later (`SIM-02-K`). A slot of clearances then
+  rebuilds the zone index and the entrance cache once, as the actions slot did; a slot that
+  removed an incompatible building bumps the building revision (`finish_phase_removals`), as daily
+  phases did. A building whose daily phase
   queues its removal skips that day's settlement, as the immediate removal skipped it. Editing paths
   (`allocator.maintain` after a player's edit, the bulldozer, undo) still remove at once.
 - **`departures`** (quota 1, slots 65–479, slot 65 serving slot 64's share too): the households whose daily phase claimed a departure
@@ -735,8 +741,9 @@ about 90 MB of lanes at 100k after every road edit.
   alone, never from measured time (`SIM-02-K`): a step's rows at the step's weight and, in the
   serial household-claim, staffing and business-claim sweeps, the searches each row made (network
   route searches, supplier searches, candidates and routes, input quotes, consumer candidates and
-  fallbacks, the business claims' scan events and carrier quotes, funded-operation searches). A
-  uniform step takes the rows its budget covers; a
+  fallbacks, the business claims' scan events and carrier quotes, funded-operation searches); the
+  expansion sweep's priced supplier routes weigh 230 (`EXPANSION_ROUTE_EXTRA`, `SIM-02-K` part 5),
+  the current-staff sweep's 30. A uniform step takes the rows its budget covers; a
   serial sweep stops at the row whose work reaches the budget. The budget is ceil(R / D): R the
   previous census's work per step less this census's, summed, or, if more, the rows left at
   their weights with a sweep in progress at its observed rate; D = max(S − 96, S / 4, 1), S the window
@@ -778,10 +785,10 @@ about 90 MB of lanes at 100k after every road edit.
   recomputes a current census whole, whatever step it had reached; a stale one restarts at the
   next window slot, or runs at slot 0. Loading also gives census storage that holds no census a
   prepared copy of the live books (`SIM-02-K` part 5), and a finished census's book is prepared
-  for planning in two halves, from slot 944 (supplier rows) and slot 953 (the rest) of the hour
-  before it serves (sixth and seventh commits). Half a minute before, at slot 936, the book's
-  planning pass rows are built in a lending of their own (tenth commit), which the supplier half
-  keeps.
+  for planning in four parts, at slots 936 (pass rows and the supplier rows' factory), 944 (the
+  supplier layout), 953 (the rest) and 957 (the business finance masks) of the hour before it
+  serves (sixth, seventh, tenth and twelfth commits; a second half that runs later than 953
+  refreshes the masks itself, and loading prepares the whole at once).
 - **Readers:** buildings take funded jobs and activity from their copies at their phases, and
   the demand snapshot sweep reads the same copies. Restock and visit requests read only the
   published census's walking proofs and household access rows, and job search the funded jobs
@@ -987,7 +994,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    Planned for all of K4: about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4
    and 2.5 ms. Part 5 (planning slots) ran before part 4's remaining items, because the planning
    slots set the maximum at every tier.
-5. **K5, planning slots** (eleven commits done 2026-10-21/22; results sections, part 5). Measured
+5. **K5, planning slots** (twelve commits done 2026-10-21/22; results sections, part 5). Measured
    first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
@@ -1074,13 +1081,29 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    2.95–4.35 ms; the worst is an hour with three removals), slot 944's census-book preparation, 4
    frames (2.9–3.3 ms), and the first actions plan after loading, 1 frame (00:03, 4.4 ms). The
    other frames over 8 ms are preempted.
+   Done in the twelfth commit: each removal finds its agents and households in one scan each, so
+   its evacuation, eviction and remaps visit only those (0.69 → 0.37 ms a removal at 100k), and
+   the removal slot's terrain boxes, render state, wait for one a light slot after it (the slot
+   2.40 → 1.26 ms mean, 3.67 → 1.90 ms maximum, diagnostic); the census book's preparation runs
+   in four parts (the pass and supplier rows at 936, which becomes queue-free, their layout at
+   944, the rest at 953, the finance masks at 957; 944 2.65 → 1.69, 953 3.13 → 2.33 ms); the
+   expansion sweep's priced routes weigh what they cost (its slices at most 2.20 → 1.69 ms); and
+   loading prepares admission's border sweeps (the first actions plan's admission 1.15 → 0.03
+   ms). All are exact for the simulation but slot 936's queue-free entry (a scheduling change;
+   the envelope stays within tolerance, net income within 0.74%). In `PERF-07` (same session,
+   same cities) the 100k 1× frames over 8 ms fall from 31 to 9 and p99.9 from 7.37 to 7.11 ms.
+   **The 100k 1× target is still not reached:** in a schedstat diagnostic day 100k 1× has 1 work
+   frame over 8 ms (the industrial planning setup, 8.0 ms); every other frame over 8 ms is
+   preempted. In the `PERF-07` day eight of the nine follow the preemption pattern and the ninth
+   is the first actions plan after loading (00:03, 3.4 ms of slot work on a 4.0 ms agent tick).
    Left:
-   - **Slot 64:** batch each removal's agent, household and freight remaps (about 0.7 ms per
-     removal) over the slot, or publish the terrain boxes in a lighter slot.
-   - **Slot 944:** split the supplier factory from its layout.
-   - **The census expansion sweep's weights:** refit them (its slices take 2.0–2.1 ms against a 1 ms
-     budget).
-   - **The first lending after a load.**
+   - **The planning setups:** the workforce count is 0.57–0.71 ms in every setup; the scans are
+     industrial 1.28 / 1.52 ms, residential 0.99, commercial 0.72, actions 0.50. Run them on the
+     pool or slice them over the setup's half minute (exact).
+   - **The actions plan:** 2.9–3.0 ms (plan 1.65, queue re-proof 1.27).
+   - **The first residential plan after a load:** 3.7 ms against 1.8 ms later. Loading lends the
+     census books after the live one, so the plan rebuilds its pass rows (0.77 ms), and the
+     queue's first re-proof costs 1.7 against 0.5 ms.
    - **Maintained workforce totals**, **part 4's indoor agents** and **zone lists.**
    - **The job board and destination fallbacks,** and the per-building commute-quote clear.
 
@@ -4386,6 +4409,172 @@ commit)
 - **Save format:** unchanged (106); the kept index and the claim counters are derived and never
   saved.
 
+#### `SIM-02-K`, part 5 — one scan a removal and the preparation in parts (2026-10-22, twelfth
+commit)
+
+- **Measured first** (the eleventh commit's code with a timing point per scheduled system over
+  0.2 ms, inside the removal slot, the census book's preparation, the supplier layout and the
+  terrain-box refresh, every staffing-sweep slice with its counted searches, and the threads'
+  scheduler statistics around every frame over 8 ms; the tenth commit's 100k cities, full day,
+  pinned, 8 workers; diagnostic, day D1): ten 100k 1× work frames over 8 ms (8.1–8.5 ms): the
+  removal window's first slot four times (slot 64, 2.7–3.7 ms), the census book's preparation
+  five times (slot 944 three, 2.8–3.0 ms; slot 953 two, 3.3–3.5 ms) and one industrial planning
+  setup (slot 32, 2.6 ms); 56 preempted frames and 8 diagnostic-log stalls. Inside them:
+  - **Removals** (42 in the day, about 0.69 ms each): three scans of every agent per removal
+    (the evacuation's 0.12 ms, the eviction's 0.09 ms and the agent remap's eight column passes,
+    0.14 ms) and two of every household (invalidation 0.07, remap 0.06 ms), each finding the
+    few agents or households that name the removed or the moved building; the freight remap
+    0.09 ms. The slot's site publication (0.69 / 1.42 ms) was all its terrain boxes, and of each
+    box's 0.25–0.55 ms the road grading margins of its one to three render patches took nearly
+    all (the site ownership loop 0.02–0.05 ms): render state that a building removal leaves as
+    it was, recomputed for every box.
+  - **The census book's preparation** (four parts of about 1 ms each): the supplier rows'
+    factory 0.8–1.1 ms (incremental) and their layout 1.1–1.4 ms (offsets 0.14, entries 0.36,
+    the supplier index 0.74 ms) at slot 944, the buyer rows' factory 0.4–0.8 and layout 0.9–1.2
+    ms and the business finance masks 0.75–0.82 ms at slot 953, each lending 0.6–0.7 ms besides;
+    slot 936's lending (the pass rows) 0.82 ms.
+  - **Census expansion slices:** 51 of 1,254 over 1.2 ms (at most 2.20 ms). In them every row
+    was an operation (85–120) with 6,000–8,700 supplier candidates and 5,000–7,800 priced
+    supplier routes; a least-squares fit gives about 230 ns a priced route in the expansion sweep
+    against 25–30 in the current-staff sweep, whose slices fit their weights.
+  - **The first actions plan after loading** (00:03, 4.08 ms against 2.8–3.4 later): its
+    admission's border arrival sweeps (1.15 ms), which later hours keep per routing revision.
+- **What changed** (exact for the simulation except slot 936's queue-free entry, a scheduling
+  change with a gameplay side; the terrain boxes' later refresh is render state; see
+  [Decided while unattended](#decided-while-unattended)):
+  1. **One scan of the agents and one of the households per removal.** A clearance finds, in one
+     parallel scan, the agents naming the removed building or the last building (which the
+     swap-remove moves into its index), and in another the households naming either
+     (`AgentSystem::agents_referencing_buildings`,
+     `HouseholdSystem::households_referencing_buildings`). The evacuation, eviction and agent
+     remap, and the household invalidation and remap, then visit those alone
+     (`evacuate_building_among`, `evict_building_among`, `remap_building_among`,
+     `invalidate_building_among`): no other agent or household names either building, and none
+     comes to name the moved one, since only the visited ones change. A cancelled shipment that
+     removes its carrier renumbers agents, so the agent remap then scans every agent as before.
+     The freight remap rebuilds its request-failure map only when a key moves. Test builds with
+     the whole-city checks assert after every such remap that no agent or household names the
+     moved building's old index. Other removal paths (the bulldozer, incompatible buildings)
+     keep the full scans.
+  2. **The removal slot's terrain boxes follow in later slots.** The removal queue publishes its
+     clearances' production sites, yards and cell-lot marks at once and queues each site box's
+     terrain render-patch ownership (`deferred_site_terrain_boxes`), which one box at a time is
+     refreshed in each light slot (a slot serving a single queue share: neither queue-free nor
+     after one), while the zone index and site clients are current. The ownership is render state
+     no simulation system reads and each refresh recomputes its patches from the live roads and
+     sites; a load recomputes it whole. At 1× the terrain under a cleared building updates two
+     to four slots (0.1–0.25 s) later; at 32× in the same frame or the next.
+  3. **The census book's preparation in four parts.** Slot 936's lending, which built the pass
+     rows, now also runs the supplier rows' factory (`PlanningPreparation::SupplierRows`, through
+     `RecurringSupply::prepare_projected_rows`, which marks the layout stale); slot 944 lays the
+     supplier rows out (`Suppliers`); slot 953 prepares the rest (`Whole { masks: false }`) and
+     slot 957 (`PLANNING_PREPARATION_MASKS_SLOT`) refreshes the business finance masks; a second
+     half that runs later than 953 (a stale zone index) refreshes them itself, and loading
+     prepares the whole at once. Slot 936 joins the queue-free slots (twelve: 0, 8, 16, 24, 32,
+     40, 48, 56, 64, 936, 944, 953; the compile-time checks hold), so its queue shares and the
+     trips and construction starts due there move to slot 937. The supplier index's resources are
+     built on the pool and large bucket indices sort on the pool (both give the serial result).
+     The rows are derived and keyed, so every part's result is the one the single preparation
+     gave.
+  4. **The expansion sweep's priced routes weigh 230 work units** (`EXPANSION_ROUTE_EXTRA`, 200
+     on top of `WORK_WEIGHTS`'s 30); the current-staff sweep keeps 30. Only slice boundaries
+     move.
+  5. **Admission's border arrival sweeps are prepared at load** (`prepare_loaded_pathing`), so
+     the first admission batch after loading finds them current.
+- **Per slot** (diagnostic, D1 = the eleventh commit's code, D2 = this commit's, the same cities;
+  slot work in ms, mean / maximum over the day's 24 hours):
+
+  | Slot | Before | After |
+  | --- | --- | --- |
+  | 56 actions plan | 3.03 / 4.08 | 3.02 / 3.38 |
+  | 64 removals | 2.40 / 3.67 | 1.26 / 1.90 |
+  | · per removal | 0.69 | 0.37 (agent scan 0.13, household scan 0.10, freight 0.11) |
+  | · site publication | 0.69 / 1.42 | 0.003 (boxes deferred) |
+  | 65 | 2.44 / 2.93 | 2.46 / 3.22 |
+  | 66, 67 (deferred boxes, 0.44 / 0.86 ms each) | 0.68 / 1.31, 0.56 / 1.21 | 1.03 / 1.84, 0.80 / 1.86 |
+  | 936 rows (and now supplier rows) | 1.11 / 1.44 | 2.03 / 2.57 (queue-free) |
+  | 944 supplier rows and layout (now layout) | 2.65 / 3.04 | 1.69 / 1.89 |
+  | 953 second half | 3.13 / 3.80 | 2.33 / 2.80 |
+  | 957 (now the finance masks) | 0.52 / 1.01 | 1.24 / 1.83 |
+
+  Census expansion slices: at most 2.20 → 1.69 ms, p99 1.78 → 1.35 ms, slices over 1.2 ms 51 →
+  28; current-staff slices unchanged (at most 1.6 ms). The first actions plan's admission: 1.15 →
+  0.03 ms, and that actions plan (2.98 ms) now equals later hours.
+- **Attribution of the 100k 1× frames over 8 ms** (diagnostic day D2, threads' scheduler
+  statistics): **1 work frame** (22:02, 8.0 ms: the industrial planning setup, slot 32, 2.9 ms on
+  a 4.1 ms agent tick; the same slot held D1's 06:02 frame), **39 preempted**, **8 log stalls**
+  (a thread blocked off its CPU for about 10 ms writing the diagnostic log, five of them inside
+  the census system). No removal, preparation, census-slice or first-lending frame remains.
+  The D1 day of the eleventh commit's code had ten work frames (slot 64 four, slot 944 three,
+  slot 953 two, slot 32 one), 56 preempted, 8 log stalls.
+- **Equivalence** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, no failures, the same eight notes;
+  determinism shows no differences (repeat, save/reload continuation, 1 and 3 workers; 10k,
+  three days). Every change but one is exact: a build of this commit with slot 936 left serving
+  queues gives an envelope bit-identical to the eleventh commit's (every metric of every city,
+  every burst). The differences against the eleventh commit therefore all come from slot 936
+  joining the queue-free slots, where the queue shares and the trips and construction starts due
+  at 936 move to slot 937 (62.5 ms of game time at 1×): net income per resident within 0.74%
+  (fiscal 10k 27.15 → 27.35, baseline 10k 13.59 → 13.67, the 30k cities within 0.06%),
+  employment within 0.13%, households, residents, jobs and buildings within 0.31%, deliveries
+  within 0.24% except the fiscal-stress cities' startup freight (+2.6% and +2.8%, already
+  notes), out-of-stock rates within 0.40%. The larger relative changes are small counts:
+  bankruptcies in the 30k baseline 0.246 → 0.281 per 1,000 buildings a day (about 70 → 80
+  events, inside its band) and arrivals 0.281 → 0.295; vacancy and unhoused rates of a few
+  homes; trip failures of a few events. Bursts pass: the worst departure minute holds at most
+  3.8% of an hour's departures (baseline 10k freight; 3.6% before), the worst settlement hour
+  7.4% (unchanged).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`
+  against the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day; in one session with the
+  eleventh commit as the control; the save format is unchanged, so both builds ran on copies of
+  the same prepared cities). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms | Load s |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 3.8 (3.7) | 1.14 (1.13) | 1.39 (1.36) | 0.49 (0.49) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 10k | 32× | 4.0 (2.4) | 2.03 (1.89) | 2.66 (2.13) | 0.91 (0.87) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 30k | 1× | 6.5 (8.3) | 1.85 (1.87) | 2.22 (2.26) | 0.89 (0.90) | 0 (1) | 0 (0) | 4.9 (5.0) |
+  | 30k | 32× | 6.2 (6.7) | 4.75 (4.75) | 5.96 (5.83) | 2.85 (2.84) | 0 (0) | 0 (0) | 5.0 (5.0) |
+  | 100k | 1× | 12.5 (10.6) | 6.08 (6.22) | 7.11 (7.37) | 4.05 (4.04) | 9 (31) | 0 (0) | 18.7 (18.7) |
+  | 100k | 32× | 24.3 (26.1) | 20.17 (21.16) | 22.50 (25.63) | 13.61 (13.63) | 2,700 (2,700) | 290 (292) | 18.7 (18.7) |
+
+  Every gate limit passes for both builds; means are level. **100k 1×:** frames over 8 ms fall
+  from 31 to 9 and p99.9 from 7.37 to 7.11 ms. Eight of the nine follow the preemption pattern:
+  little or no slot work, with an inflated agent tick (5.7–8.7 ms) or snapshot (3.3–4.8 ms); the
+  maximum, 00:03 12.5 ms, is an 8.7 ms agent tick with 2.9 ms of slot work. The ninth, 00:03
+  8.6 ms, is a work frame: the actions plan with 3.4 ms of slot work on a 4.0 ms agent tick. The
+  control's frames include five of 2.0–3.2 ms slot work (the removal slot, slot 944, a planning
+  slot). **10k and 30k** stay under 8 ms at both speeds. The 10k maxima rose above the control's,
+  so the tier was run twice more for both builds (`--perf07-tiers 10000 --perf07-speeds 1,32`,
+  fresh city copies, every lock held): 1× 4.92 and 3.88 ms (control 7.34 and 8.07), 32× 3.31 and
+  2.41 ms (2.09 and 2.68), p99 level. The main run's 10k maxima are taken as preemption: a 2.5
+  ms agent tick where it is normally 0.7, and in one run one minute-59 frame. This is unproven,
+  because gate runs have no scheduler statistics. A 100k 1× recheck in the same session
+  (`--perf07-tiers 100000 --perf07-speeds 1`, fresh city copies, every lock held, the control
+  first) gave the control 36 frames over 8 ms (max 17.7 ms) and this build 19 (max 13.4 ms), a
+  noisier session for both. **100k 32×:** 24.3 ms (26.1), slot-heavy frames (open question 6).
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the eleventh commit as
+  control: hour means 1.13–1.14, 4.15–4.41, 8.72–8.78 and 27.85–28.46 ms (control 1.14–1.23,
+  4.02–4.14, 8.64–8.72 and 26.84–27.39). The 30k hours are 3–5% dearer: in fiscal stress the
+  planning phase (436 against 413–419 ms a day, the preparation's extra parts) and the census
+  (366 against 350); in the baseline the census is 6% cheaper (539–547 against 576–583). The
+  slot-936 scheduling change also shifts the workload slightly (30k logistics calls 6,010
+  against 5,869). The hour means stay far inside the `SIM-02-A` reference, and the same
+  work-count limits fail.
+- **Tests.** 2,557 release and 2,557 debug library tests (one new) and the 4 growth integration
+  tests pass; clippy adds nothing; `./run.sh --test` in an isolated profile passes (no script
+  error). New: `a_removal_over_its_scanned_agents_equals_the_full_scans` (agents naming the
+  removed and the moved building in different columns; eviction and remap over the scanned
+  candidates equal the full scans). Changed:
+  `the_census_books_preparation_refreshes_its_business_finance_masks` (the second half in its
+  own slot leaves the masks; the masks slot refreshes them).
+- **Build identity:** rustc 1.99.1; the gate, the suites, `PERF-07` and `./run.sh --test` ran on
+  the committed sources (`$TEST_BINARY`); `PERF-07` pinned with `--cpus 0,2,4,6,8,10,12,14` and
+  `RAYON_NUM_THREADS=8`, both builds on copies of the same prepared cities.
+- **Save format:** unchanged (106); the deferred boxes, the candidate sets and the preparation
+  parts are derived and never saved.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -6758,6 +6947,87 @@ alternatives and the evidence. The user reviews these on return.
   results identical; builds that differ only by the claims' weights and the kept index's maxima
   counts, neither of which slot 944 reads, read 2.61, 2.69, 2.67 and 2.94 ms. It is taken as
   run-to-run variation of a memory-bound phase, not confirmed.
+- **`SIM-02-K` part 5 (twelfth commit) — a removal's agents and households in one scan each.**
+  Each removal scanned every agent three times (evacuation, eviction, the remap's eight column
+  passes) and every household twice, about 0.5 of its 0.69 ms at 100k, to find the few naming
+  the removed building or the last building, which its swap-remove moves. Options: (a) batch the
+  slot's remaps into one pass after its removals (rejected: each removal's evacuation and
+  eviction read agent and household references in the live index space, and the evacuation
+  plans trips home from building indices, so a deferred remap would need every reference
+  translated between index spaces mid-slot); (b) serve fewer removals in slot 64 (a scheduling
+  change, and every removal slot still pays its zone-index repair; rejected: prefer exact); (c)
+  one scan per store for both buildings, the visits restricted to it (taken: exact, since only
+  the visited agents and households change before the remap, so none outside comes to name the
+  moved building; a carrier removal, which renumbers agents, falls back to the full remap; test
+  builds assert the claim after every remap). Evidence: per removal 0.69 → 0.37 ms (diagnostic);
+  a build without slot 936's queue-free entry has an envelope bit-identical to the eleventh
+  commit's; the new unit test equals the full scans.
+- **`SIM-02-K` part 5 (twelfth commit) — the removal slot's terrain boxes in later slots.** The
+  terrain boxes cost 0.25–0.55 ms each, nearly all the road grading margins of the patches they
+  touch, which a building removal does not change. This follows the eleventh commit's entry "the
+  removal slot's site publication stays in slot 64", which left the boxes for a lighter slot.
+  Options: (a) keep the road margins per patch and reuse them for site-only refreshes (rejected
+  for now: the margins follow the road surface and the heightmap, which keep no single revision
+  covering every input, and a stale margin is a visual fault that no gate detects); (b) publish
+  them at slot 65 (rejected: it holds 2.4–3.2 ms of trip events, the cell-lot region the
+  removals dirtied and two queue shares); (c) queue them and refresh one box a slot in the slots
+  that serve a single queue share (taken: the ownership is render state no simulation system
+  reads, each refresh recomputes its patches from the live state, and a load recomputes all of
+  it, so the simulation is exact and the terrain under a cleared building updates 0.1–0.25 s
+  later at 1×; the refresh waits while the zone index or site clients are stale, since repairing
+  them would reset the vacancy order admission reads). Evidence: slot 64's publication 0.69 /
+  1.42 → 0.003 ms, the boxes 0.44 / 0.86 ms in slots 66–67 (diagnostic).
+- **`SIM-02-K` part 5 (twelfth commit) — the census book's preparation in four parts.** Slots
+  944 (2.65 / 3.04 ms) and 953 (3.13 / 3.80) each held two parts of about 1 ms plus a lending of
+  0.6–0.7 ms. Options: (a) a new heavy slot for the supplier layout (948) and the masks at 957
+  (rejected: one more lending, 0.7 ms more work an hour, and 948 and 953 could share a 32×
+  frame); (b) the supplier rows' factory in slot 936's lending, which already opens and closes
+  a pass, the layout alone at 944, the rest at 953 and the masks at 957 (taken: no extra
+  lending; 936 becomes queue-free at 2.0 / 2.6 ms; the halves at 944 and 953 still never share a
+  32× frame); (c) only a faster layout (partly taken as well: the supplier index builds its
+  resources and sorts large bucket lists on the pool, exact). The masks only prune unclaimable
+  buyers, so where they are refreshed changes no result; a second half later than 953 refreshes
+  them itself. Evidence: 944 → 1.69 / 1.89, 953 → 2.33 / 2.80, 957 → 1.24 / 1.83 ms
+  (diagnostic). The parts are exact (the build without 936 queue-free is bit-identical); 936's
+  queue-free entry is a scheduling choice with a gameplay side, of the ninth commit's kind (queue
+  shares, trips and construction starts due at 936 move to 937, in the same minute), made under
+  the run's rule (keep the envelope closest, prefer the simpler option). Envelope evidence
+  against the eleventh commit: the gate passes with no failures and the same eight notes; net
+  income per resident within 0.74%, employment within 0.13%, households, residents, jobs and
+  buildings within 0.31%, deliveries within 0.24% (the fiscal-stress startup freight +2.6% and
+  +2.8%, already notes), out-of-stock rates within 0.40%, the 30k baseline's bankruptcies 0.246
+  → 0.281 per 1,000 buildings a day (about 70 → 80 events); bursts and determinism pass. The
+  alternative, 936 serving queues at 2.0–2.6 ms plus 0.4–0.9 ms of queue shares, would make it
+  the next frame over 8 ms.
+- **`SIM-02-K` part 5 (twelfth commit) — the expansion sweep's priced-route weight.** The
+  expansion slices were up to 2.4 times their estimate (at most 2.2 ms against about 0.9 ms
+  budgets) when every row was an operation with thousands of priced routes; a least-squares fit
+  over 1,197 slices gives about 230 ns a priced route in the expansion sweep, 25–30 in the
+  current-staff sweep. Options: (a) raise the shared candidate and route weights (rejected: the
+  current-staff slices fit their weights, so they would be cut finer for nothing); (b) a higher
+  operation weight for the expansion (rejected: it overprices the operations with few routes,
+  about 5× in total); (c) an expansion-only extra of 200 a priced route (taken: the heavy
+  slices' actual over estimated time is then at most 1.0, the expansion's total estimate 2.0×
+  its time, which raises the census's slot budget by about 4.5%). Exact: only slice boundaries
+  move. Evidence: slices at most 2.20 → 1.69 ms, p99 1.78 → 1.35 (diagnostic).
+- **`SIM-02-K` part 5 (twelfth commit) — admission's border sweeps at load.** The first actions
+  plan after loading spent 1.15 ms sweeping the border arrival costs, which later hours keep per
+  routing revision. Loading now sweeps them (`prepare_loaded_pathing`); exact, the tables are a
+  function of the routing hierarchy and the graph's node roles. Evidence: the 00:03 admission
+  1.15 → 0.03 ms, the actions plan 2.98 ms, equal to later hours.
+- **`SIM-02-K` part 5 (twelfth commit) — the 100k 1× target not reached (findings).** After
+  this commit no removal slot, census-book preparation, census slice or first-lending frame is
+  among the 100k 1× work frames over 8 ms: the D2 diagnostic day has one (the industrial
+  planning setup, 2.9 ms, 22:02, 8.0 ms) and the `PERF-07` day one (the first actions plan after
+  loading, 3.4 ms, 00:03, 8.6 ms), against ten and five before. Left (diagnostic): (1) the
+  planning setups (the workforce count 0.57–0.71 ms in every setup; scans industrial 1.28 /
+  1.52 ms, residential 0.99, commercial 0.72, actions 0.50); options: the scans on the pool or
+  sliced over the setup's half minute (exact), the workforce counted once a minute for both
+  halves (a gameplay change of half a minute); (2) the actions plan (2.9–3.0 ms; plan 1.65 and
+  the queue's re-proof 1.27 ms); (3) the first residential plan after loading (3.7 ms against
+  1.8: its pass rows, 0.77 ms, because loading lends the census books after the live one, and
+  the queue's first re-proof, 1.7 against 0.5 ms). None needs a change to the user's spec
+  decisions.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

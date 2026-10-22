@@ -516,12 +516,13 @@ fn a_stale_zone_index_defers_the_census_books_preparation() {
     assert!(core.households.census_run.funding().planning_prepared);
 }
 
-// The census publishes every buyer's financing; the preparation's second half refreshes those
-// finance masks, so the hour's first masked planning claim refreshes none of them (`SIM-02-K`).
+// The census publishes every buyer's financing; the preparation's mask slot, after a second
+// half in its own slot, refreshes those finance masks, so the hour's first masked planning
+// claim refreshes none of them (`SIM-02-K`).
 #[test]
 fn the_census_books_preparation_refreshes_its_business_finance_masks() {
     use crate::simulation::economy::hiring::{
-        PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
+        PLANNING_PREPARATION_MASKS_SLOT, PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
     };
     let mut scenario = busy_town();
     let core = &mut scenario.core;
@@ -536,7 +537,10 @@ fn the_census_books_preparation_refreshes_its_business_finance_masks() {
     core.advance_census(slot + PLANNING_PREPARATION_REST_SLOT - PLANNING_PREPARATION_SLOT);
     let funding = core.households.census_run.funding();
     assert!(funding.planning_prepared);
-    assert_eq!(funding.business.changed_finance_buyers_for_test(), 0);
+    assert!(funding.business.changed_finance_buyers_for_test() > 0);
+    core.advance_census(slot + PLANNING_PREPARATION_MASKS_SLOT - PLANNING_PREPARATION_SLOT);
+    let business = &core.households.census_run.funding().business;
+    assert_eq!(business.changed_finance_buyers_for_test(), 0);
 }
 
 #[test]

@@ -150,12 +150,15 @@ impl SimCore {
     /// Builds at load what the first frame would otherwise build (`SIM-02-K`): the routing
     /// hierarchy if dirty, the flow fields loading marked dirty, and the route scratch of the
     /// movement pass, the slots' trips and the job search with its network-leg storage for
-    /// that network. Each is a function of the loaded network, buildings and entrances, so the
-    /// first frame finds them current and has nothing left to build. The fields wait for the
-    /// first frame when the zone index or entrance cache is stale here.
+    /// that network, and admission's border arrival costs. Each is a function of the loaded
+    /// network, buildings and entrances, so the first frame (and the first admission batch)
+    /// finds them current and has nothing left to build. The fields wait for the first frame
+    /// when the zone index or entrance cache is stale here.
     pub(crate) fn prepare_loaded_pathing(&mut self) {
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);
+        self.allocator
+            .prepare_border_arrival_costs(&self.transit_network, &self.region_graph);
         let allocator = &self.allocator;
         if !allocator.vacancy_index_stale()
             && !allocator.entrances_dirty

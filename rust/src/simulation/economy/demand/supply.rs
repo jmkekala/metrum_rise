@@ -169,6 +169,9 @@ pub(super) struct ProjectReservations {
     // Set by a split minute-59 preparation: the next site preparation prepares the supplier
     // rows and their layout alone and leaves the rest unprepared (`SIM-02-K`). Cleared by it.
     pub(super) suppliers_only: bool,
+    // Set with `suppliers_only` by the preparation's first part: the supplier rows alone,
+    // without their layout, which the next part lays out (`SIM-02-K`). Cleared by it.
+    pub(super) supplier_rows_only: bool,
     // Pass starts that kept the previous rows, for tests.
     #[cfg(test)]
     pub(super) kept_row_starts: usize,
@@ -657,7 +660,7 @@ impl<'a> SiteSupply<'a> {
                     Some(ProjectedSupplySource::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
                 }));
             };
-            book.prepare_projected_sources(catalog, graph, &key, |previous, previous_key| {
+            let factory = |previous: Vec<ProjectedSupplySource>, previous_key: Option<&[u64]>| {
                 let incremental = changes.collect(previous_key, &key, allocator, zoning);
                 let rows = if incremental {
                     changes.merge(
@@ -692,7 +695,12 @@ impl<'a> SiteSupply<'a> {
                     } as u64,
                 );
                 rows
-            });
+            };
+            if std::mem::take(&mut reservations.supplier_rows_only) {
+                book.prepare_projected_rows(&key, factory);
+            } else {
+                book.prepare_projected_sources(catalog, graph, &key, factory);
+            }
             let suppliers_ms = lap();
             book.prepare_customer_deliveries(reservations.business.receipt_count());
             book.prepare_owners(owners, project_owners * inputs);

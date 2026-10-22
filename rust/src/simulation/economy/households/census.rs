@@ -154,6 +154,11 @@ impl HouseholdSystem {
         self.census_run.unprepared_finished_book()
     }
 
+    /// The finished census's book, prepared or not (`SIM-02-K`). O(1).
+    pub(crate) fn finished_census_book(&mut self) -> Option<&mut JobFunding> {
+        self.census_run.finished_book()
+    }
+
     /// At load, gives census storage that holds no census a copy of the live books
     /// (`SIM-02-K`, [`RollingCensus::warm_storage_from`](crate::simulation::economy::hiring::RollingCensus::warm_storage_from))
     /// and returns the copy, for the caller to prepare as it prepared the live books.

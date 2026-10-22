@@ -42,6 +42,7 @@ pub(crate) use snapshot::SavedDemandSnapshot;
 #[cfg(test)]
 pub(crate) use supply::ProjectProof;
 pub use system::DemandSystem;
+pub(crate) use system::PlanningPreparation;
 #[cfg(test)]
 pub(crate) use system::VERIFY_LIVE_PASSES;
 pub(crate) use types::UseTuningF32;

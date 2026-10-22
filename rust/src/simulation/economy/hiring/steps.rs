@@ -157,6 +157,11 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
 /// carrier quote and a funded-operation search (the last is the staffing sweeps' own).
 const WORK_WEIGHTS: [u64; 10] = [15_000, 500, 40, 30, 100, 50, 5_000, 270, 150, 2_000];
 
+/// Work units an expansion operation's priced supplier route adds to its weight in
+/// [`WORK_WEIGHTS`] (`SIM-02-K`): fitted to the expansion sweep's slices at 100k (release, eight
+/// workers), where a priced route costs about 230 ns against 30 in the current-staff sweep.
+const EXPANSION_ROUTE_EXTRA: u64 = 200;
+
 // The weighted counted work of a census's books and route cache so far; differences between
 // two readings are a span's counted work. O(1).
 fn counted_work(funding: &JobFunding, logistics: &ShipmentSystem) -> u64 {
@@ -1969,11 +1974,18 @@ impl JobFunding {
             household_claims::Census::new(allocator, catalog, fiscal, network, graph);
         let total = allocator.buildings.len();
         let counted = counted_work(self, logistics);
+        let routes = self.input_supply.work_counts()[2];
+        let route_extra = if current_staff {
+            0
+        } else {
+            EXPANSION_ROUTE_EXTRA
+        };
         let mut operations = 0_u64;
         let work = |funding: &Self, logistics: &ShipmentSystem, slots: usize, operations: u64| {
             slots as u64 * Step::CurrentStaff.row_work()
                 + operations * WORK_WEIGHTS[9]
                 + counted_work(funding, logistics).wrapping_sub(counted)
+                + funding.input_supply.work_counts()[2].wrapping_sub(routes) * route_extra
         };
         for slot in start..total {
             let used = work(self, logistics, slot - start, operations);

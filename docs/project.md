@@ -410,7 +410,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   because only the oldest stores get customers (`ECON-22`; `SIM-02-K` part 6).
   The census's business claims now count their scan work, so no census slot holds more than about
   2.2 ms at 100k, and the removal slot keeps the zone index across its swap-removes (slot 64 3.5
-  to 2.6 ms at 100k) (`SIM-02-K` part 5).
+  to 2.6 ms at 100k) (`SIM-02-K` part 5). Each removal now scans the agents and households once and
+  defers its terrain boxes, and the census book's preparation runs in four parts, so the removal
+  slot and the minute-59 preparation no longer set 100k 1× frames over 8 ms; 9 such frames remain
+  in `PERF-07` (31 before), mostly preemption (`SIM-02-K` part 5).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -31,13 +31,13 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{
-    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem, PlanningSlot, SpawnPermit,
-    StartRefusal,
+    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem, PlanningPreparation, PlanningSlot,
+    SpawnPermit, StartRefusal,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{
-    CENSUS_WINDOW_START, FrozenCensusParameters, PLANNING_PREPARATION_REST_SLOT,
-    PLANNING_PREPARATION_ROWS_SLOT, PLANNING_PREPARATION_SLOT,
+    CENSUS_WINDOW_START, FrozenCensusParameters, PLANNING_PREPARATION_MASKS_SLOT,
+    PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_ROWS_SLOT, PLANNING_PREPARATION_SLOT,
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -298,6 +298,9 @@ pub struct SimCore {
     pub(crate) road_locked_terrain_patch_margins: BTreeMap<(usize, usize), f32>,
     /// Terrain patches owned by at least one indexed building site.
     pub(crate) building_site_owned_terrain_patch_keys: HashSet<(usize, usize)>,
+    /// Site boxes whose render-patch ownership the building removal queue left for later slots
+    /// (`SIM-02-K`), oldest first: render state only, refreshed one a light slot. Derived.
+    pub(crate) deferred_site_terrain_boxes: std::collections::VecDeque<(f32, f32, f32, f32)>,
     /// Sorted terrain patches owned by roads, building sites, or both.
     pub(crate) engineered_terrain_patch_keys: Vec<(usize, usize)>,
     /// Required CDT query margin for every engineered-owned terrain patch.
@@ -415,6 +418,7 @@ impl SimCore {
             road_locked_terrain_patch_keys: Vec::new(),
             road_locked_terrain_patch_margins: BTreeMap::new(),
             building_site_owned_terrain_patch_keys: HashSet::new(),
+            deferred_site_terrain_boxes: Default::default(),
             engineered_terrain_patch_keys: Vec::new(),
             engineered_terrain_patch_margins: BTreeMap::new(),
             terrain_payload_generation_counter: 1,
@@ -1301,21 +1305,32 @@ impl SimCore {
         }
         // A stale zone index waits for its own reader: its rebuild resets the vacancy order
         // admission reads, which the preparation must not move (`SIM-02-K`).
-        // The window's first preparation slot prepares the supplier rows alone; everything
-        // else waits for the second half's slot, so the two never share a 32× frame
-        // (`SIM-02-K`).
+        // The preparation runs in parts, each in a slot of its own (`SIM-02-K`): half a minute
+        // before minute 59 the book's pass rows and supplier rows, at minute 59's first slot
+        // their layout, and from the second half's slot everything else, so no two heavy parts
+        // share a 1× frame and the halves never share a 32× frame; a quarter minute later the
+        // business finance masks a second half in its own slot left.
         let slot_of_hour = slot % SLOTS_PER_HOUR;
-        // Half a minute earlier the book's pass rows, which the supplier half then keeps.
-        if slot_of_hour == PLANNING_PREPARATION_ROWS_SLOT
-            && !self.allocator.zone_index_needs_rebuild()
-        {
-            self.prepare_census_book_pass_rows(slot);
+        if !self.allocator.zone_index_needs_rebuild() {
+            let part = match slot_of_hour {
+                PLANNING_PREPARATION_ROWS_SLOT => Some(PlanningPreparation::SupplierRows),
+                PLANNING_PREPARATION_SLOT => Some(PlanningPreparation::Suppliers),
+                rest if rest >= PLANNING_PREPARATION_REST_SLOT => {
+                    Some(PlanningPreparation::Whole {
+                        masks: rest != PLANNING_PREPARATION_REST_SLOT,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(part) = part {
+                self.prepare_census_book_for_planning(slot, part);
+            }
         }
-        if (slot_of_hour == PLANNING_PREPARATION_SLOT
-            || slot_of_hour >= PLANNING_PREPARATION_REST_SLOT)
-            && !self.allocator.zone_index_needs_rebuild()
+        if slot_of_hour == PLANNING_PREPARATION_MASKS_SLOT
+            && let Some(funding) = self.households.finished_census_book()
         {
-            self.prepare_census_book_for_planning(slot, slot_of_hour == PLANNING_PREPARATION_SLOT);
+            // Masks only prune unclaimable buyers; O(changed buyers' tranches and paths).
+            funding.business.refresh_finance_masks();
         }
         if self
             .households
@@ -1380,9 +1395,12 @@ impl SimCore {
             &self.transit_network,
             &mut self.logistics,
             self.time.minute_of_day,
-            false,
+            PlanningPreparation::Whole { masks: true },
         );
-        self.prepare_census_book_for_planning(self.time.absolute_slot(), false);
+        self.prepare_census_book_for_planning(
+            self.time.absolute_slot(),
+            PlanningPreparation::Whole { masks: true },
+        );
         // The copy is exact to its rows; preparing it again gives its storage the spare rows
         // the live books took (`utils/storage.rs`).
         if let Some(funding) = self.households.warm_census_storage() {
@@ -1396,49 +1414,19 @@ impl SimCore {
                 &self.transit_network,
                 &mut self.logistics,
                 self.time.minute_of_day,
-                false,
-            );
-        }
-    }
-
-    // The pass rows of a finished census's book no planning pass has prepared since the census
-    // started, built for the hour it serves (`PLANNING_PREPARATION_ROWS_SLOT`); the book stays
-    // unprepared for the preparation's halves. O(1) without such a book.
-    fn prepare_census_book_pass_rows(&mut self, slot: u64) {
-        let key = self.households.census_key(&self.transit_network);
-        let Some(funding) = self.households.unprepared_census_book() else {
-            return;
-        };
-        let timing = crate::debug::Channel::EconomyPhases
-            .enabled()
-            .then(Instant::now);
-        let (_, minute_of_day) = super::schedule::slot_calendar(next_hour(slot));
-        self.demand.prepare_planning_pass_rows(
-            funding,
-            key,
-            &self.allocator,
-            &self.region_graph,
-            &self.fiscal_policy,
-            minute_of_day,
-        );
-        if let Some(start) = timing {
-            debug_log!(
-                "economy_phases",
-                "census_book_preparation_detail slot_of_hour={} ms={:.3}",
-                slot % SLOTS_PER_HOUR,
-                start.elapsed().as_secs_f64() * 1000.0
+                PlanningPreparation::Whole { masks: true },
             );
         }
     }
 
     // A finished census whose book no planning pass has prepared since the census started is
-    // prepared for the hour it serves, from minute 59's first slot (`PLANNING_PREPARATION_SLOT`)
-    // in the window while the zone index is current, and at load, not by the planning slot that
-    // first lends it (`SIM-02-K`): the census refilled a book whose site rows were laid out two
-    // hours before. With `suppliers_only` the lending prepares the supplier rows and their
-    // layout alone and leaves the book unprepared, so the next window slot prepares the rest
-    // on current supplier rows. O(1) otherwise.
-    fn prepare_census_book_for_planning(&mut self, slot: u64, suppliers_only: bool) {
+    // prepared for the hour it serves, in parts from half a minute before minute 59
+    // (`PLANNING_PREPARATION_ROWS_SLOT`) in the window while the zone index is current, and
+    // whole at load, not by the planning slot that first lends it (`SIM-02-K`): the census
+    // refilled a book whose site rows were laid out two hours before. A part short of the
+    // whole leaves the book unprepared, so a later window slot prepares the rest on current
+    // rows. O(1) otherwise.
+    fn prepare_census_book_for_planning(&mut self, slot: u64, part: PlanningPreparation) {
         let key = self.households.census_key(&self.transit_network);
         let Some(funding) = self.households.unprepared_census_book() else {
             return;
@@ -1459,7 +1447,7 @@ impl SimCore {
             &self.transit_network,
             &mut self.logistics,
             minute_of_day,
-            suppliers_only,
+            part,
         );
         if let Some(start) = timing {
             debug_log!(
@@ -1767,6 +1755,45 @@ impl SimCore {
 
     /// Publishes allocator-owned site changes through one terrain invalidation path for every mode.
     pub(crate) fn publish_pending_building_site_changes(&mut self) {
+        self.publish_pending_site_changes_but_terrain();
+        let boxes = self.allocator.take_pending_site_dirty_bounds();
+        if !boxes.is_empty() {
+            self.mark_building_site_terrain_only_boxes(&boxes);
+        }
+        self.allocator.return_site_dirty_bounds_storage(boxes);
+    }
+
+    /// [`Self::publish_pending_building_site_changes`] for the building removal queue
+    /// (`SIM-02-K`): the production sites, yards and cell lots now, as there, and each site
+    /// box's terrain render-patch ownership left to [`Self::publish_deferred_site_terrain_box`]
+    /// in later slots. The ownership is render state that no simulation system reads, and each
+    /// refresh recomputes its patches from the live roads and sites, so a later refresh gives
+    /// what the next frame's terrain needs. O(changes) now.
+    pub(crate) fn publish_pending_building_site_changes_deferring_terrain(&mut self) {
+        self.publish_pending_site_changes_but_terrain();
+        let mut boxes = self.allocator.take_pending_site_dirty_bounds();
+        self.deferred_site_terrain_boxes.extend(boxes.drain(..));
+        self.allocator.return_site_dirty_bounds_storage(boxes);
+    }
+
+    /// Refreshes the terrain render-patch ownership of the oldest site box the building removal
+    /// queue deferred (`SIM-02-K`), unless the zone index or the site clients are stale: their
+    /// repair belongs to their own readers, since a zone-index rebuild resets the vacancy order
+    /// admission reads. O(1) with none, else one box's patches.
+    pub(crate) fn publish_deferred_site_terrain_box(&mut self) {
+        if self.deferred_site_terrain_boxes.is_empty()
+            || self.allocator.zone_index_needs_rebuild()
+            || self.allocator.building_sites.len() != self.allocator.buildings.len()
+        {
+            return;
+        }
+        if let Some(bounds) = self.deferred_site_terrain_boxes.pop_front() {
+            self.mark_building_site_terrain_only_boxes(&[bounds]);
+        }
+    }
+
+    // The production sites, yards and cell-lot dirty marks of the pending site changes.
+    fn publish_pending_site_changes_but_terrain(&mut self) {
         self.publish_pending_production_site_removals();
         crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         while let Some(bounds) = self.allocator.pop_pending_cell_site_dirty_bounds() {
@@ -1776,11 +1803,6 @@ impl SimCore {
                     max: glam::DVec2::new(f64::from(bounds.2), f64::from(bounds.3)),
                 });
         }
-        let boxes = self.allocator.take_pending_site_dirty_bounds();
-        if !boxes.is_empty() {
-            self.mark_building_site_terrain_only_boxes(&boxes);
-        }
-        self.allocator.return_site_dirty_bounds_storage(boxes);
     }
 
     /// Keeps saved production polygons aligned with allocator swap removals before further use.

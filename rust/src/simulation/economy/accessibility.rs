@@ -12,6 +12,9 @@ use crate::simulation::network::types::TransitFlags;
 /// Sentinel component id for nodes or buildings with no usable access.
 pub(crate) const NO_COMPONENT: u32 = u32::MAX;
 
+// Entries from which a bucket index sorts them on the pool (`SIM-02-K`).
+const PARALLEL_SORT_ENTRIES: usize = 4096;
+
 /// Connected-component labels for one transit mode; the default labels no node.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ModeComponentIndex {
@@ -374,7 +377,12 @@ impl ReachableBucketIndex {
     /// Builds deterministic component/chunk buckets from caller-owned candidate entries.
     pub(crate) fn from_entries(mut entries: Vec<ReachableBucketEntry>) -> Self {
         entries.retain(|entry| entry.component != NO_COMPONENT);
-        entries.sort_unstable();
+        // Equal entries are identical, so the parallel sort orders them as the serial one.
+        if entries.len() >= PARALLEL_SORT_ENTRIES {
+            entries.par_sort_unstable();
+        } else {
+            entries.sort_unstable();
+        }
         entries.dedup();
         let available = entries.len();
 

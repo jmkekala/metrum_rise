@@ -55,18 +55,26 @@ pub(crate) const REMOVAL_WINDOW_START: u64 = 4 * SLOTS_PER_MINUTE;
 pub(crate) const PLANNING_PREPARATION_SLOT: u64 = SLOTS_PER_HOUR - SLOTS_PER_MINUTE;
 const _: () = assert!(PLANNING_PREPARATION_SLOT >= CENSUS_WINDOW_START);
 
-/// Slot of the hour at which a finished census's book has its planning pass rows built
-/// (`SIM-02-K`), half a minute before the preparation's first slot: a lending that only opens and
-/// closes a pass, so the supplier half that follows keeps the rows and recomputes only those of
-/// the buildings changed since, as every lending of the book the previous pass started on does.
+/// Slot of the hour at which a finished census's book has its planning pass rows and its
+/// supplier rows built (`SIM-02-K`), half a minute before the preparation's first slot: a
+/// lending that opens and closes a pass and runs the supplier rows' factory without their
+/// layout, so the slot that lays them out keeps both and recomputes only the rows of the
+/// buildings changed since, as every lending of the book the previous pass started on does.
 pub(crate) const PLANNING_PREPARATION_ROWS_SLOT: u64 = PLANNING_PREPARATION_SLOT - 8;
 const _: () = assert!(PLANNING_PREPARATION_ROWS_SLOT >= CENSUS_WINDOW_START);
 
 /// First slot of the hour at which the preparation's second half runs (`SIM-02-K`): the first
-/// slot prepares the supplier rows alone, and this one, nine slots later, everything else. A
+/// slot lays the supplier rows out alone, and this one, nine slots later, everything else. A
 /// 32× frame crosses about 8.5 slots, so the two halves never share a frame.
 pub(crate) const PLANNING_PREPARATION_REST_SLOT: u64 = PLANNING_PREPARATION_SLOT + 9;
 const _: () = assert!(PLANNING_PREPARATION_REST_SLOT < SLOTS_PER_HOUR);
+
+/// Slot of the hour at which a prepared census book's business finance masks are refreshed
+/// (`SIM-02-K`), a quarter minute after the second half, which leaves them when it runs in its
+/// own slot; a second half run later refreshes them itself. Masks only prune unclaimable
+/// buyers, so where they are refreshed changes no result.
+pub(crate) const PLANNING_PREPARATION_MASKS_SLOT: u64 = PLANNING_PREPARATION_REST_SLOT + 4;
+const _: () = assert!(PLANNING_PREPARATION_MASKS_SLOT < SLOTS_PER_HOUR);
 
 /// Whether building and household swap-removes may run at absolute `slot` (`SIM-02-J`): slots
 /// [`REMOVAL_WINDOW_START`] to [`CENSUS_WINDOW_START`] − 1 of its hour. A removal earlier in the
@@ -214,6 +222,11 @@ impl RollingCensus {
     /// started (`SIM-02-K`). O(1).
     pub(crate) fn unprepared_finished_book(&mut self) -> Option<&mut JobFunding> {
         (self.progress.is_done() && !self.funding.planning_prepared).then_some(&mut self.funding)
+    }
+
+    /// The finished census's book, prepared for planning or not (`SIM-02-K`). O(1).
+    pub(crate) fn finished_book(&mut self) -> Option<&mut JobFunding> {
+        self.progress.is_done().then_some(&mut self.funding)
     }
 
     /// Gives census storage that holds no census, as after loading, a copy of the live books

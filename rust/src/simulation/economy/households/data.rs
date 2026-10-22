@@ -575,6 +575,63 @@ impl HouseholdSystem {
         self.removed_electricity = Default::default();
     }
 
+    /// Households whose home or reserved store is building `first` or `second`, ascending, in
+    /// one scan on the pool (`SIM-02-K`): a removal of `first` that moves building `second`
+    /// into its index finds here every household its invalidation and remap change, and
+    /// passes them to [`Self::invalidate_building_among`] and [`Self::remap_building_among`].
+    /// O(H/p).
+    pub(crate) fn households_referencing_buildings(
+        &self,
+        first: usize,
+        second: usize,
+    ) -> Vec<usize> {
+        crate::thread_pools::install(|| {
+            self.households
+                .par_iter()
+                .enumerate()
+                .filter(|(_, household)| {
+                    [
+                        household.home_building_id,
+                        household.reserved_store_building_id,
+                    ]
+                    .iter()
+                    .any(|&building| building == first || building == second)
+                })
+                .map(|(household_id, _)| household_id)
+                .collect()
+        })
+    }
+
+    /// [`Self::remap_building_indices`] for one swap-remove moving building `old` to `new`,
+    /// whose household loop visits the ascending `candidates` alone: every household naming
+    /// `old` must be among them, as [`Self::households_referencing_buildings`] found them
+    /// before the removal's invalidation (`SIM-02-K`). O(candidates) plus the census books'
+    /// own remaps.
+    pub(crate) fn remap_building_among(&mut self, old: usize, new: usize, candidates: &[usize]) {
+        let mapping = std::collections::HashMap::from([(old, new)]);
+        self.note_building_structure_change();
+        self.job_funding.remap_buildings(&mapping);
+        self.census_inputs.remap_buildings(&mapping);
+        self.ensure_daily_ledger_len();
+        for &household_id in candidates {
+            let household = &mut self.households[household_id];
+            if household.home_building_id == old {
+                household.home_building_id = new;
+            }
+            if household.reserved_store_building_id == old {
+                household.reserved_store_building_id = new;
+            }
+        }
+        // Test builds: no household outside the candidates named `old`.
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            assert!(
+                self.households_referencing_buildings(old, old).is_empty(),
+                "a household outside the removal's candidates named the moved building"
+            );
+        }
+    }
+
     /// Remaps building references after a building swap-remove.
     pub fn remap_building_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
         if !mapping.is_empty() {
@@ -611,6 +668,30 @@ impl HouseholdSystem {
         removed_building: usize,
         allocator: &mut BuildingAllocator,
     ) {
+        self.invalidate_building_referencing(removed_building, None, allocator);
+    }
+
+    /// [`Self::invalidate_building`] for a removal that found its households with
+    /// [`Self::households_referencing_buildings`] just before: only the ascending `candidates`
+    /// naming `removed_building` are visited, which is every household that does
+    /// (`SIM-02-K`). O(candidates) plus the census books' own invalidations.
+    pub(crate) fn invalidate_building_among(
+        &mut self,
+        removed_building: usize,
+        candidates: &[usize],
+        allocator: &mut BuildingAllocator,
+    ) {
+        self.invalidate_building_referencing(removed_building, Some(candidates), allocator);
+    }
+
+    // Invalidates the households naming `removed_building`: among `candidates` when given,
+    // else found by a scan of every household.
+    fn invalidate_building_referencing(
+        &mut self,
+        removed_building: usize,
+        candidates: Option<&[usize]>,
+        allocator: &mut BuildingAllocator,
+    ) {
         self.note_building_structure_change();
         self.job_funding.invalidate_building(removed_building);
         // Both removal paths swap-remove the building next (`SIM-02-I`).
@@ -630,17 +711,25 @@ impl HouseholdSystem {
         self.ensure_daily_ledger_len();
         // Only households whose home or reserved store is the removed building change; they
         // are found on the pool and updated in household order. O(H/p) (`SIM-02-K`).
-        let referencing: Vec<usize> = crate::thread_pools::install(|| {
-            self.households
-                .par_iter()
-                .enumerate()
-                .filter(|(_, household)| {
-                    household.home_building_id == removed_building
-                        || household.reserved_store_building_id == removed_building
-                })
-                .map(|(household_id, _)| household_id)
-                .collect()
-        });
+        let names_removed = |household: &Household| {
+            household.home_building_id == removed_building
+                || household.reserved_store_building_id == removed_building
+        };
+        let referencing: Vec<usize> = match candidates {
+            Some(candidates) => candidates
+                .iter()
+                .copied()
+                .filter(|&household_id| names_removed(&self.households[household_id]))
+                .collect(),
+            None => crate::thread_pools::install(|| {
+                self.households
+                    .par_iter()
+                    .enumerate()
+                    .filter(|(_, household)| names_removed(household))
+                    .map(|(household_id, _)| household_id)
+                    .collect()
+            }),
+        };
         let daily_ledgers = &mut self.daily_ledgers;
         for household_id in referencing {
             let household = &mut self.households[household_id];

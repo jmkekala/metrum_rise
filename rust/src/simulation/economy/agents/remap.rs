@@ -68,6 +68,38 @@ impl AgentSystem {
         }
     }
 
+    /// [`Self::remap_building_indices`] for one swap-remove moving building `old` to `new`, over
+    /// the ascending `candidates` alone: every agent that names `old` must be among them, as
+    /// [`Self::agents_referencing_buildings`] found them before a removal that has removed no
+    /// agent since (`SIM-02-K`). O(candidates).
+    pub(crate) fn remap_building_among(&mut self, old: usize, new: usize, candidates: &[usize]) {
+        let agents = &mut self.agents;
+        for column in [
+            &mut agents.home_building,
+            &mut agents.work_building,
+            &mut agents.current_building,
+            &mut agents.target_building,
+            &mut agents.planned_target_building,
+            &mut agents.next_departure_origin_building,
+            &mut agents.next_departure_target_building,
+            &mut agents.cached_schedule_work_building,
+        ] {
+            for &i in candidates {
+                if column[i] == old {
+                    column[i] = new;
+                }
+            }
+        }
+        // Test builds: no agent outside the candidates named `old`.
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            assert!(
+                self.agents_referencing_buildings(old, old).is_empty(),
+                "an agent outside the removal's candidates named the moved building"
+            );
+        }
+    }
+
     /// Sets `current_lane_id = usize::MAX` for every agent whose active lane belongs to the
     /// incremental rebuild closure of `affected_edges`, or whose connector leads into that closure.
     ///

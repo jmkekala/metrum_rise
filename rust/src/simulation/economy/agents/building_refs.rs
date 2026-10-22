@@ -23,26 +23,57 @@ impl AgentSystem {
     // Agents any of whose building references name `building_id`, ascending: the only agents
     // a removal's eviction and evacuation change, found on the pool. O(A/p) (`SIM-02-K`).
     fn agents_referencing_building(&self, building_id: usize) -> Vec<usize> {
+        self.agents_referencing_buildings(building_id, building_id)
+    }
+
+    /// Agents any of whose building references name `first` or `second`, ascending, in one
+    /// scan on the pool (`SIM-02-K`): a removal of `first` that moves building `second` into its
+    /// index finds here every agent its evacuation, eviction and remap change, and passes them
+    /// to [`Self::evacuate_building_among`], [`Self::evict_building_among`] and
+    /// [`Self::remap_building_among`]. O(A/p).
+    pub(crate) fn agents_referencing_buildings(&self, first: usize, second: usize) -> Vec<usize> {
         let agents = &self.agents;
         crate::thread_pools::install(|| {
             (0..agents.len())
                 .into_par_iter()
                 .filter(|&i| {
-                    [
-                        &agents.home_building,
-                        &agents.work_building,
-                        &agents.current_building,
-                        &agents.target_building,
-                        &agents.planned_target_building,
-                        &agents.next_departure_origin_building,
-                        &agents.next_departure_target_building,
-                        &agents.cached_schedule_work_building,
-                    ]
-                    .iter()
-                    .any(|column| column[i] == building_id)
+                    self.building_columns()
+                        .iter()
+                        .any(|column| column[i] == first || column[i] == second)
                 })
                 .collect()
         })
+    }
+
+    // The agent columns that hold building indices, as `remap_building_indices` remaps them.
+    pub(super) fn building_columns(&self) -> [&Vec<usize>; 8] {
+        let agents = &self.agents;
+        [
+            &agents.home_building,
+            &agents.work_building,
+            &agents.current_building,
+            &agents.target_building,
+            &agents.planned_target_building,
+            &agents.next_departure_origin_building,
+            &agents.next_departure_target_building,
+            &agents.cached_schedule_work_building,
+        ]
+    }
+
+    // Whether agent `i` names `building_id` in any building column. O(1).
+    fn references_building(&self, i: usize, building_id: usize) -> bool {
+        self.building_columns()
+            .iter()
+            .any(|column| column[i] == building_id)
+    }
+
+    // `candidates` (ascending) that name `building_id` now, ascending. O(candidates).
+    fn referencing_among(&self, building_id: usize, candidates: &[usize]) -> Vec<usize> {
+        candidates
+            .iter()
+            .copied()
+            .filter(|&i| self.references_building(i, building_id))
+            .collect()
     }
 
     /// Clears schedule-derived building cache fields for one agent.
@@ -269,7 +300,22 @@ impl AgentSystem {
     /// Forcefully removes all agents from a building that has been deleted. O(A/p) to find
     /// them, then O(1) each.
     pub fn evict_building(&mut self, building_id: usize) {
-        for i in self.agents_referencing_building(building_id) {
+        let referencing = self.agents_referencing_building(building_id);
+        self.evict_referencing(building_id, referencing);
+    }
+
+    /// [`Self::evict_building`] for a removal that found its agents with
+    /// [`Self::agents_referencing_buildings`]: only the ascending `candidates` that still name
+    /// `building_id` are evicted, which is every agent that does, since the removal changes no
+    /// other agent's references before. O(candidates) (`SIM-02-K`).
+    pub(crate) fn evict_building_among(&mut self, building_id: usize, candidates: &[usize]) {
+        let referencing = self.referencing_among(building_id, candidates);
+        self.evict_referencing(building_id, referencing);
+    }
+
+    // Evicts the ascending `referencing` agents, every agent that names `building_id`.
+    fn evict_referencing(&mut self, building_id: usize, referencing: Vec<usize>) {
+        for i in referencing {
             let cache_touches_building = self.agents.next_departure_origin_building[i]
                 == building_id
                 || self.agents.next_departure_target_building[i] == building_id
@@ -328,9 +374,55 @@ impl AgentSystem {
         if building_id >= allocator.buildings.len() {
             return;
         }
-
-        // Agents that reference no removed building are left as they are, in both passes.
         let referencing = self.agents_referencing_building(building_id);
+        self.evacuate_referencing(
+            building_id,
+            referencing,
+            households,
+            allocator,
+            transit_network,
+            graph,
+        );
+    }
+
+    /// [`Self::evacuate_building_for_removal`] for a removal that found its agents with
+    /// [`Self::agents_referencing_buildings`]: the ascending `candidates` that name
+    /// `building_id` are exactly the agents that the full scan would find (`SIM-02-K`).
+    /// O(candidates) plus their trips.
+    pub(crate) fn evacuate_building_among(
+        &mut self,
+        building_id: usize,
+        candidates: &[usize],
+        households: &mut HouseholdSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        if building_id >= allocator.buildings.len() {
+            return;
+        }
+        let referencing = self.referencing_among(building_id, candidates);
+        self.evacuate_referencing(
+            building_id,
+            referencing,
+            households,
+            allocator,
+            transit_network,
+            graph,
+        );
+    }
+
+    // Evacuates the ascending `referencing` agents, every agent that names `building_id`.
+    fn evacuate_referencing(
+        &mut self,
+        building_id: usize,
+        referencing: Vec<usize>,
+        households: &mut HouseholdSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        // Agents that reference no removed building are left as they are, in both passes.
         let mut household_targets: HashMap<usize, Option<usize>> = HashMap::new();
         for &agent_idx in &referencing {
             if self.agents.home_building[agent_idx] != building_id {
@@ -985,6 +1077,37 @@ mod tests {
             usize::MAX
         );
         assert_eq!(sys.agents.cached_work_profile_index[agent_idx], u16::MAX);
+    }
+
+    #[test]
+    fn a_removal_over_its_scanned_agents_equals_the_full_scans() {
+        // Agents naming the removed building 2 or the moved last building 5 in different
+        // columns, and agents naming neither.
+        let build = || {
+            let mut sys = AgentSystem::new();
+            for (home, work, target) in [
+                (1, 2, 2),
+                (5, 3, 5),
+                (2, 5, 0),
+                (4, 3, 1),
+                (5, 2, 4),
+                (0, 1, 3),
+            ] {
+                let i = sys.spawn_housed_agent(home, 0.0, 0.0);
+                sys.agents.work_building[i] = work;
+                sys.agents.target_building[i] = target;
+                sys.agents.next_departure_target_building[i] = target;
+            }
+            sys
+        };
+        let (mut full, mut among) = (build(), build());
+        let candidates = among.agents_referencing_buildings(2, 5);
+        assert_eq!(candidates, [0, 1, 2, 4]);
+        full.evict_building(2);
+        full.remap_building_indices(&HashMap::from([(5, 2)]));
+        among.evict_building_among(2, &candidates);
+        among.remap_building_among(5, 2, &candidates);
+        assert_eq!(format!("{:?}", among.agents), format!("{:?}", full.agents));
     }
 
     #[test]

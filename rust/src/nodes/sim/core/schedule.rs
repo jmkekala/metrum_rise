@@ -31,8 +31,8 @@ use crate::simulation::core::timing_wheel::TimedEvent;
 use super::trips::TripEvent;
 use crate::simulation::economy::demand::PlanningSlot;
 use crate::simulation::economy::hiring::{
-    PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT, REMOVAL_WINDOW_START,
-    removals_allowed,
+    PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_ROWS_SLOT, PLANNING_PREPARATION_SLOT,
+    REMOVAL_WINDOW_START, removals_allowed,
 };
 
 // Removals and level changes wait until the hour's planning slots have read the census its
@@ -41,13 +41,13 @@ const _: () = assert!(REMOVAL_WINDOW_START > PlanningSlot::Actions as u64);
 
 /// Slots of the hour in which the request queues serve nothing (`SIM-02-K`): the hour's four
 /// planning slots' setups and plans, the removal window's first slot, which serves the hour's
-/// first building removals, and the census book's two preparation slots. Each holds 1.5–3.5 ms
+/// first building removals, and the census book's three preparation slots. Each holds 1.2–2.5 ms
 /// of its own work at 100k residents, so at 1× a queue's share there would put the frame over
 /// its budget. The slot after one serves the skipped slot's share first, then its own, so every
 /// queue serves the same quota and accrues the same credit per hour. The removal window's first
 /// slot keeps its building removals, the slot's own work. Trip events and construction starts
 /// due in one fire in the next slot ([`event_slot`]).
-pub(crate) const QUEUE_FREE_SLOTS: [u64; 11] = [
+pub(crate) const QUEUE_FREE_SLOTS: [u64; 12] = [
     PlanningSlot::Residential.setup_slot(),
     PlanningSlot::Residential as u64,
     PlanningSlot::Commercial.setup_slot(),
@@ -57,6 +57,7 @@ pub(crate) const QUEUE_FREE_SLOTS: [u64; 11] = [
     PlanningSlot::Actions.setup_slot(),
     PlanningSlot::Actions as u64,
     REMOVAL_WINDOW_START,
+    PLANNING_PREPARATION_ROWS_SLOT,
     PLANNING_PREPARATION_SLOT,
     PLANNING_PREPARATION_REST_SLOT,
 ];
@@ -855,6 +856,11 @@ impl SimCore {
                             BUILDING_REMOVAL_QUOTA as usize,
                             observer,
                         );
+                    }
+                    // One deferred site box's terrain a slot that serves a single queue share,
+                    // so neither a queue-free slot nor the one after it holds them (`SIM-02-K`).
+                    if queue_shares == 1 {
+                        self.publish_deferred_site_terrain_box();
                     }
                 }
                 SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),

@@ -275,8 +275,12 @@ impl SupplierCandidateIndex {
                 .push(entry);
         }
 
-        let by_resource = grouped
+        // Each resource's buckets follow from its own entries alone, so they build on the pool
+        // and enter the map as the serial loop entered them (`SIM-02-K`).
+        let built: Vec<(ResourceRuntimeId, ReachableBucketIndex)> = grouped
             .into_iter()
+            .collect::<Vec<_>>()
+            .into_par_iter()
             .map(|(resource_runtime_id, entries)| {
                 (
                     resource_runtime_id,
@@ -285,7 +289,9 @@ impl SupplierCandidateIndex {
             })
             .collect();
 
-        Self { by_resource }
+        Self {
+            by_resource: built.into_iter().collect(),
+        }
     }
 
     /// Sorts `entries` in place and groups them as [`Self::from_entries`] does, keeping the

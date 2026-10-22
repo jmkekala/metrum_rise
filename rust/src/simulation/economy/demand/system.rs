@@ -31,6 +31,23 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::zoning::ZoningSystem;
 use std::sync::Arc;
 
+/// What one lending of a census book prepares for planning (`SIM-02-K`): the minute-58 and
+/// minute-59 preparation splits the work over window slots of its own, and loading prepares
+/// the whole at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlanningPreparation {
+    /// The pass rows and the supplier rows, without their layout.
+    SupplierRows,
+    /// The supplier rows, unless current, and their layout.
+    Suppliers,
+    /// Everything; the book is then prepared. With `masks` the business book's finance masks
+    /// are refreshed too, else a later slot refreshes them.
+    Whole {
+        /// Whether the business book's finance masks are refreshed in this lending.
+        masks: bool,
+    },
+}
+
 /// Demand-owned daily growth state derived from the settled economy snapshot.
 pub struct DemandSystem {
     pub(super) config: Arc<DemandConfig>,
@@ -527,15 +544,16 @@ impl DemandSystem {
     }
 
     /// Prepares on `funding`'s books what a planning slot prepares before it plans
-    /// (`SIM-02-K`): the border carrier tables, the supplier and buyer site rows and their
-    /// layouts, the pass's owner rows and the books' planning storage. Saves keep none of it,
-    /// so the first slot to lend each book after loading built it all in one frame; the live
-    /// book is prepared at load and a fresh census book once it is finished, in a window slot
-    /// of its own. The books are lent and restored exactly as a planning slot does, and what
-    /// is prepared is derived from the city and keyed by its revisions, so no result changes.
-    /// Books not valid for the live `key` at `minute_of_day` (the minute they serve) are left
-    /// alone. With `suppliers_only` only the supplier rows and their layout are prepared and the
-    /// book stays unprepared for a later call (`SIM-02-K`). O(B + P) and the books' storage.
+    /// (`SIM-02-K`): the border carrier tables, the pass rows, the supplier and buyer site rows
+    /// and their layouts, the pass's owner rows and the books' planning storage. Saves keep none
+    /// of it, so the first slot to lend each book after loading built it all in one frame; the
+    /// live book is prepared at load and a fresh census book once it is finished, in window
+    /// slots of its own. The books are lent and restored exactly as a planning slot does, and
+    /// what is prepared is derived from the city and keyed by its revisions, so no result
+    /// changes. Books not valid for the live `key` at `minute_of_day` (the minute they serve)
+    /// are left alone. `part` names what this lending prepares ([`PlanningPreparation`]); a
+    /// book stays unprepared for a later call until the whole is. O(B + P) and the books'
+    /// storage.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_planning_books(
         &mut self,
@@ -548,8 +566,9 @@ impl DemandSystem {
         network: &TransitNetwork,
         logistics: &mut ShipmentSystem,
         minute_of_day: u16,
-        suppliers_only: bool,
+        part: PlanningPreparation,
     ) {
+        let suppliers_only = !matches!(part, PlanningPreparation::Whole { .. });
         // Attempted once per book: an invalid one is left to its first planning slot.
         funding.planning_prepared = !suppliers_only;
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -580,6 +599,7 @@ impl DemandSystem {
             );
             // Preparing the rows and storage is all a new supply does before its first quote.
             reservations.suppliers_only = suppliers_only;
+            reservations.supplier_rows_only = part == PlanningPreparation::SupplierRows;
             SiteSupply::new(
                 &mut inputs,
                 &mut reservations,
@@ -610,65 +630,9 @@ impl DemandSystem {
             // (0.8 ms at 100k). The same refresh here leaves that claim only the buyers changed
             // since. Masks only prune unclaimable buyers, so no result changes (`SIM-02-K`).
             // O(changed buyers' tranches and their bucket paths).
-            if !suppliers_only {
+            if part == (PlanningPreparation::Whole { masks: true }) {
                 funding.business.refresh_finance_masks();
             }
-        }
-        self.freight_border_nodes = borders;
-    }
-
-    /// Builds the planning pass rows of `funding`'s books (`SIM-02-K`): lends them and opens and
-    /// closes a pass, as a planning slot does before it plans, so the next lending of the same
-    /// books keeps the rows and recomputes only those of the buildings changed since. The rows
-    /// are derived and keyed by the books' generation, the price phase and the policies, so no
-    /// result changes. Books not valid for the live `key` at `minute_of_day` are left alone.
-    /// O(B/p) in parallel.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_planning_pass_rows(
-        &mut self,
-        funding: &mut JobFunding,
-        key: CensusKey,
-        allocator: &BuildingAllocator,
-        graph: &RegionGraph,
-        fiscal_policy: &CityFiscalPolicy,
-        minute_of_day: u16,
-    ) {
-        let catalog = Arc::clone(&self.runtime_catalog);
-        let economy_tuning = Arc::clone(&self.runtime_tuning);
-        let mut borders = std::mem::take(&mut self.freight_border_nodes);
-        collect_connected_border_nodes(graph, &mut borders);
-        let phase = crate::simulation::economy::logistics::freight_price_phase(
-            &economy_tuning,
-            minute_of_day,
-        );
-        if funding.has_current_input_supply(key, &borders, phase) {
-            #[cfg(test)]
-            let before = VERIFY_LIVE_PASSES
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .then(|| live_fingerprint(funding));
-            let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
-            let mut inputs = super::execution::lend_live_books(&mut reservations, funding);
-            reservations.begin_live_pass(
-                funding,
-                &mut inputs,
-                allocator,
-                graph,
-                &catalog,
-                &economy_tuning,
-                fiscal_policy,
-                minute_of_day,
-            );
-            reservations.end_live_pass(&mut inputs, allocator, graph);
-            super::execution::return_live_books(inputs, &mut reservations, funding);
-            #[cfg(test)]
-            if let Some(before) = before {
-                assert_eq!(
-                    live_fingerprint(funding),
-                    before,
-                    "building the pass rows must return the books exactly"
-                );
-            }
-            self.construction_execution.reservations = reservations;
         }
         self.freight_border_nodes = borders;
     }

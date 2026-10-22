@@ -261,7 +261,8 @@ impl SimCore {
                 self.allocator
                     .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
             }
-            self.publish_pending_building_site_changes();
+            // The sites' terrain render patches follow in later slots (`SIM-02-K`).
+            self.publish_pending_building_site_changes_deferring_terrain();
             observer.buildings_changed(self);
         }
     }

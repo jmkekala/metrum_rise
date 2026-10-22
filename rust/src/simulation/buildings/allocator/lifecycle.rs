@@ -479,6 +479,18 @@ impl BuildingAllocator {
         self.entrances_dirty = true;
     }
 
+    /// Sweeps admission's border arrival costs for the loaded network (`SIM-02-K`), as the
+    /// first admission batch after loading would: the tables are kept per routing revision, so
+    /// that batch finds them current. O(1) when current, else O(nodes) plus one CCH sweep a
+    /// car-connected border.
+    pub(crate) fn prepare_border_arrival_costs(
+        &mut self,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        self.border_arrival.refresh(transit_network, graph);
+    }
+
     /// Admits bounded arrival candidates after demand claims their actual income requirements:
     /// each accepted family claims its home's vacancy and is handed to `launch` with its home,
     /// size, composition and arrival border.
@@ -683,22 +695,15 @@ impl BuildingAllocator {
                 if !self.can_demand_despawn(building_idx) {
                     continue;
                 }
-                // Employment slots can be empty while former employees remain inside.
-                // Preserve a physical route home before deletion invalidates the entrance.
-                agents.evacuate_building_for_removal(
-                    building_idx,
-                    households,
-                    self,
-                    network,
-                    graph,
-                );
-                mutated_any |= self.remove_building_at_index(
+                mutated_any |= self.remove_evacuated_building(
                     building_idx,
                     zoning,
                     agents,
                     households,
                     logistics,
                     treasury_balance,
+                    graph,
+                    network,
                 );
             }
 
@@ -827,9 +832,42 @@ impl BuildingAllocator {
         if !self.can_demand_despawn(building_idx) {
             return false;
         }
-        // Employment slots can be empty while former employees remain inside.
-        // Preserve a physical route home before deletion invalidates the entrance.
-        agents.evacuate_building_for_removal(building_idx, households, self, network, graph);
+        self.remove_evacuated_building(
+            building_idx,
+            zoning,
+            agents,
+            households,
+            logistics,
+            treasury_balance,
+            graph,
+            network,
+        )
+    }
+
+    // Removes building `building_idx` after evacuating its remaining occupants through the
+    // street handoff (employment slots can be empty while former employees remain inside, so
+    // a physical route home is kept before deletion invalidates the entrance). One parallel
+    // scan finds the agents naming it or the last building, which its swap-remove moves into
+    // its index; the evacuation, eviction and agent remap visit those alone (`SIM-02-K`).
+    // Returns whether it was removed. O(A/p) plus the removal's other remaps.
+    #[allow(clippy::too_many_arguments)]
+    fn remove_evacuated_building(
+        &mut self,
+        building_idx: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
+        graph: &RegionGraph,
+        network: &TransitNetwork,
+    ) -> bool {
+        if building_idx >= self.buildings.len() {
+            return false;
+        }
+        let candidates =
+            agents.agents_referencing_buildings(building_idx, self.buildings.len() - 1);
+        agents.evacuate_building_among(building_idx, &candidates, households, self, network, graph);
         self.remove_building_at_index(
             building_idx,
             zoning,
@@ -837,6 +875,7 @@ impl BuildingAllocator {
             households,
             logistics,
             treasury_balance,
+            Some(&candidates),
         )
     }
 
@@ -1610,6 +1649,13 @@ impl BuildingAllocator {
         Some(())
     }
 
+    // Removes building `building_idx` and repairs every reference to it and to the last
+    // building, which the swap-remove moves into its index. `candidates`, when given, are the
+    // agents `AgentSystem::agents_referencing_buildings` found naming either before anything
+    // else changed agents' references; eviction and the agent remap then visit them alone,
+    // unless a cancelled shipment removed a carrier meanwhile (the remap then scans every
+    // agent).
+    #[allow(clippy::too_many_arguments)]
     fn remove_building_at_index(
         &mut self,
         building_idx: usize,
@@ -1618,6 +1664,7 @@ impl BuildingAllocator {
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
         treasury_balance: &mut f64,
+        candidates: Option<&[usize]>,
     ) -> bool {
         let Some((parcel_id, zone_type)) = self
             .buildings
@@ -1632,8 +1679,22 @@ impl BuildingAllocator {
         self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         zoning.clear_parcel_occupancy(parcel_id);
 
-        agents.evict_building(building_idx);
-        households.invalidate_building(building_idx, self);
+        let last_idx = self.buildings.len().saturating_sub(1);
+        // The households naming either building, found as the agents were: the invalidation
+        // and the remap below change no other household.
+        let household_candidates =
+            candidates.map(|_| households.households_referencing_buildings(building_idx, last_idx));
+        match candidates {
+            Some(candidates) => agents.evict_building_among(building_idx, candidates),
+            None => agents.evict_building(building_idx),
+        }
+        let agent_count = agents.agents.len();
+        match &household_candidates {
+            Some(candidates) => {
+                households.invalidate_building_among(building_idx, candidates, self)
+            }
+            None => households.invalidate_building(building_idx, self),
+        }
         logistics.invalidate_building(building_idx, self, agents, treasury_balance);
         let city_owned = self.is_city_service_building(&self.buildings[building_idx]);
         households.close_building_electricity(
@@ -1645,7 +1706,6 @@ impl BuildingAllocator {
             self.dirty_zones[zone_idx] = true;
         }
 
-        let last_idx = self.buildings.len().saturating_sub(1);
         if building_idx < last_idx {
             let moved_building = &self.buildings[last_idx];
             if let Some(zone_idx) = baseline_private_zone_slot(moved_building.zone_type) {
@@ -1653,8 +1713,19 @@ impl BuildingAllocator {
             }
             let mut mapping = std::collections::HashMap::new();
             mapping.insert(last_idx, building_idx);
-            agents.remap_building_indices(&mapping);
-            households.remap_building_indices(&mapping);
+            match candidates {
+                // A removed carrier renumbered agents; the candidates no longer name them.
+                Some(candidates) if agents.agents.len() == agent_count => {
+                    agents.remap_building_among(last_idx, building_idx, candidates)
+                }
+                _ => agents.remap_building_indices(&mapping),
+            }
+            match &household_candidates {
+                Some(candidates) => {
+                    households.remap_building_among(last_idx, building_idx, candidates)
+                }
+                None => households.remap_building_indices(&mapping),
+            }
             logistics.remap_building_indices(&mapping);
             zoning.remap_parcel_occupancy(moved_building.parcel_id, last_idx, building_idx);
         }
@@ -1705,6 +1776,7 @@ impl BuildingAllocator {
             households,
             logistics,
             treasury_balance,
+            None,
         )
     }
 }

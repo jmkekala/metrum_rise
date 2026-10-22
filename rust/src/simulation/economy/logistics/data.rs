@@ -383,14 +383,22 @@ impl ShipmentSystem {
             shipment.destination.remap_building(mapping);
         }
 
-        let mut remapped_failures = BTreeMap::new();
-        for (mut key, failure) in std::mem::take(&mut self.request_failures) {
-            if let Some(&new_id) = mapping.get(&key.destination_building_id) {
-                key.destination_building_id = new_id;
+        // Rebuilt only when a key moves: otherwise the rebuild is the same map (`SIM-02-K`).
+        // O(F), else O(F log F).
+        if self
+            .request_failures
+            .keys()
+            .any(|key| mapping.contains_key(&key.destination_building_id))
+        {
+            let mut remapped_failures = BTreeMap::new();
+            for (mut key, failure) in std::mem::take(&mut self.request_failures) {
+                if let Some(&new_id) = mapping.get(&key.destination_building_id) {
+                    key.destination_building_id = new_id;
+                }
+                remapped_failures.insert(key, failure);
             }
-            remapped_failures.insert(key, failure);
+            self.request_failures = remapped_failures;
         }
-        self.request_failures = remapped_failures;
         self.invalidate_route_cache();
     }
 

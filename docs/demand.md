@@ -436,10 +436,11 @@ count changes. Registry, zoning-overlay, parcel-layout, lane and CCH changes reg
 Regenerated rows still reuse entrance geometry only when exact door coordinates, frontage
 edge/side, lane revision and CCH generation match. Rows keep the full rebuild's owner/key order,
 so candidate order, financing and job-lock expiry are unchanged. Each census's book is merged
-and laid out again in two halves in minute 59 of the hour before the one it serves (the supplier
-rows at its first slot, the buyer rows nine slots later; the second half also refreshes the
-business book's finance masks, which the census's financing publication marks for every buyer,
-so the residential slot's first business claim refreshes only buyers changed since), once the
+and laid out again in four parts in minute 59 of the hour before the one it serves (the pass rows
+and the supplier rows' factory at slot 936, the supplier layout at 944, the buyer rows at 953, and
+at 957 the business book's finance masks, which the census's financing publication marks for
+every buyer, so the residential slot's first business claim refreshes only buyers changed since;
+a second half that runs later refreshes them itself), once the
 census is done and while the zone index is current, so the residential slot finds its rows
 current unless a building or occupancy changed in that last minute. A lending of the same book keeps the live operation and
 site rows of the previous one and derives again only the rows of buildings changed or appended
@@ -487,8 +488,8 @@ once placed. Residential spawns need no permit. Construction itself is owned by
 
 `demand/viability.rs` and `demand/execution/level_change.rs`. Upgrades and downgrades are instant
 replacements by the asset one level up or down. Planned at the hour's slots, they are applied by
-the `level changes` queue (quota 8, slots 65–959 but the census book's preparation slots 944 and
-953, each skipped share
+the `level changes` queue (quota 8, slots 65–959 but the census book's preparation slots 936, 944
+and 953, each skipped share
 served in the next slot) under a permit (`SIM-02-J`); a change whose
 building no longer has the asset, level, profile or (for a business) door it was proved for is
 rejected. Level is a wealth tier; a target may hold more

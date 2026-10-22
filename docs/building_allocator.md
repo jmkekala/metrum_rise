@@ -360,7 +360,11 @@ removal queue's repair (`rebuild_zone_index_after_removals`) then returns the va
 building order and recomputes the admission order, which is what a rebuild gives (`ALLOC-03`), and
 recomputes the maxima or chunk bounds only when a removal may have lowered them. Any other stale
 mark drops the kept state and every other caller rebuilds in full; test builds compare the kept
-index with a rebuild.
+index with a rebuild. A clearance from the removal queue finds the agents and households naming
+the removed or the moved building in one scan each and repairs only those (`SIM-02-K`); the
+agent remap scans every agent when a removed carrier renumbered agents meanwhile. The slot's
+production-site terrain boxes are render state: they refresh one a light slot later while the
+zone index and site clients are current, and a load recomputes them whole.
 
 Inspector and service-funding picks share `nearest_building_idx_at()`. It searches building
 centres strictly within 30 m, preferring the lowest building index on an exact distance tie.

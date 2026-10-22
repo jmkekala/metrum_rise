@@ -90,7 +90,54 @@ pub(super) struct ProjectedSources {
     enabled: bool,
 }
 
+impl ProjectedSources {
+    // Replaces the rows with `factory`'s for a changed caller revision, sorted by owner and
+    // asset, and marks the layout stale; current rows are kept. O(factory + rows).
+    fn rebuild_rows(
+        &mut self,
+        caller_revision: &[u64],
+        factory: impl FnOnce(Vec<ProjectedSupplySource>, Option<&[u64]>) -> Vec<ProjectedSupplySource>,
+    ) {
+        if self.key.as_deref() == Some(caller_revision) {
+            return;
+        }
+        let previous = std::mem::take(&mut self.sources);
+        self.sources = factory(previous, self.key.as_deref());
+        self.key = Some(caller_revision.to_vec());
+        // The offsets, owner ranges and index follow the rows.
+        self.layout = None;
+        crate::debug::work::add(crate::debug::work::Work::SupplierSourceRebuilds, 1);
+        // Linear for the already-ordered rows the planner returns.
+        self.sources
+            .sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
+        debug_assert!(
+            self.sources
+                .windows(2)
+                .all(|pair| (pair[0].owner, &pair[0].asset) != (pair[1].owner, &pair[1].asset))
+        );
+    }
+}
+
 impl RecurringSupply {
+    /// The rows of [`Self::prepare_projected_sources`] alone (`SIM-02-K`): a changed caller
+    /// revision passes the previous rows and their revision to `factory` as there, and the
+    /// layout is left stale, so the next preparation lays these rows out without calling its
+    /// factory again (rows current). Nothing is enabled. O(factory + rows).
+    pub(crate) fn prepare_projected_rows(
+        &mut self,
+        caller_revision: &[u64],
+        factory: impl FnOnce(Vec<ProjectedSupplySource>, Option<&[u64]>) -> Vec<ProjectedSupplySource>,
+    ) {
+        debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
+        debug_assert!(
+            !self.projected.enabled && self.released.is_empty(),
+            "prepare once after a live fork"
+        );
+        if self.components.is_some() {
+            self.projected.rebuild_rows(caller_revision, factory);
+        }
+    }
+
     /// Prepares only caller-selected recipe/door variants, reusing the existing supplier
     /// buckets. A changed caller revision passes the previous rows and their revision to
     /// `factory`, which may regenerate only changed owners; rows must come back sorted by
@@ -122,23 +169,7 @@ impl RecurringSupply {
             let timing = crate::debug::Channel::EconomyPhases
                 .enabled()
                 .then(std::time::Instant::now);
-            if !rows_current {
-                let previous = std::mem::take(&mut projected.sources);
-                projected.sources = factory(previous, projected.key.as_deref());
-                projected.key = Some(caller_revision.to_vec());
-                crate::debug::work::add(crate::debug::work::Work::SupplierSourceRebuilds, 1);
-                // Linear for the already-ordered rows the planner returns.
-                projected
-                    .sources
-                    .sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
-                debug_assert!(projected.sources.windows(2).all(|pair| (
-                    pair[0].owner,
-                    &pair[0].asset
-                ) != (
-                    pair[1].owner,
-                    &pair[1].asset
-                )));
-            }
+            projected.rebuild_rows(caller_revision, factory);
             let factory_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
             // Components follow the network topology; door chunks follow the retained entrance.
             let topology = layout.0.map(|revision| revision.2);
