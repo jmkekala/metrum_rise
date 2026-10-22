@@ -5,7 +5,7 @@ each system runs, entity handles, timed events, snapshot rules, the sim-frame bu
 simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) and
 [`demand.md`](demand.md); traffic movement stays in [`traffic.md`](traffic.md).
 
-**Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
+**Status:** `SIM-02` done (2026-10-22). `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
 (save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases),
 `SIM-02-D` (passive deadlines and construction completion), `SIM-02-E` (trips as timed
 events), `SIM-02-F` (per-entity hourly economy), `SIM-02-G` (per-entity daily settlement),
@@ -50,9 +50,9 @@ feasibility cache split by parcel, and the live books lent last at load; then th
 delays summed by lane range on the pool, and each planning slot's free-place scan run beside
 its site preparation).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
-Part 7 (acceptance) is stopped for review: `PERF-07` now reports the frames another task
-preempted, 10k and 30k meet 8 ms at both speeds and 100k at 1× on the frames that were not
-preempted, and 100k at 32× does not (open questions 6 and 7).
+Part 7 (acceptance) is done: `PERF-07` reports the frames another task preempted and accepts on
+the frames that were not (open question 7, decided 2026-10-22); 30k at both speeds and 100k at 1×
+pass. 100k at 32× is deferred to `PERF-08` (open question 6, decided 2026-10-22).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -102,6 +102,16 @@ even at 32×. The cost problem is the peak, not the total, at today's sizes.
   one period old.
 - **Generational handles** for buildings, households, agents and shipments.
 - **GPU compute is deferred**; see [GPU compute](#gpu-compute).
+
+### Decisions (2026-10-22)
+
+- **`PERF-07` accepts on the frames no other task preempted.** A tier passes when its worst
+  unpreempted frame (`max_unpreempted_ms`), its raw p99.9 and its worst preempted frame less the
+  wait (`max_preempted_less_wait_ms`) are each at most 8 ms. See
+  [Open questions](#open-questions), question 7.
+- **100k at 32× is deferred.** The decision is taken when players' cities start to approach 100k
+  agents; until then it is tracked as `PERF-08` and `PERF-07` does not require it. See
+  [Open questions](#open-questions), question 6.
 
 ## Time model
 
@@ -825,7 +835,13 @@ moves its entities between the tiers' phase buckets.
 - **Workload:** the populated-city fixture used by `benchmark_populated_hour_boundaries` and
   `benchmark_populated_midnight_boundaries`, extended to record every frame of the day, at 10k,
   30k and 100k residents, at 1× and 32×.
-- **Target:** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding case: one
+- **Acceptance (decided 2026-10-22):** at 30k at 1× and 32× and at 100k at 1×, the worst frame no
+  other task preempted (`max_unpreempted_ms`), the raw p99.9 and the worst preempted frame less
+  its wait (`max_preempted_less_wait_ms`) are each at most 8 ms. `tools/sim02_gate.py perf07`
+  checks it and fails a run that misses it or lacks the scheduler statistics. 100k at 32× is
+  reported but not required: it is deferred to `PERF-08`.
+- **Target (as first set):** max ≤ 8 ms at 30k and 100k, at both speeds. 32× at 100k is the binding
+  case: one
   complete 100k candidate run in `economy.md` averaged about 161 ms per hour and 328 ms per daily
   tick, about 4.2 s of CPU per game day, or about 1.6 ms per frame at 32× once spread.
 - Matched, unprofiled release runs, recorded here, as for the economy contract. The
@@ -1185,7 +1201,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    of agent tick, and its 100k city failed the fixture's continuation check. Neither fix is
    landed: the census claim rule is an economy design decision. Open question 6 is not shrunk by
    traffic.
-7. **K7, acceptance** (stopped for review 2026-10-22; results section, part 7). `PERF-07` now
+7. **K7, acceptance** (done 2026-10-22, after review; results section, part 7). `PERF-07` now
    reports the frames another task preempted (a run-queue wait of 0.5 ms or more in one of the
    frame's threads; test builds only), with the threshold and the reads' overhead measured.
    On the final code, two full days at every tier and speed:
@@ -1197,10 +1213,11 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
      5's last commit; 30k at 1× and 32× (raw maximum 4.6–6.1 ms); 100k at 1× on frames no other
      task preempted (7.35 and 7.73 ms; the raw maximum is 10.2–14.1 ms through preempted frames).
    - **Failed:** 100k at 32× (mean frame 13.6 ms, worst frames 22–24 ms without preemption).
-   - **Open:** [question 6](#open-questions) (100k at 32× needs a decision of this document to
-     change; recommended: a coarser tier for distant areas, as its own item) and
-     [question 7](#open-questions) (the raw or the unpreempted maximum; recommended: the
-     unpreempted maximum with the raw p99.9 and the preempted frames less their wait at 8 ms).
+   - **Decided 2026-10-22:** [question 7](#open-questions), option (a): `PERF-07` accepts on the
+     unpreempted maximum with the raw p99.9 and the preempted frames less their wait each at most
+     8 ms; on both acceptance days 30k at 1× and 32× and 100k at 1× pass it.
+     [Question 6](#open-questions): 100k at 32× is deferred until players' cities approach 100k
+     agents and tracked as `PERF-08`. With both, `SIM-02` and `PERF-07` are done.
 
 If a part cannot reach its target without changing a decision of this document (for example a
 coarser simulation tier for distant agents, or GPU compute), the findings and options are
@@ -5034,6 +5051,21 @@ question 7](#open-questions)). No simulation code changed.
   | 100k 1× | passes on `max_unpreempted_ms` (thin margin); fails on raw max through preempted frames |
   | 100k 32× | fails |
 
+- **Acceptance as decided (2026-10-22, [question 7](#open-questions) (a); 100k at 32× deferred to
+  `PERF-08`).** Each value at most 8 ms; both acceptance days, ms, day 1 / day 2:
+
+  | Tier | `max_unpreempted_ms` | Raw p99.9 | `max_preempted_less_wait_ms` | Result |
+  | --- | --- | --- | --- | --- |
+  | 30k 1× | 3.19 / 2.56 | 2.21 / 2.17 | 2.52 / 2.67 | pass |
+  | 30k 32× | 5.87 / 6.04 | 5.77 / 5.52 | 4.96 / 4.13 | pass |
+  | 100k 1× | 7.35 / 7.73 | 7.51 / 7.14 | 6.15 / 7.10 | pass |
+  | 100k 32× (deferred) | 24.28 / 24.43 | 22.51 / 22.04 | 20.58 / 18.89 | not required |
+
+  `tools/sim02_gate.py perf07` now evaluates these limits in every run and fails one that misses
+  them or lacks the scheduler statistics; applied to the two acceptance reports it passes both,
+  and it fails a row over the limit and a row without the statistics. `SIM-02` and `PERF-07` are
+  done.
+
 - **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
   0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with part 5's fourteenth
   commit as control: hour means 0.81–0.92, 3.31–3.40, 8.36–8.51 and 26.09–26.64 ms (control
@@ -5225,6 +5257,11 @@ The options, each changing a decision of this document:
 refresh, so the clock never slips) is a further option, but 280–314 frames a day exceed 16.7 ms
 today, so it too needs (a) or (b).
 
+**Decided by the user (2026-10-22): deferred.** The option is chosen when players have built
+cities that start to approach 100k agents. Until then the target is tracked as `PERF-08`, outside
+`SIM-02`; `PERF-07`'s acceptance covers 30k at both speeds and 100k at 1×, and the gate keeps
+reporting 100k at 32× so the gap stays visible.
+
 7. **`PERF-07` under preemption** (`SIM-02-K` part 7). The benchmark's eight pinned CPUs are
    shared with the rest of the machine, and another task keeps a pool worker or the frame's own
    thread off its CPU for 0.5–10.6 ms in 0.2–9% of a day's frames (100k 1×: 4.6–5.4%). Such a
@@ -5251,6 +5288,10 @@ today, so it too needs (a) or (b).
    **Recommendation: (a).** It needs no machine change, the benchmark reports it from part 7 on,
    its two guards keep a preempted frame from hiding work, and the threshold data show that it
    does not depend on the threshold's exact value. (b) only if a raw maximum must be quoted.
+
+   **Decided by the user (2026-10-22): (a).** `tools/sim02_gate.py perf07` checks it for 30k at
+   1× and 32× and 100k at 1×, and fails a run that misses it or lacks the scheduler statistics
+   (see [Frame budget](#frame-budget-perf-07)).
 
 ### Decided while unattended
 
@@ -7726,7 +7767,9 @@ alternatives and the evidence. The user reviews these on return.
   maximum or the unpreempted one is the user's decision (open question 7). Per the rule, part 7
   changes no simulation code, writes the findings and options here, marks `SIM-02` and
   `PERF-07` `needs_revalidation` and stops for review. The only code change is the measurement
-  (test builds), which leaves every simulation result bit-identical.
+  (test builds), which leaves every simulation result bit-identical. The user's review on
+  2026-10-22 decided both questions ([Decisions (2026-10-22)](#decisions-2026-10-22)), and
+  `SIM-02` and `PERF-07` are done.
 - **`SIM-02-K` part 7 — the day report carries its components' means.** Open question 6 needs
   the 100k 32× frame's budget by part; `PERF07_DAY` reported only the components' maxima and the
   snapshot's mean. It now also reports the mean agent tick, slot work and pathing per frame

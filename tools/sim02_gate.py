@@ -47,6 +47,12 @@ MONEY_RESIDUAL_SLACK = 1.5
 MAX_SLACK = 1.25
 P99_SLACK = 1.10
 TIMING_FLOOR_MS = 0.5
+# PERF-07 acceptance (docs/simulation.md#open-questions, question 7): a tier passes when its
+# worst frame no other task preempted, its raw p99.9 and its worst preempted frame less the
+# wait are each at most 8 ms. 100k at 32x is deferred (PERF-08) and only reported.
+PERF07_ACCEPTANCE_MS = 8.0
+PERF07_ACCEPTED_TIERS = ((30000, 1), (30000, 32), (100000, 1))
+PERF07_ACCEPTANCE_KEYS = ("max_unpreempted_ms", "p999_ms", "max_preempted_less_wait_ms")
 
 
 def run_test(binary, name, env, log_path, tags):
@@ -269,6 +275,24 @@ def perf07_table(rows):
     return lines
 
 
+def perf07_acceptance(rows):
+    """The acceptance values of every measured tier the limit covers, and the failures. A run
+    without scheduler statistics cannot be judged and is reported as a failure."""
+    accepted, failures = [], []
+    for row in rows:
+        if (row["residents"], int(row["speed"])) not in PERF07_ACCEPTED_TIERS:
+            continue
+        values = {key: row.get(key) for key in PERF07_ACCEPTANCE_KEYS}
+        missing = [key for key, value in values.items() if value is None]
+        over = [key for key, value in values.items() if value is not None and value > PERF07_ACCEPTANCE_MS]
+        accepted.append({"residents": row["residents"], "speed": row["speed"], **values,
+                         "pass": not missing and not over})
+        label = f"PERF-07 acceptance {row['residents']} {row['speed']:g}x"
+        failures += [f"{label} {key} {values[key]:.2f} > {PERF07_ACCEPTANCE_MS:g}" for key in over]
+        failures += [f"{label} {key} not measured" for key in missing]
+    return accepted, failures
+
+
 def portable_command(argv):
     """The command line with local paths replaced by the docs' placeholders."""
     names = {"--binary": "$TEST_BINARY", "--artifacts": "$ARTIFACTS"}
@@ -379,6 +403,13 @@ def main():
         report["perf07"] = run_perf07(binary, output, tiers, speeds)
         report["perf07_table"] = perf07_table(report["perf07"])
         print("\n".join(report["perf07_table"]))
+        report["perf07_acceptance"], acceptance_failures = perf07_acceptance(report["perf07"])
+        report["failures"] += acceptance_failures
+        for row in report["perf07_acceptance"]:
+            shown = ", ".join("–" if row[key] is None else f"{row[key]:.2f}"
+                              for key in PERF07_ACCEPTANCE_KEYS)
+            print(f"PERF-07 acceptance {row['residents']} {row['speed']:g}x (unpreempted, p99.9, "
+                  f"preempted less wait): {shown}: {'PASS' if row['pass'] else 'FAIL'}")
         if args.perf07_baseline:
             baseline_rows = json.loads(args.perf07_baseline.read_text())["perf07"]
             report["failures"] += compare_perf07(report["perf07"], baseline_rows)
