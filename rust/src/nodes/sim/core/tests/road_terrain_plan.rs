@@ -3,9 +3,36 @@
 //! Road-only preview, deferred click terrain parity and stale-dependency regressions.
 
 use super::*;
+use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::{RefinedTerrainPatchBuildInput, RoadEditPlan};
 use godot::prelude::Vector2;
 use std::sync::Arc;
+
+#[test]
+fn cold_road_commit_completes_terrain_plan_before_mutation() {
+    let mut core = test_core();
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let edges_before = core.region_graph.edge_count();
+
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            edit_plan: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+
+    assert!(outcome.committed, "{}", outcome.rejection);
+    assert_eq!(core.region_graph.edge_count(), edges_before + 1);
+    assert!(!core.last_road_edit_metrics.preview_plan_reused);
+    assert!(!core.transit_network.road_edit_is_staged());
+}
 
 #[test]
 fn road_only_preview_completes_on_click_without_copying_or_resolving_roads() {

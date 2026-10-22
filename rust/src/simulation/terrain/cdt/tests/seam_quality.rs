@@ -5,6 +5,37 @@
 use super::*;
 
 #[test]
+fn cdt_stops_after_reaching_a_near_degenerate_three_vertex_seam_loop() {
+    let source = test_span_boundary_source(77, TerrainCdtRoadBandKind::Sidewalk, 4);
+    let points = vec![
+        TerrainCdtVertex::new(1.0, 0.12, 1.0),
+        TerrainCdtVertex::new(1.004, 0.12, 1.0),
+        TerrainCdtVertex::new(1.008, 0.12, 1.0),
+        TerrainCdtVertex::new(5.0, 0.12, 1.000_001),
+    ];
+    let source_edges = points
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+            start,
+            end: points[(index + 1) % points.len()],
+            source,
+        })
+        .collect::<Vec<_>>();
+
+    let quality = harden_terrain_cdt_road_loop_seams(
+        points.clone(),
+        &source_edges,
+        TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+    );
+
+    assert_eq!(quality.points, vec![points[0], points[2], points[3]]);
+    assert_eq!(quality.edge_sources.len(), 3);
+    assert_eq!(quality.merged_subbudget_seam_edges, 1);
+}
+
+#[test]
 fn cdt_merges_subbudget_same_authority_seam_fragments_before_triangulation() {
     let source_a = test_span_boundary_source_range(
         78,

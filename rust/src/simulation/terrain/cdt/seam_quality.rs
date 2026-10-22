@@ -27,7 +27,9 @@ pub(super) fn harden_terrain_cdt_road_loop_seams(
     let mut samples = Vec::new();
 
     loop {
-        if points.len() < 3 || edge_sources.len() != points.len() {
+        // Three vertices are the minimum valid loop. The removal helper deliberately keeps that
+        // minimum, so searching for another eligible merge here would retry the same no-op forever.
+        if points.len() <= 3 || edge_sources.len() != points.len() {
             break;
         }
         let Some(merge) = next_mergeable_subbudget_seam_vertex(&points, &edge_sources) else {
