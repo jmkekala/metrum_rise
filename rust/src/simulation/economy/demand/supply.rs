@@ -207,6 +207,12 @@ struct KeptPassRows {
 pub(crate) type ProjectProof = (u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>);
 
 impl ProjectReservations {
+    /// The constructing buildings the pass's project market replayed, in building order: every
+    /// building [`constructing`] selects for the census the pass lent.
+    pub(super) fn constructing_rows(&self) -> &[usize] {
+        &self.constructing
+    }
+
     /// Finds an unplaced operation using the fixed owner namespace retained across appends.
     #[cfg(test)]
     pub(super) fn project_operation(

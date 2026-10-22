@@ -4920,6 +4920,7 @@ fn plan_slot(
         },
         &mut |_: u64, _: &str| Some(fee),
         None,
+        None,
     );
 }
 

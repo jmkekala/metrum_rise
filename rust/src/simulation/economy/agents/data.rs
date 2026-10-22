@@ -225,6 +225,9 @@ pub struct AgentSystem {
     pub lane_speed_sum: Vec<f32>,
     /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
     pub lane_vehicle_cnt: Vec<u32>,
+    /// Scratch buffer: each agent's lane for the frontage delay sums, `u32::MAX` for agents
+    /// that are not cars on a lane (`SIM-02-K`).
+    pub(crate) frontage_lanes: Vec<u32>,
     /// Monotonic source for transient render IDs assigned to newly spawned agents.
     pub(crate) next_render_id: u64,
     /// Last allocator building-reference revision that was scrubbed against this agent store.
@@ -302,6 +305,7 @@ impl AgentSystem {
             movement_claim_modes: Vec::new(),
             lane_speed_sum: Vec::new(),
             lane_vehicle_cnt: Vec::new(),
+            frontage_lanes: Vec::new(),
             next_render_id: 0,
             last_building_ref_scrub_revision: u64::MAX,
             traffic_debug_last_pos_x: Vec::new(),

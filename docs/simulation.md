@@ -23,7 +23,7 @@ census's whole steps in slices). Part 4 (agent tick) has two commits done (lane 
 across appends and swap-removes with interleaved movement shards; then commute departures leaving
 over their minute's slots, the unused per-edge congestion deleted, save format 105, and the first
 tick after loading prepared at load), and part 5 (planning slots)
-has thirteen commits done (planning storage estimates from free lots, one downgrade scan, and
+has fourteen commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
 slots' trips on one owned route scratch that loading prepares with the job search's scratch;
@@ -46,7 +46,9 @@ households found in one scan, the removal slot's terrain boxes refreshed in late
 census book's preparation in four parts with slot 936 queue-free, the expansion sweep's priced
 routes weighed, and admission's border sweeps prepared at load; then each planning setup's scans
 run beside its workforce count, a workforce reset passes over the buildings once, the site
-feasibility cache split by parcel, and the live books lent last at load).
+feasibility cache split by parcel, and the live books lent last at load; then the frontage
+delays summed by lane range on the pool, and each planning slot's free-place scan run beside
+its site preparation).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
@@ -847,7 +849,11 @@ moves its entities between the tiers' phase buckets.
   simulation work; the count over 8 ms and p99.9 are robust to it, a single maximum is not. Timing runs keep the machine quiet, the
   run's own monitoring included. At 100k 1× a full day of per-phase timing with the same
   statistics found 59 of the 184 agent ticks over 6 ms preempted (a worker waiting 1.1–7.8 ms);
-  the others were departure waves, removed by `SIM-02-K` part 4's second commit.
+  the others were departure waves, removed by `SIM-02-K` part 4's second commit. Across the
+  fourteenth commit's runs the 100k 1× count of frames over 8 ms moved between 12 and 36 for
+  either build, and every recorded worst frame of the last build showed the preemption pattern,
+  so a single raw maximum and the over-8 count are not reproducible on this machine; acceptance
+  needs preempted frames separated (part 7).
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -997,7 +1003,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    Planned for all of K4: about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4
    and 2.5 ms. Part 5 (planning slots) ran before part 4's remaining items, because the planning
    slots set the maximum at every tier.
-5. **K5, planning slots** (thirteen commits done 2026-10-21/22; results sections, part 5). Measured
+5. **K5, planning slots** (fourteen commits done 2026-10-21/22; results sections, part 5). Measured
    first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
@@ -1115,12 +1121,33 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    `PERF-07`'s own 12 worst frames, actions-slot frames still reach 9.3-10.0 ms (2.8-3.4 ms of
    slot work on a 4.5-5 ms agent tick), plus one removal-window frame at 8.8 ms. So the margin is
    not yet robust.
+   Done in the fourteenth commit: the frontage delay update (once a simulated second, in the
+   frame that crosses each game minute) notes each agent's lane in parallel, then one task per
+   lane range adds its cars in agent order and updates its own lanes (0.68 → 0.45 ms at 1×, 0.72
+   → 0.47 ms at 32×); and each planning slot (8, 24, 40, 56) runs the workforce reset's
+   free-place scan beside its site preparation and queue replay, the constructing workplaces'
+   jobs coming from the books' constructing rows (actions slot 2.74 → 2.56 ms, commercial plan
+   1.50 → 1.32, industrial 1.64 → 1.42, residential 1.87 → 1.77; slot 56 in schedstat days
+   2.78 / 3.38 → 2.72 / 2.89 ms, slot 8 1.84 / 3.57 → 1.57 / 2.64). Both exact: the envelope is
+   bit-identical and the save format is unchanged.
+   **Status after the fourteenth commit.** In a schedstat diagnostic day every 100k 1× frame
+   over 8 ms that carries slot work was preempted. There were 46 frames over 8 ms: 23 preempted,
+   22 diagnostic-log stalls, and 1 agent-tick frame in the evening commute window with no slot
+   work and no waiting worker (21:45, 8.1 ms, a 6.8 ms tick). `PERF-07`'s 12 worst frames in
+   both runs show the preemption pattern. The largest slot-work frames are the actions slot
+   (2.7 / 2.9 ms) and slot 65 (2.6 / 3.2 ms), at 7.0–7.5 ms when quiet. The minute-3/4 agent
+   tick is attributed: there is no departure, admission or arrival clustering (tick mean by
+   minute 2.98–3.21 ms); the frame crossing each game minute runs the frontage update; the frame
+   after a slot frame has a movement pass about 0.3 ms slower (cache eviction); commute hours
+   add 0.4–0.6 ms.
    Left:
-   - **The actions slot:** either one lending for the plan and the construction epoch (exact;
-     needs the pass journal to rewind without truncating owner rows), or the execution in its own
-     queue-free slot of minute 3 (a save format change plus a scheduling change).
-   - **Slot 65.**
-   - **The census-book parts at 936 / 953.**
+   - **The actions slot's execution in its own queue-free slot 60** (save the workforce view,
+     the admission budget and the plan's validity: a save format change and a scheduling change;
+     expected slot 56 about 1.4 ms and slot 60 about 1.3 ms).
+   - **Slot 65:** 1–3 cell-lot regions an hour re-derive with no candidates (0.46–0.73 ms each)
+     after `release_invalid_empty_cell_lot`, plus the first construction start.
+   - **The frontage lane pass** (0.34 ms over 184k lane records).
+   - **The census-book parts at 936 / 953** (2.1 / 2.5 ms).
    - **Warming the first queue re-proof after a load** (about 1.8 ms).
    - **Maintained workforce totals**, **part 4's indoor agents** and **zone lists.**
    - **The job board and destination fallbacks,** and the per-building commute-quote clear.
@@ -4720,6 +4747,133 @@ commit)
 - **Save format:** unchanged (106); the cache shards, the estimate and the lending order are
   derived and never saved.
 
+#### `SIM-02-K`, part 5 — frontage sums by lane range (2026-10-22, fourteenth commit)
+
+- **Measured first** (the thirteenth commit's code, the tenth commit's 100k cities, pinned, 8
+  workers; diagnostic: every frame of a 100k 1× day with the agent tick split into its
+  sub-phases, and 6 game hours with the `economy_phases` channel):
+  - **The agent tick does not rise in minutes 3 and 4.** By minute of the hour its mean is
+    2.98–3.21 ms (minutes 3 and 4: 3.05 and 3.10 ms), and path searches stay at 14–16 a frame
+    in every minute: no departures, admissions or arrivals cluster there. By hour of day it is
+    2.79–3.63 ms, highest in the commute hours (05:00, 06:00, 13:00, 21:00, 22:00: 3.38–3.63).
+    Two frame kinds carry more: **the frame that crosses a game minute** (3.65 ms against 2.94
+    for other slot frames), whose tick runs the once-a-simulated-second frontage delay update,
+    0.71 ms there and nothing elsewhere; at 1× a simulated second is a game minute, so the
+    update falls in the frame of every minute's first slot, which is the frame of the planning
+    setups (0, 16, 32, 48), the removal slot (64) and the census book's part at 944. And **the
+    frame after a slot frame** (3.27 against 2.97 ms after a frame without slot work: the
+    movement pass 1.48 against 1.22 ms, its data evicted by the slot work). The actions slot's
+    own frames (slot 56, mid-minute) hold an agent tick at the hour's median; the 4.5–5.0 ms
+    ticks in `PERF-07`'s worst actions-slot frames were commute hours plus preemption (a
+    22:03 window of 4.8–5.6 ms ticks in the diagnostic day had every neighbouring frame as
+    high).
+  - **The frontage update** (184,092 lanes, 115,000 agents at 100k): a serial pass over the
+    agents adding each car's speed to its lane (about 0.27 ms; serial so each lane adds its
+    cars in agent order), the scratch clear (0.07 ms) and a parallel pass over the lanes, which
+    reads each lane's and its edge's records (0.34 ms).
+  - **The planning slots' workforce reset** (every plan, 0.4–0.5 ms) passes over the buildings
+    after the site preparation (0.35–0.5 ms) and the queue's replay (0.36 ms), though its free
+    places read neither the books nor the queue; only the constructing workplaces' jobs read the
+    replay's workers.
+- **What changed** (both exact; see [Decided while unattended](#decided-while-unattended)):
+  1. **The frontage delays sum by lane range on the pool.** Each agent's lane is noted in
+     parallel (none for an agent that is not a car on a lane, 4 bytes an agent); the lanes then
+     split into one range per worker, and each range's task zeroes its sums, reads the notes in
+     agent order, adds the cars on its own lanes and updates those lanes' delays. Each lane's
+     cars are added in agent order whatever the split, so the sums, and the delays, are the
+     serial pass's bit for bit with any worker count. O(agents / p) for the notes, O(agents) a
+     range task over the notes, O(lanes / p). The update: 0.68 → 0.45 ms at 1× (240 updates),
+     0.72 → 0.47 ms an update at 32× (diagnostic).
+  2. **The planning slots scan the free places beside their site preparation.** The reset's
+     pass over the buildings splits into a free-place scan (every building's construction hours
+     left and its free places, for the snapshot: `WorkforceReservations::scan_free_places`),
+     which each planning slot (8, 24, 40, 56) runs beside its site preparation and queue replay
+     (`rayon::join`), and the rest (`reset_scanned`), which adds the constructing or not yet
+     operating workplaces' jobs from the books' constructing rows (the replay's list of every
+     building that predicate selects) instead of a second test of every building. The sums
+     wrap, so they are equal in any order; test builds with the whole-city checks assert that
+     the rows hold every constructing building. The construction epoch keeps its own order (its
+     overlap measured no gain: its site preparation, market and scan are each well parallel).
+- **Per slot** (diagnostic; the schedstat days of the thirteenth commit and of this commit,
+  the same cities, full day, slot work in ms, mean / maximum, log stalls dropped):
+
+  | Slot | Before | After |
+  | --- | --- | --- |
+  | 8 residential plan | 1.84 / 3.57 | 1.57 / 2.64 |
+  | 24 commercial plan | 1.52 / 1.69 | 1.35 / 1.51 |
+  | 40 industrial plan | 1.63 / 2.07 | 1.46 / 1.87 |
+  | 56 actions | 2.78 / 3.38 | 2.72 / 2.89 |
+  | 0, 16, 32, 48 setups | 1.47, 1.28, 1.49, 1.17 | 1.61, 1.22, 1.50, 1.09 |
+  | 64, 65 | 1.33 / 1.76, 2.51 / 3.27 | 1.30 / 1.74, 2.56 / 3.16 |
+  | 936, 944, 953 | 2.08 / 2.47, 1.58 / 2.01, 2.13 / 2.53 | 2.07 / 2.53, 1.58 / 1.87, 2.16 / 2.48 |
+
+  In 6 game hours with the `economy_phases` channel (the thirteenth commit against a build
+  with both overlaps): the actions slot 2.74 → 2.56 ms mean, the commercial plan 1.50 → 1.32,
+  the industrial 1.64 → 1.42, the residential 1.87 → 1.77; the epoch 1.19 → 1.18 ms (so its
+  overlap was not kept). Every minute-first frame loses the frontage update's 0.24 ms.
+- **Attribution of the 100k 1× frames over 8 ms** (this commit's instrumented day, threads'
+  scheduler statistics): every frame over 8 ms that carries slot work is **preempted**. Of 46
+  frames over 8 ms, **23 are preempted** (a pool worker waiting 1.9–7.6 ms for a CPU), **22 are
+  log stalls** (a thread blocked about 10.5 ms writing the diagnostic log; 9 in the thirteenth
+  commit's day) and **1 is an agent-tick frame** without slot work or a waiting worker (21:45,
+  8.1 ms: a 6.8 ms tick in the evening commute window, where both builds' days hold their
+  largest ticks). Preempted frames that carry slot work: 20:03 8.2 ms (the actions slot, 2.84
+  ms, wait 2.1 ms), 20:04 8.2 ms (slot 65, 3.1 ms, wait 1.9 ms) and 21:59 8.9 ms (slot 953, 2.5
+  ms, wait 4.1 ms).
+- **Equivalence** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): PASS (361 s), no failures, the same eight
+  notes; **every metric and burst of every city is bit-identical to the thirteenth commit's**;
+  determinism shows no differences (repeat, save/reload continuation, 1 and 3 workers; 10k,
+  three days).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`
+  against the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day; in one session with the
+  thirteenth commit as the control; the save format is unchanged, so both ran on copies of the
+  cities the tenth commit prepared). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms | Load s |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 2.0 (7.7) | 1.12 (1.16) | 1.31 (1.41) | 0.48 (0.49) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 10k | 32× | 2.3 (2.2) | 1.92 (1.95) | 2.15 (2.16) | 0.87 (0.89) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 30k | 1× | 6.7 (4.7) | 1.87 (1.84) | 2.22 (2.21) | 0.88 (0.89) | 0 (0) | 0 (0) | 4.9 (5.0) |
+  | 30k | 32× | 7.5 (6.0) | 4.82 (4.73) | 5.89 (5.61) | 2.76 (2.82) | 0 (0) | 0 (0) | 4.9 (5.0) |
+  | 100k | 1× | 16.0 (10.2) | 6.20 (6.05) | 7.47 (7.09) | 4.01 (4.02) | 36 (20) | 0 (0) | 19.0 (18.8) |
+  | 100k | 32× | 29.4 (24.3) | 19.57 (20.02) | 22.58 (22.27) | 13.47 (13.62) | 2,700 (2,700) | 252 (291) | 18.6 (18.7) |
+
+  Every gate limit passes for both builds; means and p99 are level or lower (100k 32× mean 13.62
+  → 13.47 ms: the frontage update runs in about every second 32× frame). **10k and 30k** stay
+  under 8 ms at both speeds. The 30k maxima and the 10k 32× maximum rose above the control's, so
+  10k and 30k were run twice more for both builds and 100k 1× once more (`--perf07-tiers
+  10000,30000 --perf07-speeds 1,32` and `--perf07-tiers 100000 --perf07-speeds 1`, fresh city
+  copies, every lock held, the control first): 10k 1× 3.14 / 6.53 ms (control 5.19 / 2.99), 10k
+  32× 2.14 / 2.27 (2.94 / 3.22), 30k 1× 15.02 / 4.00 (6.82 / 4.52), 30k 32× 5.92 / 6.61 (6.23 /
+  6.17), p99 and p99.9 level. The raised 10k and 30k maxima are single preemption-pattern
+  frames: an agent tick of 5.1–11.9 ms (the tiers' mean frames are 0.5–0.9 ms) with under 2 ms
+  of slot work; no 10k or 30k frame over 8 ms is a work frame. **100k 1×:** 36 frames over 8 ms
+  (20), p99.9 7.47 ms (7.09); the recheck gave 19 (12), p99.9 7.14 (7.04), max 11.06 (11.58).
+  The count moved between 12 and 36 across this and the last session's runs of either build.
+  The 12 worst frames of both runs show the preemption pattern (agent ticks of 5.2–12.7 ms,
+  slot work at most 2.2 ms); no actions-slot or removal-window frame is among them (the
+  control's main run has one, 14:04 9.1 ms, the removal window with 4.4 ms of slot work). The
+  frontage change adds about 0.1 ms of parallel phase per simulated second, too little to
+  change how often a preempted worker lands in one. **100k 32×:** 29.4 ms (24.3), a frame with
+  a 12.9 ms agent tick (about 6.5 normally); the steady worst frames are 21.6–23.7 ms of
+  slot-heavy work (open question 6).
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the thirteenth commit as
+  control: hour means 0.82–0.83, 3.38–3.39, 8.28–8.33 and 25.82–26.64 ms (control 0.91–0.95,
+  3.68–3.69, 8.47–8.49 and 26.55–26.67): the baseline hours 8–12% cheaper, fiscal stress level,
+  and the same work-count limits fail.
+- **Tests.** 2,558 release and 2,558 debug library tests (one new) and the 4 growth integration
+  tests pass; clippy adds nothing. New: `frontage_delay_sums_are_independent_of_the_worker_count`
+  (2,000 cars over a two-edge road's vehicle lanes with order-sensitive f32 speeds; the delays
+  of 1, 3 and 8 workers are bit-identical). `./run.sh --test` was not needed: nothing in the
+  bridge or the save format changed.
+- **Build identity:** rustc 1.99.1; the gate, the suites and `PERF-07` ran on the committed
+  sources (`$TEST_BINARY`); `PERF-07` pinned with `--cpus 0,2,4,6,8,10,12,14` and
+  `RAYON_NUM_THREADS=8`, both builds on copies of the same prepared cities; `./run.sh --test`
+  was not needed, because nothing in the bridge or the save format changed.
+- **Save format:** unchanged (106); the lane notes and the free-place scan are scratch.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -7223,6 +7377,53 @@ alternatives and the evidence. The user reviews these on return.
   one lending for the plan and the epoch, needs the pass journal to rewind without truncating
   the owner rows. Neither fitted this session; neither needs a change to the user's spec
   decisions.
+- **`SIM-02-K` part 5 (fourteenth commit) — one lending for plan and epoch: not done.** The
+  actions slot (2.78 / 3.38 ms) lends the books twice, for its plan and for the construction
+  epoch. One lending for both would be exact, but the admission decision, the queue's refresh
+  and a stale entrance cache's rebuild run between the plan and the epoch on the live city, and
+  the three books would need a pass journal that rewinds deeply to the prepared state, keeping
+  the projected source slots, the temporary owners' rows and the site rows while restoring what
+  the plan claimed on them. It saves only the epoch's pass start and site preparation, about
+  0.4 ms, so it was not worth that rewrite.
+- **`SIM-02-K` part 5 (fourteenth commit) — the execution split to slot 60: deferred.** The
+  actions slot's execution (1.2–1.3 ms) in a queue-free slot of its own in minute 3 would take
+  about 1.2 ms off slot 56 (expected slot 56 about 1.4 ms, slot 60 about 1.3 ms). It is a
+  scheduling change and a save format change: the workforce view, the admission budget and the
+  plan's validity would be saved, and the tests that expect the execution at 56 change. It did
+  not fit this session with its gate, `./run.sh --test` and fresh `PERF-07` cities.
+- **`SIM-02-K` part 5 (fourteenth commit) — the free-place scan: overlapped for the plans,
+  dropped for the epoch.** The workforce reset's free-place scan reads neither the books nor the
+  queue, so each plan runs it beside the site preparation and queue replay (taken: exact;
+  0.15–0.25 ms off each plan). The epoch's overlap measured 1.19 → 1.18 ms, no gain, since its
+  parts are each well parallel, so the epoch keeps its order. The constructing workplaces' jobs
+  come from the books' constructing rows; test builds assert that the rows are complete.
+  Evidence: 6 game hours with the `economy_phases` channel and the schedstat days (diagnostic);
+  envelope bit-identical.
+- **`SIM-02-K` part 5 (fourteenth commit) — no spreading within minute 3 (findings).** A
+  per-frame dump of a 100k 1× day found no departures, admissions or arrivals clustered in
+  minutes 3 and 4 (path searches 14–16 a frame in every minute, the tick's mean flat by minute,
+  2.98–3.21 ms). The higher ticks in the worst frames were the frontage update in every
+  minute-first frame, the movement pass after a slot frame (about 0.3 ms slower, cache
+  eviction), the commute hours (0.4–0.6 ms) and preemption. Spreading work within a minute
+  would be a gameplay change with nothing to spread, so none was made; the frontage update was
+  made cheaper instead.
+- **`SIM-02-K` part 5 (fourteenth commit) — the frontage sums by lane range.** The update sums
+  each lane's car speeds in f32 in agent order, serially, so delays never depend on the worker
+  count. Options: (a) per-chunk partial sums merged (rejected: f32 addition is not associative,
+  so the delays would change with the split); (b) a phase shift of the update off the minute
+  boundary (rejected: a gameplay change, and the frame it moves to may hold a planning slot);
+  (c) one task per lane range scanning the agent columns (tried: 0.82 ms, slower than the serial
+  0.71, each task reading the agents' mode and lane columns); (d) compact lane notes, 4 bytes an
+  agent filled in parallel, then one task per lane range reading the notes in agent order and
+  updating its own lanes' delays (taken: each lane's cars still add in agent order, so the
+  delays equal the serial pass's bit for bit; a unit test compares 1, 3 and 8 workers).
+  Evidence: 0.68 → 0.45 ms an update at 1×, 0.72 → 0.47 at 32× (diagnostic); envelope
+  bit-identical. The lane pass itself (0.34 ms) is left.
+- **`SIM-02-K` part 5 (fourteenth commit) — rising maxima and over-8 counts treated as noise.**
+  The 10k and 30k maxima and the 100k 1× count of frames over 8 ms rose against the control in
+  the first run. After the rechecks (the count between 12 and 36 for either build; the raised
+  maxima single frames with an agent tick of 5.1–11.9 ms and under 2 ms of slot work) they were
+  taken as preemption noise, not as a cost of this commit.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

@@ -463,34 +463,49 @@ impl DemandSystem {
             self.last_admission_diagnostics = admission_diagnostics;
         }
         lap(3);
-        let mut supply = SiteSupply::new(
-            &mut inputs,
-            &mut reservations,
-            allocator,
-            zoning,
-            network,
-            graph,
-            logistics,
-            &economy_tuning,
-            &borders,
-            &catalog,
-            minute_of_day,
-            fiscal_policy.household_vat_rate,
+        // The workforce reset's pass over the buildings' free places reads neither the books
+        // nor the queue, so it runs beside the site preparation and the queue's replay
+        // (`SIM-02-K`); each gives the result it gives alone.
+        let (mut supply, free_places) = rayon::join(
+            || {
+                let mut supply = SiteSupply::new(
+                    &mut inputs,
+                    &mut reservations,
+                    allocator,
+                    zoning,
+                    network,
+                    graph,
+                    logistics,
+                    &economy_tuning,
+                    &borders,
+                    &catalog,
+                    minute_of_day,
+                    fiscal_policy.household_vat_rate,
+                );
+                lap(4);
+                supply.reserve_projects(
+                    self.queued_supply_order
+                        .iter()
+                        .map(|&index| &self.queued_construction[index]),
+                    &catalog,
+                    &snapshot.output_absorption,
+                    &mut self.construction_execution.replay_market,
+                    fiscal_policy,
+                    &funded_jobs.service_capacities,
+                    &funded_jobs.freight_capital,
+                    |index| funded_jobs.saw_operating(index),
+                );
+                lap(5);
+                supply
+            },
+            || {
+                super::workforce::WorkforceReservations::scan_free_places(
+                    allocator,
+                    &economy_tuning,
+                    &snapshot,
+                )
+            },
         );
-        lap(4);
-        supply.reserve_projects(
-            self.queued_supply_order
-                .iter()
-                .map(|&index| &self.queued_construction[index]),
-            &catalog,
-            &snapshot.output_absorption,
-            &mut self.construction_execution.replay_market,
-            fiscal_policy,
-            &funded_jobs.service_capacities,
-            &funded_jobs.freight_capital,
-            |index| funded_jobs.saw_operating(index),
-        );
-        lap(5);
         self.plan_private_building_actions(
             slot,
             allocator,
@@ -506,6 +521,7 @@ impl DemandSystem {
             environment,
             &mut supply,
             scans,
+            Some(free_places),
         );
         self.snapshot_sweep.restore_front(front);
         lap(6);

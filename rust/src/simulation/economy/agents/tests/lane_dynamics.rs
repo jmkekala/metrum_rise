@@ -561,3 +561,46 @@ fn parallel_lane_bucket_fill_is_independent_of_the_worker_count() {
     assert_eq!(one, run(3));
     assert_eq!(one, run(8));
 }
+
+/// The frontage delays' per-lane speed sums split by lane ranges, one per worker, still add
+/// each lane's cars in agent order: the delays are bit for bit those of one worker, the
+/// serial pass, with 3 and 8 workers (`SIM-02-K`).
+#[test]
+fn frontage_delay_sums_are_independent_of_the_worker_count() {
+    let run = |threads: usize| {
+        let (mut network, graph, _) = build_two_edge_road(3, 2);
+        let vehicle_lanes: Vec<(usize, usize)> = network
+            .lane_system
+            .lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, lane)| {
+                lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+            })
+            .map(|(lane_id, lane)| (lane.edge_id, lane_id))
+            .collect();
+        assert!(vehicle_lanes.len() >= 8);
+        let mut agents = AgentSystem::new();
+        // Speeds whose f32 sums depend on the order they are added in.
+        for k in 0..2_000 {
+            let (edge, lane) = vehicle_lanes[(k * 7) % vehicle_lanes.len()];
+            let speed = 0.37 + (k as f32 * 0.618).fract() * 9.0 + 1.0e-4 * (k % 13) as f32;
+            place_on_lane(&mut agents, edge, lane, (k as f32 * 3.1) % 95.0, speed);
+        }
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| agents.update_frontage_delay_cache(&mut network, &graph, 1.0));
+        network
+            .lane_system
+            .lanes
+            .iter()
+            .map(|lane| lane.live_frontage_delay_s.to_bits())
+            .collect::<Vec<_>>()
+    };
+    let one = run(1);
+    assert!(one.iter().filter(|&&bits| bits != 0).count() >= 8);
+    assert_eq!(one, run(3));
+    assert_eq!(one, run(8));
+}

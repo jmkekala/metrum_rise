@@ -154,7 +154,10 @@ authoritative lane.
 Removing the last agent also retires dirty lane occupancy before the
 empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane list and
 buffers. Once these are empty, later empty ticks skip the occupancy rebuild. The separate
-low-frequency frontage-delay cache continues its existing decay from live agent speeds.
+low-frequency frontage-delay cache continues its existing decay from live agent speeds. Its
+once-a-simulated-second update notes each agent's lane in parallel, then sums each lane range's
+cars in agent order on the pool, so the delays are bit-identical for any worker count
+(`SIM-02-K` part 5).
 Save format 75 preserves that smoothed delay and its fractional update clock, restoring lane
 values through saved lane identities; see [frontage delay persistence](entrance_and_exit.md#exact-frontage-congestion-penalty-cache).
 

@@ -182,7 +182,8 @@ impl WorkforceReservations {
     /// Collects already committed housing and workplaces once, in one parallel pass over the
     /// buildings (`SIM-02-K`), O(B / p + Q + hours). A workplace the census did not see
     /// complete (`census_operating`) claims its constructing workers, as one still under
-    /// construction does (`SIM-02-I`).
+    /// construction does (`SIM-02-I`). Planning passes scan the free places beside their site
+    /// preparation instead ([`Self::scan_free_places`], [`Self::reset_scanned`]).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reset(
         &mut self,
@@ -195,38 +196,71 @@ impl WorkforceReservations {
         reservations: Option<&super::supply::ProjectReservations>,
         census_operating: impl Fn(usize) -> bool + Sync,
     ) {
+        let free_places = Self::scan_free_places(allocator, tuning, snapshot);
+        self.reset_scanned(
+            free_places,
+            allocator,
+            catalog,
+            tuning,
+            snapshot,
+            queued,
+            new_start_hour,
+            reservations,
+            census_operating,
+        );
+    }
+
+    /// The part of a reset's pass over the buildings that reads neither the project books nor
+    /// the queue (`SIM-02-K`): every building's construction hours left and its free places,
+    /// for `snapshot`. A planning pass runs it beside its site preparation and project market,
+    /// and hands it to [`Self::reset_scanned`]. O(B / p).
+    pub(super) fn scan_free_places(
+        allocator: &BuildingAllocator,
+        tuning: &RuntimeEconomyTuning,
+        snapshot: &DailyDemandSnapshot,
+    ) -> FreePlaceScan {
+        let places = FreePlaces::for_snapshot(snapshot, tuning);
+        FreePlaceScan(
+            allocator
+                .buildings
+                .par_iter()
+                .enumerate()
+                .fold(BuildingHours::default, |mut scan, (idx, building)| {
+                    scan.add_free_places(allocator, places, idx, building);
+                    scan
+                })
+                .reduce(BuildingHours::default, BuildingHours::merge),
+        )
+    }
+
+    /// [`Self::reset`] on a scan [`Self::scan_free_places`] took of the same buildings and
+    /// snapshot. The constructing or not yet operating workplaces' jobs are added from the
+    /// project books' constructing rows, which hold every building that predicate selects
+    /// (`supply::constructing`), or from every building without books. O(constructing + Q +
+    /// hours) with books.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reset_scanned(
+        &mut self,
+        free_places: FreePlaceScan,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        snapshot: &DailyDemandSnapshot,
+        queued: &[QueuedConstruction],
+        new_start_hour: u64,
+        reservations: Option<&super::supply::ProjectReservations>,
+        census_operating: impl Fn(usize) -> bool + Sync,
+    ) {
         let arrivals_possible = snapshot.connected_border_count > 0;
-        // Displaced households claim free places first; without them free places only add to
-        // the hour bins.
-        let places = if !snapshot.unhoused_workforce.is_empty() {
-            FreePlaces::Homes(
-                &tuning
-                    .households
-                    .residential_move_in_min_reserve_days_by_level,
-            )
-        } else if arrivals_possible {
-            FreePlaces::Arrivals
-        } else {
-            FreePlaces::Ignored
-        };
-        let mut scan = allocator
-            .buildings
-            .par_iter()
-            .enumerate()
-            .fold(BuildingHours::default, |mut scan, (idx, building)| {
-                scan.add_building(
-                    allocator,
-                    catalog,
-                    snapshot,
-                    reservations,
-                    &census_operating,
-                    places,
-                    idx,
-                    building,
-                );
-                scan
-            })
-            .reduce(BuildingHours::default, BuildingHours::merge);
+        let places = FreePlaces::for_snapshot(snapshot, tuning);
+        let FreePlaceScan(mut scan) = free_places;
+        scan.add_constructing_jobs(
+            allocator,
+            catalog,
+            snapshot,
+            reservations,
+            &census_operating,
+        );
         self.horizon = scan.horizon.max(
             tuning
                 .construction
@@ -686,6 +720,10 @@ struct BuildingHours {
     future: Vec<FutureHome>,
 }
 
+/// The free places of every building, taken for one workforce reset
+/// ([`WorkforceReservations::scan_free_places`]).
+pub(super) struct FreePlaceScan(BuildingHours);
+
 // What a reset's free places supply: future homes with move-in thresholds by level, for the
 // displaced households to claim first; arrival workers by hour; or nothing (no arrivals).
 #[derive(Clone, Copy)]
@@ -693,6 +731,24 @@ enum FreePlaces<'a> {
     Homes(&'a [f32]),
     Arrivals,
     Ignored,
+}
+
+impl<'a> FreePlaces<'a> {
+    // Displaced households claim free places first; without them free places only add to
+    // the hour bins.
+    fn for_snapshot(snapshot: &DailyDemandSnapshot, tuning: &'a RuntimeEconomyTuning) -> Self {
+        if !snapshot.unhoused_workforce.is_empty() {
+            Self::Homes(
+                &tuning
+                    .households
+                    .residential_move_in_min_reserve_days_by_level,
+            )
+        } else if snapshot.connected_border_count > 0 {
+            Self::Arrivals
+        } else {
+            Self::Ignored
+        }
+    }
 }
 
 impl BuildingHours {
@@ -703,44 +759,81 @@ impl BuildingHours {
         bins[hour] = bins[hour].wrapping_add(value);
     }
 
-    // Building `idx`'s part, as the reset's passes over the buildings added it.
-    #[allow(clippy::too_many_arguments)]
-    fn add_building(
+    // Whether a building neither supplies places nor claims jobs.
+    fn skipped(building: &Building) -> bool {
+        building.broken
+            || building.economy_broken
+            || building.is_deserted
+            || building.pending_redevelopment
+    }
+
+    // The jobs of the constructing or not yet operating workplaces, as the reset's pass over
+    // the buildings added them: over the books' constructing rows, which hold every building
+    // the predicate selects, or over every building without books. The sums wrap, so the
+    // order is free.
+    fn add_constructing_jobs(
         &mut self,
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
         snapshot: &DailyDemandSnapshot,
         reservations: Option<&super::supply::ProjectReservations>,
         census_operating: &(impl Fn(usize) -> bool + Sync),
+    ) {
+        let mut add = |idx: usize| {
+            let building = &allocator.buildings[idx];
+            if !Self::skipped(building)
+                && (building.is_under_construction() || !census_operating(idx))
+                && matches!(
+                    building.zone_type,
+                    ZoneType::Commercial | ZoneType::Industrial
+                )
+                && let Some(profile) =
+                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            {
+                Self::add(
+                    &mut self.jobs,
+                    usize::from(building.construction_hours_left(allocator.now_slot)),
+                    reservations.map_or_else(
+                        || snapshot.output_absorption.committed_workers(profile),
+                        |claims| claims.building_workers.get(idx).copied().unwrap_or(0),
+                    ),
+                );
+            }
+        };
+        match reservations {
+            Some(claims) => {
+                // Test builds: the rows hold every building the predicate selects.
+                #[cfg(test)]
+                if crate::debug::work::city_checks() {
+                    let rows = claims.constructing_rows();
+                    for (idx, building) in allocator.buildings.iter().enumerate() {
+                        if super::supply::constructing(building, census_operating(idx)) {
+                            assert!(
+                                rows.binary_search(&idx).is_ok(),
+                                "constructing building {idx} missing from the books' rows"
+                            );
+                        }
+                    }
+                }
+                claims.constructing_rows().iter().for_each(|&idx| add(idx));
+            }
+            None => (0..allocator.buildings.len()).for_each(add),
+        }
+    }
+
+    // Building `idx`'s construction hours left and free places, as the reset's pass over the
+    // buildings added them.
+    fn add_free_places(
+        &mut self,
+        allocator: &BuildingAllocator,
         places: FreePlaces<'_>,
         idx: usize,
         building: &Building,
     ) {
         let hour = usize::from(building.construction_hours_left(allocator.now_slot));
         self.horizon = self.horizon.max(hour);
-        if building.broken
-            || building.economy_broken
-            || building.is_deserted
-            || building.pending_redevelopment
-        {
+        if Self::skipped(building) {
             return;
-        }
-        if (building.is_under_construction() || !census_operating(idx))
-            && matches!(
-                building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial
-            )
-            && let Some(profile) =
-                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-        {
-            Self::add(
-                &mut self.jobs,
-                hour,
-                reservations.map_or_else(
-                    || snapshot.output_absorption.committed_workers(profile),
-                    |claims| claims.building_workers.get(idx).copied().unwrap_or(0),
-                ),
-            );
         }
         if matches!(places, FreePlaces::Ignored) {
             return;

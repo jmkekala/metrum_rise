@@ -523,6 +523,7 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         supply: &mut impl ProjectSupply,
         scans: Option<PlanningScans>,
+        free_places: Option<super::workforce::FreePlaceScan>,
     ) {
         let timing = crate::debug::Channel::EconomyPhases.enabled();
         let begin = timing.then(std::time::Instant::now);
@@ -568,7 +569,16 @@ impl DemandSystem {
         let scan_ms = scan_begin.map_or(0.0, |begin| begin.elapsed().as_secs_f64() * 1_000.0);
         lap(1);
         let mut absorption_context = snapshot.output_absorption.clone();
-        self.workforce_reservations.reset(
+        // The buildings' free places, scanned beside the slot's site preparation, or now.
+        let free_places = free_places.unwrap_or_else(|| {
+            super::workforce::WorkforceReservations::scan_free_places(
+                allocator,
+                economy_tuning,
+                snapshot,
+            )
+        });
+        self.workforce_reservations.reset_scanned(
+            free_places,
             allocator,
             catalog,
             economy_tuning,
@@ -1198,6 +1208,7 @@ impl DemandSystem {
                 cadence_fraction,
                 environment,
                 &mut supply,
+                None,
                 None,
             );
         }

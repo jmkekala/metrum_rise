@@ -420,8 +420,9 @@ Individual future homes take whole store workers from a running total in matchin
 by those adults. "Unreserved ready homes", which non-worker arrivals and residential
 downgrades may use, are the places left after claimed workers fill single-adult places first.
 That keeps as many homes reserved as the claims could need. A downgrade retires the
-calendar workers of the places it removes. Counting adults costs O(free places) in the existing
-parallel building pass and O(1) per claim.
+calendar workers of the places it removes. Counting adults costs O(free places) in a parallel
+pass over the buildings, which a planning slot runs beside its site preparation (`SIM-02-K`), and
+O(1) per claim.
 
 Projects cannot share workers or count homes that finish too late. Immediate level changes may
 claim only unemployed adults and already-ready homes.

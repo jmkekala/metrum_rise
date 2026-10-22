@@ -416,7 +416,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   in `PERF-07` (31 before), mostly preemption (`SIM-02-K` part 5). The planning setups now scan
   beside their workforce count and a workforce reset passes over the buildings once, so no planning
   setup sets a 100k 1× work frame over 8 ms; the actions slot (2.8 / 3.4 ms) is the largest steady
-  slot left (`SIM-02-K` part 5).
+  slot left (`SIM-02-K` part 5). The frontage delay update, which every minute-first frame
+  carried, now runs by lane range on the pool, and the planning slots scan the free places beside
+  their site preparation; the actions slot (2.7 / 2.9 ms) and slot 65 (2.6 / 3.2 ms) are the
+  largest steady slots left (`SIM-02-K` part 5).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.
