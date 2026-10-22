@@ -292,8 +292,7 @@ impl AgentSystem {
                 }
             }
         }
-        self.agents.job_lock_until_day[agent_idx] =
-            self.settlement_days + u32::from(job_lock_days);
+        self.agents.job_lock_until_day[agent_idx] = self.settlement_days + u32::from(job_lock_days);
         self.agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 

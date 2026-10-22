@@ -253,8 +253,14 @@ impl JobFunding {
     pub(crate) fn assert_same_market_for_test(&self, other: &Self) {
         assert_eq!(self.market, other.market);
         assert_eq!(self.market_chunks, other.market_chunks);
-        assert_eq!(self.potential_customers.counted, other.potential_customers.counted);
-        assert_eq!(self.potential_customers.owners, other.potential_customers.owners);
+        assert_eq!(
+            self.potential_customers.counted,
+            other.potential_customers.counted
+        );
+        assert_eq!(
+            self.potential_customers.owners,
+            other.potential_customers.owners
+        );
     }
 
     /// Forces ordinary import-only staffing evaluation in comparison tests.
@@ -375,7 +381,12 @@ impl Drop for FundingSearchTrace {
             crate::debug_log!(
                 "economy_phases",
                 "import_plan owner={} key={} capital={} desired={} workers={} required={} trials={}",
-                plan.owner, plan.key, plan.capital, plan.desired, plan.workers, plan.required,
+                plan.owner,
+                plan.key,
+                plan.capital,
+                plan.desired,
+                plan.workers,
+                plan.required,
                 self.counts[1]
             );
         }
@@ -485,7 +496,10 @@ impl JobFunding {
     /// Cross-owner rejected quote reuses and those subsequently accepted after real reservation.
     #[cfg(test)]
     pub(crate) fn household_rejected_quote_counts(&self) -> (usize, usize) {
-        (self.household_quotes.rejected_reused, self.household_quotes.rejected_accepted)
+        (
+            self.household_quotes.rejected_reused,
+            self.household_quotes.rejected_accepted,
+        )
     }
 
     /// Requests replayed from the preceding census, excluding retries inside this census.
@@ -1242,16 +1256,34 @@ fn funded_private_operation(
         if *DETAILS.get_or_init(|| std::env::var_os("METRUM_TRACE_IMPORT_PLANS").is_some()) {
             // Exact arithmetic inputs, excluding capital: a successful maximal plan
             // stays successful while capital still covers the same fixed requirement.
-            let shares: Vec<_> = profile.outputs.iter()
-                .map(|port| sales.share(port.resource_runtime_id).to_bits()).collect();
+            let shares: Vec<_> = profile
+                .outputs
+                .iter()
+                .map(|port| sales.share(port.resource_runtime_id).to_bits())
+                .collect();
             trace.import_plan = Some(ImportPlanTrace {
                 owner: building.parcel_id,
-                key: format!("{:?}", (profile.runtime_id, physical, area.to_bits(),
-                    [prices.utilities[0].to_bits(), prices.utilities[1].to_bits(),
-                     prices.utilities[2].to_bits(), prices.property_tax.to_bits(),
-                     prices.imports.to_bits(), prices.carrier_quote.to_bits(),
-                     prices.truck_payload.to_bits()],
-                    export_multiplier.map(f32::to_bits), market_activity.to_bits(), desired, shares)),
+                key: format!(
+                    "{:?}",
+                    (
+                        profile.runtime_id,
+                        physical,
+                        area.to_bits(),
+                        [
+                            prices.utilities[0].to_bits(),
+                            prices.utilities[1].to_bits(),
+                            prices.utilities[2].to_bits(),
+                            prices.property_tax.to_bits(),
+                            prices.imports.to_bits(),
+                            prices.carrier_quote.to_bits(),
+                            prices.truck_payload.to_bits()
+                        ],
+                        export_multiplier.map(f32::to_bits),
+                        market_activity.to_bits(),
+                        desired,
+                        shares
+                    )
+                ),
                 capital: imported_capital.to_bits(),
                 desired,
                 workers: 0,
@@ -1263,9 +1295,15 @@ fn funded_private_operation(
         profile: profile.runtime_id,
         physical,
         area: area.to_bits(),
-        prices: [prices.utilities[0].to_bits(), prices.utilities[1].to_bits(),
-            prices.utilities[2].to_bits(), prices.property_tax.to_bits(),
-            prices.imports.to_bits(), prices.carrier_quote.to_bits(), prices.truck_payload.to_bits()],
+        prices: [
+            prices.utilities[0].to_bits(),
+            prices.utilities[1].to_bits(),
+            prices.utilities[2].to_bits(),
+            prices.property_tax.to_bits(),
+            prices.imports.to_bits(),
+            prices.carrier_quote.to_bits(),
+            prices.truck_payload.to_bits(),
+        ],
         exports: export_multiplier.map(f32::to_bits),
         market_activity: market_activity.to_bits(),
         desired,

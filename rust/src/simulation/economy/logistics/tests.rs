@@ -224,12 +224,7 @@ fn stale_shipment_carrier_cannot_remove_an_unrelated_agent() {
                 cargo_loaded: true,
             });
             if removal {
-                shipments.invalidate_building(
-                    0,
-                    &mut allocator,
-                    &mut agents,
-                    &mut 0.0,
-                );
+                shipments.invalidate_building(0, &mut allocator, &mut agents, &mut 0.0);
             } else {
                 progress_shipments_for_test(
                     &mut shipments,
@@ -5673,12 +5668,7 @@ fn destination_removal_restores_dispatched_local_source_stock() {
     assert_eq!(agents.len(), 1);
     assert!(allocator.buildings[0].inventory_units(packaged_food) < 300.0);
 
-    shipments.invalidate_building(
-        1,
-        &mut allocator,
-        &mut agents,
-        &mut 0.0,
-    );
+    shipments.invalidate_building(1, &mut allocator, &mut agents, &mut 0.0);
 
     assert!(shipments.shipments.is_empty());
     assert_eq!(agents.len(), 0);
@@ -5767,12 +5757,7 @@ fn endpoint_removal_does_not_reverse_already_settled_sale() {
 
         let buyer_budget = allocator.buildings[1].operating_budget;
         let seller_revenue = allocator.buildings[0].revenue;
-        shipments.invalidate_building(
-            removed,
-            &mut allocator,
-            &mut agents,
-            &mut 0.0,
-        );
+        shipments.invalidate_building(removed, &mut allocator, &mut agents, &mut 0.0);
         assert_eq!(allocator.buildings[1].operating_budget, buyer_budget);
         assert_eq!(allocator.buildings[0].revenue, seller_revenue);
 
@@ -5852,23 +5837,13 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
         assert_eq!(allocator.buildings[1].daily_city_funded_input_cost, 800.0);
         let mut agents = AgentSystem::new();
 
-        shipments.invalidate_building(
-            removed,
-            &mut allocator,
-            &mut agents,
-            &mut treasury,
-        );
+        shipments.invalidate_building(removed, &mut allocator, &mut agents, &mut treasury);
 
         assert_eq!(treasury, 2_000.0);
         assert_eq!(allocator.buildings[1].operating_budget, 123.0);
         assert_eq!(allocator.buildings[1].daily_city_funded_input_cost, 0.0);
         assert!(shipments.shipments.is_empty());
-        shipments.invalidate_building(
-            removed,
-            &mut allocator,
-            &mut agents,
-            &mut treasury,
-        );
+        shipments.invalidate_building(removed, &mut allocator, &mut agents, &mut treasury);
         assert_eq!(treasury, 2_000.0);
     }
 }

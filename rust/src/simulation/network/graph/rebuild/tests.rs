@@ -90,6 +90,13 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
         solved[2].1.len() > 2,
         "fixture must have a solved approach transition"
     );
+    let branch_end = *graph.edge(2).geometry.last().unwrap();
+    graph.edge_mut(2).geometry = vec![Vector3::ZERO, branch_end];
+    let solved: Vec<_> = graph
+        .edges()
+        .iter()
+        .map(|edge| (edge.geometry.clone(), edge.physical_geometry.clone()))
+        .collect();
     for _ in 0..3 {
         graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &dirty_edges, &HashSet::new());
         for (edge, (control, physical)) in graph.edges().iter().zip(&solved) {

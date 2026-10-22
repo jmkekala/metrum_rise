@@ -17,6 +17,12 @@ spawning; save/load use the same checks ([TRAFFIC-02](traffic.md#shared-lane-occ
 The saved-city pedestrian/vehicle-lane mismatch remains under investigation; the original
 transition has not been reproduced.
 
+Roads can again be attached beside an existing sloped three-way junction after loading a save.
+Splitting an incident edge now retains its independently solved physical support knots, and the
+topology-only junction finalizer adjusts those stations without rebuilding them from sparse control
+geometry. All 11 refused strokes in the reported dump build independently against its original
+network and installed asset packs (`ROAD-57`; see [`roads.md`](roads.md)).
+
 Building assets can now line their yards with clipped hedges that a spawned house lays itself: rows cut at driveways and the entrance, corners closed and adjoining yards sharing one hedge, editable with the brushes and removed with the house unless the player changed them ([VEG-15](asset_editor.md#yard-hedges)). On sloping streets, hedges and yard plants now stand on the yard's graded lawn instead of sinking into it ([VEG-21](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)), and front hedges meet a neighbour's corner straight and without a gap ([VEG-22](asset_editor.md#yard-hedges)). Assets can also mark lawn planting areas that each spawned house fills with its own trees, shrubs or flowers, where players can plant trees too ([VEG-17](asset_editor.md#yard-planting)); six Finnish yard flowers can also be planted with the brush ([VEG-20](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)), and grow a back yard without moving the street side ([TOOLS-12](asset_editor.md#back-yards)). Hedge rows drawn with the brush now join at corners and snap to hedges already standing ([VEG-13](roadmap.md)), and hedges stay drawn out to the trees' far range as one box per straight run ([VEG-14](terrain.md)).
 
 Trees, yard shrubs, clipped hedges and rocks are now Blender models; every tree casts its own baked silhouette in place of the old per-species lathe blob, and hedges are laid as rows with a line tool ([VEG-09 and VEG-10 details](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)). The brush now thickens gradually: each click or held tenth of a second adds 10 trees/ha until the preset's density ([VEG-11](terrain.md#gradual-brush--veg-11-2026-09-27)). From a distance, lone trees no longer sit on blurred forest-floor blots, far crowns grow up to 1.6x past the shadow range, and the far ground stand-in matches the authored trees' colour and crown-to-crown texture ([details](terrain.md#forest-from-a-distance-2026-09-28)). A far tree now renders within 12% of its near level at every tested pose: small pine crowns no longer vanish from its baked mips, and it catches the near crown's sun sheen ([VEG-12](terrain.md#impostor-refit-to-the-authored-trees--veg-12-2026-09-29)). Each impostor quad is now cropped to what its baked views draw, which takes a dense painted stand from `39.9` to `28.8 ms` of GPU at eye level ([details](terrain.md#impostor-quads-cropped-to-their-views-2026-09-30)).
@@ -274,6 +280,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   closing the reproduced narrow commercial-yard gap without changing assets or flattening the
   graded apron. Contract revision 14 also fixes the `farms.sqlite` rejection: site and road guides
   share source heights, and building aprons grade both sides of tile boundaries.
+  CDT export now also measures geometry in retained `f64` world coordinates before converting
+  patch-local values to Godot buffers. This fixes the benchmark-city patch `(27, 0)`, where early
+  `f32` conversion collapsed a valid sub-millimetre site edge and falsely rejected the patch as
+  pathologically steep.
   See [`terrain.md`](terrain.md).
 - **Level building yards (`EARTH-02`)**: buildings and usable yard interiors share a level pad; 2 m lot-edge strips provide graded road/neighbor/terrain tie-ins. Zoned, service and explicit industry placement now share support preparation, installation and site-terrain invalidation. Mixed 2D/3D frontage projection and the explicit-mode raw-height fallback are removed. Paired zoned/service tests compare final site and terrain geometry; `farms.sqlite` now reproduces and verifies the corrected terrain-rejection path; the original unsaved view remains unavailable. See [`earthworks.md`](earthworks.md).
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.

@@ -3,9 +3,9 @@
 //! Exact household-quote prefixes across matching live funding inputs and closure attempts.
 
 use super::super::customers::{ConsumerMarket, DirectConsumerQuoteKey};
-use std::collections::HashMap;
 use super::*;
 use crate::simulation::buildings::allocator::BuildingEntranceKey;
+use std::collections::HashMap;
 
 /// Inputs remain immutable for all closure attempts in one census. Cross-census reuse first
 /// compares household accounts/access, then every seller's entrance, price and output request.
@@ -250,14 +250,16 @@ impl HouseholdQuotes {
             if reuse_enabled && profile.outputs.len() == 1 {
                 let output = &profile.outputs[0];
                 self.pending_key = census.allocator.entrances.get(owner).and_then(|entrance| {
-                    customers.direct_quote_key(
-                        entrance,
-                        output.resource_runtime_id,
-                        f64::from(profile.net_output_units_per_day(output) * area),
-                        f32::from_bits(gross_price),
-                        census.network,
-                        census.graph,
-                    ).map(|key| (key, customers.quote_revision()))
+                    customers
+                        .direct_quote_key(
+                            entrance,
+                            output.resource_runtime_id,
+                            f64::from(profile.net_output_units_per_day(output) * area),
+                            f32::from_bits(gross_price),
+                            census.network,
+                            census.graph,
+                        )
+                        .map(|key| (key, customers.quote_revision()))
                 });
             }
             if let Some((key, revision)) = self.pending_key
@@ -267,10 +269,13 @@ impl HouseholdQuotes {
                 units[0] = value;
                 self.pending_rejected_replay = true;
                 #[cfg(test)]
-                { self.rejected_reused += 1; }
+                {
+                    self.rejected_reused += 1;
+                }
             } else {
                 census.quote(owner, customers, units);
-                self.pending_direct = self.pending_key.is_some() && customers.last_claim_was_direct();
+                self.pending_direct =
+                    self.pending_key.is_some() && customers.last_claim_was_direct();
             }
             assert!(
                 self.quotes.len() < self.quotes.capacity()
@@ -324,7 +329,9 @@ impl HouseholdQuotes {
                         &self.units[quote.first..quote.first + quote.ports]
                     );
                     #[cfg(test)]
-                    { self.rejected_accepted += 1; }
+                    {
+                        self.rejected_accepted += 1;
+                    }
                 }
                 customers.accept_growing_for(quote.owner);
             } else if !self.pending_rejected_replay {
@@ -333,9 +340,13 @@ impl HouseholdQuotes {
                     && let Some((key, revision)) = self.pending_key
                     && revision == customers.quote_revision()
                 {
-                    assert!(self.rejected.len() < self.rejected.capacity() || self.rejected.contains_key(&key),
-                        "rejected household quotes require census preparation");
-                    self.rejected.insert(key, (revision, self.units[quote.first]));
+                    assert!(
+                        self.rejected.len() < self.rejected.capacity()
+                            || self.rejected.contains_key(&key),
+                        "rejected household quotes require census preparation"
+                    );
+                    self.rejected
+                        .insert(key, (revision, self.units[quote.first]));
                 }
             }
             self.quotes[self.cursor].accepted = accepted;

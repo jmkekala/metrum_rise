@@ -16,8 +16,8 @@ mod remap;
 mod tests;
 pub mod tick;
 
-pub use data::{Agent, AgentSystem, AgentVec};
 pub(crate) use data::AgentHandle;
+pub use data::{Agent, AgentSystem, AgentVec};
 pub(crate) use household_members::NO_MEMBER;
 
 use determinism::stable_index;

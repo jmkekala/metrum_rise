@@ -563,11 +563,7 @@ impl TripQueryScratch {
 
     /// Prepares predecessor and retained-path buffers only for full route work. Cost-only
     /// forecasts keep their existing storage; warm route queries merely check the revision.
-    pub(crate) fn prepare_routes(
-        &mut self,
-        network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) {
+    pub(crate) fn prepare_routes(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
         self.prepare(network, graph);
         if self.route_revision == self.revision {
             return;
@@ -1437,7 +1433,10 @@ mod tests {
         });
         scratch.mark_dirty_quote(0);
         scratch.publish_quotes(&mut shared);
-        assert_eq!(shared.get(&key, network_quote_revision(&network)), Some(Some(2.0)));
+        assert_eq!(
+            shared.get(&key, network_quote_revision(&network)),
+            Some(Some(2.0))
+        );
         assert!(scratch.dirty_quote_slots.is_empty());
         assert!(scratch.deferred_shared);
         assert!(scratch.dirty_quote_slots.capacity() >= scratch.network_quotes.len());

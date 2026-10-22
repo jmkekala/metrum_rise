@@ -226,7 +226,10 @@ impl ConsumerMarket {
             components[0].entrance_components(entrance, graph, TransitFlags::FOOT),
             components[1].entrance_components(entrance, graph, TransitFlags::CAR),
         ];
-        if mode_components.iter().all(|component| component.as_slice().is_empty()) {
+        if mode_components
+            .iter()
+            .all(|component| component.as_slice().is_empty())
+        {
             return None;
         }
         let [origin, destination] =
@@ -1160,7 +1163,9 @@ impl ConsumerMarket {
         {
             let reached = components[mode].entrance_components(entrance, graph, flag);
             #[cfg(test)]
-            { reached_components[mode] = reached; }
+            {
+                reached_components[mode] = reached;
+            }
             self.indices[category][mode].scan_nearest(
                 reached,
                 entrance.door_pos.x,

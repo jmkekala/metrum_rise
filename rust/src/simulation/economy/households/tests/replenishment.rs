@@ -227,7 +227,10 @@ fn child_at_home_does_not_carry_household_shopping_trip() {
         households.households[0].replenishment_state,
         REPLENISHMENT_WAITING_FOR_SHOPPER
     );
-    assert_eq!(households.households[0].shopping_agent, crate::simulation::economy::agents::AgentHandle::NONE);
+    assert_eq!(
+        households.households[0].shopping_agent,
+        crate::simulation::economy::agents::AgentHandle::NONE
+    );
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
@@ -1485,7 +1488,10 @@ fn routine_stock_checks_spread_evenly_over_the_check_slots() {
         let mut slots = [0u32; 6];
         let mut hours = [false; 24];
         for hid in 0..6_000u32 {
-            let offset = super::super::replenishment::stable_replenishment_offset_hours(hid as usize + home_shift, hid);
+            let offset = super::super::replenishment::stable_replenishment_offset_hours(
+                hid as usize + home_shift,
+                hid,
+            );
             slots[usize::from(offset % 6)] += 1;
             hours[usize::from(offset)] = true;
         }

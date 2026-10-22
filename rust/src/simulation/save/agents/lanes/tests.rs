@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::simulation::economy::agents::MODE_WALK;
-use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::graph::Edge;
+use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::lanes::geometry::agent_lane_position;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -161,20 +161,13 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored =
-        load_agents(&conn, 0.0).unwrap();
+    let mut restored = load_agents(&conn, 0.0).unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     assert_eq!(new_graph.edge_count(), graph.edge_count() - 1);
     assert_eq!(new_graph.node_count(), graph.node_count() - 1);
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut new_graph);
-    restore_lane_references(
-        &conn,
-        &mut restored,
-        &new_graph,
-        &mut new_network,
-    )
-    .unwrap();
+    restore_lane_references(&conn, &mut restored, &new_graph, &mut new_network).unwrap();
     assert_eq!(
         network.frontage_delay_elapsed_s,
         new_network.frontage_delay_elapsed_s
@@ -279,13 +272,8 @@ fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
     tx.commit().unwrap();
     let mut restored_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     network.lane_system.rebuild(&mut restored_graph);
-    let error = restore_lane_references(
-        &conn,
-        &mut loaded,
-        &restored_graph,
-        &mut network,
-    )
-    .unwrap_err();
+    let error =
+        restore_lane_references(&conn, &mut loaded, &restored_graph, &mut network).unwrap_err();
     assert!(
         error
             .to_string()
@@ -328,11 +316,13 @@ fn loaded_network_and_ingress_plans_preserve_detach_without_origin_attach() {
 fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     let (graph, network) = fixture();
     let mut allocator = BuildingAllocator::new();
-    allocator.buildings.push(crate::simulation::buildings::allocator::indexed_test_building(
-        "test:retry_home".into(),
-        crate::simulation::zoning::ZoneType::Residential,
-        0,
-    ));
+    allocator.buildings.push(
+        crate::simulation::buildings::allocator::indexed_test_building(
+            "test:retry_home".into(),
+            crate::simulation::zoning::ZoneType::Residential,
+            0,
+        ),
+    );
     let current_node = graph.edge(1).start_node;
     let mut agents = AgentSystem::new();
     let i = agents.spawn_border_arrival_agent(usize::MAX, current_node, 0.0, 0.0);
@@ -400,11 +390,13 @@ fn departure_holds_survive_loaded_plan_repair() {
     let (graph, network) = fixture();
     let mut allocator = BuildingAllocator::new();
     for index in 0..2 {
-        allocator.buildings.push(crate::simulation::buildings::allocator::indexed_test_building(
-            "test:held_trip".into(),
-            crate::simulation::zoning::ZoneType::Residential,
-            index,
-        ));
+        allocator.buildings.push(
+            crate::simulation::buildings::allocator::indexed_test_building(
+                "test:held_trip".into(),
+                crate::simulation::zoning::ZoneType::Residential,
+                index,
+            ),
+        );
     }
     let mut agents = AgentSystem::new();
     let i = agents.spawn_housed_agent(0, 0.0, 0.0);
@@ -413,7 +405,10 @@ fn departure_holds_survive_loaded_plan_repair() {
     agents.hold_departure(i);
     validate_loaded_planned_lane_ids(&mut agents, network.lane_system.lanes.len());
     validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
-    assert!(agents.departure_held(i), "loading must not release a held trip early");
+    assert!(
+        agents.departure_held(i),
+        "loading must not release a held trip early"
+    );
     assert_eq!(agents.planned_target_building[i], 1);
     assert!(agents.release_departure(i));
     assert!(!agents.departure_held(i));

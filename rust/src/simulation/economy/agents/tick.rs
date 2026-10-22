@@ -36,21 +36,21 @@ const TRAFFIC_DEBUG_STATIONARY_EPS_M: f32 = 0.02;
 const TRAFFIC_DEBUG_STATIONARY_AFTER_S: f32 = 3.0;
 const TRAFFIC_DEBUG_STATIONARY_LOG_INTERVAL_S: f32 = 5.0;
 
+#[cfg(test)]
+pub(crate) use planning::estimate_trip_seconds_between;
 pub(crate) use planning::{
     BuildingTripEnds, BuildingWalkingAccess, BuiltTripPlan, PedestrianReachability,
     SharedNetworkQuotes, TripEstimate, TripQueryScratch, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
-    estimate_trip_seconds_with_scratch,
-    plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
+    estimate_trip_seconds_with_scratch, plan_building_origin_trip, plan_building_to_border_trip,
+    plan_immigration_trip,
 };
-#[cfg(test)]
-pub(crate) use planning::estimate_trip_seconds_between;
 // The agent inspector draws the route the movement rules below would follow.
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
+pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
-pub(crate) use lane_buckets::LaneBucketScratch;
 pub(crate) use trip_failures::TripFailureLog;
 
 impl AgentSystem {

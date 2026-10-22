@@ -356,14 +356,21 @@ impl AgentSystem {
             && work != usize::MAX
             && work < allocator.buildings.len()
         {
-            allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
+            allocator.set_worker_count(
+                work,
+                allocator.buildings[work].worker_count.saturating_sub(1),
+            );
         }
 
         self.remove_agent_record(index, "left the city with its household")
     }
 
     // `reason` explains the removal when it ends an inspection.
-    fn remove_agent_record(&mut self, index: usize, reason: &'static str) -> Option<(usize, usize)> {
+    fn remove_agent_record(
+        &mut self,
+        index: usize,
+        reason: &'static str,
+    ) -> Option<(usize, usize)> {
         let last = self.agents.len() - 1;
         let moved_household = self.unlink_for_swap_remove(index);
         self.swap_remove_lane_bucket_agent(index);

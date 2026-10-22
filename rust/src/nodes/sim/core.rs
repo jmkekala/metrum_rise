@@ -39,8 +39,8 @@ pub(crate) use road_terrain_plan::RoadTerrainPlan;
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
 };
-pub use snapshot::RenderSnapshot;
 pub(crate) use schedule::SimEvent;
+pub use snapshot::RenderSnapshot;
 pub use state::SimCore;
 pub(crate) use thread::SimCommand;
 

@@ -202,10 +202,7 @@ pub(super) fn save_agents(
     Ok(())
 }
 
-pub(super) fn load_agents(
-    conn: &Connection,
-    sim_time: f32,
-) -> SaveLoadResult<AgentSystem> {
+pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<AgentSystem> {
     let mut car_paths = HashMap::new();
     {
         let mut stmt = conn.prepare("SELECT agent_id, step_index, node_id FROM agent_path_nodes ORDER BY agent_id, step_index")?;

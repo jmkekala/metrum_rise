@@ -193,7 +193,9 @@ impl FailureSink {
 
     fn lock(&self) -> MutexGuard<'_, Vec<TripFailure>> {
         // A panicking worker must not hide the failures of the others.
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 

@@ -313,12 +313,12 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
                 graph,
             );
             return Err(ReplanFailure::new(
-            start_node,
-            target_building,
-            destination_entrance.edge_idx,
-            "no_valid_destination_candidate",
-            candidate_diagnostics,
-        ));
+                start_node,
+                target_building,
+                destination_entrance.edge_idx,
+                "no_valid_destination_candidate",
+                candidate_diagnostics,
+            ));
         };
         let current_path = scratch.finish_path();
         let mut access_flags = ACCESS_PLAN_VALID | (preserve_flags & ACCESS_IMMIGRATION_ORIGIN);

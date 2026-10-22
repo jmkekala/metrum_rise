@@ -1080,7 +1080,9 @@ impl HouseholdSystem {
                 transit_network,
                 graph,
                 tuning.operational_clock.seconds_per_day,
-                tuning.operational_clock.household_shopping_leg_timeout_hours,
+                tuning
+                    .operational_clock
+                    .household_shopping_leg_timeout_hours,
                 household_vat_rate,
             );
             return (true, vat);
@@ -1170,7 +1172,14 @@ impl HouseholdSystem {
         }
         for hid in 0..self.households.len() {
             vat += self
-                .check_shopping_trip(hid, agents, allocator, transit_network, graph, household_vat_rate)
+                .check_shopping_trip(
+                    hid,
+                    agents,
+                    allocator,
+                    transit_network,
+                    graph,
+                    household_vat_rate,
+                )
                 .1;
         }
         vat
@@ -1756,7 +1765,11 @@ fn eligible_shopper_for_household(
 }
 
 // The household's live shopper, or `None` when it left the city or the household.
-fn shopping_carrier(household: &Household, household_id: usize, agents: &AgentSystem) -> Option<usize> {
+fn shopping_carrier(
+    household: &Household,
+    household_id: usize,
+    agents: &AgentSystem,
+) -> Option<usize> {
     agents
         .resolve_agent(household.shopping_agent)
         .filter(|&agent_idx| agents.household_id[agent_idx] == household_id)

@@ -69,7 +69,10 @@ mod tests {
 
     #[test]
     fn owned_query_dispatch_visits_each_index_once_at_partition_boundaries() {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .unwrap();
         pool.install(|| {
             let mut shards: Vec<_> = (0..3).map(|_| TripQueryScratch::default()).collect();
             let mut serial = TripQueryScratch::default();
@@ -78,7 +81,11 @@ mod tests {
                 dispatch_agents_with_owned_scratch(n, &mut shards, &mut serial, |index| {
                     visits[index].fetch_add(1, Ordering::Relaxed);
                 });
-                assert!(visits.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+                assert!(
+                    visits
+                        .iter()
+                        .all(|count| count.load(Ordering::Relaxed) == 1)
+                );
             }
         });
     }

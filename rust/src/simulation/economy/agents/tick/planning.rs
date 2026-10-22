@@ -15,13 +15,13 @@ pub(super) use network::{
     ReplanCandidateDiagnostic, ReplanFailure, plan_border_network_replan, plan_network_replan,
 };
 pub(crate) use reachability::{BuildingWalkingAccess, PedestrianReachability};
+#[cfg(test)]
+pub(crate) use trip::estimate_trip_seconds_between;
 pub(crate) use trip::{
     BuildingTripEnds, TripEstimate, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
     estimate_trip_seconds_with_scratch,
 };
-#[cfg(test)]
-pub(crate) use trip::estimate_trip_seconds_between;
 pub(crate) use trip::{plan_building_origin_trip, plan_building_to_border_trip};
 pub(super) use types::BuiltNetworkReplan;
 pub(crate) use types::BuiltTripPlan;

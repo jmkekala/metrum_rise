@@ -171,7 +171,11 @@ fn departure_failures_log_in_agent_order_and_fold_past_the_place_limit() {
         agents.trip_failures.lines.clone()
     };
     let lines = run();
-    assert_eq!(lines, run(), "the log must not depend on the worker schedule");
+    assert_eq!(
+        lines,
+        run(),
+        "the log must not depend on the worker schedule"
+    );
     // Twenty lines for the first twenty agents, then one summary when the minute ends. The
     // retries at 30 s repeat the first failures and are not logged.
     assert_eq!(lines.len(), 21, "{lines:#?}");

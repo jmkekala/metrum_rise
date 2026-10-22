@@ -419,7 +419,8 @@ mod tests {
             "source stock still exists before its cargo is loaded"
         );
         logistics.shipments[0].cargo_loaded = true;
-        logistics.shipments[0].carrier = crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
+        logistics.shipments[0].carrier =
+            crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.write_freight_working_capital(&mut capital);
         assert_eq!(
             capital,

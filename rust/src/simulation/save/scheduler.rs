@@ -155,7 +155,8 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         demand_snapshot: load_demand_snapshot(conn)?,
         events: Vec::new(),
     };
-    let mut stmt = conn.prepare("SELECT slot, seq, kind, a FROM timed_events ORDER BY slot, seq")?;
+    let mut stmt =
+        conn.prepare("SELECT slot, seq, kind, a FROM timed_events ORDER BY slot, seq")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         scheduler.events.push((

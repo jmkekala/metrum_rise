@@ -835,9 +835,11 @@ impl RegionGraph {
         }
         let saved_control = (!adapt_control).then(|| edge.geometry.clone());
         let solve_sample_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m);
-        let should_materialize_supports = materialize_supports
-            || Self::endpoint_profile_support_delta_m(edge, at_start, plane, solve_sample_m)
-                .is_some_and(|delta_m| delta_m > JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M);
+        let preserve_solved_supports = previous_plane.is_some() && !adapt_control;
+        let should_materialize_supports = !preserve_solved_supports
+            && (materialize_supports
+                || Self::endpoint_profile_support_delta_m(edge, at_start, plane, solve_sample_m)
+                    .is_some_and(|delta_m| delta_m > JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M));
         if should_materialize_supports {
             Self::materialize_edge_endpoint_profile_supports(
                 edge,
@@ -847,7 +849,11 @@ impl RegionGraph {
             );
         }
 
-        let mut physical_geometry = Self::physical_profile_on_control_alignment(edge);
+        let mut physical_geometry = if preserve_solved_supports {
+            edge.physical_geometry.clone()
+        } else {
+            Self::physical_profile_on_control_alignment(edge)
+        };
         let solve_sample_m = should_materialize_supports.then_some(solve_sample_m);
         let distances = Self::edge_endpoint_distances(edge, at_start);
         for (point, distance_m) in edge.geometry.iter_mut().zip(distances.iter().copied()) {
@@ -870,7 +876,11 @@ impl RegionGraph {
             };
             point.y = point.y * (1.0 - weight) + target_y * weight;
         }
-        for (point, distance_m) in physical_geometry.iter_mut().zip(distances.iter().copied()) {
+        let physical_distances = Self::profile_endpoint_distances(&physical_geometry, at_start);
+        for (point, distance_m) in physical_geometry
+            .iter_mut()
+            .zip(physical_distances.iter().copied())
+        {
             if distance_m > blend_end_m {
                 continue;
             }
@@ -1124,26 +1134,24 @@ impl RegionGraph {
     }
 
     fn edge_endpoint_distances(edge: &Edge, at_start: bool) -> Vec<f32> {
-        let mut distances = vec![0.0; edge.geometry.len()];
-        if edge.geometry.len() < 2 {
+        Self::profile_endpoint_distances(&edge.geometry, at_start)
+    }
+
+    fn profile_endpoint_distances(points: &[Vector3], at_start: bool) -> Vec<f32> {
+        let mut distances = vec![0.0; points.len()];
+        if points.len() < 2 {
             return distances;
         }
 
         if at_start {
-            for index in 1..edge.geometry.len() {
+            for index in 1..points.len() {
                 distances[index] = distances[index - 1]
-                    + Self::edge_profile_point_distance_m(
-                        edge.geometry[index - 1],
-                        edge.geometry[index],
-                    );
+                    + Self::edge_profile_point_distance_m(points[index - 1], points[index]);
             }
         } else {
-            for index in (0..edge.geometry.len() - 1).rev() {
+            for index in (0..points.len() - 1).rev() {
                 distances[index] = distances[index + 1]
-                    + Self::edge_profile_point_distance_m(
-                        edge.geometry[index + 1],
-                        edge.geometry[index],
-                    );
+                    + Self::edge_profile_point_distance_m(points[index + 1], points[index]);
             }
         }
         distances

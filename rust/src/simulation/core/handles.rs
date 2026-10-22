@@ -254,11 +254,9 @@ impl<K> HandleTable<K> {
 
     /// Handle of the entity at `dense`, or [`Handle::NONE`] when it has none yet.
     pub(crate) fn handle(&self, dense: usize) -> Handle<K> {
-        self.dense_slots
-            .get(dense)
-            .map_or(Handle::NONE, |&slot| {
-                Handle::from_parts(slot, self.slots[slot as usize].generation)
-            })
+        self.dense_slots.get(dense).map_or(Handle::NONE, |&slot| {
+            Handle::from_parts(slot, self.slots[slot as usize].generation)
+        })
     }
 
     /// Current dense index of `handle`'s entity, or `None` when it has left.
@@ -292,7 +290,12 @@ impl<K> HandleTable<K> {
             slots: self
                 .slots
                 .iter()
-                .map(|slot| (slot.generation, (slot.dense != NONE_INDEX).then_some(slot.dense)))
+                .map(|slot| {
+                    (
+                        slot.generation,
+                        (slot.dense != NONE_INDEX).then_some(slot.dense),
+                    )
+                })
                 .collect(),
             free: self.free.clone(),
         }
@@ -325,7 +328,11 @@ impl<K> HandleTable<K> {
             };
             table.slots.push(Slot { generation, dense });
         }
-        if let Some(dense) = table.dense_slots.iter().position(|&slot| slot == NONE_INDEX) {
+        if let Some(dense) = table
+            .dense_slots
+            .iter()
+            .position(|&slot| slot == NONE_INDEX)
+        {
             return Err(format!("dense index {dense} has no handle slot"));
         }
         let mut seen = vec![false; table.slots.len()];
@@ -391,9 +398,10 @@ mod tests {
         // Phase buckets follow allocation and release.
         assert_eq!(table.phases().len(), store.len());
         let mut bucket = Vec::new();
-        table
-            .phases()
-            .daily(crate::simulation::core::phases::daily_phase(reused), &mut bucket);
+        table.phases().daily(
+            crate::simulation::core::phases::daily_phase(reused),
+            &mut bucket,
+        );
         assert!(bucket.contains(&reused));
     }
 

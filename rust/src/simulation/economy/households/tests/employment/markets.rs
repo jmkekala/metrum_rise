@@ -267,7 +267,11 @@ fn production_market_chunks_match_full_census_after_input_changes() {
             2..=4 => 256,
             _ => count,
         };
-        assert_eq!(cached.funding.market_rows_for_test(), expected, "step {step}");
+        assert_eq!(
+            cached.funding.market_rows_for_test(),
+            expected,
+            "step {step}"
+        );
         assert_eq!(full.funding.market_rows_for_test(), count);
     }
 }
@@ -281,7 +285,9 @@ fn import_plan_handoff_matches_cold_funding_after_input_changes() {
     let source = std::mem::take(&mut cached.funding);
     let mut hits = 0;
     for step in 0..8 {
-        if step == 4 { tuning.owa_import_price_multiplier = 1.25; }
+        if step == 4 {
+            tuning.owa_import_price_multiplier = 1.25;
+        }
         for market in [&mut cached, &mut cold] {
             match step {
                 1 => market.allocator.buildings[HOMES + 1].operating_budget += 10_000.0,
@@ -292,23 +298,36 @@ fn import_plan_handoff_matches_cold_funding_after_input_changes() {
                 7 => {
                     let authored = include_str!("../../../../../../../economy/profiles.toml");
                     market.catalog = std::sync::Arc::new(
-                        crate::simulation::economy::definitions::compile_test_catalog(authored).unwrap()
+                        crate::simulation::economy::definitions::compile_test_catalog(authored)
+                            .unwrap(),
                     );
                 }
                 _ => {}
             }
         }
         cached.funding.refresh_with_service_capacity(
-            &cached.allocator, &cached.families, &mut cached.logistics,
-            &cached.network, &cached.graph, &cached.catalog, &tuning,
-            &CityFiscalPolicy::from_runtime_tuning(&tuning), 0.0,
-            |_, _, _| 0, Some(&source), 420,
+            &cached.allocator,
+            &cached.families,
+            &mut cached.logistics,
+            &cached.network,
+            &cached.graph,
+            &cached.catalog,
+            &tuning,
+            &CityFiscalPolicy::from_runtime_tuning(&tuning),
+            0.0,
+            |_, _, _| 0,
+            Some(&source),
+            420,
         );
         cold.refresh(&tuning);
         cached.assert_same_funding(&cold);
-        cached.funding.assert_same_operations_for_test(&cold.funding);
+        cached
+            .funding
+            .assert_same_operations_for_test(&cold.funding);
         hits += cached.funding.import_plan_replays();
-        if step == 7 { assert_eq!(cached.funding.import_plan_replays(), 0); }
+        if step == 7 {
+            assert_eq!(cached.funding.import_plan_replays(), 0);
+        }
     }
     assert!(hits > 0, "fixture must exercise the import plan handoff");
 }
@@ -396,7 +415,10 @@ fn rejected_direct_household_quotes_restage_before_acceptance() {
     policy.commercial_property_tax_per_building_per_day = 100.0;
     policy.industrial_property_tax_per_building_per_day = 100.0;
     for market in [&mut cached, &mut ordinary] {
-        let profile = market.catalog.profile_for_id("personal_service_small").unwrap();
+        let profile = market
+            .catalog
+            .profile_for_id("personal_service_small")
+            .unwrap();
         for index in HOMES + 1..DISTRICT {
             let building = &mut market.allocator.buildings[index];
             building.economy_profile_runtime_id = profile.runtime_id;
@@ -407,16 +429,29 @@ fn rejected_direct_household_quotes_restage_before_acceptance() {
         market.allocator.bump_building_ref_revision();
         market.allocator.rebuild_zone_index();
         market.funding.refresh(
-            &market.allocator, &market.families, &mut market.logistics,
-            &market.network, &market.graph, &market.catalog, &tuning,
-            &policy, &[], 0.0, 420,
+            &market.allocator,
+            &market.families,
+            &mut market.logistics,
+            &market.network,
+            &market.graph,
+            &market.catalog,
+            &tuning,
+            &policy,
+            &[],
+            0.0,
+            420,
         );
     }
     cached.assert_same_funding(&ordinary);
-    cached.funding.assert_same_operations_for_test(&ordinary.funding);
+    cached
+        .funding
+        .assert_same_operations_for_test(&ordinary.funding);
     let (reused, accepted) = cached.funding.household_rejected_quote_counts();
     assert!(reused > 0, "fixture must reuse a rejected spatial question");
-    assert!(accepted > 0, "a later solvent shop must materialize the reused quote");
+    assert!(
+        accepted > 0,
+        "a later solvent shop must materialize the reused quote"
+    );
     assert_eq!(ordinary.funding.household_rejected_quote_counts(), (0, 0));
 }
 

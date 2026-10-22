@@ -329,8 +329,7 @@ impl RecurringSupply {
             let internal = profile
                 .output_port(input.resource_runtime_id)
                 .map_or(0.0, |output| output.units_per_day);
-            input.units_per_day > internal
-                && self.offers_resource(input.resource_runtime_id)
+            input.units_per_day > internal && self.offers_resource(input.resource_runtime_id)
         })
     }
 

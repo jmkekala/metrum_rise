@@ -170,7 +170,10 @@ impl fmt::Display for Cause<'_> {
                 write!(f, "no road path from node {from} to border node {border}")
             }
             FailureCause::NoImmigrationRoute { border, building } => {
-                write!(f, "no route from border node {border} to building {building}")
+                write!(
+                    f,
+                    "no route from border node {border} to building {building}"
+                )
             }
             FailureCause::NoDeparture { has_car } => write!(
                 f,

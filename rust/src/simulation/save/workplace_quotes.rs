@@ -457,16 +457,7 @@ mod tests {
         let mut households = HouseholdSystem::new();
         let allocator = BuildingAllocator::new();
         let network = TransitNetwork::new();
-        assert!(
-            load(
-                &conn,
-                &mut households,
-                &allocator,
-                &network,
-                true,
-            )
-            .is_err()
-        );
+        assert!(load(&conn, &mut households, &allocator, &network, true,).is_err());
     }
 
     #[test]

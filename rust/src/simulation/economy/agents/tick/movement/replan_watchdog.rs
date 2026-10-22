@@ -339,20 +339,38 @@ mod tests {
         let slices = MovementSlices::new(&mut agents.agents);
         unsafe {
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 10.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
+                agent_idx,
+                10.0,
+                &allocator,
+                &graph,
+                "test",
+                FailureCause::NoPlan,
+                &slices,
             );
             assert_eq!(*slices.network_replan_failures.get(agent_idx), 1);
             assert_eq!(*slices.transit.get(agent_idx), TRANSIT_NETWORK);
             assert_eq!(*slices.next_replan_time.get(agent_idx), 15.0);
 
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 15.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
+                agent_idx,
+                15.0,
+                &allocator,
+                &graph,
+                "test",
+                FailureCause::NoPlan,
+                &slices,
             );
             assert_eq!(*slices.network_replan_failures.get(agent_idx), 2);
             assert_eq!(*slices.transit.get(agent_idx), TRANSIT_NETWORK);
 
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 20.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
+                agent_idx,
+                20.0,
+                &allocator,
+                &graph,
+                "test",
+                FailureCause::NoPlan,
+                &slices,
             );
         }
 
@@ -390,13 +408,31 @@ mod tests {
         let slices = MovementSlices::new(&mut agents.agents);
         unsafe {
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 10.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
+                agent_idx,
+                10.0,
+                &allocator,
+                &graph,
+                "test",
+                FailureCause::NoPlan,
+                &slices,
             );
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 15.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
+                agent_idx,
+                15.0,
+                &allocator,
+                &graph,
+                "test",
+                FailureCause::NoPlan,
+                &slices,
             );
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 20.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
+                agent_idx,
+                20.0,
+                &allocator,
+                &graph,
+                "test",
+                FailureCause::NoPlan,
+                &slices,
             );
         }
 

@@ -124,7 +124,12 @@ fn the_minute_limit_folds_failures_everywhere_but_never_the_inspected_agent() {
         agents.inspected_agent_failure(render_id),
         lines.last().map(String::as_str)
     );
-    assert!(lines.last().unwrap().contains(&format!("[row {inspected}]")));
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains(&format!("[row {inspected}]"))
+    );
     let summary = report(&mut agents, 60.0, &[]);
     assert_eq!(summary.len(), 1);
     assert!(

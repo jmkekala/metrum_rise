@@ -4464,6 +4464,11 @@ Deterministic terrain-render rules:
   building-part yaw, invalidating earlier oversized/misrotated pads and one-sided apron products;
   Rust and Godot enforce the same revision. Invalid geometry still blocks publication, and both
   `terrain` and `road` debugging expose the renderer's rejection reason.
+- CDT export retains world XZ in `f64` while calculating face normals, slope/pathology metrics,
+  patch-local positions, and UV deltas; it converts only the resulting local values to Godot's
+  `f32` buffers. Converting kilometre-scale world coordinates first can collapse a valid
+  sub-millimetre road/site separation, inflate its measured slope, and falsely suppress the whole
+  atomic patch. The saved benchmark-city regression covers that case at patch `(27, 0)`.
 - successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
   normal-sum magnitudes, and side-seam manifests; reuse therefore skips triangle conversion,
   window-side vertex scans, and triangle-index normal reconstruction for unchanged tiles

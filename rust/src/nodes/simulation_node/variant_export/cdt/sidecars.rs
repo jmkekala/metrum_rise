@@ -5,12 +5,6 @@
 use super::super::super::*;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn terrain_cdt_vertex_to_vector3(
-        vertex: TerrainCdtVertex,
-    ) -> Vector3 {
-        Vector3::new(vertex.x as f32, vertex.height_m, vertex.z as f32)
-    }
-
     pub(in crate::nodes::simulation_node) fn terrain_cdt_error_label(
         err: &TerrainCdtError,
     ) -> &'static str {

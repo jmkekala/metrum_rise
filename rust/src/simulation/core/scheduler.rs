@@ -409,7 +409,10 @@ mod tests {
                 per_minute[((slot % SLOTS_PER_HOUR) / SLOTS_PER_MINUTE) as usize] += 1;
             }
             let busiest = *per_minute.iter().max().unwrap();
-            assert!(busiest <= count / 60 + 2, "{count}: busiest minute {busiest}");
+            assert!(
+                busiest <= count / 60 + 2,
+                "{count}: busiest minute {busiest}"
+            );
         }
     }
 

@@ -60,7 +60,9 @@ pub(super) fn load<K>(
     let mut rows = slots.query([kind])?;
     while let Some(row) = rows.next()? {
         if row.get::<_, i64>(0)? != saved.slots.len() as i64 {
-            return Err(SaveLoadError::custom("entity handle slots are not contiguous"));
+            return Err(SaveLoadError::custom(
+                "entity handle slots are not contiguous",
+            ));
         }
         let dense: i64 = row.get(2)?;
         saved.slots.push((

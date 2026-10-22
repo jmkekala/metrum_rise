@@ -719,29 +719,23 @@ impl SimulationNode {
 
         for (triangle_index, triangle) in triangles.iter().enumerate() {
             let mut source_indices = *triangle;
-            let mut points = [
-                Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[0]]),
-                Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[1]]),
-                Self::terrain_cdt_vertex_to_vector3(vertices_source[triangle[2]]),
-            ];
-            let mut raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-            if raw_normal.length_squared() <= 0.000_001 {
+            let source_points = triangle.map(|index| vertices_source[index]);
+            let Some((mut normal, face_y_delta_m, face_slope_ratio, face_longest_edge_m)) =
+                Self::terrain_cdt_triangle_geometry(source_points)
+            else {
                 continue;
-            }
-            if raw_normal.y < 0.0 {
+            };
+            if normal.y < 0.0 {
                 source_indices.swap(1, 2);
-                points.swap(1, 2);
-                raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+                normal = -normal;
             }
-            let normal = raw_normal.normalized();
-            let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
-                Self::terrain_buffer_triangle_metrics(points);
             if omit_pathological_terrain_faces
                 && Self::terrain_cdt_output_is_pathological(face_slope_ratio, face_longest_edge_m)
             {
                 debug_log!(
                     "road",
-                    "terrain_cdt_rejected_face points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m}"
+                    "terrain_cdt_rejected_face points={source_points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m} sources={:?}",
+                    triangle_sources.get(triangle_index),
                 );
                 omitted_pathological_faces += 1;
                 continue;
@@ -759,20 +753,24 @@ impl SimulationNode {
             for source_index in source_indices {
                 let mut export_index = vertex_remap[source_index];
                 if export_index == usize::MAX {
-                    let point = Self::terrain_cdt_vertex_to_vector3(vertices_source[source_index]);
+                    let point = vertices_source[source_index];
                     export_index = vertices.len();
                     vertex_remap[source_index] = export_index;
+                    // Subtract in f64 before the GPU conversion. World-space f32 loses the
+                    // sub-millimetre separation retained by the CDT at kilometre-scale origins.
                     vertices.push(Vector3::new(
-                        point.x - center_x,
-                        point.y,
-                        point.z - center_z,
+                        (point.x - f64::from(center_x)) as f32,
+                        point.height_m,
+                        (point.z - f64::from(center_z)) as f32,
                     ));
                     normals.push(Vector3::new(0.0, 0.0, 0.0));
                     uvs.push(Vector2::new(
-                        ((point.x - patch.world_origin_x) / patch.world_size_x.max(0.001))
-                            .clamp(0.0, 1.0),
-                        ((point.z - patch.world_origin_z) / patch.world_size_z.max(0.001))
-                            .clamp(0.0, 1.0),
+                        ((point.x - f64::from(patch.world_origin_x))
+                            / f64::from(patch.world_size_x.max(0.001)))
+                        .clamp(0.0, 1.0) as f32,
+                        ((point.z - f64::from(patch.world_origin_z))
+                            / f64::from(patch.world_size_z.max(0.001)))
+                        .clamp(0.0, 1.0) as f32,
                     ));
                 }
                 normals[export_index] += normal;
@@ -805,6 +803,63 @@ impl SimulationNode {
             max_face_slope_ratio,
             longest_triangle_edge_m,
         }
+    }
+
+    fn terrain_cdt_triangle_geometry(
+        points: [TerrainCdtVertex; 3],
+    ) -> Option<(Vector3, f32, f32, f32)> {
+        // Safety metrics and normals belong to the authoritative f64 CDT. Measuring after a
+        // world-space f32 conversion can turn a valid thin tie-in into a false vertical face.
+        let ax = points[1].x - points[0].x;
+        let ay = f64::from(points[1].height_m - points[0].height_m);
+        let az = points[1].z - points[0].z;
+        let bx = points[2].x - points[0].x;
+        let by = f64::from(points[2].height_m - points[0].height_m);
+        let bz = points[2].z - points[0].z;
+        let normal_x = ay * bz - az * by;
+        let normal_y = az * bx - ax * bz;
+        let normal_z = ax * by - ay * bx;
+        let normal_length_squared = normal_x * normal_x + normal_y * normal_y + normal_z * normal_z;
+        if normal_length_squared <= 0.000_001 {
+            return None;
+        }
+        let normal_length = normal_length_squared.sqrt();
+        let normal = Vector3::new(
+            (normal_x / normal_length) as f32,
+            (normal_y / normal_length) as f32,
+            (normal_z / normal_length) as f32,
+        );
+        let min_height_m = points
+            .iter()
+            .map(|point| point.height_m)
+            .fold(f32::INFINITY, f32::min);
+        let max_height_m = points
+            .iter()
+            .map(|point| point.height_m)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let edge_length_squared = |a: TerrainCdtVertex, b: TerrainCdtVertex| {
+            let dx = b.x - a.x;
+            let dz = b.z - a.z;
+            dx * dx + dz * dz
+        };
+        let longest_edge_m = edge_length_squared(points[0], points[1])
+            .max(edge_length_squared(points[1], points[2]))
+            .max(edge_length_squared(points[2], points[0]))
+            .sqrt() as f32;
+        let horizontal_normal = (normal_x * normal_x + normal_z * normal_z).sqrt();
+        let slope_ratio = if horizontal_normal <= 0.000_001 {
+            0.0
+        } else if normal_y.abs() <= 0.000_001 {
+            1_000_000.0
+        } else {
+            (horizontal_normal / normal_y.abs()) as f32
+        };
+        Some((
+            normal,
+            max_height_m - min_height_m,
+            slope_ratio,
+            longest_edge_m,
+        ))
     }
 
     pub(in crate::nodes::simulation_node) fn append_triangle_buffer_export(

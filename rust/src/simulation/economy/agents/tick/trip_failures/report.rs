@@ -100,8 +100,7 @@ impl TripFailureLog {
         self.places.clear();
         self.detailed = 0;
         self.folded = [Folded::default(); CAUSES];
-        self.streaks
-            .retain(|_, last| sim_time - *last < MINUTE_S);
+        self.streaks.retain(|_, last| sim_time - *last < MINUTE_S);
     }
 }
 

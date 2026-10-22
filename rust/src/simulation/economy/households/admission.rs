@@ -10,8 +10,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::handles::Handle;
 use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::agents::{
-    AgentHandle,
-    AgentSystem, HouseholdAgeComposition, TRANSIT_IN_BUILDING,
+    AgentHandle, AgentSystem, HouseholdAgeComposition, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,

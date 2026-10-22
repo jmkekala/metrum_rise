@@ -41,15 +41,15 @@ mod cell_zoning;
 mod census_inputs;
 mod demand_queues;
 mod handles;
-mod scheduler;
 pub mod network;
+mod scheduler;
 pub mod schema;
 pub(crate) mod sqlite;
 #[cfg(test)]
 pub mod tests;
 mod vegetation;
-pub mod world;
 mod workplace_quotes;
+pub mod world;
 
 pub(crate) use camera::SavedCameraState;
 use schema::*;
@@ -645,10 +645,16 @@ pub(crate) fn load_from_sqlite(
         world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
     let mut agents = agents::load_agents(&conn, time_r.5)?;
-    allocator.building_handles =
-        handles::load(&conn, handles::HandleKind::Buildings, allocator.buildings.len())?;
-    households.handles =
-        handles::load(&conn, handles::HandleKind::Households, households.households.len())?;
+    allocator.building_handles = handles::load(
+        &conn,
+        handles::HandleKind::Buildings,
+        allocator.buildings.len(),
+    )?;
+    households.handles = handles::load(
+        &conn,
+        handles::HandleKind::Households,
+        households.households.len(),
+    )?;
     agents.handles = handles::load(&conn, handles::HandleKind::Agents, agents.len())?;
     demand_queues::load(&conn, &mut allocator, &mut households, &mut demand)?;
     if let Some(setup) = planning_setup {

@@ -21,6 +21,7 @@ use std::time::Instant;
 use super::demand_requests::{BUILDING_REMOVAL_QUOTA, DEPARTURE_QUOTA, LEVEL_CHANGE_QUOTA};
 use super::frame::{EconomyObserver, FrameStepReport, record_crash_phase_for_core, run_sim_phase};
 use super::state::SimCore;
+use super::trips::TripEvent;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::core::scheduler::{
@@ -28,7 +29,6 @@ use crate::simulation::core::scheduler::{
     SystemKind, Tier, state,
 };
 use crate::simulation::core::timing_wheel::TimedEvent;
-use super::trips::TripEvent;
 use crate::simulation::economy::demand::PlanningSlot;
 use crate::simulation::economy::hiring::{
     PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_ROWS_SLOT, PLANNING_PREPARATION_SLOT,

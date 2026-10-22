@@ -235,9 +235,9 @@ fn removing_an_agent_preserves_a_moved_shoppers_active_trip() {
         }
 
         assert_eq!(
-        agents.resolve_agent(households.households[0].shopping_agent),
-        Some(0)
-    );
+            agents.resolve_agent(households.households[0].shopping_agent),
+            Some(0)
+        );
         households.run_household_replenishment(
             &mut agents,
             &mut allocator,
@@ -322,12 +322,7 @@ fn batched_removal_preserves_surviving_members_and_ledgers() {
         ledger.wage_income = idx as f32;
     }
     assert_eq!(
-        households.execute_demand_household_removal(
-            4,
-            exit_policy(),
-            &mut agents,
-            &mut allocator,
-        ),
+        households.execute_demand_household_removal(4, exit_policy(), &mut agents, &mut allocator,),
         4
     );
     assert_eq!(households.households.len(), 8);
@@ -446,12 +441,7 @@ fn demand_household_removal_prioritizes_unhoused_households() {
     allocator.claim_vacancy(1);
 
     households.households[1].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    households.execute_demand_household_removal(
-        1,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-    );
+    households.execute_demand_household_removal(1, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(households.households.len(), 2);
     assert_eq!(agents.len(), 2);
@@ -486,12 +476,7 @@ fn departure_execution_protects_recently_displaced_and_recovered_households() {
     }
     let recovered_budget = households.households[1].budget;
     assert_eq!(
-        households.execute_demand_household_removal(
-            4,
-            exit_policy(),
-            &mut agents,
-            &mut allocator,
-        ),
+        households.execute_demand_household_removal(4, exit_policy(), &mut agents, &mut allocator,),
         2
     );
     assert_eq!(households.households.len(), 2);
@@ -553,12 +538,7 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
     // The home has failed before departure; retain the agent and shipment remapping fixture.
     allocator.buildings[0].is_deserted = true;
     households.households[0].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    households.execute_demand_household_removal(
-        1,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-    );
+    households.execute_demand_household_removal(1, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(agents.len(), 1);
     assert_eq!(agents.freight_shipment_id[0], 77);
@@ -611,12 +591,7 @@ fn demand_household_removal_never_fills_unused_slots_with_housed_households() {
     allocator.claim_vacancy(1);
 
     households.households[2].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    households.execute_demand_household_removal(
-        2,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-    );
+    households.execute_demand_household_removal(2, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(households.households.len(), 2);
     assert_eq!(agents.len(), 2);
@@ -933,12 +908,7 @@ fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
     assert_eq!(agents.household_id[a0], 0);
     assert_eq!(agents.household_id[a1], 0);
     households.households[0].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    households.execute_demand_household_removal(
-        1,
-        exit_policy(),
-        &mut agents,
-        &mut allocator,
-    );
+    households.execute_demand_household_removal(1, exit_policy(), &mut agents, &mut allocator);
 
     assert_eq!(households.households.len(), 0);
     assert_eq!(agents.len(), 0);
@@ -983,7 +953,10 @@ fn eviction_settles_active_shopping_reservations_once() {
 
         assert_eq!(households.households[0].home_building_id, usize::MAX);
         assert_eq!(households.households[0].reserved_amount, 0.0);
-        assert_eq!(households.households[0].shopping_agent, crate::simulation::economy::agents::AgentHandle::NONE);
+        assert_eq!(
+            households.households[0].shopping_agent,
+            crate::simulation::economy::agents::AgentHandle::NONE
+        );
         assert_eq!(
             households.households[0].budget,
             if picked_up { 0.0 } else { reserved_cost }

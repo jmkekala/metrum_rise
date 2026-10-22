@@ -420,9 +420,11 @@ road grade rule, not a 3-D polyline-length rule. The source-fit and final plan s
 limiting stays close to the incident road samples; otherwise the original source-supported plane is
 preserved.
 Clip rebuilds update ownership distances only: they must not copy hard-pinned control geometry
-over the independently eased physical profile. Junction support materialization and edge splits
-sample the existing physical profile at control stations in a linear monotonic walk. Explicit
-terrain authoring remains responsible for synchronizing both profiles after a terrain edit.
+over the independently eased physical profile. Junction support materialization for authored
+profile changes may sample the existing physical profile at control stations in a linear monotonic
+walk. A topology-only split instead partitions the original physical polyline at the matching
+horizontal station, retaining support knots on both halves. Explicit terrain authoring remains
+responsible for synchronizing both profiles after a terrain edit.
 On a link to another connected endpoint, endpoint blending is bounded to its half of the link;
 it must not overwrite the opposite endpoint's profile supports. An open terminal keeps the full
 transition length because it has no competing endpoint profile.
@@ -465,7 +467,9 @@ explicitly reprofiled roads; splitting an existing road does not make either ret
 grade authority. Split children inherit profile authorship only from an authored parent. Preview
 and cold commit drain the same ledger, while adoption/rollback/load reset it. At an existing
 junction dirtied only by a remote split, preserve control geometry and apply only the change from
-the previously solved plane to its physical transition. Reapplying the entire blend accumulates
+the previously solved plane to every retained physical support station. Do not rematerialize that
+transition from sparse control knots: doing so can discard its solved vertical curve and create
+conflicting road-owned terrain boundaries (`ROAD-57`). Reapplying the entire blend accumulates
 cut/fill with each nearby edit. New junctions still receive one complete final-profile solve.
 This adds O(local authored edges) bookkeeping and O(local incident profile points) work, with
 no resident-city scan.

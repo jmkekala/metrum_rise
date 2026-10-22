@@ -241,8 +241,11 @@ impl PopulatedCity {
                     core.agents.transit[i] = TRANSIT_IN_BUILDING;
                     core.agents.current_building[i] = core.agents.home_building[i];
                     core.agents.release_departure(i);
-                    core.households
-                        .materialize_arrival_carrier(i, &mut core.agents, &core.allocator);
+                    core.households.materialize_arrival_carrier(
+                        i,
+                        &mut core.agents,
+                        &core.allocator,
+                    );
                 }
             }
             self.advance_hour();

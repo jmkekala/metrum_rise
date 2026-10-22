@@ -270,6 +270,36 @@ fn terrain_cdt_triangle_buffers_can_omit_pathological_faces() {
 }
 
 #[test]
+fn terrain_cdt_triangle_buffers_measure_large_world_faces_before_f32_conversion() {
+    let patch = TerrainPatchSnapshot {
+        world_origin_x: 5_100.0,
+        world_origin_z: -8_900.0,
+        world_size_x: 510.0,
+        world_size_z: 510.0,
+        ..test_patch()
+    };
+    let export = SimulationNode::terrain_cdt_triangle_buffers(
+        &patch,
+        &[
+            TerrainCdtVertex::new(5_245.163_574_218_75, 122.1313, -8_712.916_015_625),
+            TerrainCdtVertex::new(5_246.984_863_281_25, 122.1313, -8_728.812_5),
+            // This point is 0.11 mm from the long edge. Converting world X/Z to f32 first
+            // moves it to about 0.004 mm and falsely makes the otherwise valid face pathological.
+            TerrainCdtVertex::new(5_245.729_605_6, 122.122604, -8_717.855_455_8),
+        ],
+        &[[0, 1, 2]],
+        &[Vec::new()],
+        false,
+        true,
+    );
+
+    assert_eq!(export.emitted_faces, 1);
+    assert_eq!(export.omitted_pathological_faces, 0);
+    assert!(export.max_face_slope_ratio < TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO);
+    assert_eq!(export.indices.len(), 3);
+}
+
+#[test]
 fn terrain_cdt_triangle_buffers_omitted_faces_do_not_poison_export_metrics() {
     let export = SimulationNode::terrain_cdt_triangle_buffers(
         &test_patch(),

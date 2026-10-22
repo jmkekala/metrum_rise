@@ -113,15 +113,16 @@ impl ShipmentSystem {
                     graph,
                 )
             }
-            (ShipmentEndpoint::Building(source), ShipmentEndpoint::OwaBorder(border_node)) => agents
-                .spawn_export_freight_carrier(
+            (ShipmentEndpoint::Building(source), ShipmentEndpoint::OwaBorder(border_node)) => {
+                agents.spawn_export_freight_carrier(
                     shipment.id,
                     source,
                     border_node,
                     allocator,
                     transit_network,
                     graph,
-                ),
+                )
+            }
             _ => None,
         };
         let Some(carrier_agent_id) = carrier else {
@@ -276,7 +277,14 @@ impl ShipmentSystem {
             &catalog,
         );
         for id in std::mem::take(&mut self.held_dispatches) {
-            self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
+            self.dispatch_shipment(
+                id,
+                allocator,
+                agents,
+                transit_network,
+                graph,
+                treasury_balance,
+            );
         }
         self.hourly_tick();
         let ids: Vec<u64> = self.shipments.iter().map(|shipment| shipment.id).collect();
@@ -332,7 +340,14 @@ impl ShipmentSystem {
             &catalog,
         );
         for id in std::mem::take(&mut self.held_dispatches) {
-            self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
+            self.dispatch_shipment(
+                id,
+                allocator,
+                agents,
+                transit_network,
+                graph,
+                treasury_balance,
+            );
         }
         let ids: Vec<u64> = self.shipments.iter().map(|shipment| shipment.id).collect();
         for id in ids {
@@ -489,8 +504,7 @@ impl ShipmentSystem {
                     return;
                 }
 
-                allocator.buildings[src_idx].revenue +=
-                    shipment.total_cost - shipment.freight_cost;
+                allocator.buildings[src_idx].revenue += shipment.total_cost - shipment.freight_cost;
                 allocator.buildings[src_idx].operating_budget +=
                     shipment.total_cost - shipment.freight_cost;
                 // The buyer's escrow pays the seller; the carrier fee leaves the city.

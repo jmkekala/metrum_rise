@@ -1144,7 +1144,9 @@ fn apply_workplace_plan(
         if plan.old_job < allocator.buildings.len() {
             allocator.set_worker_count(
                 plan.old_job,
-                allocator.buildings[plan.old_job].worker_count.saturating_sub(1),
+                allocator.buildings[plan.old_job]
+                    .worker_count
+                    .saturating_sub(1),
             );
         }
         allocator.set_worker_count(job, allocator.buildings[job].worker_count.saturating_add(1));
@@ -1186,7 +1188,10 @@ fn eject_inactive_work_assignments(
         .collect();
     for i in ejected_agents {
         let work = agents.work_building[i];
-        allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
+        allocator.set_worker_count(
+            work,
+            allocator.buildings[work].worker_count.saturating_sub(1),
+        );
         reassign_worker(households, agents, i, usize::MAX, 0);
     }
 }
@@ -1561,7 +1566,9 @@ fn build_home_job_options(
     let home_chunk = keys.len().div_ceil(shards.len()).max(1);
     let current_chunk = current_job_keys.len().div_ceil(shards.len()).max(1);
     shards.par_iter_mut().for_each(|shard| {
-        shard.query.prepare_deferred_quotes(transit_network, graph, network_quotes);
+        shard
+            .query
+            .prepare_deferred_quotes(transit_network, graph, network_quotes);
         shard.home.clear();
         shard.home.reserve(home_chunk);
         shard.current.clear();
@@ -1575,7 +1582,8 @@ fn build_home_job_options(
             CandidateVisits::with(|scratch| {
                 scratch.begin_query(job_supply.entries.len());
                 for &key in keys {
-                    let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
+                    let mut route_entries =
+                        [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
                     let mut route_entry_count = 0usize;
                     let options = build_home_job_options_for_key(
                         key,
