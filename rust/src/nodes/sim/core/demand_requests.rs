@@ -187,8 +187,8 @@ impl SimCore {
     /// recovered its compatibility, stays), then the derived caches are repaired once: as the
     /// actions slot repaired clearances, or as the daily phases repaired an incompatible
     /// building's removal. The caller serves it only in the hour's removal window. O(1) with
-    /// nothing queued, else O(quota) removals with their parallel O(A + H) remaps plus one O(B)
-    /// cache repair.
+    /// nothing queued, else O(quota) removals with their parallel O(A + H) remaps plus the cache
+    /// repair: O(V log V) for a zone index the clearances kept (`SIM-02-K`), else O(B).
     pub(super) fn serve_building_removal_queue(
         &mut self,
         quota: usize,
@@ -249,10 +249,12 @@ impl SimCore {
         if expired_any {
             self.finish_building_removals(observer);
         } else if cleared {
-            // As the actions slot repaired its clearances: one zone-index rebuild, O(B), which
-            // also returns the vacancy lists to building order (`ALLOC-03`). Each removal kept a
-            // clean entrance cache in step (`SIM-02-K`); only a stale one is rebuilt, O(B).
-            self.allocator.rebuild_zone_index();
+            // As the actions slot repaired its clearances: the zone index a rebuild gives, which
+            // also returns the vacancy lists to building order (`ALLOC-03`); each removal kept
+            // the lists of a current index in step, so only that order and the admission order
+            // are recomputed, O(V log V), else it is rebuilt, O(B) (`SIM-02-K`). Each removal
+            // kept a clean entrance cache in step too; only a stale one is rebuilt, O(B).
+            self.allocator.rebuild_zone_index_after_removals();
             if self.allocator.entrances_dirty
                 || self.allocator.entrances.len() != self.allocator.buildings.len()
             {

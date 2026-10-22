@@ -352,6 +352,16 @@ Important invariant:
 - `vacancy_pos`
 - `building_chunks`
 
+A building removal's swap-remove keeps a current index in step (`keep_index_across_swap_remove`,
+`SIM-02-K`): the removed building leaves its zone and chunk lists, the last building takes its
+place there, the vacancy lists drop the removed building and rename the last one, and the
+explicit-site count and the counts of buildings at the support and lot-radius maxima follow. The
+removal queue's repair (`rebuild_zone_index_after_removals`) then returns the vacancy lists to
+building order and recomputes the admission order, which is what a rebuild gives (`ALLOC-03`), and
+recomputes the maxima or chunk bounds only when a removal may have lowered them. Any other stale
+mark drops the kept state and every other caller rebuilds in full; test builds compare the kept
+index with a rebuild.
+
 Inspector and service-funding picks share `nearest_building_idx_at()`. It searches building
 centres strictly within 30 m, preferring the lowest building index on an exact distance tie.
 Non-finite points return no hit. A clean query examines at most four existing 512 m chunks,
@@ -710,8 +720,9 @@ Done 2026-10-03. `AdmissionOrder` (`allocator/admission_order.rs`) groups reside
 positions by the household size admission offers there, each group a `BTreeSet` ordered by
 position. One helper, `admission_size`, defines the offered size for both the index and the old
 scan. The index changes with every residential vacancy push, swap-remove and occupancy change
-(O(log V) each), is rebuilt with `rebuild_zone_index` and after an asset-registry reload
-(O(V log V)), and is cleared with the allocator. While `dirty_index` is set, the vacancy list may
+(O(log V) each), is rebuilt with `rebuild_zone_index`, by the removal queue's kept-index repair
+and after an asset-registry reload (O(V log V)), and is cleared with the allocator. While
+`dirty_index` is set, the vacancy list may
 name moved buildings, so the pick falls back to the scan. Admission runs after the spawn batch and
 `maintain` have rebuilt the index, so the hourly path does not hit the fallback.
 

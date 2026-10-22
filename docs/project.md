@@ -408,6 +408,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the agent tick, and the unused per-edge congestion value is gone (`SIM-02-K` part 4, save
   format 105). The 100k city's busy streets are not jammed: shoppers walk several kilometres
   because only the oldest stores get customers (`ECON-22`; `SIM-02-K` part 6).
+  The census's business claims now count their scan work, so no census slot holds more than about
+  2.2 ms at 100k, and the removal slot keeps the zone index across its swap-removes (slot 64 3.5
+  to 2.6 ms at 100k) (`SIM-02-K` part 5).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

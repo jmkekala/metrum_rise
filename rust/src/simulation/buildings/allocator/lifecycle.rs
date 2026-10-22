@@ -475,7 +475,7 @@ impl BuildingAllocator {
                 bounds.3
             );
         }
-        self.dirty_index = true;
+        self.mark_index_stale();
         self.entrances_dirty = true;
     }
 
@@ -1602,7 +1602,7 @@ impl BuildingAllocator {
         self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
-        self.dirty_index = true;
+        self.mark_index_stale();
         self.entrances_dirty = true;
         if let Some(zone_idx) = baseline_private_zone_slot(zone_type) {
             self.dirty_zones[zone_idx] = true;
@@ -1670,6 +1670,7 @@ impl BuildingAllocator {
         );
         self.building_handles
             .swap_remove(building_idx, self.buildings.len());
+        self.keep_index_across_swap_remove(building_idx);
         self.buildings.swap_remove(building_idx);
         crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
         self.remove_building_site_client(building_idx);

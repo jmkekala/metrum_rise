@@ -1779,7 +1779,8 @@ fn perf_contract_financing_locality() {
 // phases too, equals one run bit for bit. A restart there leaves the customer book torn, and the
 // restarted refresh withdraws it, so the census is the one a loaded game computes. On a cold
 // book the census also rewrites its route quotes, builds its supplier index and lays out its
-// business book, and restarts land inside each of those slices.
+// business book, and restarts land inside each of those slices and inside the business claims'
+// serial sweep.
 #[test]
 fn a_census_restarted_after_any_slice_equals_one_run_bit_for_bit() {
     use crate::simulation::economy::hiring::RESTARTED_AT;
@@ -1839,6 +1840,7 @@ fn a_census_restarted_after_any_slice_equals_one_run_bit_for_bit() {
         "business_layout_access",
         "business_layout_ports",
         "business_layout_indices",
+        "business_claims",
     ] {
         assert!(
             restarted

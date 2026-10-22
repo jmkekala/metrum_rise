@@ -449,6 +449,9 @@ pub struct BuildingAllocator {
     pub(crate) building_chunk_bounds: Option<[i32; 4]>,
     /// Highest indexed support plane, for conservative directional-shadow caster queries.
     pub(crate) max_building_support_m: f32,
+    /// Indexed buildings whose support equals [`Self::max_building_support_m`], so a kept
+    /// index's removal lowers it only when it takes the last (`SIM-02-K`).
+    pub(crate) max_building_support_count: usize,
     /// Derived full-field reservations rebuilt from AgricultureSystem on load and undo.
     pub(crate) field_clearance: FieldClearanceIndex,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
@@ -477,6 +480,8 @@ pub struct BuildingAllocator {
     pub(crate) level_changes: LevelChangeLog,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
+    /// Indexed buildings whose lot radius equals [`Self::max_lot_radius_cells`] (`SIM-02-K`).
+    pub(crate) max_lot_radius_count: usize,
     /// Explicit non-parcel sites in the existing building index; invalid when `dirty_index`.
     pub(crate) explicit_cell_site_count: usize,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
@@ -519,6 +524,8 @@ pub struct BuildingAllocator {
     border_arrival: lifecycle::BorderArrivalCosts,
     // The zone-index rebuild's reused storage.
     index_scratch: index::IndexScratch,
+    // What a zone index kept across the removal queue's swap-removes still owes (`SIM-02-K`).
+    kept_index: index::KeptIndex,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
@@ -853,6 +860,7 @@ impl BuildingAllocator {
             building_chunks: HashMap::new(),
             building_chunk_bounds: None,
             max_building_support_m: f32::NEG_INFINITY,
+            max_building_support_count: 0,
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
             now_slot: 0,
@@ -865,6 +873,7 @@ impl BuildingAllocator {
             pending_yards: Vec::new(),
             level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
+            max_lot_radius_count: 0,
             explicit_cell_site_count: 0,
             max_site_radius_m: 0.0,
             max_site_radius_count: 0,
@@ -885,6 +894,7 @@ impl BuildingAllocator {
             site_feasibility: Default::default(),
             border_arrival: Default::default(),
             index_scratch: Default::default(),
+            kept_index: Default::default(),
             registry: AssetRegistry::new(),
         }
     }
@@ -1076,7 +1086,7 @@ impl BuildingAllocator {
         self.record_production_change(building_idx);
         self.dirty = true;
         if !self.index_completed_building(building_idx) {
-            self.dirty_index = true;
+            self.mark_index_stale();
         }
     }
 
@@ -1126,7 +1136,9 @@ impl BuildingAllocator {
         self.building_chunks.clear();
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
+        self.max_building_support_count = 0;
         self.max_lot_radius_cells = 0.0;
+        self.max_lot_radius_count = 0;
         self.explicit_cell_site_count = 0;
         self.max_site_radius_m = 0.0;
         self.max_site_radius_count = 0;
@@ -1134,6 +1146,7 @@ impl BuildingAllocator {
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;
+        self.kept_index = Default::default();
         self.entrances.clear();
         self.entrances_dirty = false;
         if had_buildings || had_sites {

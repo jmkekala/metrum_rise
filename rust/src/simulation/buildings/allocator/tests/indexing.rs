@@ -501,3 +501,89 @@ fn rebuilt_chunk_lists_hold_each_chunks_buildings_in_building_order() {
     assert_eq!(allocator.building_chunks, direct(&allocator));
     assert_eq!(allocator.building_chunks.len(), 3);
 }
+
+// `SIM-02-K`: a zone index kept across the swap-removes of building removals equals a rebuild:
+// the zone, chunk and vacancy lists, the building order a rebuild gives the vacancy lists
+// (`ALLOC-03`) after claims took homes out of it, the support maximum and chunk bounds a removed
+// building held, and the admission order.
+#[test]
+fn a_zone_index_kept_across_removals_equals_a_rebuild() {
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::economy::households::HouseholdSystem;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::zoning::ZoningSystem;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.kept_index",
+        ZoneClass::Residential,
+    );
+    let commercial = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.com.kept_index",
+        ZoneClass::Commercial,
+    );
+    for i in 0..24 {
+        let (asset, zone) = if i % 3 == 0 {
+            (&commercial, ZoneType::Commercial)
+        } else {
+            (&residential, ZoneType::Residential)
+        };
+        let mut building = indexed_test_building(asset.clone(), zone, i);
+        // Six chunks along x; the last building alone in a far chunk, with the highest support.
+        building.center_x = (i % 6) as f32 * 600.0 + 10.0;
+        building.center_y = if i == 23 { 3_000.0 } else { 10.0 };
+        building.support_height_m = if i == 23 { 9.0 } else { (i % 4) as f32 };
+        building.parcel_id = 0;
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_building_site_clients(10.0);
+    allocator.rebuild_zone_index();
+    // Filling homes 4 and 1 and freeing 1 again takes them out of building order.
+    for building_idx in [4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 7] {
+        allocator.claim_vacancy(building_idx);
+    }
+    allocator.release_vacancy(1);
+    let slot = zone_bucket(ZoneType::Residential);
+    assert!(!allocator.vacancy_index[slot].is_sorted());
+
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    // The last building, then buildings the last one replaces: a home, a store, a full home.
+    for removed in [23, 5, 0, 4] {
+        assert!(allocator.remove_building_for_bulldoze(
+            removed,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut 0.0
+        ));
+        assert!(allocator.zone_index_kept_for_test());
+    }
+    let mut rebuilt = allocator.clone();
+    rebuilt.rebuild_zone_index();
+    allocator.rebuild_zone_index_after_removals();
+
+    assert!(!allocator.dirty_index);
+    assert_eq!(allocator.zone_index, rebuilt.zone_index);
+    assert_eq!(allocator.vacancy_index, rebuilt.vacancy_index);
+    assert_eq!(allocator.vacancy_pos, rebuilt.vacancy_pos);
+    assert_eq!(allocator.building_chunks, rebuilt.building_chunks);
+    assert_eq!(
+        allocator.building_chunk_bounds,
+        rebuilt.building_chunk_bounds
+    );
+    assert_eq!(
+        allocator.max_building_support_m.to_bits(),
+        rebuilt.max_building_support_m.to_bits()
+    );
+    assert_eq!(allocator.max_building_support_m, 3.0);
+    assert!(allocator.admission_order.same_as(&rebuilt.admission_order));
+}

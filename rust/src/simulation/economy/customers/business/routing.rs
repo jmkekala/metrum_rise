@@ -59,6 +59,9 @@ pub(crate) struct BusinessMarket {
     revision: Option<(u64, u64, u32)>,
     visited: Vec<u64>,
     visit: u64,
+    // Scan events the claims visited and carrier quotes they priced so far, which the funding
+    // census counts as work (`SIM-02-K`); monotonic, never read by any result.
+    claim_work: [u64; 2],
     #[cfg(test)]
     index_builds: u64,
     #[cfg(test)]
@@ -114,6 +117,12 @@ struct CensusBuyers {
 }
 
 impl BusinessMarket {
+    /// Scan events visited and carrier quotes priced by claims so far, for the funding census's
+    /// work units (`SIM-02-K`). Monotonic counters; O(1).
+    pub(crate) fn claim_work(&self) -> [u64; 2] {
+        self.claim_work
+    }
+
     /// Lifetime affordability prechecks, rejected routes, and rejects that free freight
     /// would not prove. Diagnostics only; production does not repeat the free-price check.
     #[cfg(test)]
@@ -895,6 +904,7 @@ impl BusinessMarket {
             entrance.door_pos.y,
             mask,
             |event| {
+                self.claim_work[0] += 1;
                 let ReachableBucketScanEvent::Item { item_idx: port } = event else {
                     return true;
                 };
@@ -975,6 +985,7 @@ impl BusinessMarket {
                     }
                     return true;
                 }
+                self.claim_work[1] += 1;
                 if let Some(carrier) = logistics.customer_carrier_quote(
                     entrance,
                     destination,

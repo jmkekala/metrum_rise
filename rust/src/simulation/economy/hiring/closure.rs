@@ -801,9 +801,12 @@ impl JobFunding {
         }
     }
 
-    /// Claims the customers of sellers `rows`, in building order after the seeding. A storage
-    /// shortfall returns the arena size required: the caller reserves it, seeds again and
-    /// claims again from the first seller, so no partial matching result escapes.
+    /// Claims the customers of sellers from `start` on, in building order after the seeding,
+    /// until `work` (of the book, the route cache and the sellers claimed) reaches `budget`;
+    /// returns the seller it stopped before and the work used (`SIM-02-K`), so a slice holds
+    /// at most one seller past its budget. A storage shortfall returns the arena size required
+    /// and the work used: the caller reserves it, seeds again and claims again from the first
+    /// seller, so no partial matching result escapes.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn claim_business_customers(
         &mut self,
@@ -813,12 +816,19 @@ impl JobFunding {
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        rows: std::ops::Range<usize>,
-    ) -> Result<(), usize> {
+        start: usize,
+        budget: u64,
+        work: impl Fn(&Self, &ShipmentSystem, usize) -> u64,
+    ) -> Result<(usize, u64), (usize, u64)> {
+        let total = allocator.buildings.len();
         let Some(components) = self.input_supply.freight_components() else {
-            return Ok(());
+            return Ok((total, work(self, logistics, total - start)));
         };
-        for index in rows {
+        for index in start..total {
+            let used = work(self, logistics, index - start);
+            if used >= budget {
+                return Ok((index, used));
+            }
             let building = &allocator.buildings[index];
             if self.capacities[index] == 0 || !live(building) {
                 continue;
@@ -861,9 +871,11 @@ impl JobFunding {
                     tuning,
                 );
             }
-            self.business.try_extend_for(index)?;
+            if let Err(required) = self.business.try_extend_for(index) {
+                return Err((required, work(self, logistics, index - start)));
+            }
         }
-        Ok(())
+        Ok((total, work(self, logistics, total - start)))
     }
 
     /// The proof over buildings `rows`, independent per building and parallel: a provisional

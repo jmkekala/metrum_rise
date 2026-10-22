@@ -1926,7 +1926,7 @@ impl BuildingAllocator {
         self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
-        self.dirty_index = true;
+        self.mark_index_stale();
         self.entrances_dirty = true;
         // A site under construction is no flow-field source (`SIM-02-I`): its zone's fields
         // change when it completes. One placed complete is a source at once.

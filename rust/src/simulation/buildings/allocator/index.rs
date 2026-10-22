@@ -33,6 +33,78 @@ pub(crate) struct IndexScratch {
     // The chunk lists during a rebuild, by cell of the dense grid over the chunk bounds;
     // empty between rebuilds, some keeping storage.
     grid_lists: Vec<Vec<usize>>,
+    // Each building's vacancy list while a kept index returns them to building order
+    // (`SIM-02-K`); `u8::MAX` for none.
+    vacancy_slots: Vec<u8>,
+}
+
+/// What a zone index kept across swap-removes still owes a rebuild (`SIM-02-K`): each removal
+/// applies its swap-remove to the zone, chunk and vacancy lists
+/// ([`BuildingAllocator::keep_index_across_swap_remove`]), and the removal queue's repair
+/// ([`BuildingAllocator::rebuild_zone_index_after_removals`]) gives what a rebuild gives
+/// without deriving every building again. Derived, never saved.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct KeptIndex {
+    // Every change since the last rebuild was applied to the lists: only swap-removes, each on
+    // a current or kept index. Anything else that marks the index stale clears it.
+    kept: bool,
+    // A kept swap-remove shortened the vacancy positions since the last rebuild, where an
+    // unkept one leaves them at their length: an append then still waits for the rebuild.
+    shrunk: bool,
+    // A removal took the last building at the highest support or lot radius.
+    maxima: bool,
+    // A removal emptied a chunk on the chunk bounds' edge.
+    bounds: bool,
+}
+
+// Removes `value` from the ascending `list`; false when it is not there. O(list).
+fn remove_sorted(list: &mut Vec<usize>, value: usize) -> bool {
+    let position = list.partition_point(|&entry| entry < value);
+    if list.get(position) != Some(&value) {
+        return false;
+    }
+    list.remove(position);
+    true
+}
+
+// Moves the ascending `list`'s last entry, `last`, to its place as `to`; false when the list
+// does not end with `last`. O(list).
+fn rename_last(list: &mut Vec<usize>, last: usize, to: usize) -> bool {
+    if list.last() != Some(&last) {
+        return false;
+    }
+    list.pop();
+    let position = list.partition_point(|&entry| entry < to);
+    list.insert(position, to);
+    true
+}
+
+// Adds `value` to a maximum, as `f32::max` folds it, and to its count of equal values. O(1).
+fn include_maximum(max: &mut f32, count: &mut usize, value: f32) {
+    if value > *max {
+        *count = 1;
+    } else if value == *max {
+        *count += 1;
+    }
+    *max = max.max(value);
+}
+
+// Takes `value` out of a maximum's count; false when the maximum may fall: `value` was the
+// last equal to it, or above it. O(1).
+fn exclude_maximum(max: f32, count: &mut usize, value: f32) -> bool {
+    if value > max {
+        return false;
+    }
+    if value == max {
+        *count = count.saturating_sub(1);
+        return *count > 0;
+    }
+    true
+}
+
+// Half-diagonal of a building's lot in zoning cells.
+fn lot_radius_cells(b: &super::Building) -> f32 {
+    (b.width_cells as f32 * 0.5).hypot(b.depth_cells as f32 * 0.5)
 }
 
 // The dense grid over chunk bounds `[min x, min z, max x, max z]`, x-major, so cells follow
@@ -147,6 +219,7 @@ impl BuildingAllocator {
     /// and back into the map, keeping its storage. The indices equal a serial pass's
     /// (`SIM-02-K`). O(B/p + chunks) plus an O(B) ordered fill.
     pub fn rebuild_zone_index(&mut self) {
+        self.kept_index = KeptIndex::default();
         for list in &mut self.zone_index {
             list.clear();
         }
@@ -211,6 +284,20 @@ impl BuildingAllocator {
                     .push(idx),
             }
         }
+        // The buildings at each maximum, which a kept index's removals count down (`SIM-02-K`).
+        let (support, radius) = (self.max_building_support_m, self.max_lot_radius_cells);
+        (self.max_building_support_count, self.max_lot_radius_count) =
+            crate::thread_pools::install(|| {
+                entries
+                    .par_iter()
+                    .map(|entry| {
+                        (
+                            usize::from(entry.support_height_m == support),
+                            usize::from(entry.lot_radius_cells == radius),
+                        )
+                    })
+                    .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+            });
         if let Some(grid) = &grid {
             for (cell, list) in grid_lists.iter_mut().enumerate() {
                 if !list.is_empty() {
@@ -231,10 +318,8 @@ impl BuildingAllocator {
                 "the chunk lists hold each chunk's buildings in building order"
             );
         }
-        self.index_scratch = IndexScratch {
-            entries,
-            grid_lists,
-        };
+        self.index_scratch.entries = entries;
+        self.index_scratch.grid_lists = grid_lists;
         self.rebuild_admission_order();
         self.dirty_index = false;
         // The zone lists name the flow fields' sources (`SIM-02-I`): the next frame compares
@@ -244,13 +329,11 @@ impl BuildingAllocator {
 
     // Building `idx`'s index entries. O(1).
     fn indexed_building(&self, idx: usize, b: &super::Building) -> IndexedBuilding {
-        let half_width = b.width_cells as f32 * 0.5;
-        let half_depth = b.depth_cells as f32 * 0.5;
         let mut entry = IndexedBuilding {
             chunk: RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y)),
             explicit_site: b.parcel_id == 0 && b.zone_type == ZoneType::None,
             support_height_m: b.support_height_m,
-            lot_radius_cells: half_width.hypot(half_depth),
+            lot_radius_cells: lot_radius_cells(b),
             zone: None,
             vacancy: None,
         };
@@ -277,7 +360,7 @@ impl BuildingAllocator {
     /// where the saved game's would. O(V log V).
     pub(crate) fn restore_vacancy_order(&mut self, saved: &SavedVacancyOrder) {
         if saved.stale {
-            self.dirty_index = true;
+            self.mark_index_stale();
             return;
         }
         let mut sorted = Vec::new();
@@ -311,6 +394,7 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len()
             || building_idx + 1 != self.buildings.len()
             || self.vacancy_pos.len() != building_idx
+            || self.kept_index.shrunk
         {
             return false;
         }
@@ -325,10 +409,16 @@ impl BuildingAllocator {
             .or_default()
             .push(building_idx);
         include_chunk(&mut self.building_chunk_bounds, chunk);
-        self.max_building_support_m = self.max_building_support_m.max(b.support_height_m);
-        let half_width = b.width_cells as f32 * 0.5;
-        let half_depth = b.depth_cells as f32 * 0.5;
-        self.max_lot_radius_cells = self.max_lot_radius_cells.max(half_width.hypot(half_depth));
+        include_maximum(
+            &mut self.max_building_support_m,
+            &mut self.max_building_support_count,
+            b.support_height_m,
+        );
+        include_maximum(
+            &mut self.max_lot_radius_cells,
+            &mut self.max_lot_radius_count,
+            lot_radius_cells(b),
+        );
         if !b.is_under_construction() {
             if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
                 self.zone_index[zi].push(building_idx);
@@ -345,6 +435,222 @@ impl BuildingAllocator {
         }
         self.dirty_index = false;
         true
+    }
+
+    /// Marks the zone index stale for its next reader's rebuild; an index kept across
+    /// swap-removes then waits for a rebuild too.
+    pub(super) fn mark_index_stale(&mut self) {
+        self.dirty_index = true;
+        self.kept_index.kept = false;
+    }
+
+    /// Applies the swap-remove of building `removed`, about to happen, to the zone, chunk and
+    /// vacancy lists when they are current or were kept across earlier swap-removes, so the
+    /// removal queue's repair needs no rebuild (`SIM-02-K`). The zone and chunk lists stay in
+    /// building order: `removed` leaves them, and the last building leaves the end of its lists
+    /// for its new index's place. The vacancy lists lose `removed` and rename the last building;
+    /// the repair returns them to building order. Any entry not where the lists' invariants put
+    /// it leaves the index to a rebuild. The caller marks the index stale for every other
+    /// reader, as before. O(zone list + chunk list) moves.
+    pub(super) fn keep_index_across_swap_remove(&mut self, removed: usize) {
+        let current = (!self.dirty_index || self.kept_index.kept)
+            && self.vacancy_pos.len() == self.buildings.len()
+            && removed < self.buildings.len();
+        self.kept_index.kept = current && self.apply_kept_swap_remove(removed);
+    }
+
+    // The lists' part of `keep_index_across_swap_remove`; false when an entry is missing.
+    fn apply_kept_swap_remove(&mut self, removed: usize) -> bool {
+        let last = self.buildings.len() - 1;
+        let gone = self.indexed_building(removed, &self.buildings[removed]);
+        let moved = (removed != last).then(|| self.indexed_building(last, &self.buildings[last]));
+        if let Some(zone) = gone.zone
+            && !remove_sorted(&mut self.zone_index[zone], removed)
+        {
+            return false;
+        }
+        if let Some(zone) = moved.and_then(|entry| entry.zone)
+            && !rename_last(&mut self.zone_index[zone], last, removed)
+        {
+            return false;
+        }
+        let Some(list) = self.building_chunks.get_mut(&gone.chunk) else {
+            return false;
+        };
+        if !remove_sorted(list, removed) {
+            return false;
+        }
+        if list.is_empty() {
+            self.building_chunks.remove(&gone.chunk);
+            let (x, z) = gone.chunk;
+            self.kept_index.bounds |= self.building_chunk_bounds.is_none_or(|bounds| {
+                x == bounds[0] || z == bounds[1] || x == bounds[2] || z == bounds[3]
+            });
+        }
+        if let Some(entry) = moved {
+            let Some(list) = self.building_chunks.get_mut(&entry.chunk) else {
+                return false;
+            };
+            if !rename_last(list, last, removed) {
+                return false;
+            }
+        }
+        if gone.explicit_site {
+            let Some(count) = self.explicit_cell_site_count.checked_sub(1) else {
+                return false;
+            };
+            self.explicit_cell_site_count = count;
+        }
+        // Both counts follow the removal; f32::max ignores NaN, so a NaN never holds a maximum.
+        self.kept_index.maxima |= !exclude_maximum(
+            self.max_building_support_m,
+            &mut self.max_building_support_count,
+            gone.support_height_m,
+        ) | !exclude_maximum(
+            self.max_lot_radius_cells,
+            &mut self.max_lot_radius_count,
+            gone.lot_radius_cells,
+        );
+        let position = self.vacancy_pos[removed];
+        if position != usize::MAX {
+            let Some(slot) = self.housing_vacancy_slot(removed) else {
+                return false;
+            };
+            let list = &mut self.vacancy_index[slot];
+            if list.get(position) != Some(&removed) {
+                return false;
+            }
+            list.swap_remove(position);
+            if let Some(&shifted) = list.get(position) {
+                self.vacancy_pos[shifted] = position;
+            }
+            self.admission_vacancy_removed(slot, position);
+        }
+        if removed != last && self.vacancy_pos[last] != usize::MAX {
+            let Some(slot) = self.housing_vacancy_slot(last) else {
+                return false;
+            };
+            let Some(entry) = self.vacancy_index[slot]
+                .get_mut(self.vacancy_pos[last])
+                .filter(|entry| **entry == last)
+            else {
+                return false;
+            };
+            *entry = removed;
+        }
+        self.vacancy_pos.swap_remove(removed);
+        self.kept_index.shrunk = true;
+        true
+    }
+
+    /// The zone index after the removal queue's swap-removes (`SIM-02-K`): what
+    /// [`Self::rebuild_zone_index`] gives, without deriving every building again when each
+    /// swap-remove kept the lists ([`Self::keep_index_across_swap_remove`]): the vacancy lists
+    /// return to building order (`ALLOC-03`) and the admission order is recomputed; the maxima
+    /// only when a removal took a maximum's last building, the chunk bounds only when one
+    /// emptied an edge chunk. Otherwise a rebuild. Test builds with the whole-city checks
+    /// compare the kept index with a rebuild. O(B + V) on reused storage for the vacancy lists
+    /// and O(V log V) for the admission order, plus O(B) for a maximum and O(chunks) for the
+    /// bounds when they may fall.
+    pub(crate) fn rebuild_zone_index_after_removals(&mut self) {
+        let kept = std::mem::take(&mut self.kept_index);
+        if !(kept.kept && self.dirty_index && self.vacancy_pos.len() == self.buildings.len()) {
+            self.rebuild_zone_index();
+            return;
+        }
+        self.vacancy_lists_in_building_order();
+        if kept.maxima {
+            // In building order from the rebuild's start values, as its fill folds them; only
+            // when a removal took a maximum's last building. O(B).
+            self.max_building_support_m = f32::NEG_INFINITY;
+            self.max_building_support_count = 0;
+            self.max_lot_radius_cells = 0.0;
+            self.max_lot_radius_count = 0;
+            for b in &self.buildings {
+                include_maximum(
+                    &mut self.max_building_support_m,
+                    &mut self.max_building_support_count,
+                    b.support_height_m,
+                );
+                include_maximum(
+                    &mut self.max_lot_radius_cells,
+                    &mut self.max_lot_radius_count,
+                    lot_radius_cells(b),
+                );
+            }
+        }
+        if kept.bounds {
+            self.building_chunk_bounds = None;
+            for &chunk in self.building_chunks.keys() {
+                include_chunk(&mut self.building_chunk_bounds, chunk);
+            }
+        }
+        self.rebuild_admission_order();
+        self.dirty_index = false;
+        // As the rebuild leaves them: each zone's flow fields compare their sources.
+        self.dirty_zones = [true; 3];
+        #[cfg(test)]
+        if crate::debug::work::city_checks() {
+            self.assert_kept_index_matches_rebuild();
+        }
+    }
+
+    /// Whether every swap-remove since the last rebuild kept the index.
+    #[cfg(test)]
+    pub(crate) fn zone_index_kept_for_test(&self) -> bool {
+        self.kept_index.kept
+    }
+
+    // Returns a kept index's vacancy lists to building order, as a rebuild fills them: each
+    // listed building is tagged with its list, then the tags are read in building order.
+    // O(B + V), sequential, on reused storage.
+    fn vacancy_lists_in_building_order(&mut self) {
+        let mut slots = std::mem::take(&mut self.index_scratch.vacancy_slots);
+        slots.clear();
+        slots.resize(self.buildings.len(), u8::MAX);
+        for (slot, list) in self.vacancy_index.iter_mut().enumerate() {
+            for &building_idx in list.iter() {
+                slots[building_idx] = slot as u8;
+            }
+            list.clear();
+        }
+        for (building_idx, &slot) in slots.iter().enumerate() {
+            if let Some(list) = self.vacancy_index.get_mut(usize::from(slot)) {
+                self.vacancy_pos[building_idx] = list.len();
+                list.push(building_idx);
+            }
+        }
+        self.index_scratch.vacancy_slots = slots;
+    }
+
+    // Test builds: the kept index equals a rebuild's, which then stands.
+    #[cfg(test)]
+    fn assert_kept_index_matches_rebuild(&mut self) {
+        let lists = |allocator: &Self| {
+            (
+                allocator.zone_index.clone(),
+                allocator.vacancy_index.clone(),
+                allocator.vacancy_pos.clone(),
+                allocator.building_chunks.clone(),
+                allocator.building_chunk_bounds,
+                allocator.max_building_support_m.to_bits(),
+                allocator.max_lot_radius_cells.to_bits(),
+                allocator.max_building_support_count,
+                allocator.max_lot_radius_count,
+                allocator.explicit_cell_site_count,
+            )
+        };
+        let kept = lists(self);
+        let admission = self.admission_order.clone();
+        self.rebuild_zone_index();
+        assert!(
+            kept == lists(self),
+            "the zone index kept across swap-removes equals a rebuild"
+        );
+        assert!(
+            admission.same_as(&self.admission_order),
+            "the kept index's admission order equals a rebuild's"
+        );
     }
 
     /// Adds a building that just finished construction to clean indices: a sorted insert into

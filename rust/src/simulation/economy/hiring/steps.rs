@@ -25,16 +25,17 @@
 //! sliced); the provisional-input repair; business validation (seeding the accounts: its start
 //! and the buyers, sliced and serial; the book's layout: its start, after a layout change the
 //! buyers' access and recipe ports, sliced, the index entries and the indices one resource at
-//! least a slice, and the accounts' availability; the claims sliced by seller, the proof
-//! sliced, publishing the financing); and settling, or propagating impossible customers into
-//! the next pass.
+//! least a slice, and the accounts' availability; the claims sliced and serial by seller, the
+//! proof sliced, publishing the financing); and settling, or propagating impossible customers
+//! into the next pass.
 //!
 //! **Costs** (`SIM-02-K`). Work is counted in work units, a deterministic estimate of census
 //! work in nominal nanoseconds made from counts alone, never from measured time: each step's
 //! rows at the step's weight ([`Step::row_work`]: buildings for building passes, households for
 //! the consumer-market refresh), and, in the serial claim and staffing sweeps, the searches the
 //! row made ([`WORK_WEIGHTS`]: network route searches, supplier searches, candidates and
-//! routes, input quotes, consumer candidates and fallbacks, funded-operation searches). A
+//! routes, input quotes, consumer candidates and fallbacks, business claims' scan events and
+//! carrier quotes, funded-operation searches). A
 //! uniform sliced step takes its budget's rows; a serial sweep runs rows until their work
 //! reaches the budget, so one slice holds at most one row past it; an unsliced step runs whole
 //! once started and starts only in a slot that has done no other step, unless the budget
@@ -152,14 +153,16 @@ pub(crate) const STEP_NAMES: [&str; STEP_COUNT] = [
 /// Work-unit weights of the counted searches (`SIM-02-K`), in nominal nanoseconds, fitted to
 /// per-row timings of the serial sweeps at 100k (release, eight workers): a network route
 /// search, a supplier search, a supplier candidate, a supplier route priced, an input quote,
-/// a consumer candidate, a consumer trip fallback and a funded-operation search.
-const WORK_WEIGHTS: [u64; 8] = [15_000, 500, 40, 30, 100, 50, 5_000, 2_000];
+/// a consumer candidate, a consumer trip fallback, a business claim's scan event, a business
+/// carrier quote and a funded-operation search (the last is the staffing sweeps' own).
+const WORK_WEIGHTS: [u64; 10] = [15_000, 500, 40, 30, 100, 50, 5_000, 270, 150, 2_000];
 
 // The weighted counted work of a census's books and route cache so far; differences between
 // two readings are a span's counted work. O(1).
 fn counted_work(funding: &JobFunding, logistics: &ShipmentSystem) -> u64 {
     let [searches, candidates, routes, quotes] = funding.input_supply.work_counts();
     let [consumers, fallbacks] = funding.customers.claim_work();
+    let [scanned, priced] = funding.business.claim_work();
     [
         logistics.route_searches(),
         searches,
@@ -168,6 +171,8 @@ fn counted_work(funding: &JobFunding, logistics: &ShipmentSystem) -> u64 {
         quotes,
         consumers,
         fallbacks,
+        scanned,
+        priced,
     ]
     .iter()
     .zip(WORK_WEIGHTS)
@@ -267,6 +272,8 @@ impl Step {
             Ceilings => 10,
             ImportFunding => 20,
             HouseholdClaims | CurrentStaff | Expansion => 25,
+            // The business claims' row alone, before its counted scan and quotes.
+            BusinessClaims => 20,
             Sources => 3,
             SourcesLayout => 15,
             // The supplier index's entries, sorted, after a geometry change.
@@ -285,7 +292,6 @@ impl Step {
             BusinessLayoutEntries => 5,
             BusinessLayoutIndices => 15,
             BusinessAccounts => 10,
-            BusinessClaims => 20,
             BusinessProof => 10,
             Settle => 20,
             MarketBegin | MarketEnd | PassStart | FinishPass | BusinessPublish | Done => 0,
@@ -506,7 +512,7 @@ impl CensusProgress {
         };
         let rate = if matches!(
             self.step,
-            Step::HouseholdClaims | Step::CurrentStaff | Step::Expansion
+            Step::HouseholdClaims | Step::CurrentStaff | Step::Expansion | Step::BusinessClaims
         ) && done > 0
         {
             (self.step_used / done as u64).max(self.step.row_work())
@@ -878,12 +884,43 @@ impl JobFunding {
                 progress.finish_slice(buildings);
                 return used;
             }
+            Step::BusinessClaims => {
+                // A serial sweep: sellers until their counted work reaches the budget.
+                let start = progress.cursor.min(buildings);
+                let counted = counted_work(self, logistics);
+                let work = |funding: &Self, logistics: &ShipmentSystem, rows: usize| {
+                    rows as u64 * step.row_work()
+                        + counted_work(funding, logistics).wrapping_sub(counted)
+                };
+                match self.claim_business_customers(
+                    ctx.allocator,
+                    logistics,
+                    ctx.network,
+                    ctx.graph,
+                    ctx.catalog,
+                    ctx.tuning,
+                    start,
+                    budget,
+                    work,
+                ) {
+                    Ok((end, used)) => {
+                        progress.cursor = end;
+                        progress.finish_slice(buildings);
+                        return used;
+                    }
+                    Err((required, used)) => {
+                        // Grow between attempts, then seed and claim again in order.
+                        self.business.reserve_receipts(required);
+                        progress.advance(Step::BusinessSeed);
+                        return used;
+                    }
+                }
+            }
             Step::Ceilings
             | Step::ImportFunding
             | Step::SourceProduction
             | Step::PublishActivity
             | Step::PublishProduction
-            | Step::BusinessClaims
             | Step::BusinessProof => {
                 let rows = progress.slice(buildings, budget_rows);
                 let used = rows.len() as u64 * step.row_work();
@@ -916,22 +953,6 @@ impl JobFunding {
                         false,
                         rows,
                     ),
-                    Step::BusinessClaims => {
-                        if let Err(required) = self.claim_business_customers(
-                            ctx.allocator,
-                            logistics,
-                            ctx.network,
-                            ctx.graph,
-                            ctx.catalog,
-                            ctx.tuning,
-                            rows,
-                        ) {
-                            // Grow between attempts, then seed and claim again in order.
-                            self.business.reserve_receipts(required);
-                            progress.advance(Step::BusinessSeed);
-                            return used;
-                        }
-                    }
                     Step::BusinessProof => {
                         progress.reduced |= self.prove_business_customers(
                             ctx.allocator,
@@ -1763,7 +1784,7 @@ impl JobFunding {
         let mut operations = 0_u64;
         let work = |funding: &Self, rows: usize, operations: u64| {
             rows as u64 * Step::HouseholdClaims.row_work()
-                + operations * WORK_WEIGHTS[7]
+                + operations * WORK_WEIGHTS[9]
                 + counted_work(funding, logistics).wrapping_sub(counted)
         };
         for index in start..total {
@@ -1951,7 +1972,7 @@ impl JobFunding {
         let mut operations = 0_u64;
         let work = |funding: &Self, logistics: &ShipmentSystem, slots: usize, operations: u64| {
             slots as u64 * Step::CurrentStaff.row_work()
-                + operations * WORK_WEIGHTS[7]
+                + operations * WORK_WEIGHTS[9]
                 + counted_work(funding, logistics).wrapping_sub(counted)
         };
         for slot in start..total {
