@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Core simulation primitives: time, slots, scheduling, entity handles, request queues and timed
-//! events.
+//! Core simulation primitives: time, slots, scheduling, entity handles, request queues, timed
+//! events and weather.
 
 pub(crate) mod change_log;
 pub mod config;
@@ -12,6 +12,7 @@ pub(crate) mod scheduler;
 pub(crate) mod sparse_chunk_grid;
 pub mod time;
 pub(crate) mod timing_wheel;
+pub mod weather;
 
 /// Mixes a stable integer seed into a well-distributed 64-bit value (SplitMix64 finalizer).
 #[inline(always)]

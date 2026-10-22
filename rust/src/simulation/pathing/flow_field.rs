@@ -14,6 +14,7 @@
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::pathing::cost::CostCalculator;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 use std::collections::BinaryHeap;
@@ -69,7 +70,12 @@ impl ReverseAdjacency {
             if edge.deleted || edge.allowed_types & flags == 0 {
                 return [None, None];
             }
-            let cost = edge.base_cost.max(1e-6);
+            let cost = if flags == TransitFlags::FOOT {
+                CostCalculator::walk_cost_s(edge)
+            } else {
+                edge.base_cost
+            }
+            .max(1e-6);
             [
                 (edge.traversal_flags(true) & flags != 0).then_some((
                     edge.end_node,

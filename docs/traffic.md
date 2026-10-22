@@ -73,7 +73,14 @@ Save format 58 stores one identity row per live lane: road edge, direction and l
 or junction node plus incoming/outgoing road lanes. Current and planned agent references resolve
 through these identities after graph compaction and lane rebuilds. Tombstoned lanes are excluded.
 Loading rebuilds final visible-surface lane heights before restoring distances and references,
-and validates each current lane against its owner and travel mode. Pedestrian lanes remain active
+and validates each current lane against its owner and travel mode. A live session lifts lanes the
+same way without waiting for the renderer: rebuilds only append lanes, so `LaneSystem` keeps a
+watermark of lanes already on the visible surface, and `TransitNetwork::sync_new_lane_heights`
+lifts the lanes past it at the start of every simulation frame and after each road mesh
+precompute (O(new lane points); a frame with nothing pending returns at once). Before this, a lane
+rebuilt outside a drawn road chunk, such as a crosswalk connector rebuilt by a building edit, kept
+its flat build heights and so a shorter length until the next load, and a session continued
+differently after save and reload. Pedestrian lanes remain active
 through load, including final frontage legs with an exhausted graph-node path.
 An empty network path can also be a pending immediate replan after demolition. With valid
 node, edge and destination references, loading preserves its planned target and path cursor
@@ -237,7 +244,7 @@ connection lane with:
 - cubic Bezier geometry from the inbound lane neck to the outbound lane neck
 - at most `1 m` chord sampling, clamped to `8..64` steps
 
-At true junctions (`degree >= 3`) and user-authored vehicle connection nodes, connector control
+At true junctions (three or more vehicle arms) and user-authored vehicle connection nodes, connector control
 distance and sampling use the junction footprint span: the larger of the lane-mouth chord, the two
 mouth distances through the node center, and the widest incident roadbed span. This prevents
 two-lane to four-lane T-junctions and explicit connection nodes from degenerating into tiny lateral
@@ -252,8 +259,18 @@ Allowed turns are derived from `Node::lane_connections`:
 
 Strict degree-two corridor splits may skip materializing a vehicle connector and directly link the
 aligned incoming physical lane to the outgoing physical lane. This direct pass-through is allowed
-only when the node has exactly two incident edges, no user-authored vehicle lane connections, the
-lane mouths are coincident, and their XZ tangents are near-collinear. True junctions and all
+only when the node has exactly two incident vehicle arms, no user-authored vehicle lane connections,
+their XZ tangents are near-collinear, and the lane mouths are coincident or overlap (on the inside of
+a slight bend the outgoing lane starts behind the incoming lane's end, so any connector would run
+backwards).
+
+The pass-through degree here counts only arms with vehicle lanes (`TRAFFIC-03`), so a footpath
+joining a road leaves it a pass-through for cars. The U-turn rule is the shared
+`open_node_allows_u_turn` (`NET-07`), which counts every arm: a road ending in a footpath is not a
+dead end, and cars do not turn around there. Counting the footpath once turned such a node into a three-arm junction: the road's
+coincident lane ends got a junction-span Bézier connector that ran about 3 m backwards, so cars
+turned around for a moment. Saves holding such a connector still load: a saved connector whose
+incoming lane now links straight to its outgoing lane is dropped, and agents on it replan. True junctions and all
 user-authored vehicle connection nodes must keep explicit connector lanes so junction speed,
 spacing, and whitelist semantics still apply.
 
@@ -464,6 +481,66 @@ and the headless and windowed vehicle grounding test were rerun on it.
   call with real vehicle meshes, and passes headless and windowed. It checks 4,840 poses: no buried
   contact, windowed MultiMesh buffers equal to the drawn pose, and the height-owner snap within the
   snap distance.
+
+### Vehicle models and lamps (`RENDER-26`)
+
+Cars are the Kenney models (`godot/assets/models/vehicles/civilian/` sedan, sports sedan, SUV,
+luxury SUV; `freight/` delivery van) with their colormap atlas variants. Generic Finnish models
+were tried on this branch and withdrawn as not good enough to ship; they are kept off-tree. The
+Kenney meshes carry no lamp data, so `vehicle_lamps.gd` holds a measured table of front and rear
+lamp anchors per model (left lamps mirror X); procedural cars derive theirs from the AABB.
+
+At night (sun below 4 to -2 degrees, as the street lights):
+
+- `vehicle_lamps.gd` adds a camera-facing glow quad per
+  lamp (`vehicle_lamp_glow.gdshader`) that keeps at least 1.6 pixels, so traffic shows across the
+  map; headlights show from ahead, tail lights from behind;
+- the 12 drawn cars nearest the camera within 100 m get a real `SpotLight3D` each
+  (`vehicle_headlights.gd`, 60 m range, inverse-square decay, 35 degrees with a soft rim, no
+  shadows; see below), chosen in Rust by
+  `nearest_car_poses` (O(drawn cars · log 12) with a bounded heap). They light the road, trees,
+  walls, walkers and the car ahead by their own colour;
+- every car carries a light box (`vehicle_headlight_beam.gdshader`) that rebuilds each covered
+  pixel from the depth buffer and adds a small red tail glow behind, and for cars from 70-100 m
+  out (where the spot lights fade) the same cone the real headlight casts: Godot's SpotLight3D
+  falloff with its 60 m range, inverse-square decay, 35° angle and rim attenuation 3, lit as level
+  ground. This light is added blind to surface colour, acceptable only at that distance. Near the camera the box shrinks in the vertex shader
+  to the tail region; by day and past 450 m it collapses and draws nothing.
+
+Measured 2026-10-09 on the M2 Pro, `no-headlights` save (7 cars), release build, 120 frames,
+old (Kenney models, no lamps) and new alternated three times: by day the new models cost under
+0.1 ms. At 23:00, with real lights already on for the street lights: saved view +1.15 ms,
+eye level +0.8 ms, 32 m overhead +0.4 ms with a 45 m spot range. Without the spot lights the
+lamps cost 0.1-0.35 ms; the spot lights' cost follows their reach, not their count (6 or 12 the
+same), and a 28 m range saved 0.45 ms in the saved view (about +0.85 ms over old in total), so
+the range is 30 m. The 30 m setting itself was checked visually, not re-timed.
+
+Near and far headlights did not match: up close the lighting shrank and dimmed. The real lights
+were about 100 times weaker than the far light box on ordinary surfaces (their light is scaled by
+albedo, the box's is added blind to it), fell off linearly instead of with the square of distance,
+and reached 30 m against the box's 45. `tools/bake_headlight_projector.py` calibrates the
+two against each other and bakes the box's own low-beam pattern into a spot-light projector
+(`godot/assets/textures/vehicles/headlight_projector.png`). Godot 4.7 applies a projector only to
+a shadowed light (`SpotLight3D` warns so; `storage_rd/light_storage.cpp` builds the projector
+matrix only for shadowed lights), and four shadowed lights cost 1.9-2.9 ms a frame on the M2 Pro,
+two 1.3-2.1 ms; hard shadows or an empty caster mask saved little, so the cost is per-pixel
+shading. They are off (`SHADOWED := 0`), and every light is a plain cone: 60 m range,
+inverse-square decay, 35 degrees with a steep rim falloff, energy 1200, matching the box's hot
+spot near 20 m and overlighting the first few metres. Against the old 30 m lights (same save,
+23:00, 120 frames, alternated twice): close view -0.1 ms, saved view +0.4 ms, overhead +0.15 ms.
+Shots: `screenshots/2026-10-09-roads/headlights-4-shadowed.png` and
+`headlights-shadowless-cone.png`.
+
+Far and near headlights still did not match (2026-10-14): from 70 m out a car lit a wide white
+block with straight edges, and close up a narrow soft cone. The box drew its own low-beam pattern,
+still strong at the box's front face (45 m) and side faces (16 m), and lit each pixel with a
+normal rebuilt from depth derivatives, which broke at every kerb and depth step into bright dashes
+and straight-edged patches. The box now draws the real light's cone (above), lights everything as
+level ground, and reaches 60 m ahead and 42 m (tan 35° × 60 m) to each side, where that cone is
+spent; it fades out below the box's 8 m top. Its energy (62) and a ground tint (1.07, 1.0, 0.85)
+were fitted to the mean light the real headlights add to the same views (`light-road` save at
+01:00, cars 60 and 110 m away, all-real against all-box: 86-110 % per channel before the tint).
+Frame cost was not measurable apart from the street-light change it shipped with (`ROAD-59`).
 
 ## Debugging
 
@@ -709,9 +786,10 @@ The measured ignored tests are
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
 - there are no traffic lights, stop signs, yield priorities, or priority-road rules yet
+  (`TRAFFIC-06` plans junction priority, yield and stop control, and roundabout entry)
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
-- network entry at a node does not claim the entry slot (`TRAFFIC-03`)
+- network entry at a node does not claim the entry slot (`TRAFFIC-07`)
 - walkers keep car spacing (2.7 m) in lane buckets, connector entry claims and overlap correction

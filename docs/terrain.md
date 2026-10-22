@@ -228,17 +228,103 @@ sun angle or density. This remains a measured lighting limitation despite the ac
 Single headless catalogue-build observations were `109.7 / 113.3 ms` before/after; these
 are startup observations, not a statistically established timing difference.
 
+## GPU grass prototype — VEG-23
+
+`grass.gd` / `grass.gdshader` add cosmetic blades in the gameplay scene. The prototype
+switch is `GameSettings.GRASS_ENABLED`; it has no saved simulation state and no graphics UI yet.
+
+- A 0.8 m world grid follows a camera-centred window of at most 177 × 177 cells (70 m), which
+  shrinks with the camera's height above the ground (one `get_world_surface_height` call a
+  frame) and is empty once the camera is 70 m up: the vertex shader runs for every cell of the
+  window whether its clump draws or not, and a 301-cell window cost `1.4-2.4 ms` everywhere,
+  the overview included, where no blade was visible. Integer world-cell hashes
+  select jitter, height and density; crossing a camera cell changes instance addresses, never
+  a retained clump's world position. Up to four MultiMeshes bind the terrain patches the window
+  touches. Boundary cells are submitted on both sides and a half-open world-root test chooses
+  one patch, so cells do not duplicate or disappear at a seam.
+- Height, water depth, accepted crown coverage, coal-pit and grain-field overlays use the
+  terrain material's existing textures and exact world/texel mappings. No heightmap readback,
+  second height upload, Rust placement or per-frame CPU instance loop. Terrain only publishes
+  **patch-local** maps, hence patch binding slots instead of one world-wide texture.
+- Roads and building sites are holes in the terrain CDT, and graded frontage uses its blue
+  vertex colour. There is no existing exclusion texture. Each binding slot rasterizes that
+  **existing mesh** into a private 1024² top-down GPU coverage mask when the mesh or patch changes;
+  it does not run every frame. Four footprint taps exclude edge roots, wet cells, coal pits
+  and slopes over about 31 degrees. This is an extra mask draw, not a terrain/placement rebuild.
+- Clumps are five tapered blades fanned about 0.2 m wide, darker at the base, lighter and
+  drier at the tip, varying from clump to clump, so they read against the ground they are tinted
+  from. Meadow blades are 0.25–0.5 m, thinning from 28 to 60 m camera distance. Closed canopy uses
+  terrain's 0.35/0.7 cover thresholds, 24% density, 55% height and 35% wind, with litter hue and
+  reduced sky light. Grain uses 0.8–1 m golden blades in world-Z rows, thinning from 45 to 70 m.
+  Its colour function is shared with terrain in `terrain_grain.gdshaderinc`; meadow uses the
+  existing ground-grass palette/detail include. Terrain texture remains underneath and beyond.
+- Wind uses `weather_wind`, `weather_gust_factor()`, `weather_storminess()` and
+  `weather_wind_omega()`, with the trees' fixed (1, 0.35) direction, so grass takes the same
+  gusts as the trees. A 14 m travelling
+  phase bends tips downwind/downwards; a storm adds sustained lean, larger waves and tip sheen.
+  Frequencies complete whole cycles per clock wrap; pausing holds the blades. No `TIME`.
+- Opaque, two-sided tapered geometry uses `standard_light.gdshaderinc`, including cloud shadows
+  and a grass-only cheap backlight branch. Grass receives shadows but casts none. Rejected
+  cells become degenerate triangles, with no alpha blending or alpha-scissor overdraw.
+
+**Budget:** five two-segment blades per clump, **25 vertices / 15 triangles**; at most 31,329
+clumps a slot. Release, M2 Pro, 1080p, alternating with `GRASS_ENABLED` off: Kuopio
+`city_low` (20 m up) `8.20 -> 8.82 ms`, the lake shore of `reflections-noisy.sqlite` `18.74 ->
+19.25 ms`; the overview and the town (`12.23 -> 12.23`, `21.96 -> 21.92 ms`) cost nothing, the
+camera being above the grass's reach. From those heights the blades are sparse specks; they
+read only within a few tens of metres, and doubling their density would cost about four times
+as much. What carries the wind from a gameplay camera is the terrain's grass shading:
+
+**Wind waves on the ground** (`grass_wind.gdshaderinc`). As a gust bends a stretch of blades
+their paler sides turn up, so bands of light roll downwind over meadows and grain (honami). The
+terrain scales its grass and field albedo by `grass_wind_sheen()`: bands 16 x 64 m and 4 x 16 m,
+laid on world axes and carried by the air drift (continuous through its wrap), drawn from the
+gust lattice, times the gust factor, so lulls lie still and gusts roll: about +-2% in a fair
+breeze and up to +-25% in storm gusts, 1.6x on grain, 0.3x on the sheltered forest floor, faded
+where a band would be under about four pixels. They read from every gameplay height. A breeze
+waves only grain; meadows wave in strong wind. Measured (alternating, same batch) at `+0.27 ms`
+in a storm over the Kuopio overview (`12.04 -> 12.31`) and `+0.15 ms` in the storm town
+(`22.15 -> 22.30`); gated to fields in fair weather, `+0.1-0.2 ms` against an earlier batch.
+
+**Near layer.** Up close the 0.8 m grid read as separate tufts. A second grid of clumps at 0.5 m
+spacing, with its own hash salt so its clumps fall between the far layer's, draws within 24 m of
+the camera and fades out over 14-22 m (`grass.gd` `NEAR_*`; `cell_m`, `layer_salt` and
+`near_fade_m` in `grass.gdshader`). It shares the far layer's per-patch surface masks and skips
+grain, whose rows stay on the far grid. Within 14 m that is about 2.5 times the clumps. Release,
+M2 Pro, two alternating rounds on `trees-water.sqlite` from its saved camera: `12.12 -> 12.45 ms`
+p50 (`+0.33 ms`); the island view is unchanged (`15.85 -> 15.89`). A 0.4 m grid to 30 m read as
+a continuous meadow but cost `+0.9 ms` there (`12.12 -> 13.01`).
+
+**Limits / next steps:** this is still clumps rather than a continuous turf carpet; grain has no
+seed heads, crop lifecycle or per-field row orientation. Density changes can pop individual
+clumps during motion. A bilinear height sample can differ from the terrain's triangulated or
+engineered surface between samples; graded site lawns are intentionally excluded with sites.
+Mask clearance is raster-resolution dependent, does not account for the whole bent tip, and
+covers only exclusions present in terrain geometry. Existing bushes/rocks have no separate
+exclusion. Layouts with terrain patches smaller than 241.6 m disable the prototype rather than
+sampling unbound patches. Camera-motion, terrain/site-edit and field close-up acceptance,
+plus matched GPU timing by the performance owner, remain VEG-23 work.
+
 ## Local vegetation experiment (V01)
 
 Vegetation adds cosmetic trees to loaded worlds.
 This is a local proof of concept, not persistent vegetation or a simulation resource.
 Rust generates deterministic 16 m candidate cells and rejects water, steep ground,
-and sampled road/building footprints. The renderer reuses terrain residency and uploads
-at most one patch per frame. Two opaque tree species each have three geometry levels.
+and sampled road/building footprints. Trees, generated or brushed, also keep their trunk
+`3 m` from any footpath or sidewalk and `4 m` from a lamp pole (`VEG-26`); yard plantings
+keep their asset's layout. The walkway test is exact against the visible paving through the
+surface query chunks, so a path between the footprint samples still counts. The pole test
+runs only where any paving lies within `4.75 m` (poles stand at most `0.75 m` beyond it)
+and then reads the poles of the one to four `512 m` road mesh chunks around the trunk:
+about `0.2 us` a candidate against `0.67 us` for the footprint check, with 1000 poles per
+chunk. A road edit restales vegetation over its rebuilt surface query chunks plus the
+`6 m` canopy margin, so a later path clears trees in a neighbouring patch too.
+The renderer reuses terrain residency and uploads at most one patch per frame. Two opaque tree species each have three geometry levels.
 Trees have no collisions. Near trees, bushes and yard plants sway in a vertex-shader wind;
 nothing else moves. The initial visibility limit is 4500 m.
-Every canopy tree casts its own baked impostor silhouette, faced to the sun, at every distance
-inside the shadow range; the drawn tree levels never cast. Rocks and yard plants cast; generated
+A canopy tree within 60 m of the camera casts from its own branched level; past that it casts its
+baked impostor silhouette, faced to the sun, out to the shadow range (`VEG-25`). The visible
+impostor never casts. Rocks and yard plants cast; generated
 ground cover never does. `set_cast_shadows` updates both resident and cached patches. See
 [authored trees, yard plants and rocks](#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27).
 
@@ -1003,11 +1089,65 @@ procedural branch skeletons, their lathe proxies and `vegetation_distant.gdshade
 
 **Shadows.** Past `120 m` the old shadow caster was one solid lathe per species, sized to the
 mean envelope of all its variants. It cast a broad opaque blob under every narrow open crown,
-and a closed stand cast a dark halo past its edge. Every tree now casts from
-`vegetation_impostor_shadow.gdshader`: the tree's own baked view nearest the light, one fetch
-per texel, set back `0.12` of its bounds along the light so a crown does not shadow its own
-sunlit half. The branched and reduced levels never cast. Trees receive real shadows out to the
-shadow range less `20 m`, fading over `80 m`; the canopy shade term covers only what lies
+and a closed stand cast a dark halo past its edge. Past `60 m` every tree now casts from
+`vegetation_impostor_shadow.gdshader`: the tree's own baked views around the light, set back
+`0.12` of its bounds along the light so a crown does not shadow its own sunlit half.
+
+The caster took only the nearest view, one fetch per texel, until 2026-10-15 (`VEG-25`). As the
+sun moved, the shadow kept one view's shape and then jumped to the next. A view up to half a cell
+off the light also slid the shadow off its own tree: a 20 m tree's trunk shadow started up to a
+metre from its root under a low sun. Within `150 m` the caster now blends the three views around
+the light by their barycentric weights, as the visible impostor does around the camera. Past that
+the nearest view casts alone, with one fetch and its own tighter crop. In the `one-tree` save at
+15:00-15:29, in one-minute steps from 60 m above, the largest step of the shadow's centre went
+from 9 px to under 2 px, and its area no longer drops by 40 % at a view change.
+
+Blending cannot move a shadow onto its root, so a canopy tree within `TREE_SHADOW_HANDOVER_M`
+(`60 m`) of the camera casts from its own branched level instead. One detail level casts whole,
+the one the colour pass keeps more of, and the wood and card shaders measure their sway from the
+main camera in the shadow pass too, so the shadow sways with its tree. The impostor caster skips
+those trees by the same distance. `vegetation.gd` submits a patch's branched instances to the
+shadow pass only while its tree box comes within that distance (`_refresh_branched_shadow`,
+on camera moves). With every near patch submitted, each card ran its vertex stage once per
+cascade only to collapse, and that cost more than the casting.
+
+At first the branched casters stood where the tree stands. A crown then shaded its own sunlit
+half and its neighbours' crowns, which the impostor caster never did, because it stands back from
+the sun by `LIGHT_SETBACK`. Trees darkened as they came within `60 m`. In `shadows.sqlite` at
+45 m, the crowns lost 9.8 % of their brightness against impostor casting alone. The wood and card
+casters now stand back by the same amount along the light (`vegetation_caster_setback`): 2.9 m
+per unit of tree scale, capped at half the height above the root. A move along the light leaves
+the ground shadow where it was. Under the cap no caster sinks below the ground it shades, so the
+trunk's shadow still starts at its root. The handover change is now 1.8 %, the shading between
+neighbouring crowns that a single impostor card cannot cast. Idle p50 is unchanged within noise
+(`33.10` to `33.15 ms` at 45 m).
+
+A thin caster also needs the real sun's penumbra. `SHADOW_BLUR` was `1.80`, which nearly doubled
+it, and with soft-shadow filter quality `2` a trunk's shadow broke into dots and stopped short of
+its root. It is now `1.0` with filter quality `4`: in the `one-tree` save, seen side-on at 15 sun
+positions from 06:30 to 17:30, the trunk's shadow runs whole from its root to its crown's shadow.
+Quality `3` costs half as much but still breaks the trunk shadow midway. The low shadow setting
+keeps its hard filter and is unaffected.
+
+Cost, as the p50 frame time of the matched idle benchmark: 120 frames at 1600x900, 13:00, clear
+weather, on the M2 Pro, against the branch head in a separate worktree, with runs alternated:
+
+| View | Before | After | Of which filter |
+| --- | --- | --- | --- |
+| `light-road` saved | `10.13 ms` | `13.41 ms` | `+1.3 ms` |
+| `light-road` low | `11.00 ms` | `14.33 ms` | `+1.2 ms` |
+| `light-road` top20 | `12.40 ms` | `15.26 ms` | `+0.9 ms` |
+| `forest` | `8.30 ms` | `9.28 ms` | `+0.95 ms` |
+| `forest_low` | `9.31 ms` | `11.51 ms` | `+1.25 ms` |
+| `forest_low`, 244 stems/ha (8x) | `15.25 ms` | `20.30 ms` | `+1.9 ms` |
+
+In the dense stand, branched casting within 60 m adds `1.4 ms` and the blend `1.6 ms` (`2.6 ms`
+before it stopped at `150 m`). If
+dense near stands need bounding, cast from the N nearest trees only, through a small shadow-only
+caster; per-patch submission cannot bound a patch's own density.
+
+The visible branched and reduced levels cast nothing past `60 m`. Trees receive real shadows out
+to the shadow range less `20 m`, fading over `80 m`; the canopy shade term covers only what lies
 past it.
 
 Measured with `zz_look_probe.gd` experiment `E24` (a painted stand of 164,099 plants over
@@ -2636,14 +2776,16 @@ player's choice. Both resolve the config against the loaded extent inside
 `reset_to_blank_world_runtime`, and both sanitise it there, so no menu can start a world the
 generator cannot reproduce from its save.
 
-The choosing happens in `new_game_dialog.gd`, which opens after a world is picked. Its defaults,
-its density range and the grid spacing it reads back all come from `VegetationOptions`, a
-`RefCounted` class that exists because the main menu holds no `SimulationNode` and therefore has
-nothing to ask. The alternative was four literals in GDScript, which would have outlived the
-renderer limit that sets the ceiling: when `RENDER-04` lifts it, the slider follows without a
-second edit. Density is shown as stems per hectare next to the cell it produces, because that
-cell is what the generator actually varies and it is quantised - a dialog computing it locally
-would eventually disagree with the world it started.
+The choosing happens in `new_game_dialog.gd`, which opens after a world is picked. It offers
+one row of two toggle buttons with no readout: Forest, Less | More. Coverage and density were
+separate rows until 2026-10-07, but they were development knobs, and a bare map is not a game
+choice, so there is no Off either. Preset values come from `VegetationOptions`, a `RefCounted`
+class available before a `SimulationNode` exists. Less is the shipped coverage, 0.565, on an
+11 m canopy grid (about 64 trees/ha); More is 0.8 coverage on the 8 m renderer ceiling (about
+122; 128 would need `RENDER-04` to lift it). The dialog opens on Less, so a new game starts with
+twice the shipped canopy; `VegetationConfig::default()` and older saves keep the 16 m grid. The
+seed always stays at `VegetationConfig::default().seed`. The emitted dictionary and
+`start_new_game` argument list are unchanged.
 
 ### The woodland ground mask is gone (2026-09-12)
 
@@ -3702,6 +3844,18 @@ Current deterministic rules:
   keep the engine's own specular sky reflection, so the sky never comes from the screen edge
   (streaks) or a fallback colour (a frame at the edge of the on-screen sky). Godot's SSR skips
   transparent materials (`WATER-03`)
+- known limitation: reflections fade out near the screen's side edges, and from a camera tilted
+  down they end in a curve there. This is inherent to reflecting from the screen. Vertical
+  surfaces lean outwards towards the sides of a tilted view, and so do the reflected rays, so near
+  a side edge the shore a ray should meet is off screen and there is nothing to reflect. The 15%
+  edge fade (`water_reflection()` in `water.gdshader`) only softens the cut. Two workarounds were
+  tried and reverted in 2026-10: narrowing the side fade, which kept the same curved cut, and
+  marching on against the screen clamped or mirrored at the edge. Clamping streaked, and
+  mirroring invents scenery that is not there, which is wrong beside a road, building or any
+  distinctive object. A real fix has to render what is off screen. One option is a planar
+  reflection: a second, mirrored scene render, which only works for one water height at a time.
+  The other is an overscanned main view, which costs extra pixels and changes the viewport, UI
+  and picking setup. Neither has been costed yet
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
@@ -3749,6 +3903,43 @@ state or hidden repair paths for missing geometry.
 
 Current deterministic rules:
 
+- `WATER-04` planar reflection buildings (2026-10-07): each building or scaffold batch gets one
+  instance in the mirror world sharing its MultiMesh, materials and window schedules; no mesh,
+  buffer or material is copied. It draws out to 1000 m from the mirrored camera (32 m margin),
+  a provisional cap since building LODs are pixel-based. Godot cannot override one MultiMesh
+  surface's material, so the shared window shader takes an instance uniform,
+  `water_reflection_proxy`, set only on mirror instances, which lifts any vertex below the
+  mirror's plane onto it: a fragment discard there cost every main-view building 0.3-0.4 ms on
+  `kuopio-city`. Sync is event-driven from `building_lods.gd`'s `reflection_batch_changed` plus a
+  ten-frame round robin, O(changed batches + resident batches / 10) per frame. Lots, hedges and
+  roads are left out; a bridge needs Rust to export its deck, railings and piers as their own
+  surfaces first, because chunks mix them with ground roads and retaining walls. Matched release
+  runs on the M2 Pro (two each, mean frame time, before -> after): across a lake to a town
+  18.6-19.0 -> 18.2 ms, `kuopio-city` 23.7-24.1 -> 24.1-24.2 ms, `house-water-reflection`
+  12.75-12.80 -> 12.84-12.85 ms. Written first by GPT-6.1 Sol through Codex.
+- `WATER-04` shore, scale and popping fixes (2026-10-11, player saves `reflection-bug-11-10`,
+  `popping-11-10`):
+  - Shore stair-steps that grew and shrank with tilt: the mirror's terrain was a halved-interval
+    copy with its own 32-interval heightmap stand-in, cut at the plane by a binary discard in a
+    half-resolution, no-MSAA target. The mirror now shares the displayed terrain mesh and mode,
+    refreshes changed patches from the terrain's existing `patch_render_will_change` /
+    `patches_will_reset` signals, and cuts at the plane with derivative alpha-to-coverage
+    (`clamp(0.5 + d / fwidth(d))`) resolved from 2x MSAA.
+  - Trees jumping in size near the shore: the impostor's atlas inset doubled at each integer mip;
+    both adjacent mips are now sampled with their own inset and blended. The mirror plane also
+    moved by decimetres each frame because the vote used raw ground + depth rather than the
+    water surface as drawn; Rust now rebuilds the shader's wet-neighbour-smoothed height for ray
+    crossings, and a selected lake keeps its exact plane height and texture slot while it stays
+    within the 0.5 m tolerance.
+  - Two lakes swapping between high and low quality while moving: the 7 x 6 ray vote missed one
+    lake entirely and a 7 % share floor kept the second off slot one. The vote is now 14 x 12
+    horizon-weighted rays; Rust picks the two distinct leaders, keeps incumbents in their slots
+    and needs a challenger to beat the weakest by over a third. O(rays²) selection into a fixed
+    168-bin stack buffer, no heap allocation; the Rayon march stays O(rays · 4 m steps).
+  - The camera keeps its eye 1.5 m above the visible water surface (with the shader's 5 cm lift),
+    also on upward orbits and after a save restores the view: one O(1) surface query per update.
+  - Written by GPT-6.1 Sol through Codex; `water_reflection_math_test` and `weather_menu_test`
+    pass. Not yet timed.
 - terrain grass uses world-space UVs and the Grass002 texture stack
 - the runtime `grass002_2k_albedo.jpg` and `grass002_2k_height.jpg` imports generate complete
   mipmap chains (11 levels below the 2048x2048 base). Their shader samplers already request
@@ -3778,9 +3969,14 @@ Current deterministic rules:
   no longer derives lighting from the mesh normal. The engine's specular (`SPECULAR = 0.25`)
   reflects the sky and draws the sun glint; the custom glitter is a faint broadening only
 - five analytic deep-water ripples (`0.9-7.3 m`, around one wind direction, each at its own
-  phase speed) tilt the normal, gated into gusts by slow noise and faded once a wavelength nears
+  phase speed) tilt the normal, gated into gusts by the shared gust field (`RENDER-18`) and faded once a wavelength nears
   the pixel footprint so distant water does not shimmer; half their slope bends the reflection
-  ray (`WATER-03`)
+  ray (`WATER-03`). Past a `0.25-1.2 m` footprint that bend hands over to blur of the same
+  slope variance, and the blurred reflection is read with two taps stacked vertically: a ripple
+  the pixel still shaded but could not resolve as a reflection had bent each pixel's ray onto a
+  different hit, so far reflections tore and flickered as the ripples moved. On
+  `reflections-noisy.sqlite` the pixels of the far reflection changing by more than 8 levels
+  between consecutive frames fell from `0.17%` to `0.05%`, at `+0.03 ms` (`18.17 -> 18.20 ms`)
 - `WATER-03` acceptance, M2 Pro, 1920x1080 windowed, release dylib, idle-frame harness with the
   saved camera kept (`METRUM_IDLE_BENCH_SAVE_PATH`, 300 frames, two alternating runs per side),
   Kuopio saves: frame p50 `bd60c509` -> final was `9.50 -> 10.10 ms` (`issue-1`),
@@ -3795,6 +3991,18 @@ Current deterministic rules:
   (`white-distance-1`): at most `+0.1 ms`
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
+- every lit world surface takes the cloud shadow on the sun. Godot has no projector for a
+  directional light and no hook into a material's lighting short of replacing `light()`, and a
+  screen-space darkening after the fact cannot tell sun from ambient, so the shadow is applied in
+  each material's `light()`. A surface built from a `BaseMaterial3D` goes through
+  `WindowMaterials.create()`; a custom spatial shader includes `standard_light.gdshaderinc`
+  after its uniforms (Godot's own Lambert or Burley diffuse plus Schlick-GGX specular, with the
+  sun scaled by the cloud transmission) and sets `standard_light_cloud_sun` at the end of
+  `fragment()`; a shader with its own `light()` multiplies its directional term by
+  `weather_cloud_sun()`, as terrain, water, vegetation and paving do. A shader without
+  `diffuse_burley` gets Lambert from Godot, and the include follows it unless the shader defines
+  `STANDARD_LIGHT_DIFFUSE_BURLEY`. Unshaded tool, preview, selection and debug overlays are
+  exempt
 - the visible background uses one continuous procedural hemisphere gradient; its upper and lower
   halves meet at the same color without literal horizon geometry
 - the day/night cycle is a pure function of the operational clock. `day_cycle.gd` maps the day
@@ -3806,9 +4014,20 @@ Current deterministic rules:
   the day length and the length of golden hour follow from two constants instead of hand-placed
   keyframes. Palette stops are keyed to solar elevation, not to the clock, which makes sunrise and
   sunset symmetric and keeps the palette correct if the latitude is retuned
-- the key light is one `DirectionalLight3D` that carries the sun by day and an antisolar full moon
-  at night. It may only swap bodies inside the window where both contribute nothing, and it must
-  never have energy above the horizon crossing, so no light ever shines up through the ground
+- the key light is one `DirectionalLight3D` that carries the sun by day and the moon at night. It
+  may only swap bodies inside the window where both contribute nothing, and it must never have
+  energy above the horizon crossing, so no light ever shines up through the ground
+- the moon keeps a month (RENDER-24, 2026-10-06). It rides the ecliptic, its elongation from the
+  sun growing one turn per synodic month (`29.53` simulation days), so it drifts east among the
+  stars by about its own width an hour, rises some 50 minutes later each day and goes through its
+  phases; a new city starts on a waxing gibbous moon. Before this it was a full moon pinned
+  opposite the sun, turning locked to the stars. The orbit's 5 degree tilt and every perturbation
+  are left out. Moonlight scales with the lit fraction squared (a quarter moon gives a quarter of a
+  full one's light, really nearer a tenth) and needs the moon above the horizon, so moonless hours
+  are lit by the ambient floor alone. The sky shader shades the disk from the true sun direction
+  with a soft terminator and a faint earthshine, and keeps a pale disk in a daylit sky.
+  `day_cycle_test` sweeps a month for a lit moon below the horizon or by day, the eastward drift
+  and the four quarters
 - terrain grass and site grass suppress environment ambient through `IRRADIANCE`/`RADIANCE`
   overrides while retaining SSIL, and bake their authored ambient floor into `EMISSION`. The cycle therefore scales and desaturates that floor through shader globals;
   dimming alone leaves a saturated ground reading as daylight with the brightness turned down.
@@ -3830,13 +4049,10 @@ Current deterministic rules:
 - the sky shader places its own sun and moon disks from explicit uniforms rather than from
   `LIGHT0`, so disk brightness and key-light energy can disagree. A sun on the horizon has to stay
   visible after it has stopped being a useful key light, and the moon is not a Godot light
-- the cloud panorama is a daylight capture used only as a shape source. Its rotation is fixed and
-  its colour comes from the cycle's shadow/light tints; rotating it with the sun would spin the
-  whole cloud field around the sky once per day
 - the sky uses `PROCESS_MODE_INCREMENTAL` because its palette now changes every frame
-- static equirectangular cloud imagery is sampled only as a restrained half-resolution upper-sky
-  cover; baked panorama sky color, lower hemisphere, and lighting do not replace the shared
-  procedural gradient or directional-light contract
+- clouds, their shadows and the night sky are described under "Weather, clouds and the night
+  sky" below; the sky shader keeps the gradient, the disks and, in its radiance pass only, the
+  clouds' mean cover
 - one shared depth-fog pass fades all ordinary world geometry into the horizon sky color; terrain,
   water, roads, buildings, vehicles, and agents must not implement competing per-material horizon
   cutoffs. Aerial perspective and the far cull curtain are that one ramp, so its colour tracks the
@@ -3978,6 +4194,25 @@ time are unchanged; by day idle p50 (new asset pack installed, matched baseline)
 `10.65 -> 9.16 ms`. The benchmark's SSIL variants go through `SceneLighting.ssil_allowed`,
 because the day cycle rewrites `ssil_enabled` every frame.
 
+Re-measured on the weather branch (2026-10-06, release, M2 Pro, 1920x1080, two runs each;
+idle variants `no_pcss` and `no_blend_splits` added for this): turning off, at 10:00, glow /
+PCSS / cascade blending saves town (`kuopio-city` own view, `21.36 ms`) `0.43 / 0.74 / 1.29 ms`,
+Kuopio overview `0.38 / 0.19 / 0.00`, `close` `0.39 / 0.25 / 0.14`, `forest` `0.39 / 0.25 /
+0.06 ms`. Image change against the full frame: glow none to speak of (p99 `0-2` levels by day;
+facing a clear 18:00 sun at most `13` levels on a handful of pixels; at 22:00 with lit windows at
+most `6` levels and p99 `0`, so it gives the windows no visible bloom); PCSS p99 `15-18` levels on
+`2.8-5.3%` of pixels in the town and forest, nothing at overview or `close`; blending p99
+`10-14` on `1.2-2.1%`. Glow works in the game (with the threshold at `0` it changes a quarter of
+the pixels, by up to `81` levels), but at the authored `1.5` HDR threshold almost nothing in
+these views is bright enough to trip it: even at intensity `1.0` and a `0.5` threshold it changed
+the frame by a mean `0.46` levels by day and nothing at night, where the lit windows are a few
+pixels each. Its passes still cost `0.4-0.5 ms`. **Glow is off** (owner's decision, 2026-10-06):
+`glow_enabled = false` in `default_environment.tres`, with its authored settings (intensity
+`0.15`, normalized, HDR threshold `1.5`) left in place, so turning it back on is one line if the
+image ever misses a bloom, for example around lit windows, which would also need a lower
+threshold. The shadow changes alter the look at shadow edges and stay open. Captures:
+`screenshots/2026-10-05-clouds/render15/` (local).
+
 Frame budget after these changes, and canopy density (2026-10-03, `RENDER-04`): the idle matrix
 gains `forest` and `forest_low` poses (150 m and 30 m over one of Kuopio's densest canopy cells,
 about 510 trees per 400 m cell) and `METRUM_IDLE_BENCH_CANOPY_DENSITY`, which starts a new game
@@ -4074,6 +4309,232 @@ cause explains the longer load at HEAD (town `0.85 -> 1.75 s`, Kuopio `3.4 -> 4.
 Profiler trace shows runtime glTF parsing of those houses' embedded PNG textures rising from
 `1.15 s` to `2.86 s` on the main thread, with no change to the loaders. Results:
 `benchmark-results/idle/suite/20-pr-*`.
+
+Weather, clouds and the night sky (`RENDER-16`, `RENDER-17`, `RENDER-20`, `RENDER-25`):
+
+- **Ownership.** Weather is Rust state beside the clock (`simulation/core/weather.rs`): a seed, a
+  scenario (clear, fair cumulus, overcast, storm, rain), the transition from the previous profile and
+  the accumulated cloud drift. It advances on the clock's speed-scaled seconds, so a paused game
+  holds the sky still and a replay reproduces it; the drift is an integrated offset, not
+  speed x time, so a wind change never makes the clouds jump. Left automatic, a seeded schedule
+  moves it: each change picks the next scenario by weight from the current one (clear clouds
+  over, a storm builds out of fair or overcast weather and breaks into overcast, rain sets in
+  from fair or overcast weather or after a storm and clears through overcast), blends over
+  20-90 in-game minutes and holds for 1-10 in-game hours by scenario. Draws hash the seed and the
+  event's index, and a long step is split exactly at each change, so 32x speed lays the same
+  weather as 1x, at O(1 + changes) per step. Each scheduled change also turns the wind by up to
+  70 degrees either way and pulls it 30% of the way back to the prevailing west-north-westerly,
+  draws its speed at 0.75-1.3x the scenario's, and draws the high cloud cover from the
+  scenario's range (`RENDER-25`); the transition blends the wind vector, so the clouds swing
+  round over the blend rather than turning at once. A scenario the player chooses keeps the
+  direction the weather has reached. Saves store every field, the schedule included (save
+  version `87`, and from `88` the target wind, high cover and high drift, numbered after the
+  economy's `70`-`86`); version `87` saves
+  move to their target scenario's authored wind and high cover, and older saves load settled,
+  automatic fair weather with seed `0`.
+  `set_weather_scenario` chooses a scenario and stops the schedule, `set_weather_automatic`
+  restarts it; Tools > Weather (Automatic and the four scenarios) and Tools > Looks (an hour plus
+  a weather) call them.
+- **Publication.** One snapshot read per frame feeds the `weather_clouds` global (field offset,
+  coverage, optical depth), `weather_wind_direction` (where the wind blows), the high layer's
+  offset and cover for the cloud pass, and `weather_sun` (true sun direction; `w` is the shadow share: 0 by
+  moonlight and in scenes with no simulation, so the asset editor keeps a clear sun). No shader
+  reads `TIME` for weather, and numeric global writes do not dirty the sky's radiance map.
+- **Where clouds stand.** A 2D weather map, baked once at startup into a 1024² RGBA8 texture of
+  one 8192 m tile (`weather_cloud_shape.gd`), gives each column its cloud presence. Its BA
+  channels carry regional fields over the 65,536 m drift period that pick one of four placements
+  of the tile and shift the coverage, so the 8 km repeat never lines clouds up in rows. Shadows
+  and the volumetric march read the same map, so a shadow always lies under its cloud.
+- **How clouds look.** A `CompositorEffect` after the sky (`weather_cloud_effect.gd`) marches
+  the layer at a quarter of the render size on each axis, between 1500 m and 2900 m, through a
+  128³ tiling Perlin-Worley noise baked once (2048 m body tile, 512 m detail). Under a closed
+  deck the weather map no longer hides that tile, and its repeats lined up into rows converging
+  on the horizon; a smooth index field now shuffles the tile's placement every few hundred metres
+  and blends the two neighbouring placements (Quilez's technique 3), at no measurable cost
+  (overcast view `9.79` to `9.78 ms`). Each frame uses a
+  fresh jitter and blends 0.88 of the reprojected history, so a few dozen steps converge to a
+  smooth cloud. The result is laid only over pixels where no geometry was drawn (reversed-Z depth
+  `0`), before the transparent pass, so the water's screen reads see it. A second 256² march
+  fills a hemisphere panorama around the camera, published as `weather_cloud_reflection`, for the
+  water's cloud reflections; it marches one workgroup of each 2x2 a frame and carries the rest
+  from its history, which took about `0.1 ms` off every view with no visible change (skipping
+  single texels saved nothing, since a workgroup costs as much as its slowest texel).
+  The march reaches deck bases up to 45 km away. Nearer the horizon the layer is a band of the
+  sky's own horizon haze, as dense as the deck. The march fades into it over its last 9 km. The
+  band once mixed in the deck's shade with a fixed lift, which drew a grey stripe at night and a
+  lilac one at dusk under overcast and storm. Its hard cut-off also drew a stepped edge.
+- **High cloud** (`RENDER-25`). Above the cumulus a sheet of cirrus at 8 km is drawn in the
+  same march as one translucent surface (`high_clouds()` in `weather_cloud_march.glsl`): broad
+  patches carrying fine fibres, both read from the weather map stretched along the world
+  diagonal, opacity up to 0.6, lit mostly from the sun's side with a forward glow and hazed with
+  distance, so it reaches the water through the panorama too. It drifts on its own wind, the
+  low wind veered 35 degrees and four times as fast, which at its height still crosses the sky
+  more slowly than the cumulus. Its streaks stay on the diagonal while the wind turns: every
+  lookup period divides the 65,536 m wrap only on world-aligned or diagonal axes, and turning a
+  pattern the size of the sky would sweep its far edge faster than any wind. Clear weather draws
+  0-0.8 cover, fair 0-0.6, overcast 0.3-1 (mostly hidden by the deck), a storm 0-0.3. It casts no
+  shadow, as real cirrus barely dims the sun, and the radiance map does not see it. Release,
+  M2 Pro, 1920x1080, three alternating rounds against `6a47b2f4` with a reimport after each
+  switch: the clear-night lake looking up at clear weather (cirrus 0.3) `11.42` to `11.48 ms`
+  p50, the kuopio-city town view in fair weather `21.87` to `21.71 ms` (inside its noise).
+- **Rain** (`RENDER-23`, first part). Rain needs no state of its own: `WeatherSample::rain` is
+  derived from the current deck, a smoothstep of coverage over `0.9-1.0` times a smoothstep of
+  optical depth over `2.6-4.0`. An overcast deck (depth 2.2) stays dry, a storm rains fully, the
+  Rain scenario (index 4, appended so saved indices hold: a closed deck at depth 3.4, 7.4 m/s
+  wind, 2-6 hours) at about 0.6 of it, which the schedule can reach; Tools > Weather and Tools >
+  Looks hide it (and the "Rainy Afternoon" look) until rain renders. Rain arrives and leaves with the deck over the same transition, so saves and replays carry it
+  for free. It is published as `weather_rain.x`. The march darkens a raining deck (`params.high.w`): its
+  base luminance falls from 0.4 to 0.18 of the ambient and the ambient itself by a further 35%,
+  on top of the storm darkening by depth. Falling streaks (a camera-following particle box) and
+  drop rings on the water were tried and removed on 2026-10-07: a flat, animated streak layer
+  read as fake, and rain will come back only as a physically grounded effect. Wet surfaces (`weather_rain.gdshaderinc`):
+  `weather_wetness()` is the rain on upward faces and a third of it on walls, and
+  `weather_wet_surface()` darkens a surface's albedo by up to 45% and lowers its roughness towards
+  0.3, scaled by porosity (soil 1, paving and asphalt 0.8-0.9, metal 0), as water filling the pores
+  does. It is applied before a ground shader emits its ambient floor from the albedo, so the floor
+  darkens too, in the terrain (ground and paving), site ground, concrete, curb faces, GPU grass and
+  every `WindowMaterials` surface (buildings, props); a ground left out stood out as a dry
+  yellow halo around every yard. It is the same frame, not a lagging wetness: surfaces dry as the
+  deck thins. Same A/B against `ba66d238`, kuopio-city town: fair `21.86` to `21.89 ms`, storm
+  `22.78` to `22.77 ms` (within noise). Not yet: falling rain itself, surfaces that stay wet after the rain,
+  rain shafts under distant cells, and wet roads: the Finnish asphalt and footpath shaders
+  (`ROAD-56`) have a `wetness` input the weather does not drive yet.
+- **Shadows.** `weather_cloud_sun()` attenuates only the directional light, by
+  `exp(-3 x density x optical depth / max(sun.y, 0.08))`, so a dense core takes the sun away as
+  fully as a tree's cast shadow while ambient light remains. The shadow fades in between 0.3 and
+  1.1 degrees of sun elevation, so a setting sun still goes behind a cloud. Every lit world
+  material receives it (see the rule above): terrain, water, vegetation and paving in their own
+  `light()`, buildings, construction sites, vehicles, retaining walls, rocks and hedges through
+  `WindowMaterials.create()`, and pedestrians, curbs, bridge concrete and the map-edge sides
+  through `standard_light.gdshaderinc`. Receivers do not evaluate the weather map themselves near
+  the camera: the cloud pass also bakes the transmission into a 1024² texture of 24 m texels over
+  the deck window where the camera's ground casts its shadow (`weather_cloud_shadow_map.glsl`,
+  sharing `weather_cloud_map.glslinc` with the march), and a receiver inside it reads one texel.
+  The bake runs after the opaque pass and is read the next frame, with the window published a
+  frame late to match; a bake before the opaque pass split the frame's render pass and cost more
+  than it saved. Outside the window, receivers evaluate the map as before.
+- **Wind** (`RENDER-18`). Trees and water share one wind from the weather state
+  (`weather_wind.gdshaderinc`, the `weather_wind` global): a clock that runs with the game but
+  never faster than normal speed (a time-lapse would only shake every tree) and stops while
+  paused; the scenario's wind speed over the authored fair-weather speed, capped at 2x, scaling
+  sway and ripple amplitude; and a gust field of 128 m cells carried at the wind's speed (half the
+  clouds' drift), which bends trees by 0.6-1.4x and gates the ripples, so gusts cross a forest and
+  a lake together. No shader reads `TIME`. Every sway and ripple frequency is rounded to a whole
+  number of cycles per 16,384 s clock wrap, and the broad water noise repeats every 64 cells with
+  its drift rounded to whole periods per wrap, so nothing jumps where the clock wraps. Since
+  `RENDER-25` the wind turns with the weather: the gust field travels with the air's
+  drift wherever it goes, trees, impostors and grass blades bend and lean along
+  `weather_wind_direction`, and the ground's wind bands lie across
+  whichever world axis the wind is nearer, crossfading within about ten degrees of the
+  diagonal. Patterns laid across the whole world keep fixed directions: the trees' and blades'
+  sway phases and the water ripples, since turning a phase across a forest or a lake sweeps its
+  far side faster than the wind (a 50 degree turn over an in-game hour moves a ripple 5 km away
+  hundreds of radians a second). The wind clock is saved; scenes without a simulation, such as
+  the asset editor, run a local one.
+- **Strong wind** (`RENDER-22`). Sway is gated to the trees within about 250 m and the ripples
+  fade below the pixel, so from a gameplay camera a storm first changed nothing.
+  - *Gusts* (puuska). Above 1.3x the fair wind (`weather_storminess()`) a second gust layer,
+    carried at half the air's speed on half-size cells, joins the first, so gusts grow and die
+    as they travel; `weather_gust_factor()` maps gustiness to the wind a point feels: a breeze
+    breathes at 0.6-1.4x, a storm leaves most of the land in a lull at 0.5-0.8x while gust
+    patches, about a fifth of it at a time, blow at up to 2.2x (a storm's peak gust over its
+    mean); the mean stays near 1. The lattice is baked once into a 256² texture
+    (`weather_gust_map.gd`) and each layer is one filtered fetch whose sample point moves by
+    the smoothstep of the cell fraction, the same field the integer hashes gave at a fraction
+    of their cost: in a storm every tree vertex reads it.
+  - *Trees*. The sway scales with the gust factor, capped at 2.2x the authored fair sway, and is
+    gated by its own size in pixels, so a storm's sway reads farther out. A gust also leans a
+    tree downwind as the square of the gusting wind, up to 1.9 m at weight 1, bending from the
+    top (weight squared), so a gust visibly loads a stand and lets it go; it changes over seconds
+    and is gated at a pixel. In strong wind impostors shear with the same lean and sway, in the
+    same phase, and near trees keep their sway through the handover; their bounds grow by the
+    lean. Leaves turned by a gust show paler undersides: cards and impostors brighten or darken
+    by up to 20% with the gust factor (`vegetation_gust_sheen`). A breeze takes none of this:
+    its path is the authored one, gated and looked up as before.
+  - *Water*. The ripples take the wind uncapped and grow as the sea state to the 1.5, as a lake's
+    fetch-limited waves steepen with the wind (6.5x in a storm), and in a storm with the gust
+    factor, so gust patches cross the lake as rougher water between calmer lanes. The slope
+    variance of ripples too fine for the pixel is kept as roughness instead of dropped: `2 sigma`
+    widens the scene reflection's blur and `sqrt(sqrt(2) sigma)` sets the engine's roughness.
+    Whitecaps (Monahan-law foam caps in 4 m cells) were removed on 2026-10-07: the moving white
+    blotches read as a fake texture on a lake.
+  - Cost, release, M2 Pro, alternating, saved cameras, three rounds: storm town `21.65 ->
+    22.02 ms`, storm lake `13.59 -> 13.59 ms`; fair town `21.68 -> 21.74 ms` and fair lake
+    `13.28 -> 13.29 ms` unchanged. With the gust noise hashed per vertex the storm town had cost
+    `0.8 ms`.
+  - Rain is not modelled (`RENDER-23`).
+- **Lake mist** (`RENDER-19`). On calm, clear mornings mist gathers over the water from 02:00,
+  holds 05:00-07:00 and burns off by 10:00; a fair-weather breeze halves it, overcast or storm
+  wind clears it, and a closed deck thins it further. Rust derives a mist map
+  (`nodes/sim/render/mist.rs`): 32 m cells over the world, presence 1 over open water fading to 0
+  128 m up the shore, and the level of the water each cell's mist lies on (a cell straddling the
+  shoreline takes its neighbours' surface, since interpolated depth reads it low). It is rebuilt
+  only when the water or terrain generation changes, 15 ms for a 20 km world (release,
+  `mist_map_build_timing`). A compute pass after the transparent pass (`weather_mist.glsl`)
+  integrates, per pixel, the part of the camera ray below the mist ceiling in 6 segments: each
+  reads the map at its midpoint (level premultiplied by presence, so filtering weights it by
+  where mist lies) and integrates exp(-height above the water / 14 m) over its own rise in closed
+  form, clipped at the water level. A ray to a lake bed seen through the water therefore stops at
+  the surface without needing the water's depth. One read of the clouds' shape noise, drifting
+  with the wind, breaks the veil into banks. The mist takes the day cycle's fog colour and glows
+  towards a low sun. The pass is disabled whenever the density is zero; while mist lies it costs
+  `0.49 ms` in the `kuopio-city` view at 06:00 (release, matched A/B), after replacing hashed bank
+  noise that cost `0.85 ms` alone. Tools > Looks > Misty Lake Morning shows it. Against a
+  converged 4000-step integral of the same field over a lake and its shore (`tools/mist_reference.py`,
+  600 rays from 30-900 m in every direction), the six segments' opacity error is mean `0.0010`,
+  p99 `0.005` (about one 8-bit level), with 1.5% of rays above a level and the worst `0.047`: a
+  grazing ray whose long segment straddles the shoreline.
+- **Night sky.** Stars and the Milky Way are added in the sky shader's visible pass only
+  (`night_sky.gdshaderinc`), behind the cloud composite, so clouds hide them; they never enter
+  the radiance cubemap. Three cube-sphere star layers hold at most one star per cell, drawn as
+  Gaussian footprints at least about a pixel wide that keep their total light as they widen, so
+  stars neither flicker nor change brightness with resolution. The Milky Way is a mottled band
+  about the real galactic plane with a dust lane. Stars come out between 4 and 12 degrees of solar
+  depression. `DayCycle.celestial_basis()` turns the sky once a day about the celestial pole
+  (north, at the latitude's elevation) with the sun's hour angle, published as
+  `scene_celestial_basis`; `day_cycle_test` checks that the sun holds one place among the stars.
+  Lakes reflect all four layers and the Milky Way through `night_sky_baked()`: one lookup of a
+  2048² octahedral map baked once at startup in the celestial frame (`night_sky_bake.gd`), so the
+  turning sky is only the `scene_celestial_basis` rotation at lookup. The bake and the visible
+  sky share `night_sky_celestial()`. The HDR canvas output and readback stay linear, and the map
+  is stored as shared-exponent RGB9E5, `21 MiB` with mips (RGBAH was `43 MiB`; at 1024² the stars
+  blurred into blobs). For unit celestial direction `c` a texel spans
+  `2 / 2048 * pow(abs(c.x) + abs(c.y) + abs(c.z), 1.5)` radians; the reflected ray's derivative
+  picks `LOD = log2(pixel / texel_angle)`, spreading starlight through the ripples, and the bake
+  uses the same angle for flux-preserving footprints. UVs keep to the coarser mip's texel
+  centres; a 2D mip can still blur across the octahedral fold. The stars take water's physical
+  Fresnel, as the engine's reflection of the sky does, rather than the authored
+  `water_fresnel_strength` the scene and clouds take. At 23:00 with a lake filling the view
+  (`reflections.sqlite`) this costs `0.13 ms` less than the two analytic layers it replaced
+  (`15.10 -> 14.97 ms`), which had cost `0.3 ms`; by day the lookup is skipped.
+- **Measuring.** The idle-frame matrix's `saved` pose keeps a save's own camera and `saved_sky`
+  tilts it to the upward limit; `METRUM_IDLE_BENCH_WEATHER` pins a scenario as
+  `METRUM_IDLE_BENCH_HOUR` pins the hour. Variants `no_clouds` (no cloud pass) and
+  `no_cloud_shadows` (receivers skip their lookup) split the cost.
+- **Cost** (M2 Pro, 1920x1080 windowed, release, 120 warm-up + 300 frames, fair cumulus at
+  10:00, frame p50 of alternating runs; base `21100889`, before any weather work): Kuopio
+  `overview` `11.54 -> 12.22 ms`, `close` `9.51 -> 10.21 ms`; the `kuopio-city` save's own view
+  `20.32 -> 21.85 ms`, its `saved_sky` `17.44 -> 18.81 ms`, and at midnight with the stars
+  `20.09 -> 21.40 ms`. Split on the current build: the receivers' cloud lookups are `0.49 ms`
+  (overview), `0.86 ms` (town) and `0.68 ms` (town sky view), and the cloud pass `0.29`, `0.39` and
+  `0.58 ms`. Stars cost nothing measurable. The shadow bake then took `0.37 ms` off the town,
+  `0.17 ms` off the overview, `0.16 ms` off `close` and `0.12 ms` off the densest forest (matched
+  A/B on one library, two alternating rounds); most of the town's lookup cost had been trees
+  evaluating the map per vertex. With the panorama interleave too, the whole weather system
+  (clouds, shadows, wind, stars and the schedule; no mist at 10:00) now costs, against the same
+  base: overview `11.54 -> 11.93 ms`, `close` `9.51 -> 9.93 ms`, town `20.32 -> 21.30 ms`. In the
+  town the cloud pass and bake are `0.29 ms` and the receivers' lookups `0.34 ms`, nearly all of
+  that the trees' per-vertex read. Swapping one piece back at a time (matched release A/B) puts
+  the buildings' custom `light()` at `0.08 ms` and the water and terrain shader changes within
+  noise. A release bisect of the branch (town view, frame p50) shows where the cost arrived:
+  per-vertex cloud shadows on trees `+0.64 ms`, the volumetric pass `+0.16 ms`, the regional
+  reads that break the 8 km repeat `+0.66 ms` (most of it in the receivers, which the bake later
+  recovered), buildings and cars on the window shader `+0.13 ms`; about `0.2 ms` remains spread
+  over smaller changes. Logs:
+  `benchmark-results/idle/weather/` (local).
+- **Known limitation.** Beyond the map's edge the camera sees below the true horizon, where the
+  sky's lower hemisphere shows as a band between the terrain's far edge and the clouds. Drawing
+  surrounding scenery or ground-coloured haze there is not done yet (`RENDER-21`).
 
 Rendering non-repair rule:
 

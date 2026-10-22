@@ -29,6 +29,34 @@ impl VegetationOptions {
         dict
     }
 
+    /// Returns the new-game dialog's forest presets, "less" and "more", each a coverage
+    /// fraction and a canopy density in stems per hectare.
+    #[func]
+    pub fn get_presets(&self) -> VarDictionary {
+        let forest = |coverage: f32, canopy_stems_per_ha: f32| {
+            let mut dict = VarDictionary::new();
+            dict.set("coverage", f64::from(coverage));
+            dict.set("canopy_stems_per_ha", f64::from(canopy_stems_per_ha));
+            dict
+        };
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "less",
+            forest(
+                VegetationConfig::DEFAULT_COVERAGE,
+                VegetationConfig::LESS_FOREST_CANOPY_STEMS_PER_HA,
+            ),
+        );
+        dict.set(
+            "more",
+            forest(
+                VegetationConfig::MORE_COVERAGE,
+                VegetationConfig::MORE_FOREST_CANOPY_STEMS_PER_HA,
+            ),
+        );
+        dict
+    }
+
     /// Returns the inclusive canopy density range, in stems per hectare, that is accepted.
     ///
     /// The ceiling is a renderer limit rather than a generator one, so a dialog must read it

@@ -9,13 +9,17 @@ use super::{
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
+use crate::simulation::network::lanes::{Lane, LaneIdentity, LaneSystem, LaneType};
 use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
+
+/// Agent lane references keyed by their pre-rebuild lane id; see
+/// [`AgentSystem::capture_lane_identities`].
+pub(crate) struct AgentLaneIdentities(HashMap<usize, LaneIdentity>);
 
 impl AgentSystem {
     /// Remaps household indices after a `swap_remove` in `HouseholdSystem`, and moves the
@@ -309,6 +313,90 @@ impl AgentSystem {
                 if traffic_debug {
                     log_agent_route_clear_after_road_edit(self, i);
                 }
+                self.clear_route_plan_after_road_edit(i, lane_system);
+            }
+        }
+        self.invalidate_lane_bucket_snapshot();
+    }
+
+    /// Records the identity of every lane an agent references, before a full
+    /// [`LaneSystem::rebuild`] renumbers all lane ids.
+    ///
+    /// O(A), plus one O(L) pass when any agent is inside a junction connector.
+    pub(crate) fn capture_lane_identities(&self, lane_system: &LaneSystem) -> AgentLaneIdentities {
+        let agents = &self.agents;
+        let mut lane_ids = HashSet::new();
+        for i in 0..agents.len() {
+            lane_ids.insert(agents.current_lane_id[i]);
+            for id in [
+                agents.planned_attach_lane_id[i],
+                agents.planned_detach_lane_id[i],
+                agents.lane_change_from_lane_id[i],
+            ] {
+                lane_ids.insert(if id == u32::MAX {
+                    usize::MAX
+                } else {
+                    id as usize
+                });
+            }
+        }
+        lane_ids.remove(&usize::MAX);
+        AgentLaneIdentities(lane_system.lane_identities(&lane_ids))
+    }
+
+    /// Points every lane reference captured by [`Self::capture_lane_identities`] at the rebuilt
+    /// lane with the same identity. O(A).
+    ///
+    /// A reference whose lane the rebuild removed is dropped the way a road edit drops it: the
+    /// agent loses its current lane, abandons a junction crossing and replans, and
+    /// [`Self::reattach_invalidated_lanes_for_edges`] can then reattach it.
+    pub(crate) fn restore_lane_identities(
+        &mut self,
+        captured: &AgentLaneIdentities,
+        lane_system: &LaneSystem,
+    ) {
+        let resolve = |id: usize| {
+            captured
+                .0
+                .get(&id)
+                .and_then(|&identity| lane_system.resolve_lane_identity(identity))
+        };
+        let resolve_u32 = |id: u32| -> Result<u32, ()> {
+            if id == u32::MAX {
+                return Ok(u32::MAX);
+            }
+            resolve(id as usize).map(|id| id as u32).ok_or(())
+        };
+        for i in 0..self.agents.len() {
+            let mut lost = false;
+            let current = self.agents.current_lane_id[i];
+            if current != usize::MAX {
+                if let Some(id) = resolve(current) {
+                    self.agents.current_lane_id[i] = id;
+                    // The rebuild may have changed heights, and with them lane lengths.
+                    self.agents.lane_distance[i] =
+                        self.agents.lane_distance[i].min(lane_system.lanes[id].length);
+                } else {
+                    self.agents.current_lane_id[i] = usize::MAX;
+                    lost = true;
+                }
+            }
+            for planned in [
+                &mut self.agents.planned_attach_lane_id[i],
+                &mut self.agents.planned_detach_lane_id[i],
+            ] {
+                *planned = resolve_u32(*planned).unwrap_or_else(|()| {
+                    lost = true;
+                    u32::MAX
+                });
+            }
+            let from = resolve_u32(self.agents.lane_change_from_lane_id[i]).unwrap_or(u32::MAX);
+            self.agents.lane_change_from_lane_id[i] = from;
+            if from == u32::MAX {
+                self.agents.lane_change_start_d[i] = 0.0;
+                self.agents.lane_change_length_m[i] = 0.0;
+            }
+            if lost {
                 self.clear_route_plan_after_road_edit(i, lane_system);
             }
         }
@@ -1470,5 +1558,94 @@ mod tests {
             old_pos.distance_to(new_pos) <= LANE_REATTACH_MAX_DIST_M,
             "reattach moved connector agent too far: old={old_pos:?} new={new_pos:?}",
         );
+    }
+
+    // The connector from `inbound` toward `target_edge`, as the fixture finds it.
+    fn live_connector(lane_system: &LaneSystem, inbound: usize, target_edge: usize) -> usize {
+        lane_system.lanes[inbound]
+            .next_lanes
+            .iter()
+            .copied()
+            .find(|&id| {
+                let lane = &lane_system.lanes[id];
+                lane.edge_id == usize::MAX
+                    && lane.lane_type == LaneType::Vehicle
+                    && lane
+                        .next_lanes
+                        .first()
+                        .is_some_and(|&to| lane_system.lanes[to].edge_id == target_edge)
+            })
+            .expect("live connector")
+    }
+
+    // The live west-to-north connector; the west edge keeps its id across rebuilds.
+    fn west_to_north_connector(fixture: &TurnConnectorFixture) -> usize {
+        let lanes = &fixture.lane_system;
+        let west_edge = lanes.lanes[fixture.inbound_lane].edge_id;
+        let inbound = lanes.edge_lanes[&west_edge]
+            .iter()
+            .copied()
+            .find(|&id| lanes.lanes[id].lane_type == LaneType::Vehicle && lanes.lanes[id].is_fwd)
+            .expect("west inbound lane");
+        live_connector(lanes, inbound, fixture.north_edge)
+    }
+
+    // An agent inside a junction, with an earlier incremental rebuild leaving tombstones so the
+    // full rebuild renumbers its connector (as terrain edits and undo do in the live game).
+    fn agent_in_renumbered_connector() -> (TurnConnectorFixture, AgentSystem, usize, usize) {
+        let mut fixture = make_turn_connector_lane_system();
+        fixture
+            .lane_system
+            .rebuild_edges_incremental(&mut fixture.graph, &HashSet::from([fixture.north_edge]));
+        let connector = west_to_north_connector(&fixture);
+
+        let mut sys = AgentSystem::new();
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, fixture.n_west, 0.0, 0.0);
+        sys.agents.transit[idx] = TRANSIT_INTERSECTION;
+        sys.agents.transit_mode[idx] = MODE_CAR;
+        sys.agents.current_node[idx] = fixture.n_center;
+        sys.agents.current_edge[idx] = usize::MAX;
+        sys.agents.current_lane_id[idx] = connector;
+        sys.agents.lane_distance[idx] = 1.0;
+        sys.agents.current_path[idx] = vec![fixture.n_center];
+        (fixture, sys, idx, connector)
+    }
+
+    #[test]
+    fn full_lane_rebuild_keeps_agent_inside_its_junction_connector() {
+        let (mut fixture, mut sys, idx, old_connector) = agent_in_renumbered_connector();
+
+        let captured = sys.capture_lane_identities(&fixture.lane_system);
+        fixture.lane_system.rebuild(&mut fixture.graph);
+        sys.restore_lane_identities(&captured, &fixture.lane_system);
+
+        let expected = west_to_north_connector(&fixture);
+        assert_ne!(
+            expected, old_connector,
+            "the fixture must renumber the connector"
+        );
+        assert_eq!(sys.agents.current_lane_id[idx], expected);
+        assert_eq!(
+            fixture.lane_system.lanes[expected].node_id,
+            fixture.n_center as usize
+        );
+        assert_eq!(sys.agents.transit[idx], TRANSIT_INTERSECTION);
+        assert_eq!(sys.agents.current_path[idx], vec![fixture.n_center]);
+    }
+
+    #[test]
+    fn full_lane_rebuild_drops_agent_from_a_connector_that_no_longer_exists() {
+        let (mut fixture, mut sys, idx, _) = agent_in_renumbered_connector();
+
+        let captured = sys.capture_lane_identities(&fixture.lane_system);
+        // Undo removing the road the agent was turning onto.
+        fixture.graph.edge_mut(fixture.north_edge).deleted = true;
+        fixture.graph.rebuild_adjacency_list();
+        fixture.lane_system.rebuild(&mut fixture.graph);
+        sys.restore_lane_identities(&captured, &fixture.lane_system);
+
+        assert_eq!(sys.agents.current_lane_id[idx], usize::MAX);
+        assert_eq!(sys.agents.transit[idx], TRANSIT_NETWORK);
+        assert!(sys.agents.current_path[idx].is_empty());
     }
 }

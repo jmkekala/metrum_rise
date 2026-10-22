@@ -130,6 +130,7 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 - GDScript files are thin rendering and input bridges only. Simulation logic belongs in Rust.
 - Do not move simulation state or decisions into GDScript. GDScript calls Rust methods; it does not compute game outcomes.
 - Every `.gd` file must have a `##` class-level header block before `extends`.
+- Lit world materials must receive the cloud shadow: build them through `WindowMaterials.create()` or include `standard_light.gdshaderinc` in a custom shader. A plain `StandardMaterial3D` stays in full sun under clouds. See `docs/terrain.md` §14.
 - Use inline `#` comments for non-obvious geometry, packed data formats, and state transitions. Skip comments on obvious handlers and boilerplate UI setup.
 
 ### Testing

@@ -24,7 +24,8 @@ func _initialize() -> void:
 	_test_key_light_never_shines_from_below()
 	_test_curve_is_continuous()
 	_test_night_is_dark_but_readable()
-	_test_moon_is_antisolar()
+	_test_moon_keeps_a_month()
+	_test_sky_turns_with_the_sun()
 	quit(1 if _failures > 0 else 0)
 
 func _test_direction_conversion() -> void:
@@ -112,7 +113,7 @@ func _test_key_light_never_shines_from_below() -> void:
 			)
 		)
 		_expect(
-			sample.is_moonlit == (sample.key_direction.dot(sample.sun_direction) < 0.0),
+			sample.is_moonlit == sample.key_direction.is_equal_approx(sample.moon_disk_direction),
 			"the moonlit flag must match which body the key is following at step %d" % step
 		)
 
@@ -120,8 +121,9 @@ func _test_curve_is_continuous() -> void:
 	var previous := DayCycleConfig.create_sample()
 	var current := DayCycleConfig.create_sample()
 	DayCycleConfig.sample_into(0.0, previous)
+	# Across midnight into the next day, as the clock carries the day number over.
 	for step in range(1, STEPS + 1):
-		DayCycleConfig.sample_into(float(step) / STEPS, current)
+		DayCycleConfig.sample_into(float(step) / STEPS, current, int(step == STEPS))
 		_expect(
 			absf(current.key_energy - previous.key_energy) <= MAX_ENERGY_STEP,
 			(
@@ -162,7 +164,7 @@ func _test_curve_is_continuous() -> void:
 					% [step, previous.key_direction.dot(current.key_direction)]
 				)
 			)
-		DayCycleConfig.sample_into(float(step) / STEPS, previous)
+		DayCycleConfig.sample_into(float(step) / STEPS, previous, int(step == STEPS))
 
 func _test_night_is_dark_but_readable() -> void:
 	var night := DayCycleConfig.create_sample()
@@ -239,19 +241,55 @@ func _evening_fraction_at_elevation(target_deg: float) -> float:
 			best = fraction
 	return best
 
-func _test_moon_is_antisolar() -> void:
+func _test_moon_keeps_a_month() -> void:
 	var sample := DayCycleConfig.create_sample()
+	var month := DayCycleConfig.SYNODIC_MONTH_DAYS
+	# Through a month of minutes a lit moon stays above the horizon, never lights the day, and
+	# the key never jumps from one body to the other while lit.
+	for step in range(int(month) * 96):
+		var days := float(step) / 96.0
+		DayCycleConfig.sample_into(fposmod(days, 1.0), sample, int(days))
+		if sample.is_moonlit and sample.key_energy > 0.0:
+			_expect(
+				sample.moon_elevation_deg > 0.0,
+				"moonlight must come from above the horizon at day %.3f" % days
+			)
+		if sample.sun_elevation_deg > 1.0:
+			_expect(not sample.is_moonlit, "the moon must not light the day at day %.3f" % days)
+	# It drifts east among the stars by a twelfth of a turn a day, so it rises later each day.
+	var start := DayCycleConfig.moon_celestial_direction(0.0)
+	var next := DayCycleConfig.moon_celestial_direction(1.0)
+	var drift := rad_to_deg(Vector2(next.x, next.y).angle() - Vector2(start.x, start.y).angle())
+	_expect(
+		drift > 10.0 and drift < 15.0,
+		"the moon must move east about 12 degrees a day among the stars, got %.2f" % drift
+	)
+	# Full when it stands opposite the sun, new beside it; never a different moon for the same
+	# time.
+	var phases := []
+	for quarter in range(4):
+		var days := month * (float(quarter) * 0.25) - DayCycleConfig.MOON_AGE_AT_DAY_ZERO
+		DayCycleConfig.sample_into(fposmod(days, 1.0), sample, int(floor(days)))
+		phases.append(sample.moon_illumination)
+	_expect(phases[0] < 0.01, "a new moon must be dark, got %.3f" % phases[0])
+	_expect(absf(phases[1] - 0.5) < 0.05, "a first quarter must be half lit, got %.3f" % phases[1])
+	_expect(phases[2] > 0.99, "a full moon must be fully lit, got %.3f" % phases[2])
+	_expect(absf(phases[3] - 0.5) < 0.05, "a last quarter must be half lit, got %.3f" % phases[3])
+
+func _test_sky_turns_with_the_sun() -> void:
+	# The night sky turns with the sun's hour angle, so the sun keeps one place among the stars
+	# (right ascension zero at its declination) all day, and the pole stands still.
+	var sample := DayCycleConfig.create_sample()
+	var declination := deg_to_rad(DayCycleConfig.SOLAR_DECLINATION_DEG)
+	var sun_fixed := Vector3(cos(declination), 0.0, sin(declination))
+	var pole := DayCycleConfig.direction_from_position(DayCycleConfig.LATITUDE_DEG, 0.0)
 	for step in range(STEPS):
 		DayCycleConfig.sample_into(float(step) / STEPS, sample)
-		_expect(
-			sample.moon_disk_direction.dot(sample.sun_direction) < -0.999,
-			"the moon must stay antisolar at step %d" % step
-		)
-		if sample.sun_elevation_deg > 1.0:
-			_expect(
-				sample.moon_disk_intensity == 0.0,
-				"the moon must not be drawn while the sun is up, step %d" % step
-			)
+		var m := sample.celestial_basis
+		var sun := Vector3(m.x.dot(sample.sun_direction), m.y.dot(sample.sun_direction), m.z.dot(sample.sun_direction))
+		_expect(sun.is_equal_approx(sun_fixed), "the sun must hold still among the stars at step %d, got %s" % [step, sun])
+		_expect(m.z.is_equal_approx(pole), "the celestial pole must stand due north at the latitude, step %d" % step)
+		_expect(is_equal_approx(m.determinant(), 1.0), "the celestial basis must be a rotation, step %d" % step)
 
 func _digest(sample: DayCycleConfig.Sample) -> String:
 	return "%.6f|%.6f|%s|%s|%.6f|%s|%s|%s|%.6f|%s|%s|%.6f|%.6f" % [

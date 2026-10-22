@@ -540,6 +540,7 @@ impl BuildingAllocator {
             facing_dir: parcel.normal() * -1.0,
             frontage_t: parcel.frontage_center_t(),
             edge_width,
+            front_gap_m: [0.0; 3],
         };
         if self.placement_overlaps_existing_flat_support(&placement) {
             return None;
@@ -995,6 +996,7 @@ impl BuildingAllocator {
             facing_dir: -outward,
             frontage_t: projection.t,
             edge_width: edge.width,
+            front_gap_m: [0.0; 3],
         })
     }
 
@@ -1333,6 +1335,7 @@ impl BuildingAllocator {
             facing_dir: building.facing_dir,
             frontage_t: building.frontage_t,
             edge_width: edge.width,
+            front_gap_m: [0.0; 3],
         };
         if self.placement_overlaps_existing_flat_support(&placement) {
             return false;
@@ -1367,6 +1370,14 @@ impl BuildingAllocator {
         let (preferred_height, connections) =
             self.resolve_site_support_connections(placement, graph, road_surface, terrain)?;
         placement.support_height_m = preferred_height;
+        let half_m = |cells: usize| cells as f32 * placement.zone_cell_m * 0.5;
+        placement.front_gap_m = super::geometry::lot_front_gaps(
+            graph,
+            placement.center_2d,
+            placement.facing_dir,
+            half_m(placement.width_cells),
+            half_m(placement.depth_cells),
+        );
         self.finalize_site_support(placement, &connections, graph, road_surface, terrain)
     }
 
@@ -1861,6 +1872,7 @@ impl BuildingAllocator {
             facing_dir: placement.facing_dir,
             frontage_t: placement.frontage_t,
             side_offset: placement.edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
+            front_gap_m: placement.front_gap_m,
             center_x: placement.center_2d.x,
             center_y: placement.center_2d.y,
             support_height_m: placement.support_height_m,
@@ -1923,7 +1935,7 @@ impl BuildingAllocator {
         self.push_building_site_client(building_idx, zone_cell_m);
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
-        self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
         self.mark_index_stale();
@@ -2242,6 +2254,8 @@ struct ResolvedPlacement {
     facing_dir: Vector2,
     frontage_t: f32,
     edge_width: f32,
+    // See `Building::front_gap_m`; measured with the site support, before commit.
+    front_gap_m: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2451,6 +2465,7 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             edge_width: 8.0,
+            front_gap_m: [0.0; 3],
         };
         let overlapping = ResolvedPlacement {
             build_generation: 0,
@@ -2471,6 +2486,7 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             edge_width: 8.0,
+            front_gap_m: [0.0; 3],
         };
 
         assert!(!allocator.placement_overlaps_existing_flat_support(&touching));

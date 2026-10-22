@@ -7,7 +7,7 @@ use super::super::{
     push_triangle_with_normal,
 };
 use crate::simulation::network::surface::{
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3, SpanQuad,
 };
 use godot::prelude::{Color, Vector2, Vector3};
 
@@ -51,6 +51,34 @@ pub(super) fn emit_surface_polygon(
     color: Color,
 ) {
     emit_surface_triangles(mesh, layer, polygon.triangles(), color);
+}
+
+// Emits a span quad with its road-space corner coordinates as UVs. A quad triangle's points are
+// copies of its region corners, so each takes the coordinates of the corner it coincides with.
+pub(super) fn emit_road_space_quad(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    quad: &SpanQuad,
+    corners: &[RoadVec3; 4],
+    road_space: &[[f32; 2]; 4],
+    color: Color,
+) {
+    for &triangle in quad.triangles() {
+        if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle) {
+            continue;
+        }
+        let uvs = triangle.map(|point| {
+            let corner = (0..4)
+                .min_by(|&a, &b| {
+                    (corners[a] - point)
+                        .length_squared()
+                        .total_cmp(&(corners[b] - point).length_squared())
+                })
+                .unwrap_or(0);
+            Vector2::new(road_space[corner][0], road_space[corner][1])
+        });
+        push_triangle(mesh, layer, road_triangle_to_render(triangle), uvs, color);
+    }
 }
 
 pub(super) fn emit_surface_triangles(

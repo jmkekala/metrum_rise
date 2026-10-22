@@ -239,8 +239,14 @@ impl SimCore {
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
 
+        // The sync rebuilds every lane and renumbers them.
+        let lane_identities = self
+            .agents
+            .capture_lane_identities(&self.transit_network.lane_system);
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
+        self.agents
+            .restore_lane_identities(&lane_identities, &self.transit_network.lane_system);
         let road_surface_had_dirty_work =
             self.transit_network.road_surface.has_pending_rebuild_work();
         let dirty_chunks = self
@@ -591,7 +597,7 @@ impl SimCore {
     }
 
     fn remove_building_in_pool(&mut self, building_idx: usize, record_undo: bool) -> bool {
-        let dirty_bounds = self.allocator.site_world_bounds(building_idx);
+        let dirty_bounds = self.allocator.site_dirty_bounds(building_idx);
         // Read while the farm still owns its field: removing it gives the ground back, and the
         // plants the field was hiding have to return with it.
         let field_bounds = self
@@ -2179,6 +2185,15 @@ impl SimCore {
                 .road_surface
                 .last_rebuilt_query_chunks()
                 .to_vec();
+            // Generated trees keep clear of walkways and poles beside them, possibly from a
+            // neighboring terrain patch; the canopy margin covers both setbacks.
+            for &chunk in &dirty_query_chunks {
+                let (min, max) = RoadSurfaceSystem::query_chunk_world_bounds(chunk);
+                self.invalidate_vegetation_over((
+                    Vector2::new(min.x as f32, min.z as f32),
+                    Vector2::new(max.x as f32, max.z as f32),
+                ));
+            }
             self.bump_local_road_terrain_payload_generations(
                 &road_locked_dirty_patch_keys,
                 &dirty_query_chunks,

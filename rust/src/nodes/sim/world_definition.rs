@@ -11,6 +11,7 @@ use crate::nodes::sim::core::{
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::weather::WeatherState;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -556,6 +557,8 @@ impl SimCore {
         );
 
         self.time = TimeSystem::new();
+        self.weather = WeatherState::default();
+        self.world_epoch = self.world_epoch.wrapping_add(1);
         self.config = config;
         self.heightmap = terrain;
         // Resolved against the new extent rather than carried over: coverage is an area

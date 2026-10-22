@@ -88,7 +88,7 @@ MainMenu v1 actions:
 | File   | New Game, Save `[Ctrl+S]`, Load `[Ctrl+L]`, —, Options, —, Quit |
 | View   | Overlays submenu (None `[7]`, Pollution `[8]`, Noise `[9]`, Desirability `[0]`, Deposits `[-]`), — , Toggle Zoning Overlay |
 | City   | City Statistics *(window)*, Economy Overview *(window)*, Demand Overview *(window)* |
-| Tools  | Time of Day submenu, —, Open Asset Editor |
+| Tools  | Time of Day submenu, Weather submenu (Automatic, Clear, Fair Cumulus, Overcast, Storm), Looks submenu (an hour and a weather in one click), —, Open Asset Editor |
 | Help   | Keyboard Shortcuts *(window)*, About |
 
 The menu bar owns global save/load/quit actions. These are currently handled as keyboard

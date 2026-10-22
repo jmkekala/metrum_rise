@@ -670,8 +670,10 @@ available in every build and scene.
 
 ### Opening and input
 
-- The physical key left of `1` opens and closes the console (`KEY_QUOTELEFT` by physical
-  keycode): `§` on Nordic layouts and `` ` `` on US layouts. The key is always consumed, so it
+- The physical key left of `1` opens and closes the console: `§` on Nordic layouts and `` ` `` on
+  US layouts. Most platforms report it as physical `KEY_QUOTELEFT`; macOS reports it as
+  `KEY_SECTION` on ISO keyboards, where `KEY_QUOTELEFT` is the `<` key beside left shift, so a
+  `KEY_QUOTELEFT` press labelled `<` keeps typing. The key is always consumed, so it
   never types into a text field.
 - The console slides down from the top edge, anchored left. By default it is one third of the
   window wide and as tall as the HUD allows. It stays between the visible controls in the

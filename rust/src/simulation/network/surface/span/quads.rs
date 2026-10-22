@@ -117,6 +117,22 @@ impl RoadSurfaceSpanOwnedRegion {
         ]
     }
 
+    /// Road-space coordinates of [`Self::corners`]: metres along the edge from its start, and
+    /// signed metres across it from the centreline.
+    pub(crate) fn road_space_corners(&self, sections: &[RoadSurfaceSection]) -> [[f32; 2]; 4] {
+        let start = &sections[self.start_section_index()];
+        let end = &sections[self.end_section_index()];
+        let band_index = self.owner().source_band_index;
+        let band_start = &start.bands[band_index];
+        let band_end = &end.bands[band_index];
+        [
+            [start.s_m, band_start.lateral_start_m],
+            [end.s_m, band_end.lateral_start_m],
+            [end.s_m, band_end.lateral_end_m],
+            [start.s_m, band_start.lateral_end_m],
+        ]
+    }
+
     /// The region's top quad, rebuilt from the sections it was resolved from.
     pub(crate) fn quad(&self, sections: &[RoadSurfaceSection]) -> SpanQuad {
         SpanQuad::from_corners(self.corners(sections))
@@ -142,6 +158,38 @@ impl RoadSurfaceVisualSpanPiece {
     /// Asphalt top quads in render order.
     pub fn road_surface_polygons(&self) -> impl ExactSizeIterator<Item = SpanQuad> + '_ {
         self.role_quads(RoadSurfaceSpanRegionRole::Asphalt)
+    }
+
+    fn role_quads_in_road_space(
+        &self,
+        role: RoadSurfaceSpanRegionRole,
+    ) -> impl ExactSizeIterator<Item = (SpanQuad, [RoadVec3; 4], [[f32; 2]; 4])> + '_ {
+        self.surface_polygon_order[usize::from(role.sort_key())]
+            .iter()
+            .map(|&index| {
+                let region = &self.span_owned_regions[index as usize];
+                (
+                    self.region_quad(region),
+                    region.corners(&self.sections),
+                    region.road_space_corners(&self.sections),
+                )
+            })
+    }
+
+    /// Asphalt top quads in render order, each with its region corners and their road-space
+    /// coordinates (see [`RoadSurfaceSpanOwnedRegion::road_space_corners`]).
+    pub fn road_surface_polygons_in_road_space(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (SpanQuad, [RoadVec3; 4], [[f32; 2]; 4])> + '_ {
+        self.role_quads_in_road_space(RoadSurfaceSpanRegionRole::Asphalt)
+    }
+
+    /// Sidewalk and footpath top quads in render order, with road-space corners as
+    /// [`Self::road_surface_polygons_in_road_space`] gives them.
+    pub fn sidewalk_surface_polygons_in_road_space(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (SpanQuad, [RoadVec3; 4], [[f32; 2]; 4])> + '_ {
+        self.role_quads_in_road_space(RoadSurfaceSpanRegionRole::NonRoad)
     }
 
     /// Curb or shoulder top quads in render order.

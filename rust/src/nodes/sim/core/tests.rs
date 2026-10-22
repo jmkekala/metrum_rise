@@ -1035,6 +1035,7 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         facing_dir: godot::prelude::Vector2::ZERO,
         frontage_t: 0.5,
         side_offset: 0.0,
+        front_gap_m: [0.0; 3],
         budget_distress: false,
         is_deserted: false,
         edge_idx: 0,

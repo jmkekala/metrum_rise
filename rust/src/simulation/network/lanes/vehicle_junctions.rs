@@ -26,11 +26,17 @@ pub fn build_vehicle_connections_at_node(
 ) {
     let mut inbound: Vec<(usize, i8, usize)> = Vec::new();
     let mut outbound: Vec<(usize, i8, usize)> = Vec::new();
+    // Arms that carry vehicle lanes. Footpaths and other lane-less arms join the node for
+    // pedestrians only: a road continuing past a footpath is a pass-through for cars.
+    let mut vehicle_deg = 0;
 
     for &e_idx in graph.node_adjacency(node_id as u32) {
         let edge = graph.edge(e_idx);
         if edge.deleted {
             continue;
+        }
+        if edge.fwd_lanes + edge.bkw_lanes > 0 {
+            vehicle_deg += 1;
         }
 
         if edge.start_node as usize == node_id {
@@ -61,10 +67,9 @@ pub fn build_vehicle_connections_at_node(
     }
 
     let lane_conns = &graph.node(node_id as u32).lane_connections;
-    let node_deg = graph.node_adjacency_count_at(node_id as u32);
     let node_has_any_vehicle_conn = node_whitelists_vehicle_turns(graph, node_id);
-    let node_allows_direct_pass_through = node_deg == 2 && !node_has_any_vehicle_conn;
-    let node_uses_junction_span = node_deg >= 3 || node_has_any_vehicle_conn;
+    let node_allows_direct_pass_through = vehicle_deg == 2 && !node_has_any_vehicle_conn;
+    let node_uses_junction_span = vehicle_deg >= 3 || node_has_any_vehicle_conn;
 
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
         let mut allowed: Option<Vec<(usize, i8)>> =
@@ -130,8 +135,11 @@ pub fn build_vehicle_connections_at_node(
             };
 
             let dist = p0.distance_to(p3);
+            // On the inside of a slight bend the offset lanes overlap: the outgoing lane starts
+            // behind the incoming lane's end, and any connector between them would run backwards.
+            let overlaps = (p3.x - p0.x) * p1_base.x + (p3.z - p0.z) * p1_base.z <= 0.0;
             if node_allows_direct_pass_through
-                && dist <= VEHICLE_DIRECT_PASS_THROUGH_EPS_M
+                && (dist <= VEHICLE_DIRECT_PASS_THROUGH_EPS_M || overlaps)
                 && flat_direction_dot(p1_base, p2_base) >= VEHICLE_DIRECT_PASS_THROUGH_DOT
             {
                 lanes[in_lane_id].next_lanes.push(out_lid);
@@ -195,13 +203,14 @@ pub fn build_vehicle_connections_at_node(
 }
 
 /// Returns `true` when the node has a user vehicle lane connection, which puts every turn at
-/// the node in whitelist mode. Lane index `±100` marks pedestrian connections.
+/// the node in whitelist mode. Pedestrian rules (`RegionGraph::is_vehicle_turn_rule`: sidewalk
+/// lane `±100` or a footpath edge) never do.
 pub(crate) fn node_whitelists_vehicle_turns(graph: &RegionGraph, node_id: usize) -> bool {
     graph
         .node(node_id as u32)
         .lane_connections
         .keys()
-        .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100)
+        .any(|&(edge_idx, lane_idx)| graph.is_vehicle_turn_rule(edge_idx, lane_idx))
 }
 
 fn vehicle_connection_distance_basis_m(

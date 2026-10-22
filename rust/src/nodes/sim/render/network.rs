@@ -32,6 +32,8 @@ impl SimCore {
         {
             return;
         }
+        self.transit_network
+            .sync_new_lane_heights(&self.region_graph, &self.heightmap);
         let mut target_chunks = BTreeSet::new();
         if self.road_mesh_full_replace {
             target_chunks.extend(
@@ -245,6 +247,15 @@ impl SimCore {
             PackedVector2Array::from_iter(mesh_data.road_uvs.iter().copied()),
         );
         dict.set(
+            "road_crossings",
+            PackedFloat32Array::from_iter(
+                mesh_data
+                    .road_crossings
+                    .iter()
+                    .flat_map(|v| [v.x, v.y, v.z, v.w]),
+            ),
+        );
+        dict.set(
             "road_colors",
             PackedColorArray::from_iter(mesh_data.road_colors.iter().copied()),
         );
@@ -281,6 +292,32 @@ impl SimCore {
         dict.set(
             "concrete_colors",
             PackedColorArray::from_iter(mesh_data.concrete_colors.iter().copied()),
+        );
+        // Five floats per light: chunk-local pole base x, y, z, yaw, model kind.
+        dict.set(
+            "street_lights",
+            PackedFloat32Array::from_iter(mesh_data.street_lights.iter().flat_map(|light| {
+                [
+                    light.position.x,
+                    light.position.y,
+                    light.position.z,
+                    light.yaw,
+                    f32::from(light.kind as u8),
+                ]
+            })),
+        );
+        // Same five-float pose contract as street lights, with RoadSignKind indices.
+        dict.set(
+            "road_signs",
+            PackedFloat32Array::from_iter(mesh_data.road_signs.iter().flat_map(|sign| {
+                [
+                    sign.position.x,
+                    sign.position.y,
+                    sign.position.z,
+                    sign.yaw,
+                    f32::from(sign.kind as u8),
+                ]
+            })),
         );
         dict
     }

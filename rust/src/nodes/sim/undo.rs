@@ -352,7 +352,7 @@ impl SimCore {
             logistics,
             extractor_sites,
             field_sites,
-            dirty_bounds: self.allocator.site_world_bounds(building_idx),
+            dirty_bounds: self.allocator.site_dirty_bounds(building_idx),
         })
     }
 
@@ -494,10 +494,23 @@ impl SimCore {
 
             if sync_trans_graph {
                 // Rebuild lane topology from the restored graph so crosswalk geometry
-                // and junction connections match the reverted road network.
+                // and junction connections match the reverted road network. The rebuild
+                // renumbers every lane, so agents' lane ids are carried over by identity.
+                let lane_identities = self
+                    .agents
+                    .capture_lane_identities(&self.transit_network.lane_system);
                 self.transit_network
                     .lane_system
                     .rebuild(&mut self.region_graph);
+                self.agents
+                    .restore_lane_identities(&lane_identities, &self.transit_network.lane_system);
+                if let Some((edge_ids, _)) = &restored_topology_scope {
+                    self.agents.reattach_invalidated_lanes_for_edges(
+                        edge_ids,
+                        &self.transit_network.lane_system,
+                        &self.region_graph,
+                    );
+                }
                 self.transit_network
                     .rebuild_cch_and_check(&self.region_graph);
                 self.transit_network.cch_dirty_chunks.clear();

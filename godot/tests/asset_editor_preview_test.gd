@@ -222,6 +222,7 @@ func _run() -> void:
 	_expect(editor._lod_preview.states[editor._parts[0]].pixels >= 100.0, "frame selection makes the fixture clearly visible")
 	await _optional_capture_and_measure(editor)
 	await _test_comparison_preview(editor)
+	await _test_yard_preview(editor)
 	editor._session.create_asset({"type": "residential", "name": "New fixture", "pack": {"pack_id": _pack}})
 	_expect(editor._parts.is_empty(), "new asset clears document and preview selection")
 	_expect(editor._lod_preview.states.is_empty(), "new asset releases all LOD preview state")
@@ -232,6 +233,81 @@ func _run() -> void:
 	_remove_fixture_directory(_source)
 	print("asset_editor_preview_test: %s" % ("PASS" if _failures == 0 else "FAIL"))
 	quit(_failures)
+
+func _test_yard_preview(editor: Node3D) -> void:
+	var document = editor._session.document
+	var fixture: Dictionary = document.snapshot()
+	fixture.params.lot_width_cells = 4
+	fixture.params.lot_depth_cells = 4
+	fixture.params.yard_hedge = "medium"
+	fixture.params.site_surfaces = [
+		{"name": "Trees", "material": "trees", "vertices": [[-18, -18], [-3, -18], [-3, 18], [-18, 18]]},
+		{"name": "Flowers", "material": "flowers", "vertices": [[4, -18], [18, -18], [18, 18], [4, 18]]},
+		{"name": "Path", "material": "concrete", "vertices": [[-1, 5], [1, 5], [1, 20], [-1, 20]]}]
+	document.apply(fixture, "Open planted yard fixture")
+	await process_frame
+	var before: Dictionary = document.snapshot()
+	var dirty: bool = document.is_dirty()
+	var undo: String = document.undo_label()
+	var preview = editor._preview
+	var fill: Mesh = preview._site_surface_fill.mesh
+	var grid: Material = preview._ground.material_overlay
+	var hedge: MultiMesh = preview._yard_hedge.multimesh
+	var labels: Array = preview._site_surface_labels.duplicate()
+	var visibility := {}
+	for helper in [preview._selection_overlay, preview._hover_outline, preview._site_surface_overlay,
+		preview._site_anchor_overlay, preview._lot_overlay, preview._frontage_arrow,
+		preview._ground_grid, preview._scale_reference, preview._frontage_label,
+		preview._site_surface_label_root, preview._site_anchor_label_root, preview._ghost_root,
+		preview._yard_hedge, editor._view.picking_overlay, editor._view.hover_label]:
+		visibility[helper] = helper.visible
+	_expect(hedge.instance_count > 0 and labels.size() == 3, "fixture has hedge plans and planting labels")
+	editor._view.yard_preview_button.pressed.emit()
+	await process_frame
+	var yard = editor._yard_preview
+	_expect(yard.active and editor._view.yard_preview_button.text == "Reroll", "Preview enters game vegetation mode")
+	var first: PackedFloat32Array = yard.placements.duplicate()
+	var hedge_count := 0
+	var plant_count := 0
+	for i in range(0, first.size(), 6):
+		var packed := int(first[i + 5])
+		if yard.TreeSpecies.is_hedge(packed & 3, (packed >> 2) - 1):
+			hedge_count += 1
+		else:
+			plant_count += 1
+	_expect(hedge_count > 0 and plant_count > 0, "preview plans both real hedge modules and planted vegetation")
+	var rendered := 0
+	for instance: MultiMeshInstance3D in yard._root.get_children():
+		rendered += instance.multimesh.instance_count
+		_expect(instance.multimesh.mesh is ArrayMesh, "preview uses game vegetation geometry, not hedge boxes")
+	_expect(rendered == first.size() / 6, "every planned plant has a render instance")
+	for helper in visibility:
+		_expect(not helper.visible, "game preview hides editor helper " + str(helper))
+	_expect(preview._ground.material_overlay == null, "preview hides grid material")
+	_expect(preview._site_surface_fill.mesh.get_surface_count() == 1, "preview removes planting washes but retains paving")
+	editor._view.yard_preview_button.pressed.emit()
+	_expect(yard.placements != first, "Reroll changes planting layout")
+	_expect(document.snapshot() == before and document.is_dirty() == dirty and document.undo_label() == undo, "preview and reroll do not edit document or history")
+	editor._view.exit_yard_preview_button.pressed.emit()
+	_expect(not yard.active and not is_instance_valid(yard._root), "Exit preview releases vegetation")
+	for helper in visibility:
+		_expect(helper.visible == visibility[helper], "exit restores helper visibility " + str(helper))
+	_expect(preview._site_surface_fill.mesh == fill and preview._ground.material_overlay == grid and preview._yard_hedge.multimesh == hedge, "exit restores exact editing resources")
+	_expect(preview._site_surface_labels == labels, "exit preserves original label nodes")
+	_expect(document.snapshot() == before, "exit leaves document unchanged")
+	editor._view.yard_preview_button.pressed.emit()
+	var escape := InputEventAction.new()
+	escape.action = "ui_cancel"
+	escape.pressed = true
+	editor._input(escape)
+	_expect(not yard.active and document.snapshot() == before, "Escape exits preview without changing the document")
+	editor._view.yard_preview_button.pressed.emit()
+	editor._on_site_surface_selected(0)
+	_expect(not yard.active and document.snapshot() == before, "inspector selection exits preview without editing the document")
+	# A deliberate edit exits before document projection can rebuild hidden guides.
+	editor._view.yard_preview_button.pressed.emit()
+	editor._session.set_field("display_name", "Edited planted yard")
+	_expect(not yard.active and preview._ground.material_overlay != null, "document edits exit preview before rebuilding overlays")
 
 func _test_export_savepoint(editor: Node3D, manifest_path: String) -> void:
 	var session = editor._session

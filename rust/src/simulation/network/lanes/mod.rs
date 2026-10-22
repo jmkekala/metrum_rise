@@ -16,6 +16,7 @@ use crate::simulation::terrain::TerrainSystem;
 mod bounds;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
+mod identity;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
@@ -25,6 +26,7 @@ mod successors;
 pub mod vehicle_junctions;
 
 pub(crate) use bounds::LanePlanarBox;
+pub(crate) use identity::LaneIdentity;
 pub use successors::LaneSuccessors;
 
 /// Types of travel lanes supported by the network.
@@ -120,6 +122,9 @@ pub struct LaneSystem {
     revision: u64,
     // Render-cull boxes derived from `lanes`, keyed by `revision` (`SIM-02-K`).
     planar_bounds: bounds::LanePlanarBounds,
+    // Lanes below this id already sit on the visible road surface. Rebuilds only append lanes
+    // (old ids become tombstones), so every lane at or above it still has flat build heights.
+    surface_synced_len: usize,
 }
 
 impl Default for LaneSystem {
@@ -138,6 +143,7 @@ impl LaneSystem {
             crosswalks: HashMap::new(),
             revision: 0,
             planar_bounds: Default::default(),
+            surface_synced_len: 0,
         }
     }
 
@@ -148,6 +154,7 @@ impl LaneSystem {
         self.edge_lanes.clear();
         self.node_lanes.clear();
         self.crosswalks.clear();
+        self.surface_synced_len = 0;
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when
@@ -175,6 +182,30 @@ impl LaneSystem {
         for lane in &mut self.lanes {
             sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
         }
+        self.surface_synced_len = self.lanes.len();
+    }
+
+    /// True when a rebuild appended lanes that still carry flat build heights.
+    pub(crate) fn has_unsynced_lanes(&self) -> bool {
+        self.surface_synced_len < self.lanes.len()
+    }
+
+    /// Lifts every lane appended since the last sync onto the visible road surface.
+    ///
+    /// Lane length feeds agent motion and route costs, so this runs at fixed points of the
+    /// simulation (frame start and road commits) rather than only when a chunk is drawn.
+    /// O(new lane points).
+    pub(crate) fn sync_new_lanes_to_visible_surface(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        road_surface: &RoadSurfaceSystem,
+    ) {
+        let start = self.surface_synced_len.min(self.lanes.len());
+        for lane in &mut self.lanes[start..] {
+            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+        self.surface_synced_len = self.lanes.len();
     }
 
     pub(crate) fn sync_heights_to_visible_surface_for_owners(

@@ -359,7 +359,7 @@ pub(super) fn pedestrian_lane_connector_path_from_node(
         let travel_cost = graph
             .edges()
             .get(lane.edge_id)
-            .map(|edge| edge.base_cost)
+            .map(CostCalculator::walk_cost_s)
             .unwrap_or(lane.length / WALK_CONNECTOR_COST_SPEED_MS);
         let key = (next_node, start_lane_id);
         let cost = travel_cost.max(0.001);
@@ -496,7 +496,7 @@ fn visit_pedestrian_successors(
         let travel_cost = graph
             .edges()
             .get(target_lane.edge_id)
-            .map(|edge| edge.base_cost)
+            .map(CostCalculator::walk_cost_s)
             .unwrap_or(target_lane.length / WALK_CONNECTOR_COST_SPEED_MS)
             + conn_lane.length / WALK_CONNECTOR_COST_SPEED_MS;
         visit(PedestrianSearchState {

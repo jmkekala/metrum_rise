@@ -353,6 +353,18 @@ impl RegionGraph {
         }
     }
 
+    /// Whether a node's turn rule keyed by `(edge_idx, lane_idx)` restricts vehicles. Pedestrian
+    /// routes through a junction are recorded as rules too, sidewalks under lane index ±100 and
+    /// footpaths under their own edge, so neither puts the junction into vehicle whitelist mode.
+    pub fn is_vehicle_turn_rule(&self, edge_idx: usize, lane_idx: i8) -> bool {
+        lane_idx != 100
+            && lane_idx != -100
+            && !self
+                .edges
+                .get(edge_idx)
+                .is_some_and(|edge| edge.primary_type == TransitType::Foot)
+    }
+
     /// Returns the total number of nodes in the graph (including any that were merged).
     pub fn node_count(&self) -> usize {
         self.nodes.len()

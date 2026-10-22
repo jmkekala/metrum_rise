@@ -15,6 +15,7 @@ use crate::simulation::agriculture::{AgricultureSystem, FieldSite};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::weather::WeatherScenario;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::agents::{
     ACCESS_PLAN_VALID, AGE_ADULT, MODE_CAR, MODE_WALK, TRANSIT_NETWORK,
@@ -223,6 +224,7 @@ fn snapshot_test_building(
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
+        front_gap_m: [0.0; 3],
         budget_distress: false,
         is_deserted: false,
         edge_idx: edge_id,
@@ -930,6 +932,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut vegetation_edits = VegetationEdits::default();
     vegetation_edits.add(planted, authored(6));
     vegetation_edits.add(planted, authored(VARIANT_FROM_SEED));
+    // Mid-transition weather with drift, so every stored field differs from the default.
+    let mut weather = WeatherState::new(11);
+    weather.transition_to(WeatherScenario::Storm, 300.0);
+    weather.advance(42.0);
     let save_snapshot = |allocator: &BuildingAllocator,
                          resource_extraction: &ResourceExtractionSystem| {
         save_to_sqlite(
@@ -940,6 +946,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 vegetation_edits: &vegetation_edits,
                 vegetation: &vegetation,
                 time: &time,
+                weather: &weather,
                 terrain: &terrain,
                 water: &water,
                 resource_deposits: &resource_deposits,
@@ -1297,6 +1304,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.time.day_index, time.day_index);
     assert_eq!(loaded.time.minute_of_day, time.minute_of_day);
+    assert_eq!(loaded.weather, weather);
     assert_eq!(
         loaded.terrain.clone_source_dense(),
         terrain.clone_source_dense()
@@ -1625,6 +1633,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
+        front_gap_m: [0.0; 3],
         budget_distress: false,
         is_deserted: false,
         edge_idx: edge_id,
@@ -1720,6 +1729,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
             vegetation_edits: &Default::default(),
             vegetation: &crate::simulation::vegetation::VegetationConfig::default(),
             time: &time,
+            weather: &WeatherState::default(),
             terrain: &terrain,
             water: &water,
             resource_deposits: &resource_deposits,
@@ -2018,4 +2028,33 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
     assert_eq!(agents.current_node[walker], node);
     assert_eq!(agents.current_building[walker], usize::MAX);
     assert_eq!(agents.target_building[walker], 0);
+}
+
+#[test]
+fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(include_str!("tests/data/headlight_house_junction.sql"))
+        .unwrap();
+    let config = WorldConfig::new(500.0, 500.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(512.0, 0.0);
+    let mut terrain = TerrainSystem::from_world_config(&config);
+    let mut graph = network::load_graph(&conn).unwrap();
+    let saved_edges = graph.edges().to_vec();
+    let mut transit = TransitNetwork::new_for_world(&config);
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit, &mut terrain).unwrap();
+    assert!(transit.road_surface.published_generation_matches_source());
+    assert!(transit.road_surface.last_compile_failure_label().is_none());
+    assert!(
+        transit
+            .road_surface
+            .compiled_visual_node_pieces()
+            .contains_key(&1)
+    );
+    for (edge, saved) in graph.edges().iter().zip(&saved_edges) {
+        assert_eq!(edge.physical_geometry, saved.physical_geometry);
+        assert_eq!(edge.start_clip, saved.start_clip);
+        assert_eq!(edge.end_clip, saved.end_clip);
+    }
 }

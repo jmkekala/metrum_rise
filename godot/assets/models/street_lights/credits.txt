@@ -1,0 +1,7 @@
+Street lights SL-MAIN, SL-MEDIAN, SL-PATH, SL-RES-STEEL, SL-RES-WOOD: original work.
+Built procedurally in Blender (tapered shafts, bracket arms and heads from code primitives),
+three LODs each, three plain materials, no textures. Modelled by eye after photographs of
+Finnish street lights on Wikimedia Commons; no photo pixels, traced outlines or third-party
+meshes are in the models, and the photographs are not part of this repository.
+Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); credit as
+"<asset name>" from Metrum Rise. The generator scripts are code, GPL-2.0-only.

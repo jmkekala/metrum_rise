@@ -18,7 +18,9 @@ mod land_cover;
 // get_vegetation_stand_cover.
 const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
+mod tree_clearance;
 mod yard_planting;
+pub(crate) mod yard_preview;
 #[cfg(test)]
 pub(crate) use hedge_runs::hedge_runs;
 pub(crate) use placement::publish_yards;
@@ -152,7 +154,8 @@ impl SimulationNode {
     /// gave the same plant a different form in each.
     ///
     /// Species are 0 conifer, 1 broadleaf, 2 bush, 3 rock. Both grids are sized by the world's
-    /// saved [`VegetationGenerator`], so the same save generates the same plants everywhere. The
+    /// saved [`crate::simulation::vegetation::VegetationGenerator`], so the same save generates
+    /// the same plants everywhere. The
     /// denser understory grid is generated only when `include_understory` is set, which the
     /// renderer does for near patches, because it draws that layer over a much shorter range.
     /// Sparse edits add one expected O(1) lookup per cell and O(A) authored output work.
@@ -758,6 +761,7 @@ fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, y
         (2.5, 1.6)
     };
     clear_site(core, x, z, radius, max_relief, yard)
+        && (layer != VegetationLayer::Canopy || tree_clearance::clear(core, x, z))
 }
 
 // Whether a 3x3 footprint of `radius` around a position is open, native ground within

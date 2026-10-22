@@ -16,6 +16,8 @@ var _log_label: RichTextLabel
 var _asset_tree: Tree
 var _asset_search_edit: LineEdit
 var _asset_count_lbl: Label
+var yard_preview_button: Button
+var exit_yard_preview_button: Button
 var _preview_panel: PreviewPanel
 var _main_vsplit: VSplitContainer
 var _left_split: HSplitContainer
@@ -148,6 +150,10 @@ func _build_ui() -> void:
 	_right_split.add_child(center)
 	preview_bar = HFlowContainer.new()
 	center.add_child(preview_bar)
+	yard_preview_button = button(preview_bar, "Preview", _editor._yard_preview.reroll)
+	yard_preview_button.tooltip_text = "Show the yard as planted in game. Press again to reroll; Exit preview restores editing. Preview does not change the asset."
+	exit_yard_preview_button = button(preview_bar, "Exit preview", _editor._yard_preview.exit)
+	exit_yard_preview_button.hide()
 	button(preview_bar, "Lighting & quality…", open_preview_popup)
 	frame_button = button(preview_bar, "Frame selection", _editor._frame_selected_part)
 	scale_reference_button = CheckButton.new()

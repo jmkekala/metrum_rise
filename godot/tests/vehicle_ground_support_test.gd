@@ -3,6 +3,7 @@
 ## Real vehicle mesh contacts through native grounding, native smoothing and MultiMesh upload.
 extends SceneTree
 
+const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
 const AgentRenderer := preload("res://scripts/renderers/agents.gd")
 var _failures := 0
 var _poses := 0
@@ -62,8 +63,18 @@ func _run() -> void:
 			quit(1)
 			return
 		_expect(renderer._add_car_multimesh(kind, 0, mesh), "native support registration must accept " + path)
+		var body_surfaces: int = mesh.get_meta(VehicleLamps.BODY_SURFACES_META)
+		_expect(mesh.get_surface_count() == body_surfaces + 2, "every original model must have glow and beam surfaces")
+		var anchor: Vector3 = mesh.get_meta(VehicleLamps.HEAD_LAMP_META)
+		var beam := mesh.surface_get_material(body_surfaces + 1) as ShaderMaterial
+		_expect(beam.get_shader_parameter("head_lamp").is_equal_approx(anchor), "beam must use the model headlight anchor")
+		_expect(renderer._headlights.head_points[kind * 10].is_equal_approx(Vector3(0, anchor.y, anchor.z - 0.15)), "spot/projector must follow the same anchor")
+		var painted: Mesh = renderer._build_vehicle_mesh_from_glb(model, path, 0.2, 0.0, Vector3(0, PI, 0))
+		_expect(painted.get_meta(VehicleLamps.HEAD_LAMP_META) == anchor, "atlas variants must not move lamps")
+		_expect(painted.surface_get_material(body_surfaces + 1) == beam, "atlas variants must share beam materials")
 		var contacts: Array[Vector3] = []
-		for surface in range(mesh.get_surface_count()):
+		# Body surfaces only: the headlight volume reaches below the ground by design.
+		for surface in range(int(mesh.get_meta("vehicle_body_surfaces", mesh.get_surface_count()))):
 			var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
 			for point in vertices:
 				if point.y <= 0.0001:

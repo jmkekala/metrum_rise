@@ -906,6 +906,7 @@ mod tests {
             facing_dir: Vector2::new(0.0, -1.0),
             frontage_t,
             side_offset: 8.0,
+            front_gap_m: [0.0; 3],
             is_deserted: false,
             budget_distress: false,
             edge_idx,

@@ -57,6 +57,8 @@ const VIEW_DISTANCE_FULL := 0
 ## Caps the camera far plane at REDUCED_VIEW_DISTANCE_M instead of growing it with zoom.
 const VIEW_DISTANCE_REDUCED := 1
 const DEFAULT_VIEW_DISTANCE := VIEW_DISTANCE_FULL
+## VEG-23 prototype switch; no persisted option/UI until visual and GPU acceptance.
+const GRASS_ENABLED := true
 const REDUCED_VIEW_DISTANCE_M := 3000.0
 const DEFAULT_UI_SCALE := 1.0
 const MIN_UI_SCALE := 0.8

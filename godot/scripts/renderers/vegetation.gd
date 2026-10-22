@@ -8,6 +8,9 @@
 ## scatter; player placements remain authoritative.
 extends Node3D
 
+# A storm leans an impostor's top downwind by up to 0.8 x WIND_MAX_LEAN_M (1.52 m) in
+# vegetation_wind.gdshaderinc; its bounds take that much more so a leaning crown is not culled.
+const WIND_LEAN_MARGIN_M := 1.6
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 # The shadow caster choice is bounded by the sun's own range; see _shadow_caster_wanted.
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
@@ -93,9 +96,9 @@ const BAND_HYSTERESIS_M := 64.0
 const UPLOAD_BUDGET_USEC := 2000
 const MISSING_UPLOAD_BUDGET_USEC := 6000
 
-## Whether a patch casts. Every canopy tree casts its impostor's silhouette, faced to the light,
-## at every distance; the branched level never casts. NONE is for patches the sun's shadow range
-## does not reach at all.
+## Whether a patch casts. A canopy tree casts from its branched level within
+## TreeSpecies.TREE_SHADOW_HANDOVER_M of the camera and from its impostor's silhouette, faced to
+## the light, past it. NONE is for patches the sun's shadow range does not reach at all.
 enum ShadowCaster { NONE, IMPOSTOR }
 
 var enabled := true
@@ -390,6 +393,7 @@ func _process(_delta: float) -> void:
 		last_detail_camera = camera_position
 		for key in patches:
 			_refresh_near_detail(patches[key], camera_position)
+			_refresh_branched_shadow(patches[key], camera_position)
 	# O(1) while no revision moved. A patch is stale only when its terrain owner committed a
 	# newer surface or Rust advanced its vegetation revision, and each of those moves one of
 	# these two counters, so the O(resident patches) sweep runs on the frame an edit lands.
@@ -564,11 +568,31 @@ func _refresh_near_detail(patch: Node3D, camera: Vector3) -> void:
 			continue
 		instance.multimesh.mesh = meshes[species][int(instance.get_meta("variant"))][lod]
 
+## Submits a patch's branched canopy to the shadow pass while any of its trees may stand within
+## TREE_SHADOW_HANDOVER_M of the camera, and withdraws it once none can. The shaders pick the
+## casting trees one by one; this only keeps the rest of the near band, whose every card would
+## otherwise run its vertex stage once per cascade only to collapse, out of the shadow pass.
+func _refresh_branched_shadow(patch: Node3D, camera: Vector3) -> void:
+	var trees: AABB = patch.get_meta("canopy_box")
+	var wants := (cast_shadows and bool(patch.get_meta("near_band"))
+		and int(patch.get_meta("shadow_caster")) != ShadowCaster.NONE
+		and (camera == Vector3.INF
+			or camera.clamp(trees.position, trees.end).distance_to(camera)
+				< TreeSpecies.TREE_SHADOW_HANDOVER_M))
+	if bool(patch.get_meta("branched_casts", false)) == wants:
+		return
+	patch.set_meta("branched_casts", wants)
+	for instance in patch.get_children():
+		if int(instance.get_meta("species")) < TreeSpecies.BUSH and int(instance.get_meta("lod")) == 0:
+			instance.cast_shadow = (GeometryInstance3D.SHADOW_CASTING_SETTING_ON if wants
+				else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+
 ## Re-applies the shadow setting to resident patches. Avoids a full placement rebuild.
 func set_cast_shadows(value: bool) -> void:
 	cast_shadows = value
 	for store in [patches, cache]:
 		for patch in store.values():
+			patch.set_meta("branched_casts", false)
 			var caster: int = patch.get_meta("shadow_caster")
 			for instance in patch.get_children():
 				var is_proxy: bool = instance.get_meta("shadow_proxy")
@@ -579,6 +603,7 @@ func set_cast_shadows(value: bool) -> void:
 				# OFF permits colour drawing, so a silent proxy must also be hidden.
 				instance.visible = (not is_proxy
 					or instance.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+			_refresh_branched_shadow(patch, _camera_position())
 
 ## Takes a patch out of the drawn set. A patch still inside the scatter radius is hidden and
 ## kept, because a camera moving back will very likely ask for it again. Only a patch that is
@@ -815,7 +840,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 					slot += 1
 			far_mm.buffer = buffer
 			origins[species] = AABB(low, high - low)
-			var bounds := AABB(low, high - low).grow(reach * sqrt(scale_squared))
+			var bounds := AABB(low, high - low).grow(reach * sqrt(scale_squared) + WIND_LEAN_MARGIN_M)
 			far_mm.custom_aabb = bounds
 			_add_instance(patch, far_mm, species, 2, 0, caster)
 			# The shadow caster: every tree's impostor, faced to the light.
@@ -848,6 +873,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 	patch.set_meta("canopy_box", canopy_box)
 	patch.set_meta("near_detail_lod", DETAIL_FULL)
 	_refresh_near_detail(patch, _camera_position())
+	_refresh_branched_shadow(patch, _camera_position())
 	# Replace in place. The previous node stays visible until this one is in the tree,
 	# so an edit does not blank the surrounding forest for a frame.
 	if patches.has(key):
@@ -1052,8 +1078,9 @@ func _instance_transform(
 	return Transform3D(basis, Vector3(x, data[i + 1], z))
 
 ## What one instance does in the shadow pass, from the patch's caster choice and whether this
-## instance is the caster. The branched and impostor levels never cast: the caster stands in
-## for both. Ground cover never casts: it is the densest species and the key light runs four
+## instance is the caster. The branched canopy level starts out silent; _refresh_branched_shadow
+## turns it on for the patches near the camera. The visible impostor never casts. Ground cover
+## never casts: it is the densest species and the key light runs four
 ## cascades, so each plant would be submitted up to five times while its own shadow sits under
 ## a canopy shadow that already darkens the same ground. Rocks and yard plants do cast: they
 ## stand in the open, and without a shadow they float on the lawn.

@@ -80,6 +80,7 @@
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_road_surface_probe_debug` | `network_tool.gd` |
 //! | | `get_road_tool_cursor_pos` | `road_tool.gd` |
+//! | | `get_road_tool_start_direction` | `road_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |

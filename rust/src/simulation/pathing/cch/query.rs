@@ -162,7 +162,10 @@ impl CchGraph {
                 if departure.flags & mask != 0
                     && self.is_turn_allowed(start, incoming, departure.edge, mask)
                 {
-                    let (cost, distance) = self.base_metric[departure.edge];
+                    let (mut cost, distance) = self.base_metric[departure.edge];
+                    if mask == TransitFlags::FOOT {
+                        cost = self.base_walk[departure.edge];
+                    }
                     data.seed(
                         departure.target,
                         cost,

@@ -11,6 +11,166 @@ fn core() -> SimCore {
     super::super::tests::vegetation_test_core(VegetationConfig::default())
 }
 
+// Only a graph edge and its compiled surface: no zoning, lane rebuild or spawning.
+fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u8) {
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
+    let y = core.heightmap.sample_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;
+    let points = [Vector3::new(from.x, y, from.y), Vector3::new(to.x, y, to.y)];
+    let start = core.region_graph.add_node(points[0], NodeType::Junction);
+    let end = core.region_graph.add_node(points[1], NodeType::Junction);
+    let edge = core.region_graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        primary_type: if lanes == 0 {
+            TransitType::Foot
+        } else {
+            TransitType::Road
+        },
+        allowed_types: crate::simulation::network::types::TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: if lanes == 0 {
+            2.0
+        } else {
+            f32::from(lanes * 2) * crate::config::LANE_WIDTH
+        },
+        fwd_lanes: lanes,
+        bkw_lanes: lanes,
+        physical_length: points[0].distance_to(points[1]),
+        physical_geometry: points.to_vec(),
+        geometry: points.to_vec(),
+        ..Default::default()
+    });
+    core.region_graph.rebuild_all_indices();
+    core.transit_network
+        .road_surface
+        .mark_edge_dirty(&core.region_graph, edge);
+}
+
+#[test]
+fn vegetation_footpath_clearance_catches_gaps_between_footprint_samples() {
+    let mut core = core();
+    // The 2.1 m path spans z 2.45..4.55.
+    vegetation_test_path(
+        &mut core,
+        Vector2::new(-60.0, 3.5),
+        Vector2::new(60.0, 3.5),
+        0,
+    );
+    assert!(
+        core.transit_network
+            .road_surface
+            .compile_dirty(&core.region_graph, &core.heightmap)
+    );
+    // Neither the old centre row nor its +/-6 m rows touch the paving.
+    assert!(clear_site(
+        &core,
+        0.0,
+        0.0,
+        CANOPY_CLEAR_RADIUS_M,
+        3.0,
+        false
+    ));
+    for z in [0.0, 7.4] {
+        assert!(!placement_clear(&core, 0.0, z, VegetationLayer::Canopy));
+    }
+    assert!(placement_clear(&core, 0.0, 7.7, VegetationLayer::Canopy));
+    // Tree-only: ground cover keeps its sampled clearance; brushed trees share the rule.
+    assert!(placement_clear(
+        &core,
+        0.0,
+        -0.1,
+        VegetationLayer::Understory
+    ));
+    let tree = Plant {
+        x: 0.0,
+        z: 7.4,
+        yaw: 0.0,
+        scale: 1.0,
+        species: 0,
+        variant: VARIANT_FROM_SEED,
+    };
+    assert!(!placement::authored_clear(&core, &tree));
+    assert!(placement::authored_clear(&core, &Plant { z: 7.7, ..tree }));
+}
+
+#[test]
+fn vegetation_later_footpath_edit_clears_trees_by_the_same_rule() {
+    let mut core = core();
+    let p = first_candidate(&core, true);
+    let pos = Vector2::new(p.x, p.z);
+    let key = PatchLayout::new(&core).key(p.x, p.z);
+    let generation = core.vegetation_edits.patch_generation(key);
+    vegetation_test_path(
+        &mut core,
+        pos + Vector2::new(-60.0, 2.0),
+        pos + Vector2::new(60.0, 2.0),
+        0,
+    );
+    core.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+    // Paving starts 0.95 m off the candidate, between its footprint rows.
+    assert!(core.vegetation_edits.patch_generation(key) > generation);
+    assert!(!placement_clear(&core, p.x, p.z, VegetationLayer::Canopy));
+}
+
+#[test]
+fn vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries() {
+    use crate::simulation::network::render::NetworkMeshData;
+    use crate::simulation::network::render::road::street_lights::{StreetLight, StreetLightKind};
+    use crate::simulation::network::surface::RoadSurfaceSystem;
+    use std::sync::Arc;
+    let mut core = core();
+    core.transit_network.road_surface = RoadSurfaceSystem::new_with_chunk_grid(512.0, 37.0, -20.0);
+    // Footpath paving spans z -7.05..-4.95; its post-top light stands 0.5 m beyond.
+    vegetation_test_path(
+        &mut core,
+        Vector2::new(-60.0, -6.0),
+        Vector2::new(60.0, -6.0),
+        0,
+    );
+    assert!(
+        core.transit_network
+            .road_surface
+            .compile_dirty(&core.region_graph, &core.heightmap)
+    );
+    let mut mesh = NetworkMeshData::new();
+    // World position (36, -4.45), one metre before a shifted chunk boundary.
+    mesh.street_lights.push(StreetLight {
+        position: Vector3::new(511.0, 0.0, 15.55),
+        yaw: 0.0,
+        kind: StreetLightKind::Path,
+    });
+    let mesh = Arc::new(mesh);
+    core.cached_road_mesh_chunks
+        .insert((-1, 0), Arc::clone(&mesh));
+    let check = |core: &SimCore| {
+        // 3.87 m from the pole across the chunk boundary, 3.45 m from the paving.
+        assert!(clear_site(
+            core,
+            38.5,
+            -1.5,
+            CANOPY_CLEAR_RADIUS_M,
+            3.0,
+            false
+        ));
+        assert!(!placement_clear(core, 38.5, -1.5, VegetationLayer::Canopy));
+        assert!(placement_clear(core, 39.5, -1.5, VegetationLayer::Canopy));
+        assert!(placement_clear(
+            core,
+            38.5,
+            -1.5,
+            VegetationLayer::Understory
+        ));
+    };
+    check(&core);
+    // Unrelated background chunks never enter the local pole loop.
+    for x in 100..1100 {
+        core.cached_road_mesh_chunks
+            .insert((x, 100), Arc::clone(&mesh));
+    }
+    check(&core);
+}
+
 fn scatter(core: &SimCore, canopy: bool) -> Vec<f32> {
     let layer = if canopy {
         VegetationLayer::Canopy

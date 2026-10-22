@@ -79,17 +79,18 @@ impl VehicleTurns {
 
     /// Compiles source-lane whitelists once per topology, independently per node with Rayon.
     pub(super) fn build(graph: &RegionGraph) -> Self {
-        // Only source lane ±100 denotes a pedestrian entry. Preserve target lane semantics,
+        // Only pedestrian sources (`RegionGraph::is_vehicle_turn_rule`: sidewalk lane ±100 or a
+        // footpath edge) are skipped. Preserve target lane semantics,
         // nonincident edge IDs, duplicate lane entries and empty vehicle whitelists exactly.
         let rows: Vec<_> = (0..graph.node_count())
             .into_par_iter()
             .map(|id| {
                 let node = graph.node(id as u32);
-                let whitelisted = CchGraph::node_has_vehicle_whitelist(node);
+                let whitelisted = CchGraph::node_has_vehicle_whitelist(graph, id as u32);
                 let mut pairs: Vec<_> = node
                     .lane_connections
                     .iter()
-                    .filter(|&(&(_, lane), _)| lane != 100 && lane != -100)
+                    .filter(|&(&(edge, lane), _)| graph.is_vehicle_turn_rule(edge, lane))
                     .flat_map(|(&(incoming, _), targets)| {
                         targets
                             .iter()

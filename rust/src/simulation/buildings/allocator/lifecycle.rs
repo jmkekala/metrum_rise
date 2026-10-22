@@ -427,7 +427,7 @@ impl BuildingAllocator {
         let b = &self.buildings[i];
         let b_parcel_id = b.parcel_id;
         let b_zone = b.zone_type;
-        let removed_site_bounds = self.site_world_bounds(i);
+        let removed_site_bounds = self.site_dirty_bounds(i);
         self.record_building_site_change(i, removed_site_bounds);
         if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
             self.dirty_zones[zone_idx] = true;
@@ -988,6 +988,13 @@ impl BuildingAllocator {
             building.center_y = center_2d.y;
             building.facing_dir = normal * -1.0;
             building.side_offset = side_offset;
+            building.front_gap_m = super::geometry::lot_front_gaps(
+                graph,
+                center_2d,
+                building.facing_dir,
+                f32::from(building.width_cells) * zone_cell_m * 0.5,
+                depth_cells * zone_cell_m * 0.5,
+            );
         }
 
         self.dirty = true;
@@ -1255,6 +1262,22 @@ impl BuildingAllocator {
         building.side = target_side;
         building.frontage_t = target_frontage_t;
         building.side_offset = edge.width * 0.5 + SIDEWALK_WIDTH;
+        let zone_cell_m = zoning.config.zone_cell_m;
+        let half_m = |cells: u16| f32::from(cells) * zone_cell_m * 0.5;
+        let front_gap_m = super::geometry::lot_front_gaps(
+            graph,
+            Vector2::new(building.center_x, building.center_y),
+            building.facing_dir,
+            half_m(building.width_cells),
+            half_m(building.depth_cells),
+        );
+        if building.front_gap_m != front_gap_m {
+            building.front_gap_m = front_gap_m;
+            let old_bounds = self.site_dirty_bounds(building_idx);
+            self.rebuild_building_site_client(building_idx, zone_cell_m);
+            self.record_building_site_change(building_idx, old_bounds);
+            self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
+        }
         true
     }
 
@@ -1617,7 +1640,7 @@ impl BuildingAllocator {
         .into_iter()
         .filter_map(|asset| self.registry.get(asset)?.manifest.building.as_ref())
         .any(|data| data.yard_hedge.is_some() || !data.yard_planting.is_empty());
-        let old_site_bounds = self.site_world_bounds(building_idx);
+        let old_site_bounds = self.site_dirty_bounds(building_idx);
         let building = &mut self.buildings[building_idx];
         building.asset_id = target_asset_id.to_owned();
         building.level = target_level;
@@ -1638,7 +1661,7 @@ impl BuildingAllocator {
         self.level_changes
             .record((building.parcel_id, building.build_generation));
         self.record_building_site_change(building_idx, old_site_bounds);
-        self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
         self.mark_index_stale();
@@ -1676,7 +1699,7 @@ impl BuildingAllocator {
         // A clean entrance cache follows the swap-remove below: each entrance is derived from
         // its own building, the network and the asset registry alone (`SIM-02-K`).
         let entrances_clean = !self.entrances_dirty && self.entrances.len() == self.buildings.len();
-        self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
         zoning.clear_parcel_occupancy(parcel_id);
 
         let last_idx = self.buildings.len().saturating_sub(1);

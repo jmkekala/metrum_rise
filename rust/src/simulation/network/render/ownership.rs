@@ -3,6 +3,7 @@
 //! Exact source ranges in cached road meshes for reversible local editor replacements.
 
 mod preview;
+pub(super) use preview::{Polygon, Vertex};
 
 use super::NetworkMeshData;
 #[cfg(test)]
@@ -59,6 +60,11 @@ impl NetworkMeshData {
                             .$normals
                             .extend_from_slice(&self.$normals[start..range.end]);
                         result.$uvs.extend_from_slice(&self.$uvs[start..range.end]);
+                        if $index == 4 {
+                            result
+                                .road_crossings
+                                .extend_from_slice(&self.road_crossings[start..range.end]);
+                        }
                         result
                             .$colors
                             .extend_from_slice(&self.$colors[start..range.end]);
@@ -69,6 +75,11 @@ impl NetworkMeshData {
                 result.$vertices.extend_from_slice(&self.$vertices[start..]);
                 result.$normals.extend_from_slice(&self.$normals[start..]);
                 result.$uvs.extend_from_slice(&self.$uvs[start..]);
+                if $index == 4 {
+                    result
+                        .road_crossings
+                        .extend_from_slice(&self.road_crossings[start..]);
+                }
                 result.$colors.extend_from_slice(&self.$colors[start..]);
             }};
         }

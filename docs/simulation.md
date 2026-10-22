@@ -49,7 +49,7 @@ run beside its workforce count, a workforce reset passes over the buildings once
 feasibility cache split by parcel, and the live books lent last at load; then the frontage
 delays summed by lane range on the pool, and each planning slot's free-place scan run beside
 its site preparation).
-Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
+Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-07`), no code.
 Part 7 (acceptance) is done: `PERF-07` reports the frames another task preempted and accepts on
 the frames that were not (open question 7, decided 2026-10-22); 30k at both speeds and 100k at 1×
 pass. 100k at 32× is deferred to `PERF-08` (open question 6, decided 2026-10-22).
@@ -60,6 +60,10 @@ the current cadence in
 [economy.md § Time and cadence](economy.md#time-and-cadence) and
 [demand.md § Cadence and handoff](demand.md#cadence-and-handoff) remains authoritative for the
 systems it describes.
+
+The weather and Finnish-road feature merge keeps this scheduler authoritative and bumps the
+current-only save format to 107. The committed Kuopio fixture carries deterministic default
+weather in that format.
 
 ## SIM-02 scheduler refactor
 
@@ -1196,7 +1200,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    nearest households with no distance bound, and the fixture's store capacity is six times
    demand (`ECON-22`). Border imports also queue on the trunks, and a truck entering a lane at a
    border node skips the entry-slot check, so the queues stack trucks at one point
-   (`TRAFFIC-03`). A 600 m claim bound prototype passes the envelope and removes 17,000–18,000 of
+   (`TRAFFIC-07`). A 600 m claim bound prototype passes the envelope and removes 17,000–18,000 of
    the 100k city's 49,000–53,000 agents on the road, but saves only 0.4 ms (1×) and 0.7 ms (32×)
    of agent tick, and its 100k city failed the fixture's continuation check. Neither fix is
    landed: the census claim rule is an economy design decision. Open question 6 is not shrunk by
@@ -5136,7 +5140,7 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 | Agent movement in departure frames | Up to 4 ms at 10k and 17 ms at 30k (32×) | Departures spread by events; `PERF-06` limits | E, K |
 | One queued construction start | 14–21 ms for a single placement | Placement split across slots | K |
 | First boundary after loading | About 10× an ordinary hour. `SIM-02-H` found most of it was the catalog refresh every load made, now skipped when the catalog is unchanged. What remained were the generated cells, which loading invalidated and the first lot regions served afterwards rebuilt: 25–134 ms a region at 100k, all day | Generated during loading (K3), except chunks that would register a new grid frame | H (refresh, done), K (K3 done) |
-| 100k fixture traffic (found in `SIM-02-E`) | About 49,000–56,000 of 115,000 agents on the road at any time (2026-10-21; 9,000–14,000 cars, 39,000–46,000 walkers), 15,700 of them walkers on junction crossings; about 22,000 on shopping legs, mean 3.2 km on foot (about 13 game hours a leg); no gridlock (no wait-for cycle); border imports queue on the trunks (up to 2,900 cars) and stack at lane start | Census claims bounded by locality (`ECON-22`), worth about 0.4 ms (1×) and 0.7 ms (32×) of agent tick at 100k; network entry checks the entry slot (`TRAFFIC-03`), no gain | K (part 6 diagnosed, not fixed) |
+| 100k fixture traffic (found in `SIM-02-E`) | About 49,000–56,000 of 115,000 agents on the road at any time (2026-10-21; 9,000–14,000 cars, 39,000–46,000 walkers), 15,700 of them walkers on junction crossings; about 22,000 on shopping legs, mean 3.2 km on foot (about 13 game hours a leg); no gridlock (no wait-for cycle); border imports queue on the trunks (up to 2,900 cars) and stack at lane start | Census claims bounded by locality (`ECON-22`), worth about 0.4 ms (1×) and 0.7 ms (32×) of agent tick at 100k; network entry checks the entry slot (`TRAFFIC-07`), no gain | K (part 6 diagnosed, not fixed) |
 
 ### Open questions
 
@@ -7280,14 +7284,14 @@ alternatives and the evidence. The user reviews these on return.
   new 10k out-of-stock notes not yet explained. Not landed in part 6: it needs that explanation,
   a border hold that keeps waiting trucks off the per-tick serial pass, render-visible checks
   (`./run.sh --test`) and own `PERF-07` cities, and it does not shorten the queue, which is the
-  borders' throughput (`TRAFFIC-03`).
+  borders' throughput (`TRAFFIC-07`).
 - **`SIM-02-K` part 6 — pedestrians keep car spacing.** Walkers are in the lane buckets, so the
   connector entry claim and the end-of-tick overlap correction space them by `CAR_LENGTH +
   IDM_S_MIN` (2.7 m), one walker per 0.7 s per crossing at 4 m/s. The measured walking trips run
   at about free speed (825 game minutes for about 4 km of path), so this is not what makes them
   long; recorded as a limit in `traffic.md`.
 - **`SIM-02-K` — part 6 closes as findings.** `ECON-22` (the census's unbounded store claims) and
-  `TRAFFIC-03` (network entry without an entry claim) are filed as roadmap bugs outside
+  `TRAFFIC-07` (network entry without an entry claim) are filed as roadmap bugs outside
   `SIM-02`'s path, because neither changes what `SIM-02` must reach: the census change is an
   economy design choice worth 0.4–0.9 ms of agent tick at 100k, and open question 6 stands with
   or without it; the entry claim removes stacked trucks but not the border queue. The order

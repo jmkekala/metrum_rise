@@ -14,15 +14,23 @@ uniform float ground_shadow_min_visibility = 0.10;
 
 varying vec3 world_pos;
 varying vec3 world_normal;
+// Share of direct sunlight the clouds let through, from fragment() to light().
+varying float cloud_sun;
 
 #include "res://scripts/shaders/ground_grass.gdshaderinc"
+#include "res://scripts/shaders/weather_clouds.gdshaderinc"
+#include "res://scripts/shaders/weather_rain.gdshaderinc"
+#include "res://scripts/shaders/ground_paving.gdshaderinc"
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 }
 
+#include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+
 void fragment() {
+	cloud_sun = weather_cloud_sun(world_pos);
 	IRRADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
 	RADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
 	float macro_mask = macro_variation(world_pos.xz);
@@ -37,23 +45,36 @@ void fragment() {
 	// Desaturated before it is either shown or lit, so the moonlit diffuse washes out
 	// with the ambient floor rather than staying vivid against a grey ground.
 	color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
+	// Wet as the terrain around it is, before the ambient floor is emitted from it.
+	float site_roughness = 0.96;
+	weather_wet_surface(weather_wetness(normalize(world_normal).y), 1.0, color, site_roughness);
 	ALBEDO = color;
 	EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
-	ROUGHNESS = 0.96;
+	ROUGHNESS = site_roughness;
 	SPECULAR = 0.08;
+	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
+		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }
 
 void light() {
-	float shadow_visibility = mix(
-		clamp(ground_shadow_min_visibility, 0.0, 1.0),
-		1.0,
-		clamp(ATTENUATION, 0.0, 1.0)
-	);
-	float facing = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
-	float soft_facing = mix(0.82, 1.0, facing);
-	DIFFUSE_LIGHT += ALBEDO
-		* LIGHT_COLOR
-		* ground_shadow_sun_strength
-		* shadow_visibility
-		* soft_facing;
+	// The shadow visibility floor belongs to sun/moon light only. Local lights must retain
+	// their distance/cone/projector attenuation, including zero outside a headlight beam.
+	if (!LIGHT_IS_DIRECTIONAL) {
+		DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION);
+	} else {
+		float shadow_visibility = mix(
+			clamp(ground_shadow_min_visibility, 0.0, 1.0),
+			1.0,
+			clamp(ATTENUATION, 0.0, 1.0)
+		);
+		float facing = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
+		float soft_facing = mix(0.82, 1.0, facing);
+		// Clouds dim the sun only.
+		DIFFUSE_LIGHT += ALBEDO
+			* LIGHT_COLOR
+			* ground_shadow_sun_strength
+			* shadow_visibility
+			* soft_facing
+			* cloud_sun;
+	}
 }

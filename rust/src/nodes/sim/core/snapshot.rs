@@ -10,10 +10,12 @@ mod agents;
 pub(crate) use agents::AgentPoseScratch;
 
 use super::state::{PendingDemandSpawnAction, SimCore};
+use crate::nodes::sim::render::mist::MistMap;
 #[cfg(test)]
 use crate::nodes::sim::render::vehicle_ground::ground_vehicle_basis;
 use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
+use crate::simulation::core::weather::{WeatherSample, WeatherState};
 use crate::simulation::economy::agents::{Agent, MODE_CAR};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
 use crate::simulation::economy::logistics::ShipmentBuildingUndo;
@@ -306,6 +308,12 @@ pub struct RenderSnapshot {
     pub water_payload_generation: u64,
     /// Visible water depths along the world-edge terrain loop.
     pub water_border_depths: Arc<Vec<f32>>,
+    /// Where morning mist can lie and the water level it lies on, rebuilt with the water or the
+    /// visual terrain.
+    pub mist_map: Arc<MistMap>,
+    /// World epoch and the water, terrain source and terrain visual generations
+    /// [`Self::mist_map`] was built from.
+    pub mist_map_key: [u64; 4],
     /// Mirrors `SimCore::network_dirty` until the published generation is acknowledged.
     pub network_dirty: bool,
     /// Authoritative road-surface revision consumed by the network renderer.
@@ -332,6 +340,8 @@ pub struct RenderSnapshot {
     ///
     /// Carries the partial minute in progress so the renderer's day/night cycle is continuous.
     pub current_day_fraction: f32,
+    /// Render-facing weather for this frame, sampled from the same core state as the clock.
+    pub weather: WeatherSample,
     /// Duration of the last daily tick in milliseconds.
     pub last_tick_ms: f64,
     /// Duration of the last agent tick in microseconds.
@@ -385,6 +395,8 @@ impl Default for RenderSnapshot {
             water_dirty_patch_states: Arc::new(Vec::new()),
             water_payload_generation: 0,
             water_border_depths: Arc::new(Vec::new()),
+            mist_map: Arc::new(MistMap::default()),
+            mist_map_key: [u64::MAX; 4],
             network_dirty: false,
             network_generation: 0,
             road_mesh_chunks: Arc::new(BTreeMap::new()),
@@ -397,6 +409,7 @@ impl Default for RenderSnapshot {
             current_day: 1,
             current_minute_of_day: 0,
             current_day_fraction: 0.0,
+            weather: WeatherState::default().sample(),
             last_tick_ms: 0.0,
             last_agent_tick_us: 0,
             pathfind_count: 0,
@@ -529,6 +542,9 @@ impl SimCore {
             snapshot.water_border_depths = Arc::new(self.watermap.border_loop_depths());
         }
         snapshot.water_payload_generation = water_payload_generation;
+        self.refresh_mist_map();
+        snapshot.mist_map = Arc::clone(&self.mist_map);
+        snapshot.mist_map_key = self.mist_map_key;
         snapshot.network_dirty = self.network_dirty;
         snapshot.network_generation = self.cached_road_mesh_generation;
         snapshot.road_mesh_chunks = Arc::clone(&self.published_road_mesh_chunks);
@@ -545,6 +561,7 @@ impl SimCore {
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;
         snapshot.current_day_fraction = self.time.day_fraction();
+        snapshot.weather = self.weather.sample();
         snapshot.last_tick_ms = self.last_tick_duration;
         snapshot.last_agent_tick_us = self.last_agent_tick_us;
         snapshot.pathfind_count = self

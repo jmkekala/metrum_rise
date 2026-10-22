@@ -1,0 +1,4 @@
+aggregate_packed.png: original work, procedural crushed-stone noise from Codex look-dev
+(no photographs).
+Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); credit as
+"<asset name>" from Metrum Rise. The generator scripts are code, GPL-2.0-only.

@@ -1558,6 +1558,7 @@ pub(super) fn load_buildings(
             facing_dir: Vector2::ZERO,
             frontage_t: row.get(3)?,
             side_offset: 0.0,
+            front_gap_m: [0.0; 3],
             is_deserted: row.get::<_, i64>(25)? != 0,
             budget_distress: row.get::<_, i64>(26)? != 0,
             edge_idx: i64_to_usize(row.get(2)?)?,

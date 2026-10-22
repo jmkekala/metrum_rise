@@ -358,6 +358,7 @@ fn build_access_shared() -> AccessSharedSetup {
             facing_dir: Vector2::new(0.0, -1.0),
             frontage_t: 0.5,
             side_offset: 5.0,
+            front_gap_m: [0.0; 3],
             is_deserted: false,
             budget_distress: false,
             edge_idx,
@@ -960,6 +961,14 @@ fn bench_cch_rebuild(c: &mut Criterion) {
             &graph,
             |b, graph| {
                 b.iter(|| black_box(CchGraph::build(black_box(graph))));
+            },
+        );
+        let mut cch = CchGraph::build(&graph);
+        group.bench_with_input(
+            BenchmarkId::new("customize_connected_grid", side),
+            &graph,
+            |b, graph| {
+                b.iter(|| cch.customize(black_box(graph)));
             },
         );
     }

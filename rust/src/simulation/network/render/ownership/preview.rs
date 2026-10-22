@@ -3,15 +3,17 @@
 //! Attribute-preserving preview partitions at the bounded junction/profile edit footprint.
 
 use super::{NetworkMeshData, NetworkMeshOwner};
-use godot::prelude::{Color, Vector2, Vector3};
+use godot::prelude::{Color, Vector2, Vector3, Vector4};
 use std::collections::HashSet;
 
+/// Attributes interpolated when a road triangle is partitioned.
 #[derive(Clone, Copy, Default)]
-struct Vertex {
-    p: Vector3,
-    n: Vector3,
-    uv: Vector2,
-    c: Color,
+pub(in crate::simulation::network::render) struct Vertex {
+    pub(in crate::simulation::network::render) p: Vector3,
+    pub(in crate::simulation::network::render) n: Vector3,
+    pub(in crate::simulation::network::render) uv: Vector2,
+    pub(in crate::simulation::network::render) c: Color,
+    pub(in crate::simulation::network::render) crossing: Vector4,
 }
 
 impl Vertex {
@@ -20,6 +22,7 @@ impl Vertex {
             p: self.p.lerp(other.p, t),
             n: self.n.lerp(other.n, t),
             uv: self.uv.lerp(other.uv, t),
+            crossing: self.crossing.lerp(other.crossing, t),
             c: Color::from_rgba(
                 self.c.r + (other.c.r - self.c.r) * t,
                 self.c.g + (other.c.g - self.c.g) * t,
@@ -32,20 +35,48 @@ impl Vertex {
 
 // Convex triangle/rectangle intersections have at most seven vertices. Fixed buffers avoid
 // allocating per triangle; the two reusable fragment vectors handle unions of edit bounds.
+/// Fixed scratch polygon shared by preview and crossing partitions.
 #[derive(Clone, Copy)]
-struct Polygon {
-    vertices: [Vertex; 8],
-    len: usize,
+pub(in crate::simulation::network::render) struct Polygon {
+    pub(in crate::simulation::network::render) vertices: [Vertex; 8],
+    pub(in crate::simulation::network::render) len: usize,
 }
 
 impl Polygon {
     fn split(self, axis: usize, boundary: f32) -> (Self, Self) {
+        self.split_impl(
+            |v| if axis == 0 { v.p.x } else { v.p.z },
+            boundary,
+            |v| {
+                if axis == 0 {
+                    v.p.x = boundary;
+                } else {
+                    v.p.z = boundary;
+                }
+            },
+        )
+    }
+
+    /// Splits at a linear coordinate, preserving all surface attributes.
+    pub(in crate::simulation::network::render) fn split_by(
+        self,
+        coordinate: impl Fn(&Vertex) -> f32,
+        boundary: f32,
+    ) -> (Self, Self) {
+        self.split_impl(coordinate, boundary, |_| {})
+    }
+
+    fn split_impl(
+        self,
+        coordinate: impl Fn(&Vertex) -> f32,
+        boundary: f32,
+        snap: impl Fn(&mut Vertex),
+    ) -> (Self, Self) {
         let mut low = Self {
             vertices: [Vertex::default(); 8],
             len: 0,
         };
         let mut high = low;
-        let coordinate = |v: &Vertex| if axis == 0 { v.p.x } else { v.p.z };
         if self.vertices[..self.len]
             .iter()
             .all(|v| coordinate(v) <= boundary)
@@ -61,8 +92,8 @@ impl Polygon {
         for i in 0..self.len {
             let a = self.vertices[i];
             let b = self.vertices[(i + 1) % self.len];
-            let av = if axis == 0 { a.p.x } else { a.p.z };
-            let bv = if axis == 0 { b.p.x } else { b.p.z };
+            let av = coordinate(&a);
+            let bv = coordinate(&b);
             if av <= boundary {
                 low.vertices[low.len] = a;
                 low.len += 1;
@@ -73,11 +104,7 @@ impl Polygon {
             }
             if (av < boundary && bv > boundary) || (av > boundary && bv < boundary) {
                 let mut v = a.lerp(b, (boundary - av) / (bv - av));
-                if axis == 0 {
-                    v.p.x = boundary;
-                } else {
-                    v.p.z = boundary;
-                }
+                snap(&mut v);
                 low.vertices[low.len] = v;
                 low.len += 1;
                 high.vertices[high.len] = v;
@@ -137,6 +164,11 @@ impl NetworkMeshData {
                             n: self.$n[start + i],
                             uv: self.$uv[start + i],
                             c: self.$c[start + i],
+                            crossing: if $index == 4 {
+                                self.road_crossings[start + i]
+                            } else {
+                                Vector4::ZERO
+                            },
                         };
                     }
                     if full || !partial {
@@ -196,6 +228,9 @@ impl NetworkMeshData {
                                 output.$n.push(v.n);
                                 output.$uv.push(v.uv);
                                 output.$c.push(v.c);
+                                if $index == 4 {
+                                    output.road_crossings.push(v.crossing);
+                                }
                             }
                             output.current_owner = owner;
                             output.record_owner_triangle($index, output.$p.len());
@@ -262,6 +297,7 @@ mod tests {
             mesh.road_vertices.push(p);
             mesh.road_normals.push(Vector3::UP);
             mesh.road_uvs.push(Vector2::new(p.x, p.z));
+            mesh.road_crossings.push(Vector4::new(p.x, p.z, 1.5, p.x));
             mesh.road_colors.push(Color::WHITE);
         }
         mesh.record_owner_triangle(4, 3);
@@ -290,6 +326,12 @@ mod tests {
                 assert!((uv.x - p.x).abs() < 0.00001 && (uv.y - p.z).abs() < 0.00001);
             }
         }
+        for part in [&inside, &outside] {
+            for (p, v) in part.road_vertices.iter().zip(&part.road_crossings) {
+                assert!((v.x - p.x).abs() < 1e-5 && (v.y - p.z).abs() < 1e-5);
+                assert!((v.z - 1.5).abs() < 1e-5 && (v.w - p.x).abs() < 1e-5);
+            }
+        }
         let untouched = mesh.preview_partition(
             &HashSet::new(),
             &bounded,
@@ -299,5 +341,6 @@ mod tests {
         );
         assert_eq!(mesh.road_vertices, untouched.road_vertices);
         assert_eq!(mesh.road_uvs, untouched.road_uvs);
+        assert_eq!(mesh.road_crossings, untouched.road_crossings);
     }
 }

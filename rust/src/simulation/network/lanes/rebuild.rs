@@ -5,7 +5,7 @@
 use super::super::graph::{Edge, RegionGraph};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::build_one_lane;
-use super::pedestrian_junctions::build_pedestrian_connections_at_node;
+use super::pedestrian_junctions::{build_pedestrian_connections_at_node, footpath_end_insets};
 use super::vehicle_junctions::build_vehicle_connections_at_node;
 use super::{LaneSystem, LaneType};
 use crate::config;
@@ -22,7 +22,7 @@ impl LaneSystem {
 
         // Append in graph order because lane IDs are referenced by agents and connectors.
         for (edge_idx, edge) in graph.edges().iter().enumerate() {
-            self.append_edge_lanes(&mut lane_map, edge_idx, edge);
+            self.append_edge_lanes(&mut lane_map, graph, edge_idx, edge);
         }
 
         // Build node connections after all physical lanes exist.
@@ -61,12 +61,19 @@ impl LaneSystem {
     fn append_edge_lanes(
         &mut self,
         lane_map: &mut HashMap<(usize, bool, i8), usize>,
+        graph: &RegionGraph,
         edge_idx: usize,
         edge: &Edge,
     ) {
         if edge.deleted || edge.physical_geometry.len() < 2 {
             return;
         }
+        // A pure function of the junction geometry, so partial rebuilds trim footpaths alike.
+        let end_insets = if edge.primary_type == TransitType::Foot {
+            footpath_end_insets(graph, edge_idx)
+        } else {
+            (0.0, 0.0)
+        };
 
         let mut edge_lane_indices = Vec::new();
 
@@ -81,6 +88,7 @@ impl LaneSystem {
                 l_idx,
                 l_type,
                 l_off,
+                end_insets,
             );
         };
 
@@ -227,7 +235,7 @@ impl LaneSystem {
 
         for &edge_idx in &rebuild_edges {
             if let Some(edge) = graph.edges().get(edge_idx) {
-                self.append_edge_lanes(&mut lane_map, edge_idx, edge);
+                self.append_edge_lanes(&mut lane_map, graph, edge_idx, edge);
             }
         }
 

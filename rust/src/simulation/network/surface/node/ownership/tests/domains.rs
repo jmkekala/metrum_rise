@@ -640,3 +640,39 @@ fn unsupported_asphalt_contact_arrangement(
         ],
     }
 }
+
+#[test]
+fn footpath_tie_in_noding_matches_seam_extraction_and_footprint_union() {
+    let a = [149.538895, 157.639385];
+    let c = [151.538390, 157.594432];
+    for (extra_gap, overlap_mode, expected_shapes) in [
+        (0.0, ConstraintOverlapMode::GridBounded, 1),
+        (0.0001, ConstraintOverlapMode::GridBounded, 2),
+        (0.0, ConstraintOverlapMode::ExactCanonical, 2),
+    ] {
+        let b = [150.538646, 157.616909 + extra_gap];
+        let mut regions = [
+            test_owned_region(
+                RoadSurfaceBandKind::Sidewalk,
+                NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+                vec![a, b, c, [c[0], c[1] + 2.0], [a[0], a[1] + 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::Footpath,
+                NodeBandOwner::new(RoadSurfaceBandKind::Footpath, 1),
+                vec![a, [a[0], a[1] - 1.0], [c[0], c[1] - 1.0], c],
+            ),
+        ];
+        let sidewalk_shape = regions[0].shape.clone();
+        let footprint =
+            final_footprint_shapes_from_owned_regions(25, &mut regions, overlap_mode).unwrap();
+        assert_eq!(regions[0].shape, sidewalk_shape);
+        assert_eq!(regions[1].shape[0].contains(&b), expected_shapes == 1);
+        assert_eq!(
+            footprint.len(),
+            expected_shapes,
+            "the footprint must share arrangement noding without bridging a real gap"
+        );
+        assert!(footprint.iter().all(|shape| shape.len() == 1));
+    }
+}

@@ -18,6 +18,7 @@ func _run() -> void:
 	var fixtures := []
 	for fixture in [
 		{"name": "t", "end_z": 0.0, "forward": 1},
+		{"name": "control_curve_t", "end_z": 0.0, "forward": 1, "curve": true},
 		{"name": "cross", "end_z": 48.0, "forward": 1},
 		{"name": "wide_t", "end_z": 0.0, "forward": 2},
 		{"name": "bend", "end_z": -48.0, "forward": 1, "endpoint_join": true},
@@ -73,12 +74,12 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	# Manually drive the real process path at a fixed input cadence, without debug/node overlays.
 	tool.active = true
 	tool.fwd_lanes = fixture.forward
-	tool.start_pos = _stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0)
-	tool.current_state = RoadToolScript.State.SETTING_END
-	tool.current_path = Path3D.new()
-	tool.current_path.curve = Curve3D.new()
-	tool.current_path.curve.bake_interval = 0.5
-	tool.add_child(tool.current_path)
+	tool.draw_mode = 1 if fixture.get("curve", false) else 0
+	tool._begin_stroke(_stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0), 1, Vector3.RIGHT)
+	if tool.draw_mode == 1:
+		_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "curve stream must begin with a free control point despite its road direction")
+		tool.control_pos = _stream_point(fixture, 0.0, -24.0)
+		tool.current_state = RoadToolScript.State.SETTING_END
 	var generation := simulation.get_network_render_generation()
 	_expect(tool.update_main_mesh(generation) == generation, "stream source meshes must hydrate")
 	tool._node_visuals_dirty = false
@@ -103,13 +104,16 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		if phase >= 24:
 			x -= 16.0 / 23.0
 		var point := _stream_point(fixture, x, fixture.end_z)
-		final_points = PackedVector3Array([tool.start_pos, point])
 		tool.set_scripted_pointer(true, point)
 		tool._queue_preview_update()
 		var input_us := Time.get_ticks_usec()
 		tool._process(INPUT_INTERVAL_SEC)
 		var displayed_us := Time.get_ticks_usec()
 		process_times.append(float(displayed_us - input_us) / 1000.0)
+		final_points = tool._road_surface_points_from_curve(tool.current_path.curve)
+		if tool.draw_mode == 1:
+			_expect(tool.current_path.curve.get_point_out(0) == tool.control_pos - tool.start_pos, "moving curve preview must retain the freely chosen control handle")
+			_expect(tool.current_path.curve.get_point_in(1) == tool.control_pos - point, "moving curve preview must follow the control point and current endpoint")
 		var requested_id: int = tool._preview_request_id
 		if requested_id > 0 and not request_inputs.has(requested_id):
 			request_inputs[requested_id] = input_us

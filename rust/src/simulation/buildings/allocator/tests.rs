@@ -15,6 +15,7 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::{Vector2, Vector3};
 
+mod curved_yards;
 mod demand_actions;
 mod demand_selection;
 mod entrances;

@@ -1,0 +1,13 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://crtbmonfdyegt"
+path="res://.godot/imported/weather_mist.glsl-8a5dde0df08753b1eb85d96ce9b46d85.res"
+
+[deps]
+
+source_file="res://scripts/shaders/weather_mist.glsl"
+dest_files=["res://.godot/imported/weather_mist.glsl-8a5dde0df08753b1eb85d96ce9b46d85.res"]
+
+[params]

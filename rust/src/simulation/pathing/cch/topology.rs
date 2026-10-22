@@ -162,15 +162,16 @@ impl CchGraph {
         result.node_order = order;
         // Cache only semantically distinct masks: identical enabled directed road types and
         // identical turn rules share a metric. Combined masks mean each edge may use any
-        // selected type, while only the exact FOOT mask bypasses vehicle turn restrictions.
+        // selected type, while only the exact FOOT mask bypasses vehicle turn restrictions and
+        // walks at walking pace.
         let mut types: Vec<_> = result.departures.values.iter().map(|d| d.flags).collect();
         types.sort_unstable();
         types.dedup();
-        let restricted = result.turns.restricted.iter().any(|&v| v);
         let mut signatures: Vec<Vec<bool>> = Vec::new();
         for mask in 0..=255_u8 {
             let mut signature: Vec<_> = types.iter().map(|flags| flags & mask != 0).collect();
-            signature.push(restricted && mask == TransitFlags::FOOT);
+            // The exact FOOT mask is priced at walking pace, so it never shares a metric.
+            signature.push(mask == TransitFlags::FOOT);
             let profile = if let Some(id) = signatures.iter().position(|s| *s == signature) {
                 id
             } else {
@@ -190,6 +191,7 @@ impl CchGraph {
         result.base_arcs.shrink_to_fit();
         result.triangles.shrink_to_fit();
         result.base_metric.resize(graph.edge_count(), (0.0, 0.0));
+        result.base_walk.resize(graph.edge_count(), 0.0);
         result.customize(graph);
         result
     }

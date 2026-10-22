@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Headless contract test for the new-game vegetation dialog.
-## The dialog must report exactly what Rust accepts: its defaults, bounds and readouts all come
+## The dialog must report exactly what Rust accepts: its defaults, presets and readouts all come
 ## from `VegetationOptions`, and the dictionary it emits is what `start_new_game` consumes.
 extends SceneTree
 
@@ -19,6 +19,7 @@ func _run() -> void:
 	var options := VegetationOptions.new()
 	var defaults: Dictionary = options.get_default_config()
 	var bounds: Dictionary = options.get_density_bounds()
+	var presets: Dictionary = options.get_presets()
 	var default_density: float = float(defaults["canopy_stems_per_ha"])
 	var min_density: float = float(bounds["min_canopy_stems_per_ha"])
 	var max_density: float = float(bounds["max_canopy_stems_per_ha"])
@@ -73,39 +74,34 @@ func _run() -> void:
 	dialog.popup_for_world(WORLD_PATH)
 	await process_frame
 
+	_expect(
+		dialog._forest_buttons.size() == 2 and dialog._forest_buttons[0].button_pressed,
+		"the dialog must offer Less and More forest, with Less pressed"
+	)
 	var opened: Dictionary = dialog.selected_vegetation()
+	var less := {
+		"enabled": true,
+		"seed": int(defaults["seed"]),
+		"coverage": float(presets["less"]["coverage"]),
+		"canopy_stems_per_ha": float(presets["less"]["canopy_stems_per_ha"]),
+	}
+	_expect(opened == less, "an untouched dialog must offer the Less preset, got %s" % [opened])
+	for key in ["less", "more"]:
+		var density := float(presets[key]["canopy_stems_per_ha"])
+		_expect(
+			density >= min_density and density <= max_density,
+			"the %s forest's density must be accepted by Rust" % key
+		)
+	# More is both wider and denser, up to the renderer ceiling.
 	_expect(
-		bool(opened["enabled"]) == bool(defaults["enabled"])
-			and int(opened["seed"]) == int(defaults["seed"])
-			and is_equal_approx(float(opened["canopy_stems_per_ha"]), default_density)
-			and is_equal_approx(float(opened["coverage"]), float(defaults["coverage"])),
-		"an untouched dialog must offer the Rust defaults, got %s" % [opened]
+		float(presets["more"]["coverage"]) > float(presets["less"]["coverage"])
+			and float(presets["more"]["canopy_stems_per_ha"])
+				> float(presets["less"]["canopy_stems_per_ha"])
+			and is_equal_approx(float(presets["more"]["canopy_stems_per_ha"]), max_density),
+		"More must cover more ground than Less, at the renderer's density ceiling"
 	)
 
-	# The density slider must not be able to request a grid the renderer rejects.
-	dialog._density_slider.value = max_density * 4.0
-	dialog._coverage_slider.value = 400.0
-	var clamped: Dictionary = dialog.selected_vegetation()
-	_expect(
-		is_equal_approx(float(clamped["canopy_stems_per_ha"]), max_density),
-		"density must clamp to the renderer ceiling, got %s" % clamped["canopy_stems_per_ha"]
-	)
-	_expect(
-		is_equal_approx(float(clamped["coverage"]), 1.0),
-		"coverage must clamp to a full map, got %s" % clamped["coverage"]
-	)
-
-	# Starting empty is the same parameter set with generation turned off.
-	dialog._enabled_check.button_pressed = false
-	_expect(
-		not bool(dialog.selected_vegetation()["enabled"]),
-		"clearing the checkbox must start the map bare"
-	)
-	_expect(
-		not dialog._density_slider.editable and not dialog._coverage_slider.editable,
-		"the parameters must be inert while no forest is generated"
-	)
-
+	dialog._forest_buttons[1].button_pressed = true
 	dialog._on_start_pressed()
 	_expect(_emitted.size() == 1, "confirming must report exactly once")
 	if _emitted.size() == 1:
@@ -114,6 +110,13 @@ func _run() -> void:
 			"the chosen world must travel with the parameters"
 		)
 		var payload: Dictionary = _emitted[0][1]
+		_expect(
+			bool(payload["enabled"]) and int(payload["seed"]) == int(defaults["seed"])
+				and float(payload["coverage"]) == float(presets["more"]["coverage"])
+				and float(payload["canopy_stems_per_ha"])
+					== float(presets["more"]["canopy_stems_per_ha"]),
+			"More must emit the Rust preset with the default seed"
+		)
 		# These keys are the `VegetationConfig` fields `start_new_game` unpacks.
 		for key in ["enabled", "seed", "coverage", "canopy_stems_per_ha"]:
 			_expect(payload.has(key), "the emitted parameters must carry %s" % key)
@@ -123,8 +126,8 @@ func _run() -> void:
 	dialog.popup_for_world(WORLD_PATH)
 	await process_frame
 	_expect(
-		bool(dialog.selected_vegetation()["enabled"]),
-		"reopening must restore the defaults"
+		dialog._forest_buttons[0].button_pressed and dialog.selected_vegetation() == less,
+		"reopening must restore Less"
 	)
 
 	dialog.free()

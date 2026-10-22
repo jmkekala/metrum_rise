@@ -281,10 +281,13 @@ impl RegionGraph {
                 .dot(other.direction_xz)
                 .clamp(-1.0, 1.0);
             let cross = Self::cross_xz(self_incident.direction_xz, other.direction_xz).abs();
+            // The arms' facing edges meet this far along this arm: past the inner corner, where
+            // the two roadbeds overlap. Arms more than 90 degrees apart diverge on the outer side,
+            // so only that inner corner counts; a gentle bend needs almost none (TRAFFIC-04).
             let required_m = if cross <= CLIP_MIN_SIN {
                 edge_length_m
             } else {
-                (other.half_width_m + self_incident.half_width_m * dot.abs()) / cross
+                ((other.half_width_m + self_incident.half_width_m * dot) / cross).max(0.0)
             };
             if required_m.is_finite() {
                 clip_m = clip_m.max(required_m.min(acute_clip_limit_m));

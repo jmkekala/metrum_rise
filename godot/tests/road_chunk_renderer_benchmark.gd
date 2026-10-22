@@ -276,6 +276,10 @@ func _chunk_payload(chunk_x: int, chunk_z: int, layer_arrays: Dictionary) -> Dic
 		chunk[layer + "_normals"] = arrays["normals"]
 		chunk[layer + "_uvs"] = arrays["uvs"]
 		chunk[layer + "_colors"] = arrays["colors"]
+	var crossings := PackedFloat32Array()
+	crossings.resize(chunk["road_vertices"].size() * 4)
+	crossings.fill(0.0)
+	chunk["road_crossings"] = crossings
 	return chunk
 
 func _build_layer_arrays(vertex_counts: Dictionary) -> Dictionary:

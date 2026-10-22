@@ -566,3 +566,76 @@ fn test_cch_reroutes_around_turn_restriction() {
         nodes
     );
 }
+#[test]
+fn walkers_are_priced_at_walking_pace_and_take_the_shorter_footpath() {
+    // n0 --(fast road, ~300 m)-- n1 --(fast road)-- n2, and a 200 m footpath n0 -- n2. Priced
+    // at the speed limits the road is quicker (12 s against 14.4 s); on foot the footpath is.
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(100.0, 0.0, 111.8), NodeType::Junction);
+    let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
+    let mut edge = |start_node: u32, end_node: u32, foot_only: bool| {
+        let points = vec![graph.node(start_node).pos, graph.node(end_node).pos];
+        let mut edge = Edge {
+            start_node,
+            end_node,
+            primary_type: if foot_only {
+                TransitType::Foot
+            } else {
+                TransitType::Road
+            },
+            allowed_types: if foot_only {
+                TransitFlags::FOOT
+            } else {
+                TransitFlags::CAR | TransitFlags::FOOT
+            },
+            width: if foot_only { 2.0 } else { 7.0 },
+            fwd_lanes: if foot_only { 0 } else { 1 },
+            bkw_lanes: if foot_only { 0 } else { 1 },
+            speed_limit: if foot_only { 13.888889 } else { 25.0 },
+            base_cost: 0.0,
+            physical_length: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            class: EdgeClass::Standard,
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        };
+        (edge.base_cost, edge.physical_length) = cost::CostCalculator::calculate_costs(&edge);
+        graph.add_edge(edge);
+    };
+    edge(n0, n1, false);
+    edge(n1, n2, false);
+    edge(n0, n2, true);
+    graph.rebuild_adjacency_list();
+    let cch = CchGraph::build(&graph);
+
+    let (cost, dist, path) = cch
+        .find_path(n0, n2, usize::MAX, usize::MAX, &graph, TransitFlags::FOOT)
+        .unwrap();
+    assert_eq!(path, vec![n0, n2], "the walker takes the footpath");
+    assert!((dist - 200.0).abs() < 0.01);
+    assert!(
+        (cost - 200.0 / crate::config::AGENT_WALK_SPEED_MS).abs() < 0.01,
+        "200 m at walking pace, not at the path's speed limit: {cost}"
+    );
+    let (_, _, car_path) = cch
+        .find_path(n0, n2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
+        .unwrap();
+    assert_eq!(car_path, vec![n0, n1, n2]);
+    let foot_field = flow_field::FlowField::build(&[(n2, 0)], &graph, TransitFlags::FOOT);
+    assert_eq!(foot_field.build_path(n0, 4), Some(vec![n0, n2]));
+    let mixed = TransitFlags::FOOT | TransitFlags::CAR;
+    assert_eq!(
+        cch.find_path(n0, n2, usize::MAX, usize::MAX, &graph, mixed)
+            .unwrap()
+            .2,
+        car_path
+    );
+    let mixed_field = flow_field::FlowField::build(&[(n2, 0)], &graph, mixed);
+    assert_eq!(mixed_field.build_path(n0, 4), Some(car_path));
+}

@@ -4,6 +4,7 @@
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::pathing::cost::CostCalculator;
 use crate::traffic_log;
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -94,6 +95,8 @@ pub struct CchGraph {
     turns: VehicleTurns,
     base_arcs: Vec<BaseArc>,
     base_metric: Vec<(f32, f32)>,
+    // Walking-pace cost per base edge, for walkers' departures from restricted junctions.
+    base_walk: Vec<f32>,
     triangles: Vec<[usize; 3]>,
     profiles: Vec<Metric>,
     profile_for_mask: [u8; 256],
@@ -115,6 +118,7 @@ impl CchGraph {
             turns: VehicleTurns::empty(nodes),
             base_arcs: Vec::new(),
             base_metric: Vec::new(),
+            base_walk: Vec::new(),
             triangles: Vec::new(),
             profiles: Vec::new(),
             profile_for_mask: [0; 256],
@@ -133,8 +137,12 @@ impl CchGraph {
         self.metric_revision = self.metric_revision.wrapping_add(1);
         self.base_metric
             .par_iter_mut()
+            .zip(self.base_walk.par_iter_mut())
             .zip(graph.edges().par_iter())
-            .for_each(|(metric, edge)| *metric = (edge.base_cost, edge.physical_length));
+            .for_each(|((metric, walk), edge)| {
+                *metric = (edge.base_cost, edge.physical_length);
+                *walk = CostCalculator::walk_cost_s(edge);
+            });
         self.profiles.par_iter_mut().for_each(|metric| {
             metric.costs.fill(f32::INFINITY);
             metric.distances.fill(0.0);
@@ -146,8 +154,14 @@ impl CchGraph {
                     continue;
                 }
                 let edge = graph.edge(base.edge);
-                if edge.base_cost < metric.costs[base.arc] {
-                    metric.costs[base.arc] = edge.base_cost;
+                // Walkers go at walking pace whatever the road's speed limit (TRAFFIC-05).
+                let cost = if metric.mask == TransitFlags::FOOT {
+                    self.base_walk[base.edge]
+                } else {
+                    edge.base_cost
+                };
+                if cost < metric.costs[base.arc] {
+                    metric.costs[base.arc] = cost;
                     metric.distances[base.arc] = edge.physical_length;
                     metric.witnesses[base.arc].edge = base.edge;
                 }
@@ -191,8 +205,8 @@ impl CchGraph {
     ///   enters whitelist mode: only explicitly listed turns are permitted; all others
     ///   are blocked regardless of which arm they come from.
     ///
-    /// Pedestrian lane entries (lane_idx == ±100) are always ignored so that the
-    /// presence of sidewalk connections does not accidentally engage whitelist mode.
+    /// Pedestrian entries (`RegionGraph::is_vehicle_turn_rule`) are always ignored so that
+    /// sidewalk and footpath connections do not accidentally engage whitelist mode.
     fn vehicle_turn_allowed(
         graph: &RegionGraph,
         node: u32,
@@ -201,15 +215,13 @@ impl CchGraph {
     ) -> bool {
         // Global whitelist: if the node has any user vehicle connection, all unspecified
         // turns are blocked. Otherwise only the U-turn depends on the node.
-        let node_data = graph.node(node);
-        if !Self::node_has_vehicle_whitelist(node_data) {
+        if !Self::node_has_vehicle_whitelist(graph, node) {
             return in_edge != out_edge || graph.open_node_allows_u_turn(node);
         }
         // Whitelist mode: check explicit vehicle turns only.
-        for (&(e_from, lane_idx), targets) in &node_data.lane_connections {
-            if lane_idx != 100
-                && lane_idx != -100
-                && e_from == in_edge
+        for (&(e_from, lane_idx), targets) in &graph.node(node).lane_connections {
+            if e_from == in_edge
+                && graph.is_vehicle_turn_rule(e_from, lane_idx)
                 && targets.iter().any(|&(e_to, _)| e_to == out_edge)
             {
                 traffic_log!(
@@ -224,10 +236,12 @@ impl CchGraph {
         false
     }
 
-    fn node_has_vehicle_whitelist(node: &crate::simulation::network::graph::data::Node) -> bool {
-        node.lane_connections
+    fn node_has_vehicle_whitelist(graph: &RegionGraph, node: u32) -> bool {
+        graph
+            .node(node)
+            .lane_connections
             .keys()
-            .any(|&(_, lane)| lane != 100 && lane != -100)
+            .any(|&(edge_idx, lane_idx)| graph.is_vehicle_turn_rule(edge_idx, lane_idx))
     }
 
     /// Returns `true` if every turn in `path` is permitted under the current vehicle

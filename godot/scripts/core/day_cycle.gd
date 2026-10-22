@@ -41,8 +41,13 @@ const PRESET_HOURS := {
 	"Midnight": 0.0,
 }
 
-# The moon is treated as full and antisolar: it rises as the sun sets. That is the cheapest
-# believable model, it needs no second orbit, and it keeps night shadowed instead of flat.
+# The moon keeps a month: it rides the ecliptic one synodic period behind the sun, so it drifts
+# east among the stars by about its own width an hour, rises some 50 minutes later each day and
+# waxes and wanes. The orbit's 5 degree tilt and every perturbation are left out. A new city
+# starts on a waxing gibbous moon, up in the afternoon and full four days later.
+const SYNODIC_MONTH_DAYS := 29.530589
+const MOON_AGE_AT_DAY_ZERO := 11.0
+const OBLIQUITY_DEG := 23.44
 const MOON_COLOR := Color(0.58, 0.70, 1.00, 1.0)
 const MOON_ENERGY := 0.26
 const MOON_INDIRECT_ENERGY := 0.10
@@ -51,6 +56,11 @@ const MOON_DISK_INTENSITY := 0.85
 const MOON_DISK_DEG := 0.62
 const MOON_HALO_DEG := 3.20
 const MOON_HALO_STRENGTH := 0.06
+# Share of the night disk brightness a moon keeps in a daylit sky, where it reads pale.
+const MOON_DISK_DAY_SCALE := 0.35
+# Moonlight follows the lit fraction squared: a quarter moon gives about a quarter of a full
+# one's light (really nearer a tenth), a thin crescent next to nothing.
+const MOON_PHASE_EXPONENT := 2.0
 
 const SUN_ENERGY_PEAK := 1.65
 const SUN_INDIRECT_ENERGY_PEAK := 0.35
@@ -231,6 +241,8 @@ class Sample:
 	var sun_azimuth_deg := 180.0
 	## Unit vector pointing from the world toward the sun, whether or not it is up.
 	var sun_direction := Vector3.UP
+	## World-to-celestial rotation for the night sky; see [method DayCycle.celestial_basis].
+	var celestial_basis := Basis.IDENTITY
 	## Unit vector pointing toward whichever body is the current key light.
 	var key_direction := Vector3.UP
 	## Key light tint.
@@ -278,8 +290,12 @@ class Sample:
 	var sun_halo_strength := SUN_HALO_STRENGTH_HIGH
 	## Direction toward the moon disk drawn in the sky shader.
 	var moon_disk_direction := Vector3.DOWN
-	## Moon disk brightness. Zero while the moon is below the horizon.
+	## Moon disk brightness, before its phase; the sky shader shades the unlit part.
 	var moon_disk_intensity := 0.0
+	## Moon elevation in degrees.
+	var moon_elevation_deg := 0.0
+	## Lit fraction of the moon's disk, 0 at new moon and 1 at full.
+	var moon_illumination := 1.0
 
 ## Returns the solar elevation and azimuth in degrees for a day fraction.
 ##
@@ -304,6 +320,43 @@ static func solar_position_deg(day_fraction: float) -> Vector2:
 	# reads as 180 rather than as -180 and the afternoon reads as 180..360 rather than negative.
 	return Vector2(rad_to_deg(elevation), fposmod(rad_to_deg(azimuth), 360.0))
 
+## Rotation from world directions to the celestial frame the night sky is drawn in: z is the
+## celestial pole, north at [constant LATITUDE_DEG] above the horizon, and x is right ascension
+## zero, where the sun stands. The frame turns once per day about the pole with the sun's hour
+## angle, so the stars rise and set with it and hold still while the clock is paused.
+##
+## Its columns are the rows of the rotation: the shader dots a world direction with each.
+static func celestial_basis(day_fraction: float) -> Basis:
+	var hour_angle := deg_to_rad(
+		(fposmod(day_fraction, 1.0) * 24.0 - 12.0) * HOUR_ANGLE_PER_HOUR_DEG
+	)
+	var latitude := deg_to_rad(LATITUDE_DEG)
+	var east := Vector3(1.0, 0.0, 0.0)
+	var pole := Vector3(0.0, sin(latitude), -cos(latitude))
+	# Where the celestial equator crosses the meridian, due south.
+	var equator := Vector3(0.0, cos(latitude), sin(latitude))
+	return Basis(
+		cos(hour_angle) * equator - sin(hour_angle) * east,
+		sin(hour_angle) * equator + cos(hour_angle) * east,
+		pole
+	)
+
+## Direction toward the moon in the celestial frame of [method celestial_basis] for a time in
+## days since the city's first midnight. The moon leads the sun along the ecliptic by its
+## elongation, which grows through one full turn per [constant SYNODIC_MONTH_DAYS]; the sun
+## holds [constant SOLAR_DECLINATION_DEG] at right ascension zero.
+static func moon_celestial_direction(days: float) -> Vector3:
+	var obliquity := deg_to_rad(OBLIQUITY_DEG)
+	# The sun's ecliptic longitude at its declination, in spring, and its right ascension.
+	var sun_longitude := asin(sin(deg_to_rad(SOLAR_DECLINATION_DEG)) / sin(obliquity))
+	var sun_ascension := atan2(cos(obliquity) * sin(sun_longitude), cos(sun_longitude))
+	var age := fposmod(days + MOON_AGE_AT_DAY_ZERO, SYNODIC_MONTH_DAYS) / SYNODIC_MONTH_DAYS
+	var longitude := sun_longitude + TAU * age
+	var ecliptic := Vector3(
+		cos(longitude), cos(obliquity) * sin(longitude), sin(obliquity) * sin(longitude)
+	)
+	return ecliptic.rotated(Vector3(0.0, 0.0, 1.0), -sun_ascension)
+
 ## Converts an elevation/azimuth pair in degrees to a world direction.
 ##
 ## North is -Z and east is +X, matching the hillshade convention already used by the terrain
@@ -322,11 +375,11 @@ static func direction_from_position(elevation_deg: float, azimuth_deg: float) ->
 static func create_sample() -> Sample:
 	return Sample.new()
 
-## Writes the lighting state for `day_fraction` into `out`.
+## Writes the lighting state for `day_fraction` of day number `day` into `out`.
 ##
-## Pure and allocation-free: the same fraction always produces the same values, and nothing
-## outside `out` is touched.
-static func sample_into(day_fraction: float, out: Sample) -> void:
+## Pure and allocation-free: the same day and fraction always produce the same values, and
+## nothing outside `out` is touched. Only the moon reads the day number.
+static func sample_into(day_fraction: float, out: Sample, day: int = 0) -> void:
 	var fraction := fposmod(day_fraction, 1.0)
 	var position := solar_position_deg(fraction)
 	var elevation: float = position.x
@@ -337,6 +390,7 @@ static func sample_into(day_fraction: float, out: Sample) -> void:
 	out.sun_elevation_deg = elevation
 	out.sun_azimuth_deg = azimuth
 	out.sun_direction = direction_from_position(elevation, azimuth)
+	out.celestial_basis = celestial_basis(fraction)
 
 	out.sky_zenith = _color_at(SKY_ZENITH, at)
 	out.sky_horizon = _color_at(SKY_HORIZON, at)
@@ -362,12 +416,19 @@ static func sample_into(day_fraction: float, out: Sample) -> void:
 	out.sun_halo_deg = lerpf(SUN_HALO_DEG_HIGH, SUN_HALO_DEG_LOW, low_sun)
 	out.sun_halo_strength = lerpf(SUN_HALO_STRENGTH_HIGH, SUN_HALO_STRENGTH_LOW, low_sun)
 
-	# The moon is antisolar, so its elevation is the sun's mirrored. It fades in over the
-	# window where the sun has already stopped contributing, which means the key light can be
-	# swapped while both bodies are contributing nothing and the swap cannot be seen.
-	var moon_gate := smoothstep(-1.0, -7.0, elevation)
-	out.moon_disk_direction = direction_from_position(-elevation, azimuth + 180.0)
-	out.moon_disk_intensity = MOON_DISK_INTENSITY * moon_gate
+	# The moon lights the ground only once the sun has stopped contributing, so the key light
+	# is swapped while both bodies give nothing and the swap cannot be seen. Its disk stays in a
+	# daylit sky, paler.
+	var celestial := out.celestial_basis
+	out.moon_disk_direction = celestial * moon_celestial_direction(float(day) + fraction)
+	out.moon_elevation_deg = rad_to_deg(asin(clampf(out.moon_disk_direction.y, -1.0, 1.0)))
+	out.moon_illumination = 0.5 * (1.0 - out.moon_disk_direction.dot(out.sun_direction))
+	var night_gate := smoothstep(-1.0, -7.0, elevation)
+	var moon_gate := (
+		night_gate * smoothstep(0.0, 4.0, out.moon_elevation_deg)
+		* pow(out.moon_illumination, MOON_PHASE_EXPONENT)
+	)
+	out.moon_disk_intensity = MOON_DISK_INTENSITY * lerpf(MOON_DISK_DAY_SCALE, 1.0, night_gate)
 
 	var sun_energy := _float_at(KEY_ENERGY_SCALE, at) * SUN_ENERGY_PEAK
 	if sun_energy > 0.0:

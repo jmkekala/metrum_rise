@@ -108,6 +108,7 @@ pub(super) fn create_test_building(edge_idx: usize, side: i8) -> Building {
         facing_dir: Vector2::new(1.0, 0.0),
         frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge
         side_offset: 5.0,
+        front_gap_m: [0.0; 3],
         is_deserted: false,
         budget_distress: false,
         edge_idx,

@@ -218,6 +218,9 @@ impl SimCore {
         // Rebuild CCH if dirty, then rebuild any dirty flow fields, the zones whose buildings
         // changed since the last frame among them.
         let pathing_start = Instant::now();
+        record_crash_phase_for_core(self, "lane surface sync");
+        self.transit_network
+            .sync_new_lane_heights(&self.region_graph, &self.heightmap);
         record_crash_phase_for_core(self, "pathing rebuild");
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);
@@ -256,6 +259,10 @@ impl SimCore {
         record_crash_phase_for_core(self, "time advance");
         self.align_events_to_clock();
         let time_advance = self.time.process_delta(frame_dt_s);
+        self.weather
+            .advance_scheduled(frame_dt_s * speed as f64, self.time.seconds_per_day / 24.0);
+        self.weather
+            .advance_wind(frame_dt_s * f64::from(speed.min(1.0)));
         report.elapsed_minutes = time_advance.elapsed_minutes;
         // The slots' serial trip pricing and planning use one owned route scratch, whichever
         // pool worker runs this frame: each worker's own scratch cost about 8 ms at 100k to

@@ -54,7 +54,8 @@ static func export_mesh(mesh: ArrayMesh, species: int, variant: int, lod: int) -
 			data.parameters = {}
 			for uniform in material.shader.get_shader_uniform_list():
 				# The impostor applies the leaf share per layer, so the bake reads unscaled leaves.
-				if uniform.name == "leaf_albedo_scale":
+				# The shadow handover steers only the shadow pass, which the bake never draws.
+				if uniform.name == "leaf_albedo_scale" or uniform.name == "tree_shadow_handover_m":
 					continue
 				var value = material.get_shader_parameter(uniform.name)
 				if value is float or value is int:

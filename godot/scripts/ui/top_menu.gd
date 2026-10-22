@@ -50,7 +50,26 @@ enum ActionId {
 	# One id per DayCycleConfig.PRESET_HOURS entry, in table order, so the menu never has to
 	# keep a hand-written enum in step with the hours themselves.
 	TOOLS_TIME_OF_DAY_FIRST = 81,
+	# One id per WEATHER_SCENARIOS entry, then one per LOOK_PRESETS entry, in table order.
+	TOOLS_WEATHER_AUTOMATIC = 89,
+	TOOLS_WEATHER_FIRST = 90,
+	TOOLS_LOOK_FIRST = 100,
 }
+
+# Labels in the order of the Rust WeatherScenario indices that set_weather_scenario takes.
+const WEATHER_SCENARIOS := ["Clear", "Fair Cumulus", "Overcast", "Storm", "Rain"]
+# Rain has no rendering in the game yet, so the menus hide it; its index and action IDs stay.
+const HIDDEN_RAIN_SCENARIO := 4
+# One-click looks: an hour from DayCycleConfig.PRESET_HOURS and a weather scenario index.
+const LOOK_PRESETS := [
+	["Misty Lake Morning", "Morning", 0],
+	["Fair Summer Midday", "Midday", 1],
+	["Golden Afternoon", "Afternoon", 0],
+	["Overcast Morning", "Morning", 2],
+	["Storm at Dusk", "Evening", 3],
+	["Rainy Afternoon", "Afternoon", 4],
+	["Clear Night", "Midnight", 0],
+]
 
 var scene_kind: String = SCENE_GAMEPLAY
 
@@ -62,6 +81,7 @@ var _bar_margin: MarginContainer
 var _bar_row: HBoxContainer
 var _menu_bar: MenuBar
 var _time_of_day_popup: PopupMenu
+var _weather_popup: PopupMenu
 var _theme_switch: CheckButton
 var _theme_mode: String = EditorTheme.MODE_DARK
 var _syncing_theme_switch: bool = false
@@ -190,10 +210,28 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	var tools_popup := _add_menu_popup(menu_bar, "Tools")
 	_time_of_day_popup = _create_popup_menu("Time of Day")
 	tools_popup.add_submenu_node_item("Time of Day", _time_of_day_popup)
+	_weather_popup = _create_popup_menu("Weather")
+	tools_popup.add_submenu_node_item("Weather", _weather_popup)
+	var looks_popup := _create_popup_menu("Looks")
+	tools_popup.add_submenu_node_item("Looks", looks_popup)
 	tools_popup.add_separator()
 	tools_popup.add_item("Open Asset Editor", ActionId.TOOLS_OPEN_ASSET_EDITOR)
 	tools_popup.id_pressed.connect(_on_tools_menu_pressed)
 	_build_time_of_day_menu(_time_of_day_popup)
+	# Automatic hands the weather to the seeded schedule; choosing a scenario holds that one.
+	_weather_popup.add_check_item("Automatic", ActionId.TOOLS_WEATHER_AUTOMATIC)
+	_weather_popup.add_separator()
+	for index in range(WEATHER_SCENARIOS.size()):
+		if index == HIDDEN_RAIN_SCENARIO:
+			continue
+		_weather_popup.add_item(WEATHER_SCENARIOS[index], ActionId.TOOLS_WEATHER_FIRST + index)
+	_weather_popup.id_pressed.connect(_on_tools_menu_pressed)
+	_weather_popup.about_to_popup.connect(_sync_weather_automatic)
+	for index in range(LOOK_PRESETS.size()):
+		if LOOK_PRESETS[index][2] == HIDDEN_RAIN_SCENARIO:
+			continue
+		looks_popup.add_item(LOOK_PRESETS[index][0], ActionId.TOOLS_LOOK_FIRST + index)
+	looks_popup.id_pressed.connect(_on_tools_menu_pressed)
 
 	var help_popup := _add_menu_popup(menu_bar, "Help")
 	help_popup.add_item("Keyboard Shortcuts", ActionId.HELP_SHORTCUTS)
@@ -370,10 +408,39 @@ func _select_time_of_day(id: int) -> void:
 	var hours: Array = DayCycleConfig.PRESET_HOURS.values()
 	_scene_root.menu_set_time_of_day(float(hours[id - ActionId.TOOLS_TIME_OF_DAY_FIRST]))
 
+# The weather switches at once: a blend advances on simulation time, so a paused city would
+# show nothing until it was resumed.
+func _set_weather(index: int) -> void:
+	if _scene_root and _scene_root.has_method("menu_set_weather"):
+		_scene_root.menu_set_weather(index)
+	_weather_popup.set_item_checked(_weather_popup.get_item_index(ActionId.TOOLS_WEATHER_AUTOMATIC), false)
+
+# Read when the menu opens: the schedule's state lives in Rust and loads with a save.
+func _sync_weather_automatic() -> void:
+	var automatic: bool = (_scene_root.menu_weather_automatic()
+		if _scene_root and _scene_root.has_method("menu_weather_automatic") else false)
+	_weather_popup.set_item_checked(_weather_popup.get_item_index(ActionId.TOOLS_WEATHER_AUTOMATIC), automatic)
+
 func _on_tools_menu_pressed(id: int) -> void:
 	var presets: int = DayCycleConfig.PRESET_HOURS.size()
 	if id >= ActionId.TOOLS_TIME_OF_DAY_CYCLE and id < ActionId.TOOLS_TIME_OF_DAY_FIRST + presets:
 		_select_time_of_day(id)
+		return
+	if id == ActionId.TOOLS_WEATHER_AUTOMATIC:
+		var index := _weather_popup.get_item_index(id)
+		var automatic := not _weather_popup.is_item_checked(index)
+		_weather_popup.set_item_checked(index, automatic)
+		if _scene_root and _scene_root.has_method("menu_set_weather_automatic"):
+			_scene_root.menu_set_weather_automatic(automatic)
+		return
+	if id >= ActionId.TOOLS_WEATHER_FIRST and id < ActionId.TOOLS_WEATHER_FIRST + WEATHER_SCENARIOS.size():
+		_set_weather(id - ActionId.TOOLS_WEATHER_FIRST)
+		return
+	if id >= ActionId.TOOLS_LOOK_FIRST and id < ActionId.TOOLS_LOOK_FIRST + LOOK_PRESETS.size():
+		var look: Array = LOOK_PRESETS[id - ActionId.TOOLS_LOOK_FIRST]
+		var hour_index: int = DayCycleConfig.PRESET_HOURS.keys().find(look[1])
+		_select_time_of_day(ActionId.TOOLS_TIME_OF_DAY_FIRST + hour_index)
+		_set_weather(look[2])
 		return
 	match id:
 		ActionId.TOOLS_OPEN_ASSET_EDITOR:
