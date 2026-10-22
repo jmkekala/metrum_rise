@@ -78,9 +78,11 @@
 #
 # Release crash diagnostics:
 #   --release defaults METRUM_CRASH_DIAGNOSTICS=1 and writes panic/hang dumps to logs/
+#   Interactive --release launches also default METRUM_HANG_ABORT=1 so a hang leaves a core
+#   Tests, headless runs, benchmarks/profilers and packaged launches remain dump-only
 #   METRUM_CRASH_DIAGNOSTICS=0 ./run.sh --release disables the background recorder
 #   METRUM_HANG_WATCHDOG_MS=0 disables the hang watchdog only
-#   METRUM_HANG_ABORT=1 aborts after the first hang dump
+#   METRUM_HANG_ABORT=0 keeps any release launch dump-only
 #
 # Godot import cache:
 #   Missing/stale imported resources are repaired once per asset-source state.
@@ -685,9 +687,33 @@ if [ $RELEASE -eq 1 ] && [ -z "${METRUM_CRASH_DIAGNOSTICS+x}" ]; then
     export METRUM_CRASH_DIAGNOSTICS=1
 fi
 
+# A developer playing the release build benefits from an all-thread core after a fatal stall.
+# Automated modes must report their own failure and debugger/package launches do not enter here.
+INTERACTIVE_RELEASE=0
+if [ $RELEASE -eq 1 ] && [ $TEST -eq 0 ] && \
+   [ $ROAD_CHUNK_BENCHMARK -eq 0 ] && [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 0 ] && \
+   [ -z "$GAMEPLAY_ROAD_PROFILE_MODE" ] && [ -z "$ROAD_REPLAY_DUMP" ]; then
+    INTERACTIVE_RELEASE=1
+    for engine_arg in "${GODOT_ENGINE_ARGS[@]}"; do
+        case "$engine_arg" in
+            --headless|--quit-after|--quit-after=*)
+                INTERACTIVE_RELEASE=0
+                ;;
+        esac
+    done
+fi
+if [ $INTERACTIVE_RELEASE -eq 1 ] && \
+   [ -n "${METRUM_CRASH_DIAGNOSTICS:-}" ] && [ "${METRUM_CRASH_DIAGNOSTICS}" != "0" ] && \
+   [ -z "${METRUM_HANG_ABORT+x}" ]; then
+    export METRUM_HANG_ABORT=1
+fi
+
 if [ -n "${METRUM_CRASH_DIAGNOSTICS:-}" ] && [ "${METRUM_CRASH_DIAGNOSTICS}" != "0" ]; then
     mkdir -p "$METRUM_CRASH_LOG_DIR"
     echo "Crash diagnostics enabled (panic/hang dumps go to $METRUM_CRASH_LOG_DIR)"
+    if [ "${METRUM_HANG_ABORT:-0}" != "0" ]; then
+        echo "Hang abort enabled (the first watchdog dump is followed by SIGABRT for a core dump)"
+    fi
 fi
 
 if [ $DEBUG -eq 0 ] && [ -n "${METRUM_DEBUG_FILTER:-}" ]; then

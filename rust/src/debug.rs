@@ -37,8 +37,8 @@ use std::sync::OnceLock;
 pub use channel::{Channel, mask, set_mask};
 pub use crash::{CRASH_DIAGNOSTICS_ENABLED, is_crash_diagnostics_enabled};
 pub(crate) use crash::{
-    CrashCommand, CrashSimSnapshot, flush_crash_diagnostics, record_crash_command,
-    record_crash_frame, record_crash_phase, shutdown, suspend_hang_watchdog,
+    CrashCommand, CrashRoadGeometry, CrashSimSnapshot, flush_crash_diagnostics,
+    record_crash_command, record_crash_frame, record_crash_phase, shutdown, suspend_hang_watchdog,
 };
 pub use log::{Source, emit};
 

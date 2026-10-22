@@ -1673,9 +1673,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
   sets `METRUM_CRASH_DIAGNOSTICS=1`, Rust installs a panic hook plus hang watchdog, and the sim
   thread records a fixed-size flight recorder of command, phase, and frame summaries that dumps to
   `logs/` on panic or watchdog-detected progress stalls. `METRUM_HANG_WATCHDOG_MS=0` disables only
-  hang detection, and `METRUM_HANG_ABORT=1` aborts after the first hang dump. The watchdog, the
-  threads `SimulationNode` starts and the extension's shared Rayon pool, which replaces Rayon's
-  global pool, are joined before Godot unloads the library ([`CODE-17`](debug.md#shutdown)).
+  hang detection. Interactive developer release runs default `METRUM_HANG_ABORT=1`, producing an
+  all-thread core after the first hang report; automation, headless runs and explicit
+  `METRUM_HANG_ABORT=0` remain dump-only. Road commands retain allocation-free endpoints and a
+  stable all-point hash, and pre-transaction markers distinguish shared-pool wait, preview-plan
+  validation, cold road compilation, terrain completion and transaction opening (`DEBUG-09`). The
+  watchdog, the threads `SimulationNode` starts and the extension's shared Rayon pool, which
+  replaces Rayon's global pool, are joined before Godot unloads the library
+  ([`CODE-17`](debug.md#shutdown)).
   Foreground debug modes such as `--debug road`, `--debug perf`, and `--debug traffic` remain
   opt-in. See [`reference.md`](reference.md).
 - The Rust runtime bridge now keeps `simulation_node.rs` as the `SimulationNode` lifecycle and

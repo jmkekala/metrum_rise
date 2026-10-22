@@ -10,6 +10,8 @@ use std::sync::{Mutex, Once, OnceLock, PoisonError, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use godot::prelude::Vector3;
+
 const CRASH_RECORDER_CAPACITY: usize = 4096;
 const DEFAULT_HANG_WATCHDOG_TIMEOUT_MS: u64 = 10_000;
 const HANG_WATCHDOG_POLL_MS: u64 = 500;
@@ -162,11 +164,50 @@ pub(crate) enum CrashCommand {
         bkw_lanes: i32,
         /// Whether endpoints may snap to existing roads.
         snap_to_existing_roads: bool,
+        /// Fixed-size geometry identity for reproducing the submitted stroke.
+        geometry: CrashRoadGeometry,
     },
     /// Undo command from Godot.
     Undo,
     /// Bulldoze command from Godot.
     Bulldoze,
+}
+
+/// Allocation-free geometry identity retained with an `AddRoad` flight-recorder event.
+#[derive(Clone, Copy)]
+pub(crate) struct CrashRoadGeometry {
+    start: [f32; 3],
+    end: [f32; 3],
+    points_hash: u64,
+}
+
+impl CrashRoadGeometry {
+    /// Captures both endpoints and an exact stable fingerprint of every submitted float bit.
+    pub(crate) fn from_points(points: &[Vector3]) -> Self {
+        let components = |point: Vector3| [point.x, point.y, point.z];
+        let start = points.first().copied().map_or([0.0; 3], components);
+        let end = points.last().copied().map_or([0.0; 3], components);
+
+        // FNV-1a over an explicit little-endian stream is stable across processes and targets.
+        // Length is included so an empty stroke cannot alias a one-point all-zero stroke.
+        let mut points_hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in (points.len() as u64).to_le_bytes() {
+            points_hash = (points_hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        for point in points {
+            for component in components(*point) {
+                for byte in component.to_bits().to_le_bytes() {
+                    points_hash =
+                        (points_hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        Self {
+            start,
+            end,
+            points_hash,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -621,9 +662,17 @@ fn write_crash_command(out: &mut impl Write, command: CrashCommand) -> std::io::
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
+            geometry,
         } => write!(
             out,
-            "add_road points={point_count} fwd_lanes={fwd_lanes} bkw_lanes={bkw_lanes} snap={snap_to_existing_roads}"
+            "add_road points={point_count} start=({:.3},{:.3},{:.3}) end=({:.3},{:.3},{:.3}) points_hash={:016x} fwd_lanes={fwd_lanes} bkw_lanes={bkw_lanes} snap={snap_to_existing_roads}",
+            geometry.start[0],
+            geometry.start[1],
+            geometry.start[2],
+            geometry.end[0],
+            geometry.end[1],
+            geometry.end[2],
+            geometry.points_hash,
         ),
         CrashCommand::Undo => write!(out, "undo"),
         CrashCommand::Bulldoze => write!(out, "bulldoze"),
@@ -676,5 +725,59 @@ mod tests {
         let recorder = CrashRecorder::new();
         assert_eq!(recorder.events.len(), CRASH_RECORDER_CAPACITY);
         assert!(recorder.events.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn road_command_geometry_is_fixed_size_stable_and_printed() {
+        let points = [
+            Vector3::new(1.25, -2.5, 3.75),
+            Vector3::new(4.5, 5.25, -6.0),
+            Vector3::new(7.0, 8.5, 9.25),
+        ];
+        let geometry = CrashRoadGeometry::from_points(&points);
+        assert_eq!(geometry.start, [1.25, -2.5, 3.75]);
+        assert_eq!(geometry.end, [7.0, 8.5, 9.25]);
+        assert_eq!(geometry.points_hash, 0x7d9d_4eb7_7a4c_2803);
+        assert!(std::mem::size_of::<CrashRoadGeometry>() <= 32);
+
+        let mut rendered = Vec::new();
+        write_crash_command(
+            &mut rendered,
+            CrashCommand::AddRoad {
+                point_count: points.len(),
+                fwd_lanes: 2,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+                geometry,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(rendered).unwrap(),
+            "add_road points=3 start=(1.250,-2.500,3.750) end=(7.000,8.500,9.250) points_hash=7d9d4eb77a4c2803 fwd_lanes=2 bkw_lanes=1 snap=true"
+        );
+    }
+
+    #[test]
+    fn road_command_hash_covers_interior_points_and_length() {
+        let endpoints = [Vector3::ZERO, Vector3::new(8.0, 0.0, 0.0)];
+        let with_midpoint = [
+            Vector3::ZERO,
+            Vector3::new(4.0, 0.0, 0.0),
+            Vector3::new(8.0, 0.0, 0.0),
+        ];
+        let moved_midpoint = [
+            Vector3::ZERO,
+            Vector3::new(4.0, 0.0, 1.0),
+            Vector3::new(8.0, 0.0, 0.0),
+        ];
+        assert_ne!(
+            CrashRoadGeometry::from_points(&endpoints).points_hash,
+            CrashRoadGeometry::from_points(&with_midpoint).points_hash
+        );
+        assert_ne!(
+            CrashRoadGeometry::from_points(&with_midpoint).points_hash,
+            CrashRoadGeometry::from_points(&moved_midpoint).points_hash
+        );
     }
 }

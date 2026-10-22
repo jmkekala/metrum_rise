@@ -79,7 +79,11 @@ impl SimCore {
         edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
         // The commit's rebuilds are parallel: shared pool (CODE-17).
-        crate::thread_pools::install(|| self.commit_road_in_pool(request, road_total, edit_metrics))
+        record_crash_phase_for_core(self, "add road shared pool wait");
+        crate::thread_pools::install(|| {
+            record_crash_phase_for_core(self, "add road shared pool entered");
+            self.commit_road_in_pool(request, road_total, edit_metrics)
+        })
     }
 
     fn commit_road_in_pool(
@@ -102,6 +106,7 @@ impl SimCore {
         let add_internal_start = Instant::now();
         // Complete all geometry before opening the transaction. The worker and
         // click rebuild use the same local compiler; neither clones the city here.
+        record_crash_phase_for_core(self, "add road preview plan validation");
         let edit_plan = edit_plan.filter(|plan| {
             plan.prepared_input_for(
                 self.road_tool_surface_generation,
@@ -114,9 +119,13 @@ impl SimCore {
             .is_some()
                 && plan.road_status(self) == "ready"
         });
+        record_crash_phase_for_core(self, "add road preview plan validated");
         edit_metrics.preview_plan_reused = edit_plan.is_some();
-        let road_plan = edit_plan.unwrap_or_else(|| {
-            Arc::new(RoadEditPlan::compile_road(
+        let road_plan = if let Some(edit_plan) = edit_plan {
+            edit_plan
+        } else {
+            record_crash_phase_for_core(self, "add road cold plan compile");
+            let road_plan = Arc::new(RoadEditPlan::compile_road(
                 self,
                 RoadPreviewRequest {
                     enqueued_at: None,
@@ -128,14 +137,20 @@ impl SimCore {
                     bkw_lanes,
                     snap_to_existing_roads,
                 },
-            ))
-        });
+            ));
+            record_crash_phase_for_core(self, "add road cold plan compiled");
+            road_plan
+        };
         edit_metrics.road_plan_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_start = Instant::now();
+        record_crash_phase_for_core(self, "add road terrain plan completion");
         let edit_plan = road_plan.complete_for_commit(self);
+        record_crash_phase_for_core(self, "add road terrain plan completed");
         edit_metrics.terrain_plan_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
+        record_crash_phase_for_core(self, "add road transaction start");
         self.transit_network.bulk_load = true;
         self.transit_network.begin_road_edit();
+        record_crash_phase_for_core(self, "add road transaction started");
         record_crash_phase_for_core(self, "add road internal");
         let mut road_add = self.add_road_internal_with_snap_and_validation(
             points,

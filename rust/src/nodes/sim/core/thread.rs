@@ -243,6 +243,7 @@ pub(crate) fn run_sim_thread(
                             queue_wait_ms: enqueued_at.elapsed().as_secs_f64() * 1000.0,
                             ..Default::default()
                         };
+                    let crash_geometry = crate::debug::CrashRoadGeometry::from_points(&points);
                     let lock_wait_start = Instant::now();
                     let road_lock_wait_ms;
                     let outcome = {
@@ -256,6 +257,7 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
+                                geometry: crash_geometry,
                             },
                         );
                         c.commit_road(
