@@ -157,6 +157,9 @@ pub(super) struct ProjectReservations {
     freight_capital: Vec<f64>,
     staged_site: Option<OperationSite>,
     replacement_proof: ReplacementProof,
+    // The owner slots of free lots for the storage estimates, under the parcel revisions it
+    // was counted at (`SIM-02-K`).
+    free_lot_estimate: Option<([u64; 3], usize)>,
     prepared: bool,
     // What the live operation and site rows were derived from at the last pass's start, so
     // the next lending of the same book recomputes only what changed (`SIM-02-K`).
@@ -597,12 +600,26 @@ impl<'a> SiteSupply<'a> {
             // New projects open only on free lots, so the warm-start storage estimates count
             // their owner slots alone (`SIM-02-K`); the census book already holds the live
             // buildings' rows, and a replacement grows through the exact preflight
-            // (`supply/storage.rs`). Estimates never change a result. O(parcels / p).
-            let project_owners = 2 * zoning
-                .parcels()
-                .par_iter()
-                .filter(|parcel| parcel.is_available())
-                .count();
+            // (`supply/storage.rs`). Estimates never change a result, so the count is kept
+            // while the parcels' layout and occupancy revisions hold. O(parcels / p) after a
+            // change, O(1) otherwise.
+            let parcels = [
+                zoning.parcel_layout_revision(),
+                zoning.overlay_occupancy_revision(),
+                zoning.parcels().len() as u64,
+            ];
+            let project_owners = match reservations.free_lot_estimate {
+                Some((key, count)) if key == parcels => count,
+                _ => {
+                    let count = 2 * zoning
+                        .parcels()
+                        .par_iter()
+                        .filter(|parcel| parcel.is_available())
+                        .count();
+                    reservations.free_lot_estimate = Some((parcels, count));
+                    count
+                }
+            };
             crate::debug::work::add(crate::debug::work::Work::OwnerSlotsPrepared, owners as u64);
             let outputs = catalog
                 .all_profiles()

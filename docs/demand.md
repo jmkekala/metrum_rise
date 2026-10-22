@@ -182,8 +182,10 @@ This section describes the current cadence. Its replacement is planned in
 
 - **Hourly demand planning:** four slots of every hour, 00:00 included, a game minute apart, each
   in two halves of its minute (`SIM-02-I` part 4, `SIM-02-K` part 5): a setup at the minute's
-  first slot counts the live workforce and scans the zone's free lots and existing buildings, and
-  the plan eight slots later decides on it. Minutes 0, 1 and 2 (plans at slots 8, 24 and 40) plan
+  first slot counts the live workforce and, beside the count, scans the zone's free lots and
+  existing buildings (a workforce reset passes over the buildings once, and the site feasibility
+  cache is split by parcel), and the plan eight slots later decides on it. Minutes 0, 1 and 2
+  (plans at slots 8, 24 and 40) plan
   residential, commercial and industrial projects into a saved hour plan, each on the
   published census books; minute 3 (the actions slot, plan at slot 56) plans downgrades,
   decides the hour's admissions,

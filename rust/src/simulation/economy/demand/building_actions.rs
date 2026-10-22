@@ -1124,25 +1124,33 @@ impl DemandSystem {
         match slot.zone() {
             Some(use_kind) => {
                 let zone_type = use_kind.zone_type();
-                let mut by_use = allocator.collect_demand_spawn_candidates_from_assets(
-                    zoning,
-                    graph,
-                    catalog,
-                    priorities,
-                    environment,
-                    spawn_assets,
-                    Some(zone_type),
+                // Independent read-only scans of the lots and the buildings, side by side.
+                let (mut by_use, existing) = rayon::join(
+                    || {
+                        allocator.collect_demand_spawn_candidates_from_assets(
+                            zoning,
+                            graph,
+                            catalog,
+                            priorities,
+                            environment,
+                            spawn_assets,
+                            Some(zone_type),
+                        )
+                    },
+                    || {
+                        self.collect_existing_actions(
+                            allocator,
+                            catalog,
+                            economy_tuning,
+                            residential_occupants,
+                            Some(zone_type),
+                            ExistingActions::ZONE_SLOT,
+                        )
+                    },
                 );
                 scans.spawns = by_use.take_zone_type(zone_type);
                 scans.availability = by_use.availability[use_kind as usize];
-                scans.existing = self.collect_existing_actions(
-                    allocator,
-                    catalog,
-                    economy_tuning,
-                    residential_occupants,
-                    Some(zone_type),
-                    ExistingActions::ZONE_SLOT,
-                );
+                scans.existing = existing;
             }
             None => {
                 scans.downgrades = self.collect_downgrades_by_use(
@@ -1398,7 +1406,7 @@ impl DemandSystem {
 // output temporarily, so a new category is selected from recurring unreserved sales, the same
 // market entry itself uses; currency rather than raw units makes the order invariant to a
 // resource's unit size.
-fn commercial_spawn_priorities(
+pub(super) fn commercial_spawn_priorities(
     snapshot: &DailyDemandSnapshot,
     catalog: &RuntimeEconomyCatalog,
 ) -> Vec<(ResourceRuntimeId, f32)> {

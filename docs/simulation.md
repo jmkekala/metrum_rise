@@ -23,7 +23,7 @@ census's whole steps in slices). Part 4 (agent tick) has two commits done (lane 
 across appends and swap-removes with interleaved movement shards; then commute departures leaving
 over their minute's slots, the unused per-edge congestion deleted, save format 105, and the first
 tick after loading prepared at load), and part 5 (planning slots)
-has twelve commits done (planning storage estimates from free lots, one downgrade scan, and
+has thirteen commits done (planning storage estimates from free lots, one downgrade scan, and
 planning books prepared at load and when a fresh census book finishes; then the census storage
 copied from the prepared live books at load and spare capacity for row storage; then the
 slots' trips on one owned route scratch that loading prepares with the job search's scratch;
@@ -44,7 +44,9 @@ format 106; then the census's business claims counted by their scan events and c
 the zone index kept across the removal slot's swap-removes; then each removal's agents and
 households found in one scan, the removal slot's terrain boxes refreshed in later slots, the
 census book's preparation in four parts with slot 936 queue-free, the expansion sweep's priced
-routes weighed, and admission's border sweeps prepared at load).
+routes weighed, and admission's border sweeps prepared at load; then each planning setup's scans
+run beside its workforce count, a workforce reset passes over the buildings once, the site
+feasibility cache split by parcel, and the live books lent last at load).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
@@ -172,7 +174,8 @@ A declaration names:
     work with a stated O(1), O(zones) or O(dirty) bound. `Cost::Dirty` is work proportional to
     what changed or came due since the previous call. The census publication, the hour's four
     demand planning plans and their four setups declare `Cost::CityScan`, which grows with the city
-    (a setup O(B + H + P), a plan O(B + H + P + Q log H) a call in buildings, households, parcels
+    (a setup O(B + H + P), run beside its count since `SIM-02-K` part 5's thirteenth commit; a plan
+    O(B + H + P + Q log H) a call in buildings, households, parcels
     and queued projects): splits
     of the former whole-city pass, recorded as `SIM-02-K` debt for part 5 and the only
     `CityScan` users.
@@ -994,7 +997,7 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    Planned for all of K4: about 3 ms at 1× and 7 ms at 32× at 100k; the first commit saves 1.4
    and 2.5 ms. Part 5 (planning slots) ran before part 4's remaining items, because the planning
    slots set the maximum at every tier.
-5. **K5, planning slots** (twelve commits done 2026-10-21/22; results sections, part 5). Measured
+5. **K5, planning slots** (thirteen commits done 2026-10-21/22; results sections, part 5). Measured
    first:
    the planned scans cost 0.1–1.5 ms each at 100k, and the measured maxima were cold planning books
    after loading (the residential slot of the first hours: 100k 49, 42 and 31 ms; 30k 17 and 14 ms),
@@ -1057,8 +1060,9 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    3.0–3.5 ms, or removals 3.3 ms (zone index 1.5). These sit on an agent tick of 3.6–4.1 ms and a
    snapshot of 0.8–1.1 ms, for frames of 8.0–10.8 ms (mean 8.6). The other 34 were preempted.
    Done in the tenth commit: each planning slot runs as two halves of its game minute. The setup
-   at the minute's first slot (0, 16, 32, 48) counts the live workforce and runs the plan's scans
-   of lots and existing buildings (the actions slot scans every zone's downgrade candidates); the
+   at the minute's first slot (0, 16, 32, 48) counts the live workforce and, beside it, runs the
+   plan's scans of lots and existing buildings (the actions slot scans every zone's downgrade
+   candidates); the
    plan eight slots later (8, 24, 40, 56) lends the books, prepares site rows, proves the queue and
    the earlier plans again and decides, and the actions slot executes at 56 (the first admission
    at slot 57). A save between keeps the setup (save format 106, `demand_planning_setup`). The
@@ -1096,14 +1100,28 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    frame over 8 ms (the industrial planning setup, 8.0 ms); every other frame over 8 ms is
    preempted. In the `PERF-07` day eight of the nine follow the preemption pattern and the ninth
    is the first actions plan after loading (00:03, 3.4 ms of slot work on a 4.0 ms agent tick).
+   Done in the thirteenth commit: each planning setup runs its scans beside its workforce count
+   (the scans' lot priorities do not read the workforce), a zone setup's lot and building scans
+   side by side and the count's three passes overlapped; a workforce reset passes over the
+   buildings once with thread-local sums that wrap as the atomic adds did, keeping the homes in
+   building order; the site feasibility cache is split into 32 locks by parcel; the free-lot
+   storage estimate is kept while the parcel revisions hold (it only sizes storage); and loading
+   lends the live books last when census storage took the warm copy, so the first planning slot
+   keeps their pass rows (0.8 to 0.09 ms). The industrial setup falls from 2.16 / 2.90 to 1.49 /
+   1.95 ms, the other setups by 0.1-0.3 ms, the actions slot from 3.02 to 2.78 ms mean
+   (diagnostic). All exact: the envelope is bit-identical and the save format is unchanged.
+   **The 100k 1x target is still not reached.** A schedstat diagnostic day at 100k 1x has no work
+   frame over 8 ms: all 28 frames over 8 ms are preempted, and 9 of them are log stalls. In
+   `PERF-07`'s own 12 worst frames, actions-slot frames still reach 9.3-10.0 ms (2.8-3.4 ms of
+   slot work on a 4.5-5 ms agent tick), plus one removal-window frame at 8.8 ms. So the margin is
+   not yet robust.
    Left:
-   - **The planning setups:** the workforce count is 0.57–0.71 ms in every setup; the scans are
-     industrial 1.28 / 1.52 ms, residential 0.99, commercial 0.72, actions 0.50. Run them on the
-     pool or slice them over the setup's half minute (exact).
-   - **The actions plan:** 2.9–3.0 ms (plan 1.65, queue re-proof 1.27).
-   - **The first residential plan after a load:** 3.7 ms against 1.8 ms later. Loading lends the
-     census books after the live one, so the plan rebuilds its pass rows (0.77 ms), and the
-     queue's first re-proof costs 1.7 against 0.5 ms.
+   - **The actions slot:** either one lending for the plan and the construction epoch (exact;
+     needs the pass journal to rewind without truncating owner rows), or the execution in its own
+     queue-free slot of minute 3 (a save format change plus a scheduling change).
+   - **Slot 65.**
+   - **The census-book parts at 936 / 953.**
+   - **Warming the first queue re-proof after a load** (about 1.8 ms).
    - **Maintained workforce totals**, **part 4's indoor agents** and **zone lists.**
    - **The job board and destination fallbacks,** and the per-building commute-quote clear.
 
@@ -4575,6 +4593,133 @@ commit)
 - **Save format:** unchanged (106); the deferred boxes, the candidate sets and the preparation
   parts are derived and never saved.
 
+#### `SIM-02-K`, part 5 — setup scans beside the count (2026-10-22, thirteenth commit)
+
+- **Measured first** (the twelfth commit's code, the tenth commit's 100k cities, pinned, 8
+  workers; diagnostic):
+  - **The planning setups** (slots 0, 16, 32, 48; 1.2-2.2 ms mean, the industrial one 2.1 / 2.9
+    ms): the live workforce count, 0.5-0.9 ms, then the scans, 0.5-1.5 ms (industrial lots
+    1.0-1.3 ms and existing buildings 0.9-1.2 ms), one after the other; the site index, road
+    surface and queue refresh about 0. Inside the count: the housed-unemployed pass over the
+    households (random reads of each home building) about 1.0 ms, the displaced list 0.2 ms, the
+    jobs fold 0.14 ms. The scans need the snapshot only for the commercial lots' resource
+    priorities, which come from its output absorption and unmet commercial demand: `compose`
+    derives both without the workforce, and the queue's reservation does not read it.
+  - **The actions slot** (slot 56, 2.9-3.4 ms): its plan 1.6 ms and the execution 1.3 ms, of
+    which the construction epoch's site preparation 0.48, workforce reset 0.47, project market
+    0.27, existing claims 0.08 and pass start 0.05 ms. Every lending's site preparation (about
+    eight an hour, 0.45-0.55 ms) counted the free lots for its storage estimates, 0.14 ms each.
+  - **The workforce reset** (every plan and the epoch, five a game hour): two passes over the
+    buildings (the latest construction hour 0.12 ms, then the homes 0.44 ms), the second adding
+    every free place's workers to shared atomic bins.
+  - **The lot scan** looks every candidate pose up in the site feasibility cache, one mutex for
+    every stored parcel, from all pool workers at once.
+  - **The first residential plan after a load** (3.6-3.9 ms against 1.7-1.9 later): its pass
+    rows 0.8 ms, rebuilt whole because loading lends the census storage's warm copy after the
+    live books (the rows are kept per book, so the plan found the copy's), and its queue re-proof
+    1.8 against 0.36-0.54 ms later (not changed).
+- **What changed** (all exact; see [Decided while unattended](#decided-while-unattended)):
+  1. **The setup's scans run beside the workforce count** (`rayon::join`), on a snapshot composed
+     with an empty workforce: the scans read only its output absorption and unmet commercial
+     demand. Test builds with the whole-city checks compose both snapshots and assert that their
+     priorities are bit-identical. A zone setup's lot scan and existing-building scan also run
+     side by side, and the count's three passes overlap.
+  2. **A workforce reset passes over the buildings once.** One fold sums, in thread-local bins by
+     construction hours left, the arrival places' workers and members, the ready places and the
+     constructing or not yet operating workplaces' jobs, and collects the homes displaced
+     households may claim; the bins merge in building-range order and are stored into the shared
+     bins once. The sums wrap as the atomic adds did, so they are equal in any order; the homes
+     keep building order. O(B / p + Q + hours).
+  3. **The stored-parcel site feasibility cache is split into 32 locks by parcel**, so the lot
+     scan's lookups rarely wait on one another; the hourly prune visits every shard. The cache is
+     derived and each pose's verdict is validated before reuse, so no verdict changes.
+  4. **The free-lot storage estimate is kept** while the parcels' layout and occupancy revisions
+     and count hold (`ProjectReservations::free_lot_estimate`): estimates size storage and never
+     change a result.
+  5. **Loading lends the live books last.** Without a finished census, loading prepares the live
+     books, gives census storage its warm copy and prepares it, and now prepares the live books
+     once more, so the first planning slot after the load finds their pass rows kept. With a
+     finished census the order is unchanged (that book is published next and lent last).
+- **Per slot** (diagnostic, the instrumented twelfth-commit day against this commit's
+  instrumented day, the same cities, full day, slot work in ms, mean / maximum; the load change
+  is not in the instrumented day; the slot 8 and slot 56 figures cover the first item only):
+
+  | Slot | Before | After |
+  | --- | --- | --- |
+  | 0 residential setup | 1.71 / 2.11 | 1.47 / 2.11 |
+  | 16 commercial setup | 1.56 / 2.20 | 1.28 / 1.96 |
+  | 32 industrial setup | 2.16 / 2.90 | 1.49 / 1.95 |
+  | 48 actions setup | 1.27 / 1.49 | 1.17 / 1.55 |
+  | 8 residential plan | 1.90 / 3.92 | 1.84 / 3.57 |
+  | 24 commercial plan | 1.67 / 2.19 | 1.52 / 1.69 |
+  | 40 industrial plan | 1.75 / 2.09 | 1.63 / 2.07 |
+  | 56 actions | 3.02 / 3.38 | 2.78 / 3.38 |
+  | 936 / 944 / 953 census-book parts | 2.03 / 2.57, 1.69 / 1.89, 2.33 / 2.80 | 2.08 / 2.47, 1.58 / 2.01, 2.13 / 2.53 |
+
+  A lending's site preparation 0.50 → 0.35 ms (median); the epoch's reset 0.47 → 0.40 ms. The
+  first residential plan after the load keeps its pass rows (0.8 → 0.09 ms in a short
+  instrumented run); its queue re-proof stays about 1.8 ms.
+- **Attribution of the 100k 1× frames over 8 ms** (this commit's instrumented day, threads'
+  scheduler statistics): **0 work frames**; all 28 frames over 8 ms are **preempted**, and 9 of
+  them are **log stalls** (a thread blocked writing the diagnostic log, about 10 ms, one of them
+  in the removal slot). Some preempted frames carry real slot work besides a worker's wait of
+  1.2-7.1 ms: 10:03 8.1 ms (the actions slot, 3.4 ms), 14:31 8.7 ms (3.4 ms), 15:23 10.7 ms
+  (restock and job requests, 5.6 ms inflated by a 7.1 ms wait), 18:00 8.0 ms (the residential
+  setup, 2.1 ms), 22:01 / 22:02 9.3 / 8.9 ms (the commercial and industrial setups, 1.5 / 1.7
+  ms), 23:32 8.3 ms (a census slice, 2.5 ms). The twelfth commit's day had 1 work frame (the
+  industrial setup, 2.9 ms), 39 preempted, 8 stalls.
+- **Equivalence** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): PASS for the first four changes (425 s) and
+  for the whole commit (364 s); **every metric and burst of every city is bit-identical to the
+  twelfth commit's**, the same eight notes; determinism shows no differences (repeat,
+  save/reload continuation, 1 and 3 workers; 10k, three days).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`
+  against the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`, full day; in one session with the
+  twelfth commit as the control; the save format is unchanged, so both ran on copies of the
+  cities the tenth commit prepared). Milliseconds and frame counts, control in parentheses:
+
+  | Tier | Speed | Max | p99 | p99.9 | Mean | Frames > 8 ms | > 16.7 ms | Load s |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 5.5 (9.2) | 1.15 (1.16) | 1.38 (1.43) | 0.49 (0.49) | 0 (1) | 0 (0) | 1.8 (1.8) |
+  | 10k | 32× | 3.1 (2.2) | 1.93 (1.88) | 2.41 (2.17) | 0.90 (0.88) | 0 (0) | 0 (0) | 1.8 (1.8) |
+  | 30k | 1× | 7.0 (12.6) | 1.88 (1.91) | 2.33 (2.33) | 0.88 (0.90) | 0 (1) | 0 (0) | 5.0 (4.9) |
+  | 30k | 32× | 5.7 (6.0) | 4.67 (4.67) | 5.49 (5.71) | 2.80 (2.81) | 0 (0) | 0 (0) | 5.0 (5.2) |
+  | 100k | 1× | 12.3 (10.7) | 6.21 (6.10) | 7.29 (7.15) | 4.08 (4.04) | 27 (20) | 0 (0) | 18.7 (18.6) |
+  | 100k | 32× | 24.2 (24.3) | 20.12 (20.14) | 23.01 (22.24) | 13.62 (13.68) | 2,700 (2,700) | 284 (321) | 18.8 (18.7) |
+
+  Every gate limit passes for both builds; means are level. **10k and 30k** stay under 8 ms at
+  both speeds; the 30k maxima fall (7.0 and 5.7 ms against 12.6 and 6.0, the control's 1×
+  maximum a 12.1 ms agent tick). The 10k 32× maximum rose above the control's (3.1 against 2.2
+  ms; the frame a 2.6 ms render snapshot with 0.3 ms of slot work), so the tier was run twice for
+  both builds (`--perf07-tiers 10000 --perf07-speeds 1,32`, fresh city copies, every lock held,
+  the control first): 32× 3.78 and 2.20 ms (control 2.25 and 2.39), p99.9 level; the 3.78 ms
+  frame holds 1.6 ms of measured phases (2.2 ms outside them), and the next frame of that run is
+  2.25 ms, so it is taken as preemption. **100k 1×:** 27 frames over 8 ms (20), p99.9 7.29 ms
+  (7.15); a recheck in the same session (`--perf07-tiers 100000 --perf07-speeds 1`, fresh city
+  copies, every lock held, the control first) gave 28 (35), p99.9 7.25 (7.46), max 13.6 (12.0).
+  Across both sessions the count is 27-28 for this build against 20-35 for the control: run-to-run
+  noise, larger than the difference between the builds. Of the recorded 12 worst frames, the work
+  frames are the actions slot (frames of 9.3-10.0 ms with 2.8-3.4 ms of slot work on 4.5-5 ms
+  agent ticks) and one removal-window frame (21:04 8.8 ms); the rest follow the preemption
+  pattern (an agent tick of 5.2-8.3 ms or a snapshot of 2.0-6.2 ms with under 2 ms of slot
+  work). The control's include the same actions slot (06:03 9.8 ms, 3.3 ms) and its minute-4
+  frame. **100k 32×:** 24.2 ms (24.3), slot-heavy frames (open question 6).
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with the twelfth commit as
+  control: hour means 0.93–0.95, 3.64–3.67, 8.14–8.33 and 26.37–26.70 ms (control 1.15,
+  4.14–4.16, 8.75–8.86 and 27.92–28.45): the baseline hours 12–19% cheaper and the fiscal-stress
+  hours 5–7%, and the same work-count limits fail.
+- **Tests.** 2,557 release and 2,557 debug library tests and the 4 growth integration tests pass
+  (no new test: every change is exact, the bit-identical envelope with 1- and 3-worker
+  determinism covers them, and the setup's independence from the workforce has a test-build
+  assertion); clippy adds nothing; `./run.sh --test` in an isolated profile passes (no script
+  error).
+- **Build identity:** rustc 1.99.1; the gate, the suites, `PERF-07` and `./run.sh --test` ran on
+  the committed sources (`$TEST_BINARY`); `PERF-07` pinned with `--cpus 0,2,4,6,8,10,12,14` and
+  `RAYON_NUM_THREADS=8`, both builds on copies of the same prepared cities.
+- **Save format:** unchanged (106); the cache shards, the estimate and the lending order are
+  derived and never saved.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -7027,6 +7172,56 @@ alternatives and the evidence. The user reviews these on return.
   the queue's re-proof 1.27 ms); (3) the first residential plan after loading (3.7 ms against
   1.8: its pass rows, 0.77 ms, because loading lends the census books after the live one, and
   the queue's first re-proof, 1.7 against 0.5 ms). None needs a change to the user's spec
+  decisions.
+
+- **`SIM-02-K` part 5 (thirteenth commit) — the setup's scans beside its workforce count.** The
+  setups held 1.2-2.2 ms (industrial 2.9 ms at most), the count and the scans one after the
+  other. Options: (a) slice the scans over the setup's half minute (rejected: the queues change
+  the city between those slots, so slices would scan a city no single scan saw, and the plan
+  decides on the setup's scan; not exact); (b) count the workforce once a minute for both halves
+  (rejected: the plan would decide on a workforce half a minute old, a gameplay change); (c) run
+  the scans beside the count on a snapshot composed with an empty workforce (taken: the scans
+  read only the snapshot's output absorption and unmet commercial demand, which `compose` and
+  the queue reservation derive without the workforce, so the scans are the ones the serial setup
+  ran; test builds assert the priorities bit for bit), with the lot and building scans and the
+  count's passes side by side as well. Evidence: industrial setup 2.16 / 2.90 → 1.49 / 1.95 ms,
+  residential 1.71 → 1.47, commercial 1.56 → 1.28, actions 1.27 → 1.17 ms mean (diagnostic);
+  envelope bit-identical.
+- **`SIM-02-K` part 5 (thirteenth commit) — one pass for a workforce reset.** Each reset (five a
+  game hour) passed over the buildings twice and added free places to shared atomic bins.
+  Options: (a) keep the reset's results across the actions slot's two resets (rejected: the
+  epoch's project claims and queue differ from the plan's, and a cache would need revision keys
+  for every building field the reset reads); (b) one fold with thread-local sums (taken: the sums
+  wrap as the atomic adds did, so any order gives the same bins, and `reduce` merges adjacent
+  building ranges in order, so the displaced households' homes keep building order). Evidence:
+  the epoch's reset 0.47 → 0.40 ms (diagnostic); envelope bit-identical, determinism with 1 and 3
+  workers equal.
+- **`SIM-02-K` part 5 (thirteenth commit) — the site feasibility cache in shards.** The lot scan
+  looks up every candidate pose from all pool workers under one mutex. Options: a concurrent map
+  (rejected: a new dependency); 32 mutex shards by parcel (taken: each lot is resolved by one
+  worker, so lookups rarely meet; the cache stays derived and validated before reuse, so
+  verdicts are unchanged).
+- **`SIM-02-K` part 5 (thirteenth commit) — the free-lot storage estimate kept per parcel
+  revision.** Every lending's site preparation counted the free lots (0.14 ms) to size storage.
+  The count is kept while the parcels' layout and occupancy revisions and count hold; a stale
+  count could only size storage differently, which never changes a result (the storage grows
+  through the exact preflight). Evidence: a lending's site preparation 0.50 → 0.35 ms median.
+- **`SIM-02-K` part 5 (thirteenth commit) — the live books lent last at load.** The first
+  residential plan after loading rebuilt its pass rows (0.8 ms) because loading lent the census
+  storage's warm copy after the live books. Options: (a) build the copy without lending it
+  (rejected: the copy's storage then lacks the spare rows its first census needs); (b) lend the
+  live books once more, last, when no finished census is held (taken: a lending restores the
+  books exactly and its rows are derived, so the second preparation changes nothing but which
+  book's rows are kept; with a finished census, which is published and lent next, the order is
+  unchanged). Evidence: the first plan's pass rows 0.8 → 0.09 ms in a short instrumented run;
+  envelope bit-identical (the gate's save/reload continuation included).
+- **`SIM-02-K` part 5 (thirteenth commit) — the actions slot not split (findings).** After these
+  changes the actions slot is the largest steady slot (2.8 / 3.4 ms). Splitting its execution
+  into a later queue-free slot of minute 3 would take about 1.2 ms off it, but the state the
+  plan hands the execution (the workforce view, the admission budget, the slot's validity) is
+  not saved, so it is a save format change besides a scheduling change; the exact alternative,
+  one lending for the plan and the epoch, needs the pass journal to rewind without truncating
+  the owner rows. Neither fitted this session; neither needs a change to the user's spec
   decisions.
 
 ### Corrections to part 2's statements (merge with the entries above)

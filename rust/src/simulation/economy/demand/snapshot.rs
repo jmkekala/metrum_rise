@@ -451,46 +451,63 @@ impl WorkforceView {
         income_tax_rate: f32,
     ) {
         let census = &households.job_funding;
-        self.housed_unemployed = households
-            .households
-            .par_iter()
-            .filter(|household| {
-                household.member_count > 0 && household_is_housed(household, allocator)
-            })
-            .map(|household| {
-                u32::from(
-                    household
-                        .adult_count
-                        .saturating_sub(household.employed_adults),
+        let unhoused = &mut self.unhoused;
+        // Three independent read-only passes, side by side (`SIM-02-K`).
+        let ((housed_unemployed, ()), jobs) = rayon::join(
+            || {
+                rayon::join(
+                    || {
+                        households
+                            .households
+                            .par_iter()
+                            .filter(|household| {
+                                household.member_count > 0
+                                    && household_is_housed(household, allocator)
+                            })
+                            .map(|household| {
+                                u32::from(
+                                    household
+                                        .adult_count
+                                        .saturating_sub(household.employed_adults),
+                                )
+                            })
+                            .reduce(|| 0, u32::saturating_add)
+                    },
+                    || {
+                        unhoused.clear();
+                        // Indexed parallel collection preserves household priority.
+                        unhoused.par_extend(households.households.par_iter().filter_map(
+                            |household| {
+                                UnhousedWorkforce::of(household, allocator, catalog, tuning)
+                            },
+                        ));
+                    },
                 )
-            })
-            .reduce(|| 0, u32::saturating_add);
-        self.unhoused.clear();
-        // Indexed parallel collection preserves household priority.
-        self.unhoused.par_extend(
-            households.households.par_iter().filter_map(|household| {
-                UnhousedWorkforce::of(household, allocator, catalog, tuning)
-            }),
-        );
-        self.jobs = ordered_fold(
-            &allocator.buildings,
-            BUILDING_SNAPSHOT_CHUNK_SIZE,
-            JobTotals::default,
-            |jobs, idx, building| {
-                jobs.add_workplace(
-                    catalog,
-                    income_tax_rate,
-                    FundedJobs::Published,
-                    idx,
-                    building,
-                    census.saw_operating(idx),
-                );
             },
-            |mut merged, jobs| {
-                merged.merge(jobs);
-                merged
+            || {
+                ordered_fold(
+                    &allocator.buildings,
+                    BUILDING_SNAPSHOT_CHUNK_SIZE,
+                    JobTotals::default,
+                    |jobs, idx, building| {
+                        jobs.add_workplace(
+                            catalog,
+                            income_tax_rate,
+                            FundedJobs::Published,
+                            idx,
+                            building,
+                            census.saw_operating(idx),
+                        );
+                    },
+                    |mut merged, jobs| {
+                        merged.merge(jobs);
+                        merged
+                    },
+                )
             },
         );
+        self.housed_unemployed = housed_unemployed;
+        self.jobs = jobs;
     }
 }
 

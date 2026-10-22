@@ -175,10 +175,15 @@ impl CachedSite {
     }
 }
 
+// Stored-parcel shards of the site cache: the hourly lot scan looks poses up from every pool
+// worker, each lot in the shard of its parcel, so lookups rarely wait on one another
+// (`SIM-02-K`).
+const SITE_CACHE_SHARDS: usize = 32;
+
 /// Derived cache only: cloning an allocator starts empty so independent edits cannot share epochs.
 #[derive(Default)]
 pub(crate) struct SiteFeasibilityCache {
-    entries: Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>,
+    entries: [Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>; SITE_CACHE_SHARDS],
     previews: Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>,
     zoning: zoning::ZoningSiteCache,
     #[cfg(test)]
@@ -190,7 +195,7 @@ impl SiteFeasibilityCache {
         if key.parcel == 0 {
             &self.previews
         } else {
-            &self.entries
+            &self.entries[(key.parcel % SITE_CACHE_SHARDS as u64) as usize]
         }
     }
 }
@@ -284,11 +289,8 @@ impl BuildingAllocator {
     /// Drops results for removed, occupied, rezoned or reattached parcels during hourly collection.
     pub(crate) fn prune_site_feasibility(&self, zoning: &ZoningSystem) {
         self.site_feasibility.zoning.prune(zoning);
-        self.site_feasibility
-            .entries
-            .lock()
-            .unwrap()
-            .retain(|asset, poses| {
+        for shard in &self.site_feasibility.entries {
+            shard.lock().unwrap().retain(|asset, poses| {
                 let Some(building) = self
                     .registry
                     .get(asset)
@@ -319,6 +321,7 @@ impl BuildingAllocator {
                 });
                 !poses.is_empty()
             });
+        }
         self.site_feasibility
             .previews
             .lock()

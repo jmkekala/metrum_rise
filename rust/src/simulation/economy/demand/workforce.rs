@@ -9,7 +9,9 @@ use rayon::prelude::*;
 use super::actions::DemandSpawnAction;
 use super::queued::QueuedConstruction;
 use super::snapshot::{DailyDemandSnapshot, UnhousedWorkforce};
-use crate::simulation::buildings::allocator::{BuildingAllocator, construction_duration_hours};
+use crate::simulation::buildings::allocator::{
+    Building, BuildingAllocator, construction_duration_hours,
+};
 use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
 use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
@@ -177,9 +179,10 @@ pub(super) struct WorkforceReservations {
 }
 
 impl WorkforceReservations {
-    /// Collects already committed housing and workplaces once, in parallel. A workplace the
-    /// census did not see complete (`census_operating`) claims its constructing workers, as
-    /// one still under construction does (`SIM-02-I`).
+    /// Collects already committed housing and workplaces once, in one parallel pass over the
+    /// buildings (`SIM-02-K`), O(B / p + Q + hours). A workplace the census did not see
+    /// complete (`census_operating`) claims its constructing workers, as one still under
+    /// construction does (`SIM-02-I`).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reset(
         &mut self,
@@ -192,23 +195,49 @@ impl WorkforceReservations {
         reservations: Option<&super::supply::ProjectReservations>,
         census_operating: impl Fn(usize) -> bool + Sync,
     ) {
-        self.horizon = allocator
+        let arrivals_possible = snapshot.connected_border_count > 0;
+        // Displaced households claim free places first; without them free places only add to
+        // the hour bins.
+        let places = if !snapshot.unhoused_workforce.is_empty() {
+            FreePlaces::Homes(
+                &tuning
+                    .households
+                    .residential_move_in_min_reserve_days_by_level,
+            )
+        } else if arrivals_possible {
+            FreePlaces::Arrivals
+        } else {
+            FreePlaces::Ignored
+        };
+        let mut scan = allocator
             .buildings
             .par_iter()
-            .map(|building| usize::from(building.construction_hours_left(allocator.now_slot)))
-            .max()
-            .unwrap_or(0)
-            .max(
-                tuning
-                    .construction
-                    .residential_hours_by_level
-                    .iter()
-                    .chain(&tuning.construction.commercial_hours_by_level)
-                    .chain(&tuning.construction.industrial_hours_by_level)
-                    .copied()
-                    .max()
-                    .unwrap_or(0) as usize,
-            );
+            .enumerate()
+            .fold(BuildingHours::default, |mut scan, (idx, building)| {
+                scan.add_building(
+                    allocator,
+                    catalog,
+                    snapshot,
+                    reservations,
+                    &census_operating,
+                    places,
+                    idx,
+                    building,
+                );
+                scan
+            })
+            .reduce(BuildingHours::default, BuildingHours::merge);
+        self.horizon = scan.horizon.max(
+            tuning
+                .construction
+                .residential_hours_by_level
+                .iter()
+                .chain(&tuning.construction.commercial_hours_by_level)
+                .chain(&tuning.construction.industrial_hours_by_level)
+                .copied()
+                .max()
+                .unwrap_or(0) as usize,
+        );
         // Keep the bounded authored/remaining hours dense for O(1) building aggregation.
         // Queue delays add coordinates, not empty hours: a distant saved due date cannot
         // cause an allocation proportional to elapsed time.
@@ -240,8 +269,18 @@ impl WorkforceReservations {
                 bin.store(0, Ordering::Relaxed);
             }
         }
-        for places in &self.ready_places {
-            places.store(0, Ordering::Relaxed);
+        for (bins, sums) in [
+            (&self.homes_by_hour, &scan.homes),
+            (&self.jobs_by_hour, &scan.jobs),
+            (&self.members_by_hour, &scan.members),
+        ] {
+            // Every building's hour is at most the horizon, below which hours are dense.
+            for (bin, &sum) in bins.iter().zip(sums) {
+                bin.store(sum, Ordering::Relaxed);
+            }
+        }
+        for (places, &sum) in self.ready_places.iter().zip(&scan.ready) {
+            places.store(sum, Ordering::Relaxed);
         }
         self.store_labor_per_resident = resident_store_labor(catalog);
         self.home_store_labor = 0.0;
@@ -251,87 +290,15 @@ impl WorkforceReservations {
         self.optional_initial.fill(0);
         self.unemployed = snapshot.existing_unemployed_member_count;
         self.unfilled_existing = 0;
-        let arrivals_possible = snapshot.connected_border_count > 0;
         self.arrivals_possible = arrivals_possible;
         self.displaced.reset(&snapshot.unhoused_workforce);
         self.optional_selected.clear();
-        self.homes.clear();
         let thresholds = &tuning
             .households
             .residential_move_in_min_reserve_days_by_level;
-        let match_displaced = !snapshot.unhoused_workforce.is_empty();
-        let homes_by_hour = &self.homes_by_hour;
-        let members_by_hour = &self.members_by_hour;
-        let ready_places = &self.ready_places;
-        let jobs_by_hour = &self.jobs_by_hour;
-        self.homes
-            .par_extend(allocator.buildings.par_iter().enumerate().filter_map(
-                |(idx, building)| {
-                    if building.broken
-                        || building.economy_broken
-                        || building.is_deserted
-                        || building.pending_redevelopment
-                    {
-                        return None;
-                    }
-                    let hour = usize::from(building.construction_hours_left(allocator.now_slot));
-                    if (building.is_under_construction() || !census_operating(idx))
-                        && matches!(
-                            building.zone_type,
-                            ZoneType::Commercial | ZoneType::Industrial
-                        )
-                        && let Some(profile) =
-                            catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    {
-                        jobs_by_hour[hour].fetch_add(
-                            reservations.map_or_else(
-                                || snapshot.output_absorption.committed_workers(profile),
-                                |claims| claims.building_workers.get(idx).copied().unwrap_or(0),
-                            ),
-                            Ordering::Relaxed,
-                        );
-                    }
-                    let (first_slot, capacity) = if building.is_under_construction() {
-                        (0, allocator.registry.household_capacity(&building.asset_id))
-                    } else {
-                        (building.occupancy, allocator.household_capacity(idx))
-                    };
-                    let slots = capacity.saturating_sub(first_slot);
-                    if slots == 0 {
-                        return None;
-                    }
-                    let flat_size_m2 = allocator.registry.flat_size_m2(&building.asset_id);
-                    if !match_displaced {
-                        // Each free place supplies the adults of the applicant offered it.
-                        if arrivals_possible {
-                            let (places, members) = applicant_places_and_members(
-                                flat_size_m2,
-                                allocator.applicant_seed(idx),
-                                first_slot..capacity,
-                            );
-                            homes_by_hour[hour]
-                                .fetch_add(place_workers(&places), Ordering::Relaxed);
-                            members_by_hour[hour].fetch_add(members, Ordering::Relaxed);
-                            if hour == 0 {
-                                add_places(ready_places, &places);
-                            }
-                        }
-                        return None;
-                    }
-                    Some(FutureHome {
-                        hour,
-                        level: building.level,
-                        order: idx as u64,
-                        seed: allocator.applicant_seed(idx),
-                        slots,
-                        first_slot,
-                        flat_size_m2,
-                        threshold: level_tuning_value(thresholds, building.level),
-                        optional: None,
-                        arrival_workers: 0,
-                    })
-                },
-            ));
+        self.homes.clear();
+        self.homes.append(&mut scan.future);
+        let match_displaced = matches!(places, FreePlaces::Homes(_));
         for project in queued {
             if !project.active {
                 continue;
@@ -691,6 +658,148 @@ fn add_places(
 ) {
     for (ready, &count) in ready.iter().zip(places) {
         ready.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
+// A building's first free place and capacity: a constructing building's places are all its
+// asset's, an operating one's those above its occupancy.
+fn free_places(allocator: &BuildingAllocator, idx: usize, building: &Building) -> (u32, u32) {
+    if building.is_under_construction() {
+        (0, allocator.registry.household_capacity(&building.asset_id))
+    } else {
+        (building.occupancy, allocator.household_capacity(idx))
+    }
+}
+
+// A reset's one pass over the buildings (`SIM-02-K`): the latest construction hour of every
+// building and, by construction hours left, the workers and members of arrival places and the
+// jobs of constructing or not yet operating workplaces, summed per thread and merged. The sums
+// wrap, as the shared atomic adds they replace did, so they are exact in any order.
+#[derive(Default)]
+struct BuildingHours {
+    horizon: usize,
+    homes: Vec<u32>,
+    members: Vec<u32>,
+    jobs: Vec<u32>,
+    ready: [u32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1],
+    // The future homes displaced households may claim, in building order.
+    future: Vec<FutureHome>,
+}
+
+// What a reset's free places supply: future homes with move-in thresholds by level, for the
+// displaced households to claim first; arrival workers by hour; or nothing (no arrivals).
+#[derive(Clone, Copy)]
+enum FreePlaces<'a> {
+    Homes(&'a [f32]),
+    Arrivals,
+    Ignored,
+}
+
+impl BuildingHours {
+    fn add(bins: &mut Vec<u32>, hour: usize, value: u32) {
+        if bins.len() <= hour {
+            bins.resize(hour + 1, 0);
+        }
+        bins[hour] = bins[hour].wrapping_add(value);
+    }
+
+    // Building `idx`'s part, as the reset's passes over the buildings added it.
+    #[allow(clippy::too_many_arguments)]
+    fn add_building(
+        &mut self,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        snapshot: &DailyDemandSnapshot,
+        reservations: Option<&super::supply::ProjectReservations>,
+        census_operating: &(impl Fn(usize) -> bool + Sync),
+        places: FreePlaces<'_>,
+        idx: usize,
+        building: &Building,
+    ) {
+        let hour = usize::from(building.construction_hours_left(allocator.now_slot));
+        self.horizon = self.horizon.max(hour);
+        if building.broken
+            || building.economy_broken
+            || building.is_deserted
+            || building.pending_redevelopment
+        {
+            return;
+        }
+        if (building.is_under_construction() || !census_operating(idx))
+            && matches!(
+                building.zone_type,
+                ZoneType::Commercial | ZoneType::Industrial
+            )
+            && let Some(profile) =
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+        {
+            Self::add(
+                &mut self.jobs,
+                hour,
+                reservations.map_or_else(
+                    || snapshot.output_absorption.committed_workers(profile),
+                    |claims| claims.building_workers.get(idx).copied().unwrap_or(0),
+                ),
+            );
+        }
+        if matches!(places, FreePlaces::Ignored) {
+            return;
+        }
+        let (first_slot, capacity) = free_places(allocator, idx, building);
+        if capacity <= first_slot {
+            return;
+        }
+        let flat_size_m2 = allocator.registry.flat_size_m2(&building.asset_id);
+        if let FreePlaces::Homes(thresholds) = places {
+            self.future.push(FutureHome {
+                hour,
+                level: building.level,
+                order: idx as u64,
+                seed: allocator.applicant_seed(idx),
+                slots: capacity - first_slot,
+                first_slot,
+                flat_size_m2,
+                threshold: level_tuning_value(thresholds, building.level),
+                optional: None,
+                arrival_workers: 0,
+            });
+            return;
+        }
+        // Each free place supplies the adults of the applicant offered it.
+        let (places, members) = applicant_places_and_members(
+            flat_size_m2,
+            allocator.applicant_seed(idx),
+            first_slot..capacity,
+        );
+        Self::add(&mut self.homes, hour, place_workers(&places));
+        Self::add(&mut self.members, hour, members);
+        if hour == 0 {
+            for (ready, &count) in self.ready.iter_mut().zip(&places) {
+                *ready = ready.wrapping_add(count);
+            }
+        }
+    }
+
+    fn merge(mut self, mut other: Self) -> Self {
+        self.horizon = self.horizon.max(other.horizon);
+        for (bins, others) in [
+            (&mut self.homes, other.homes),
+            (&mut self.members, other.members),
+            (&mut self.jobs, other.jobs),
+        ] {
+            if bins.len() < others.len() {
+                bins.resize(others.len(), 0);
+            }
+            for (bin, value) in bins.iter_mut().zip(others) {
+                *bin = bin.wrapping_add(value);
+            }
+        }
+        for (ready, count) in self.ready.iter_mut().zip(other.ready) {
+            *ready = ready.wrapping_add(count);
+        }
+        // `reduce` merges adjacent building ranges in order, so homes stay in building order.
+        self.future.append(&mut other.future);
+        self
     }
 }
 

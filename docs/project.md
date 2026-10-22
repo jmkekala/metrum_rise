@@ -413,7 +413,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   to 2.6 ms at 100k) (`SIM-02-K` part 5). Each removal now scans the agents and households once and
   defers its terrain boxes, and the census book's preparation runs in four parts, so the removal
   slot and the minute-59 preparation no longer set 100k 1× frames over 8 ms; 9 such frames remain
-  in `PERF-07` (31 before), mostly preemption (`SIM-02-K` part 5).
+  in `PERF-07` (31 before), mostly preemption (`SIM-02-K` part 5). The planning setups now scan
+  beside their workforce count and a workforce reset passes over the buildings once, so no planning
+  setup sets a 100k 1× work frame over 8 ms; the actions slot (2.8 / 3.4 ms) is the largest steady
+  slot left (`SIM-02-K` part 5).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -69,36 +69,64 @@ impl DemandSystem {
                 policy: fiscal_policy,
                 treasury: treasury_balance,
             });
+            let border_count = connected_road_border_count(graph, &borders);
+            let compose = |workforce: &WorkforceView| {
+                let mut snapshot = DailyDemandSnapshot::compose(
+                    &front.totals,
+                    workforce,
+                    households,
+                    border_count,
+                    &catalog,
+                    &tuning,
+                    fiscal_policy,
+                    treasury_balance,
+                );
+                snapshot.reserve_queued_construction(&catalog, &self.queued_construction);
+                snapshot
+            };
+            // The scans read only the snapshot's output absorption and unmet commercial demand,
+            // which `compose` and the queue derive without the workforce, so they run beside
+            // the count on a snapshot composed without one (`SIM-02-K`).
             let mut workforce = WorkforceView::default();
-            workforce.count_live(
-                allocator,
-                households,
-                &catalog,
-                &tuning,
-                fiscal_policy.income_tax_rate,
+            let ((), scans) = rayon::join(
+                || {
+                    workforce.count_live(
+                        allocator,
+                        households,
+                        &catalog,
+                        &tuning,
+                        fiscal_policy.income_tax_rate,
+                    )
+                },
+                || {
+                    self.scan_for_planning(
+                        slot,
+                        allocator,
+                        graph,
+                        zoning,
+                        &compose(&WorkforceView::default()),
+                        &catalog,
+                        &tuning,
+                        &front.occupants,
+                        environment,
+                    )
+                },
             );
-            let mut snapshot = DailyDemandSnapshot::compose(
-                &front.totals,
-                &workforce,
-                households,
-                connected_road_border_count(graph, &borders),
-                &catalog,
-                &tuning,
-                fiscal_policy,
-                treasury_balance,
-            );
-            snapshot.reserve_queued_construction(&catalog, &self.queued_construction);
-            let scans = self.scan_for_planning(
-                slot,
-                allocator,
-                graph,
-                zoning,
-                &snapshot,
-                &catalog,
-                &tuning,
-                &front.occupants,
-                environment,
-            );
+            // Test builds: the counted workforce's snapshot ranks the lots alike.
+            #[cfg(test)]
+            if crate::debug::work::city_checks() {
+                let ranks = |snapshot: DailyDemandSnapshot| {
+                    super::building_actions::commercial_spawn_priorities(&snapshot, &catalog)
+                        .into_iter()
+                        .map(|(resource, priority)| (resource, priority.to_bits()))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    ranks(compose(&workforce)),
+                    ranks(compose(&WorkforceView::default())),
+                    "the setup's scans must not depend on the workforce"
+                );
+            }
             self.snapshot_sweep.restore_front(front);
             self.planning_setup = Some(PlanningSetup {
                 slot,

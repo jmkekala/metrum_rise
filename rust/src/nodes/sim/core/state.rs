@@ -1380,7 +1380,8 @@ impl SimCore {
     /// finished (one current at the save) is prepared now too, not in a window slot; census
     /// storage that holds no census takes a copy of the prepared live books, as an
     /// uninterrupted game's census storage holds the previous published census, so the first
-    /// census after loading finishes on warm planning storage and site rows.
+    /// census after loading finishes on warm planning storage and site rows; the live books
+    /// are then lent once more, last, so the first planning slot keeps their pass rows.
     pub(crate) fn warm_loaded_planning(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
@@ -1406,6 +1407,20 @@ impl SimCore {
         if let Some(funding) = self.households.warm_census_storage() {
             self.demand.prepare_planning_books(
                 funding,
+                key,
+                &self.allocator,
+                &self.region_graph,
+                &self.zoning,
+                &self.fiscal_policy,
+                &self.transit_network,
+                &mut self.logistics,
+                self.time.minute_of_day,
+                PlanningPreparation::Whole { masks: true },
+            );
+            // Without a finished census the next planning slot lends the live books again: they
+            // are lent last, so its pass keeps the rows built now (`SIM-02-K`).
+            self.demand.prepare_planning_books(
+                &mut self.households.job_funding,
                 key,
                 &self.allocator,
                 &self.region_graph,
