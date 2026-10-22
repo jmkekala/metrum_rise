@@ -247,6 +247,19 @@ fn starting_a_town(e: &mut Entries) -> SimCore {
 // Edits Godot's main thread makes under the core lock, each followed by the snapshot refresh
 // the node does after it, and the per-frame render calls.
 fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
+    e.run("water reflection bridge", || {
+        let directions = [
+            Vector3::new(-0.25, -1.0, 0.0).normalized(),
+            Vector3::new(0.25, -1.0, 0.0).normalized(),
+        ];
+        let levels = super::super::water_api::first_water_surfaces_for_rays(
+            core,
+            Vector3::new(0.0, 500.0, 0.0),
+            &directions,
+            1_000.0,
+        );
+        assert_eq!(levels.len(), directions.len());
+    });
     e.run("cell chunks", || {
         core.prepare_stale_cell_chunks_internal();
         core.prepare_requested_cell_chunk((0, 0), core.terrain_payload_global_generation);
