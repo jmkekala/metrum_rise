@@ -239,11 +239,34 @@ def run_perf07(binary, output, tiers, speeds):
             records = run_test(binary, PERF07_TEST, dict(env, METRUM_PERF07_SPEED=str(speed)),
                                output / f"perf07-{tier}-{speed}x.log", ("PERF07_DAY",))
             row = records["PERF07_DAY"][0]
-            print(f"PERF-07 {tier} {speed}x: max {row['max_ms']:.2f} ms, p99 {row['p99_ms']:.2f}, "
-                  f"p99.9 {row['p999_ms']:.2f}, >8 ms {row['over_8_ms']}, "
-                  f">16.7 ms {row['over_16_7_ms']}", flush=True)
+            # Builds before SIM-02-K part 7 report no preemption fields.
+            split = (f" (unpreempted {row['max_unpreempted_ms']:.2f})", f" ({row['over_8_ms_preempted']} "
+                     f"preempted, {row['over_8_ms_unpreempted']} unpreempted)") \
+                if "max_unpreempted_ms" in row else ("", "")
+            print(f"PERF-07 {tier} {speed}x: max {row['max_ms']:.2f} ms{split[0]}, "
+                  f"p99 {row['p99_ms']:.2f}, p99.9 {row['p999_ms']:.2f}, "
+                  f">8 ms {row['over_8_ms']}{split[1]}, >16.7 ms {row['over_16_7_ms']}", flush=True)
             rows.append(row)
     return rows
+
+
+def perf07_table(rows):
+    """Markdown table of the runs. A frame counts as preempted when one of its threads waited
+    `preempted_wait_ms` or more for a CPU; the gate limits stay on the raw numbers."""
+    def value(row, key, digits):
+        return "–" if row.get(key) is None else f"{row[key]:,.{digits}f}"
+
+    lines = ["| Tier | Speed | Max | Max unpreempted | p99 | p99.9 | Mean | Frames > 8 ms | "
+             "preempted | unpreempted | > 16.7 ms | Preempted frames |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for row in rows:
+        lines.append(f"| {row['residents'] // 1000}k | {row['speed']:g}× | {value(row, 'max_ms', 1)} | "
+                     f"{value(row, 'max_unpreempted_ms', 1)} | {value(row, 'p99_ms', 2)} | "
+                     f"{value(row, 'p999_ms', 2)} | {value(row, 'mean_ms', 2)} | "
+                     f"{value(row, 'over_8_ms', 0)} | {value(row, 'over_8_ms_preempted', 0)} | "
+                     f"{value(row, 'over_8_ms_unpreempted', 0)} | {value(row, 'over_16_7_ms', 0)} | "
+                     f"{value(row, 'preempted_frames', 0)} / {value(row, 'frames', 0)} |")
+    return lines
 
 
 def portable_command(argv):
@@ -354,6 +377,8 @@ def main():
         tiers = [int(value) for value in args.perf07_tiers.split(",")]
         speeds = [int(value) for value in args.perf07_speeds.split(",")]
         report["perf07"] = run_perf07(binary, output, tiers, speeds)
+        report["perf07_table"] = perf07_table(report["perf07"])
+        print("\n".join(report["perf07_table"]))
         if args.perf07_baseline:
             baseline_rows = json.loads(args.perf07_baseline.read_text())["perf07"]
             report["failures"] += compare_perf07(report["perf07"], baseline_rows)

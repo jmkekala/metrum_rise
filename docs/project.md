@@ -311,7 +311,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Simulation scheduler refactor (`SIM-02`, in progress)**: hourly and midnight work moves from
+- **Simulation scheduler refactor (`SIM-02`, stopped for review, needs revalidation: open
+  questions 6 and 7)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
   Old saves break; continuous income and per-entity settlement windows are accepted gameplay
   changes; GPU compute is deferred. See the [engine contract and migration](simulation.md#sim-02-scheduler-refactor)
@@ -420,6 +421,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   carried, now runs by lane range on the pool, and the planning slots scan the free places beside
   their site preparation; the actions slot (2.7 / 2.9 ms) and slot 65 (2.6 / 3.2 ms) are the
   largest steady slots left (`SIM-02-K` part 5).
+  `SIM-02-K` part 7 (acceptance, 2026-10-22) stopped for review: `PERF-07` now separates the
+  frames other tasks preempted, 30k meets 8 ms at both speeds and 100k at 1× on unpreempted
+  frames, 100k at 32× does not (13.6 ms mean, 22–24 ms worst), and `SIM-02` and `PERF-07` wait on
+  two decisions ([open questions 6 and 7](simulation.md#open-questions)).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

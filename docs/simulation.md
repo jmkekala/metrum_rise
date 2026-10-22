@@ -50,6 +50,9 @@ feasibility cache split by parcel, and the live books lent last at load; then th
 delays summed by lane range on the pool, and each planning slot's free-place scan run beside
 its site preparation).
 Part 6 (100k traffic) is diagnosed: findings and two new bugs (`ECON-22`, `TRAFFIC-03`), no code.
+Part 7 (acceptance) is stopped for review: `PERF-07` now reports the frames another task
+preempted, 10k and 30k meet 8 ms at both speeds and 100k at 1× on the frames that were not
+preempted, and 100k at 32× does not (open questions 6 and 7).
 See the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
@@ -854,6 +857,23 @@ moves its entities between the tiers' phase buckets.
   either build, and every recorded worst frame of the last build showed the preemption pattern,
   so a single raw maximum and the over-8 count are not reproducible on this machine; acceptance
   needs preempted frames separated (part 7).
+- **Preemption columns** (`SIM-02-K` part 7). Before each timed frame and after it, outside the
+  timed span, the benchmark reads the run-queue wait (`/proc/self/task/<tid>/schedstat`, the
+  time a thread was runnable but waiting for a CPU) of every shared-pool worker and of the
+  thread that runs the frame, and records the largest growth among them (`wait_ms`). A frame
+  whose largest growth is 0.5 ms or more counts as **preempted** by another task. `PERF07_DAY`
+  adds `max_unpreempted_ms` (the maximum over the other frames), `over_8_ms_preempted` and
+  `over_8_ms_unpreempted`, `preempted_frames`, `max_preempted_less_wait_ms` (the largest
+  preempted frame less its wait: a preempted frame that still exceeds 8 ms after its wait is
+  removed hides work), `wait_classes` (frames, mean, maximum and frames over 8 ms by largest
+  wait: under 0.05, 0.1, 0.25, 0.5, 1, 2 and 5 ms, and above), `worst_unpreempted`, a `wait_ms`
+  on each worst frame, and the mean agent tick, slot work and pathing (`mean_agent_ms`,
+  `mean_slot_ms`, `mean_pathing_ms`). Test builds only, Linux only (elsewhere no thread is
+  watched and no frame counts as preempted), no dependency, no `unsafe`, no allocation per
+  frame. `METRUM_PERF07_SCHEDSTAT=0` skips the reads, to measure their overhead against the same
+  build. `tools/sim02_gate.py perf07` prints the split in each tier's line and a table of every
+  run, also kept in the report (`perf07_table`). The gate's "no worse" limits stay on the raw
+  maximum and p99. The threshold and the overhead are measured in the part 7 results.
 
 **Pre-refactor baseline** (2026-10-15, `SIM-02-A` release `$TEST_BINARY`,
 `RAYON_NUM_THREADS=8`, one run each on an i9-12900K). Milliseconds; "boundary" frames ran an
@@ -1165,8 +1185,22 @@ about 70% of it serial). Each part is gated and committed on its own, in this or
    of agent tick, and its 100k city failed the fixture's continuation check. Neither fix is
    landed: the census claim rule is an economy design decision. Open question 6 is not shrunk by
    traffic.
-7. **K7, acceptance.** `PERF-07` max at most 8 ms at 30k and 100k, at 1× and 32×, over a full game
-   day; envelope and burst limits; `SIM-02` and `PERF-07` marked done.
+7. **K7, acceptance** (stopped for review 2026-10-22; results section, part 7). `PERF-07` now
+   reports the frames another task preempted (a run-queue wait of 0.5 ms or more in one of the
+   frame's threads; test builds only), with the threshold and the reads' overhead measured.
+   On the final code, two full days at every tier and speed:
+   - **Passed:** the structural criteria (no `simulate_tick_internal`,
+     `simulate_operational_hour_internal` or minute-0 path; an hour's slot 0 holds only declared
+     fixed slots: the census publication, the operational hour's remainder, the residential
+     setup and, once a day, the `Cost::Constant` calendar close; hour-boundary frames are no
+     longer any run's worst); the envelope, determinism and burst limits, bit-identical to part
+     5's last commit; 30k at 1× and 32× (raw maximum 4.6–6.1 ms); 100k at 1× on frames no other
+     task preempted (7.35 and 7.73 ms; the raw maximum is 10.2–14.1 ms through preempted frames).
+   - **Failed:** 100k at 32× (mean frame 13.6 ms, worst frames 22–24 ms without preemption).
+   - **Open:** [question 6](#open-questions) (100k at 32× needs a decision of this document to
+     change; recommended: a coarser tier for distant areas, as its own item) and
+     [question 7](#open-questions) (the raw or the unpreempted maximum; recommended: the
+     unpreempted maximum with the raw p99.9 and the preempted frames less their wait at 8 ms).
 
 If a part cannot reach its target without changing a decision of this document (for example a
 coarser simulation tier for distant agents, or GPU compute), the findings and options are
@@ -4874,6 +4908,146 @@ commit)
   was not needed, because nothing in the bridge or the save format changed.
 - **Save format:** unchanged (106); the lane notes and the free-place scan are scratch.
 
+#### `SIM-02-K`, part 7 — acceptance (2026-10-22)
+
+Stopped for review under the part's rule: 100k at 32× cannot reach 8 ms without changing a
+decision of this document ([open question 6](#open-questions)), and whether the acceptance reads
+the raw maximum or the maximum over frames no other task preempted is the user's decision ([open
+question 7](#open-questions)). No simulation code changed.
+
+- **What changed (measurement only, test builds).** `PERF-07` reads the run-queue wait of every
+  shared-pool worker and of the frame's own thread before and after each timed frame, outside
+  the timed span, and counts a frame whose largest wait growth is 0.5 ms or more as preempted
+  (the [Frame budget](#frame-budget-perf-07) bullet "Preemption columns" lists the new fields).
+  `tools/sim02_gate.py perf07` prints the split in each tier's line and a table of the runs; the
+  gate's limits stay on the raw maximum and p99, so earlier gates keep their meaning.
+- **Threshold** (see [Decided while unattended](#decided-while-unattended)): frames with under
+  0.5 ms of wait are 0.0–0.3 ms slower on average than frames with none, those with 1–2 ms
+  1.0–1.6 ms slower; `max_unpreempted_ms` is the same at any threshold from 0.1 to 0.5 ms in
+  every run below; 1 ms and 2 ms let preempted frames into it, 0.05 ms drops work frames.
+- **Overhead** (same build, `METRUM_PERF07_SCHEDSTAT=0` against the reads, alternating, two
+  rounds each, 30k, one session): means 0.877 → 0.873 ms at 1× and 2.799 → 2.771 ms at 32×
+  (−0.4% and −1.0%, within the 2.4% and 1.2% between rounds with the reads off); agent tick,
+  slot work, snapshot and p99 move under 2% the same way; the reads add about 4 µs a frame to
+  the run's wall time, outside the timed span. Two builds of the same simulation code differ by
+  about 4% in the 30k 1× mean (code layout), so timing comparisons keep a same-session control.
+- **Equivalence** (`tools/sim02_gate.py envelope determinism --bursts departures,settlements
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): PASS (361 s), no failures, the same eight
+  notes as part 5's fourteenth commit; every day record of every city, with its fingerprint,
+  bursts, money residual and invariant counts, is bit-identical to that commit's gate (only the
+  runs' wall-clock seconds differ); determinism shows no differences (repeat, save/reload
+  continuation, 1 and 3 workers; 10k, three days). The burst limits pass.
+- **`PERF-07`, two full days on the final code** (`tools/sim02_gate.py perf07 --cpus
+  0,2,4,6,8,10,12,14 --binary "$TEST_BINARY" --perf07-baseline <the pinned SIM-02-A report>`,
+  `RAYON_NUM_THREADS=8`, every lock held, the machine otherwise idle, fresh copies of the cities
+  part 5's tenth commit prepared; every gate limit passes). Milliseconds and frame counts; a
+  frame is preempted when one of its threads waited 0.5 ms or more for a CPU; the last column is
+  the largest preempted frame less its wait:
+
+  Run 1:
+
+  | Tier | Speed | Max | Max unpreempted | p99 | p99.9 | Mean | Frames > 8 ms (preempted / unpreempted) | > 16.7 ms | Preempted frames | Preempted less wait |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 8.3 | 2.20 | 1.14 | 1.38 | 0.48 | 1 (1 / 0) | 0 | 165 / 86,376 | 1.6 |
+  | 10k | 32× | 2.6 | 2.13 | 1.98 | 2.45 | 0.87 | 0 | 0 | 35 / 2,700 | 1.9 |
+  | 30k | 1× | 5.1 | 3.19 | 1.86 | 2.21 | 0.87 | 0 | 0 | 1,528 / 86,376 | 2.5 |
+  | 30k | 32× | 5.9 | 5.87 | 4.73 | 5.77 | 2.80 | 0 | 0 | 207 / 2,700 | 5.0 |
+  | 100k | 1× | 14.1 | 7.35 | 6.27 | 7.51 | 4.04 | 28 (28 / 0) | 0 | 4,686 / 86,376 | 6.2 |
+  | 100k | 32× | 24.4 | 24.28 | 20.22 | 22.51 | 13.63 | 2,700 (242 / 2,458) | 314 | 242 / 2,700 | 20.6 |
+
+  Run 2:
+
+  | Tier | Speed | Max | Max unpreempted | p99 | p99.9 | Mean | Frames > 8 ms (preempted / unpreempted) | > 16.7 ms | Preempted frames | Preempted less wait |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 10k | 1× | 5.1 | 1.63 | 1.13 | 1.36 | 0.48 | 0 | 0 | 374 / 86,376 | 1.6 |
+  | 10k | 32× | 3.7 | 2.38 | 1.90 | 2.51 | 0.88 | 0 | 0 | 40 / 2,700 | 0.9 |
+  | 30k | 1× | 4.6 | 2.56 | 1.83 | 2.17 | 0.87 | 0 | 0 | 1,208 / 86,376 | 2.7 |
+  | 30k | 32× | 6.0 | 6.04 | 4.68 | 5.52 | 2.77 | 0 | 0 | 82 / 2,700 | 4.1 |
+  | 100k | 1× | 10.2 | 7.73 | 6.07 | 7.14 | 4.05 | 11 (11 / 0) | 0 | 4,498 / 86,376 | 7.1 |
+  | 100k | 32× | 24.4 | 24.43 | 19.88 | 22.04 | 13.59 | 2,700 (126 / 2,574) | 280 | 126 / 2,700 | 18.9 |
+
+  Two earlier days, on a build of the same code without the reads' off switch (max / max
+  unpreempted / p99.9 / frames over 8 ms, preempted and unpreempted): 10k 1× 6.8 / 2.03 / 1.30 /
+  0 and 10.2 / 1.60 / 1.29 / 1 (1, 0); 10k 32× 2.1 / 2.12 / 2.02 and 2.2 / 2.17 / 2.01; 30k 1×
+  5.8 / 2.62 / 2.18 and 6.0 / 3.26 / 2.10; 30k 32× 6.1 / 6.09 / 5.56 and 5.8 / 5.81 / 5.50, none
+  over 8 ms; 100k 1× 13.1 / 7.49 / 6.90 / 10 (10, 0) and 9.1 / 7.28 / 7.25 / 14 (14, 0); 100k 32×
+  24.1 / 24.13 / 21.98 and 27.4 / 21.90 / 25.62, every frame over 8 ms.
+- **Against the targets** (max ≤ 8 ms at 30k and 100k, 1× and 32×, a full day):
+  - **30k, both speeds: pass** on the raw maximum (4.6–6.1 ms in all four days) and on the
+    unpreempted maximum (2.6–6.1 ms); no frame over 8 ms. 10k (not a target tier) stays under
+    2.4 ms on unpreempted frames; on the raw maximum two of its four 1× days have one preempted
+    frame over 8 ms (8.3 and 10.2 ms: agent ticks of 7.8 and 8.8 ms with waits of 7.0 and 8.1 ms,
+    against a mean tick of 0.19 ms).
+  - **100k 1×: passes on unpreempted frames, fails on the raw maximum.** Unpreempted maximum
+    7.28–7.73 ms in four days, p99.9 6.90–7.51 ms; the raw maximum is 9.1–14.1 ms through 10–28
+    preempted frames a day, none of which exceeds 7.1 ms once its wait is taken off. The margin is
+    thin: the unpreempted maxima are the removal window's first minute (22:04 7.7 ms: 3.1 ms of
+    slot work on a 3.4 ms agent tick and a 1.2 ms snapshot; also 14:04, 21:04, 23:04), the actions
+    slot (06:03 7.1–7.2 ms) and the evening's largest agent ticks (21:15–21:46, 4.4–5.0 ms).
+  - **100k 32×: fails.** Every frame is over 8 ms; the mean frame is 13.6 ms (agent tick 6.6,
+    slot work 6.1, snapshot 0.85, pathing 0.01), and the worst frames, 21.8–24.4 ms without
+    preemption, fall in 07:38–08:35 (13.7–17.0 ms of slot work on a 5.6–7.5 ms agent tick) and
+    05:37–05:48 (a 9.4–9.9 ms agent tick on 11.1–11.4 ms of slot work); the report does not split
+    slot work by system. See open question 6.
+- **Hour boundaries.** The 24 frames a day that cross an hour's first slot hold at most 1.2–1.3 ms
+  (10k 1×), 1.8–2.1 (10k 32×), 2.1–2.2 (30k 1×), 4.6–4.8 (30k 32×), 6.7–6.8 (100k 1×) and 17.4–17.5
+  ms (100k 32×), under each run's maximum at every tier and speed; in the pinned pre-refactor
+  reference the worst frame of every run was the first hour boundary after loading (198–2,021
+  ms).
+- **Structural checks** (`git grep` over the tree):
+  - `simulate_tick_internal`, `simulate_operational_hour_internal` and `step_authored_minute`:
+    no match in code, tests, benchmarks or tools; only this document's history and the archive
+    name them.
+  - Outside the dispatcher's fixed slots, game code reads the slot of the hour only as a
+    position inside a declared window or sweep: each rolling sweep's chunk index (chunk 0 is one
+    chunk like the others), the removal window of the building-removal and departure queues
+    (slots 64–479), the funding census's input half and step half, the census book's preparation
+    parts (slots 936, 944, 953 and 957, part 5), the city hour's close at the hour's last slot
+    (O(1)), the event shift out of queue-free slots, and the save's note of whether the hour's
+    census was published. Agents leave at their own departure minute. A debug-channel summary
+    skips a day's first slot because the calendar close prints it. None adds work at an hour's
+    slot 0. `TimeAdvance::crossed_day_boundary` remains only for its own unit test.
+  - **What runs at an hour's slot 0** (all declared, in dispatch order): the timed events due
+    then (every slot); `census publish` (fixed slot, `Cost::CityScan`: an O(1) swap and an
+    O(B/p) parallel copy of funded jobs and activity, a whole census only when the window left
+    it missing or stale, such as a world's first hour); `operational hour` (fixed slot,
+    `Cost::Dirty`: the demand snapshot's newly created entities, the pending-arrival recount
+    from queued admissions and carriers in flight, the logistics clock, expired commute
+    quotes); `residential setup` (fixed slot, `Cost::CityScan`: the workforce count beside the
+    plan's lot and building scans); at a day's slot 0 the `calendar close` (`Cost::Constant`:
+    the day's totals become the budget report; road upkeep reads the rolling road length); then
+    the slot's hourly and daily entity phases and the rolling chunks. Slot 0 is queue-free:
+    slot 1 serves its queue shares. The two `CityScan` systems are the ones the
+    [Scheduler](#scheduler) section allows as recorded `SIM-02-K` debt (with the other planning
+    setups and plans); at 100k their slot held 1.5–1.6 ms in part 5's last diagnostic days.
+- **Left** (none blocks 30k or 100k 1×; all are part 5's and part 4's lists): the actions slot
+  in its own slot or one lending; slot 65; the census book's parts at 936 and 953; the first
+  queue re-proof after a load; maintained workforce totals, part 4's indoor agents and zone
+  lists; the planning slots still declare `Cost::CityScan`.
+- **Criteria** (part 7's acceptance, each against the final code):
+
+  | Criterion | Result |
+  | --- | --- |
+  | No legacy or boundary paths | pass |
+  | Envelope and burst limits | pass |
+  | 30k, both speeds | pass, on raw and unpreempted maxima |
+  | 100k 1× | passes on `max_unpreempted_ms` (thin margin); fails on raw max through preempted frames |
+  | 100k 32× | fails |
+
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with part 5's fourteenth
+  commit as control: hour means 0.81–0.92, 3.31–3.40, 8.36–8.51 and 26.09–26.64 ms (control
+  0.82–0.84, 3.24–3.32, 8.08–8.29 and 26.69–26.97); level, and the same work-count limits fail.
+
+- **Tests.** 2,559 release and 2,559 debug library tests (one new, for the preemption
+  bookkeeping) and the 4 growth integration tests pass; clippy adds nothing. An isolated
+  `./run.sh --test` passed with no script errors.
+- **Build identity:** rustc 1.99.1; the gate, the suites, both acceptance days of `PERF-07` and
+  `./run.sh --test` ran on the committed sources (`$TEST_BINARY`), `PERF-01` on the same binary;
+  `PERF-07` pinned with `--cpus 0,2,4,6,8,10,12,14` and `RAYON_NUM_THREADS=8`, every lock held,
+  no other timing run or build on the machine, both days on copies of the same prepared cities.
+- **Save format:** unchanged (106); the measurement is test-build code only.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -4995,6 +5169,88 @@ about 0.04 ms per thousand at 32×, so even a healthy city keeps about 5 ms of 3
 passes over every agent and in trip planning. The 32× arithmetic of this question therefore
 stands: about 6.5 ms of agent tick plus about 5.6 ms of slot work. 100k 32× within 8 ms still
 needs one of the options above.
+
+**Part 7 (2026-10-22), the final count.** On the final code (two full `PERF-07` days, part 7's
+results): the 100k 32× frame averages 13.6 ms, of which agent tick 6.6 ms, slot work 6.1 ms,
+render snapshot 0.85 ms and pathing 0.01 ms. Every frame exceeds 8 ms, p99 is 19.9–20.2 ms,
+280–314 frames a day exceed 16.7 ms, and the worst frames without preemption are 21.8–24.4 ms
+(13.7–17.0 ms of slot work on a 5.6–7.5 ms agent tick in 07:38–08:35; a 9.4–9.9 ms agent tick on
+11 ms of slot work in 05:37–05:48). 100k 1× now meets 8 ms on the frames no other task preempted
+(7.28–7.73 ms in four days), so 32× is the one target the refactor leaves. The arithmetic of this
+question stands, and with numbers from the final code:
+
+- **Slot work is per-entity work for the simulated time a frame carries.** At 32× a frame
+  crosses 8.5 slots, and slot work rises linearly with speed: 0.23 ms a frame at 1×, 0.45 at 2×,
+  0.86 at 4×, 1.63 at 8×, 3.14 at 16× and 6.1 at 32× (a 100k speed sweep, one diagnostic day
+  each, the same cities), about 16–20 s of slot work per game day at every speed. The agent tick
+  rises from 3.0 ms (1×) to 6.6 ms (32×): passes over every agent plus trip planning (about 120
+  µs a plan, routing work, part 4).
+- **Neither half fits alone.** The agent tick and snapshot alone are 7.4 ms at 32×, so slot work
+  would have to fall from 6.1 ms to under 0.6 ms in every frame, its peaks of 11–17 ms included.
+- **Part 6's traffic finding does not change it.** The 100k city's shoppers walk kilometres
+  because the funding census lets stores claim the nearest households without a distance bound
+  (`ECON-22`); a 600 m bound took 17,000–18,000 agents off the road but under 1 ms of agent tick
+  (part 6's prototype: 0.4 ms at 1×, 0.7 ms at 32×).
+- **Lower speeds do not fit either.** The worst frame without preemption at 100k is 7.3–7.7 ms at
+  1×, 9.8 ms at 2×, 9.5 ms at 4×, 12.7 ms at 8×, 16.0 ms at 16× and 21.8–24.4 ms at 32× (sweep;
+  1× and 32× from the acceptance days). At 2× and 4× the frames over 8 ms without preemption (17
+  and 42) are mostly the removal window's first minute (minute 4 of an hour: up to 4.5 ms of slot
+  work on a 3.4–5.8 ms agent tick).
+
+The options, each changing a decision of this document:
+
+- **(a) A coarser tier for distant areas.** Outside the area of interest, agents skip the
+  per-frame movement (a trip becomes its arrival event, timed from the routed travel time) and
+  households and buildings settle as district aggregates in that tier's own phase buckets
+  ([Simulation tiers](#simulation-tiers)). It removes most of the movement (about 9% of moving
+  agents are in the camera, part 2) and, through the aggregates, the per-entity slot work of
+  distant districts, so it is the only option that reaches both halves at any size. It changes
+  the decision that every entity runs `Full`, needs its own design (the aggregates, the hand-over
+  between tiers, what the player sees), and is what goal 4 built the scheduler for and the
+  project's route to a million residents.
+- **(b) A cap on simulated slots per frame** (the clock slips behind real time when a frame would
+  carry more). Deterministic, since results follow the slot sequence alone, and no new system, but
+  it changes the decision that a speed simulates its stated rate, and at 100k it would bind at
+  1×: the sweep's 2× day already has 17 frames over 8 ms without preemption.
+- **(c) Movement sub-stepping** (each agent moves every k-th frame by k frames' time). It changes
+  the time model's per-frame movement and the traffic it produces (coarser car following,
+  junction and lane-change steps), and reaches only the movement part of the agent tick, not
+  trip planning or the 6.1 ms of slot work: it cannot reach 8 ms alone.
+- **(d) GPU compute**, deferred by decision ([GPU compute](#gpu-compute)): movement is its only
+  GPU-shaped part, so it shares (c)'s limit, and WGSL does not guarantee bit-identical results.
+
+**Recommendation: (a)**, as its own roadmap item that takes over the 100k 32× target, so that
+`SIM-02` can close on the targets it meets. Only (a) and (b) reach slot work, and (b) would make
+100k a 1× game. A changed target (for example 100k 32× max ≤ 16.7 ms, one frame per display
+refresh, so the clock never slips) is a further option, but 280–314 frames a day exceed 16.7 ms
+today, so it too needs (a) or (b).
+
+7. **`PERF-07` under preemption** (`SIM-02-K` part 7). The benchmark's eight pinned CPUs are
+   shared with the rest of the machine, and another task keeps a pool worker or the frame's own
+   thread off its CPU for 0.5–10.6 ms in 0.2–9% of a day's frames (100k 1×: 4.6–5.4%). Such a
+   frame stalls for about its wait, at a different minute in every run, so a day's raw maximum
+   measures the machine as much as the simulation: in four days of the same code 100k 1× had raw
+   maxima of 9.1–14.1 ms and 10–28 frames over 8 ms, every one of them preempted, against
+   7.28–7.73 ms without preemption. The acceptance needs a decision:
+   - **(a) Accept on the unpreempted maximum**: `max_unpreempted_ms` ≤ 8 ms, with the raw p99.9 ≤
+     8 ms (so at most 0.1% of the day's frames, 86 at 1×, may exceed 8 ms through preemption) and
+     `max_preempted_less_wait_ms` ≤ 8 ms (so no preempted frame hides more than 8 ms of work). No
+     machine change; the raw columns stay reported and the gate's "no worse" limits stay on them.
+     On the four days: 30k passes at both speeds, 100k 1× passes (p99.9 6.90–7.51 ms, preempted
+     frames less their wait at most 7.1 ms), 100k 32× fails.
+   - **(b) Isolated CPUs**: boot with the benchmark's CPUs and their SMT siblings isolated (for
+     example `isolcpus=` and `nohz_full=` on 0–15, or a cpuset that moves every other task off
+     them), or run on a quiet machine. The raw maximum then means what it says, but it is machine
+     configuration outside the repository, needs a reboot each way, and does not describe the
+     players' machines, which are never isolated.
+   - **(c) Fewer workers than pinned CPUs** (for example 7 workers on the 8 CPUs), so a waiting
+     worker can move to a free CPU. It shortens the stalls without removing them (the kernel
+     moves a runnable task to an idle CPU only at its next balancing), and it measures a pool
+     1/8 smaller than the game runs.
+
+   **Recommendation: (a).** It needs no machine change, the benchmark reports it from part 7 on,
+   its two guards keep a preempted frame from hiding work, and the threshold data show that it
+   does not depend on the threshold's exact value. (b) only if a raw maximum must be quoted.
 
 ### Decided while unattended
 
@@ -7424,6 +7680,59 @@ alternatives and the evidence. The user reviews these on return.
   the first run. After the rechecks (the count between 12 and 36 for either build; the raised
   maxima single frames with an agent tick of 5.1–11.9 ms and under 2 ms of slot work) they were
   taken as preemption noise, not as a cost of this commit.
+- **`SIM-02-K` part 7 — `PERF-07` reports the frames other tasks preempted.** The eight pinned
+  CPUs are shared with the rest of the machine, and rechecks of one binary gave 30k 1× maxima
+  from 4 to 15 ms (see "rising maxima and over-8
+  counts treated as noise"): a single raw maximum is not reproducible.
+  Options: (a) keep the raw maximum only (rejected: it measures the machine as much as the
+  simulation); (b) per-frame scheduler statistics of the threads that do the frame's work, read
+  outside the timed span (taken: test builds only, Linux only, no dependency, no `unsafe`,
+  O(threads) reads a frame and no allocation; the raw columns and the gate's limits stay as
+  they were); (c) the part 5 diagnostic, which read every task of the process with its name
+  (rejected for the benchmark: it opens and allocates per task and frame, and only the pool's
+  workers and the frame's own thread hold the frame's work); (d) isolated CPUs (machine
+  configuration, not a code change; left to the user, open question 7). The workers' thread
+  ids come from a `rayon::broadcast` on the shared pool when the run starts, each worker reading
+  its own `/proc/thread-self` link, rather than from a start handler in `thread_pools.rs`
+  (rejected: it would change the game's pool code for a test need; the shared pool keeps its
+  workers until it stops, so both give the same set). Each thread's `schedstat` stays open and
+  is read with one positioned read at offset 0, which procfs renders afresh.
+- **`SIM-02-K` part 7 — the preemption threshold is 0.5 ms of run-queue wait.** Options: 0.05,
+  0.1, 0.25, 0.5, 1, 2 or 5 ms (the report's wait classes). Evidence, from four full days of
+  every tier and speed and four more of 30k (`wait_classes`, `tools/sim02_gate.py perf07`
+  reports): frames whose largest wait is under 0.5 ms are on average 0.0–0.3 ms slower than
+  frames with no wait (100k 1×: 0.06–0.34 ms on a 4.0 ms mean), frames with 0.5–1 ms of wait
+  0.3–0.6 ms slower, 1–2 ms 1.0–1.6 ms and 2–5 ms 1.5–5.2 ms. `max_unpreempted_ms` is the same at
+  every threshold from 0.1 to 0.5 ms in every run. 1 ms raises the 10k or 30k 1× value in seven of
+  the eight full 1× days at those tiers (by 0.03–0.7 ms), and 2 ms puts a 100k 1× frame over 8 ms
+  (8.00 and 8.12 ms) in two of the four 100k 1× days. 0.05 ms drops three frames with 0.05–0.08 ms
+  of wait, among them a 100k 32× day's worst frame (24.3 ms, 16.8 ms of it slot work), which is
+  work, not preemption. So 0.5 ms is the largest threshold whose maxima equal those of every
+  threshold down to 0.1 ms.
+- **`SIM-02-K` part 7 — an off switch for the reads' overhead.** The first A/B ran the new build
+  against the fourteenth commit's binary and found the new build's means 4–5% lower at 30k 1×
+  (the snapshot mean 13% lower), a layout difference between two builds, not the reads (the
+  harness change touches no simulation code). Options: accept that A/B (rejected: it cannot
+  separate the reads from the build); a same-binary A/B (taken): `METRUM_PERF07_SCHEDSTAT=0`
+  watches no thread. Same build, 30k, the reads off and on alternating, two rounds each, one
+  session: means 0.877 → 0.873 ms at 1× (−0.4%) and 2.799 → 2.771 ms at 32× (−1.0%), against a
+  spread of 2.4% and 1.2% between the two rounds with the reads off; agent tick, slot work,
+  snapshot and p99 move by under 2% the same way. The reads add about 4 µs a frame to the run's
+  wall time at 1×, outside the timed span. The two builds' layouts differ by about 4% in the
+  30k 1× mean (0.835–0.851 against 0.873–0.888 ms with the reads on in both), so a timing
+  comparison across builds keeps needing a same-session control.
+- **`SIM-02-K` part 7 — stopped under the rule.** 100k at 32× cannot reach 8 ms without changing
+  a decision of this document (open question 6), and whether the acceptance reads the raw
+  maximum or the unpreempted one is the user's decision (open question 7). Per the rule, part 7
+  changes no simulation code, writes the findings and options here, marks `SIM-02` and
+  `PERF-07` `needs_revalidation` and stops for review. The only code change is the measurement
+  (test builds), which leaves every simulation result bit-identical.
+- **`SIM-02-K` part 7 — the day report carries its components' means.** Open question 6 needs
+  the 100k 32× frame's budget by part; `PERF07_DAY` reported only the components' maxima and the
+  snapshot's mean. It now also reports the mean agent tick, slot work and pathing per frame
+  (sums over the samples it already keeps, no per-frame cost). A 100k speed sweep (2×, 4×, 8×,
+  16×, one diagnostic day each) measured how the frame grows between 1× and 32×, for the cap
+  option of open question 6.
 
 ### Corrections to part 2's statements (merge with the entries above)
 

@@ -6,14 +6,20 @@
 //! does while it holds the core mutex: the frame step, stale cell-chunk preparation and the
 //! render snapshot. Godot's upload acknowledgements run between frames, outside the timing, as
 //! the main thread does. Run serially through `tools/sim02_gate.py`.
+//!
+//! Each frame also records the largest run-queue wait one of the frame's threads gained during
+//! it, read outside the timing (`preemption`), so the report separates frames that another task
+//! preempted from the frame's own work.
 
 use super::super::frame::{FRAME_DT_S, FrameStepReport};
 use super::super::snapshot::RenderSnapshot;
 use super::super::state::SimCore;
 use super::contract::{cache_dir, residents, timing_mode};
 use super::snapshot;
+use preemption::RunQueueWaits;
 use std::time::Instant;
 
+mod preemption;
 // Kept out of `populated_city.rs`, whose bytes are part of the snapshot fixture revision.
 mod snapshot_cull;
 
@@ -23,6 +29,12 @@ const FRAME_MS: f64 = 1000.0 / 60.0;
 const CAMERA_HALF_SPAN_M: f32 = 1000.0;
 const WORST_FRAMES: usize = 12;
 const MINUTES_PER_DAY: u64 = 24 * 60;
+// A frame in which one of its threads gained this much run-queue wait counts as preempted by
+// another task; the report's wait classes show where frames split
+// (docs/simulation.md#frame-budget-perf-07).
+const PREEMPTED_WAIT_MS: f64 = 0.5;
+// Upper bounds of the report's wait classes, in milliseconds; the last class is unbounded.
+const WAIT_CLASSES_MS: [f64; 7] = [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0];
 
 #[derive(Clone, Copy)]
 struct FrameSample {
@@ -32,6 +44,8 @@ struct FrameSample {
     step: FrameStepReport,
     cell_ms: f64,
     snapshot_ms: f64,
+    // The largest run-queue wait one of the frame's threads gained during the frame.
+    wait_ms: f64,
 }
 
 impl FrameSample {
@@ -41,10 +55,14 @@ impl FrameSample {
             "pathing_ms":self.step.pathing_ms, "agent_ms":self.step.agent_ms,
             "minute_ms":self.step.minute_ms, "pending_spawn_ms":self.step.pending_spawn_ms,
             "hourly_ms":self.step.hourly_ms, "daily_ms":self.step.daily_ms,
-            "cell_ms":self.cell_ms, "snapshot_ms":self.snapshot_ms,
+            "cell_ms":self.cell_ms, "snapshot_ms":self.snapshot_ms, "wait_ms":self.wait_ms,
             "elapsed_minutes":self.step.elapsed_minutes,
             "hourly_ticks":self.step.hourly_ticks, "daily_ticks":self.step.daily_ticks,
         })
+    }
+
+    fn preempted(&self) -> bool {
+        self.wait_ms >= PREEMPTED_WAIT_MS
     }
 }
 
@@ -68,6 +86,31 @@ fn acknowledge_uploads(core: &mut SimCore, published: &RenderSnapshot) {
     if published.network_dirty {
         core.acknowledge_network_render_generation(published.network_generation);
     }
+}
+
+// Frames by the largest wait one of their threads gained: count, mean and largest frame, and
+// frames over the budget, for each class of `WAIT_CLASSES_MS`.
+fn wait_classes(samples: &[FrameSample]) -> Vec<serde_json::Value> {
+    let mut classes = vec![(0_usize, 0.0, 0.0_f64, 0_usize); WAIT_CLASSES_MS.len() + 1];
+    for sample in samples {
+        let class = WAIT_CLASSES_MS.partition_point(|&bound| bound <= sample.wait_ms);
+        let (count, sum, max, over) = &mut classes[class];
+        *count += 1;
+        *sum += sample.ms;
+        *max = max.max(sample.ms);
+        *over += usize::from(sample.ms > BUDGET_MS);
+    }
+    classes
+        .iter()
+        .enumerate()
+        .map(|(class, &(count, sum, max, over))| {
+            serde_json::json!({
+                "wait_below_ms": WAIT_CLASSES_MS.get(class),
+                "frames": count, "mean_ms": sum / count.max(1) as f64, "max_ms": max,
+                "over_8_ms": over,
+            })
+        })
+        .collect()
 }
 
 // Nearest-rank percentile of an ascending sample.
@@ -114,8 +157,17 @@ fn perf07_frame_budget() {
         / (FRAME_DT_S * f64::from(speed)))
     .ceil() as usize;
     let mut samples = Vec::with_capacity(frames_per_day + 1);
+    // `METRUM_PERF07_SCHEDSTAT=0` skips the wait reads, to measure their overhead against the
+    // same build; the report then watches no thread and counts no frame as preempted.
+    let mut waits = if std::env::var("METRUM_PERF07_SCHEDSTAT").is_ok_and(|value| value == "0") {
+        RunQueueWaits::unwatched()
+    } else {
+        RunQueueWaits::record_pool_and_caller()
+    };
     let started = Instant::now();
     while absolute_minute(core) < end_minute {
+        // The wait counters are read outside the timed span.
+        waits.start();
         let frame_start = Instant::now();
         let step = core.step_frame(FRAME_DT_S);
         let cell_start = Instant::now();
@@ -123,6 +175,7 @@ fn perf07_frame_budget() {
         let snapshot_start = Instant::now();
         let next = core.build_snapshot_reusing(std::mem::take(&mut spare));
         let frame_end = Instant::now();
+        let wait_ms = waits.largest_growth_ms();
         spare = std::mem::replace(&mut published, next);
         acknowledge_uploads(core, &published);
         samples.push(FrameSample {
@@ -132,6 +185,7 @@ fn perf07_frame_budget() {
             step,
             cell_ms: (snapshot_start - cell_start).as_secs_f64() * 1000.0,
             snapshot_ms: (frame_end - snapshot_start).as_secs_f64() * 1000.0,
+            wait_ms,
         });
     }
     let run_s = started.elapsed().as_secs_f64();
@@ -141,6 +195,20 @@ fn perf07_frame_budget() {
     let mut worst = samples.clone();
     worst.sort_by(|a, b| b.ms.total_cmp(&a.ms));
     worst.truncate(WORST_FRAMES);
+    let mut worst_unpreempted: Vec<FrameSample> = samples
+        .iter()
+        .filter(|sample| !sample.preempted())
+        .copied()
+        .collect();
+    worst_unpreempted.sort_by(|a, b| b.ms.total_cmp(&a.ms));
+    worst_unpreempted.truncate(WORST_FRAMES);
+    let preempted = samples.iter().filter(|sample| sample.preempted());
+    let over_budget = |preempted_frames: bool| {
+        samples
+            .iter()
+            .filter(|sample| sample.preempted() == preempted_frames && sample.ms > BUDGET_MS)
+            .count()
+    };
     let boundary: Vec<f64> = samples
         .iter()
         .filter(|sample| sample.step.hourly_ticks > 0)
@@ -153,6 +221,9 @@ fn perf07_frame_budget() {
         .fold(0.0, f64::max);
     let component_max =
         |value: fn(&FrameSample) -> f64| samples.iter().map(value).fold(0.0, f64::max);
+    let component_mean = |value: fn(&FrameSample) -> f64| {
+        samples.iter().map(value).sum::<f64>() / samples.len() as f64
+    };
     let mut snapshot_sorted: Vec<f64> = samples.iter().map(|sample| sample.snapshot_ms).collect();
     snapshot_sorted.sort_by(f64::total_cmp);
     eprintln!(
@@ -164,6 +235,14 @@ fn perf07_frame_budget() {
             "mean_ms":sorted.iter().sum::<f64>() / sorted.len() as f64,
             "over_8_ms":sorted.iter().filter(|&&ms| ms > BUDGET_MS).count(),
             "over_16_7_ms":sorted.iter().filter(|&&ms| ms > FRAME_MS).count(),
+            "preemption_threads":waits.len(), "preempted_wait_ms":PREEMPTED_WAIT_MS,
+            "preempted_frames":preempted.clone().count(),
+            "max_unpreempted_ms":worst_unpreempted.first().map_or(0.0, |sample| sample.ms),
+            "over_8_ms_preempted":over_budget(true), "over_8_ms_unpreempted":over_budget(false),
+            "max_preempted_less_wait_ms":preempted
+                .map(|sample| sample.ms - sample.wait_ms)
+                .fold(0.0, f64::max),
+            "wait_classes":wait_classes(&samples),
             "boundary_frames":boundary.len(),
             "boundary_max_ms":boundary.iter().copied().fold(0.0, f64::max),
             "non_boundary_max_ms":plain_max,
@@ -172,8 +251,12 @@ fn perf07_frame_budget() {
             "max_cell_ms":component_max(|sample| sample.cell_ms),
             "max_snapshot_ms":component_max(|sample| sample.snapshot_ms),
             "mean_snapshot_ms":snapshot_sorted.iter().sum::<f64>() / snapshot_sorted.len() as f64,
+            "mean_agent_ms":component_mean(|sample| sample.step.agent_ms),
+            "mean_slot_ms":component_mean(|sample| sample.step.minute_ms),
+            "mean_pathing_ms":component_mean(|sample| sample.step.pathing_ms),
             "p99_snapshot_ms":percentile(&snapshot_sorted, 0.99),
             "worst":worst.iter().map(FrameSample::json).collect::<Vec<_>>(),
+            "worst_unpreempted":worst_unpreempted.iter().map(FrameSample::json).collect::<Vec<_>>(),
             "record":format!("{:?}", city.record()),
         })
     );
