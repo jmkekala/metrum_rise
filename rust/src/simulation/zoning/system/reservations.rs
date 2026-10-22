@@ -10,6 +10,16 @@ use glam::DVec2;
 use godot::prelude::Vector3;
 
 impl ZoningSystem {
+    /// Visits reserved cell interiors in one local road-query envelope. The cell store's chunk
+    /// and reservation-mask indices bound the work; the callback supplies the exact road test.
+    pub(crate) fn reserved_road_cells_overlap_bounds(
+        &self,
+        bounds: CellBounds,
+        test: impl FnMut([DVec2; 4]) -> bool,
+    ) -> bool {
+        self.reserved_cells_overlap(bounds, true, test)
+    }
+
     /// Tests arbitrary (including concave) field/site footprints against both zoning workflows.
     pub(crate) fn overlaps_reservation(&self, footprint: &PolygonFootprint) -> bool {
         self.parcels.overlaps_polygon(footprint) || self.cells_overlap_footprint(footprint, false)

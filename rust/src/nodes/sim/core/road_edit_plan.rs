@@ -38,6 +38,9 @@ struct RoadGeometryPlan {
     validation: RoadPreviewValidation,
     topology: Option<RoadTopologyPlan>,
     topology_reuse: Mutex<Option<RoadPreviewTopologyReuse>>,
+    // Cell reservations are independent of the immutable road solve. Cache their exact local
+    // result by the canonical cell-store revision so frame publication does not repeat it.
+    cell_zoning_check: Mutex<Option<(u64, bool)>>,
 }
 
 // Which live-state check refused a plan; no allocation, since preview status polls it.
@@ -329,11 +332,25 @@ impl RoadEditPlan {
 
     /// Revalidates cell reservations even when paint changed after this road preview was built.
     pub(crate) fn overlaps_cell_zoning(&self, core: &SimCore) -> bool {
-        self.road
+        let revision = core.zoning.cells.revision();
+        let mut cached = self
+            .road
+            .cell_zoning_check
+            .lock()
+            .expect("road edit plan cell-zoning lock poisoned");
+        if let Some((cached_revision, overlaps)) = *cached
+            && cached_revision == revision
+        {
+            return overlaps;
+        }
+        let overlaps = self
+            .road
             .topology
             .as_ref()
             .and_then(|topology| topology.roads())
-            .is_some_and(|roads| roads.overlaps_cell_zoning(&core.zoning))
+            .is_some_and(|roads| roads.overlaps_cell_zoning(&core.zoning));
+        *cached = Some((revision, overlaps));
+        overlaps
     }
 
     /// Retains the worker's preparation, solved graph delta and optional canonical surface products.
@@ -355,6 +372,7 @@ impl RoadEditPlan {
                 validation,
                 topology,
                 topology_reuse: Mutex::new(topology_reuse),
+                cell_zoning_check: Mutex::new(None),
             }),
             terrain: None,
         }

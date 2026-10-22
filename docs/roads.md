@@ -1268,7 +1268,11 @@ current result:
 
 Without a current result a frame does O(1) work and allocates nothing. With one, it repeats a
 poll's corridor and plan checks, all local. Their parcel queries allocate scratch sets, as a poll's
-do. The populated planning fixtures measure this as `frame_checks` on the full-mode result (release
+do. Finalized cell-reservation overlap is cached by the cell-store revision: a changed revision
+visits reserved cells once per affected span/node envelope and narrows exact triangle contact with
+the compiled owner's existing query grid, without query-time allocation (`ROAD-66`). Unchanged
+frames reuse that exact result. The populated planning fixtures measure the whole live check as
+`frame_checks` on the full-mode result (release
 `$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::<test> --exact --ignored --nocapture
 --test-threads=1`, `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, 100
 samples per size, 2026-10-19). From 0 to 100,000 background buildings (600,024 agents, 100,004
@@ -1277,6 +1281,22 @@ to 0.123 ms with painted cells in `populated_cell_road_plan_scaling` (p95 at mos
 cost follows the stroke, not the city. Evaluation only reads the core, so it cannot change
 simulation outcomes. A published verdict is display feedback: the click is still decided under
 the mutex.
+
+`ROAD-66` was reproduced on the reported four-way/neighboring-three-way stroke: its valid local
+plan had about 6,500 top-surface polygons. The former polygon-major query restarted the reserved
+cell chunk walk for every polygon and every frame, keeping the global simulation mutex almost
+continuously. The owner-major query keeps the same positive-area, shared-edge-legal contact rule
+by testing the compiled triangles against the rounded cell interior. On the original save's
+51-position pointer sweep, formerly observed live checks of 201 ms and 1,108 ms fell to 2.55–3.50
+ms on their first cell revision and 0.011–0.020 ms when republished unchanged. The permanent
+regression builds a dense four-way beside a three-way, drives 36 preview positions while the core
+lock is held, compares every published verdict with the commit guard, commits a ready result, and
+keeps the same local verdict after adding 20,000 remote reservations.
+
+A fresh unpinned test-profile locality run on 2026-10-22 (24 Rayon workers, 100 samples per
+size) kept identical local products from 0 through 100,000 remote buildings, cells and 391 remote
+roads. `frame_checks` stayed at 0.041–0.050 ms p50 and 0.080–0.099 ms p95. This is locality
+validation, not a matched release speedup comparison.
 
 Committed farm fields also reserve land (`ECON-07`). Road creation rejects `field_overlap` from
 both the stroke corridor and finalized local carriageway/curb/sidewalk/junction polygons. The

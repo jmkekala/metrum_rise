@@ -1849,6 +1849,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
   discard margin-only road loops whose patch-clamped bounds collapse to a line, preventing a bridge
   landing from invalidating and hiding an adjacent terrain patch. Road geometry dumps now include
   compact cut/fill summaries. See [`roads.md`](roads.md).
+- Road-preview cell-reservation validation now queries each affected compiled span/junction owner
+  once through the existing cell and surface-triangle indices, then caches the exact verdict by
+  cell revision. This removes the simulation-lock freeze when a dense four-way preview contained
+  thousands of valid surface polygons, without weakening commit validation or making the work
+  depend on remote zoning (`ROAD-66`). See [`roads.md`](roads.md).
 - Corrected road-speed units so the current urban road presets use `50 km/h` as `13.89 m/s`,
   and capped car movement through junction connector lanes at `6 m/s`. See
   [`reference.md`](reference.md).

@@ -2,9 +2,11 @@
 
 //! Read-only live/planned road queries over existing spatial and owner-local indices.
 
-use super::super::RoadSurfaceSystem;
+use super::super::{ChunkCacheKind, RoadSurfaceSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::zoning::cells::{CellBounds, interiors_overlap};
+use glam::DVec2;
 use godot::prelude::Vector3;
 use std::collections::HashSet;
 
@@ -233,14 +235,70 @@ fn max_height(left: Option<f32>, right: Option<f32>) -> Option<f32> {
 }
 
 impl RoadSurfaceSystem {
-    /// Tests this compiled neighborhood against cell paint and occupied claims. Callers must
-    /// supply a bounded validation surface; this visits every owner in this particular cache.
+    /// Tests this compiled neighborhood against cell paint and occupied claims. The cell chunk
+    /// index is visited once per affected owner envelope, then the owner's existing triangle grid
+    /// narrows each exact test. Work follows the affected neighborhood, not polygon count times
+    /// reservation lookup count, and the query allocates no scratch storage.
     pub(crate) fn overlaps_cell_zoning(
         &self,
         zoning: &crate::simulation::zoning::ZoningSystem,
     ) -> bool {
-        zoning.cells.has_reservations()
-            && self.any_road_polygon(|points| zoning.cells_overlap_road_points_world(points))
+        if !zoning.cells.has_reservations() {
+            return false;
+        }
+        self.compiled_visual_span_pieces.values().any(|piece| {
+            self.visual_span_piece_bounds(piece, ChunkCacheKind::Surface)
+                .is_some_and(|(min, max)| {
+                    zoning.reserved_road_cells_overlap_bounds(
+                        CellBounds {
+                            min: DVec2::new(min.x, min.z),
+                            max: DVec2::new(max.x, max.z),
+                        },
+                        |cell| Self::span_piece_overlaps_cell(piece, &cell),
+                    )
+                })
+        }) || self.compiled_visual_node_pieces.values().any(|piece| {
+            self.visual_node_piece_bounds(piece, ChunkCacheKind::Surface)
+                .is_some_and(|(min, max)| {
+                    zoning.reserved_road_cells_overlap_bounds(
+                        CellBounds {
+                            min: DVec2::new(min.x, min.z),
+                            max: DVec2::new(max.x, max.z),
+                        },
+                        |cell| Self::node_piece_overlaps_cell(piece, &cell),
+                    )
+                })
+        })
+    }
+
+    fn span_piece_overlaps_cell(
+        piece: &super::super::RoadSurfaceVisualSpanPiece,
+        cell: &[DVec2; 4],
+    ) -> bool {
+        let bounds = CellBounds::from_points(*cell);
+        let bounds = [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y];
+        piece.surface_query.items_in_bounds(bounds).any(|item| {
+            Self::road_triangle_overlaps_cell(piece.surface_query_triangle(item).0, cell)
+        })
+    }
+
+    fn node_piece_overlaps_cell(
+        piece: &super::super::RoadSurfaceVisualNodePiece,
+        cell: &[DVec2; 4],
+    ) -> bool {
+        let bounds = CellBounds::from_points(*cell);
+        let bounds = [bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y];
+        piece.surface_query.items_in_bounds(bounds).any(|item| {
+            Self::road_triangle_overlaps_cell(piece.surface_query_triangle(item).0, cell)
+        })
+    }
+
+    fn road_triangle_overlaps_cell(
+        triangle: [super::super::backend::RoadVec3; 3],
+        cell: &[DVec2; 4],
+    ) -> bool {
+        let triangle = triangle.map(|point| DVec2::new(point.x, point.z));
+        interiors_overlap(cell, &triangle)
     }
 
     fn any_road_polygon(
