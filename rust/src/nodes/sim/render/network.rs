@@ -23,10 +23,20 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
-        // While a node fails, hold the last fully valid generation (roads.md open question 11).
         let roadbed = &self.transit_network.roadbed;
-        if !roadbed.is_current() || !roadbed.failed_nodes().is_empty() {
+        if !roadbed.is_current() {
             return;
+        }
+        // A failed node has no piece, so it publishes as a gap; never hold its previous mesh
+        // (roads.md open question 11).
+        if let Some(&node) = roadbed.failed_nodes().first() {
+            debug_log!(
+                "road",
+                "road_node_failed failed_nodes={} first_node={} error={:?}",
+                roadbed.failed_nodes().len(),
+                node,
+                roadbed.node_error(node)
+            );
         }
         self.transit_network
             .sync_new_lane_heights(&self.region_graph);

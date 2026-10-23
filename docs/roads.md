@@ -730,29 +730,22 @@ These need a user decision; work that does not depend on them continues.
     which also crosses one bend arm by default, against clips that now end at the layout mouths.
     Two lane and sign tests are disabled for `ROAD-68-F`. Options: keep the layout rule and move
     the lanes in `ROAD-68-F` (current); or match the lane rule's default bend crossing now.
-11. **Publication while a node fails (`ROAD-68-C`, guardrail).** This touches invariant 3
-    (WYSIWYG) and invariant 5 (no fallback geometry).
-    - **Behaviour.** When a node fails at compile, the roadbed drops that node's piece and records
-      the typed error in `failed_nodes`. While any node fails,
-      `SimCore::precompute_road_mesh_data` (`nodes/sim/render/network.rs`) publishes no mesh
-      chunks and no lane heights, and `road_tool_snapshot_from_core`
-      (`nodes/sim/core/road_preview.rs`) does not refresh the road-tool context.
-    - **The breach.** The screen keeps the last fully valid generation, including the failed
-      node's previous mesh, while queries, lanes and buildings see no piece there. That is stale
-      geometry on screen.
-    - **When it can happen.** Road placement validates every affected layout first
-      (`roadbed::check_node`) and rolls back a commit that still fails, and load fails on a failed
-      node. Other paths that dirty nodes without that validation can still reach it: undo, terrain
-      sync (`TransitNetwork::sync_to_terrain`) and some node-move and editing paths.
-    - **Options.**
-      - (a) Keep the hold (current). It matches the atomic road/terrain publication rule, but the
-        stale mesh stays on screen until the failure clears.
-      - (b) Publish the generation with the failed node absent, as a visible gap plus a
-        diagnostic. This is truthful WYSIWYG with no stale geometry.
-      - (c) Validate affected layouts in every operation that dirties nodes, and reject or roll
-        back as placement does. Then a published failure can only be a bug, and (b) handles it.
-    - **Recommendation.** (c) with (b), in `ROAD-68-E`, which owns commit, undo and load adoption.
-      Until decided, the code keeps (a).
+11. **Publication while a node fails (`ROAD-68-C`, guardrail) — resolved 2026-10-24, option (b).**
+    - **Before.** While any node failed to compile, `SimCore::precompute_road_mesh_data` and
+      `road_tool_snapshot_from_core` held the last fully valid generation. The screen could keep a
+      failed node's previous mesh while queries saw no piece there. That was stale geometry,
+      against invariants 3 and 5.
+    - **Now.** A failed node publishes as a gap: it has no piece, its chunks are republished
+      without it, and a `road_node_failed` line on the road debug channel names it and its typed
+      error. The road-tool context refreshes as usual, and `failed_nodes`/`node_error` still
+      report the failure.
+    - **Placement, commit and load.** Unchanged: placement validates layouts and rolls back a
+      commit that still fails, and load fails on a failed node.
+    - **Test.** `failed_junction_publishes_a_gap_not_its_previous_mesh` replaces the old
+      hold test. It fails if the hold is restored.
+    - **Follow-up for `ROAD-68-E`.** Option (c): validate affected layouts in every operation
+      that dirties nodes (undo, terrain sync, node moves), so a published gap can only come from
+      a bug.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -1015,9 +1008,8 @@ fixtures and test-only helpers excluded).
 - **System**: the dirty closure is the dirty edges, their nodes (and a reconnected edge's previous
   nodes), and those nodes' incident edges. Nodes plan first (arms, layout, plane, mouths), then
   node pieces and spans build on the shared pool and publish in piece order. `failed_nodes` and
-  `node_error` report failures, and the failed node's piece is dropped. While any node fails,
-  mesh publication and the road-tool snapshot hold the last fully valid generation, so the screen
-  can show the failed node's previous mesh (open question 11). Queries, raycasts,
+  `node_error` report failures, and a failed node has no piece. It publishes as a gap with a
+  `road_node_failed` diagnostic, never as its previous mesh (open question 11). Queries, raycasts,
   `pieces_in_bounds`, chunks and generations cover node pieces; `lane_query` answers junction
   lanes from their node piece; the renderer emits
   node pieces under their node owner with world UVs (junction asphalt keeps `road_color`).

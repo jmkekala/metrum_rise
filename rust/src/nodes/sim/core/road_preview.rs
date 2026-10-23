@@ -137,7 +137,7 @@ impl RoadToolQuerySnapshot {
 /// Captures the road-tool query snapshot once the roadbed matches the graph.
 pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQuerySnapshot> {
     let roadbed = &core.transit_network.roadbed;
-    if !roadbed.is_current() || !roadbed.failed_nodes().is_empty() {
+    if !roadbed.is_current() {
         return None;
     }
     Some(RoadToolQuerySnapshot {

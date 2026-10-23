@@ -605,7 +605,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
 }
 
 #[test]
-fn failed_junction_precompute_retains_matching_render_and_road_tool_generation() {
+fn failed_junction_publishes_a_gap_not_its_previous_mesh() {
     let mut core = test_core();
     let center_pos = Vector3::ZERO;
     let center = core.region_graph.add_node(center_pos, NodeType::Junction);
@@ -685,26 +685,36 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
         !core.transit_network.roadbed.failed_nodes().is_empty(),
         "the contradictory JunctionN must exercise the failed-production path"
     );
-    assert!(published_mesh.iter().all(|(chunk, mesh)| {
-        std::sync::Arc::ptr_eq(
-            core.cached_road_mesh_chunks
-                .get(chunk)
-                .expect("failed precompute must retain every last-good chunk"),
-            mesh,
-        )
-    }));
-    assert_eq!(core.cached_road_mesh_generation, published_generation);
+    // The failed junction publishes as a gap: its previous mesh must not stay on screen.
     assert!(
-        road_tool_snapshot_from_core(&core).is_none(),
-        "a current graph with a stale latched surface must not become a road-tool snapshot"
+        core.transit_network.roadbed.height_at(0.0, 0.0).is_none(),
+        "the failed junction must have no surface"
+    );
+    assert_ne!(
+        core.cached_road_mesh_generation, published_generation,
+        "a failed node must not hold the previous mesh generation"
+    );
+    assert!(
+        published_mesh.iter().any(|(chunk, mesh)| !core
+            .cached_road_mesh_chunks
+            .get(chunk)
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, mesh))),
+        "the chunks under the failed junction must be republished"
+    );
+    assert!(
+        road_tool_snapshot_from_core(&core).is_some(),
+        "the road tool must see the current roadbed, gap included"
     );
     let failed_snapshot = core.build_snapshot();
-    assert_eq!(failed_snapshot.network_generation, published_generation);
+    assert_eq!(
+        failed_snapshot.network_generation,
+        core.cached_road_mesh_generation
+    );
     assert!(std::sync::Arc::ptr_eq(
         &failed_snapshot.road_mesh_chunks,
-        &published_mesh
+        &core.published_road_mesh_chunks
     ));
-    assert!(std::sync::Arc::ptr_eq(
+    assert!(!std::sync::Arc::ptr_eq(
         &failed_snapshot.node_positions,
         &published_node_positions
     ));
