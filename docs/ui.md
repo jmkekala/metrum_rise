@@ -235,7 +235,7 @@ Road previews expose full readiness only for the exact current pointer input wit
 canonical road/terrain pair. Coarse ribbons, retained older poses and missing resident terrain
 resources remain visibly provisional (`terrain preview pending`). Cancelling or invalidating a
 paired preview restores the original road and terrain resources without changing simulation state.
-The complete backend and presentation contract is owned by [`roads.md`](roads.md#preview-query-and-editing).
+The complete backend and presentation contract is owned by [`roads.md`](roads.md#preview-commit-undo-and-load); `ROAD-68-E` removes the coarse ribbon and provisional older poses.
 
 Sub-menus expand upward above the toolbar row, the same as today. In the current
 implementation the right-side menu cluster has:

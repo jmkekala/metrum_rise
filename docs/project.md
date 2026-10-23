@@ -90,7 +90,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).
 - **Road preview modes (`ROAD-29`, done)**: Options → Gameplay selects Road only
   (faster, default) or Road and terrain. Changes apply immediately; full preview uses reversible
-  terrain rendering and the same placement rules. Tests and rendered checks pass; release deployed. [Contract](roads.md#player-selectable-road-preview-modes-road-29).
+  terrain rendering and the same placement rules. Tests and rendered checks pass; release deployed. [Contract](archive/roads_legacy_surface_2026-10-23.md#player-selectable-road-preview-modes-road-29).
 
 - **Junction preview refactor (`ROAD-28`, done)**: hover builds road/junction geometry;
   terrain reconstruction waits for click. The locality correction preserves connected roads
@@ -100,7 +100,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Repeated identical-input worker cost stays near 1 ms through 100,000 background buildings;
   snapshot cost is measured separately. All 2,012 active Rust tests, four headless suites,
   rendered junction checks and Rustdoc pass. Release extension deployed. New geometry may
-  intersect unchanged terrain during hover. See [scope, measurements and limits](roads.md#junction-preview-without-terrain-reconstruction-road-28).
+  intersect unchanged terrain during hover. See [scope, measurements and limits](archive/roads_legacy_surface_2026-10-23.md#junction-preview-without-terrain-reconstruction-road-28).
 
 - **Road-generated cell zoning (`ZONE-04`, done)**: 10 m square cells extend six rows on
   both sides of eligible roads. Compatible orthogonal junctions share a grid; curves and
@@ -262,18 +262,18 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 - **Road guide removal (`ROAD-27`)**: removed guiding lines, guide snapping, their global
   cache and the G shortcut. Zoning-grid snapping, road connections and active placement
   measurements remain. All 2,010 active Rust tests, both Godot cursor/preview suites and eight
-  report tests pass; the release extension is deployed. See [road guide removal](roads.md#road-guide-removal-road-27).
+  report tests pass; the release extension is deployed. See [road guide removal](archive/roads_legacy_surface_2026-10-23.md#road-guide-removal-road-27).
 
 - **Road preview crash (`ROAD-26`)**: generated-carrier height lookup no longer indexes an
   empty candidate list during preview or commit validation. Missing support follows existing
   validation. All 2,014 Rust tests and both road-tool/continuous-preview Godot suites pass;
-  updated extension deployed. See [`roads.md`](roads.md#empty-generated-carrier-height-lookup-road-26).
+  updated extension deployed. See [`roads.md`](archive/roads_legacy_surface_2026-10-23.md#empty-generated-carrier-height-lookup-road-26).
 
 - **Third-road placement (`ROAD-25`)**: node boundary export preserves distinct submillimetre
   segments, closing the reproduced Kuopio terrain ownership gaps. Rejected exact previews retain
   a visible red fallback and explanation. Road drawing waits for simulation acceptance; rejection
   keeps the stroke editable. Road logging no longer enables the cyan surface overlay implicitly.
-  See [`roads.md`](roads.md#third-road-boundary-and-placement-feedback-road-25).
+  See [`roads.md`](archive/roads_legacy_surface_2026-10-23.md#third-road-boundary-and-placement-feedback-road-25).
 
 - **Machinery upkeep (`ECON-09`)**: grain farms use 0.1 kg and coal mines 4 kg Machinery per hectare/day; food processors and utilities use building-level inputs. Paid OWA imports, small-consumer stock batches, startup funding and inspector stock/rates are integrated. Business/utility customers drive matching industrial demand. The audit unified restock/supplier logic, preserved small-shop shipment buffers, corrected net production headroom and city payroll/refund reporting, removed duplicate ledger/resource helpers and production constants, and rejected duplicate recipe ports. Depleted mines now stop creating jobs and Machinery demand; distress sales protect upkeep stock, and inventory fill counts shared input/output stock once. `machinery_factory_basic` is ready for the incoming four-worker industrial asset (Steel + Metals → 40 net Machinery/day); the production model itself is still user-created content. See [`economy.md`](economy.md#machinery-upkeep-econ-09) and [`asset_editor.md`](asset_editor.md).
 
@@ -325,12 +325,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Road surface compiler replacement (`ROAD-67`, in progress)**: after `SIM-02`, replace
-  repeated surface construction and investigate exact local terrain clipping for WYSIWYG
-  road-and-terrain previews below 16.7 ms on a declared workload. The fresh baseline and deadline
-  collector are validated, and same-frame dispatch/publication ordering passes Godot bridge checks.
-  The sloped T/four-way prototype must still prove preview/commit/undo parity and rendered latency.
-  See the [design and migration gates](roads.md#surface-compiler-replacement-road-67).
+- **Constructive roadbed (`ROAD-68`, in progress, branch `road`)**: the legacy road-surface
+  compiler (about 145k lines) is retired. Its rendered baseline missed 16.7 ms on every sampled
+  moving pose, and `ROAD-67`, which ported its semantics, is superseded. Junctions will be built
+  directly from their arms (corners, round joins, mouth stations, heights `plane + level`) and feed
+  the existing terrain CDT through oriented outer chains. Preview runs synchronously; commit adopts
+  the preview's pieces. The targets are an exact road-and-terrain preview within 16.7 ms and a
+  commit within one frame. The game may break between gates `ROAD-68-A`–`H`, all of which are open.
+  See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
@@ -880,8 +882,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   - `ROAD-43` is parked: the roughly 90,000 allocations per junction compile are small stage products, not reusable scratch, and removing 10% of them changed nothing measurable.
 
   Next: the Road only review
-  ([findings and tasks](roads.md#preview-compile-bottlenecks-road-37road-42)).
-  [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
+  ([findings and tasks](archive/roads_legacy_surface_2026-10-23.md#preview-compile-bottlenecks-road-37road-42)).
+  [Ordered plan and acceptance criteria](archive/roads_legacy_surface_2026-10-23.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).
   The current passes correct household/freight accounting and persistence, indexed agent removal,
@@ -996,7 +998,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   three warmups) put second-T preview readiness at 50.89→53.98 ms and mixed-width crossing at
   67.37→69.70 ms, with first-idle effectively unchanged. This small cost for complete terrain is
   accepted explicitly; no general speedup or 60 FPS guarantee is claimed. Details and historical runs:
-  [`roads.md`](roads.md#kuopio-terrain-regression-replay-road-24).
+  [`roads.md`](archive/roads_legacy_surface_2026-10-23.md#kuopio-terrain-regression-replay-road-24).
   The September 9 audit separates CDT pre-composition checks from final buffer acceptance,
   rejects missing/invalid render products in the common validator, and removes obsolete two-pass
   regrade APIs/telemetry. Rustdoc links and load/site/undo/readiness documentation are corrected;

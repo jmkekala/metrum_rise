@@ -2,445 +2,734 @@
 
 ## Purpose
 
-This document is the live road-surface contract for Metrum Rise. It owns the shipped roadbed
-runtime, editor preview / commit geometry parity, road-touched terrain integration, and the
-guardrails that keep roads deterministic and performant.
+This document is the live road-surface contract for Metrum Rise. It owns the road cross-section
+profile, junction layout, the visible roadbed mesh, road queries, the road side of terrain
+integration, the road preview / commit / undo pipeline, and the guardrails that keep roads
+deterministic and performant.
 
-Historical `ROAD-01` / `ROAD-02` hardcut notes are preserved in
-[`archive/roads_hardcut_history_2026-05-31.md`](archive/roads_hardcut_history_2026-05-31.md).
-That archive is reference-only; this file is authoritative.
+It does not own lane-routing policy, building frontage semantics, terrain storage internals, or the
+shared engineered-ground model. Those are owned by [`entrance_and_exit.md`](entrance_and_exit.md),
+[`terrain.md`](terrain.md), and [`earthworks.md`](earthworks.md). Pedestrian crossings and lanes are
+described here only where they consume road geometry.
 
-This document does not own lane-routing policy, building frontage semantics, terrain storage
-internals, or the shared engineered-ground model. Those are owned by
-[`entrance_and_exit.md`](entrance_and_exit.md), [`terrain.md`](terrain.md), and
-[`earthworks.md`](earthworks.md).
+## Status
 
-## Current Status
+**`ROAD-68` — in progress on branch `road` (2026-10-23).** The legacy road-surface compiler is
+retired and is being replaced by the [constructive roadbed](#constructive-roadbed-road-68) below.
+Gate status is in the [implementation plan](#implementation-plan-road-68).
 
-Road tops now share world-space paving sampling and matte Lambert lighting with authored
-plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
-Road/yard shader bodies and material setup are shared; the old inline stripe code is removed
-because markings are emitted as their own mesh layer. See
-[plot material consistency and GPU evidence](terrain.md#plot-grass-and-frontage-materials--render-13).
+The legacy compiler (`rust/src/simulation/network/surface/`, about 145k lines in 437 files, of which
+about 67k production lines built junctions) emitted an overlapping corridor polygon for every band
+of every arm, then discovered ownership and heights with polygon booleans, winding and claim
+priorities, three noding passes, generated contacts and height-authority rules. Its fresh rendered
+baseline ([`ROAD-67-A`](#baseline-road-67-a-legacy-compiler)) missed the 16.7 ms deadline on all
+750 sampled moving poses, and the isolated five-way junction compiled in 101 ms. The `ROAD-67-B`
+prototype that ported the same semantics onto a shared subdivision was stopped: its graph stage
+alone consumed the solve budget before heights, export or terrain, and it was still reconciling
+millimetre height conflicts that only exist because legacy contours interpolate heights
+independently. `ROAD-67` is closed as superseded. Its design notes, measurements and the full
+`ROAD-01`–`ROAD-67` history are archived in
+[`archive/roads_legacy_surface_2026-10-23.md`](archive/roads_legacy_surface_2026-10-23.md).
 
-The roadbed rewrite is shipped for the current surface-road scope:
+On the `road` branch:
 
-- the logical road graph owns connectivity, IDs, lanes, authored plan curves, and road class
-- `RoadSurfaceSystem` owns the visible roadbed, query surface, terrain clip inputs, and chunk
-  coverage
-- road pieces are explicit `Span`, `Terminal`, `Bend`, and `JunctionN` visual carriers
-- asphalt, curb / shoulder, sidewalk, markings, terrain clip loops, earthwork roots, and query
-  support all derive from the same compiled piece ownership
-- node pieces route through canonical rails, boolean ownership, height carriers, Spade
-  triangulation, and validation
-- grounded `Standard` road-touched terrain patches are generated in Rust with Spade CDT over
-  unioned road-owned footprint loops
-- ordinary grounded-road tie-ins use `RoadSurfaceSystem` generated grade-limited guide samples
-  around the final unioned road-owned footprint; only a single clean non-hole convex footprint may
-  constrain its guide rails, while holed, concave, or multi-loop footprint sets stay sample-only so
-  guide rails cannot cross the final roadbed
-- road-locked terrain coverage follows each grounded footprint's required tie-in envelope; a large
-  cut / fill envelope on one road must not widen unrelated road patches, and clip-source queries
-  include the same render/cell safety pad used to select grading-ray boundary patches
-- ordinary grounded-road tie-ins do not emit retaining-wall mesh as a visual cleanup path
-- player road bulldoze is a queued `SimCore` mutation: Godot captures an immutable target from the
-  road spatial index, the simulation thread verifies and soft-deletes that exact edge, removes
-  attached zoning parcels, and repairs adjacency, clips, lanes, CCH, road surface chunks, terrain
-  clips, and flow-field dirtiness before publishing the next render snapshot
-- Godot is a thin input/render bridge: it uploads cached payloads and must not decide road
-  topology, heights, terrain holes, or material ownership
+- the game may be unplayable between `ROAD-68` gates; every gate commit still compiles, adds no
+  Clippy warnings and passes its own tests
+- save compatibility is not maintained; no road-surface geometry is saved, and load rebuilds every
+  piece from the graph
+- the legacy compiler stays available for visual comparison on `main` and at tag `road-legacy`
+  (`d6c80f91`, created in `ROAD-68-A`)
 
-The old centerline-lift, generic node-patch, seam-strip, and renderer-owned road-hole paths are
-retired.
+### Why junctions can be constructed
 
-## Surface compiler replacement (`ROAD-67`)
+The product geometry is far simpler than the legacy compiler assumed:
 
-**Status: in progress (2026-10-23), native prototypes after the fresh baseline.** This is the road work following
-`SIM-02`, on the `road` branch. The requirements below govern the replacement; they do not
-claim that the existing implementation or an unmeasured prototype meets the latency target.
-The shipped contracts elsewhere in this document remain in force during migration.
+- only four band kinds are ever emitted: `Carriageway`, `CurbOrShoulder`, `Sidewalk` and
+  `Footpath`; `Median`, `Parking`, `CycleTrack` and `TramReservation` are reserved
+- a car road's cross-section is fixed: `sidewalk | curb | carriageway | carriageway | curb |
+  sidewalk`, or shoulders in place of curb and sidewalk
+- there are exactly two height levels: ground (carriageway, footpath) and raised, `+0.12 m` (curb,
+  sidewalk, shoulder)
+- every `Bend` and `JunctionN` already has one solved plane (`JunctionEndpointProfilePlane`), and
+  span cross-sections reach it at full blend weight at the mouth
 
-### Outcome and ownership
+A junction surface is therefore `P(x, z)` for ground bands and `P(x, z) + 0.12` for raised bands,
+bounded by curves that follow directly from the arms. Nothing overlaps, so nothing needs to be
+arbitrated.
 
-At 60 Hz, a supported local edit should produce its exact road-and-terrain preview in less
-than 16.7 ms from sampled world-space pointer input to the first rendered matching result.
-That preview must remain usable while simulation is paused. A matching click adopts the
-same solved geometry after validating live dependencies. Geometry, queries and terrain
-publish as one complete generation; terrain cannot penetrate the road, overlap it with
-coplanar faces, or leave open seams. Render bias and masking do not establish these guarantees.
+## Ownership Boundaries
 
-Keep the logical network, physical-profile rules, lanes and routing, existing spatial
-indices, scheduler, high-level edit mutators and transaction/rollback guarantees. Replace
-the derived surface compiler and terrain integration where measurement demonstrates the
-need. Godot remains an input/render bridge. Road materials, crossing paint, cloud shadows,
-building sites, bridges, tunnel portals, picking, save/load and undo retain their contracts.
+### Logical Graph
 
-The scheduler's fixed simulation-slot `PureJob` application rule does not govern hover
-previews. Preview computation consumes immutable versioned inputs outside the core mutex;
-the latest complete applicable result is published independently of simulation time. Click
-validation and authoritative mutations remain ordered simulation operations. Preserve the
-`ROAD-54`, `ROAD-57`, `ROAD-65`, `ROAD-66` and three-vertex terrain-seam regressions.
+The graph is authoritative for:
 
-### Proposed representation and terrain experiment
+- node and edge identity
+- route connectivity
+- lane counts and modal permissions
+- authored road class: `Standard`, `Bridge`, or `Tunnel`
+- authored plan polyline control points in world XZ
+- finalized physical profiles retained on edges after the shared `RoadEditPlan` finalizer
 
-Use one solved local boundary representation with explicit material and height ownership.
-Share boundary vertices and identifiers between top surfaces, raised faces, terrain seams
-and queries. Span extrusion and node face construction consume those same boundaries;
-ownership must not be reconstructed independently by each exporter. Reuse the existing
-arrangement machinery and geometry libraries where they satisfy this contract. The first
-prototype must demonstrate which repeated boolean/arrangement stages it removes, rather
-than adding another cache around the complete old pipeline.
+Endpoint-to-road projection evaluates the XZ parameter and world interpolation in `f64`, then
+narrows the final point once. Refinement projects the authored endpoint onto the selected full
+geometry segment; it does not reconstruct position from the rounded `segment + t` address.
+An endpoint already on a straight centreline therefore retains its representable coordinates.
+The native orthogonal zoning-block fixture caught the earlier sideways drift at `(30, -150)`;
+that drift changed the road's tangent and produced incompatible zoning frames. Verification is
+recorded with the [zoning references](zoning.md#native-road-transactions-and-rendered-references).
 
-The regular-terrain experiment kept connectivity outside boundary-crossed cells, updated
-heights within the grading envelope, omitted ground covered by the final footprint, and
-triangulated boundary-crossed cells against the authoritative seam. Its first matched
-release comparison was slower, so **retain full-patch CDT for the first complete road gate**.
-Any future replacement must preserve source-edge provenance, holes, tile/LOD
-seams, concave footprints, terrain-pad interaction and grade limits. In particular, a coarse
-cell containing an entire small footprint still needs clipping; testing only its corners
-does not establish coverage. Bridges retain ground beneath them. Source terrain is never
-rewritten by this derived mesh. Shared engineered-ground rules remain in `earthworks.md`;
-any accepted change to them must be documented there when implemented.
+Splitting an edge at a junction merges any control knot within 5 cm of the junction, the
+intersection node capture distance, into the junction on either side (`ROAD-51`, fixed
+2026-10-04). Before, only the knot before the junction merged, and only within 1 mm. An endpoint
+snapped onto a road it already lies on keeps its exact projection. Before, it moved onto a knot
+within 5 cm. An endpoint off the road still snaps to a knot that close, as before.
 
-Both old and new footprint/grading coverage enter invalidation. Unaffected render sections
-stay resident, but exact profile dependencies may extend beyond the pointer neighborhood.
-A long logical edge must not force unrelated mesh sections to rebuild merely because it
-was split. Use existing spatial/chunk indices, with explicit mapping from logical edits
-to affected visual sections; do not add a second city-wide spatial structure.
+Long roads are resampled at about 6 m in f32, so knots land within millimetres of crossings, or
+centimetres of a projection, at whole multiples of the spacing. That caused two failures:
 
-### Complexity and resource bounds
+- **1M grid.** A knot 1.1 mm past the junction at (-4200, 600) on the 20.4 km row left the second
+  half a 1.1 mm first segment. The four-way failed to compile and the row was rejected with
+  `surface_geometry_invalid`.
+- **300k grid.** The row at z = -75 ended on the outer cross streets 27 mm from their knots.
+  Moving its ends onto those knots shifted the whole row 27 mm sideways, after its crossing
+  junctions had been placed on the original line. Every row edge then ended in a 27 mm jog, and
+  eight four-ways failed.
 
-Let `N` be the city-wide indexed population, `K` the local candidates returned by existing
-indices, `S` the affected boundary segments, `X` their intersections, `G` the terrain cells
-in the union of old/new grading envelopes, and `M` the emitted mesh size. Indexed capture
-should follow the existing spatial query cost (typically `O(log N + K)`, with overlap/output
-cost explicit). The proposed boundary construction targets `O((S + X) log S + M)` and local
-terrain work targets visited cells plus their boundary intersections and output. These are
-design targets: each implemented stage must state and verify its actual bound. `X` may be
-quadratic in `S`; no constant-time claim is made for arbitrary intersections or edit lengths.
+Five centimetres is far above f32 spacing anywhere in a 20 km world, and far below any authored
+segment. Regressions: `split_next_to_a_knot_leaves_no_sub_millimetre_segment` and
+`endpoint_on_a_road_beside_a_knot_keeps_the_new_road_on_its_line` (`simulation/network/topology.rs`).
 
-No per-pose city scan or full-network clone is allowed. Measure immutable snapshot/setup
-cost separately, including refreshes after commits. Keep worker scratch and packed buffers
-reusable; no new allocations in idle/per-frame checks. Parallel independent jobs use owned
-Rayon pools with the existing shutdown contract. Record worker counts and contention with
-simulation/rendering; extra pools are not free CPU capacity.
+Road insertion, node movement, rollback and undo also refresh the zoning system's recorded
+straight-road grid choices from the affected edge set. Node movement invalidates both old and
+new corridors. These choices belong to zoning, use one local adjacency ring, and survive save
+remapping; see [persistent alignment](zoning.md#persistent-straight-road-alignment-checkpoint).
 
-### Measurement and acceptance
+The graph is not the final visible road surface, final terrain clip carrier, final earthwork
+boundary, or final node polygon carrier.
 
-Baseline build: `b75e03c9f472213945b468540da59c9ab3768b9d`, before replacement code. Reuse
-the `ROAD-30` rendered preview matrix and native locality fixtures. Record actual hardware,
-runtime/renderer, resolution, VSync/FPS cap, worker configuration, extension hash and exact
-commands with results. Keep captures under `$ARTIFACTS`; cite no local artifact paths here.
-Run matched unprofiled release processes without overlapping builds, tests or other benchmarks.
-Profile separately to attribute CPU/allocation costs. Historical September results are not
-validation of this build.
+### RoadbedSystem
 
-- First complete gate: `sloped_t`, then `sloped_branch` (adding the fourth leg), moving and
-  stationary, including full terrain, a matching click and undo. Flat counterparts also pass.
-- Final representative gate: the existing flat/sloped neighboring-junction, cross and dense
-  preview fixtures. Record their lengths, affected nodes, segments, terrain cells and output
-  sizes so the workload cannot quietly shrink. Acute, mixed-width/profile, footpath, bridge,
-  tunnel and site cases retain correctness coverage even when outside this timing workload.
-- Report sampled input to first rendered matching generation, displayed pose age, final-pose
-  settling, maximum/p50/p95/p99 where sample counts justify them, deadline misses, coalesced
-  input and superseded requests. Queue wait, compilation, terrain, lock/capture, live checks,
-export, upload submission and installation are distinct stages; overlapping measurements
-must not be summed. A stale result is not a successful update for a newer sampled pose.
-- `frame_post_draw` is a rendered boundary, not proof of physical monitor presentation or
-  isolated GPU upload duration. Headless timings cannot establish rendered acceptance. Count
-  real elapsed misses, including contention; do not inherit `PERF-07`'s preemption exclusion.
-- The deliberately withheld-residency fixture tests atomic retries and recovery. Report its
-  injected delay separately; do not present it as normal residency or hide its missed updates.
-- Repeat with simulation paused and active on populated fixtures. Hold the edited neighborhood
-  fixed while increasing remote roads, buildings, parcels and agents; verify identical local
-  semantic products and locality. The deferred `PERF-08` simulation workload remains separately
-  identified and does not turn a road compile measurement into a full-game frame guarantee.
+`RoadbedSystem` (`rust/src/simulation/network/roadbed.rs`, replacing the legacy
+`RoadSurfaceSystem`) owns:
 
-The initial engineering allowance is about 6.5 ms for capture, solve, terrain and CPU
-publication (0.5 / 3 / 2 / 1 ms respectively), leaving margin within the end-to-end 16.7 ms
-target. These are provisional stage budgets, not measured results or permission to consume
-the whole render frame. Use the actual critical path and revise stage allocations openly if
-measurement supports it, without relaxing the end-to-end target.
+- cross-section profiles and junction layouts derived from the graph
+- immutable span and node pieces: meshes, outer chains and query grids
+- the road chunk index and the source / compiled generation gate
+- visible-surface height, band and ray queries
+- the road side of terrain integration: patch loops, grading envelope and patch selection
+- preview artifacts, commit adoption and undo records
+- road debug output
 
-The baseline tool polled before dispatch in one `_process`, imposing another frame on a newly
-submitted result. The branch now orders camera input, pending camera-clearance updates,
-sampling/dispatch, ordinary scene processing and late publication at priorities
-`-300 / -200 / -100 / 0 / +100`. One RoadTool-owned publisher makes the visual decision after
-polling, preserving atomic road/terrain staging and live dependency checks. It is enabled when
-Road/Walkway mode activates: a real SceneTree regression showed that enabling it during the
-early callback defers its first execution until the next frame. While selected and idle, it
-checks pending flags without allocations or native calls. Ordinary node staging in
-`frame_pre_draw` does not establish same-frame visibility;
-the water renderer already needs direct RID updates at that late hook. A late nonblocking poll
-alone cannot meet the target when a cheap main-thread frame finishes before its worker.
-Only if measurements justify it, add an exact-request completion wait with an absolute sample
-deadline and an export/stage/render reserve, holding no core or result lock while waiting.
-Timeout, unavailable live checks and stale/superseded results remain reported misses.
+It evaluates heights only as `plane + level` at nodes and as the graph's finalized physical profile
+along spans. It does not solve longitudinal profiles; the graph's shared `RoadEditPlan` finalizer
+does.
 
-Fresh headless validation, `godot --headless --path godot --script
-res://tests/network_tool_chunk_renderer_test.gd`, passes actual same-frame callback ordering,
-late exact-result selection without resampling or a fallback upload, rejection, stale/cancel
-handling and failed-stage retention/retry. A dependency change between sampling and first
-publication queues a fresh early update; a stationary-pointer regression verifies recovery.
-The run reports three ObjectDB instances and one
-resource remaining at shutdown; the archived October 20 run of this same test/runtime reports
-the same counts. These are callback and bridge checks, not rendered latency acceptance or
-evidence of a compiler speedup. The gameplay benchmark also activates the publisher before
-its first sample, using the same tool lifecycle as interactive placement.
+### TerrainSystem
 
-Maintain the surface/terrain regression suites and production Godot transaction checks.
-Compare material ownership, heights, topology, seam coverage and queries; an equivalent new
-triangulation need not preserve the old triangle order. Verify repeatability and worker-count
-independence, preview/commit parity, stale-result rejection, deletion, rollback, save/load and
-undo. Run the required Clippy checks and rendered checks for material/seam changes.
+`TerrainSystem` owns source terrain, visual terrain storage, chunk residency, and upload
+boundaries. It consumes road-derived terrain clip / earthwork inputs; it must not decide road
+heights or invent road seams.
 
-### First baseline and compiler decision (2026-10-23)
+### Godot
 
-Fresh rendered baseline, one unprofiled process for `sloped_t,sloped_branch` and one for
-`flat_cross,sloped_cross`, with a separate diagnostic process for the slope cases. Release
-extension SHA-256: `da43b17f643c982c47461d92111aae05b43a51b361a0829bbbbf946652dff1f3`.
-The original extension and measurement scripts were retained before any source changes.
-Source is the baseline commit above; later captures include only the three documentation
-changes introducing `ROAD-67`. This is a baseline, not a before/after speedup claim.
+Godot-side road, terrain, and water scripts upload cached Rust payloads, bind materials, collect
+input, and display debug data. They must not:
 
-Reference machine: i9-12900K (24 logical CPUs), RX 7900 XTX / RADV, Godot 4.7.2 Forward+,
-X11, 1920×1080, VSync on, 60 FPS cap, four Rayon workers, simulation paused. Full road-and-terrain
-mode, eight warmup poses, 100 stationary poses and 400 scheduled 60 Hz moving inputs per case.
-The synthetic 512 m world uses 8 m cells, 128 m chunks, and a 2.5% slope in sloped cases.
-The T begins with one edge; the branch begins with a three-way junction; each cross begins
-with four parallel roads. No buildings or agents are present. Populated acceptance remains
-outstanding. The initial sandboxed display launch failed before the workload; only the
-subsequent rendered runs below are evidence.
+- resample terrain to repair road heights
+- rebuild road topology from graph guesses
+- clip road holes with `Geometry2D`
+- mask missing topology with shader, water, zoning, material order, or background color
+- perform expensive geometry decisions in editor input loops
 
-| Fixture | Stationary input-to-frame p50 / p95 / max, ms | Moving displayed-age p50 / p95 / max, ms | New moving results / scheduled inputs | Stop to exact frame, ms |
-| --- | --- | --- | --- | --- |
-| `sloped_t` | 57.02 / 63.91 / 75.92 | 53.10 / 69.69 / 87.05 | 245 / 400 | 57.25 |
-| `sloped_branch` | 57.24 / 77.10 / 96.32 | 74.01 / 103.64 / 185.54 | 154 / 400 | 97.49 |
-| `flat_cross` | 74.50 / 77.19 / 96.06 | 102.89 / 136.82 / 170.52 | 108 / 400 | 75.34 |
-| `sloped_cross` | 91.62 / 109.15 / 126.31 | 120.18 / 186.92 / 286.64 | 85 / 400 | 141.89 |
+## Constructive roadbed (`ROAD-68`)
 
-All four captures pass the existing correlation, state-preservation and exact-final-pose
-validator; no trace overflow or frame longer than 33.333 ms was reported. Nevertheless all
-996 captured result rows (stationary, moving and final) exceed 16.7 ms, and none of the moving
-result rows matches the latest sampled input at its rendered frame. Smooth frame cadence
-therefore does not establish responsive previews.
+### Invariants
 
-The old schema's `dropped=0` means no measurement-buffer loss. It does not mean every scheduled
-or sampled pointer pose was displayed. Scheduled inputs may coalesce before the tool samples
-them, and pending requests may be superseded. The table must not be used to infer an exact
-number of missed sampled inputs. The old frame report has distributions, not raw frame intervals.
+1. **Construct, never discover.** Every boundary is generated by a rule from the arms. The road
+   compiler uses no polygon boolean, winding or claim-priority ownership, noding, generated
+   contacts, or provenance / height-authority rules.
+2. **One value, one function.** Mouth cross-sections (shared by span and node), corner curves
+   (shared by the mesh, crosswalks and pedestrian lanes) and heights (`plane + level`) are each
+   computed once and copied, never recomputed independently.
+3. **WYSIWYG.** Preview, commit, undo and load produce bitwise-identical pieces from the same graph
+   inputs. Road queries answer from the triangles that render.
+4. **Watertight by construction.** Adjacent bands share vertex sequences, curb faces share their
+   edges with both levels, spans and nodes share mouth vertices, and terrain seams reuse the road's
+   outer-edge vertices.
+5. **No repair.** A construction that cannot satisfy its rules returns a typed error, and the edit
+   is rejected with a reason. There is no tolerance snapping, nearest-height, averaging, fallback
+   geometry or render masking.
+6. **Deterministic.** Arms, dirty sets and chunks are processed in sorted order and internal
+   geometry uses `f64`. Output does not depend on the Rayon worker count, hash order, or an edit
+   history that produces the same graph.
+7. **Local.** An edit touches only its [dirty closure](#invalidation-and-chunks) and the chunks
+   and terrain patches covered by its old and new pieces.
 
-Schema 2 adds scheduled-input dispositions, per-sampled-input deadline accounting and raw
-frame intervals. A fresh rendered run with the archived baseline extension and the new
-collector passed the report validator for both slope fixtures. The denominator includes
-every sampled pose; an exact result must show the latest pose in strictly less than 16.7 ms.
-An older pose displayed within that time still misses. Buffer overflow is reported separately.
+### Dataflow
 
-| Fixture | Scheduled / sampled | Coalesced before sampling | Superseded without display | Displayed stale | Exact deadline met / missed | Frames over 16.7 ms / total | Maximum frame, ms |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `sloped_t` | 400 / 380 | 20 | 140 | 240 | 0 / 380 | 317 / 769 | 34.555 |
-| `sloped_branch` | 400 / 370 | 30 | 216 | 154 | 0 / 370 | 357 / 847 | 28.572 |
+```text
+graph XZ (authored alignment, widths, lanes, modes, class)
+  -> cross-section profile                   per edge
+  -> junction layout                         per node: arm order, sectors, corners, mouth stations
+  -> profile solve (existing finalizer)      hard zone = mouth station; junction and terminal planes
+  -> mouth sections                          per edge end, shared by span and node
+  -> node pieces + span pieces               meshes, outer chains, query grids
+  -> render chunks | terrain patches (existing CDT) | queries | lanes and crossings
+```
 
-All 750 sampled moving poses missed; neither case lost collector records. The T capture had
-one frame above 33.333 ms. The collector and reporter focused suites passed (Godot collector,
-10 Python reporter cases), including superseded requests, stale results, preserving the first
-exact result and rejecting equality at the deadline. Schema-1 reports remain readable.
+Layout depends only on XZ geometry and profiles, so the profile solve can pin each arm to its
+plane over exactly the node piece's extent. Heights never feed back into layout.
 
-This run used the same hardware/settings and extension hash as above, launched directly with
-`godot --path godot --windowed --resolution 1920x1080 -- --gameplay-road-benchmark` and the same
-benchmark environment, plus launcher identity metadata and a fresh run ID. It did not rebuild
-the extension from the modified tree. Replay-helper SHA-256:
-`e2dcd631aed843b82f648bec6091e5e73f9477668631cc552a614ebcf5c28190`;
-trace/collector SHA-256: `d7efc8fa9aeb1dee59f3a2b4fa2f43beed7d05c82ca4aa41dc5aca2ecfb408d7`.
-Frame means changed from 16.672/16.678 to 16.676/16.669 ms (T/branch); stationary preview
-medians changed from 57.02/57.24 to 56.64/58.10 ms. These separate single-process observations
-show no material cadence shift but do not establish a paired harness-overhead bound. The
-opt-in collector still allocates diagnostic records; subsequent comparisons use the same schema.
+### Cross-section profile
 
-Separate diagnostic medians / p95, milliseconds (not acceptance timings):
+`RoadProfile` is a pure function of the edge (`primary_type`, `allowed_types`, `width`, `class`),
+ported unchanged from the legacy band rule. Bands are listed left to right in the edge's forward
+frame:
 
-| Fixture | Worker total | Road | Terrain | Earthwork preparation | Queue wait | Worker end to poll | Stage/install |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `sloped_t` | 25.35 / 28.99 | 20.65 / 24.49 | 3.48 / 4.82 | 0.89 / 1.17 | 7.56 / 14.32 | 8.52 / 16.00 | 2.01 / 3.13 |
-| `sloped_branch` | 38.92 / 51.90 | 33.38 / 47.19 | 3.70 / 5.25 | 0.97 / 1.22 | 8.37 / 25.54 | 8.91 / 15.16 | 1.95 / 3.03 |
+| Edge | Bands | Levels |
+| --- | --- | --- |
+| Car road with sidewalks | sidewalk 1.35 m, curb 0.15 m, carriageway `w/2`, carriageway `w/2`, curb, sidewalk | raised, raised, ground, ground, raised, raised |
+| Car road without sidewalks | shoulder 0.75 m, carriageway `w/2`, carriageway `w/2`, shoulder | raised, ground, ground, raised |
+| Footpath | footpath `max(edge.width, 2 m)` | ground |
 
-Road construction remains the largest worker stage. Queue/poll cadence and installation also
-consume material time, so reducing the compiler alone does not prove end-to-end acceptance.
-The replacement builds one constrained planar subdivision from raw semantic contours and
-source constraints, with material/source labels per face, retaining independent owner/height contexts
-at shared XZ positions. Raised curbs must never collapse to one shared height. Existing Spade
-supports the triangulation; every semantic boundary must be constrained and globally noded,
-and conflicting constraints are errors. Exact integer winding is a test oracle; evaluating
-every boundary for every face costs `O(F*S)` and is not the intended production classifier.
-Investigate propagation of signed contour contributions across shared edges, then derive the
-owned faces, seam provenance and final triangles from that same subdivision. This replaces
-repeated ownership operations rather than caching another copy of their outputs.
+`w` is `max(edge.width, LANE_WIDTH)`. The profile, not the `Edge::width` doc comment, defines what
+width means. The raised offset is `CURB_STEP_HEIGHT_M` (0.12 m). New band kinds, such as medians,
+parking or cycle tracks, are added as explicit ordered bands with a level; nothing else in the
+compiler may special-case them.
 
-The first native sloped T/four-way checks pass for material/owner/source labels, per-label
-coverage in both directions and exclusion of unlabeled faces from the footprint. These are
-test-only subdivision checks; they do not yet prove evaluated heights, final meshes or runtime
-performance. Raw rail contours contain unsplit crossings even in the T fixture, so the shared
-subdivision needs explicit global noding before triangulation. Sparse winding propagation now
-updates aggregate ownership counters across constrained edges. The indexed noder below replaces
-the initial exhaustive discovery, but still requires a bounded rounding-closure contract.
-The existing region-based height solver cannot simply consume one region per CDT triangle:
-that changes seam participation and makes arbitrary triangulation edges enter grade decisions.
-Connected ownership cycles remain necessary for boundary export; height normalization should
-operate once on canonical vertex contexts and authorized contact incidence.
+### Junction layout
 
-The exhaustive noder costs `O(sum_i(E_i*V_i + E_i^2))` across rounding-closure passes,
-plus split sorting. Its final provenance rescan also costs `O(A*E + U*V)` for atomic
-edges/vertices `A/U`. The next measured step reuses deterministic sorted-axis candidate
-filtering and carries source incidences through splitting. Its bound must include actual
-bounding-box candidates and closure passes; it is not a one-pass snap-rounding proof.
-Interior height checks must use authorized source fields and final seam/grade rules. Two
-independently triangulated nonplanar contours need not interpolate identical interior heights;
-exact boundary/source anchors and contact authority remain required.
-The revised T proof passes these focused checks. The four-way exposed a 31.167 mm curb
-height difference at a common boundary context. Restoring internal seam records did not
-resolve it. A focused trace confirms identical 4.100000 m source-field values and agreement
-through the first four normalization passes; only explicit material-seam normalization
-diverges, selecting 4.131167 m in the reference. The reference passes arrangement construction
-and final triangulation validation, and the failing context is unique in both results.
-Canonical contact spans and all participating vertex contexts remain under investigation.
-Shared edges and point contacts must retain height authority
-even when adjacent material/owner labels match; exterior region cycles alone are insufficient.
-The four-way discrepancy remains a prototype correctness blocker. Five indexed-noder checks
-pass, including a newly covered point-only carrier that lies on an edge only after intersection
-rounding. Segment-only planarity verification missed that contact; the replacement explicitly
-verifies vertex/segment completeness as well.
+A layout is built for every node except degree-two pass-through nodes (the existing
+`directions_are_pass_through` rule). Those own no node piece; their spans meet at one bisected
+cross-section, as today.
 
-The direct raw-input height probe also remains incomplete. Before field construction, noded
-generated contours must interpolate their original carriers and apply the existing authorized
-shared-height synchronization. Build source-carrier provenance from that synchronized geometry;
-the raw rail builder's empty registry is not evidence that no authority applies. Reuse canonical
-claim selection and typed conflict handling, then resolve one `(point, owner, height field)`
-context with the selected claim as metadata. A synthetic split must not suppress a genuine
-source-height disagreement. Repeated triangle-local seam attachment is not the replacement.
-Provenance-derived carrier points must be materialized before field construction, preserving
-the existing dependency order. The independent probe now performs that step. A source trace
-resolved its first 39 mm discrepancy as an oracle setup mismatch: the new graph vertex at
-XZ (1 m, 1 m) has no old owned context or provenance record. Registering the new owned
-incidence selects its explicit 4.200 m source segment; the old arbitrary-point oracle had
-not registered that support and selected a 4.161143 m generated side-join patch. The corrected
-oracle must register the same requested support and retain independent existing-anchor and
-source-segment checks. That correction and the complete source proof remain pending; no
-height tolerance has been relaxed and this is not an accepted replacement yet.
-The separate flat grade consumer passes focused group-order and three-stage raised-seam checks,
-plus 12 existing seam-selector and four grade regressions. It resolves each pass from a stable
-input state before applying writes. Canonical graph-incidence integration remains outstanding.
-Before replacing final triangulation, preserve and test the existing long sloped carriageway
-interior-guide contract; raw carrier constraints alone do not prove equivalent output coverage.
+**Arms.** Each incident live edge end becomes an arm with:
 
-Fresh exhaustive-graph component timing used the ownership proof fixture (mouths at
-±10 m X / ±12 m Z, relative mouth heights 0 / +0.25 / −0.15 / +0.4 m), four Rayon workers,
-one warmup and 21 samples. It excludes reference setup, height solving, mesh export, terrain
-and Godot; it is not the 96 m-arm compiler fixture or the rendered preview workload.
+- its centerline polyline in control-geometry XZ, oriented away from the node
+- its profile, oriented outward: left and right as seen walking away from the node
+- its direction, taken from the first metre of the centerline as `validate.rs` measures it
 
-| Proof fixture | Raw contours median / p90, ms | Shared graph median / p90, ms | Noding passes | Point/segment tests | Segment-pair tests | Atomic edges / faces |
-| --- | --- | --- | --- | --- | --- | --- |
-| Sloped T | 0.154 / 0.166 | 3.218 / 3.313 | 1 | 36,680 | 137,026 | 139 / 164 |
-| Sloped four-way | 0.276 / 0.291 | 9.868 / 9.957 | 1 | 101,700 | 404,550 | 260 / 312 |
+Arms are sorted counter-clockwise by direction; ties break by edge index, then edge end.
 
-These counters omit verification and final provenance scans; the indexed comparison adds
-discovery/verification/output accounting. Run from `rust/`: `RUSTC_WRAPPER= RAYON_NUM_THREADS=4
-cargo test --release shared_subdivision_raw_constant_factors --lib -- --ignored --nocapture`.
-Archived executable SHA-256: `1571649d0545766e984b9fec6e0d2cd183d9a8543dfd7d40199f1888008dfce1`;
-proof fixture source SHA-256: `fe60d1543150a5e554fd9685c9509a9b16aebd0aec94b2ebbb4fa2b05804060a`.
-This establishes the component baseline for the indexing change, not full compiler acceptance.
+**Offset curves.** For an arm, `o(s, l)` is the point at station `s` along the centerline,
+offset by signed lateral distance `l` along the section lateral axis spans already use. Every band
+boundary is an offset curve at its lateral offset.
 
-The indexed implementation's matched release run, using the same fixture and command, reduced
-shared-graph median / p90 to **1.385 / 1.411 ms for T** and **2.838 / 2.891 ms for four-way**
-(about 57% / 71% below that exhaustive baseline). A second run of the archived indexed binary
-gave medians 1.388 / 2.832 ms. These are component observations; final normalized heights,
-export, terrain and rendered latency are still outstanding. Indexed executable SHA-256:
-`b07be6dc87001af077b6f8d6b6c05f80c8df7e2337f49301c640526922fa01e7`;
-noder source SHA-256: `6da5d4ba40e18049ead67e25f46dfd07f80ca5ed88fa1d7b76c01dda31997d22`.
+**Sectors.** Each pair of consecutive arms `a`, `b` (counter-clockwise) bounds one sector between
+`a`'s left side and `b`'s right side, with angle `phi`. A fixed angular constant `eps` owned in code
+classifies it:
 
-T / four-way inputs contain 218 / 310 paths, 715 / 1,170 point incidences and 524 / 900
-segment incidences. Point discovery visits 2,209 / 4,470 axis-range entries and retains
-1,236 / 2,136 exact predicates; segment discovery visits 36,957 / 85,951 entries and retains
-10,034 / 20,606 pairs. Both finish in one pass with unchanged 139 / 260 atomic edges.
-Separate final verification includes 308 / 610 segment pairs and 280 / 526 point/segment
-predicates; source assembly emits 1,020 / 2,116 edge and 1,139 / 2,290 vertex incidences.
-This removes the provenance rescan, but dense candidate ranges remain quadratic and rounded
-closure still lacks a useful production pass bound. Passing this component comparison does
-not resolve that remaining algorithm contract or the four-way height discrepancy.
+- concave, `phi < pi - eps`: a curb-return corner
+- straight, `|phi - pi| <= eps`, or convex, `phi > pi + eps`: a round join around the node
 
-The independent regular-terrain experiment passed focused checks for regular connectivity,
-contained footprints, holes and sourced seams; its shared output-assembly extraction passed
-the existing terrain CDT suite. The latest coherent experimental binary passed six focused
-checks and 70 active CDT checks (one ignored). These validate that experimental checkpoint,
-not adoption: full assembly of near-coincident grid/seam vertices and broader authored terrain
-cases were still outstanding when timing rejected the approach for the first road gate.
+A `Terminal` has one sector of `2 pi`, which is convex.
 
-Matched unprofiled release comparison on identical synthetic 64 m tiles with 8 m grids,
-10 warmups and 50 measured samples per path:
+**Concave corner.** Let `la` be `a`'s left carriageway-edge offset, `lb` be `b`'s right one, and
+`R` the curb-return radius ([D1](#product-decisions)).
 
-| Sloped footprint | Full-patch CDT median, ms | Regular/component median, ms | Change | Full vertices / faces | Safe / boundary cells | Component vertices / constraints | Extra grid cuts / output faces |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| T | 0.0657 | 0.0942 | +43.4% | 80 / 119 | 42 / 22 | 50 / 50 | 15 / 134 |
-| Four-way | 0.0794 | 0.1258 | +58.4% | 82 / 118 | 36 / 28 | 64 / 64 | 18 / 136 |
+1. The corner centre `C` is the first intersection, by distance from the node, of
+   `o_a(., la + R)` and `o_b(., -(lb + R))`.
+2. The tangent stations `sa*` and `sb*` are the stations of `C` on those two curves. Every band
+   boundary on that side reaches the corner at the same station, because each lies on the arm's
+   lateral line through `C`.
+3. Band boundary `j` runs from `o_a(sa*, la_j)` to `o_b(sb*, lb_j)`. In polar form about `C`, its
+   angle and radius each interpolate linearly from those exact endpoint values. For straight arms
+   with equal profiles this is an exact family of concentric arcs. Endpoints are copied from the
+   offset curves, never re-derived.
+4. All boundaries of one corner use one sample count `N`, from the longest boundary and fixed
+   maximum segment length and angle constants. Every band is therefore a quad strip.
 
-Each case forms one connected boundary component. Partitioning, grid cuts and extra output
-cost more than reducing CDT vertices saves. These are synthetic footprint fixtures, not actual
-road-surface-export inputs or the complete 3.5–3.7 ms rendered terrain stage; the result does
-not prove all regular-terrain algorithms slower. It does reject this candidate as a justified
-replacement now. The experimental sources, patches, binaries and raw results were archived
-locally, then all five terrain experiment files were restored or removed. Existing full-patch
-CDT remains unchanged while work targets the measured road compiler bottleneck. No change to
-terrain or engineered-ground behavior is accepted.
+Unequal profiles on the two sides interpolate per boundary. A band missing on one side has zero
+width there and tapers along the corner.
 
-The experimental release binary has SHA-256
-`43d8568d8dae59e2404049d9d27ce65898d6b627edee0eb91ca038bf95bc19cf`.
-Its ignored native fixture was run from `rust/` with `RUSTC_WRAPPER= cargo test --release
-benchmark_regular_component_cdt_against_full_patch --lib -- --ignored --nocapture`.
-It uses one sloped plane, 9 × 9 grid samples and an exact-grid T/plus footprint with 8/12
-boundary vertices. This rejected fixture is retained in the local experiment archive, not
-the production test suite. Eleven subsequent serial runs of the archived release executable,
-with `RAYON_NUM_THREADS` unset and no competing build/test, confirmed the direction: median
-paired ratios were 1.505 for T and 1.592 for four-way. These local algorithms run serially;
-the surrounding harness used default Rayon settings, not the four-worker rendered workload.
+**Round join.** On straight and convex sectors, band boundary `j` is an arc about the node from
+`o_a(0, la_j)` to `o_b(0, lb_j)`, with the radius interpolated linearly by angle. A straight
+sector between unequal widths gives a radial step at the node; its taper is
+[D4](#product-decisions).
 
-Native cost attribution changed the implementation priority. A fresh release run of
-`junction_compile_constant_factors` used the unchanged production road compiler, one warmup
-and 21 samples per case. Median times were 14.07/19.79 ms for flat/sloped T, 21.54/22.91 ms
-for flat/sloped cross, 36.36 ms for sloped oblique and 101.02 ms for five-way. This isolated
-fixture uses 96 m arms and precompiled spans; it excludes terrain patch generation, Godot
-and rendering. It used **default Rayon settings**, unlike the rendered four-worker baseline;
-the actual pool size was not recorded, so it is diagnostic baseline evidence, not a matched
-acceptance comparison. Future comparisons must set and record worker counts explicitly.
-Test-binary SHA-256: `0841bddc795cb54ef04bf043ce04bbad4330b2063aab0b72b6b364e98c35e47f`.
+**Mouth stations.** For each arm, the mouth station is the larger of `s_min` and the tangent
+stations of its concave corners, plus the crosswalk depth on crossable arms
+([D8](#product-decisions)). Between a corner's tangent station and the mouth, the arm's band
+boundaries follow its offset curves. The mouth is the arm's full cross-section at that station:
+the node piece ends and the span begins there. When both ends of an edge reach the same station,
+the span is empty and the two node pieces share that mouth section.
 
-A separate diagnostic run, after initializing the existing debug subsystem in that ignored
-benchmark, gave these sloped-cross pipeline medians (ms):
+**Fitting.** Each end may use at most half of its edge's length.
 
-| Rails | Ownership | Heights | Arrangement | Triangulation + validation | Attach | Export | Pipeline total |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 8.680 | 5.582 | 3.037 | 1.589 | 0.834 | 0.237 | 1.787 | 21.916 |
+- If a corner does not fit, `R` is reduced towards `R_min`. If it still does not fit, layout
+  returns `LayoutError::CornerDoesNotFit { node, arm }`.
+- A self-intersecting carriageway core returns `LayoutError::CoreNotSimple { node }`.
 
-Medians do not sum to the median total, and nested substage timers overlap. Diagnostic binary:
-`ccf8ac253bbd22172b2d5e1444fcd75b7dbc8590d495fc26bf9789f77f4159b5`.
-Both runs used `RUSTC_WRAPPER= METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road cargo test --release
-junction_compile_constant_factors -- --ignored --nocapture` from `rust/`, with no competing
-build or benchmark. Debug variables were inert in the first binary because the test harness
-had not initialized logging. Source was the baseline commit plus the test-only prototypes,
-visibility/shared terrain-assembly changes, and (for diagnostics) benchmark debug initialization;
-production road construction was unchanged. These are fresh measurements, not acceptance of
-the replacement.
+Both are placement rejections with player-facing reasons, alongside the existing
+[`ROAD-54`](#road-geometry-validation-road-54) limits: illegal arm angles below 25° and degree
+above 6.
 
-Raw four-way contour construction costs about 0.25 ms in the diagnostic fixture; most rail
-time follows it. The 52 contours and 164 source constraints expand to 832 flat / 911 sloped
-final constraints through repeated contact synthesis, noding and retained-authority processing.
-The replacement input boundary must therefore move before `finish_base_with_profile`:
-consume raw semantic contours and source constraints once, derive final adjacent owner contexts
-from the shared subdivision, and retain source height authority explicitly on its atomic edges
-and vertices. Point-only contacts, exact source-span requirements and authorized reownership
-remain part of that contract; material kinds alone cannot establish seam authority.
-Finished rails remain a reference oracle during proof. Replacing only boolean ownership after
-paying the existing rail cost cannot meet the budget.
+**Products.** `JunctionLayout` stores:
 
-Reproduction (run build and measurements sequentially; choose a fresh run ID each time):
+- per arm: the mouth station, tangent stations and crosswalk station
+- per sector: its kind, `R`, `C` and sampled boundary curves
+
+Graph clips (`start_clip` / `end_clip`), the profile solve's hard zone, crosswalk placement and
+pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
+`junction_profile_crossing_core_m` no longer compute setbacks of their own.
+
+### Heights
+
+- `Bend` and `JunctionN` use their solved plane `P`. The profile finalizer pins each incident
+  arm's physical profile to `P` on `[0, mouth station]` and blends back to the source grade outside
+  it, as today. A `Terminal` gets a plane through its end section, with the arm's end grade and no
+  crossfall, solved by the same finalizer.
+- Every node-piece vertex is at `P(x, z) + level`. A curb face is a vertical quad between the
+  ground and raised vertices at the same XZ.
+- Mouth sections are evaluated directly as `P(x, z) + level`. Span sections at full blend weight
+  use the same function, so the shared seam is bit-identical. A finalized centerline more than
+  1 mm from `P` at the mouth is a profile-solve defect: it is reported as an error, not repaired.
+- Spans keep the existing section model: centerline height from `physical_geometry`, band heights
+  from their level, and the existing plane blend inside the transition zone.
+
+### Pieces and meshes
+
+**Node piece.**
+
+- **Carriageway core.** One closed loop crosses each arm's mouth, follows its carriageway edges
+  back to the corners, and runs along each sector's carriageway-edge curve. Spade CDT triangulates
+  it. The core is planar, so no interior guide vertices are needed.
+- **Raised strips.** Quad strips between consecutive band boundaries, for each sector and arm
+  side.
+- **Curb faces.** Along every carriageway boundary except the mouths.
+- **Mouth vertices.** Copied from the shared mouth section.
+
+**Span piece.** Sections are placed at the physical knots, at the refinement stations, and at the
+two mouth sections (copied). Each band is one quad strip, with curb faces along both carriageway
+edges.
+
+**Other node kinds.**
+
+- `Bend` is a two-arm junction with one concave corner and one round join.
+- `Terminal` is a one-arm junction with a round cap ([D2](#product-decisions)).
+- Bridges and tunnels use the same pieces, with class-specific terrain handling in
+  [`ROAD-68-F`](#road-68-f--remaining-families).
+
+**`PieceMesh`.** A piece's mesh holds:
+
+- positions
+- per-layer triangle index lists (carriageway, curb or shoulder, sidewalk, footpath, curb face),
+  with each triangle's band kind kept for queries
+- outer chains: footprint boundary polylines oriented with the road on their left, each running
+  from one mouth corner to the next
+- bounds
+- a per-piece triangle query grid, reusing the legacy `SurfaceTriangleGrid` design
+
+Pieces are immutable and shared through `Arc`.
+
+**Watertightness.** Within a piece, every edge borders exactly two triangles, except outer-chain
+edges (which meet terrain) and mouth edges. Every mouth edge appears in exactly one span and one
+node piece, with bit-identical endpoints. Tests check both conditions on every fixture.
+
+### Footprint and terrain
+
+The terrain CDT core in `rust/src/simulation/terrain/cdt/` stays. It is generic: patch-clipped
+loops, source samples and tie-in guides in; stitched patch mesh out. Its contract in
+[`terrain.md`](terrain.md) and [`earthworks.md`](earthworks.md) is unchanged:
+
+- loops are hard constraints
+- faces inside road footprints are omitted
+- seam vertices take road heights
+- source samples are inserted only outside footprints
+- building-site boundaries share the CDT, and the road height wins at shared vertices
+
+The road side is rewritten:
+
+- **Patch loops.** The roadbed builds each patch's loops directly from outer chains: collect the
+  chains of pieces overlapping the patch from the chunk index, clip them to the patch rectangle,
+  and connect exits to entries along the rectangle boundary. Orientation is known, so holes such as
+  closed city blocks need no classification. Cost is `O(S log S)` for `S` local chain segments.
+  The legacy `terrain_clip/` union and `query/terrain_cdt/` adapters are deleted.
+- **Source tags.** `TerrainCdtRoadBoundarySource` keeps `BuildingSiteBoundary`. Its span, node and
+  handoff variants are replaced by one `RoadBoundary { piece, chain, segment }`.
+- **Grading envelope.** Tie-in guide samples and constraints are reimplemented against the outer
+  chains, following the existing rule in [`earthworks.md`](earthworks.md#geometry-decision): 2 m
+  or finer sampling, at most `EARTHWORK_MAX_MARGIN_M`.
+- **Patch selection.** Patches overlapping the old and new pieces' bounds plus grading margin.
+- **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts keep the
+  existing rules ([`ROAD-68-F`](#road-68-f--remaining-families)).
+- **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
+  terrain edits.
+
+### Queries
+
+`RoadbedSystem` answers:
+
+- visible-surface height at an XZ point, optionally carriageway-only
+- band kind at a point, and band kinds near a disc (tree clearance)
+- ray hits against the visible surface (cursor and picking)
+- prepared owner-local lane queries (lane height snapping)
+
+Each query maps XZ to pieces through the chunk index, then to triangles through the piece's grid,
+so the answer comes from the rendered triangle. Visible-world precedence is unchanged: client
+surface, then structural earthwork, then visual terrain ([`terrain.md`](terrain.md)).
+
+### Invalidation and chunks
+
+An edit's dirty closure is:
+
+- the changed edges
+- every node incident to them
+- every edge incident to those nodes, because their mouths may move
+
+Node pieces are rebuilt for those nodes and spans for those edges. The far end of an incident edge
+is unaffected unless the edge itself changed, because a layout reads only its own arms.
+
+Render chunks keep the existing terrain-aligned grid. A changed piece rebuilds the sorted union of
+its old and new chunks, and every triangle has one deterministic centroid home chunk. The Rust to
+Godot chunk payload stays byte-compatible, so Godot's committed-chunk renderer is unchanged:
+`NetworkMeshData` layers, owner ranges, the generation and acknowledgement protocol, and removal
+tombstones.
+
+### Preview, commit, undo and load
+
+**Context.** The road tool works on an immutable, versioned local context: the graph
+neighbourhood, terrain samples, sites, and zoning and field reservations. It is captured when the
+tool activates and refreshed when the simulation publishes a new generation. No per-pose work takes
+the core lock, which also resolves the hover core-lock bug listed under Validated Bugs in
+[`roadmap.md`](roadmap.md) (`get_agriculture_field_overlay_revision`).
+
+**Preview.** `preview_road(context, stroke)` runs synchronously in RoadTool's early process
+callback:
+
+1. Finalize the local edit plan.
+2. Compile the dirty closure.
+3. Build the affected terrain patches in parallel on the owned Rayon pool.
+4. Pack the road and terrain payloads.
+
+It returns the payloads together with a dependency fingerprint: the generations of touched edges
+and nodes, terrain patch revisions, and site, zoning and field revisions. Godot stages and shows
+the result in the same frame. There is no mailbox, worker queue, request-ID retirement, late
+publisher, coarse preview ribbon or stale-result path. Reintroducing asynchrony requires a measured
+reason.
+
+**Commit.** A click submits the preview's plan as an ordered simulation operation.
+
+- If the fingerprint is still current, the simulation installs the preview's pieces and terrain
+  patches without recompiling, then applies the topology mutation (graph, lanes, zoning, parcels).
+- If it is stale, the simulation recompiles locally and synchronously.
+
+Godot keeps showing the preview until the committed generation is acknowledged, then swaps road and
+terrain atomically, so no frame shows neither.
+
+**Undo.** The undo record holds the replaced pieces (`Arc`) and terrain patch revisions; undo
+restores them by swapping.
+
+**Load.** Load compiles every piece from the graph in parallel. A junction that fails layout or
+the profile solve fails the load with its typed error.
+
+### Commit consequences
+
+Any topology change currently rebuilds the CCH from scratch and marks every flow field dirty
+(`TransitNetwork::rebuild_pathing`). At city scale that alone exceeds a frame.
+[`ROAD-68-G`](#road-68-g--commit-consequences-inside-one-frame) takes it off the commit's critical
+path ([D7](#product-decisions)). Lane invalidation and agent reattachment remain local, as today.
+
+### Complexity bounds
+
+| Stage | Bound |
+| --- | --- |
+| Profile | `O(B)` for `B` bands |
+| Layout, per node | `O(k log k + sum over corners of (Pa + Pb) + V)`: degree `k <= 6`, arm centerline points `P` inside the setback, emitted boundary vertices `V` |
+| Node mesh | `O(V + n log n)`, with `n` carriageway-core vertices passed to the CDT |
+| Span mesh | `O(sections * B)` |
+| Dirty closure | `O(changed edges + their incident node degrees)` |
+| Terrain patch | `O((S + G) log (S + G))` for `S` local chain segments and `G` patch samples plus guides |
+| Height, band or ray query | `O(1)` chunk lookup plus `O(triangles in one grid cell)`, or the cells the ray crosses |
+| Chunk rebuild | `O(pieces in the changed chunks)` |
+
+No stage scans the city.
+
+### Stage budgets
+
+Provisional budgets per preview pose, on the [reference machine](#baseline-road-67-a-legacy-compiler)
+and the declared fixtures:
+
+| Stage | Budget |
+| --- | --- |
+| Context refresh | measured separately; never per pose |
+| Edit plan (topology, profile solve) | 1.0 ms |
+| Roadbed (layout and pieces for the dirty closure) | 0.5 ms |
+| Terrain patches, four workers | 3.0 ms |
+| Payload packing | 1.0 ms |
+| Godot stage and install | 2.0 ms |
+
+Together, about 7.5 ms, which leaves the rest of the 16.7 ms frame for rendering. The isolated
+targets are a four-way node piece in 0.1 ms, a six-way in 0.3 ms, and a 100 m span in 0.05 ms.
+Budgets are revised openly from measurements; the end-to-end target is not.
+
+### Guardrails
+
+- **Size.** `roadbed/` production code stays within 8,000 lines, tests excluded, through
+  `ROAD-68-H`. Each gate records the count. Going over requires a written reason here.
+- **No stage caches.** Only final immutable pieces are kept. A new cache needs a measurement that
+  shows the need.
+- **No hot-path allocation.** Per-pose scratch buffers live in the preview context and are reused.
+- **No second implementation of shared geometry.** Pedestrian corner routes, crosswalk stations
+  and street-furniture offsets read the layout.
+- **Benchmarks gate performance.** Every gate that touches a hot path adds or reruns a Criterion
+  benchmark; passing tests are not performance acceptance.
+
+### Product decisions
+
+These defaults apply unless the user overrides them:
+
+| ID | Decision | Default |
+| --- | --- | --- |
+| D1 | Curb-return radius | 6 m. The minimum is the raised width plus 0.5 m. The radius is reduced to fit; if the minimum does not fit, the edit is rejected. |
+| D2 | Terminal shape | Round cap; the curb and sidewalk wrap around the end. |
+| D3 | Preview modes | One mode, road and terrain together. The `ROAD-29` "Road only" mode is removed in `ROAD-68-E`. |
+| D4 | Width change on a straight side | A radial step at the node in `ROAD-68-C`; a linear taper along both approaches in `ROAD-68-F`. |
+| D5 | Footpath meeting a road junction | It joins the sidewalk ring at sidewalk height, with its end pinned there by the profile solve. Its ribbon ends at the sidewalk outer edge on shared vertices. |
+| D6 | Roads without sidewalks | Keep the current raised 0.75 m shoulder. |
+| D7 | Routing at commit | Confirmed by the user, 2026-10-23. Rebuild the CCH on an immutable graph snapshot as a scheduled job and adopt it at a fixed tick offset. Route queries issued meanwhile wait for adoption. If the job is late, the simulation blocks at the adoption tick, so results do not depend on machine speed. Revisit if the query backlog at adoption is too large at 100k buildings. |
+| D8 | Crosswalks | On crossable arms the mouth moves 3 m beyond the corner tangent station, and the crossing sits square on that straight approach. Sidewalk lanes end at its kerb points, as `ROAD-64` requires. |
+
+## Implementation plan (`ROAD-68`)
+
+Gates are sequential unless noted. Every gate ends with:
+
+- a commit that compiles and adds no Clippy warnings
+- its own tests passing, plus `cargo test --lib` in debug
+- the `roadbed/` production line count recorded
+- updates to this section, [`roadmap.md`](roadmap.md) and [`project.md`](project.md)
+
+A test that cannot pass until a later gate is marked
+`#[ignore = "ROAD-68-<gate>: <reason>"]` and listed under the gate that re-enables it. At
+`ROAD-68-H`, none may remain.
+
+| Gate | Status | Scope |
+| --- | --- | --- |
+| `ROAD-68-A` | open | Remove the legacy compiler; add the roadbed façade; the crate compiles |
+| `ROAD-68-B` | open | Profiles, spans, meshes, queries and render chunks |
+| `ROAD-68-C` | open | Junction layout and node pieces for car roads |
+| `ROAD-68-D` | open | Footprint chains and terrain patches |
+| `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
+| `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
+| `ROAD-68-G` | open | Commit consequences inside one frame (routing, flow fields) |
+| `ROAD-68-H` | open | Rendered acceptance and final cleanup |
+
+### `ROAD-68-A` — remove legacy, stand up the façade
+
+1. Commit the stopped `ROAD-67-B` prototype (its untracked `height/shared.rs`, `height/grade/graph*`
+   and `ownership/subdivision*` modules, and its tracked edits) to a side branch for reference.
+   Restore the tracked files on `road`, then tag `d6c80f91` as `road-legacy`.
+2. Delete:
+   - `rust/src/simulation/network/surface/`
+   - `rust/benches/surface_benchmark.rs` and its `Cargo.toml` entry
+   - legacy-only tests elsewhere, such as `render/test_road_mesh.rs`
+3. Add `rust/src/simulation/network/roadbed.rs` as the API router, with modules under `roadbed/`.
+   It provides:
+   - `RoadbedSystem`, owned by `TransitNetwork` in place of `road_surface`: dirty marking,
+     `compile_dirty`, the source / compiled generation gate, the chunk index and piece storage
+   - the public types `RoadProfile`, `BandKind`, `Level`, `JunctionLayout`, `SpanPiece`,
+     `NodePiece`, `PieceMesh`, `OuterChain` and `MouthSection`
+   - the query signatures
+
+   Pieces are empty at this gate.
+4. Port every consumer outside `surface/` to the façade:
+   - simulation-core preview, commit and undo
+   - `render/road`
+   - lanes, the building allocator, zoning, agriculture and vegetation
+   - save/load and validation
+   - the junction-profile solve
+   - the CDT and async-terrain adapters
+   - the Godot API
+
+   Queries return `None`, consumers take their existing "surface missing" path, and roads render
+   nothing. Delete the asynchronous preview worker, mailbox, reclaim thread and topology-reuse
+   plumbing. The preview API keeps its Godot signature and returns empty payloads.
+
+Acceptance:
+
+- the crate builds, and Clippy reports no new warnings
+- library tests pass, with the ignores listed under their gates
+- every public façade item is documented
+
+### `ROAD-68-B` — profiles and spans
+
+1. `roadbed/profile.rs`: the [profile table](#cross-section-profile).
+2. `roadbed/span.rs`: section sampling between mouth stations, band quad strips, curb faces and
+   outer chains. Mouth stations come from the existing graph clips until `ROAD-68-C`.
+3. `roadbed/mesh.rs` and `roadbed/query.rs`: `PieceMesh`, the triangle grid, height, band and ray
+   queries, and prepared lane queries. Re-enable lane height snapping and building frontage height.
+4. Render: `render/road/standard_surface/*` consumes `PieceMesh`, and lane markings come from
+   sections. The chunk payload format is unchanged.
+
+Acceptance:
+
+- spans are watertight
+- span heights equal the section evaluation
+- query heights equal the rendered triangles
+- output is bitwise deterministic across runs and worker counts
+- the chunk partition preserves the triangle multiset
+- a new `roadbed_span` Criterion benchmark is recorded
+
+### `ROAD-68-C` — junction layout and node pieces
+
+1. `roadbed/arms.rs` and `roadbed/layout.rs`: arms, sectors, corners, round joins, mouth stations,
+   fitting and `LayoutError`.
+2. Graph integration:
+   - clips and the profile hard zone come from the layout
+   - add terminal planes
+   - remove `junction_profile_crossing_core_m` and the graph's dependency on roadbed half-width
+     helpers
+3. `roadbed/node.rs`: the carriageway core through Spade, raised strips, curb faces and shared
+   mouth sections, for `JunctionN`, `Bend` and `Terminal`.
+4. Layout errors become placement rejections with reasons in the road tool.
+
+Acceptance:
+
+- fixtures, flat and at a 2.5% slope: T, four-way, five-way and six-way; Y junctions at 25°, 40°
+  and 60°; bends from 10° to 170°; a terminal; mixed two- and four-lane arms
+- node and span pieces are watertight across their shared mouths
+- node heights are bitwise `P + level`
+- output does not change with edge insertion order
+- neighbouring junctions on a short edge either fit or fail with `CornerDoesNotFit`
+- rebuilds stay local
+- a new `roadbed_junction` Criterion benchmark meets the isolated targets, with its worker count
+  recorded
+
+### `ROAD-68-D` — footprint and terrain
+
+1. `roadbed/terrain.rs`: patch loops from outer chains, the grading envelope and patch selection.
+2. `terrain/cdt/model.rs`: the `RoadBoundary` source variant, with source ordering simplified to
+   match.
+3. Rewire `nodes/simulation_node/variant_export/cdt/*` and `async_terrain/*`. Simplify the CDT
+   source labels in Godot's `terrain.gd` debug display.
+
+Acceptance:
+
+- no terrain face centroid lies inside the footprint, checked with the roadbed query
+- seam vertices are bitwise equal to the road's outer edge
+- closed blocks produce holes
+- seams across patch boundaries are continuous
+- the road–site shared-vertex rule holds
+- the existing CDT suite passes
+- per-patch timing is recorded, and the T fixture's patches total at most 2 ms on four workers
+
+### `ROAD-68-E` — preview equals commit equals undo, in one frame
+
+1. The versioned tool context and `preview_road`. The context also fixes the hover core-lock bug.
+2. Fingerprinted commit adoption, undo records and the load rebuild.
+3. Godot:
+   - `road_tool.gd` calls the synchronous preview from its early callback
+   - delete `road_preview_publisher.gd`, the request-ID plumbing and the coarse preview ribbon
+   - merge `road_junction_preview.gd` into the road tool's preview display or delete it
+   - keep the reversible terrain staging in `road_terrain_preview.gd`
+   - apply [D3](#product-decisions)
+4. Update `network_tool_chunk_renderer_test.gd` and `road_preview_stream_test.gd` for the
+   synchronous path.
+
+Acceptance:
+
+- preview pieces, terrain buffers and payloads are bitwise equal to the committed ones
+- a commit with stale dependencies recompiles and equals a fresh compile
+- undo restores bitwise
+- save → load reproduces bitwise-identical pieces
+- the Godot bridge suites pass
+- native per-stage timings are within budget on `sloped_t` and `sloped_branch`
+
+### `ROAD-68-F` — remaining families
+
+- footpaths: footpath-only nodes, and footpaths meeting roads ([D5](#product-decisions))
+- roads without sidewalks, and mixed widths and profiles, including the D4 taper
+- bridges: decks through the existing bridge renderer, and abutment cutouts
+- tunnels: portals; this covers `ROAD-61`
+- crossings: the layout supplies crosswalk stations and sidewalk corner curves, and
+  `lanes/pedestrian_junctions.rs` consumes them in place of `rounded_sidewalk_corner_path_xz`
+- lane markings at junctions, street lights and road signs
+- building sites, driveways and paving
+- zoning, agriculture and vegetation overlap queries
+
+Acceptance:
+
+- focused fixtures for each family
+- the [crossing contract](#pedestrian-junction-crossings): a zebra marking and its pedestrian
+  connectors share one kerb segment
+- deterministic street-light and sign placement
+- the building frontage tests are re-enabled
+
+### `ROAD-68-G` — commit consequences inside one frame
+
+This gate is independent of `ROAD-68-C` to `ROAD-68-F` and may start once `ROAD-68-A` lands.
+
+1. Measure the commit breakdown on the populated fixture at 0, 1k, 10k and 100k buildings: graph
+   mutation, lanes, zoning and parcels, roadbed install, terrain install, render publication, CCH
+   and flow fields.
+2. Implement [D7](#product-decisions) in the scheduler ([`simulation.md`](simulation.md)) and in
+   the routing contract ([`entrance_and_exit.md`](entrance_and_exit.md)). Flow fields refresh after
+   adoption.
+
+Acceptance:
+
+- click → committed generation installed and acknowledged in under 16.7 ms at 100k buildings
+- routing-adoption latency reported separately
+- agent records bitwise equal across worker counts and with an injected rebuild delay
+
+### `ROAD-68-H` — acceptance and cleanup
+
+1. The [rendered runs](#targets), with the simulation paused and active, and the populated
+   locality check.
+2. Remove the remaining dead paths and every `ROAD-68` ignore. Update references to legacy types
+   in [`terrain.md`](terrain.md) and [`earthworks.md`](earthworks.md). Record final line counts.
+
+## Measurement and acceptance
+
+### Baseline (`ROAD-67-A`, legacy compiler)
+
+Fresh rendered baseline, 2026-10-23:
+
+- **Build:** release, source `b75e03c9`
+- **Machine:** i9-12900K, RX 7900 XTX / RADV, Godot 4.7.2 Forward+, X11
+- **Display:** 1920×1080, VSync, 60 FPS cap
+- **Workers:** four Rayon workers
+- **Simulation:** paused
+- **World:** synthetic 512 m, 2.5% slope in the sloped cases
+
+| Fixture | Stationary input-to-frame p50 / p95 / max, ms | Moving displayed-age p50 / p95 / max, ms | Exact deadline met (schema 2) |
+| --- | --- | --- | --- |
+| `sloped_t` | 57.02 / 63.91 / 75.92 | 53.10 / 69.69 / 87.05 | 0 / 380 |
+| `sloped_branch` | 57.24 / 77.10 / 96.32 | 74.01 / 103.64 / 185.54 | 0 / 370 |
+| `flat_cross` | 74.50 / 77.19 / 96.06 | 102.89 / 136.82 / 170.52 | not run |
+| `sloped_cross` | 91.62 / 109.15 / 126.31 | 120.18 / 186.92 / 286.64 | not run |
+
+Isolated legacy junction compile medians: flat / sloped T 14.07 / 19.79 ms, flat / sloped cross
+21.54 / 22.91 ms, sloped oblique 36.36 ms, five-way 101.02 ms.
+
+The full method, binary hashes, collector schema and diagnostic stage split are in the
+[archive](archive/roads_legacy_surface_2026-10-23.md#first-baseline-and-compiler-decision-2026-10-23).
+
+### Targets
+
+These apply in road-and-terrain mode on the reference machine and settings, to `sloped_t`,
+`sloped_branch`, `flat_cross`, `sloped_cross` and the dense preview fixture:
+
+- **Moving.** With the simulation paused, every sampled pose's exact result renders within 16.7 ms
+  of sampling. With the simulation active on the populated fixture, at least 99% do, and the report
+  attributes every miss. A stale or superseded result counts as a miss.
+- **Stationary.** Input-to-frame p99 under 16.7 ms, and stop to exact frame under 16.7 ms.
+- **Commit.** Click → committed generation acknowledged in under 16.7 ms, with no frame that shows
+  neither the preview nor the committed road.
+- **Locality.** With the edited neighbourhood held fixed, grow remote buildings, parcels, agents
+  and roads from 0 to 100k. Local products stay bitwise identical and per-pose timings stay flat.
+  Context refresh is reported separately.
+
+### Method
+
+Reuse the schema-2 deadline collector, the gameplay road benchmark and the native fixtures.
+
+- Run matched, unprofiled release processes with no overlapping builds or benchmarks, pinned to
+  P-cores.
+- Record hardware, settings, worker counts, extension hash and exact commands, and keep captures
+  under `$ARTIFACTS`.
+- `frame_post_draw` is a rendered boundary, not proof of physical presentation. Headless timings
+  cannot establish rendered acceptance.
 
 ```bash
 RUSTC_WRAPPER= cargo build --release --manifest-path rust/Cargo.toml
@@ -451,30 +740,253 @@ METRUM_GAMEPLAY_BENCHMARK_REPETITIONS=100 \
 METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS=8 \
 METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60 \
 METRUM_GAMEPLAY_BENCHMARK_OUTPUT_DIR="$ARTIFACTS" \
-METRUM_GAMEPLAY_BENCHMARK_RUN_ID=road67-baseline-slope \
+METRUM_GAMEPLAY_BENCHMARK_RUN_ID=<fresh-run-id> \
 ./run.sh --benchmark-gameplay-roads
 ```
 
-The cross run changes the cases to `flat_cross,sloped_cross` and uses its own run ID. The
-diagnostic changes `METRUM_DEBUG_PERF=1` on the slope cases with a third run ID. The launcher
-deploys the release extension and records source, binary and harness identity in each capture.
+For the cross fixtures, set the cases to `flat_cross,sloped_cross` and use a fresh run ID.
 
-### Migration gates
+## Pedestrian Junction Crossings
 
-| Gate | Status | Required evidence before advancing |
-| --- | --- | --- |
-| `ROAD-67-A` | complete | Fresh release baseline and diagnostic attribution; rendered schema-2 deadline accounting validated; shared-boundary design and complexity targets recorded. |
-| `ROAD-67-B` | in progress | Native prototypes underway; complete sloped T and four-way replacement still requires terrain, preview/commit/undo parity and measured frame-budget acceptance. |
-| `ROAD-67-C` | open | Supported geometry families and neighboring/site interactions, deterministic correctness and locality. |
-| `ROAD-67-D` | open | Production input/render scheduling, click consequences and active-city end-to-end acceptance. |
-| `ROAD-67-E` | open | Superseded production paths/caches removed; final cross-system checks and matched release evidence. |
+> **`ROAD-68`:** the sidewalk corner curve and crosswalk station used below come from the
+> [junction layout](#junction-layout). `rounded_sidewalk_corner_path_xz` is removed in
+> `ROAD-68-F`. Otherwise this contract is unchanged; the legacy lane audit measurements are archived.
 
-Keep the game usable between changes. Experimental code may coexist in test/benchmark
-harnesses while being proved; do not introduce permanent runtime feature flags, compatibility
-shims, or a silent fallback to a different geometry contract. If the complete prototype misses
-the target, revise it before expanding. A fast isolated ribbon or passing narrow unit suite
-does not complete `ROAD-67-B`, and documentation or baseline completion does not complete the
-refactor.
+One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:
+
+- an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`
+- the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
+  segment stored by the marking
+- routes between adjacent arms follow the solved sidewalk perimeter and must not create direct
+  mouth-to-mouth chords through the junction carriageway; their centerlines use the same sampled
+  circular-arc / bounded-fillet policy as the compiled rounded sidewalk side joins, with straight
+  sidewalk approaches between the node mouth and crosswalk inset
+- every incoming sidewalk mouth has one precomputed route to each reachable outbound sidewalk
+  mouth; ordinary edge routing selects the shortest route to an arm, while exact building access
+  can select either sidewalk without falling back to a side-to-side lane reselection
+- physical road-sidewalk lanes terminate at the configured crosswalk inset, exactly matching the
+  first and last points of their junction connectors, so walkers cannot pass a zebra and backtrack
+- a corner route falls back to the node-centred arc only when the rounded route would cut into the
+  asphalt of either arm, judged against the arm centrelines (`TRAFFIC-04`). The old test compared
+  distance from the node with asphalt half-width plus half a sidewalk, which every straight or
+  gently bent sidewalk failed, and the arc it chose, of radius equal to the mouth distance, ran
+  walkers across the lawn on curved roads
+- a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
+  road or reattaching farther along the reverse sidewalk
+- degree-two junctions keep the deterministic single-crosswalk policy, while higher-degree
+  junctions may expose one crossing per eligible arm
+- a crossing is square to the road where it is drawn (`ROAD-64`): the midpoint of the two sidewalk
+  lane ends is projected onto the arm's physical edge, and both kerb points sit at that one station,
+  asphalt half-width either side along the local normal. Before, the two sidewalk lanes were trimmed
+  separately and could end at different stations, and the graph endpoint's normal was used, so
+  crossings on curved arms came out skewed. Pedestrian routes use the same kerb points
+
+Crossing availability and geometry must not be independently reconstructed by the renderer,
+selection queries, or agent movement.
+
+Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
+`ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could
+never plan a route onto one; footpaths had been dead ends since pedestrians moved onto lanes.
+
+- A footpath's lanes stop where the path leaves the paved area of the roads at that node, the
+  outer edge of their sidewalks: a ray at angle `d` to a road arm of paved half-width `w` leaves
+  it after `w / |sin d|` along the arm (capped at 10°) and after `w` away from it. The trim is a
+  pure function of the node's geometry, applied when lanes are built, so full and partial
+  rebuilds agree. Where only footpaths meet, each stops 1 m short of the node.
+- Between two road arms, the footpath joins the sidewalk corner of that sector at its nearest
+  point and follows the corner to the sidewalk on either side; reaching the other side of the road
+  uses the arms' crosswalks as before. At a single road arm it joins both sidewalks directly.
+  Footpaths meeting only footpaths connect through the node.
+- Road arms, their crosswalks and the single-crosswalk rule at degree-two nodes are unchanged.
+- The node records these pedestrian routes as turn rules keyed by the footpath edge, as sidewalk
+  routes are keyed by lane index ±100. `RegionGraph::is_vehicle_turn_rule` tells both apart from
+  player-set car turn rules, so neither puts a junction into car whitelist mode. Until this was
+  fixed, a rebuild that saw a footpath's rule (any full rebuild, and every load) dropped every car
+  connector at that junction, and a save with a car on one failed to load ("saved connector …
+  has no matching junction route"); pathfinding refused car routes through it too.
+
+Incremental physical-lane rebuilds include every road arm incident to the original dirty
+endpoints. All connector lanes at both ends of every rebuilt arm are replaced in the same update,
+and active agents on that complete rebuild closure are invalidated before the old lane IDs become
+orphans. After the lane rebuild, invalidated on-road agents may reattach only to rebuilt physical
+lanes in the same closure near their preserved world position; the stored `lane_distance` is
+derived from the same 3D lane arc-length metric used by lane geometry. A connector must never
+survive while targeting an orphaned physical lane.
+
+Full and incremental rebuilds share physical-lane and node-connection construction. Incremental
+updates assign new IDs in sorted edge/node order and gather surviving lane references only from
+the affected nodes' existing adjacency. Only lanes arriving at a rebuilt node lose their old
+connections; the opposite direction on a preserved road retains the untouched far-end junction.
+Local discovery/map work scales with incident lanes, plus O(K log K) sorting of K affected owners
+and their existing geometry/connector work. Ordered publication preserves deterministic IDs.
+
+Reattachment chooses the smallest squared distance, then the smallest lane ID for an exact tie
+(`AUDIT-01-A14`). Approximate distance ties are not transitive and can make the selected lane
+depend on unordered edge iteration. The query remains allocation-free and scans only lanes in
+the affected closure; its cost is O(P), where P is their total polyline point count. The existing
+outer invalidation/reattachment passes still visit the agent store; this change does not add a
+new agent spatial index or claim to remove that O(A) work.
+
+## Road Geometry Validation (`ROAD-54`)
+
+Placement accepts geometry no road could have. The profile solver treats its 16% grade as a
+target and relaxes each span's limit to the terrain slope under it
+(`solve_standard_road_profile`), and the preview measures `max_grade` without comparing it to
+anything. Nothing measures horizontal radius, kinks where two edges meet at a degree-2 node, or
+the angles between junction arms. Six player saves from 2026-10-08 (`road-*.sqlite`,
+screenshots in `screenshots/2026-10-08-roads/`) showed, within 250 m of their cameras:
+
+| Save | Worst measured |
+|---|---|
+| `road-too-steep` | 24-42% grades straight up the fall line |
+| `road-too-tilted` | 15-39% grades; 37° and 41° kinks at degree-2 nodes |
+| `road-house-yard-broken` | 38-39% grades on a fronted street; 29-30° kinks |
+| `road-snowflake` | a degree-10 junction with 20° between arms; a 6.7 m radius on a 7 m road; 77% grade |
+| `road-broken-tunnel` | an 82% tunnel opening into a degree-6 junction; portal pieces left floating |
+| `road-vertical` | a 108 m two-point bridge at 307% |
+
+`network/validate.rs` measures these read-only, at two tiers: `Illegal` (geometry to reject) and
+`Design` (legal, worth a warning). Defaults:
+
+| Check | Design | Illegal |
+|---|---|---|
+| Grade, `Standard` | > 10% | > 16% |
+| Grade, `Bridge` / `Tunnel` | > 6% | > 16% |
+| Grade change per horizontal metre | > 0.018 | > 0.06 |
+| Horizontal radius | < v² / (127 · 0.20), v in km/h | < 1.25 × visual roadbed half-width |
+| Kink at a degree-2 node | > 3° | > 10° |
+| Smallest angle between junction arms | < 60° | < 25° |
+| Junction degree | > 4 | > 6 |
+
+The illegal tier allows about 20% leeway over common Western design limits, so a city may be a
+little more playful than an engineer would draw it, but not mangled: grade change 0.05 became
+0.06 and the arm angle 30° became 25°.
+
+The radius is measured over a window of three roadbed half-widths from each vertex, as the
+window's horizontal length over its net signed turn. A polyline corner has no radius of its own,
+and the profile solver densifies centrelines to 20 cm near junctions, so a per-vertex estimate
+read a gentle 17° corner as a 3 m curve. Over the window, a stretch is illegal once it turns more
+than about 137°: a hairpin, not a street corner.
+
+Edges are judged on `physical_geometry`. Arm directions at a node use the first metre of each
+centreline, without clips, so sub-5 cm end segments do not decide them and a smooth curve split at
+a node does not read as a kink. `validate_edge` is `O(points)`, `validate_node` is
+`O(degree log degree)` plus the one-metre prefix, and `audit_graph` runs both over the graph with
+Rayon in a deterministic order.
+
+Placement refuses what an edit adds (`validate::edit_violation`, called from the preview and
+commit validator once the edit's local graph is finalized and before its surface compiles):
+illegal horizontal radius anywhere on the drawn road's pieces (the inserted edge and every piece
+split off it), and an illegal junction arm angle or degree at their endpoints unless that node was
+already as bad before the edit, so a bad junction can still be extended or repaired. The road tool
+shows the measured value and the limit. Not refused yet:
+
+- grade and grade change, which wait for the hill policy below: the profile solver still raises
+  each span's grade limit to the terrain under it, so refusing them would refuse every steep
+  hillside and, on the Kuopio DEM fixture, ordinary roads over bumpy ground (0.067 per metre)
+- direction kinks where two roads meet end to end: a street corner the bend piece rounds
+
+An audit of the 58 local saves found no illegal radius; illegal arm angles at 20° Y junctions in
+the `simple-city` saves and the `road-snowflake` star; the degree-10 snowflake; and illegal grade
+change only on the steep Kuopio hillside roads (0.06 to 0.12 per metre).
+
+Remaining: the hill policy (grade), a debug overlay and preview colouring of design warnings.
+
+## Drawing and placement (`ROAD-63`)
+
+The road tool (`godot/scripts/tools/road_tool.gd`) draws continuously: an accepted road starts the
+next stroke at its end, leaving in its end direction, until right-click or Esc, until the road
+ends on an existing road or junction, or until it reaches the map edge: a road that raises the
+external-connection prompt ends the chain, so the dialog never sits over a stroke still following
+the pointer off the map. Each stroke has a start direction from
+`get_road_tool_start_direction`, which reads only the edges at the cursor's snap target: a dead end
+is continued (signed), a road or degree-two node gives its direction (either sense), free ground
+and junctions give none. It replaced the tool's `get_road_tangent_at`, which scanned every edge in
+the city on each click.
+
+- Straight mode snaps the stroke every 45° from the start direction (straight on, square, half
+  square) when it lies within 4° of one. Snapping runs in Rust inside `get_road_tool_cursor_pos` (`interaction::snap_stroke_angle`),
+  after network snapping, which wins, and off while the zoning grid snaps. Shift draws free; the
+  label shows `[snapped]`.
+- Curve mode keeps the three-click quadratic curve (start, free control point, end) on every
+  stroke, continuation included, and does not snap. A curve aimed only by its end point, as a
+  constant-radius arc from the inherited direction, was tried and dropped: continuing a chain then
+  forced each curve to leave along the previous one, so players could no longer choose the bend.
+
+Node movement and merging update graph ownership, spatial entries and edge routing metrics in the
+same mutation (`AUDIT-01-A17`). Merges resolve both canonical parents before selecting the lower
+ID, remove old R-tree entries before changing geometry, and retire the removed node from the
+lookup grid. Reindexing skips aliases. Local adjacency supplies the moved/merged edges; sorting
+covers only the participating nodes' incidence. Self-loops retain two endpoint incidences but
+receive one geometry update.
+
+Endpoint deformation uses horizontal distance along the road. Independently sampled control and
+physical profiles first share the union of their support positions, interpolating each profile's
+own heights at added positions. Both receive the same smooth displacement, preserving their
+common XZ alignment and distinct vertical profiles. Already aligned profiles allocate nothing;
+merging unequal support sets takes O(C + P) time and temporary output storage. Edge length and
+slope-aware routing cost refresh through the existing cost calculator. Clip, lane, terrain and
+agent-plan publication remain the caller's coordinated edit work.
+
+Editor node selection and border-connection lookup share the simulation's nearest-node search
+(`AUDIT-01-A18`). Both use the existing 16 m node grid and require a live canonical node. Editor
+hits use XZ distance; border lookup retains 3D distance. The radius is exclusive and equal-distance
+nodes choose the lowest ID, including fresh cursor snaps and endpoint acquisition from a retained
+edge. The bridge only converts an absent result to its existing `-1` UI value.
+
+Node rectangles share one allocation-free visitor. It probes covered lookup cells, or scans the
+hash table when its allocated capacity is smaller than the rectangle's covered-cell count
+(`AUDIT-01-A20`). Counting populated cells alone missed table capacity retained after clear/rebuild.
+Exact coordinate checks retain inclusive rectangle bounds. Cost is O(min(covered cells, table
+capacity) + nodes in visited cells), plus incident-edge checks for candidates. Global rectangles
+therefore follow stored index capacity rather than empty world space. Sorted collecting queries
+retain their ordering and deduplication. No new index or per-query candidate buffer is introduced. Retired 3D network-point snapping, the unused
+whole-network edge query, its segment projector and the unused projection-data API are removed.
+
+Road-inspector hover selection uses the existing edge R-tree and physical-profile XZ geometry
+(`AUDIT-01-A19`). Deleted road slots cannot win selection. The existing zoning-depth-derived
+selection radius remains inclusive, repeated profile points remain valid, and exact distance ties
+choose the lowest live edge ID regardless of tree update history. The search visits overlapping
+bounds and their profile segments without allocating candidate lists; the bridge supplies the
+configured radius and converts the result to its existing UI ID.
+
+Thirteen unused geometry-query methods are removed with their complete caller chains: the old
+obstacle-polygon export, polygon ray depth, road-boundary projection, curved frontage, 2D geometry
+export, averaged network direction and unused connection-coordinate utility. The current 3D road
+geometry API and active node/edge inspectors remain the rendering and selection paths.
+
+Editor preview must use the same road-surface solve rules as committed placement. Preview and
+commit may differ in cache lifetime or display detail, but not in geometry ownership.
+
+Standard-road input keeps the player's authored XZ alignment, then prepares its physical geometry
+before graph commit or preview compilation: long spans are densified every few metres, samples are
+grounded against source terrain or existing visible road support, true endpoints and road
+connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
+targeting smooth grade and curvature changes. These profile targets shape generated geometry and
+remain available as diagnostics; they are not player-facing placement limits. The dense solved
+profile is stored on `physical_geometry`; section compilation, terrain clips, and earthworks
+interpolate that stored profile instead of drawing a straight vertical line between sparse
+endpoints. Earthworks own only the remaining local cut/fill around that solved roadbed.
+When a road is extended from a degree-1 standard-road terminal, preview and commit solve the
+existing terminal edge plus the new edge as one vertical corridor; the shared terminal becomes an
+internal profile point, while the far old endpoint, far new endpoint, and true junctions stay pinned.
+When the same edit runs from a degree-1 elevated bridge terminal down to source terrain, the dense
+profile remains `Bridge` and forms a structural ramp across the full approach. It may enter the
+ordinary bridge-clearance zone near its grounded landing, but it may not pass below source terrain
+and it never becomes `Standard` earthwork that raises terrain to the bridge deck.
+
+Player-facing placement rules include existing parcel conflicts and structural impossibilities:
+roads shorter than `2 m`, standard roadbeds crossing authored water without bridge mode,
+bridge/tunnel clearance failures, and endpoints that resolve to an impossible same-node connection.
+There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
+`same_node_connection` reason; it is not reported as a compiler failure.
+
+Road cursor snapping retains a generation-checked node or edge identity. Nodes remain fixed snap
+targets; edges continuously project the latest cursor onto their centerline and acquire their real
+endpoints within the node capture radius. Retention releases by distance to that target, not distance
+to the previous projected point. Interior polyline knots have no endpoint margin, avoiding artificial
+half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
+uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
 
 ## Road marking lighting — RENDER-12
 
@@ -831,5028 +1343,80 @@ per chunk rebuild, ordered by a total pose key, so the same network gives identi
 it ran beside other build jobs on the M2 Pro, so treat it as a scaling check, not an exact cost.
 In game (`traffic-signs.sqlite`) the warning signs face the traffic they warn, on its right.
 
-## Ownership Boundaries
-
-### Logical Graph
-
-The graph is authoritative for:
-
-- node and edge identity
-- route connectivity
-- lane counts and modal permissions
-- authored road class: `Standard`, `Bridge`, or `Tunnel`
-- authored plan polyline control points in world XZ
-- finalized physical profiles retained on edges after the shared `RoadEditPlan` finalizer
-
-Endpoint-to-road projection evaluates the XZ parameter and world interpolation in `f64`, then
-narrows the final point once. Refinement projects the authored endpoint onto the selected full
-geometry segment; it does not reconstruct position from the rounded `segment + t` address.
-An endpoint already on a straight centreline therefore retains its representable coordinates.
-The native orthogonal zoning-block fixture caught the earlier sideways drift at `(30, -150)`;
-that drift changed the road's tangent and produced incompatible zoning frames. Verification is
-recorded with the [zoning references](zoning.md#native-road-transactions-and-rendered-references).
-
-Splitting an edge at a junction merges any control knot within 5 cm of the junction, the
-intersection node capture distance, into the junction on either side (`ROAD-51`, fixed
-2026-10-04). Before, only the knot before the junction merged, and only within 1 mm. An endpoint
-snapped onto a road it already lies on keeps its exact projection. Before, it moved onto a knot
-within 5 cm. An endpoint off the road still snaps to a knot that close, as before.
-
-Long roads are resampled at about 6 m in f32, so knots land within millimetres of crossings, or
-centimetres of a projection, at whole multiples of the spacing. That caused two failures:
-
-- **1M grid.** A knot 1.1 mm past the junction at (-4200, 600) on the 20.4 km row left the second
-  half a 1.1 mm first segment. The four-way failed to compile and the row was rejected with
-  `surface_geometry_invalid`.
-- **300k grid.** The row at z = -75 ended on the outer cross streets 27 mm from their knots.
-  Moving its ends onto those knots shifted the whole row 27 mm sideways, after its crossing
-  junctions had been placed on the original line. Every row edge then ended in a 27 mm jog, and
-  eight four-ways failed.
-
-Five centimetres is far above f32 spacing anywhere in a 20 km world, and far below any authored
-segment. Regressions: `split_next_to_a_knot_leaves_no_sub_millimetre_segment` and
-`endpoint_on_a_road_beside_a_knot_keeps_the_new_road_on_its_line` (`simulation/network/topology.rs`).
-
-Road insertion, node movement, rollback and undo also refresh the zoning system's recorded
-straight-road grid choices from the affected edge set. Node movement invalidates both old and
-new corridors. These choices belong to zoning, use one local adjacency ring, and survive save
-remapping; see [persistent alignment](zoning.md#persistent-straight-road-alignment-checkpoint).
-
-The graph is not the final visible road surface, final terrain clip carrier, final earthwork
-boundary, or final node polygon carrier.
-
-### RoadSurfaceSystem
-
-`RoadSurfaceSystem` owns:
-
-- source-profile preparation and compilation of the graph's finalized longitudinal profiles
-- ordered edge sections and lateral band profiles
-- visual piece classification
-- compiled road top-surface meshes
-- visible-world road queries and picking support
-- terrain clip loops for grounded roads
-- terrain-CDT grading-envelope guide samples / constraints derived from final roadbed loops
-- road surface and terrain chunk coverage
-- road debug geometry and provenance output
-
-Span terrain-clip source endpoints retain the first matching canonical XZ/height coordinate through
-a temporary sorted key table, O(P log P + E log P) for P loop points and E source edges. Earthwork
-vertex normals reuse one winding computation per loop. The node-move reservation guard stages
-exact span checks before expensive node solving and uses the existing exact artifact-reuse checks
-for current live-node candidates. Geometry contracts and evidence are recorded in
-[zoning validation costs](zoning.md#staged-node-validation-and-boundary-lookup-cost).
-Node ownership cleanup also shares immutable source-point and rail-path preparation between its
-passes, scoped to one borrowed rail set and keyed by exact source and policy. Contour work and
-error predicates remain unchanged; see [source preparation reuse](zoning.md#reuse-of-immutable-ring-source-preparation).
-
-### TerrainSystem
-
-`TerrainSystem` owns source terrain, visual terrain storage, chunk residency, and upload
-boundaries. It consumes road-derived terrain clip / earthwork inputs; it must not decide road
-heights or invent road seams.
-
-### Godot
-
-Godot-side road, terrain, and water scripts upload cached Rust payloads, bind materials, collect
-input, and display debug data. They must not:
-
-- resample terrain to repair road heights
-- rebuild road topology from graph guesses
-- clip road holes with `Geometry2D`
-- mask missing topology with shader, water, zoning, material order, or background color
-- perform expensive geometry decisions in editor input loops
-
-## Roadbed Model
-
-One authoritative roadbed model drives preview, committed mesh, visible-world picking, lane
-marking anchors, terrain clip loops, and earthwork roots.
-
-For every road-owned top surface:
-
-- lateral width is explicit, not inferred from a centerline render offset
-- each section stores center position, tangent, lateral axis, solved height, and ordered lateral
-  bands
-- band heights derive from the solved grade and explicit profile offsets
-- preview and committed placement use the same Rust surface solve rules
-- render triangles and query triangles use the same compiled ownership
-
-The current required band model supports carriageway, curb / shoulder, sidewalk, and no-sidewalk
-profiles. Later medians, parking lanes, cycle tracks, tram reservations, or richer shoulders must
-add explicit ordered bands instead of special-case render offsets.
-
-## Pedestrian Junction Crossings
-
-One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:
-
-- an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`
-- the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
-  segment stored by the marking
-- routes between adjacent arms follow the solved sidewalk perimeter and must not create direct
-  mouth-to-mouth chords through the junction carriageway; their centerlines use the same sampled
-  circular-arc / bounded-fillet policy as the compiled rounded sidewalk side joins, with straight
-  sidewalk approaches between the node mouth and crosswalk inset
-- every incoming sidewalk mouth has one precomputed route to each reachable outbound sidewalk
-  mouth; ordinary edge routing selects the shortest route to an arm, while exact building access
-  can select either sidewalk without falling back to a side-to-side lane reselection
-- physical road-sidewalk lanes terminate at the configured crosswalk inset, exactly matching the
-  first and last points of their junction connectors, so walkers cannot pass a zebra and backtrack
-- a corner route falls back to the node-centred arc only when the rounded route would cut into the
-  asphalt of either arm, judged against the arm centrelines (`TRAFFIC-04`). The old test compared
-  distance from the node with asphalt half-width plus half a sidewalk, which every straight or
-  gently bent sidewalk failed, and the arc it chose, of radius equal to the mouth distance, ran
-  walkers across the lawn on curved roads
-- a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
-  road or reattaching farther along the reverse sidewalk
-- degree-two junctions keep the deterministic single-crosswalk policy, while higher-degree
-  junctions may expose one crossing per eligible arm
-- a crossing is square to the road where it is drawn (`ROAD-64`): the midpoint of the two sidewalk
-  lane ends is projected onto the arm's physical edge, and both kerb points sit at that one station,
-  asphalt half-width either side along the local normal. Before, the two sidewalk lanes were trimmed
-  separately and could end at different stations, and the graph endpoint's normal was used, so
-  crossings on curved arms came out skewed. Pedestrian routes use the same kerb points
-
-Crossing availability and geometry must not be independently reconstructed by the renderer,
-selection queries, or agent movement.
-
-Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
-`ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could
-never plan a route onto one; footpaths had been dead ends since pedestrians moved onto lanes.
-
-- A footpath's lanes stop where the path leaves the paved area of the roads at that node, the
-  outer edge of their sidewalks: a ray at angle `d` to a road arm of paved half-width `w` leaves
-  it after `w / |sin d|` along the arm (capped at 10°) and after `w` away from it. The trim is a
-  pure function of the node's geometry, applied when lanes are built, so full and partial
-  rebuilds agree. Where only footpaths meet, each stops 1 m short of the node.
-- Between two road arms, the footpath joins the sidewalk corner of that sector at its nearest
-  point and follows the corner to the sidewalk on either side; reaching the other side of the road
-  uses the arms' crosswalks as before. At a single road arm it joins both sidewalks directly.
-  Footpaths meeting only footpaths connect through the node.
-- Road arms, their crosswalks and the single-crosswalk rule at degree-two nodes are unchanged.
-- The node records these pedestrian routes as turn rules keyed by the footpath edge, as sidewalk
-  routes are keyed by lane index ±100. `RegionGraph::is_vehicle_turn_rule` tells both apart from
-  player-set car turn rules, so neither puts a junction into car whitelist mode. Until this was
-  fixed, a rebuild that saw a footpath's rule (any full rebuild, and every load) dropped every car
-  connector at that junction, and a save with a car on one failed to load ("saved connector …
-  has no matching junction route"); pathfinding refused car routes through it too.
-
-Incremental physical-lane rebuilds include every road arm incident to the original dirty
-endpoints. All connector lanes at both ends of every rebuilt arm are replaced in the same update,
-and active agents on that complete rebuild closure are invalidated before the old lane IDs become
-orphans. After the lane rebuild, invalidated on-road agents may reattach only to rebuilt physical
-lanes in the same closure near their preserved world position; the stored `lane_distance` is
-derived from the same 3D lane arc-length metric used by lane geometry. A connector must never
-survive while targeting an orphaned physical lane.
-
-Full and incremental rebuilds share physical-lane and node-connection construction. Incremental
-updates assign new IDs in sorted edge/node order and gather surviving lane references only from
-the affected nodes' existing adjacency. Only lanes arriving at a rebuilt node lose their old
-connections; the opposite direction on a preserved road retains the untouched far-end junction.
-Local discovery/map work scales with incident lanes, plus O(K log K) sorting of K affected owners
-and their existing geometry/connector work. Ordered publication preserves deterministic IDs.
-
-Reattachment chooses the smallest squared distance, then the smallest lane ID for an exact tie
-(`AUDIT-01-A14`). Approximate distance ties are not transitive and can make the selected lane
-depend on unordered edge iteration. The query remains allocation-free and scans only lanes in
-the affected closure; its cost is O(P), where P is their total polyline point count. The existing
-outer invalidation/reattachment passes still visit the agent store; this change does not add a
-new agent spatial index or claim to remove that O(A) work.
-
-### Lane Reattachment Audit Measurements (2026-09-12)
-
-Five alternating unprofiled CPU-0 release pairs measure the local query against two connected
-100 m roads with four vehicle lanes. Prebuilt positions span longitudinal coordinates 0–200 m
-and lateral coordinates −5–5 m. Fixture construction and result hashing are outside timing;
-each process performs three warmups and 21 query batches. Selected lane IDs, lane distances and
-squared-distance checksums match across builds and all runs. The separate close-distance/order
-regression intentionally changes the old incorrect result and also checks exact ties.
-
-| Queries | Before → after median, ms |
-| --- | --- |
-| 1,024 | 0.078691 → 0.076529 |
-| 16,384 | 1.256949 → 1.235671 |
-| 131,072 | 10.059423 → 9.889772 |
-
-Three further alternating pairs run the existing populated paved-site planning fixture on
-eight physical cores (`taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`). Four local occupied
-paved sites and the measured T-junction remain fixed while remote buildings, parcels, agents
-and roads grow. Each build verifies identical local products across all background sizes.
-After three warmups, each size measures 100 planning/readiness/worker calls; fixture preparation
-is excluded and the one-time snapshot is reported separately.
-
-| Remote buildings / roads | Total agents | Plan before → after, ms | Worker before → after, ms | Snapshot before → after, ms |
-| --- | --- | --- | --- | --- |
-| 0 / 0 | 24 | 19.713903 → 19.978799 | 20.671695 → 20.863355 | 0.006833 → 0.006239 |
-| 1,000 / 4 | 6,024 | 19.934972 → 19.654014 | 20.728349 → 20.633692 | 0.054038 → 0.055384 |
-| 10,000 / 40 | 60,024 | 19.813491 → 20.078570 | 20.793456 → 20.633240 | 0.352461 → 0.347382 |
-| 100,000 / 391 | 600,024 | 20.382618 → 19.840608 | 20.969874 → 20.822044 | 3.471363 → 3.376629 |
-
-These are medians of process medians. Local planning remains comparable and independent of
-background size; snapshot construction still scales with the stored city. This planning fixture
-does not time applying an edit or remapping the agent store. No concurrent builds or other
-benchmark jobs ran during timing, and both source trees and executables remained fixed.
-
-The runner records commands for
-`simulation::economy::agents::remap::tests::benchmark_lane_reattachment` and
-`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using `--exact
---ignored --nocapture --test-threads=1` and `METRUM_DEBUG=0`. Query runs use one worker; planning
-runs use eight. Binary SHA-256 values are
-`d7490495dd5c66a0a9ddd3e86d013ac1e8e756e4ae6828096a805c0540b05bf4` before and
-`14e2f21e2685cae09f4f0aed7ba7057b4fa40515f1d099de9c60c60fb93a4651` after.
-
-### Lane Rebuild Audit Measurements (2026-09-12)
-
-`AUDIT-01-A16` reproduces two incremental-update failures: an untouched far-end junction loses
-its outgoing connections, and identical edits assign different physical/connector IDs through
-unordered sets. The corrected tests preserve remote connections and compare 32 repeated edits.
-The shared builders replace copied full/incremental code, three fixture closures reuse the existing
-road helper, and two weaker tests are removed. One checked no vehicle routes because its loop only
-encountered pedestrian table entries; the other called every connector a crosswalk. Existing tests
-retain actual vehicle turns, crosswalk markings, lane geometry and full/incremental equivalence.
-
-Three alternating CPU-0/one-worker release pairs run
-`simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling`.
-The fixed frontier has two rebuilt roads and one preserved road. Each process adds isolated remote
-roads, builds the graph/lanes outside timing, warms one update, then measures 21 updates. Local
-physical and connector geometry, distances, markings and destinations are hashed after timing;
-references use lane roles so background-dependent numeric IDs do not affect the comparison.
-Products match across background sizes and repeats within each version. The corrected version
-intentionally differs from the baseline because the far-end connections now survive.
-
-| Remote roads | Local rebuild before / after, ms | One-time fixture setup before / after, ms |
-| ---: | ---: | ---: |
-| 0 | 0.013385 / 0.013207 | 0.132 / 0.128 |
-| 1,000 | 0.089305 / 0.014780 | 1.876 / 1.880 |
-| 10,000 | 0.891426 / 0.013518 | 19.597 / 19.573 |
-| 100,000 | 24.387279 / 0.011468 | 206.802 / 206.027 |
-
-The previous update populated a temporary map from every surviving road; the corrected map stays
-local. These are lane-update timings, not complete road-commit or frame timings. As a separate
-check, three matched pairs run the populated paved-site planning fixture above on eight physical
-P-cores / Rayon workers. All local planning products remain identical as remote buildings,
-parcels, agents and roads grow. The largest fixture has 100,000 remote buildings, 391 remote roads
-and 600,024 total agents.
-
-| Remote buildings | Plan before / after, ms | Worker before / after, ms | Snapshot before / after, ms |
-| ---: | ---: | ---: | ---: |
-| 0 | 20.071 / 19.939 | 20.934 / 20.803 | 0.007431 / 0.006799 |
-| 1,000 | 19.969 / 19.683 | 20.608 / 20.749 | 0.052251 / 0.055508 |
-| 10,000 | 20.176 / 19.932 | 20.872 / 20.815 | 0.349490 / 0.354304 |
-| 100,000 | 20.150 / 20.396 | 20.857 / 20.878 | 3.349324 / 3.282118 |
-
-Planning remains comparable; this does not claim removal of its one-time world snapshot or the
-existing agent invalidation pass. Both workloads use Rust 1.98.1, offline release lib-test builds,
-`METRUM_DEBUG=0` and no concurrent builds/tests. Before/after executable SHA-256 values are
-`e37149dd31660156f5cddd4976b2c2cc324536cc888a92c3a71184583f6c3ea1` and
-`991bd166a3c5da6d8620fef8bce48fada818cba4107980a7a141ebe1364a8a5d`.
-
-## Road Geometry Validation (`ROAD-54`)
-
-Placement accepts geometry no road could have. The profile solver treats its 16% grade as a
-target and relaxes each span's limit to the terrain slope under it
-(`solve_standard_road_profile`), and the preview measures `max_grade` without comparing it to
-anything. Nothing measures horizontal radius, kinks where two edges meet at a degree-2 node, or
-the angles between junction arms. Six player saves from 2026-10-08 (`road-*.sqlite`,
-screenshots in `screenshots/2026-10-08-roads/`) showed, within 250 m of their cameras:
-
-| Save | Worst measured |
-|---|---|
-| `road-too-steep` | 24-42% grades straight up the fall line |
-| `road-too-tilted` | 15-39% grades; 37° and 41° kinks at degree-2 nodes |
-| `road-house-yard-broken` | 38-39% grades on a fronted street; 29-30° kinks |
-| `road-snowflake` | a degree-10 junction with 20° between arms; a 6.7 m radius on a 7 m road; 77% grade |
-| `road-broken-tunnel` | an 82% tunnel opening into a degree-6 junction; portal pieces left floating |
-| `road-vertical` | a 108 m two-point bridge at 307% |
-
-`network/validate.rs` measures these read-only, at two tiers: `Illegal` (geometry to reject) and
-`Design` (legal, worth a warning). Defaults:
-
-| Check | Design | Illegal |
-|---|---|---|
-| Grade, `Standard` | > 10% | > 16% |
-| Grade, `Bridge` / `Tunnel` | > 6% | > 16% |
-| Grade change per horizontal metre | > 0.018 | > 0.06 |
-| Horizontal radius | < v² / (127 · 0.20), v in km/h | < 1.25 × visual roadbed half-width |
-| Kink at a degree-2 node | > 3° | > 10° |
-| Smallest angle between junction arms | < 60° | < 25° |
-| Junction degree | > 4 | > 6 |
-
-The illegal tier allows about 20% leeway over common Western design limits, so a city may be a
-little more playful than an engineer would draw it, but not mangled: grade change 0.05 became
-0.06 and the arm angle 30° became 25°.
-
-The radius is measured over a window of three roadbed half-widths from each vertex, as the
-window's horizontal length over its net signed turn. A polyline corner has no radius of its own,
-and the profile solver densifies centrelines to 20 cm near junctions, so a per-vertex estimate
-read a gentle 17° corner as a 3 m curve. Over the window, a stretch is illegal once it turns more
-than about 137°: a hairpin, not a street corner.
-
-Edges are judged on `physical_geometry`. Arm directions at a node use the first metre of each
-centreline, without clips, so sub-5 cm end segments do not decide them and a smooth curve split at
-a node does not read as a kink. `validate_edge` is `O(points)`, `validate_node` is
-`O(degree log degree)` plus the one-metre prefix, and `audit_graph` runs both over the graph with
-Rayon in a deterministic order.
-
-Placement refuses what an edit adds (`validate::edit_violation`, called from the preview and
-commit validator once the edit's local graph is finalized and before its surface compiles):
-illegal horizontal radius anywhere on the drawn road's pieces (the inserted edge and every piece
-split off it), and an illegal junction arm angle or degree at their endpoints unless that node was
-already as bad before the edit, so a bad junction can still be extended or repaired. The road tool
-shows the measured value and the limit. Not refused yet:
-
-- grade and grade change, which wait for the hill policy below: the profile solver still raises
-  each span's grade limit to the terrain under it, so refusing them would refuse every steep
-  hillside and, on the Kuopio DEM fixture, ordinary roads over bumpy ground (0.067 per metre)
-- direction kinks where two roads meet end to end: a street corner the bend piece rounds
-
-An audit of the 58 local saves found no illegal radius; illegal arm angles at 20° Y junctions in
-the `simple-city` saves and the `road-snowflake` star; the degree-10 snowflake; and illegal grade
-change only on the steep Kuopio hillside roads (0.06 to 0.12 per metre).
-
-Remaining: the hill policy (grade), a debug overlay and preview colouring of design warnings.
-
-## Visual Pieces
-
-### Span
-
-`Span` owns ordinary edge corridors between node throats:
-
-- span sections are ordered along the edge plan polyline
-- every original edge knot and every node throat appears as a section
-- long spans are refined by deterministic world-space constants owned in Rust code
-- span cross-section directions interpolate normalized centered secants between polyline knots;
-  incident lengths are retained before normalization so short profile supports do not amplify
-  coordinate roundoff. Exact node-mouth directions bound this frame, and node-owned rails retain
-  their source geometry. Inserted samples use the same continuous frame, preventing tiny bands
-  from folding across near-adjacent profile knots. Sampling stays O(P) per section for P edge
-  points, adds two O(P) mouth samples per compiled edge, and allocates no tangent-search buffers.
-- span output emits role-tagged asphalt, curb / shoulder, non-road, query, terrain clip, earthwork,
-  and chunk coverage data
-
-### Terminal
-
-`Terminal` owns one-mouth endpoints:
-
-- terminal asphalt follows the carriageway to the graph endpoint
-- side non-road bands and end-band closure are explicit solved-band topology
-- terminal caps are not generic annulus, disk, or endpoint helper geometry
-- terminal output carries the same owner, height-field, provenance, and chunk-coverage contracts as
-  other node pieces
-
-### Bend And JunctionN
-
-`Bend` and `JunctionN` share the node-region ownership model:
-
-- `Bend` is a two-mouth node piece
-- `JunctionN` is an `n >= 3` node piece
-- mouths are sorted deterministically
-- full-roadbed corridor candidates define the node footprint
-- carriageway owner carriers and side-join candidates define asphalt; non-terminal nodes must not
-  reintroduce raw source-band-none carriageway corridor fallback polygons, and those owner carriers
-  must follow the same rounded adjacent-mouth boundary policy as side-join contours instead of
-  preserving old miter endpoints
-- `node_non_road = node_footprint - node_asphalt` is an intermediate domain only
-- curb / shoulder and sidewalk are accepted only after explicit profile seam-rail evidence
-- sidewalks may shrink, split, or disappear when asphalt legally owns the conflict region
-- no non-road triangle may overlap asphalt or reconnect sidewalk islands across asphalt
-- where a curved road continues through a junction (the straight-through arms' retained band
-  paths meet end to end in XYZ, with opposite tangents on one line), the side join follows those
-  retained bands instead of extrapolating the mouth tangents. Extrapolating drew a second kerb and
-  sidewalk ribbon beside the real one on the inside of the curve (`ROAD-64`)
-- at grid-bounded junctions, footpath contours are noded against the sidewalk's vertices before the
-  footprint union and seam extraction, so a sidewalk vertex sitting micrometres off the footpath's
-  chord does not leave an internal slit that earthwork export rejects (two material sources on one
-  edge). Exact-canonical bends keep their source segments unchanged (`ROAD-64`)
-
-The final node output is a canonical arrangement:
-
-- every vertex has a canonical key, material owner, height-field owner, and grade authority
-- every seam edge has explicit source / owner-pair provenance
-- height is evaluated only after ownership and seam vertices are known
-- missing, ambiguous, or conflicting owner / height support is a hard diagnostic, not a repair path
-- Spade CDT triangulates already-owned material regions; CDT does not decide ownership
-
-Adjacent-mouth corners in `Bend` and `JunctionN` pieces are canonical rounded geometry, not a
-renderer bevel, shader mask, or test-only helper. For every non-degenerate adjacent mouth gap, the
-side-join generator must round asphalt-to-curb / sidewalk material boundaries and outer
-roadbed-to-terrain footprint boundaries before the ownership boolean. The emitted visible side-join
-contours are adjacent-mouth boundaries: their endpoints come from the generated rail / band boundary
-points, not from the shared graph endpoint or node centre. A shared endpoint / centreline point may
-remain as internal owner or height support, but it must not be emitted as an exposed side-join
-material or footprint boundary for the rounded corner.
-
-Exact circular arcs are preferred when the incident rails support a shared radius; bounded
-deterministic fillets are used when exact arcs are unavailable. Fillet sampling is fixed and bounded
-per adjacent mouth, preserves the generated band owner / height carrier provenance through the normal
-contour path, and must be clamped by the available adjacent segments so it cannot erase sidewalks,
-cross another mouth, or create unsupported sliver polygons. If a split carriageway slice collapses
-against the centerline, that degenerate asphalt slice must not abort the whole corner or reintroduce a
-center-routed miter; its rounded outer path is carried forward so curb / shoulder and sidewalk bands
-still receive rounded ownership boundaries. Render polygons, visible-surface queries, terrain clip
-loops, and earthwork roots all consume this same rounded ownership output.
-
-Node throat clips use the roadbed half-width plus a small numeric safety margin as their baseline
-distance from the graph node, so ordinary orthogonal junction mouths stay close to the junction
-centre without producing exact tangencies in node ownership. Acute-angle and near-parallel conflicts
-may still expand the clip distance deterministically from incident roadbed widths and angular
-separation. Same-width conflicts cap that expansion to a small multiplier of the incident roadbed
-half-width so ordinary acute mouths do not become long node-owned approach regions; mixed-width conflicts may
-expand farther when needed for canonical side-join ownership. That expansion is geometry ownership,
-not visual padding. The conflict is signed (`TRAFFIC-04`): two arms meeting at an obtuse angle,
-such as a gentle bend or the straight side of a Y, have no inner corner to clear, so they keep the
-baseline. Taking the angle's absolute value once gave a 13° bend a 25 m clip, a phantom conflict
-on the outside of the bend, which left a long sidewalk gap at the node.
-Edge span sampling, visible-surface section queries, and grounded `Standard` road earthwork ranges
-must consume the same node-mouth ownership policy. Ownership answers which piece renders a surface,
-not where elevation may change. Grounded approach profiles may rise or fall inside node ownership;
-the shared crossing core and all material/terrain seams still require compatible heights and grades.
-This rule is independent of source sampling density.
-
-Degree-two `PassThrough` nodes own no node platform and therefore never run the `Bend` /
-`JunctionN` endpoint-profile rewrite. Their incident spans preserve the already validated authored
-vertical profiles. At a shallow alignment change, both spans use one deterministic bisected
-cross-section axis at the shared endpoint, so `Bridge` / `Standard` and same-class handoffs meet
-without a transverse cap, terrain slit, or overlapping roadbed.
-
-Incident `Bend` / `JunctionN` rails use a shared graph endpoint profile plane before section, span,
-and node compilation. Profile distances are measured in horizontal XZ metres because the cap is a
-road grade rule, not a 3-D polyline-length rule. The source-fit and final plan solve may grade-limit only when
-limiting stays close to the incident road samples; otherwise the original source-supported plane is
-preserved.
-Clip rebuilds update ownership distances only: they must not copy hard-pinned control geometry
-over the independently eased physical profile. Junction support materialization for authored
-profile changes may sample the existing physical profile at control stations in a linear monotonic
-walk. A topology-only split instead partitions the original physical polyline at the matching
-horizontal station, retaining support knots on both halves. Explicit terrain authoring remains
-responsible for synchronizing both profiles after a terrain edit.
-On a link to another connected endpoint, endpoint blending is bounded to its half of the link;
-it must not overwrite the opposite endpoint's profile supports. An open terminal keeps the full
-transition length because it has no competing endpoint profile.
-For a true two-mouth `Bend`, fit the node-local plane to the incident source grades rather than
-requiring a horizontal platform. The compatible crossing core is determined by incident roadbed
-overlap, independently of the more distant visual ownership handoff. The 32 m transition outside
-that core is retained: reducing its length is not the remedy for an unnecessarily constrained area.
-Grounded road edits resolve grade limits and the final physical profile once in the shared
-`RoadEditPlan` topology finalizer. Road and terrain compilation consume that physical solution;
-surface compilation may construct lateral crossfall and material offsets, but must not apply
-another longitudinal flattening blend. Structural approach integration remains tracked separately.
-
-For any `JunctionN`, the endpoint profile solve first looks for deterministic opposite-mouth
-authority corridors. Existing stable corridor mouths score above edited branch mouths, and the
-highest-scored corridor owns the node base plane. Secondary opposite branch pairs must not rotate
-that base plane when another road is added to the same `JunctionN`. When such a corridor exists,
-the authority mouths retain their original control-grade authority. All affected physical crossing
-profiles must nevertheless agree with the selected solution. When no compatible authority corridor
-exists, the node falls back to the all-mouth least-squares plane. Finalization must not exclude a
-prepared steep through-road from authority selection merely because its grade exceeds the
-conservative raw-input fit limit; a later flat branch must not take over that hillside. The final
-16% mouth-grade target applies only when it moves the fitted 12 m samples by at most 0.5 m.
-Otherwise the supported plane is retained, including its crossfall during surface reconstruction.
-Any changed mouth preserves the compatible crossing core and blends back to source grade
-over a bounded transition. The 12 m profile sample is only a stable solve/control sample, not a
-visible hard platform extent; it may anchor the source profile plane, but physical road geometry
-must receive the same vertical-curve blend as other post-mouth support points. Support vertices are
-materialized at the solve sample and sparsely through the outer transition so later section sampling
-reads a gradual source-grade transition instead of one large planar ramp back to raw terrain.
-Visible road-surface sections inside an active profile fade use a denser transition cadence than
-ordinary road spans, so the rendered asphalt approximates the vertical curve instead of exposing
-long planar facets.
-The edit's adaptable edge set controls authored control-profile changes; any stable physical profile
-changed to maintain crossing agreement becomes an explicit plan output and dependency. Section
-sampling must also suppress sub-decimetre protected-handoff slivers so a support point cannot
-create a visible near-vertical roadbed face immediately outside node ownership.
-
-Topology dirtiness is not profile authorship. A local edit ledger records newly authored or
-explicitly reprofiled roads; splitting an existing road does not make either retained half a new
-grade authority. Split children inherit profile authorship only from an authored parent. Preview
-and cold commit drain the same ledger, while adoption/rollback/load reset it. At an existing
-junction dirtied only by a remote split, preserve control geometry and apply only the change from
-the previously solved plane to every retained physical support station. Do not rematerialize that
-transition from sparse control knots: doing so can discard its solved vertical curve and create
-conflicting road-owned terrain boundaries (`ROAD-57`). Reapplying the entire blend accumulates
-cut/fill with each nearby edit. New junctions still receive one complete final-profile solve.
-This adds O(local authored edges) bookkeeping and O(local incident profile points) work, with
-no resident-city scan.
-
-Straight side joins retain both incident approach profiles, including their interior stations;
-an extrapolated collinear miter must not send the path past its endpoint and back. After canonical
-boundary-loop cleanup, discarded spur vertices must not reenter CDT as unconstrained guides.
-Compact the local vertex/lookup/constraint set before adding intentional interior guides;
-repair contours use the same loop cleanup. This stays bounded to one owned node region
-(O(vertices + lookup entries + constraints log constraints)); height and coverage checks are unchanged.
-
-### `ROAD-04` Node Top-Surface Quality
-
-`ROAD-04` is shipped for the current `Bend` / `JunctionN` road-owned top-surface path. It hardens
-the Rust node triangulation and validation stages against visually harsh carriageway triangles
-without moving ownership into terrain, Godot, or render-time repair.
-
-The implemented contract:
-
-- numeric-dust split / intersection vertices canonicalize only when the existing and incoming
-  support have matching material owner, height-field owner, quantized height, and source provenance
-- exact-key height conflicts and nearby conflicting height support remain blocking diagnostics
-- sloped `Bend` and `JunctionN` carriageway regions may receive deterministic interior guide
-  vertices before Spade CDT input; guides are inserted only inside the final road-owned region,
-  require a verified road-owned grade plane from the region boundary, and carry canonical key /
-  owner / height-field / grade authority
-- road-edit junction profile solving resolves its final grade target before applying the physical
-  transition; true two-mouth `Bend` nodes fit the incident grades, while affected `JunctionN` mouths
-  solve through deterministic authority-corridor selection; stable opposite-mouth corridors are
-  scored deterministically, the best corridor keeps the node base grade for the whole `JunctionN`,
-  physical crossing profiles adapt into that plane, and no-compatible-corridor cases fall back
-  to the all-mouth solve;
-  this is the source grade solution, not a render-time repair, it must use horizontal profile
-  distances, keep the hard mouth pin small, materialize the solve/control sample plus sparse outer
-  vertical-curve support points, and update changed edge cost / length data before lane rebuild
-- exposed final-footprint boundary endpoints may resolve a collapsed raised-step corner only when
-  exact endpoint source edges prove an adjacent lower / raised material pair at that key; direct
-  asphalt / sidewalk height conflicts remain blocking unless explicit step authority exists or both
-  exact final-boundary endpoints carry source-intersection provenance for a collapsed generated
-  mouth corner
-- guide insertion never subdivides or moves final footprint boundaries, so terrain clip loops and
-  earthwork provenance continue to consume the same road-owned footprint
-- triangle numeric-area filtering uses actual triangle area, not double-area, against the shared
-  overlay numeric threshold
-- the post-CDT validation gate reports node ID, piece kind, material owner, source owner index,
-  height field, triangle index, canonical keys, millimetre coordinates, edge lengths, area, aspect
-  ratio, slope angle, adjacent normal angle, height delta, and local grade-plane residual
-- near-zero, aspect-ratio, and slope failures block only when the triangle is large enough to be a
-  visible top-surface problem; subvisual slivers remain bounded by the existing coverage and
-  numeric-threshold validation
-
-This remains a road-owned geometry rule. It must not be replaced with render z-bias, terrain
-sampling, nearest-owner / nearest-height repair, min/max repair, averaging, old-road-wins priority,
-or hidden compatibility fallback.
-
-## Terrain And Earthworks
-
-Grounded `Standard` roads replace visible terrain inside the road-owned footprint. Terrain under
-asphalt, curb / shoulder, or sidewalk is not an independent visible carrier.
-
-Save/load first compiles saved node positions, road grades, physical lengths, and junction clips
-unchanged. Only rejected grounded junctions receive one local pass of the shared profile finalizer;
-load fails if the detached graph still cannot compile. Valid nonincident profiles remain unchanged.
-Derived road surfaces, terrain earthworks, and lanes rebuild without city-wide terrain-authoring
-resynchronization. See [saved-reference validation](#coverage-and-saved-reference-completion).
-
-Road-touched terrain patches obey this contract:
-
-- Rust unions grounded road-owned footprint loops for the patch before CDT input
-- terrain patch rectangles, footprint loops, and source-terrain samples are inserted in canonical
-  order
-- road footprint constraints are clipped and split at patch boundaries before Spade input
-- clipping preserves exact rectangle coordinates, including integer-overlay output for disconnected
-  components; source-vertex recovery cannot move an intersection off that boundary or outside the patch
-- source provenance and earthwork loop connectivity follow canonical endpoint identity, including
-  edges shorter than 1 mm between distinct keys; their nonzero outward directions remain valid
-- source-terrain samples are inserted only outside road-owned footprints
-- Rust inserts deterministic grade-limited tie-in guide samples outside grounded `Standard`
-  footprints before ordinary source terrain samples, using the final unioned roadbed loops rather
-  than per-piece or Godot-side repair geometry
-- constrained guide rails are allowed only for a single clean non-hole convex footprint; holed,
-  concave `Bend` / `JunctionN`, multi-loop, or non-road client footprint sets leave those rails
-  unconstrained, so guide constraints cannot cross through the road-owned footprint
-- accepted terrain faces stay outside the unioned road-owned footprint
-- rejected road-footprint faces are not emitted
-- emitted terrain seam vertices reuse road-owned outer-edge coordinates and heights
-- when a building-site footprint boundary shares an exact XZ vertex with a road-owned terrain
-  constraint, the road-owned height is authoritative for that shared CDT vertex; site-owned yard
-  grading must not emit a conflicting over/under terrain face at the road seam
-- ordinary `Standard` span and node seam sources stay in the terrain bucket even when the authored
-  terrain is steep; retaining-wall output is reserved for explicit structural bridge / tunnel /
-  future retaining sources
-- an omitted over-steep source sample beside a bridge abutment does not promote every face sharing
-  that span boundary to retaining material; bridge faces are classified from their emitted slope,
-  while a tunnel portal may still require source-wide retaining output
-- no shader mask, water plane, closure carpet, guard strip, or seam strip may replace missing
-  topology
-
-`Bridge` and `Tunnel` edges do not flatten or clip ordinary midspan terrain. Their terrain support
-is limited to class-owned abutment or portal regions. A bridge ramp within the ground-contact
-clearance zone exports a source-owned terrain cutout only through its abutment and adjacent node
-handoff; it does not stamp terrain fill, and the elevated bridge run remains outside terrain CDT.
-
-Structural earthwork stamping remains for explicit bridge, tunnel, retaining, and future
-engineered-ground cases. Its current acceleration is chunk-local: prepared triangles are bucketed
-inside dirty chunks, support candidates preserve the closest-distance / lower-height tie-break
-rule, and writes are applied in canonical chunk order.
-
-Shared engineered-ground rules live in [`earthworks.md`](earthworks.md).
-
-Building-site earthworks consume road-owned visible-surface/query heights for driveway or frontage
-connections, but roads do not own lot grading, flat-site height selection, or authored yard material
-regions.
-
-## Preview, Query, And Editing
-
-### Drawing (`ROAD-63`)
-
-The road tool (`godot/scripts/tools/road_tool.gd`) draws continuously: an accepted road starts the
-next stroke at its end, leaving in its end direction, until right-click or Esc, until the road
-ends on an existing road or junction, or until it reaches the map edge: a road that raises the
-external-connection prompt ends the chain, so the dialog never sits over a stroke still following
-the pointer off the map. Each stroke has a start direction from
-`get_road_tool_start_direction`, which reads only the edges at the cursor's snap target: a dead end
-is continued (signed), a road or degree-two node gives its direction (either sense), free ground
-and junctions give none. It replaced the tool's `get_road_tangent_at`, which scanned every edge in
-the city on each click.
-
-- Straight mode snaps the stroke every 45° from the start direction (straight on, square, half
-  square) when it lies within 4° of one. Snapping runs in Rust inside `get_road_tool_cursor_pos` (`interaction::snap_stroke_angle`),
-  after network snapping, which wins, and off while the zoning grid snaps. Shift draws free; the
-  label shows `[snapped]`.
-- Curve mode keeps the three-click quadratic curve (start, free control point, end) on every
-  stroke, continuation included, and does not snap. A curve aimed only by its end point, as a
-  constant-radius arc from the inherited direction, was tried and dropped: continuing a chain then
-  forced each curve to leave along the previous one, so players could no longer choose the bend.
-
-Node movement and merging update graph ownership, spatial entries and edge routing metrics in the
-same mutation (`AUDIT-01-A17`). Merges resolve both canonical parents before selecting the lower
-ID, remove old R-tree entries before changing geometry, and retire the removed node from the
-lookup grid. Reindexing skips aliases. Local adjacency supplies the moved/merged edges; sorting
-covers only the participating nodes' incidence. Self-loops retain two endpoint incidences but
-receive one geometry update.
-
-Endpoint deformation uses horizontal distance along the road. Independently sampled control and
-physical profiles first share the union of their support positions, interpolating each profile's
-own heights at added positions. Both receive the same smooth displacement, preserving their
-common XZ alignment and distinct vertical profiles. Already aligned profiles allocate nothing;
-merging unequal support sets takes O(C + P) time and temporary output storage. Edge length and
-slope-aware routing cost refresh through the existing cost calculator. Clip, lane, terrain and
-agent-plan publication remain the caller's coordinated edit work.
-
-Editor node selection and border-connection lookup share the simulation's nearest-node search
-(`AUDIT-01-A18`). Both use the existing 16 m node grid and require a live canonical node. Editor
-hits use XZ distance; border lookup retains 3D distance. The radius is exclusive and equal-distance
-nodes choose the lowest ID, including fresh cursor snaps and endpoint acquisition from a retained
-edge. The bridge only converts an absent result to its existing `-1` UI value.
-
-Node rectangles share one allocation-free visitor. It probes covered lookup cells, or scans the
-hash table when its allocated capacity is smaller than the rectangle's covered-cell count
-(`AUDIT-01-A20`). Counting populated cells alone missed table capacity retained after clear/rebuild.
-Exact coordinate checks retain inclusive rectangle bounds. Cost is O(min(covered cells, table
-capacity) + nodes in visited cells), plus incident-edge checks for candidates. Global rectangles
-therefore follow stored index capacity rather than empty world space. Sorted collecting queries
-retain their ordering and deduplication. No new index or per-query candidate buffer is introduced. Retired 3D network-point snapping, the unused
-whole-network edge query, its segment projector and the unused projection-data API are removed.
-
-Road-inspector hover selection uses the existing edge R-tree and physical-profile XZ geometry
-(`AUDIT-01-A19`). Deleted road slots cannot win selection. The existing zoning-depth-derived
-selection radius remains inclusive, repeated profile points remain valid, and exact distance ties
-choose the lowest live edge ID regardless of tree update history. The search visits overlapping
-bounds and their profile segments without allocating candidate lists; the bridge supplies the
-configured radius and converts the result to its existing UI ID.
-
-Thirteen unused geometry-query methods are removed with their complete caller chains: the old
-obstacle-polygon export, polygon ray depth, road-boundary projection, curved frontage, 2D geometry
-export, averaged network direction and unused connection-coordinate utility. The current 3D road
-geometry API and active node/edge inspectors remain the rendering and selection paths.
-
-Editor preview must use the same road-surface solve rules as committed placement. Preview and
-commit may differ in cache lifetime or display detail, but not in geometry ownership.
-
-Standard-road input keeps the player's authored XZ alignment, then prepares its physical geometry
-before graph commit or preview compilation: long spans are densified every few metres, samples are
-grounded against source terrain or existing visible road support, true endpoints and road
-connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
-targeting smooth grade and curvature changes. These profile targets shape generated geometry and
-remain available as diagnostics; they are not player-facing placement limits. The dense solved
-profile is stored on `physical_geometry`; section compilation, terrain clips, and earthworks
-interpolate that stored profile instead of drawing a straight vertical line between sparse
-endpoints. Earthworks own only the remaining local cut/fill around that solved roadbed.
-When a road is extended from a degree-1 standard-road terminal, preview and commit solve the
-existing terminal edge plus the new edge as one vertical corridor; the shared terminal becomes an
-internal profile point, while the far old endpoint, far new endpoint, and true junctions stay pinned.
-When the same edit runs from a degree-1 elevated bridge terminal down to source terrain, the dense
-profile remains `Bridge` and forms a structural ramp across the full approach. It may enter the
-ordinary bridge-clearance zone near its grounded landing, but it may not pass below source terrain
-and it never becomes `Standard` earthwork that raises terrain to the bridge deck.
-
-Player-facing placement rules include existing parcel conflicts and structural impossibilities:
-roads shorter than `2 m`, standard roadbeds crossing authored water without bridge mode,
-bridge/tunnel clearance failures, and endpoints that resolve to an impossible same-node connection.
-There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
-`same_node_connection` reason; it is not reported as a compiler failure.
-
-Road cursor snapping retains a generation-checked node or edge identity. Nodes remain fixed snap
-targets; edges continuously project the latest cursor onto their centerline and acquire their real
-endpoints within the node capture radius. Retention releases by distance to that target, not distance
-to the previous projected point. Interior polyline knots have no endpoint margin, avoiding artificial
-half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
-uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
-
-Road guiding lines and guide snapping are removed; see
-[road guide removal](#road-guide-removal-road-27).
-
-Road surface, earthwork and fine-query chunk owner indices now share immutable map branches
-across preview snapshots using `imbl`, with sorted owner sets shared by `Arc`. A local membership
-change copies its trie path and touched owner set, preserving older snapshots. Spatial coverage,
-query predicates and owner ordering are unchanged. Cached node inputs and reverse owner-to-chunk
-lists also share map roots and immutable records, including inputs held by preview certificates
-and bounded undo entries. Other graph/surface snapshot fields still copy, so this does not
-establish whole-edit locality. The dependency rationale and matched evidence are owned by
-[ZONE-04](zoning.md#shared-compiler-inputs-and-reverse-coverage).
-
-Mouse motion performs no curve baking, validation, or mesh upload in the input-event handler.
-The tool resolves the current pointer once per frame, then coalesces changed position/settings into
-one lightweight preview update. Camera-only movement also refreshes the preview; motion that leaves
-the resolved snap unchanged preserves the displayed exact result. Exact compilation starts immediately
-and continues during motion: one running job completes while the current curve replaces pending
-intent, then the newest input is dispatched. The native mailbox also holds at most one pending job;
-there is no idle timer or unbounded request backlog. Cache/request matching uses exact points, so fine movements cannot
-redisplay an old result within the former 5 cm tolerance. Clicks resolve their current pointer before
-building the committed curve, including clicks arriving before the next frame. The road-options
-checkbox controls zoning-grid snapping. The Shift shortcut and old 15-degree / fixed-10-metre
-snap are removed. Road connections stay enabled. Zoning snap uses persistent curb alignment,
-selected road width and configured cell size. It captures directions only within 5 degrees and
-half a cell of lateral displacement. Other angles stay free. The placement
-and complexity contract is owned by [ZONE-04](zoning.md#11-road-generated-cell-zoning--zone-04).
-
-The moving and fallback stroke previews render asphalt, lane dividers, curbs, and sidewalks rather than a
-uniform blue ribbon. They share committed-road texture resources and Rust's lateral band widths;
-zero vehicle lanes render the actual 2 m walkway. Valid placement uses untinted materials with no
-outline; pending validation is amber, and rejection is red. Lane coordinates remain in metres through curves.
-
-Preview display positions are separate from the authoritative prepared points. Moving feedback
-reuses the already prepared terrain-aware vertical profile; settled feedback uses compiled sections.
-Both stroke ribbons sample current visual terrain along and across the road, at 0.25–2 m spacing
-tied to terrain resolution, and lift vertices 15 cm above
-the higher of the planned roadbed and terrain, preserving raised band offsets. This keeps cut areas
-visible before commit excavates them, without lowering elevated roads or changing tunnel/bridge
-classification, validation, cost, or committed heights. Normal depth testing stays enabled; the
-preview is not an always-visible overlay through buildings. It is a sampled placement display, not
-an exact visualization of the future cut/fill terrain.
-
-Display generation is `O(longitudinal samples × lateral strips)` for the current stroke, with
-constant-time terrain-grid samples and no city-wide query or junction compilation. Buffer capacity
-is computed before triangle emission. Hover validation returns prepared points and its source
-generation without generating or exporting a ribbon. Only an actual fallback draw requests packed
-material/UV geometry from those prepared points; it performs no second snap/profile solve and rejects
-a changed source generation. GDScript performs no per-vertex terrain calls. A matching exact result
-is consumed before hover validation, avoiding both a redundant validity check and unused fallback
-construction. Retaining a compiled pose during motion likewise builds no ribbon.
-
-When the exact worker compiles a standard road, including an isolated stroke or an affected
-`Bend`, `JunctionN` or `PassThrough`, feedback shows the local terminals, connections and spans
-through the committed road renderer: asphalt, sidewalks, curb/step
-faces, crosswalks and lane dividers. It exports the already-compiled validation neighborhood,
-reconstructing lanes only inside that excerpt for the normal marking rules. It does not compile
-the junction again, rebuild city routing or modify the live graph. Before display-only lifting,
-all vertex attributes must match an independent cold commit, including unequal widths, slopes,
-four-way crossings and an old terminal that becomes a pass-through without a nearby junction.
-Isolated strokes move the same already-compiled neighborhood into this path, with no removed
-source owners. The retained chunk batch may be empty on a blank map; unrelated roads sharing
-those chunks retain their exact geometry. Empty old cutout sets bypass vacated-ground boolean
-work entirely. Terminal-extension previews include the reprofiled existing edge
-in the same changed-edge ledger as commit, keeping sloped bend heights and mouths identical.
-
-Cached road chunks retain compact source-owner ranges alongside their existing vertex buffers.
-The worker uses the existing owner-to-chunk memberships to select replacements, snapshots only
-those chunk Arcs under a nonblocking, generation-checked core lock, then filters them off-lock.
-Unrelated owners retain their exact vertices/material attributes. This removes the old curbs and
-markings by identity, not by approximate triangle clipping or blanking neighboring roads.
-The preview context is an `O(1)` Arc snapshot; expensive work holds neither its publication lock
-nor `SimCore`. A newer pointer request supersedes one waiting for chunk access.
-
-`RoadJunctionPreview` stages retained geometry and new surfaces before temporarily hiding
-the corresponding resident instances. Ordinary motion keeps the last completed junction visible
-until its replacement is ready. That older pose is display-only: exact click validation still requires
-identical current points and context. Session, start/control, lane, mode, snap-target, query and zoning
-changes retire mismatched poses/results. Rejection, cancellation, world reset and source generation
-changes restore originals; incomplete/stale batches cannot replace a complete preview. A pending
-parcel check retries without removing the displayed junction or authorizing a click. A completed
-pose consumed while that check is pending remains eligible for display when validation recovers;
-it is not lost merely because it completed on an earlier frame.
-Query and source-mesh revisions are checked separately: a water-only edit invalidates validation
-without requiring unchanged resident road chunks to be relabelled or rebuilt.
-Unchanged request IDs do not upload meshes again. One retained CPU-mesh cache is keyed by exact
-source-mesh generation, chunk grid, replacement keys and excluded owners. Matching revisions omit
-retained payloads at the bridge and preserve their GPU instances; only planned geometry is replaced.
-Temporary fallback detaches this retained cache; cancellation, renderer reset and tool destruction
-release it. Cached dictionaries are immutable references, not per-frame deep copies. Junction results
-do not build a redundant stroke ribbon. `ROAD-23` keeps replacement geometry over committed roads
-at its compiled height: existing terrain is already cut out beneath those roads and cannot support a
-blanket hover offset. Only new coverage receives terrain-aware clearance. Triangles transitioning
-between anchored and lifted coverage are split at the current cutout boundaries, including vertical
-curb/support faces; the contact vertices remain unlifted and material layers share their XZ offsets.
-Inserted interior vertices are checked against existing coverage too: interpolating an offset from
-new coverage must not raise a vertex inside the old road footprint.
-Existing collinear terrain breakpoints are retained even on unlifted replacement edges, avoiding
-raster T-junction cracks when an old terminal becomes a straight continuation.
-The local old-minus-planned cutout footprint receives reversible ground infill when a bend removes
-an old terminal corner. Its inner edge follows the planned road and its outer edge the existing
-surface. Holes and sub-centimetre residuals use the shared constrained triangulator without the
-road renderer's skinny-triangle rejection. Failure to build complete infill declines the replacement
-scene, leaving the ordinary ribbon available. Prepared points, reusable topology and live terrain
-patches remain untouched: this is a render-only seam treatment, not full future excavation/grading.
-
-The added work scales with the local validation/lane excerpt and affected chunks: `O(C log M)`
-for `C` chunk-cache lookups among `M` resident chunks on a retained-cache miss, then `O(R + V)` retained-range filtering,
-payload copying for affected ranges/vertices. Display clearance queries reuse existing query chunks
-and owner-local triangle grids. Footprint booleans/CDT depend on local boundary segments,
-intersections and output only. Contact splitting takes `O(B(T + P))` boundary checks for `B` local
-segments, `T` input triangles and `P` generated pieces; boundaries are filtered to the chunk and
-source triangle's actual bounds before splitting, and scratch buffers are reused per chunk.
-Fully anchored triangles only need collinear seam breakpoints.
-Wholly lifted triangles are also checked because they can enclose a cutout without a covered
-original vertex. Independent chunk work uses
-Rayon. A retained-cache hit checks `O(affected owners + chunks)` dependencies and shares mesh Arcs
-in `O(1)`, avoiding retained filtering, payload copying and upload. Planned geometry still scales
-with the local excerpt. The request mailbox is bounded to one pending input plus one running job.
-Normal mesh generation adds `O(1)` ownership bookkeeping per triangle and storage per
-contiguous owner/layer/chunk run; no new spatial index or whole-network preview scan is introduced.
-
-Road and walkway tools show the committed parcel overlay. Cheap candidate validation, synchronous
-commit validation, and completed async previews query the same parcel chunk index and corridor
-width as the simulation-thread commit guard. Conflicts return `parcel_overlap` with the count and
-first parcel id; empty/free parcels remain parcel authority and are not silently removed. Preview
-caches include the zoning revision as well as road geometry/generation. No hover query waits on
-the simulation mutex. While the simulation holds it, cheap candidate validation returns a retryable
-pending result.
-
-The completed async preview poll (`get_preview_road_surface_result`) returns `null` only while its
-result is pending or stale (`ROAD-54`). The live checks it adds to a result are the corridor's
-parcel and field clearance with their revisions, the plan state, and why an invalid plan refuses
-the stroke. `PublishedRoadPreviewChecks`
-(`rust/src/nodes/sim/core/road_preview/live_checks.rs`) holds the latest evaluation of the
-current result:
-
-- At the end of every simulation frame, under the mutex and from the state the render snapshot
-  was just built from, the simulation thread evaluates the current result and publishes the
-  checks.
-- A poll that takes the mutex evaluates the checks itself and publishes them, so an immediate
-  refetch of the same result never needs a frame.
-- A poll that finds the mutex held returns the published checks when they belong to its result
-  (same request id and retained-geometry revision). They are as current as the render snapshot.
-- Pending means nothing has evaluated the result since the worker published it. Stale means a
-  newer request superseded it, or it was compiled for an older road-surface generation. Frames
-  stop evaluating such a result, and a frame that meets the worker replacing the result publishes
-  nothing.
-
-Without a current result a frame does O(1) work and allocates nothing. With one, it repeats a
-poll's corridor and plan checks, all local. Their parcel queries allocate scratch sets, as a poll's
-do. Finalized cell-reservation overlap is cached by the cell-store revision: a changed revision
-visits reserved cells once per affected span/node envelope and narrows exact triangle contact with
-the compiled owner's existing query grid, without query-time allocation (`ROAD-66`). Unchanged
-frames reuse that exact result. The populated planning fixtures measure the whole live check as
-`frame_checks` on the full-mode result (release
-`$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::<test> --exact --ignored --nocapture
---test-threads=1`, `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, 100
-samples per size, 2026-10-19). From 0 to 100,000 background buildings (600,024 agents, 100,004
-parcels), the p50 goes from 0.0115 to 0.0123 ms in `populated_road_plan_scaling` and from 0.119
-to 0.123 ms with painted cells in `populated_cell_road_plan_scaling` (p95 at most 0.146 ms). The
-cost follows the stroke, not the city. Evaluation only reads the core, so it cannot change
-simulation outcomes. A published verdict is display feedback: the click is still decided under
-the mutex.
-
-`ROAD-66` was reproduced on the reported four-way/neighboring-three-way stroke: its valid local
-plan had about 6,500 top-surface polygons. The former polygon-major query restarted the reserved
-cell chunk walk for every polygon and every frame, keeping the global simulation mutex almost
-continuously. The owner-major query keeps the same positive-area, shared-edge-legal contact rule
-by testing the compiled triangles against the rounded cell interior. On the original save's
-51-position pointer sweep, formerly observed live checks of 201 ms and 1,108 ms fell to 2.55–3.50
-ms on their first cell revision and 0.011–0.020 ms when republished unchanged. The permanent
-regression builds a dense four-way beside a three-way, drives 36 preview positions while the core
-lock is held, compares every published verdict with the commit guard, commits a ready result, and
-keeps the same local verdict after adding 20,000 remote reservations.
-
-A fresh unpinned test-profile locality run on 2026-10-22 (24 Rayon workers, 100 samples per
-size) kept identical local products from 0 through 100,000 remote buildings, cells and 391 remote
-roads. `frame_checks` stayed at 0.041–0.050 ms p50 and 0.080–0.099 ms p95. This is locality
-validation, not a matched release speedup comparison.
-
-Committed farm fields also reserve land (`ECON-07`). Road creation rejects `field_overlap` from
-both the stroke corridor and finalized local carriageway/curb/sidewalk/junction polygons. The
-final guard queries live field reservations before adopting or consuming a road plan. Preview
-caches include the agriculture revision; see [`economy.md`](economy.md#field-placement-and-editing-econ-07).
-
-Placement validity also includes local road-surface compileability. A preview or commit replays the
-candidate's local post-split topology before acceptance, including interior crossings against nearby
-road edges. Any edit that would fail to compile the new span or its required endpoint `Terminal` /
-`Bend` / `JunctionN` pieces is rejected before it reaches the live graph; tight switchbacks are
-allowed only when the compiled surface topology can actually represent them.
-A stroke shorter than 2 m horizontally, ignoring degenerate steps, is `too_short`. The fast hover
-check, the click check, the exact preview and the commit all apply this one rule (`ROAD-53`), so a
-too-short drag shows "Road too short" before the click instead of failing after it.
-Every refused stroke is reported on `events` with its reason, location and exact inputs, and can be
-replayed against a dumped save ([`debug.md`](debug.md#road-rejections)).
-The exact async preview carries a shared `RoadEditPlan` for its matching commit. The simulation
-thread requires identical raw road points, lanes, snap mode, surface generation and source/visual
-terrain revisions before borrowing the prepared profile and skipping its exact candidate replay. The plan
-also retains the finalized local graph delta: resolved connections, splits and merges, terminal
-extensions, junction-adjusted profiles, clip distances and affected edge/node scope. Preview and
-unplanned commit use the same finalizer. Matching commits install the solved delta through
-`TransitNetwork`, mapping preview-local identities to existing or appended live slots without
-repeating intersections, junction solving, regrading or clipping. An incomplete mutation frontier
-cannot be adopted. Stale/missing click plans are rebuilt through the same local compiler against
-borrowed live inputs before opening the transaction; no whole-city snapshot is copied at click.
-
-The completion plan also retains local road/site terrain CDT tiles and joined patch render
-buffers. Default road-only hover retains just the solved road products and local query inputs;
-optional full preview completes terrain during hover (`ROAD-29`). Planned
-cutout queries remove replaced source owners **before** union and remap local provenance to the
-same live IDs that topology adoption will allocate. Existing road contributors outside the graph
-excerpt are retained through the existing chunk/query indices. The simulation command uses the
-production grading, fixed-tile CDT and buffer builders after click; there is no second terrain
-compiler. It captures nearby site footprints/support heights through the allocator's existing
-512 m chunk index under the simulation lock, then compiles the affected patches through Rayon
-before opening the transaction. An unprepared index leaves the terrain candidate provisional:
-road-only pointer work does not capture terrain sites. Full preview captures bounded site
-inputs without rebuilding or scanning the resident building store.
-Site grading queries the finalized local roads over the immutable resident world, excluding
-replaced owners and preserving unmapped neighbors, global road-top precedence and prospective
-live-ID nearest-edge ties. This adds only a bounded validation-excerpt copy, not a city snapshot.
-Road splits and attachment repair change reference coordinates, not the authored world pose or
-support height from which site geometry is derived. Captured site inputs therefore remain the
-post-topology inputs; their grading already uses final planned roads. Commit verifies this exact
-site set again, remapped road products, source and structural visual samples, affected-patch
-coverage, bordered textures, ownership and exact query contributors. Different broad-phase margins
-must select the identical road/site sets; no floating-point tolerance is used. It then adopts the complete planned
-terrain batch, rebinding only payload generation metadata and sharing tile/seam/mesh buffers by
-Arc. It does not assemble new CDT inputs or choose geometry from the previous live tile cache.
-A mismatch rolls back the edit instead of compiling a different result after readiness.
-
-Replaced owners are exactly the owners the commit recompiles (`ROAD-50`, fixed 2026-10-03).
-Adoption marks the plan's dirty edges and affected nodes. The dirty compile adds both endpoints
-of every dirty edge, recompiles every span incident to those nodes, and dirties all their chunks.
-The plan applies the same rule, using live incidence for existing nodes, because the excerpt
-need not hold all of it. The validation excerpt also compiles neighbouring junctions and their
-spans as context. The commit keeps the live pieces and chunks of those, and `matches_published`
-requires them equal, so the plan takes context from the live surface. It adds no chunks, stamp
-owners or clip loops of its own. Before the fix, every excerpt piece counted as replaced. An edit
-next to a long span that crosses a chunk border then planned that span's chunks too, and graded
-patches the commit never dirtied. On the 10k `PopulatedCity` street grid, extending a T junction
-planned 12 patches against the commit's 9, and wasted about 300 ms of CDT on the extra column.
-The coverage check then rejected the commit with `road_plan_coverage_mismatch`. Regression:
-`plan_beside_unchanged_long_span_covers_only_commit_chunks` (`nodes/sim/core/tests/road_terrain_plan.rs`).
-
-Terrain validation separates pre-composition contributor/window checks from final publication.
-Successful triangulation alone is insufficient: every clipped patch must retain valid final render
-buffers with zero discarded faces. Missing or invalid buffers report a concrete failure, not an
-indefinitely provisional plan. Cache insertion, cold validation and planned adoption share this
-final gate. Explicit loop-free ordinary patches need no clipped render buffers.
-
-Structural visual-height stamps use the same pattern: retain ordered support inputs and grid
-writes, compare source/grid dependencies and actual triangles, then consume the offer once.
-The plan materializes their final visual result in a bounded copy-on-write overlay using the
-existing terrain storage chunks. Source resets and writes stay interleaved in live sorted chunk
-order, including inclusive shared borders. Patch textures (with clamped border rings), CDT source
-and boundary samples, road grading guides and site grading all consume this same visual view.
-Untouched chunks borrow resident samples; source heights never change. Unchanged edits retain
-the live sampling path. Overlay construction costs O(touched storage chunks + copied samples +
-stamp writes), with O(1) indexed sampling and no full-map copy. Dense road/terrain sampling is
-statically dispatched for resident versus planned inputs. Exact dependencies govern direct
-tile/buffer adoption. Ownership and clip discovery now run after the ordered resets/writes,
-using the same final visual view as compilation. Resident grading caches check both source and
-visual-only revisions; changed overlays use a batch-local cache and cannot poison resident entries.
-This keeps discovery bounded to indexed local owners and grades each boundary once per batch.
-Ordinary grounded roads remain CDT-only; empty stamp reuse is not terrain-mesh reuse. Neither
-product changes authored terrain or skips rollback. Structural stamp materialization, cutout
-patch discovery and terrain compilation happen after click in the default road-only mode
-(`ROAD-28`); full preview opts into this work during hover (`ROAD-29`). Hover reads terrain
-samples for the authoritative road profile and junction heights, then publishes the complete
-canonical road scene: spans, terminals, junctions, sidewalks, curbs, crossings and lane markings.
-Preview display replaces the new stroke, its junctions and bounded approach transitions only.
-Existing connected roads outside those bounds retain their committed vertices and attributes;
-neighboring junctions stay resident. Bounds derive from the junction crossing core, the 32 m
-profile blend support and roadbed width. Boundary triangles are partitioned with interpolated
-attributes instead of being discarded. Both sides use solved heights without a blanket display lift. The renderer performs no terrain-dependent clearance
-solve, terrain-contact retessellation or vacated-cutout infill. Occasional clipping/z-fighting
-and exposed old cutouts are accepted within the edited preview footprint, not on distant existing roads. In road-only mode terrain resources, samples, payloads and acknowledgments stay unchanged,
-including while idle; terrain renderer residency is not a dependency. Full mode temporarily
-substitutes resident draw meshes only, leaving authoritative samples/cache payloads untouched.
-
-`plan_state` describes road geometry readiness in road-only mode and complete road/terrain
-readiness in full mode: pending, provisional, invalid, stale, consumed or
-ready. Ready road geometry is not full placement authorization. It requires a complete local
-road solve, matching road/source/visual dependencies and current water/parcel/field/cell checks.
-Godot stages canonical road meshes with retained source owners; the latest completed pose remains
-visible while newer input compiles. An older rejected request cannot clear a newer provisionally
-valid pose. Missing current road products remain visibly under checking.
-
-A matching click shares the immutable road preparation, graph/profile delta and canonical surface
-products, then owns its newly completed terrain plan. It does not mutate the published preview
-or repeat the road solve. A stale or missing road candidate is compiled locally against current
-inputs. Full commit readiness additionally requires current site inputs, valid terrain buffers
-and all final ownership/coverage checks. Product claims remain single-use after preflight;
-terrain rejection preserves the committed world and reports failure to the tool. The terrain
-preview exporter, temporary terrain renderer and paired-display readiness gates are removed.
-Repeated cursor work is bounded by the affected road neighborhood and emitted vertices; terrain
-work follows affected patches/sites only after click. Shared context snapshot costs and full
-placement costs are measured separately from repeated previews.
-
-The existing simulation mutex encloses topology adoption, product validation, lane/agent/entrance
-and routing maintenance, charging and matching render-snapshot preparation; publication retains
-the existing generation fences. Failure before acceptance
-restores the bounded graph/split-reference journal and exact visual storage chunks; successful
-undo retains the same visual checkpoint. No new full-city snapshot or per-pointer index rebuild
-is introduced. Plan-less subsystem diagnostics retain the cold compiler, but interactive commits
-always require a complete plan.
-
-Immutable surface candidates still feed commit compilation, which matches them by world position, piece kind,
-and mouth count, then independently requires exact canonical node-local rail topology. Exact rail
-height values additionally permit boolean ownership and the already validated, triangulated
-arrangement to be rebound from preview-local node IDs to authoritative node IDs, including terrain
-cutout boundary ownership. Any metadata,
-topology, carrier, source-authority, or exact-height mismatch takes the full deterministic compiler
-path.
-Preview validation also seeds that same compiler with immutable committed-node topology candidates,
-remapped through the bounded validation graph's source-to-local node map. It rebuilds current node
-inputs before checking reuse; removed/merged local identities are not seeded. This adds only
-`O(copied neighborhood nodes)` lookups and shared references, not a resident-network scan or a
-second topology cache. Cold and seeded preview/commit output must remain identical.
-`surface_geometry_invalid` is an exact surface-compiler integrity failure, never a curve-angle or
-grade policy. An ordinary continuation or T-junction producing it is a compiler bug. Road debug logs
-must include the failed required split spans or nodes with their lengths, clips, lane counts, and
-endpoints. Bounded validation graphs can also contain unchanged frontier/context nodes that are not
-part of the candidate's required topology. Their cold-compile failures do not reject the candidate:
-both full and incremental transient compilers retain each successful artifact while keeping the
-failed-generation latch, and the gate independently requires every
-candidate-owned span and changed endpoint node piece to exist. Authoritative simulation and render
-compiles remain transactional, so placement cannot publish a road whose required surface is missing.
-Deleting and redrawing a connection must ignore deleted edges in duplicate detection, matching the
-preview graph. Bulldozing uses the existing incremental lane-rebuild closure, identical to agent
-invalidation/reattachment; it must not renumber distant active lanes (`ROAD-13`). Lane construction
-is local to that closure; existing surviving-lane lookup and agent scans remain `O(L + A)`.
-The two paths that still rebuild every lane, finishing a terrain-brush stroke
-(`TransitNetwork::sync_to_terrain`) and undo, renumber all lane ids. They carry agents' current,
-planned and lane-change lane ids across by identity: a road lane by edge, direction and lane
-index, a junction connector by node and the two road lanes it joins. A lane the undo removed drops
-the agent off it and clears its route, as a bulldoze does, and agents on the undo's changed edges
-are reattached nearby (`ROAD-65`). Capture and restore are `O(A)`, plus one `O(L)` pass when an
-agent is inside a junction. Loading a save written before that fix takes any agent whose saved lane is unknown or belongs to another edge or junction off the network to replan, instead of refusing the save.
-Terrain CDT boundary ownership follows the same `1 mm` canonical vertex identity as its constraint
-graph: a junction seam may be physically shorter than `1 mm` while still joining two distinct
-canonical cells, and it retains its source until seam hardening deterministically merges or accepts
-it. Truly unsourced road boundaries still fail the coordinated terrain/road upload.
-
-Numeric-dust connector height recovery is local to the connected run and its two source anchors.
-It must not validate every vertex of the unioned contour: a distant curb can legitimately expose
-two source heights handled by the terrain cutter's top envelope. Recovery walks only numeric-dust
-edges, stops at the first source anchor in each direction, and retains strict conflict checks for
-every sampled point in that run. Source queries reuse `TerrainClipSourceEdgeIndex`; each point
-query costs `O(log T + K log K)` for `T` indexed tiles and `K` local candidates, instead of scanning
-all patch sources for every contour vertex. This is terrain-build work, with no per-agent/tick cost.
-`ROAD-11` covers the iso `(22, 1)` patch failure that blocked live road publication and left terrain
-absent after reload.
-
-`ROAD-12` closes the simulation/render acceptance gap. A road command stages its local graph
-edit under the simulation mutex, compiles the road surface, and runs the production terrain input,
-CDT, and final-buffer builders for the affected grading patches. Constraint conflicts and
-pathological final buffers reject the command. Only a complete result permits lane/agent remapping,
-entrance/parcel repair, routing rebuild, and the treasury charge. Successful terrain buffers enter
-the normal generation-checked cache for reuse by the renderer. A failed edit restores the local
-graph/compiler checkpoint and reverses split building/frontage/occupancy mutations; it does not
-invoke the ordinary undo path's global lane rebuild or consume an older undo record.
-Terrain validation reuses indexed source queries and dirty 64 m tile assembly, borrowing the live
-world while locked instead of copying it. Added journal storage/work is proportional to affected
-split records and occupancy cells; terrain work is proportional to affected tiles and patch output.
-
-The `(23, 1)` saved-map failure came from a 29.6 m junction boundary enclosing only 0.0013775 m²
-of numeric seam dust. The single-operation area cap incorrectly made this complete boundary survive
-cleanup, then opposing curb vertices with heights 92 mm apart collided on the terrain identity grid.
-Complete-boundary uncertainty now accumulates the existing 0.1 mm edge strip and vertex floor
-without that unrelated fixed cap. Height conflicts remain errors; a resolved hole of comparable
-area still reaches normal source/height validation. Regression coverage includes cyclic/reversed
-order of the logged contour, terrain rejection after an occupied road split, and cached terrain
-availability before accepted-road publication.
-
-Authored water is part of the same placement contract. A `Standard` candidate is rejected with the
-stable `water_requires_bridge` reason when its complete roadbed footprint overlaps visible baseline
-water. The cheap hover query, exact async preview, live simulation-thread commit, and conversion of
-an existing edge to `Standard` all apply the same rule. `Bridge` spans remain legal over water;
-`Tunnel` spans remain legal below it.
-
-The query reuses the sparse baseline-water state and samples bilinear depth on a deterministic
-quarter-cell lattice across the roadbed. It allocates no per query and introduces no additional
-spatial index. Its bounded cost is
-`O(ceil(length / step) * ceil(width / step))`, with the sample step clamped to `0.5..=3.0 m` and
-early exit on the first visible-water sample.
-
-Visible-world queries use this precedence:
-
-1. road-owned top surface
-2. intentionally surfaced road earthwork / structure
-3. visual terrain
-4. source terrain only for terrain-only APIs
-
-Visible road-height sampling reuses the existing immutable owner-local triangle grids after the
-query-chunk lookup. It tests only triangles in each owner's matching cell, retains the original
-renderability predicate and highest-top-surface rule, and leaves structural-earthwork fallback
-unchanged. Top-surface work is proportional to local owners, their node-visibility adjacency, and
-cell triangle candidates rather than every triangle in those owners; sampling allocates nothing
-and builds no extra index. The same sampler serves snapping and other visible-height
-consumers. Exact scan-parity tests cover seams, overlapping heights, width edits, deletion, bridges,
-and tunnels.
-
-Ghost-guide CPU geometry is retained per edge. Exact physical geometry, immutable road-mesh
-chunk identities, and persistent terrain-patch revisions validate reuse over the bounds of the
-actual guide samples (including offset curves and ticks). Terrain source brushes and world resets
-invalidate the full guide cache. Multiple edits before a fetch cannot lose earlier invalidations;
-removed slots drop their lines. Independent refreshes use Rayon and reuse offset/line buffers.
-Full output assembly and Godot upload remain O(total guide vertices), in the original edge and
-outward/offset order. Validation costs O(source points + C log M), for C dependency chunks and M
-existing mesh chunks; height sampling is limited to changed edges. No new spatial index is added.
-The native fetch defers until surface and mesh publications match the requested generation.
-
-Road placement must not run heavy geometry synchronously from Godot mouse motion. Godot should
-enqueue or poll Rust-owned preview results and keep input/render code thin.
-
-Straight road edits should commit endpoint-only plan input. Curved edits may use deterministic
-world-space sampling, but must preserve authored endpoints exactly. Oversampled straight Godot
-`Curve3D` streams are not allowed to become semantic road input.
-
-### Player-selectable road preview modes (`ROAD-29`)
-
-**Status: done (2026-09-28), release extension deployed.** Options → Gameplay → Road construction preview:
-
-- **Road only (faster)** is the default. Draw the new road, junctions and bounded approach
-  transitions over unchanged terrain; build terrain when placed.
-- **Road and terrain** also prepares the final local grading/cutout terrain buffers during
-  hover. It may respond more slowly. Stage both mesh batches before displaying either;
-  use immediate road feedback while terrain resources are unavailable.
-
-The preference is stored as `gameplay/road_preview_mode` in `user://settings.cfg`. Apply updates
-active road tools immediately, retires old requests/displays and restores original terrain.
-Cancel discards pending preference edits; Reset selects Road only until Apply. New tools load
-the saved preference. Mode is a presentation/work request, not a different placement rule.
-
-Both modes retain the bounded visible road footprint, exact neighboring/previous-cursor reuse
-and solved heights without a blanket lift. Full mode reuses the production earthwork/CDT
-planner: compute road/earthwork inputs off-lock, capture only indexed local site inputs under
-the core lock, then compile local terrain through Rayon off-lock. No new spatial index or
-whole-city scan is introduced. Terrain draw substitution leaves source samples, textures,
-resident payload caches and acknowledgments unchanged. Cancel, tool teardown, mode changes
-and patch replacement/recycling restore the exact resident meshes; patch invalidation clears
-the paired road preview too. Road-only staging does not depend on terrain residency.
-
-A matching full-mode click shares the completed immutable terrain plan after rechecking all
-road, terrain and site dependencies. If terrain dependencies changed, placement recompiles
-terrain before opening the transaction. The same atomic validation/adoption/rollback path
-serves both modes; hover never mutates authoritative terrain or topology.
-
-Fresh validation: 2,013 Rust tests passed (83 ignored), five headless Godot suites
-(settings, junction previews, preview stream, chunk renderer, zoning road tool), and
-14 rendered junction fixtures, including five full-terrain captures. Rustdoc and release
-build pass. Terrain staging requires all affected patches to be resident; until then the
-immediate road feedback remains available. Render diagnostics use a flat diagnostic material,
-not the production terrain shader.
-
-Matched, unprofiled release measurements use four Rayon workers and `METRUM_DEBUG=0`.
-`benchmark_road_preview_modes --ignored --nocapture` runs 32 cursor positions on an 80 m
-branch meeting a 192 m existing road, discarding eight warmups. Worker/readiness p50/p95:
-road-only **16.612/19.721 ms**, road and terrain **22.137/25.963 ms**. Setup/snapshot and GPU
-upload are excluded; this is a mode comparison, not a universal frame-time guarantee.
-`populated_cell_road_plan_scaling --ignored --nocapture` holds the local edit fixed, with
-100 samples per size. At 0 / 1k / 10k / 100k background buildings, road-only worker p50 is
-0.933 / 0.946 / 0.910 / 0.929 ms; full worker p50 is 6.448 / 6.815 / 6.514 / 6.520 ms.
-Local products match throughout, reaching 600,024 agents, 100,004 parcels and 391 background
-roads. One-time snapshots are separate: 0.006 / 0.012 / 0.046 / 0.358 ms.
-
-Run native checks with `cargo test --offline --release --lib` from `rust/` and the filters
-above; run Godot scripts under `godot/tests/` against that release. Use `TMPDIR` on a writable
-filesystem. Native test binary SHA-256:
-`6a1bd37b08e0c2006394ad47b9aeb4fb1d86f767008fb86d67460e418029f41e`; deployed extension:
-`6382e3a4c62cb6d5ba53532ccb3ab83caebe1ef2a1fc1723bc828934cbbf632f`. The final extension also
-includes the generation-label export correction validated by the Godot suites; native timings
-measure the same planner implementation.
-
-User-requested repeat after deployment (2026-09-28): rebuilt the release test binary from
-the final source, then ran the same benchmark three times sequentially with four Rayon workers,
-debug disabled and no competing builds/tests. Each run has eight warmups and 24 measured poses
-per mode. Road-only p50 values: **16.383 / 16.575 / 16.345 ms**; full-mode p50 values:
-**22.060 / 21.531 / 21.986 ms**. Median of run medians: **16.383 vs 21.986 ms**, or
-**5.603 ms / 34.2% more CPU planning time** for full mode. Per-run p95 ranges are
-18.132–21.691 ms and 23.617–25.000 ms, respectively. These timings exclude retained source
-mesh filtering, worker lock/queue waits, bridge serialization, GPU upload and display latency.
-
-Fresh locality rerun also passes with identical local products at all four city sizes:
-road-only worker p50 **0.898 / 0.956 / 0.998 / 0.998 ms**, full worker p50 **6.245 / 6.450 /
-6.597 / 6.875 ms**. Snapshot setup is separate: 0.005 / 0.014 / 0.050 / 0.399 ms. This
-fixed-input reuse workload differs from moving-cursor planning above. Test binary SHA-256:
-`db06828a61d03bc0eb2c34c6c98559bf474b26b9051245d7ff3b714528cd6250`. Deployed extension
-identity remains unchanged.
-
-### Preview display performance plan (`ROAD-30`–`ROAD-36`)
-
-**Status: `ROAD-30`–`ROAD-35` done; `ROAD-36` parked after measurement (2026-09-29).** The measured
-preview-compile bottlenecks that remain are tracked as `ROAD-37`–`ROAD-42` in
-[Preview compile bottlenecks](#preview-compile-bottlenecks-road-37road-42). Implement and
-validate one task at a time. `ROAD-30` establishes the baseline below. Remaining: the preview-mode
-review below; use the measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
-candidate improvements identified by source inspection, with no measured speedup yet.
-The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
-and does not establish which frontend stage dominates. Road/junction solving remains a
-separate cost even if display work becomes cheaper.
-
-**Primary target: Road and terrain.** Prioritize full road/junction/terrain responsiveness
-when selecting the next optimization. Shared improvements should benefit both modes;
-full-mode terrain export, texture/resource reuse and paired staging take precedence over
-road-only-specific polish. Keep Road only available as a comparison while this work proceeds.
-The expectation that its eventual advantage may be small is a hypothesis to test with
-rendered end-to-end measurements, not a conclusion from the native-only comparison.
-
-After the measured improvements, review whether Road only provides a meaningful latency,
-frame-time or memory advantage across the supported workloads/hardware. Record the resulting
-recommendation: retain both modes, or simplify to Road and terrain. Removing a mode or changing
-the default is a separate product decision after that review; this plan changes neither.
-
-#### `ROAD-30` — Measure input-to-display latency
-
-Extend the existing road preview/gameplay benchmark and render diagnostics to correlate an
-input/request ID across input sampling, dispatch, worker start/end, retained-mesh filtering,
-result polling, bridge export, Godot validation, mesh/texture staging, atomic installation
-and the first rendered frame containing the result. Measure result age while moving and
-time to the exact final pose after stopping. Separate queue/lock waits, one-time snapshots,
-CPU command submission and rendering-server waits. A render fence or frame callback alone
-does not establish physical GPU upload time or monitor presentation latency; label those
-boundaries accurately and use GPU timing only where supported.
-
-Use full mode as the primary baseline and run both modes on matched flat/sloped T and multi-junction fixtures, continuously moving
-and stationary, including dense affected chunks and full-mode terrain residency retries.
-Record p50/p95, frame hitches, exported bytes, changed/reused chunks and layers, resource
-creations and worker utilization. Keep instrumentation behind the existing benchmark/debug
-facilities; establish acceptance timings with matched unprofiled release runs.
-**Exit:** reproducible baseline with stage attribution, workload/build/worker/render settings,
-commands and artifact locations in this section. No implementation speedup claimed.
-
-**Implementation (validated 2026-09-29):** the existing gameplay benchmark now
-accepts `METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview`. It drives the production RoadTool through
-flat/sloped T, flat/sloped neighboring-cross, dense-chunk and controlled terrain-residency
-retry fixtures, with Road and terrain first and Road only second. Each case/mode resets its
-512 m world, waits for each setup commit and renderer to settle, warms the preview, then
-measures stationary replacements and a moving pointer followed by an exact final pose.
-Since 2026-09-29 the matrix runs Road and terrain only. The T-family endpoint sweeps 130 m along
-the main road, and the moving pointer runs at 30 m/s. `*_branch` adds a leg from an existing
-T junction to free ground and circles the target at 15 m. `*_cross` crosses four parallel
-roads, planning four junctions, and circles the end at 20 m. Captures before that date
-used a few-metre endpoint jitter and both modes; they are not comparable. `sloped_branch`
-first exposed a false same-material height conflict in the 4-way junction; the fix and its
-regression are described in `docs/project.md`.
-Moving input uses absolute 60 Hz deadlines (400 scheduled samples at 100 repetitions);
-late frames coalesce overdue inputs. The capture records scheduling lateness and validates
-total trace duration, so a relative timer cannot silently halve one mode's input rate.
-Latency starts at scripted world-space input sampling, excluding OS input/raycast latency.
-Setup commits and snapshot construction are outside the measured drag. Existing
-`METRUM_DEBUG_PERF=1` snapshot diagnostics attribute one-time copying separately.
-
-The opt-in collector correlates sampled input IDs with native request IDs. Rust adds a
-fixed-size optional timing record per request; disabled captures do not read clocks in
-these new stages. Frontend capture is enabled by the benchmark or `METRUM_DEBUG_PERF=1`.
-It holds at most eight live request records and 4,096 observations per stream. Packed byte
-accounting visits payload containers and array lengths, never vertices. Complexity is
-O(changed payload metadata) per result and O(1) per frame; no city-wide query or index is added.
-
-- Native durations: mailbox queue, context read-lock/Arc capture, road solve/render,
-  retained-cache lookup plus earthwork preparation, core-lock wait, local site/mesh capture,
-  terrain compilation and retained-mesh filtering. Disjoint worker stages sum to worker
-  elapsed time. Bridge diagnostics add result read-lock wait, readiness and packing.
-- Frontend: total polling calls/time, road buffer validation, CPU mesh submission,
-  terrain preflight, mesh and resource creation, road/terrain installation, and first
-  `frame_post_draw` after installation while that request is still displayed. Headless
-  runs use a separately labelled process-frame boundary and are not rendered acceptance.
-- Totals and sub-stages overlap intentionally: queue timing starts inside request
-  dispatch; `poll_ms` includes bridge operations;
-  worker-end-to-poll includes publication and result read-lock wait; `stage_install_ms` includes the
-  validation/resource/install sub-stages. Do not sum overlapping fields. Terrain resource
-  time includes node/material/image/texture and retaining-wall creation, not GPU upload time.
-- Moving observations include both age when a new result first appears and displayed
-  result age on subsequent frames. Stationary observations require the exact sampled pose;
-  the final stop-to-exact-frame time is recorded separately. Frame hitches use 33.333/50 ms
-  thresholds. Packed bytes exclude dictionary/object overhead; resource counts describe
-  Godot objects, not physical GPU allocations. Changed/reused road
-  chunks/layers and created terrain meshes/nodes/materials/images/textures are counted.
-- Worker service fraction is observed, polled worker wall time excluding core-lock wait,
-  divided by the moving interval. Boundary jobs may remain incomplete; this is not CPU
-  core utilization. Diagnostic captures also collect latest engine viewport CPU/GPU
-  timings and an out-of-band post-workload CPU command-drain measurement. Those values
-  do not establish a request's physical GPU upload duration or monitor presentation.
-  See [Godot RenderingServer timing contracts](https://docs.godotengine.org/en/stable/classes/class_renderingserver.html#class-renderingserver-method-viewport-get-measured-render-time-gpu).
-
-The existing `tools/road_benchmark_report.py --validate` accepts the preview matrix and
-rejects missing modes, duplicate request observations, reversed milestones, stale final
-poses, missing residency retries, truncated captures and mutations of authoritative road
-state. Existing quantile policy is retained: p95 needs 100 observations, p99 needs 1,000;
-otherwise the report uses null. Diagnostic stage attribution and unprofiled release latency
-captures are separate artifacts. No implementation speedup is claimed by `ROAD-30`.
-
-Run the complete matrix through the existing launcher (synthetic world, no authored map
-required). Use a distinct run ID for each process; do not run builds or other benchmarks
-concurrently with acceptance measurements:
-
-```bash
-RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_DEBUG_PERF=0 \
-METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview \
-METRUM_GAMEPLAY_BENCHMARK_REPETITIONS=100 \
-METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS=8 \
-METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60 \
-METRUM_GAMEPLAY_BENCHMARK_RUN_ID=road30-release-a \
-./run.sh --benchmark-gameplay-roads
-```
-
-Repeat with a new run ID for an independent process; use `METRUM_DEBUG_PERF=1` only for
-separate stage/GPU diagnostics. `METRUM_GAMEPLAY_BENCHMARK_CASES` can select a comma-separated
-subset of `flat_t,sloped_t,flat_multi,sloped_multi,dense,residency_retry,flat_branch,sloped_branch,flat_cross,sloped_cross`.
-Optional `METRUM_GAMEPLAY_PREVIEW_CAPTURE_DIR` captures final rendered poses after timers
-finish; keep it unset for acceptance. Headless runs are suitable for pipeline correctness
-checks but cannot establish rendered latency. The renderer's original preview geometry,
-terrain, scheduling and commit rules are unchanged by this measurement task.
-
-**Acceptance evidence (2026-09-29):** two independent unprofiled release processes, each
-with eight warmup poses, 100 measured stationary replacements and 400 absolute-deadline
-60 Hz moving samples per fixture/mode. All 12 case/mode combinations passed in each run;
-a separate diagnostic process passed the same matrix with native/GPU timing enabled.
-Inputs, authoritative state, cadence and exact final-pose checks passed; no observations
-were dropped. These are small controlled neighborhoods, not a city-scale or cross-hardware claim.
-
-Hardware/settings: Core i9-12900K, Radeon RX 7900 XTX / RADV, Godot 4.7.2, X11,
-Forward+ Vulkan, 1280×720, VSync enabled, 60 FPS cap, four Rayon workers, simulation paused.
-Build: `cargo build --offline --release --manifest-path rust/Cargo.toml`,
-Rust 1.98.1 (`48a229cea`), existing release profile (optimized, debug info level 1).
-All captures use release library SHA-256
-`f01783c0d56537a0e67fc060ba614c8eaa5e1183672d6bb109b5a9af67ed7ac7`.
-
-The table reports ranges of the two process-level quantiles, in milliseconds; ranges are
-not confidence intervals. Displayed age includes frames between new result installations.
-
-| Fixture | Full p50 / p95 | Road-only p50 / p95 | Moving displayed-age p95: full / road-only |
-| --- | --- | --- | --- |
-| `flat_t` | 45.4–45.8 / 50.9–51.8 | 23.1–25.4 / 41.5–42.0 | 63.6–64.5 / 53.0–55.4 |
-| `sloped_t` | 45.3 / 62.3–62.6 | 39.1–39.2 / 42.6–44.7 | 68.5–68.7 / 55.6–57.8 |
-| `flat_multi` | 47.3–47.7 / 51.8–52.2 | 40.3 / 44.5–45.9 | 67.1–67.5 / 53.2 |
-| `sloped_multi` | 64.4–64.5 / 68.1–69.0 | 41.4–41.8 / 57.3–57.8 | 86.7–102.1 / 69.5–69.8 |
-| `dense` | 49.6–49.7 / 53.3–55.5 | 27.4–42.8 / 44.8–51.3 | 56.4–70.4 / 59.3–67.5 |
-| `residency_retry` | 94.1–94.3 / 103.5–103.7 | 23.0–25.7 / 39.2–43.3 | 63.3–66.5 / 53.0–53.1 |
-
-The 60 FPS cadence matters: dense road-only medians varied from 27.4 to 42.8 ms
-between the two processes. Work crossing a frame boundary can change observed latency
-by approximately one frame. These descriptive baselines do not establish a fixed mode
-speedup ratio or an optimization gain over earlier development captures.
-
-The retry fixture deliberately withholds resident patch lookup until three failed staging
-attempts; its ~94 ms full-mode median includes that injected delay. It is not a natural
-streaming-latency estimate. Ordinary final-stop observations ranged from 46.8–98.6 ms in
-full mode and 39.0–75.1 ms in road-only mode (one continuous-drag stop per case/process).
-Across all cases the two acceptance runs recorded 58/45 frame intervals over 33.333 ms
-and 0/0 over 50 ms; per-case counts and distributions are retained in the raw captures.
-
-Diagnostic stationary medians below locate costs; they are not acceptance latency or
-additive totals. Worker time and polling gaps vary between runs/modes even where the
-road algorithm is shared. All values are milliseconds.
-
-| Fixture / mode | Worker | Worker end → poll | Bridge packing | Road validation | CPU mesh submission | Terrain resource creation | Stage + install total |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| flat_t / full | 19.69 | 13.52 | 0.39 | 1.91 | 0.29 | 3.50 | 7.70 |
-| flat_t / road-only | 15.88 | 1.48 | 0.15 | 1.94 | 0.33 | 0.00 | 2.58 |
-| sloped_multi / full | 36.62 | 13.30 | 0.48 | 3.37 | 0.43 | 3.90 | 10.10 |
-| sloped_multi / road-only | 29.89 | 3.70 | 0.24 | 3.42 | 0.50 | 0.00 | 4.23 |
-| dense / full | 23.27 | 8.67 | 0.57 | 5.06 | 0.59 | 4.08 | 12.54 |
-| dense / road-only | 16.27 | 1.75 | 0.27 | 5.12 | 0.66 | 0.00 | 6.11 |
-
-For those full-mode fixtures each new pose created a median eight road meshes/40 road
-layers and 16 terrain patches (32 nodes, 16 materials/images/textures). Regular planes
-already use the terrain mesh cache: the final identity-checked counters report 20 new
-terrain meshes/12 reused planes for the T and multi-junction cases, or 22 new meshes/10
-reused planes for the dense case. Retaining-wall ArrayMeshes count as creations even
-when they have no drawable surfaces.
-Retained GPU chunk/layer reuse was zero while clipping footprints moved. Median packed
-payloads were 0.654 MB (flat T), 0.991 MB (sloped multi) and 1.455 MB (dense). Observed
-worker service fractions ranged from 0.55–0.84 across the six rows above. Diagnostic
-viewport GPU medians were 0.67–0.87 ms; the separate quiescent CPU command drains were
-0.001–0.002 ms. Neither figure isolates GPU transfers or internal waits inside API calls.
-
-These measurements support tackling `ROAD-31` validation and `ROAD-32` terrain-resource
-reuse next. `ROAD-33` can reduce retained-buffer validation/upload volume; `ROAD-35` has
-a measurable polling/scheduling interval to investigate. Packing and CPU mesh submission
-are smaller costs in these fixtures. Road/junction solving remains separate, and the
-choice to retain one or both preview modes remains deferred until after improvements.
-
-Manifests pin source hashes, binary, command, working directory and environment. The launcher recipe
-above uses its default 1920×1080 window, so use the recorded command and manifests when matching
-these exact numbers. Only v3 artifacts constitute the accepted baseline; earlier development
-captures are superseded. `captures3/` contains diagnostic final-pose screenshots taken outside
-operation timers.
-
-**Correctness/build checks:** five release Rust mailbox/timing tests, nine Python report
-validation/comparison tests, and the Godot metrics, junction-preview, stream-preview and
-chunk-renderer suites pass. The junction suite verifies resource counters against distinct
-mesh identities, including reused planes and terrain-free bridge previews. Rustdoc completes
-without warnings; `bash -n run.sh` and `git diff --check` pass. The verified release library
-was deployed atomically to `godot/bin/libmetrum_rise.so` with the capture hash above.
-Logs live alongside the captures:
-`rust-tests-final.log`, `rustdoc.log`, `metrics-final.log`, `mesh-count-final.log`, and
-`final-road_preview_stream_test.log` / `final-network_tool_chunk_renderer_test.log`.
-
-Commands used for targeted checks:
-
-```bash
-TMPDIR="$ARTIFACTS/preview-test-tmp" cargo test --offline --release --manifest-path rust/Cargo.toml --lib road_preview::
-cargo doc --offline --no-deps --manifest-path rust/Cargo.toml
-python3 -m unittest discover -s tools -p test_road_benchmark_report.py
-```
-
-No road-planning algorithm changed, so this task does not establish a new populated-map
-planning speedup or repeat the unrelated city-scale acceptance suite.
-
-#### `ROAD-31` — Validate immutable road buffers once in Rust
-
-`godot/scripts/tools/network_tool.gd::_append_road_surface` scans all position, normal, UV
-and colour components in GDScript before every upload. Extend the existing terrain pattern
-(`terrain_mesh_payload_validated`) to road payloads: validate final immutable buffers in Rust
-after clipping/export preparation, then retain cheap type/count/revision checks in Godot.
-The validation certificate must apply to the exact published buffers; missing certificates
-or malformed inputs must still be checked or rejected. Do not weaken failure-atomic staging.
-**Bound:** O(produced vertices) native validation; O(changed layers) frontend shape checks,
-plus unavoidable buffer upload. **Exit:** malformed/non-finite payload rejection tests,
-identical valid geometry, and measured main-thread validation reduction in both modes.
-
-**Implementation (validated 2026-09-29):** `NetworkMeshData::seal` is the only way to set the
-certificate. It checks every layer, including empty layers, for whole triangles,
-matching normal/UV/colour counts and finite components, then freezes the mesh in its `Arc`.
-`NetworkMeshData` is not `Clone`, so shared buffers cannot change after certification.
-All three publishers seal on the producing thread, never Godot's main thread:
-committed chunks in `precompute_road_mesh_data` (simulation thread), and planned and
-retained preview chunks on the preview worker. Retained-cache reuse shares the sealed `Arc`,
-so reused chunks are not validated again. Each exported chunk dictionary carries
-`road_mesh_payload_validated`. `network_tool.gd::_build_road_chunk_instance` reads it once
-per chunk. A non-bool value rejects the chunk; a missing or `false` value keeps the
-per-vertex GDScript scan. Certified chunks still pass the per-layer key, Variant type,
-triangle-count, attribute-count and material checks. Staging remains failure-atomic.
-Native validation is O(chunk vertices) per sealed chunk and runs off the main thread. Its
-cost is included in worker timings, with no separate timer.
-
-**Acceptance evidence (2026-09-29):** matched baseline (`HEAD` `358e8313`, clean worktree) and
-candidate processes were interleaved: two unprofiled acceptance runs and one
-`METRUM_DEBUG_PERF=1` diagnostic run each. The workload, hardware, settings, window and
-command were the same as the `ROAD-30` v3 captures. All 72 case/mode captures passed
-`--validate`; none dropped observations. The median of stationary replacements
-in the diagnostic runs, in milliseconds:
-
-| Fixture / mode | Road validation | Stage + install total | Worker |
-| --- | --- | --- | --- |
-| flat_t / full | 1.87 → 0.07 | 7.71 → 5.97 | 19.4 → 19.9 |
-| flat_t / road-only | 1.94 → 0.07 | 2.56 → 0.68 | 15.9 → 15.7 |
-| sloped_multi / full | 3.35 → 0.08 | 10.17 → 6.65 | 37.0 → 36.9 |
-| sloped_multi / road-only | 3.43 → 0.09 | 4.28 → 0.88 | 30.0 → 29.6 |
-| dense / full | 5.02 → 0.08 | 12.30 → 7.28 | 23.6 → 23.8 |
-| dense / road-only | 5.05 → 0.09 | 5.98 → 1.08 | 16.1 → 16.5 |
-
-Road validation fell to 0.07–0.11 ms in all 12 case/mode combinations. What remains is the
-constant-per-layer type/count checks. CPU mesh submission and packing are unchanged
-within noise. Worker medians moved by at most ±0.8 ms in either direction, which is within run-to-run
-variation. The native seal therefore has no measurable worker cost in these fixtures.
-
-The unprofiled acceptance ranges below span two processes per side, in milliseconds.
-Ranges are not confidence intervals.
-
-| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
-| --- | --- | --- | --- |
-| `flat_t` / full | 45.2–45.4 → 43.1–43.7 | 48.2–48.8 → 46.1–46.4 | 53.3–60.2 → 53.0–58.3 |
-| `sloped_t` / full | 45.3 → 43.1–43.3 | 50.1–51.9 → 47.8–48.3 | 68.7–68.8 → 68.4 |
-| `flat_multi` / full | 46.7–46.9 → 43.8–44.0 | 50.4 → 47.6–48.6 | 66.2–66.6 → 53.1–53.7 |
-| `sloped_multi` / full | 64.0–64.1 → 60.7 | 66.9–67.0 → 63.1 | 86.6–102.1 → 86.5–87.2 |
-| `dense` / full | 49.5–49.7 → 44.8–45.2 | 51.3–52.6 → 48.0–49.0 | 69.4–70.7 → 53.1–68.5 |
-| `residency_retry` / full | 93.5–93.6 → 91.9 | 97.6–97.7 → 95.3–95.6 | 65.3–65.5 → 53.1–53.2 |
-| `flat_t` / road-only | 22.9–24.3 → 21.4–21.5 | 39.1–41.1 → 38.0 | 52.8–53.1 → 52.9–53.4 |
-| `sloped_t` / road-only | 39.1–39.2 → 37.0–37.2 | 42.0–42.6 → 38.7–38.9 | 55.9–56.0 → 55.1–55.4 |
-| `flat_multi` / road-only | 27.1–39.9 → 36.9–37.1 | 42.1–43.3 → 38.9 | 52.9–53.4 → 53.2–53.3 |
-| `sloped_multi` / road-only | 41.5–41.7 → 37.8–38.0 | 45.9–46.5 → 40.3–53.7 | 69.8 → 69.3–69.8 |
-| `dense` / road-only | 27.1–29.6 → 22.4–22.6 | 44.1–45.6 → 38.3–39.2 | 52.7–52.9 → 53.1–53.4 |
-| `residency_retry` / road-only | 23.2–25.5 → 21.1–21.9 | 40.8–41.7 → 37.3–38.4 | 53.0–53.3 → 53.1–53.3 |
-
-Full mode stationary medians improved by about 1.6–4.7 ms in every fixture in both processes. Road-only
-improved except `flat_multi`: its baseline medians straddled a frame boundary (27.1 vs
-39.9 ms), so that row is inconclusive. One candidate process's `sloped_multi` road-only p95 was
-53.7 ms; the other was 40.3 ms. Frame intervals over 33.333 ms fell from 27/56 (baseline
-processes) to 0/0 (candidate); none exceeded 50 ms on either side. Moving displayed age
-is dominated by cadence and worker time. Some full-mode p95s dropped by about one frame. This is
-a small controlled-neighbourhood result, not a city-scale or cross-hardware claim.
-
-The runs used the workspace or baseline-worktree scripts and release libraries, with the `ROAD-30`
-override profile name. The benchmarked candidate library SHA-256 is `d3f1dea4…a2103495`; the
-baseline is `f3eb73fa…2f2264a`. After the runs, an `is_multiple_of(3)` clippy fix produced the
-deployed `godot/bin` library `837f5616…23fb88e4`. That fix does not change behaviour, and the Rust
-and Godot checks were rerun on it. `tools/road_benchmark_report.py --baseline/--candidate` does not
-yet accept preview-matrix captures; the two helper scripts compute the tables above.
-
-**Correctness checks:** new Rust test `seal_certifies_only_well_formed_finite_buffers`
-covers NaN/Inf in each attribute, a missing colour and a partial triangle. Preview parity
-tests now also assert that planned and retained meshes are certified. All 71 release `network::render`
-and `road_preview` tests pass; rustdoc reports no warnings; clippy reports nothing new.
-The Godot `network_tool_chunk_renderer_test` covers:
-- a certified payload uploads the same surface arrays as an uncertified one;
-- a non-bool certificate is rejected;
-- certified payloads with bad counts or wrong Variant types are rejected;
-- an uncertified non-finite payload is rejected.
-
-That suite plus the junction-preview, stream-preview, preview-metrics and benchmark-metrics
-suites pass headless in the isolated profile. The full debug `cargo test --lib` shows 2014 passed and 2 failed. Both failures
-are zoning tests (`partial_paint_erase_and_external_exclusion_match_full_chunk_rebuilds`,
-`occupied_cells_survive_native_node_merge_regeneration_and_undo`), and both fail identically on
-the clean baseline worktree. They are unrelated to this change.
-
-#### `ROAD-32` — Reuse preview rendering resources
-
-`road_junction_preview.gd` currently creates planned chunk nodes/meshes for each completed
-request; `road_terrain_preview.gd` additionally duplicates materials and creates height
-images/textures before discarding the previous batch. Reuse preview-owned nodes/materials
-and compatible texture allocations, using `ImageTexture.update()` for matching dimensions,
-format and mipmaps. Retain exact unchanged terrain patch products where dependency identity
-permits it. Keep a bounded staging/display pair so resource updates cannot expose a partial
-road/terrain replacement. Reuse of mesh buffers themselves is tracked in `ROAD-36`.
-
-Never mutate committed terrain resources. Height textures remain necessary for terrain
-shading even when vertex heights are baked. **Bound:** resources proportional to the active
-preview/staging footprint, no retained cursor history; work proportional to changed products.
-**Exit:** fewer resource creations in matched runs; exact restoration on cancel, mode change,
-teardown and patch recycling; failed staging leaves the previous complete display intact.
-
-**Implementation (validated 2026-09-29):** both preview halves keep one displayed set and one
-detached staging set.
-- `road_terrain_preview.gd` owns slots of a node, a retaining-wall child, a `ShaderMaterial`, an
-  `Image` and an `ImageTexture`. Staging only takes spare slots, never displayed ones.
-  - Each reused material copies the resident patch material's shader parameters, writing only
-    changed values; `heightmap` and `height_is_baked` stay preview-owned. The result matches a fresh
-    `duplicate()`. The committed material is never written.
-  - Heights go into the slot's `Image`. A texture with matching dimensions is updated in place with
-    `ImageTexture.update()`; otherwise a new texture is created and bound.
-  - `commit` returns the previous display to the spares and trims them to the displayed patch count.
-  - `reset` frees every slot. `road_tool.gd` calls it on cancel, mode change, main-mesh reset and
-    teardown.
-  - Slots are not tied to patch keys, so they survive footprint moves. A slot whose resident parent
-    was freed is skipped.
-- `road_junction_preview.gd` recycles replaced and failed chunk nodes and their `ArrayMesh`es as
-  detached spares, trimmed to the displayed count. `network_tool.gd::_fill_road_chunk_mesh` fills a
-  cleared mesh; committed chunk construction shares it.
-- A road batch that fails after terrain staged returns both halves' staging slots untouched by the
-  display.
-- Exact terrain product retention is not implemented: every request builds fresh
-  `CachedRefinedTerrainPatch` Arcs, so no cross-request product identity exists yet. `ROAD-34`
-  adds display revisions for unchanged terrain products.
-- Material sync is O(shader uniforms) per staged patch. Every other step is O(staged products).
-  Memory is bounded by twice the displayed footprint.
-
-A headless microbenchmark on the acceptance machine (CPU side only) measured 143 µs per material
-`duplicate()` against 22 µs per parameter sync of the 123-uniform terrain shader, and 8.4 against
-2.3 µs for image/texture creation against `set_data` plus `update`.
-
-**Acceptance evidence (2026-09-29):** matched baseline (`HEAD` `f8db533c` scripts) and candidate
-processes were interleaved: two unprofiled acceptance runs and one `METRUM_DEBUG_PERF=1`
-diagnostic run each. Both sides loaded the same frozen release library (SHA-256 `837f5616…23fb88e4`),
-because this task changes only GDScript. The workload, hardware, settings, window and command match
-`ROAD-30` v3. All 72 case/mode captures passed `--validate` and none dropped observations.
-
-Diagnostic stationary medians show every per-request terrain material, texture, image and node
-creation eliminated (16/16/16/32 → 0). The eight road chunk meshes are reused instead of created,
-in both modes. Values in milliseconds:
-
-| Fixture (full mode) | Terrain resources | Stage + install total | Worker |
-| --- | --- | --- | --- |
-| `flat_t` | 3.60 → 0.81 | 6.04 → 2.38 | 20.0 → 19.7 |
-| `sloped_t` | 3.69 → 0.87 | 6.22 → 2.55 | 27.9 → 27.5 |
-| `flat_multi` | 3.86 → 1.01 | 6.72 → 2.89 | 23.2 → 23.0 |
-| `sloped_multi` | 4.07 → 0.94 | 7.09 → 2.82 | 37.5 → 37.4 |
-| `dense` | 4.02 → 1.03 | 7.41 → 3.20 | 23.9 → 23.9 |
-| `residency_retry` | 4.53 → 0.93 | 6.42 → 2.64 | 20.3 → 20.3 |
-
-Road-only stage-and-install totals stay at 0.72–1.15 ms on both sides. Detaching and reattaching
-road nodes costs about what creating them did. During the continuous drag, full-mode median
-stage-and-install fell from 7.7–10.9 to 2.5–3.2 ms per installed result. Retained reuse stayed at
-0% of moving installs on both sides, because moving clip bounds invalidate the retained batch
-(`ROAD-33`).
-
-Unprofiled acceptance ranges (two processes per side, milliseconds; not confidence intervals):
-
-| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
-| --- | --- | --- | --- |
-| `flat_t` / full | 43.0–43.4 → 39.8 | 46.9–48.1 → 42.5 | 53.1–61.8 → 56.4–56.6 |
-| `sloped_t` / full | 43.4–43.6 → 39.7–39.9 | 46.3–46.7 → 42.7–43.7 | 68.5–68.8 → 55.4–68.4 |
-| `flat_multi` / full | 43.9 → 40.3–40.5 | 47.3–48.6 → 43.2 | 52.9–53.2 → 57.4–57.8 |
-| `sloped_multi` / full | 60.5–60.7 → 57.2–57.4 | 63.2–64.5 → 59.9–60.0 | 86.5–86.7 → 86.5–102.0 |
-| `dense` / full | 44.8–45.0 → 41.0–41.8 | 47.9–48.2 → 43.4–44.3 | 53.2–63.2 → 53.1–53.4 |
-| `residency_retry` / full | 92.3–92.5 → 88.3–88.7 | 96.2–106.9 → 90.7–96.4 | 53.2–53.5 → 57.9–59.2 |
-| `flat_t` / road-only | 21.3–21.6 → 20.9–21.5 | 37.1 → 36.8–38.1 | 53.2–53.3 → 52.8–55.1 |
-| `sloped_t` / road-only | 37.3–37.4 → 37.1–37.3 | 38.7–38.9 → 38.5–38.7 | 53.2–53.8 → 53.1–53.2 |
-| `flat_multi` / road-only | 36.7–37.1 → 36.8–37.0 | 38.0–39.2 → 38.6–38.8 | 53.2–53.5 → 55.7–56.0 |
-| `sloped_multi` / road-only | 37.8–39.0 → 38.2 | 41.4–54.3 → 40.5–53.6 | 69.7–70.0 → 69.9 |
-| `dense` / road-only | 22.6–23.2 → 22.6–22.9 | 38.5–39.2 → 38.4–38.9 | 53.1–56.5 → 53.1–68.6 |
-| `residency_retry` / road-only | 21.5 → 22.0–22.1 | 37.6 → 38.3–38.7 | 53.0–53.6 → 53.0–53.3 |
-
-Full-mode stationary medians improved by about 3.0–4.2 ms in every fixture and both processes. The p95s
-improved by similar amounts, except `residency_retry`, whose ranges overlap. Road-only is unchanged within noise, as expected: its only reused resources are road nodes.
-Frame intervals over 33.333 ms fell from 1/5 to 0/0; none exceeded 50 ms. Moving displayed age is
-dominated by frame cadence and worker time. Individual p95s moved by about one frame in both
-directions, so no moving-latency change is claimed. This is a small controlled-neighbourhood result,
-not a city-scale or cross-hardware claim.
-
-**Correctness checks:** `road_junction_preview_test` now also verifies:
-- successive replacements alternate between two terrain slot sets and two road node sets, and the
-  third replacement reuses the first set's nodes, materials and textures;
-- spares stay within the displayed footprint;
-- reused materials equal the resident material for every uniform except the preview heights, and the
-  preview heights use a preview-owned texture;
-- a malformed road half fails the paired batch without changing the displayed terrain or road
-  resources;
-- leaving full mode frees every terrain slot.
-
-Existing checks still verify that committed meshes, materials, textures and payloads keep their
-identities across mode change, cancel and invalidation. That suite plus the stream-preview,
-chunk-renderer, preview-metrics and benchmark-metrics suites pass headless in the isolated profile.
-
-#### `ROAD-33` — Keep unaffected road geometry resident across boundary changes
-
-`RoadPreviewRetainedCache::reuse` already skips filtering/export/upload for matching source
-generation, chunks, owners and bounds. Exact boundary changes still invalidate the retained
-batch. Separate the unchanged portion of affected chunks from the short junction/approach
-portions whose clipping changes. Extend existing ownership ranges, chunk caches and revision
-tracking; do not introduce another spatial index or shrink global chunks as a substitute.
-Use exact owner/dependency identity so native junction reuse can propagate into mesh reuse.
-**Bound:** setup may partition affected source chunks once; repeated work should follow
-changed local owner ranges/triangles, without rescanning unrelated resident city geometry.
-**Exit:** dense-chunk cursor replays preserve unaffected mesh identities and attributes,
-including markings, while reducing retained bytes and uploads; no holes, duplicated road
-surfaces or existing-road height changes outside the allowed junction/approach footprint.
-
-**Implementation (validated 2026-09-29):** `RoadJunctionPreview::retain_existing` makes two
-`preview_partition` passes over each snapshotted source chunk. Both copy triangles without clipping,
-so every attribute and owner range is preserved:
-- the resident split: every owner except the replaced nodes and bounded source edges. This is
-  sealed as `retained`.
-- the approach sources: whole bounded-owner triangles, held unsealed behind an `Arc`.
-
-`clip_approaches` then clips the approach sources to the current junction/profile bounds and seals
-the result as `approach`. This is the same per-triangle operation the previous single pass used, so
-resident plus approach equals the old retained output triangle for triangle.
-
-`RoadPreviewRetainedCache` stores both halves and no longer depends on `bounds`. It still requires
-the source mesh generation, chunk grid, replacement chunks, replaced nodes and bounded edges to
-match. On a hit, the worker adopts the resident `Arc` without the core lock or a snapshot, and
-re-clips only the approach sources inside its retained stage. The bridge sends `approach_chunks` with
-every pose; `retained_chunks` is still sent only when the retained revision changes.
-`road_junction_preview.gd` stages approach chunks into the per-request set, so staging stays
-failure-atomic, and records `approach_chunks`.
-
-**Bound:** the split is O(snapshot triangles), once per owner set. Repeated work is
-O(bounded-owner triangles × junction bounds), and O(approach vertices) to seal and export. Unrelated
-resident city geometry is never rescanned. No spatial index or chunk-size change was added.
-
-**Acceptance evidence (2026-09-29):** matched baseline (the `ROAD-32` workspace scripts and library
-`837f5616…23fb88e4`, snapshotted before this change) and candidate (library
-`025e4cd3…a69da1ec`) processes were interleaved: two unprofiled acceptance runs and one
-`METRUM_DEBUG_PERF=1` diagnostic run each. A second diagnostic pair ran in reversed order. The
-workload, hardware, settings, window and command match `ROAD-30` v3. All 96 case/mode captures
-passed `--validate` and none dropped observations.
-
-The stationary phase repeats one pose, which already hit the old retained cache. The change shows
-during the continuous drag, where every new pose moves the junction bounds. Moving-phase medians per
-installed result from the first diagnostic pair:
-
-| Fixture | Retained reuse (moves) | Packed payload, full / road-only (KB) | Retained stage, full / road-only (ms) |
-| --- | --- | --- | --- |
-| `flat_t` | 0% → 100% | 637 → 621 / 333 → 316 | 0.12 → 0.12 / 0.20 → 0.19 |
-| `sloped_t` | 0% → 100% | 651 → 634 / 346 → 330 | 0.12 → 0.12 / 0.17 → 0.19 |
-| `flat_multi` | 0% → 100% | 924 → 832 / 573 → 482 | 0.23 → 0.22 / 0.31 → 0.27 |
-| `sloped_multi` | 0% → 100% | 968 → 868 / 607 → 508 | 0.25 → 0.22 / 0.30 → 0.29 |
-| `dense` | 0% → 100% | 1421 → 815 / 920 → 316 | 0.25 → 0.12 / 0.35 → 0.17 |
-| `residency_retry` | 0% → 100% | 638 → 620 / 333 → 316 | 0.14 → 0.12 / 0.20 → 0.18 |
-
-- Each moving install now reuses four retained chunks (20 layers) instead of re-uploading them.
-- The per-request set becomes four planned plus four approach chunks. The approach chunks replace
-  the four re-uploaded retained chunks, so the uploaded chunk and layer count is unchanged (8 chunks,
-  40 layers). Only the bytes shrink. Uploads fall only where an affected chunk has no bounded source
-  owner.
-- The dense fixture, which has the most unrelated geometry in the affected chunks, cuts moving
-  payloads by 43% in full mode and 66% in road-only mode.
-- Stage-and-install medians changed by less than 0.5 ms (dense road-only 1.49 → 0.96 ms).
-
-Worker medians are unchanged within run-to-run variation. Moving-phase worker medians agree within
-1.5 ms across all four diagnostic runs. Stationary `road_ms` medians vary by up to 9 ms between
-processes on either side (for example baseline `flat_t` road-only: 17.0 ms and 26.5 ms), and the
-reversed-order pair reproduced the spread on the baseline. The unchanged road solve dominates that
-stage; the new clip is inside the retained stage, 0.09–0.30 ms.
-
-Unprofiled acceptance ranges (two processes per side, milliseconds; not confidence intervals):
-
-| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
-| --- | --- | --- | --- |
-| `flat_t` / full | 40.0–40.1 → 40.0–40.1 | 42.7 → 42.6–42.7 | 53.4–54.3 → 53.3–53.4 |
-| `sloped_t` / full | 40.8 → 40.1–40.3 | 55.4–58.6 → 55.8–56.0 | 68.5–68.7 → 68.9–69.8 |
-| `flat_multi` / full | 40.5–40.6 → 40.2–40.4 | 43.8–59.4 → 43.2 | 53.4–68.6 → 53.4–58.1 |
-| `sloped_multi` / full | 57.2–57.4 → 57.1 | 59.8–60.1 → 59.5–60.0 | 86.7–86.9 → 86.7–88.2 |
-| `dense` / full | 41.3–41.9 → 40.8 | 44.4–44.7 → 44.0–57.0 | 53.3–57.7 → 57.2–57.4 |
-| `residency_retry` / full | 88.7–88.8 → 88.8–89.7 | 97.8–98.1 → 101.3–105.2 | 53.4–60.2 → 53.4–69.0 |
-| `flat_t` / road-only | 21.8–22.0 → 21.6–22.0 | 38.4–38.5 → 38.3 | 53.2–53.4 → 53.3 |
-| `sloped_t` / road-only | 37.1 → 37.0 | 38.7 → 38.6 | 53.3–55.1 → 53.5–53.9 |
-| `flat_multi` / road-only | 37.0–37.2 → 36.9–37.4 | 38.9 → 39.0–39.1 | 53.4–53.9 → 53.3 |
-| `sloped_multi` / road-only | 37.7–38.5 → 38.2–38.9 | 53.7–54.0 → 53.7–54.0 | 69.9–71.6 → 69.9–70.2 |
-| `dense` / road-only | 23.0–23.2 → 22.1–22.7 | 39.3–39.4 → 38.5–38.8 | 53.3–54.5 → 53.3–53.6 |
-| `residency_retry` / road-only | 22.0–22.1 → 22.2–22.3 | 37.9–38.5 → 38.9–39.0 | 53.5–54.1 → 53.4–53.9 |
-
-End-to-end latency is unchanged within frame-cadence noise. Removed retained filtering and upload
-bytes cost well under a millisecond in these small neighbourhoods, so a latency gain was not
-expected. The benefit is locality: repeated work and bytes now follow the edited approaches rather
-than all existing geometry in the affected chunks. Frame intervals over 33.333 ms were 0/0 (baseline)
-and 1/0 (candidate); none exceeded 50 ms. The residency-retry fixture's full-mode p95 is dominated by
-its injected staging delay. This is a controlled-neighbourhood result, not a city-scale claim.
-
-**Correctness checks:** new Rust test `moving_junction_bounds_reuse_resident_split_and_clip_only_approaches`
-slides a T 6 m along an existing road on flat and sloped terrain, beside an unrelated road in the same
-chunks. It verifies that:
-- the owners and chunks are equal while the bounds differ;
-- the cache hit shares the resident `Arc` and keeps the revision;
-- every mesh is certified;
-- the unrelated markings stay resident;
-- approach vertices are fewer than resident vertices;
-- resident plus approach equals, bit for bit, a fresh single-pass partition at the new bounds in
-  every chunk;
-- the approach geometry actually changes.
-
-The retained-cache test now requires reuse across moved bounds. The cold-commit parity and
-neighbouring-cross tests compare planned + retained + approach. All 72 release `network::render` and
-`road_preview` tests pass, rustdoc reports no warnings, and clippy reports nothing new.
-
-The Godot junction test now:
-- includes approach chunks in the existing-road height check;
-- requires the T, wide T and sloped T shifted poses to keep the retained revision and send approach
-  chunks.
-
-That suite plus the stream-preview, chunk-renderer, preview-metrics and benchmark-metrics suites pass
-headless in the isolated profile.
-
-#### `ROAD-34` — Export only changed packed payloads
-
-Extend the retained-revision protocol through
-`rust/src/nodes/simulation_node/network_api/road_tool/preview.rs` and the mesh exporters to
-reuse immutable Godot-ready payloads and send changed chunks/layers or terrain products only.
-Current export already uses packed arrays, and GDScript caches each successfully received
-result. Target real allocations/copies and unchanged products, rather than assuming repeated
-idle-frame serialization or per-element Godot calls. Reuse existing owner/product revisions;
-do not hash or scan the whole city to discover changes. Mutable readiness metadata remains
-generation checked independently of cached geometry.
-**Bound:** O(changed payload bytes + local metadata); bounded cache for active context only.
-**Exit:** full and delta delivery produce identical displays, missing/outdated cache revisions
-request a complete payload, and export allocations/bytes/time fall in matched replays.
-
-**Implementation (validated 2026-09-29):** measurement first showed which products actually repeat.
-In the benchmark fixtures, every pose moves the planned road and the junction bounds, so every
-planned and approach chunk changes between poses. Retained chunks already travel only on a revision
-change (`ROAD-33`). Of the 16 full-mode terrain patches per pose, 12 (10 in `dense`) are road-free
-heightfields that the moving road never touches, yet each pose re-exported and restaged all 16.
-This task revises terrain products; planned and approach chunks stay per-pose.
-
-- `RoadPreviewTerrainRevisions` (`rust/src/nodes/sim/core/road_preview/terrain_revisions.rs`)
-  lives in the preview worker. After each terrain compile it gives every product a display
-  revision. A road-free patch (`input_road_loops == 0`) whose height snapshot equals the previous
-  product for its key keeps that product's revision, because the bridge exports nothing else for
-  it. Refined patches rebuild their buffers per request and always get a fresh revision. The map
-  is replaced per compile, so it holds one footprint, not drag history. Cost: O(patches + compared
-  road-free samples), on the worker. The comparison replaces the main-thread copy, upload and
-  validation of the same bytes.
-- `get_preview_road_surface_result(request_id, retained_revision, terrain_revisions)` takes the
-  revisions Godot still holds. Each patch carries `terrain_revision`. A held revision is exported
-  as `terrain_patch_metadata_dict` plus `unchanged: true`, with no height or mesh buffers. Every
-  other patch is complete. Zero or unknown revisions always export complete.
-- `road_terrain_preview.gd` records `key`, `revision` and resident level of detail on each filled
-  slot. `revisions()` lists displayed slots and detached slots whose content survived.
-  - An `unchanged` payload still passes the residency, generation and world-extent checks.
-  - A displayed slot is carried into the new display untouched until commit, which resyncs its
-    material and draw settings from the resident patch. A detached slot is resynced while detached.
-  - Held slots are claimed before fresh payloads take spares, so no fill overwrites them.
-  - Carried slots never return to the spares on failure, so a failed batch leaves the previous
-    display intact.
-- If no slot holds a named revision, or the resident node or level of detail changed, the slot
-  forgets its revision and staging sets `missing_revision`. `road_tool.gd` then re-polls the same
-  request with the current holdings, which exports those patches complete. If that result was
-  superseded, the cached pose is dropped and requested again.
-
-**Acceptance evidence (2026-09-29):** matched baseline (committed `HEAD` `ad96f3c9`: scripts and
-library `6a402274…222822ec`) and candidate (library `34d83730…35666719`) processes were
-interleaved: two unprofiled acceptance runs and one `METRUM_DEBUG_PERF=1` diagnostic run each. The
-workload, hardware, settings, window and command match `ROAD-30` v3. All 72 captures passed
-`--validate`; none dropped observations.
-
-Diagnostic medians, full mode (stationary; moving medians agree within 0.2 ms). Times in ms:
-
-| Fixture | Patches restaged | Terrain resources | Terrain install | Stage + install total | Packed KB |
-| --- | --- | --- | --- | --- | --- |
-| `flat_t` | 16 → 4 | 0.81 → 0.31 | 0.16 → 0.42 | 2.43 → 1.95 | 621 → 592 |
-| `sloped_t` | 16 → 4 | 0.86 → 0.33 | 0.17 → 0.43 | 2.50 → 1.98 | 634 → 605 |
-| `flat_multi` | 16 → 4 | 0.92 → 0.35 | 0.18 → 0.52 | 2.62 → 2.24 | 832 → 803 |
-| `sloped_multi` | 16 → 4 | 0.93 → 0.35 | 0.17 → 0.52 | 2.68 → 2.27 | 868 → 839 |
-| `dense` | 16 → 6 | 0.99 → 0.49 | 0.18 → 0.47 | 2.78 → 2.45 | 817 → 793 |
-| `residency_retry` | 16 → 4 | 0.97 → 0.34 | 0.12 → 0.14 | 2.74 → 2.45 | 621 → 592 |
-
-- Height images, texture uploads and preflight validation now follow the changed patches only. The
-  texture updates per result fall from 16 to 4 (6 in `dense`).
-- Commit now resyncs the carried slots' materials (O(shader uniforms) each), so terrain install
-  rises by about 0.3 ms. The net main-thread stage-and-install gain is 0.3–0.5 ms.
-- The skipped road-free patches are small (about 2.5 KB of heights each), so packed bytes fall by
-  only 25–30 KB (3–5%). Bridge packing is unchanged within noise.
-- Road-only payloads and staging are unchanged, as expected. Worker medians match except two
-  candidate road-only diagnostic medians (`flat_multi`, `residency_retry` stationary, about 27 vs
-  17 ms). Those are in `road_ms`, which this change does not touch; the same process-to-process
-  spread was reproduced on the baseline during `ROAD-33`.
-
-Unprofiled acceptance ranges (two processes per side, milliseconds; not confidence intervals):
-
-| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
-| --- | --- | --- | --- |
-| `flat_t` / full | 40.0–40.2 → 39.4–39.5 | 42.8–43.0 → 41.5–41.9 | 55.4–59.9 → 53.4–56.5 |
-| `sloped_t` / full | 39.9 → 39.1–40.2 | 56.2 → 55.4–55.6 | 69.2–69.3 → 59.0–69.6 |
-| `flat_multi` / full | 40.3–40.8 → 39.5–40.2 | 42.9–43.4 → 42.1–42.4 | 53.5–56.6 → 53.8–68.8 |
-| `sloped_multi` / full | 56.9–57.4 → 56.4 | 59.9–60.3 → 58.9–59.0 | 86.7 → 86.7 |
-| `dense` / full | 40.5–40.8 → 40.1–40.5 | 43.7–43.9 → 42.6–43.0 | 53.6–58.1 → 56.5–57.1 |
-| `residency_retry` / full | 88.6–88.7 → 88.3–88.4 | 101.4–104.7 → 92.5–104.2 | 53.7–59.3 → 53.4–55.9 |
-| `flat_t` / road-only | 21.3–21.9 → 21.7–22.1 | 37.8–38.5 → 38.3–38.4 | 53.4–54.0 → 53.3–53.6 |
-| `sloped_t` / road-only | 37.1 → 37.1 | 38.9–53.4 → 39.7–53.4 | 53.3–53.9 → 53.4–53.8 |
-| `flat_multi` / road-only | 37.0–37.1 → 37.0–37.2 | 38.9–39.0 → 38.8 | 53.5–56.0 → 53.4–54.6 |
-| `sloped_multi` / road-only | 38.2–38.3 → 37.7–38.0 | 53.9–54.8 → 53.6–54.0 | 69.3–71.3 → 69.8–70.0 |
-| `dense` / road-only | 22.3–22.7 → 22.0–22.4 | 38.4–38.5 → 38.3–42.0 | 53.4–53.6 → 53.3–54.5 |
-| `residency_retry` / road-only | 21.5–22.0 → 21.3–21.9 | 38.7–39.3 → 37.9–38.4 | 53.3–53.4 → 53.0–53.3 |
-
-Full-mode stationary medians fall by up to about 1 ms, consistent with the main-thread saving, but
-the ranges touch or overlap in `sloped_t` (39.9 → 39.1–40.2) and `dense` (40.5–40.8 → 40.1–40.5). Full-mode p95s
-fall by 0.5–1.5 ms, except `residency_retry`, whose ranges overlap and are dominated by its injected delay. Road-only is unchanged within noise. Moving displayed age is dominated by frame
-cadence and worker time; individual p95s move by about one frame in both directions, so no
-moving-latency change is claimed. No frame interval exceeded 33.333 ms in any run. This is a small
-controlled-neighbourhood result, not a city-scale claim.
-
-Not done here, by measurement: planned and approach chunks change with every pose in these
-fixtures, and an approach clip depends on every bound whose x/z planes cross its triangles, not
-only overlapping bounds. Per-chunk reuse would need content comparison for no measured gain.
-Refined terrain patches could keep their revision only if the worker offered previous CDT windows
-to the builder; the moving road changes every window it crosses, so that is left out.
-
-**Correctness checks:**
-- Rust `only_identical_plain_patches_keep_their_revision`: equal road-free snapshots in fresh Arcs keep
-  their revision; changed heights, refined patches and patches dropped from the footprint get new ones;
-  revisions are never reused.
-- Rust `preview_terrain_revisions_keep_unchanged_plain_patches_across_poses`: over two real preview
-  poses, revisions are kept exactly for the patches whose road-free snapshots are equal, at least one
-  is kept, and the patch under the moving road changes.
-- Godot `road_junction_preview_test` now verifies, in every terrain fixture:
-  - a poll with all revisions held exports every patch as metadata with no packed buffers;
-  - a mixed delta exports exactly the withheld patch complete, restages only that patch, keeps the
-    other displayed slots, and displays exactly what complete delivery displays (heights, meshes,
-    walls, baked flag);
-  - after `reset`, a delta for a superseded result fails without a partial display and requests the
-    pose again, and a delta for the current result refetches complete terrain and displays identically.
-
-All 74 release `network::render`, `road_preview` and revision tests pass; rustdoc reports no warnings;
-clippy reports nothing new. The junction, stream-preview, chunk-renderer, preview-metrics and
-benchmark-metrics suites pass headless in the isolated profile. `zoning_reference_test` (78 errors)
-and the windowed `plot_material_lighting_test` fail identically with the baseline and with the
-`ROAD-32` library, so both failures predate this change. The verified library was deployed to
-`godot/bin`.
-
-#### `ROAD-35` — Keep the worker fed with the latest pending input
-
-The native mailbox is already bounded, but `road_tool.gd` waits to consume the running result
-before dispatching again. Integrate one replaceable latest pending input with the running
-request and independently consume completed results. Preserve usable context-valid older
-poses as display-only feedback; continuous input must not starve all completed previews.
-Exact input/dependency checks still govern readiness and click adoption. Reuse the existing
-mailbox and worker; add no request backlog, per-input thread or simulation work in GDScript.
-**Bound:** O(1) pending requests and bookkeeping, independent of input-event rate.
-**Exit:** measured reduction in worker idle gaps/result age, prompt exact-pose convergence
-after stopping, and regressions for rapid motion, context/mode changes, stale results and
-click/cancel ordering. A scheduling gain must not silently increase geometry work unboundedly.
-
-**Implementation (validated 2026-09-29):** the mailbox already held one replaceable pending input,
-but `road_tool.gd` dispatched only after polling the running result, so the worker waited up to a
-frame for its next pose.
-
-- The mailbox receiver publishes the ID of each request it takes, under the input lock
-  (`RoadPreviewSender::started`, bridged as `get_preview_road_surface_started_request_id()`).
-  Every older request has then published or been abandoned; every newer one is pending or was
-  displaced unrun.
-- `road_tool.gd` submits each new pose as soon as it is valid, replacing the pending input while
-  the worker runs. It keeps at most three request records: the running one, the latest submission
-  and one submitted before its start was observable. Each frame it reads the started ID, then
-  polls newest first. A found result retires every older record; afterwards only the started
-  request and a still-pending latest submission survive, and context changes retire all.
-  O(1) bookkeeping and at most three polls per frame, independent of input rate.
-- An identical pose already submitted is not resubmitted, so a stopped pointer converges on one
-  exact request. Older completed poses remain display-only; exact matching still governs click
-  adoption. A pending placement neither dispatches nor adopts previews, and rejection, cancel and
-  cache resets retire every outstanding record.
-- Fixed on the way: clearing the preview cache while a request ran (mode switch, snap toggle)
-  left `_preview_result_pending` set with no request to poll, blocking every later dispatch.
-- Geometry work stays bounded: one compile at a time, and displaced inputs never run.
-- Diagnostic `preview_timing.idle_ms` reports the gap between the worker becoming free and
-  taking its next request (outside `worker_ms`).
-
-**Acceptance evidence (2026-09-29):** baseline is committed `ROAD-34` GDScript (`HEAD`
-`bbefe09c`); candidate is the workspace. Both load the candidate library `fb6ec6c9…e54192`, whose
-only Rust changes are the started-request query and `idle_ms`, so both sides report idle gaps.
-Two unprofiled acceptance runs and one `METRUM_DEBUG_PERF=1` diagnostic run per side, interleaved;
-workload, settings, window and command match `ROAD-30` v3. All 72 captures passed `--validate`;
-none dropped observations.
-
-Diagnostic moving phase (medians; service = polled worker time / moving interval):
-
-| Fixture / mode | Idle gap ms | Worker busy | Results shown | Worker ms |
-| --- | --- | --- | --- | --- |
-| `flat_t` / full | 11.9 → 0.0 | 0.60 → 0.91 | 198 → 311 | 20.2 → 19.4 |
-| `sloped_t` / full | 4.6 → 0.0 | 0.80 → 0.94 | 194 → 232 | 27.7 → 27.0 |
-| `flat_multi` / full | 8.7 → 0.0 | 0.70 → 0.93 | 199 → 275 | 23.3 → 22.6 |
-| `sloped_multi` / full | 8.8 → 0.0 | 0.76 → 0.91 | 133 → 165 | 38.0 → 36.4 |
-| `dense` / full | 8.4 → 0.0 | 0.71 → 0.93 | 200 → 265 | 23.6 → 23.0 |
-| `residency_retry` / full | 11.7 → 0.0 | 0.63 → 0.91 | 199 → 308 | 20.4 → 19.5 |
-| road-only (six fixtures) | 1.1–14.7 → 0.0 | 0.55–0.82 → 0.84–0.91 | 180–231 → 205–350 | unchanged |
-
-Unprofiled acceptance ranges (two processes per side, ms; not confidence intervals):
-
-| Fixture / mode | Moving display age p50 | Moving display age p95 | Per-result age p50 | Stop → exact frame |
-| --- | --- | --- | --- | --- |
-| `flat_t` / full | 51.9–52.2 → 40.6–41.2 | 53.3–68.9 → 56.8–57.2 | 40.0–40.1 → 39.9–40.2 | 39.1–58.3 → 56.0–56.6 |
-| `sloped_t` / full | 52.2 → 56.4–56.5 | 69.2 → 71.8–72.7 | 40.3–40.4 → 56.1–56.2 | 56.0–74.9 → 55.9–75.4 |
-| `flat_multi` / full | 52.1–52.2 → 52.6–52.9 | 59.3–68.8 → 59.3–59.4 | 40.5–40.8 → 42.1–42.5 | 39.3–56.6 → 39.7–56.3 |
-| `sloped_multi` / full | 69.5–69.8 → 70.5–73.3 | 86.7–86.8 → 87.0–102.5 | 57.5–57.7 → 59.3–61.0 | 57.5–90.2 → 56.6–57.0 |
-| `dense` / full | 51.9–52.0 → 52.8–52.9 | 53.3–57.2 → 60.2–60.4 | 40.9–41.0 → 43.5–43.5 | 39.7–41.0 → 40.9–56.7 |
-| `residency_retry` / full | 52.1 → 41.9–42.4 | 53.7–68.7 → 58.0–58.6 | 40.0–40.2 → 40.5–40.8 | 56.4–56.7 → 55.7–56.2 |
-| `flat_t` / road-only | 38.1–38.4 → 37.3–37.4 | 53.2–53.4 → 52.3–52.4 | 37.3–37.4 → 37.3–37.4 | 37.4–54.2 → 36.8–37.6 |
-| `sloped_t` / road-only | 52.0–52.1 → 52.7–53.1 | 53.4–54.1 → 57.8–69.1 | 38.2 → 38.9–40.0 | 55.1–55.4 → 37.8–53.5 |
-| `flat_multi` / road-only | 52.0 → 37.9–38.2 | 53.5–54.5 → 54.1–54.3 | 38.2–38.3 → 37.7–37.9 | 37.3–38.6 → 36.7–38.9 |
-| `sloped_multi` / road-only | 52.3–52.5 → 56.2–68.7 | 69.3–70.0 → 70.2–85.4 | 39.2–39.5 → 54.6–54.8 | 36.9–53.7 → 55.6–57.8 |
-| `dense` / road-only | 38.1–38.8 → 37.5–37.8 | 53.4–54.3 → 53.1–53.7 | 37.3–37.9 → 37.5–37.6 | 36.7–54.3 → 36.9–37.7 |
-| `residency_retry` / road-only | 37.8–38.1 → 37.3–37.6 | 53.2–53.4 → 52.4–52.9 | 37.4–37.6 → 37.3–37.5 | 37.0–37.5 → 36.9–37.7 |
-
-Worker idle gaps disappear and 15–70% more results are shown while moving, with worker time per
-result unchanged. Stationary latency and frame hitches are unchanged within noise (no frame over
-33.333 ms in any acceptance run). Displayed age is a trade-off set by frame quantization, accepted
-as shipped:
-
-- Input is resolved once per frame, so a queued pose is up to a frame old when the worker takes
-  it (median queue 5–12 ms). Starting it immediately never shows a result later, but gains a frame
-  only when the rest of the current frame plus the compile still fits the compile's own frame count.
-- Compiles well under the frame budget win: displayed age p50 falls about 11 ms in `flat_t` and
-  `residency_retry` full and up to 14 ms in road-only `flat_multi`.
-- Compiles of 1.5–2 frames lose: `sloped_t` and `sloped_multi` show each result up to one frame
-  older (per-result p50 +16 ms in `sloped_t` full and `sloped_multi` road-only) and displayed age
-  p50 +1–4 ms (+16 ms in one `sloped_multi` road-only run).
-- Choosing per cycle between starting now and waiting for the next frame's input would need
-  predicted compile time and frame phase across the Rust/Godot boundary; its best case only
-  recovers these rows, and mispredictions cost a whole frame. It is deliberately not done. Reducing
-  worker time moves more fixtures into the winning region.
-
-**Correctness checks:**
-- Rust `started_id_separates_finished_from_pending_requests`: pending input has not started, a
-  taken request publishes its ID, and displaced input never starts; the existing mailbox burst,
-  shutdown and timing tests still pass.
-- Godot `network_tool_chunk_renderer_test`, with a mock modelling one running request and one
-  replaceable pending input:
-  - rapid motion replaces the pending input each frame and never keeps more than three records;
-  - a completed older pose displays while the newest input stays queued, without authorizing a click;
-  - consumed and superseded requests are never polled again, and a stopped pointer is not resubmitted;
-  - width and snap-target changes retire in-flight results;
-  - a cache reset during a running request neither blocks the next dispatch nor revives the result;
-  - results finishing after cancel neither display nor dispatch;
-  - a pending placement neither dispatches nor adopts previews, and rejection retires them.
-
-The release `road_preview` Rust tests pass; clippy and rustfmt report nothing new in the touched
-files. The junction, stream-preview, chunk-renderer, preview-metrics and benchmark-metrics suites
-pass headless in the isolated profile. The verified library was deployed to `godot/bin`.
-
-#### `ROAD-36` — Update compatible mesh buffers in place
-
-After the earlier measurements/reuse work, evaluate ArrayMesh vertex/attribute region updates
-for exact matches in vertex layout, count and connectivity. Changed topology rebuilds only
-its affected surfaces. Preserve material partitions, normals, colours, indices, bounds and
-culling; use staging buffers to maintain atomic display replacement. Check the supported
-Godot rendering backend/API before selecting dynamic-buffer flags or lower-level server APIs.
-**Bound:** O(changed buffer bytes), bounded staging memory; no city-wide repacking.
-**Exit:** stable-topology and topology-changing replays match rebuilt meshes and cancellation
-behavior, with a measured upload/staging improvement. Defer this larger refactor if the
-baseline shows too little compatible work to justify its complexity.
-
-**Evaluation (2026-09-29): parked, not implemented.** The measurement below triggered the deferral
-clause above. Road chunk layers are non-indexed triangle lists, so equal vertex counts mean equal
-connectivity; a layer can be region-updated only when the same chunk and layer had the same
-non-zero count in the mesh being overwritten. Staging never writes the displayed set, so that mesh
-is the one staged two installs earlier.
-
-A throwaway instrumented copy of the `ROAD-35` scripts (deployed library `fb6ec6c9…e54192`) logged
-every staged planned/approach layer's vertex count through the full preview matrix: 100 repetitions,
-8 warmups, headless, all 12 captures valid. Headless runs count geometry only; they do not time
-rendering. Compatible share against the mesh two installs back, with the displayed mesh (an upper
-bound no double-buffered scheme can reach) in parentheses:
-
-| Fixture | Layers, moving | Bytes, moving | Bytes, stationary |
-| --- | --- | --- | --- |
-| `flat_t` | 48–51% (65–67%) | 27–29% (41–43%) | 15% (31%) |
-| `sloped_t` | 38–41% (56–58%) | 18–20% (29–30%) | 15% (24%) |
-| `flat_multi` | 31–41% (53–59%) | 17–28% (40–47%) | 9% (37%) |
-| `sloped_multi` | 14–19% (36–41%) | 5–8% (22–28%) | 6% (30%) |
-| `dense` | 42–52% (61–67%) | 22–30% (39–44%) | 15% (31%) |
-| `residency_retry` | 46–52% (64–68%) | 26–30% (41–44%) | 15% (31%) |
-
-Ranges span both modes. Mostly the small layers match; the large asphalt, sidewalk and earthwork
-layers change vertex count as the road and junction clips move. Only 11–44% of moving chunks match
-in every layer.
-
-The possible gain is too small for the complexity:
-- In the `ROAD-35` diagnostic capture, CPU submission of all 40 layers
-  (`add_surface_from_arrays`) costs 0.29–0.46 ms per result in both modes. That is under 2% of the
-  20–37 ms worker time and a fraction of the 0.7–2.5 ms stage-and-install total.
-- Region updates would still copy the compatible bytes, so the saving is below
-  0.46 ms × 30% ≈ 0.14 ms per result even in the best fixture. That is far inside the frame-cadence
-  noise of every acceptance measurement so far.
-- `ArrayMesh.surface_update_*_region` takes bytes in the surface's internal stream layout, not the
-  exported arrays. Producing it would couple the Rust exporter to Godot's vertex format (per-surface
-  strides, offsets and normal encoding) or add a per-vertex GDScript encoding pass that costs more
-  than the submission it replaces.
-- Keyed double buffering would also require partial surface rebuilds with the material partition
-  and bounds kept intact, adding failure paths to the atomic staging that `ROAD-32` made simple.
-
-**Slower-CPU check (2026-09-29):** single rendered diagnostic runs of the same HEAD scripts and
-library, unpinned (reference) and pinned with `taskset` to four or two E-cores (3.9 GHz max, Rayon 4
-and 2). The GPU was unchanged, so this simulates a weak CPU, not a weak GPU or driver. Road-layer
-submission medians slowed by 1.7–2.0× (to 0.57–0.84 ms) while worker time slowed by 1.5–2.3× (to
-25–83 ms). Submission stays at or below 3% of worker time, and the best-case in-place saving stays
-at about 0.25 ms. On two cores, submission p95 rose to 1.4–2.3 ms in some fixtures, and
-`sloped_multi` had 159/188 frames over 33 ms (66/54 over 50 ms, full/road-only; ≤2 elsewhere).
-Stage-and-install medians stayed at 1.2–4.5 ms, so those hitches point to core contention between
-the main, render and preview worker threads, which in-place buffer updates would not remove.
-
-Revisit only if a larger workload or rendered GPU timing shows mesh submission or upload as a
-material cost, and then prefer reducing uploaded geometry (as `ROAD-33` did) over in-place updates.
-No production code changed.
-
-**Shared acceptance and references.** Report full-mode responsiveness first and both-mode
-comparisons for every step; shared-path changes must not regress the comparison mode.
-Preserve both selectable modes during this work, the new-road/junction
-visibility boundary, unchanged committed geometry, generation fences and atomic commit/
-rollback. Reuse the existing native preview/locality fixtures and Godot settings, stream,
-junction and chunk-renderer tests, adding only task-specific regressions. For planning/cache
-changes, repeat populated-map locality with the affected neighborhood fixed as background
-roads, buildings, parcels and agents grow; separate setup from repeated work. For every
-optimization, record matched release before/after results and correctness checks under its
-stable ID before marking it done. Headless chunk tests measure CPU staging/command drain;
-rendered checks are required for GPU/display claims. No engine fork is required.
-
-API references: [ImageTexture update](https://docs.godotengine.org/en/4.7/classes/class_imagetexture.html#class-imagetexture-method-update),
-[ArrayMesh buffer updates](https://docs.godotengine.org/en/4.7/classes/class_arraymesh.html),
-and [Godot thread-safety constraints](https://docs.godotengine.org/en/4.7/tutorials/performance/thread_safe_apis.html).
-Moving GPU resource creation to workers can introduce synchronization stalls; treat it as
-a measured design choice, not an automatic consequence of moving validation into Rust.
-
-### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
-
-**Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` and `ROAD-40` done (2026-09-30);
-`ROAD-41` and `ROAD-43` parked after measurement, `ROAD-42` done with a no-go decision (2026-09-30).** See
-[`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results), [`ROAD-39` results](#road-39-results),
-[`ROAD-40` results](#road-40-results), [`ROAD-41` results](#road-41-results),
-[`ROAD-42` results](#road-42-results) and [`ROAD-43` results](#road-43-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
-terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
-preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
-is 75–90% of worker time. A single four-way `JunctionN` compile takes about 30–38 ms on one thread.
-Two cheaper defects add serial worker time and main-thread hitches on top. Fix them one ID at a time,
-in the order below, with the shared acceptance rules of the `ROAD-30`–`ROAD-36` plan: matched,
-unprofiled release runs before and after, a separate diagnostic run, and correctness checks.
-
-**Baseline workload.** Same hardware, window and settings as the `ROAD-30` v3 captures (i9-12900K,
-RX 7900 XTX / RADV, Godot 4.7.2, X11, 1280×720, VSync, 60 FPS cap, four Rayon workers). Release
-library SHA-256 `4672197b…c989bc6dee` (`HEAD` build). One unprofiled run (`head-a`), one
-`METRUM_DEBUG_PERF=1` diagnostic run (`head-diag`) and one diagnostic run with Rayon's default 24
-workers (`r24-diag`); all passed `--validate`.
-
-Unprofiled acceptance run, milliseconds. Single-process values, not ranges:
-
-| Fixture | Stationary p50 / p95 | Moving displayed age p50 / p95 | Stop → exact | Frames > 33 ms |
-| --- | --- | --- | --- | --- |
-| `flat_t` | 39.8 / 61.4 | 41.5 / 57.7 | 55.8 | 0 |
-| `sloped_t` | 40.7 / 60.3 | 55.9 / 70.1 | 56.9 | 0 |
-| `flat_multi` | 39.7 / 60.4 | 52.1 / 59.1 | 57.3 | 0 |
-| `sloped_multi` | 56.4 / 73.6 | 68.7 / 86.2 | 74.6 | 0 |
-| `dense` | 41.4 / 62.1 | 52.5 / 59.6 | 42.6 | 0 |
-| `residency_retry` | 98.7 / 118.0 | 42.5 / 58.8 | 39.1 | 0 |
-| `flat_branch` | 58.4 / 89.2 | 70.1 / 103.1 | 106.4 | 0 |
-| `sloped_branch` | 58.6 / 89.6 | 85.4 / 119.6 | 72.2 | 0 |
-| `flat_cross` | 73.8 / 92.9 | 117.6 / 153.5 | 141.2 | 40 |
-| `sloped_cross` | 91.1 / 124.2 | 139.8 / 185.6 | 209.2 | 103 |
-
-Diagnostic moving-phase medians, milliseconds (`worker` p95 in the last column). Stage + install on the
-main thread stays 1.9–2.8 ms in every fixture:
-
-| Fixture | Worker | Road | Terrain | Earthworks | Queue | Worker end → poll | Worker p95 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `flat_t` | 20.2 | 15.8 | 3.1 | 1.1 | 8.0 | 7.8 | 23.9 |
-| `sloped_multi` | 30.7 | 23.7 | 4.8 | 1.6 | 10.7 | 8.7 | 40.1 |
-| `dense` | 23.1 | 15.9 | 5.3 | 1.7 | 8.8 | 8.2 | 25.5 |
-| `flat_branch` | 34.4 | 29.3 | 3.4 | 1.2 | 10.6 | 8.4 | 57.5 |
-| `sloped_branch` | 43.2 | 37.8 | 3.6 | 1.2 | 10.9 | 8.8 | 62.9 |
-| `flat_cross` | 52.9 | 40.9 | 8.7 | 2.5 | 18.1 | 8.1 | 76.0 |
-| `sloped_cross` | 70.1 | 56.5 | 9.7 | 3.1 | 14.5 | 10.0 | 96.3 |
-
-**Findings.** CPU attribution comes from `perf` LBR call graphs (1999 Hz) of `flat_t`, `sloped_branch`
-and `sloped_cross`. LBR truncates deep stacks, so the shares are approximate. Main-thread blocking
-comes from `perf` context-switch records. Per-node counts and stage timings come from short
-`METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road` headless runs. Logging inflates those timings, so use them
-for proportions only.
-
-1. **Junction compile dominates.** Each `sloped_cross` pose compiles four `JunctionN` nodes and two
-   new `Terminal` nodes; T/multi/branch poses compile one junction and one terminal. No existing
-   terminal is recompiled. The junction compile is about 50% (`flat_t`), 62% (`sloped_branch`) and
-   76% (`sloped_cross`) of Rayon CPU. Inside it, `sloped_cross` spends rails/contact noding 34%,
-   boolean ownership 28%, region export 12%, heights 12%, arrangement 6.5%, triangulation 3.7% and
-   validation 1.9%. Logged four-way medians: 37–39 ms per junction (rails 14–15, ownership 10) and
-   3.3 ms per terminal. A four-way junction nodes 965–1235 contact constraints against 348 for the T.
-   Nothing carries over between poses: every compile logged `matched=false`,
-   `rail_topology_reused=false` and zero `previous_hits`.
-2. **The previous preview is freed under the result lock.** `*result.write() = Some(preview)` in
-   `rust/src/nodes/sim/core/road_preview.rs` drops the previous `RoadPreviewSnapshot` while holding
-   the write lock. The chain is `RoadEditPlan` → `RoadTerrainPlan` → `RoadEarthworkPlan` →
-   `PlannedRoadSurfaceQuery` → the planned `RoadSurfaceSystem` and its node topology caches.
-   - This drop is 51% of the worker thread's own CPU in `sloped_cross`. It costs about 1.1, 2.0 and
-     6.1 ms per displayed result in `flat_t`, `sloped_branch` and `sloped_cross`, all before the worker
-     takes the next pose. `worker_ms` excludes it.
-   - Main-thread `get_preview_road_surface_result` waits for the read lock meanwhile: `result_read_lock_ms`
-     p95 2.4/6.8 ms and max 9.1/8.1 ms in `flat_cross`/`sloped_cross`, against p95 ≤ 0.84 ms elsewhere.
-     Polls that return nothing are not recorded, so the real wait can be larger.
-3. **Preview compiles starve the shared Rayon pool.** Each node compile is one indivisible Rayon task
-   of 15–45 ms, so four concurrent junctions fill a four-worker global pool. Main-thread or async-job
-   calls that join the pool then wait for a node to finish.
-   - Moving from 4 to 24 workers changes frames over 33 ms from 49 → 2 (`flat_cross`) and 111 → 2
-     (`sloped_cross`), and moving displayed-age p95 from 151.9 → 121.4 and 202.5 → 154.8 ms. Worker
-     time barely moves (`sloped_cross` road 56.5 → 51.2 ms).
-   - The main thread's raw-futex blocked time falls 223 → 43 ms/s. Waits over 10 ms fall 150 → 25, and
-     the longest present wait falls 45.5 → 14.2 ms.
-   - Confirmed main-thread pool entry points are vegetation `get_vegetation_land_cover`
-     (`land_cover.rs` `into_par_iter`) and `get_decorative_tree_patch`. The blocked call behind each
-     hitch is not yet isolated: DWARF unwinding stops at libc `syscall`, and `strace -k` distorts
-     timing enough to create its own hitches.
-   - The game defaults to one worker per logical CPU, so 4–8-thread machines hit this during normal play.
-4. **Constant-factor overhead dominates junction CPU.** Shares of `sloped_branch` junction CPU:
-   - allocator about 15%: `malloc`/`free`/`realloc` plus unsymbolized libc internals, mostly `realloc`,
-     `Vec` growth and B-tree nodes;
-   - sorting 11.6%: `canonicalize_seam_constraints`, raised-step contact sorts, seam coverage and the
-     `i_overlay` split solver;
-   - SipHash 6.4%: contact-noding candidate maps and `NetworkMeshData::preview_partition`;
-   - B-tree operations 6.3%;
-   - libm `round` 5.5%. The release library contains no `roundsd`, so every `f64::round`/`floor`/`ceil`
-     is an out-of-line call;
-   - `i_overlay` 5.5%.
-5. **One scan grows with vertices × steps.** `NodeExportTopHeightContext::raised_owner_vertex_matches_explicit_step_lower_height`
-   (`node.rs`) runs `.any()` over every explicit-step lower edge for each queried vertex. A four-way
-   junction has about 110 vertical steps. The function is 3.9% self time of all Rayon CPU in
-   `sloped_cross`, and 4.9% of junction CPU in the call tree.
-6. **Smaller or non-code items.**
-   - Serial worker-thread work: mesh generation with lane-height sync about 0.6 ms per result, and
-     `preview_partition` about 0.35 ms (`flat_t`).
-   - Terrain and earthworks: 4–13 ms combined, already parallel.
-   - Stationary `road_ms` is 7–13 ms higher than moving in single-junction fixtures at both pool
-     sizes, while `terrain_ms` is equal. The machine runs `powersave` (intel_pstate HWP), so this fits
-     a clock/C-state ramp after the ~20 ms idle gaps. It is not a code target.
-   - Queue and worker end → poll times are the accepted `ROAD-35` frame-quantization trade-off.
-
-**Tasks, in order.** Each needs its own matched before/after evidence and correctness checks.
-
-- **`ROAD-37` — Retire the previous preview off the lock and off the worker's path (`bug`, `P1`,
-  done).** Swap the snapshot under the write lock, release the guard, then hand the old value to a dedicated
-  reclaim thread through a bounded channel. Do not use the Rayon pool (`ROAD-38`). When the channel is
-  full, drop inline so memory stays bounded. Check the other large drops on the worker path too.
-  **Bound:** O(1) under the lock; freeing stays O(freed allocations) off the worker and main threads.
-  **Exit:** `result_read_lock_ms` p95 < 0.1 ms in every fixture; moving queue and new-result age fall
-  in `*_cross`; identical products; publication, stale-result and poll-ordering tests still pass.
-- **`ROAD-38` — Keep preview compiles from starving the shared Rayon pool (`bug`, `P1`, done).** First
-  identify each main-thread Rayon join during preview, with bounded timing behind `METRUM_DEBUG_PERF`.
-  Then run the worker's parallel compile in a dedicated `rayon::ThreadPool`, created once and entered
-  with `install`, or make those main-thread callers asynchronous and polled, like terrain payloads.
-  Indexed collection keeps output order deterministic. **Bound:** no per-request threads; one pool
-  for the process lifetime. **Exit:** with four global workers, `*_cross` frames over 33 ms and
-  main-thread blocked time match the 24-worker run (≤ 2 frames); no worker-time regression at four or
-  default workers.
-- **`ROAD-39` — Index explicit-step lower edges in node export (`refactor`, `P1`, done).** Bucket the lower
-  edges by raised owner, and by segment bounds if needed, when building the export context. Keep the
-  exact `lies_on_segment` and height-parameter predicates. **Bound:** O(S log S) build; each query
-  visits candidates instead of all S steps. **Exit:** identical export products, including a
-  targeted sloped four-way equality check, and lower measured `export_ms`.
-- **`ROAD-40` — Cut constant-factor overhead in the junction compile (`refactor`, `P2`, done;
-  allocation moved to `ROAD-43`).** Land each
-  item separately, with its own measurement:
-  - **Rounding.** Either build for `x86-64-v2` (SSE4.1 inlines rounding; results are unchanged
-    because Rust does not contract floating point, but it is a minimum-CPU product decision), or
-    route mm/point-key quantization through one inline helper with identical semantics.
-  - **Hashing.** Replace `RandomState` in node-compile and `preview_partition` hot maps with a fixed
-    deterministic fast hasher. Audit any map iteration that reaches outputs, because the current
-    per-process random order would be a determinism bug.
-  - **Allocation.** Pre-size vectors and reuse per-thread scratch buffers where `realloc`/`Vec` growth
-    and B-tree node allocation dominate. Deferred to `ROAD-43`.
-  - **Sorting.** `canonicalize_seam_constraints` recomputes its sort key in `retain` after
-    `sort_by_cached_key`. Per-shape and per-edge callers re-sort shared inputs; sort once per compile.
-
-  **Bound:** unchanged complexity. **Exit:** identical products across runs and processes, and a
-  matched improvement in worker/road time for each item.
-- **`ROAD-41` — Parallelize work inside one junction compile (`refactor`, `P1`, parked after
-  measurement; see [results](#road-41-results)).** Single-junction
-  poses (T, multi, branch) run their `JunctionN` on one thread while the others idle. Candidate units:
-  - contact-noding components and pairs (rails);
-  - owned regions in ownership, heights and export.
-
-  Triangulation already splits at eight regions. Use indexed collection for deterministic order, with
-  thresholds that keep small nodes serial. This depends on `ROAD-38`, because finer tasks in a starved
-  shared pool would worsen hitches. **Bound:** the same total work; wall time follows the stage
-  dependency path. **Exit:** identical products; lower single-junction `road_ms` at four and default
-  workers. Target: `flat_t` worker time of about 12–14 ms, so stationary results land a frame earlier
-  (see `ROAD-35`).
-- **`ROAD-42` — Measure pose-to-pose junction reuse (`refactor`, `P2`, done: no-go; see
-  [results](#road-42-results)).** Rail topology reuse needs
-  whole-topology equality (`NodeRailTopologyKey`), which suits height-only edits and never matches
-  a moving preview. The incremental pair and contributor caches (same-material and source-authorized
-  contacts, contact-noding pairs, retained contacts, ownership cleanup and seams) could still hit for
-  unchanged legs, if the previous pose's topology cache for the same junction were offered. Measure
-  hit rates in a diagnostic build first; neighbouring mouth setbacks move with the edited leg, so
-  gains may be small. Retaining one previous cache would also replace the per-result drop that
-  `ROAD-37` moves. **Exit:** recorded hit rates for branch and cross fixtures, with a go/no-go decision.
-- **`ROAD-43` — Reuse junction-compile scratch storage across compiles (`refactor`, `P2`, parked after
-  measurement; see [results](#road-43-results)).** The
-  allocation item deferred from `ROAD-40`.
-  - The glibc allocator takes about 10% of single-thread `JunctionN` CPU, but no single call site is
-    above about 1%. Pre-sizing individual vectors would recover about 1–2% at most.
-  - The mimalloc A/B shows how much churn there is: road-chunk benches −6% to −30% and moving
-    `worker_ms` −6%.
-  - Keep one owned scratch workspace per compile thread for the largest stage buffers: contact
-    noding, seam canonicalization and ownership rings. Clear it between junctions instead of dropping
-    it, and pass it explicitly rather than through new thread-locals (see `CODE-11`). Profile the
-    allocation sites again first, and move only the buffers that recur in every compile.
-
-  **Bound:** unchanged complexity. Retained capacity is bounded by the largest junction compiled on
-  that thread. **Exit:** identical products across runs and processes; a matched harness and Godot
-  improvement in `road_ms`; no material peak-RSS growth at default workers.
-
-#### `ROAD-37` and `ROAD-38` results
-
-**Implementation** (`rust/src/nodes/sim/core/road_preview.rs`, `road_preview/reclaim.rs`):
-- **`ROAD-37`.** The worker swaps the new snapshot in with `Option::replace` under the write lock and
-  releases the guard. It then hands the previous snapshot to one `road-preview-reclaim` thread through a
-  `sync_channel(1)`; when that slot is full, the value drops inline. At most one snapshot is queued and one
-  is being freed. A snapshot displaced while the worker waits for `SimCore` is retired the same way.
-  Other worker-path drops are small or rare and stay inline: retained-cache and terrain-revision
-  replacement, and the old context `Arc`s after a commit.
-- **`ROAD-38`.** The worker owns one `rayon::ThreadPool` (`road-preview-N` threads), built once when the
-  worker starts. Each parallel stage (road compile and junction render, earthworks, terrain plan,
-  retained split and approach clip) runs through `pool.install`. The pool is sized like Rayon's global
-  pool: one thread per logical CPU, or `RAYON_NUM_THREADS` when set. No count is hard-coded. Node
-  compiles no longer occupy the global pool that main-thread callers join, so identifying each joining
-  call was not needed for the fix. Output order still comes from indexed collection, so products do not
-  depend on either pool's size.
-
-**Evidence.** Build identity:
-- baseline: `HEAD` `dde35ee0` library, SHA-256 `4672197b…c989bc6dee`;
-- candidate: `HEAD` plus only these two files, built in a clean worktree, SHA-256 `3985b268…6cce442`;
-- same GDScript for both, hash `e12f9ffa…`, unchanged before and after every run.
-
-Everything else matches the baseline workload above. Alternating unprofiled runs: three per side with
-`RAYON_NUM_THREADS=4`, and two per side with the default one worker per logical CPU (24 on this machine).
-One `METRUM_DEBUG_PERF=1` diagnostic run per side at each setting, plus a second four-worker pair. All 18
-captures passed `--validate`. Product fields match baseline versus candidate; only timings and request IDs,
-which depend on scheduling, differ. That includes all 100 stationary packed payload sizes per fixture.
-
-| Four workers, ranges | Baseline | Candidate |
-| --- | --- | --- |
-| Frames > 33 ms, all 10 fixtures | 163–179 | 1–2 |
-| `flat_cross` / `sloped_cross` frames > 33 ms | 52–53 / 109–124 | 0 / 0 |
-| `flat_cross` / `sloped_cross` frames > 50 ms | 1–2 / 3–6 | 0 / 0 |
-| `flat_cross` moving age p50 / p95 | 113.4–116.2 / 152.2–153.5 | 102.3–102.7 / 135.6–136.7 |
-| `sloped_cross` moving age p50 / p95 | 137.4–141.3 / 189.1–201.8 | 120.0–120.1 / 169.6–185.3 |
-| `flat_cross` / `sloped_cross` new-result age p50 | 90.4–93.2 / 107.1–108.3 | 75.2–80.2 / 91.6–94.2 |
-| `result_read_lock_ms` max, any fixture (diagnostic) | 0.67–8.52 | 0.00 |
-
-- At four workers, other fixtures stay within or below the baseline ranges. `sloped_multi` moving age
-  p50 falls 68.7 → 58.2–60.6 ms. Stop → exact is frame-quantized and moves by a frame either way
-  between runs.
-- At default workers, frames over 33 ms total 7–9 → 3–5, and `flat_cross` moving age p50 falls
-  102.3 → 87.0–90.7 ms. Two single-run outliers were seen:
-  - `residency_retry` stationary p50 of 111.3 ms, against a baseline of 95.2–96.9;
-  - one `flat_t` stop → exact of 85.2 ms.
-
-  The other candidate run was inside the baseline range both times, so no regression is claimed from
-  them. `result_read_lock_ms` max falls from 1.2–8.7 ms to 0.00 at both settings.
-- Moving queue medians fall in every fixture; in `*_cross` they fall 13.7–15.9 → 7.7–10.8 ms.
-- The `ROAD-38` exit is met: four-worker `*_cross` hitches match the 24-worker baseline (≤ 2 frames).
-  Main-thread futex time was not re-profiled; the frame counts are the acceptance measure.
-
-**Accepted trade-off.** In the crossing fixtures, candidate `worker_ms` is higher: `sloped_cross`
-+3.4–4.8 ms (67.5–68.5 → 71.9–72.3) and `flat_cross` +1.5–2.0 ms, at four workers. Single-junction
-fixtures are unchanged (within ±0.6 ms). An attribution build, SHA-256 `85d9f213…e827272a08`, keeps the
-`ROAD-37` lock swap but drops on the worker, and ran alternating diagnostic pairs of the two crossing
-fixtures. It recovers the `worker_ms`:
-- `sloped_cross` 68.3–68.7 against 70.4–70.6 ms for the candidate;
-- `flat_cross` 52.3–52.5 against 54.3–54.6 ms.
-
-So the extra time comes from freeing on the reclaim thread while the next compile allocates, which
-contends in the allocator. That variant, however, keeps the drop on the worker's own path: the observed
-worker service fraction falls to 0.86–0.90, against 0.98–0.99 with the reclaim thread. The reclaim thread
-therefore stays; lowering the allocation and free volume is `ROAD-40` work.
-
-**Checks.** Freshly run in the candidate worktree:
-- `cargo test --release --lib`: 2,024 passed, 0 failed, 83 ignored;
-- the new `reclaim` unit test;
-- `cargo clippy` (no new warnings);
-- `cargo doc` (no missing docs);
-- headless Godot suites against the candidate library, in the isolated profile:
-  `network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`, `road_preview_metrics_test`,
-  `road_junction_preview_test`, `road_preview_stream_test`, `zoning_road_tool_test` and
-  `vegetation_land_cover_test`.
-
-- captures, logs and manifests: `{base,cand}-{w4,wdef}-{a,b,c,diag,diag2}`, and the attribution runs
-  `{var,cand}-w4-diag{x,y}`;
-- scripts: `run_ab.py`, `summarize.py`;
-- results: `summary.txt`, `attribution.txt`;
-- Godot suite logs.
-
-#### `ROAD-39` results
-
-**Implementation** (`rust/src/simulation/network/surface/node.rs`). The export context no longer
-materializes every explicit step × every edge of its lower carriageway owner. It keeps the steps sorted
-by raised owner, and each step holds a range into the lower edges, grouped once per lower owner. A
-raised-vertex query binary-searches its owner's steps, applies the exact `lies_on_segment` test to each,
-and scans lower-owner edges only for a step containing the vertex. Both predicates are unchanged, and the
-query is a boolean `any`, so order cannot reach the output. **Bound:** build O(S log S + E log E), down
-from O(S · E); query O(log S + S_owner + lower edges of the containing steps).
-
-**Correctness.** In test builds, every lookup is also answered by the unindexed step × edge product,
-built as before, and the two must agree. The whole suite runs with that check. The targeted test
-`sloped_four_way_explicit_step_index_matches_full_scan` compiles the oblique sloped four-way
-(0/73/180/244°, mixed widths) on the test thread, and a test-only counter shows both outcomes: 4 matches
-in 2,318 lookups. The symmetric sloped four-ways produce no matches, so they cannot serve as this check.
-
-**Evidence.** Build identity:
-- baseline: `HEAD` `310248e2` library, SHA-256 `3985b268…6cce442` (the `ROAD-37`/`ROAD-38` candidate);
-- candidate: `HEAD` plus `node.rs`, SHA-256 `7517c3d8…c95b4f`;
-- same GDScript for both, unchanged before and after every run.
-
-Workload as for `ROAD-37`/`ROAD-38`. Alternating unprofiled runs: three per side at default workers (24
-on this machine) and two per side with `RAYON_NUM_THREADS=4`. One `METRUM_DEBUG_PERF=1` diagnostic run per
-side, and one `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road` run per side for per-node `export_ms`. All 14
-captures passed `--validate`. An earlier baseline attempt failed in `flat_multi` setup because its water
-payloads never settled within 30 s. That run is kept as `base-wdef-a-failed`, and its rerun passed.
-Stationary and final product fields (packed bytes, chunk, layer and patch counts) are identical base
-versus candidate in all seven run pairs, 1,010 rows each.
-
-Per-node `JunctionN` export, road-debug run, default workers, milliseconds. Fixtures without logged
-`JunctionN` compiles are omitted:
-
-| Fixture | Compiles | `export_ms` median | `export_ms` p95 | `face_export_ms` median |
-| --- | --- | --- | --- | --- |
-| `sloped_multi` | 114 → 115 | 2.58 → 1.83 | 3.92 → 2.88 | 0.82 → 0.15 |
-| `flat_branch` | 274 → 277 | 2.33 → 1.96 | 6.45 → 3.48 | 0.45 → 0.14 |
-| `sloped_branch` | 248 → 257 | 4.18 → 2.36 | 11.00 → 3.56 | 1.82 → 0.21 |
-| `flat_cross` | 948 → 954 | 2.75 → 1.89 | 3.23 → 2.44 | 0.91 → 0.15 |
-| `sloped_cross` | 838 → 855 | 4.56 → 2.45 | 6.20 → 2.91 | 2.06 → 0.22 |
-
-- Diagnostic moving `worker_ms` medians fall in the junction-heavy fixtures: `sloped_cross`
-  65.1 → 63.1, `sloped_branch` 43.8 → 41.5, `flat_branch` 35.2 → 34.2 ms. Single-junction fixtures are
-  within ±1 ms. That is one diagnostic run per side, so it is a direction, not a range.
-- Acceptance runs at both worker settings are unchanged or better within run-to-run spread. At default
-  workers, `sloped_cross` moving age p50 falls 118.4–119.0 → 103.3–107.2 ms. At four workers, its
-  p95 falls 185.8–186.7 → 169.1–170.1 ms. Stop → exact stays frame-quantized and moves by a frame
-  either way. Frames over 33 ms stay 0–2 per fixture.
-- The exit is met: products are identical and `export_ms` is lower.
-
-**Checks.** Freshly run on the candidate:
-- `cargo test --release --lib`: 2,025 passed, 0 failed, 83 ignored, with the reference check live;
-- `cargo clippy`: no warnings in the changed files. The existing `mut_from_ref` error in
-  `economy/agents/tick/slices.rs` still fails the clippy build;
-- `cargo doc`: no missing docs.
-
-No GDScript changed, so the Godot suites were not rerun. The preview matrix exercised the bridge.
-
-- captures, logs and manifests: `{base,cand}-{wdef-{a,b,c,diag,road},w4-{a,b}}`, plus
-  `base-wdef-a-failed`;
-- scripts: `run_ab.py`, `summarize.py`;
-- results: `summary.txt`.
-
-#### `ROAD-40` results
-
-Rounding, hashing and sorting landed as separate stacked stages, each measured against the one before.
-Allocation is deferred as a product decision: see the allocation finding below.
-
-**Implementation:**
-- **Rounding.** `rust/.cargo/config.toml` builds x86-64 targets for `x86-64-v2` (SSE4.1/4.2, POPCNT).
-  `f64::round`/`floor`/`ceil`/`trunc` now compile to inline `roundsd` (0 → about 3,700 sites in the
-  library) instead of libm calls. Godot 4.5+ already requires SSE4.2 on x86-64, and the Godot 4.7.2 binary
-  used here emits `roundsd` itself, so the minimum CPU does not change. Rust never contracts or
-  reassociates floating point, so results are bit-identical.
-- **Hashing.** The node-compile lookup maps (contact-noding pair cache, contact-authority, seam-coverage
-  and rail-constraint tile indices, seam candidates, ring canonicalization, rail paths, material
-  adjacency) use `NodeHashMap`/`NodeHashSet` (`node.rs`): `std` maps with `foldhash::fast::FixedState`,
-  a fixed seed that is identical in every process. `foldhash` 0.2 was already compiled in through
-  parry2d and spade. Audit: every converted map is only probed, or feeds sorted or B-tree output, so hash
-  order cannot reach products. `NetworkMeshData::preview_partition` keeps `std` sets but classifies each
-  owner range once instead of hashing two sets per triangle.
-- **Sorting.**
-  - `canonicalize_seam_constraints` computes keys once and reuses them for the dedup. It skips the
-    already canonical prefix, sorts only the tail and merges the two runs. Materialization passes an
-    already canonical list plus additions.
-  - Seam-coverage candidate queries filter by bounds before sorting and deduplicating.
-  - Raised-step contact collection sorts only its own additions and merges them with the caller's
-    sorted contacts, instead of re-sorting the whole shared vector.
-
-  All three keep the old order: a stable key order that keeps the first of equal keys, or a total order
-  over `Copy` values.
-- **Bound:** unchanged complexity. The sort changes turn re-sorts of canonical prefixes into O(n) merges.
-
-**Correctness.** Evidence:
-- The new ignored release test `junction_compile_constant_factors` (`surface/tests/junction/compile_benchmark.rs`)
-  compiles six `JunctionN` fixtures: flat and sloped T and four-way, the oblique mixed-width sloped
-  four-way, and a sloped five-way. It hashes the whole compiled piece (`Debug` output, fixed-key hasher)
-  and asserts that every repeat matches. The digests are identical across all stages and across separate
-  processes.
-- In the Godot runs, stationary and final product fields match `s0` in every stage and every run pair,
-  1,010 rows each.
-
-**Harness evidence.** The harness runs single-threaded, pinned to one P-core (`taskset -c 2`). It
-alternates three runs per stage and reports the median of per-run medians. Setup and digests are not
-timed, and the test-only `ROAD-39` full-scan check is switched off for this thread
-(`set_explicit_step_reference_check`). Milliseconds per compile:
-
-| Fixture | `s0` `HEAD` | `s1` rounding | `s2` hashing | `s3` sorting | `s0` → `s3` |
-| --- | --- | --- | --- | --- | --- |
-| `flat_t` | 19.56 | 18.93 | 17.81 | 17.80 | −9.0% |
-| `sloped_t` | 25.55 | 24.74 | 23.26 | 23.09 | −9.6% |
-| `flat_cross` | 25.05 | 24.76 | 22.68 | 22.73 | −9.3% |
-| `sloped_cross` | 26.44 | 25.59 | 23.99 | 24.04 | −9.1% |
-| `sloped_oblique` | 46.58 | 44.21 | 41.88 | 41.65 | −10.6% |
-| `sloped_five` | 139.68 | 131.23 | 125.30 | 123.73 | −11.4% |
-
-- Each item was measured against its own predecessor:
-  - rounding −1.1% to −6.1%;
-  - hashing −4.2% to −8.3%;
-  - sorting −1.2% in total (−2.3% to +1.0% per case; run-to-run spread is about 1%).
-- Consecutive stages were run as separate matched pairs, so adjacent columns come from different run
-  sets.
-
-**Godot evidence.** Build identity:
-- stages `s0`–`s3` were built in the main workspace on `HEAD` `5bb669fb`;
-- release library SHA-256s: `s0` `a07c6ea5…8ab06c2d`, `s1` `00af3e5a…1ec533c7`, `s2`
-  `2503b22a…9f3ee662`, `s3` `916af22a…fa52b1a8` (full hashes in the manifests);
-- GDScript unchanged, with the same hash before and after every run.
-
-Workload as for `ROAD-37`/`ROAD-38`. The diagnostic runs are two `METRUM_DEBUG_PERF=1` runs per stage at
-default workers (24 on this machine), in rotation `s0`→`s3` twice. The acceptance runs alternate `s0`
-and `s3`: three unprofiled runs per side at default workers and two with `RAYON_NUM_THREADS=4`. One
-`METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road` run per side gives per-node timings. All 20 captures passed
-`--validate`.
-
-Diagnostic moving `worker_ms` medians, mean of two runs, milliseconds:
-
-| Fixture | `s0` | `s1` | `s2` | `s3` | `s0` → `s3` |
-| --- | --- | --- | --- | --- | --- |
-| `flat_t` | 20.67 | 20.43 | 19.67 | 19.63 | −5.1% |
-| `sloped_multi` | 30.55 | 30.05 | 28.82 | 28.53 | −6.6% |
-| `dense` | 22.35 | 22.33 | 21.67 | 21.51 | −3.8% |
-| `flat_branch` | 34.07 | 33.77 | 32.22 | 31.14 | −8.6% |
-| `sloped_branch` | 42.70 | 41.69 | 39.37 | 38.10 | −10.8% |
-| `flat_cross` | 50.06 | 50.07 | 47.83 | 46.68 | −6.7% |
-| `sloped_cross` | 63.39 | 62.40 | 60.28 | 58.92 | −7.0% |
-
-- Per item, the moving medians change as follows:
-  - rounding: 0.0 to −1.0 ms (`flat_cross` +0.01);
-  - hashing: −0.7 to −2.3 ms;
-  - sorting: 0.0 to −1.4 ms, largest in branch and cross fixtures; `sloped_t` +0.2.
-- Moving `road_ms` follows the same pattern: `sloped_cross` 50.4 → 46.5, `flat_t` 16.4 → 15.1 ms.
-- Stationary worker medians move ±3 ms between runs in both directions. The `ROAD-37` analysis attributes
-  this to the `powersave` clock ramp after idle gaps, so it is not used.
-- Per-node `JunctionN` `total_ms` medians from the road-debug run: `flat_cross` 29.9 → 26.3,
-  `sloped_cross` 40.0 → 36.3, `flat_branch` 30.0 → 28.5, `sloped_branch` 35.4 → 33.6 ms.
-- Rounding's Godot gain is the smallest. It is two diagnostic runs per stage, so read it as a direction.
-  Its harness gain is matched and consistent.
-
-Acceptance, `s0` → `s3`:
-- Frames over 33 ms stay 0–2 per fixture.
-- Moving age p50 is unchanged or lower everywhere. At four workers `sloped_branch` falls
-  85.1–85.2 → 72.5–73.4 ms and `flat_cross` 102.5 → 90.5 ms.
-- Stationary p50 at four workers lands a frame earlier in both crossings: `flat_cross` 73.8–73.9 →
-  57.5–58.4 and `sloped_cross` 90.3–90.4 → 74.4–74.5 ms.
-- Stop → exact stays frame-quantized and moves by one to two frames in both directions between runs, as
-  in earlier captures. No regression is claimed from it.
-
-**Allocation finding (deferred).** In the harness profile, glibc takes 14.8% of CPU: about 10% in malloc
-and free internals, 2–3% in `memcpy`. It is spread over about 45 call sites, none above about 1%, so
-pre-sizing vectors would recover about 1–2% at most.
-- As a reverted experiment, mimalloc as the Rust global allocator gave −6.3% to −11.9% per fixture
-  (−7.4% in total) on top of `s2`, with identical digests.
-- Adopting it means a new dependency: `mimalloc` plus `libmimalloc-sys`, which builds C. It would affect
-  only Rust allocations; Godot keeps its own allocator. It may also ease the `ROAD-37` reclaim-thread
-  allocator contention.
-- This is left as a product decision and is not implemented.
-
-**mimalloc A/B (2026-09-30, rejected for now).** A matched follow-up measured mimalloc end to end, for
-shipping on all platforms:
-- Build: `HEAD` `0a520ae5`, changing only the global allocator (`mimalloc` 0.1.52, C library v2,
-  `default-features = false`).
-  - System allocator library `916af22a…fa52b1a8` (the `s3` binary); mimalloc library
-    `a98cf7f3…d0864405`.
-  - The mimalloc edit was reverted after building.
-- Workload:
-  - Godot preview matrix as above. Seven runs per side, alternating: three unprofiled and two
-    `METRUM_DEBUG_PERF=1` at default workers, two unprofiled at `RAYON_NUM_THREADS=4`.
-  - Criterion `agent_benchmark`, `road_chunk_benchmark` and `surface_benchmark`, two rounds per side
-    (sys, mi, mi, sys).
-  - Every process's peak RSS comes from `wait4`.
-- Results:
-  - All 14 captures passed `--validate`. Products were identical in every pair (7,070 rows).
-  - **Speed:**
-    - Diagnostic moving `worker_ms` −6.2% summed (−3.1% to −9.2% in all 10 fixtures; nearly all in
-      `road_ms`, for example `sloped_cross` 58.9 → 55.6 ms).
-    - Stationary −4.0% summed, with three fixtures slower.
-    - Godot process CPU unchanged at default workers (about 417 s) and −3% at four workers.
-    - Displayed latency is frame-quantized. It overlaps at default workers; at four workers a few
-      fixtures land a frame earlier (`sloped_cross` moving age p50 119.0–119.2 → 102.9–103.1 ms).
-    - Criterion road benches −6% to −30% (`full_network_emit/1024` 41.4 → 29.6 ms; dirty surface
-      compiles −6% to −25%), `CchRebuild` −3% to −12%, and `compile_all_grid` +1%.
-  - **Memory:** Godot peak RSS 1,078–1,096 → 1,418–1,460 MiB (+31%, about +340 MiB) at default workers
-    and 737–742 → 843–848 MiB (+14%) at four workers. Bench processes grew by 150–220 MiB each. The
-    growth scales with thread count.
-  - **Regression:** `AgentSystem::tick/idle_scaling/1000000` 2.23–2.30 → 2.76–2.83 ms (+23%) in both
-    rounds, on the 1M-agent path. Other agent-tick results are inside the system allocator's own
-    round-to-round spread (up to 40%, for example `on_road/10000` 0.79 vs 0.48 ms).
-  - macOS is unmeasured.
-- Decision: do not adopt. The preview gain is about 6% of worker time and rarely changes a displayed
-  frame, while it costs about 30% more peak memory at default workers and regresses the 1M-agent idle
-  tick.
-  - Revisit with mimalloc's purge options tuned, measured on macOS as well. `ROAD-43` found that
-    scratch reuse cannot lower the compile's allocation volume materially, so the allocator is the
-    remaining lever for this cost.
-  - The idle-tick regression is unexplained (possibly per-tick buffers that mimalloc returns to the OS
-    and refaults). `CODE-15` tracks it, and it must be resolved before any allocator change.
-- `benches/agent_benchmark.rs` needed `window_brightness` in its `BuildingData` fixture to compile.
-
-**Checks.** Freshly run on the `s3` tree:
-- `cargo test --release --lib` and `cargo test --lib` (debug assertions): 2,025 passed, 0 failed, 84
-  ignored each;
-- `cargo clippy`: no warnings on changed lines. The existing `mut_from_ref` error in
-  `economy/agents/tick/slices.rs` still fails the clippy build;
-- `cargo doc`: no missing docs.
-
-No GDScript changed, so the Godot suites were not rerun. The preview matrix exercised the bridge.
-
-- `lib/` (stage libraries), `bin/` (stage test binaries, plus `x-mimalloc`), `godot-s0`–`godot-s3`;
-- `harness/` (`ab.sh`, `cmp.py`, `stage.sh`, runs `round-*`, `hash-*`, `sort-*`, `alloc-x-*`);
-- `prof/` (`perf` LBR recordings and `cat.py`/`allocsite.py`);
-- `artifacts/` (`run_ab.py`, `summarize.py`, `summary.txt`, captures, logs and manifests);
-- `mimalloc/` (`run.py`, `summarize.py`, `summary.txt`, `sha256.txt`, `lib/`, `bench/`, `godot-sys`/`godot-mi`,
-  and `artifacts/` with captures, Criterion output, logs and manifests).
-
-#### `ROAD-41` results
-
-**Parked after measurement (2026-09-30).** A single `JunctionN` compile has no large independent unit
-of work. The one change tried was neutral in Godot, so it was reverted. Only the harness change was kept.
-
-**Where one junction's time goes.** Stage timings come from the `ROAD-40` harness with road-debug
-timers, on one thread, as medians of 22 compiles. `flat_t` totals 17.4 ms:
-
-| Stage | `flat_t` ms | `sloped_five` ms |
-| --- | --- | --- |
-| Rails | 6.2 | 39.7 |
-| Ownership | 5.6 | 36.9 |
-| Heights | 2.0 | 12.9 |
-| Arrangement | 1.1 | 9.2 |
-| Export | 1.1 | 8.5 |
-| Triangulation | 0.8 | 7.2 |
-
-- The stages form one dependency chain, and each is itself a chain of 0.1–2 ms sub-stages.
-  - Rails runs three contact-noding passes and three raised-step collections, and each pass consumes
-    the constraints the previous one emitted.
-  - Ownership claims asphalt, then the non-road bands. It rebuilds seams and the arrangement three
-    times and repeats final-boundary materialization until the owned regions stop changing.
-  - Most sub-stages thread a mutable memoization context (`NodeOwnershipBuildReuseContext`, the rail
-    incremental caches).
-- `flat_t` has 13 owned regions, 39 contours and 585 constraints. Per-item work is about 2–40 µs.
-- At 24 threads only triangulation scales (`sloped_five` 7.2 → 1.3 ms). The existing same-band and
-  contact-noding pair parallelism gains 0.3 ms in `flat_t`.
-- The source-authority miss thresholds (1024) never fire in these fixtures. Lowering them to 64 changed
-  nothing measurable: the serial path's per-group clip cache offsets the parallel gain.
-
-**Harness change (kept).** `junction_compile_constant_factors` now compiles inside a dedicated Rayon
-pool, as the preview worker does since `ROAD-38`, sized by `RAYON_NUM_THREADS`. Every pool thread turns
-off the `ROAD-39` reference check. Before, parallel stages injected from the test thread into the global
-pool. `RAYON_NUM_THREADS=1` still gives the single-thread timing, and the product digests are unchanged.
-
-**Candidate (reverted).** In same-band emission, the source-authorized raised-step collection reads only
-the constraints and contours, never the pair contacts. It therefore ran under `rayon::join` with the pair
-side, merging both sorted, deduplicated `Copy` sets afterwards. Products were identical.
-- Harness, alternating, median of three runs per side:
-  - four threads: −1.3% to −4.1% per fixture (`flat_t` 17.38 → 16.69 ms);
-  - eight threads pinned one per P-core: −2.1% to −3.7% (`sloped_five` +0.9%);
-  - 24 unpinned threads: −2.6% to +3.9%.
-
-  This i9-12900K is hybrid: 8 P-cores with SMT (CPUs 0–15) and 8 E-cores (16–23). At default workers
-  the stolen half of a join can land on an E-core or on an SMT sibling of the busy core, which erases
-  a sub-millisecond gain.
-- Godot, with the workload and alternation of the mimalloc A/B above:
-  - base `916af22a…fa52b1a8` (`s3`), candidate `3a108e49…8a3d1151`;
-  - all 14 captures passed `--validate`, with identical products in every pair (7,070 rows);
-  - diagnostic moving `worker_ms`: −0.3% to −1.3% in single-junction fixtures and +0.1–0.2% in the
-    crossings (`road_ms` +1.5–1.7%); −0.5% summed;
-  - acceptance latencies within the run-to-run ranges at both worker settings;
-  - frames over 33 ms 0–1 → 0–4 in a few default-worker runs;
-  - process CPU about +4% at default workers (399–406 → 417–421 s);
-  - peak RSS unchanged.
-
-  This missed the exit condition of lower single-junction `road_ms` at four and default workers.
-
-**Decision.** Do not pursue the remaining intra-junction candidates:
-- claiming asphalt and non-road regions concurrently;
-- per-region seam extraction and per-edge seam materialization, in three rebuilds of about 1 ms each;
-- height fields (0.5 ms);
-- raised-step source groups.
-
-Each needs its reuse context split into read-only lookups plus an ordered merge. The whole set is
-estimated at 2–3 ms of `flat_t` at four to eight P-core workers and about zero at default workers on
-hybrid CPUs. The 12–14 ms `flat_t` worker target is not reachable by parallelism. Cutting work instead
-is `ROAD-42` (pose-to-pose reuse) and `ROAD-43` (allocation). Revisit only if a compile gains a coarse
-independent stage.
-
-**Checks.** Fresh runs:
-- the harness passes at one thread with the `ROAD-40` digests;
-- the release test build compiles with no warnings.
-
-Only a test file changed, so the full suite was not rerun.
-
-- Godot A/B: `run.py`, `summarize.py`, `summary.txt`, `sha256.txt`, `lib/`, `godot-base`/`godot-cand`, and
-  `artifacts/` with captures, logs and manifests;
-- `harness/`: `ab.py`, `bench.sh`, `results.txt` and both test binaries;
-- `prof/`: road-debug stage logs, `road41_stages.py`, and the temporary instrumentation patch that
-  logged every sub-stage.
-
-#### `ROAD-42` results
-
-**Done, no-go (2026-09-30).** Offering the previous pose's topology cache to the next junction compile
-keeps products identical but saves no time. Nothing landed.
-
-**Method.** A temporary diagnostic patch (reverted) changed one step:
-- When the exact preview candidate misses, the dirty compile offers the previous cursor's cached topology
-  for the same junction instead of the live one. It matches by local node id and shape (kind and mouth
-  count), falling back to the nearest same-shape node within 20 m.
-- It always matched by local node id: 23 of 23 moving branch compiles, 92 of 92 cross compiles.
-- All existing keys still decide each hit, so a hit cannot change products.
-- A throwaway ignored test replayed the drags of the Godot preview matrix through the worker's compile
-  entry point (`compile_prepared_preview_surface_with_topology_reuse`, `PreviewWorker` reason):
-  - T onto the main road with the endpoint sliding along it;
-  - a new leg from the existing T at (−65, 0) orbiting its target (`branch`);
-  - a stroke crossing four parallel roads, orbiting its end (`cross`);
-  - flat and sloped terrain, 24 poses 2 m apart, the first pose excluded.
-- Every pose's preview result and every compiled node piece are hashed. The digests are identical with
-  and without the offer in all six cases.
-
-**Hit rates**, from `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road`, one thread, summed over the moving poses:
-- **Cross:** zero additional hits in every cache. All four junctions move with the stroke, so no
-  contributor key survives.
-- **Branch:** the junction centre is fixed, so a few keys survive:
-  - raised-step source contacts: 455 → 1,932 of 29,025 lookups (flat) and 0 → 4,051 of 42,438 (sloped);
-  - export top edges: 0 → 1,665 of 7,751 (flat) and 117 → 3,011 of 11,194 (sloped);
-  - ownership cleanup: 48 and 40 previous-pose hits in about 2,000 lookups;
-  - contact-noding pairs: +99 and +118 hits in about 11,000.
-
-  Neighbouring mouth setbacks, bands and contacts move with the edited leg, so most keys change.
-- **T:** the three-mouth junction logs no previous-pose ownership or export hits.
-
-**Timing.** Unprofiled, one pinned P-core thread, three alternating rounds, median of the moving-pose
-totals, in ms:
-
-| Case | Live offer (current) | Previous-pose offer | Change |
-| --- | --- | --- | --- |
-| `flat_t` | 401.7 | 404.6 | +0.7% |
-| `sloped_t` | 544.3 | 552.1 | +1.4% |
-| `flat_branch` | 834.2 | 852.6 | +2.2% |
-| `sloped_branch` | 1230.5 | 1234.1 | +0.3% |
-| `flat_cross` | 2664.1 | 2705.7 | +1.6% |
-| `sloped_cross` | 3340.1 | 3417.2 | +2.3% |
-
-Probing the previous pose's larger caches costs more than the few hits save.
-
-**Decision.** Do not offer pose-to-pose topology.
-- The per-result drop that `ROAD-37` moved off the worker stays as it is.
-- Revisit only if the contributor keys become relative to a fixed-leg frame, so that unchanged legs keep
-  their keys while the edited leg moves. That is a redesign of the key scheme, not a cache offer.
-
-- `diagnostic.patch` (the reverted offer) and `road42_diag.rs` (the replay test);
-- the test binary, `diag-bin`, SHA-256 `4fecc269…06caeb11`;
-- `base.log`/`offer.log` (road-debug runs), `parse.py`, `hits.txt` and `timing.txt`.
-
-#### `ROAD-43` results
-
-**Parked after measurement (2026-09-30).** The allocations are not recurring scratch buffers, and removing
-the largest reusable set does not change compile time. Nothing landed.
-
-**Allocation profile.** A temporary counting global allocator (reverted) in the `ROAD-40` harness,
-counting only the timed compiles on one thread at `HEAD` `422f38de`:
-
-| Fixture | Allocations per compile | Bytes per compile |
-| --- | --- | --- |
-| `flat_t` | 88,853 | 39.6 MB |
-| `sloped_t` | 104,674 | 52.0 MB |
-| `flat_cross` | 119,444 | 50.4 MB |
-| `sloped_cross` | 124,944 | 53.2 MB |
-| `sloped_oblique` | 177,404 | 88.8 MB |
-| `sloped_five` | 380,517 | 244.3 MB |
-
-- **Size classes.** From backtraces sampled at every 97th allocation (about 216,000 samples, inlined
-  frames resolved):
-  - 75% of calls are 256 bytes or smaller, and 93% are 1 KiB or smaller;
-  - allocations above 4 KiB are 1.4% of calls, but 50% of bytes.
-- **Sites.** No single site is above 4.3% of calls. The largest groups are:
-  - i_overlay's internal buffers plus the conversion vectors in `surface/overlay.rs` (about 12%);
-  - `GeneratedContactAuthorityConstraint::new` (5.2%);
-  - `NodeRailConstraint` clones (2.9%);
-  - contact-noding summaries;
-  - arrangement vertex sources;
-  - seam materialization.
-
-  These are stage outputs, cache keys and entries, clones and nested `Vec`s. Most live until their stage
-  or the compile ends, so clearing and reusing a buffer does not apply.
-- **CPU.** In a profile without the harness's per-sample `Debug` digests, libc is 16% of samples:
-  - about 12.6% is malloc/free (the rest is `memmove`/`memcpy`);
-  - kernel time is below 1%, with 27,000 page faults in the whole run, so page faults and trimming are
-    not a cost.
-- **The ROAD-40 finding needs a correction.** Its profile included the digests. The allocator share
-  inside the compile is real, but it comes from small-object churn across the whole compiler, not from
-  a few recurring buffers.
-- **glibc tuning is no remedy.** Raising glibc's per-thread cache (`glibc.malloc.tcache_count=65000`,
-  diagnostic only) made the harness about 5% slower.
-
-**Candidate (reverted).** The largest reusable set was the overlay booleans. One reused i_overlay
-`Overlay` per thread (`clear` + `add_contour`), with a reused integer-contour scratch vector:
-- Output conversion and canonicalization were fused into one pass.
-- Products were identical.
-- Allocation calls fell 9–11% and bytes 5–8% (`flat_t` 88,853 → 79,650).
-- Harness, two A/B sets of four alternating rounds each, median of per-run medians:
-  - first set: −1.4% to +1.4% per fixture, total 254.40 → 254.45 ms;
-  - second set: −0.1% to −0.9% per fixture, total 253.82 → 252.34 ms (−0.6%);
-  - both within the run-to-run spread.
-
-  A committed version would also need an explicit workspace parameter threaded through about 30
-  overlay call sites, because `CODE-11` excludes new thread-locals.
-
-**Decision.** Do not pursue scratch reuse.
-- To recover the roughly 6% that mimalloc showed, about half of the ~90,000 allocations per compile
-  would have to go. That means redesigning the compiler's data layout (flattened contours, interned
-  keys, fewer owned clones), not a scratch workspace.
-- The allocator itself stays the remaining lever. The mimalloc revisit above still depends on `CODE-15`
-  and on bounding peak RSS.
-- Revisit if a later compile redesign flattens stage outputs.
-
-- binaries: `base-bin` (`HEAD`, SHA-256 `dc72267a…c721b332`), `proto1-bin` (overlay workspace,
-  `95f5f112…8dbb8dc8`), `count-bin`/`proto1-count-bin` (counting allocator) and `base-nodigest-bin`;
-- patches: `compile_benchmark.counting.rs`, `overlay-workspace-prototype.patch` and
-  `no-digest-harness.patch`;
-- `ab.py` and `ab-overlay.txt` (the second A/B set; the first was printed only), and `base-alloc.txt`;
-- `prof/`:
-  - `base.data`/`nodigest.data` (`perf`);
-  - `traces.txt` (sampled backtraces);
-  - `sites.py`/`sites.txt` and `sizes.py`/`sizes.txt`;
-  - `nodigest-libc.txt`.
-
-- captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,
-  `off*`, `st-*` and `dbg-*` runs;
-- `perf` recordings: `prof-*.data` (cycles, LBR) and `off*-sloped_cross.data` (context switches);
-- runner and analysis scripts: `run.py`, `run24.py`, `prof.sh`, `offcpu*.sh`, `stracefutex.sh`,
-  `summarize.py`, `agg*.py`, `tree.py`, `callers.py`, `dropcost.py`, `offcpu.py`, `leafcallers.py`.
-
-No production code changed during this analysis.
-
-### Junction preview without terrain reconstruction (`ROAD-28`)
-
-**Status: done (2026-09-28).** Tracked as `refactor`, `done`, `P1` in
-[`roadmap.md`](roadmap.md). The release extension is deployed. The current preview/readiness
-contract uses the split below; earlier ROAD-23/24/25 measurements describe their original builds.
-
-**Goal and agreed behavior**
-
-Make junction previews respond faster during continuous cursor movement by removing full
-terrain reconstruction from the path to displaying the next road result. Preserve the complete
-planned road/junction scene: connecting spans, bends, terminals, asphalt, sidewalks, curbs,
-crosswalks and lane markings. An outline or stroke ribbon alone does not satisfy this goal.
-
-- While moving, sample the existing terrain/support and retain the authoritative road profile,
-  grade and junction-height rules. Terrain-aware road geometry is still required; a flat or
-  arbitrarily floating preview is not the requested result.
-- Leave terrain meshes, samples, ownership and payload acknowledgments unchanged throughout
-  preview, including when the pointer stops. Do not build future terrain CDT tiles, grading
-  meshes, structural terrain stamps or paired terrain display payloads before a click. Retain
-  only the road-side footprint/support work actually required to define correct road geometry.
-- Occasional preview clipping or z-fighting against unchanged terrain is explicitly accepted.
-  Do not deform the road to clear every terrain sample or retain expensive display-only
-  clearance/contact/infill solves solely to make the preview perfectly meet terrain. Preserve
-  correct replacement of affected road owners and restoration on cancel; review exposed old
-  cutouts explicitly without reintroducing full terrain reconstruction as a visual repair.
-- On click, complete terrain integration and final validation asynchronously, then publish the
-  matching road and terrain together. The existing committed cutout/grading contract that
-  prevents terrain overlapping the road remains unchanged. A queued click is not acceptance.
-
-**Baseline coupling addressed**
-
-`run_road_preview_worker` in `rust/src/nodes/sim/core/road_preview.rs` previously prepared the local
-road scene, captured terrain-site inputs and called `compile_preview_terrain` before publishing
-the result. The bridge in `rust/src/nodes/simulation_node/network_api/road_tool/preview.rs`
-exported readiness with paired products; `road_tool.gd` staged those through the now-removed
-`road_terrain_preview.gd`. `RoadEditPlan::status` required completed terrain, and the former
-`AddRoad` filter in `core/thread.rs` discarded a supplied plan unless it was already complete.
-Merely hiding terrain or skipping the worker call would leave unnecessary work or force a
-second road solve on click. The former road-only renderer also added clearance and infill;
-selecting that path unchanged would retain work the new contract no longer requires.
-
-**Refactor sequence**
-
-1. Capture a current release baseline for continuous junction movement and click settlement
-   using the existing road benchmark/preview-stream fixtures. Attribute road/profile compilation,
-   terrain preparation, bridge export, mesh construction/upload and scheduling separately.
-   Historical stationary-preview timings are not a moving-preview baseline or a promised gain.
-2. Separate road-product reuse eligibility from full commit readiness within the existing
-   `RoadEditPlan` / `RoadTerrainPlan` ownership. A valid road candidate may lack terrain products;
-   that must not make it stale, require terrain-render resources, or authorize a commit. Keep
-   exact request points, lane/snap settings, source/visual/road generations and affected local
-   topology dependencies. Preserve immutable published plans and single-use product adoption.
-3. Publish the complete canonical road/junction scene without waiting for terrain construction.
-   Reuse the existing compiled road renderer and retained-owner CPU/GPU caches. Remove paired
-   terrain export/staging and unnecessary terrain-only capture from this cursor path, and avoid
-   cloning both adjusted and unadjusted road buffers when only one is needed. Keep bounded
-   latest-input scheduling, current snapping, generation checks, last-completed-pose display,
-   invalid-result feedback and cancellation/world-reset cleanup. GDScript stays a thin bridge.
-4. Resolve the actual click input and revalidate road reuse on the simulation thread. Complete
-   a matching road plan with terrain products using current indexed site/terrain dependencies;
-   rebuild the local road solve only when absent, stale or genuinely invalidated. Recheck live
-   water, zoning/cells/parcels, fields and buildings. A changed terrain dependency must not
-   blindly adopt obsolete road heights. Complete required products before opening the live
-   transaction, then retain existing atomic validation, rollback, charging and acceptance
-   acknowledgment. Terrain rejection leaves the committed world/render pair intact and reports
-   rejection without finishing the gesture as though placement succeeded.
-5. Remove superseded preview-only plumbing once callers/tests have migrated; preserve shared
-   terrain compilation used by commit and other tools. Update the current preview/readiness
-   contract, relevant `terrain.md` / `earthworks.md` references and dashboard on implementation.
-   Do not leave parallel compatibility modes or a hidden pointer-idle terrain compile.
-
-**Scope and performance bounds**
-
-Extend the existing systems and spatial indices. This is not a chunk-size change, routing
-rewrite, engine modification, prefab-road replacement or separate approximate junction solver.
-Broader preview-to-preview topology caching and render subdivision are follow-ups only if
-measurements justify them; they are not prerequisites for deferring terrain work.
-
-Cursor work must follow affected road owners, their incident dependency closure and emitted
-road vertices, with existing indexed queries and bounded retained caches. Exact input matching
-remains O(input points); retained mesh reuse uses the existing owner/chunk memberships. No
-full-city scan/copy, unbounded request queue or new spatial index is permitted. Terrain work
-after click must follow affected patches/tiles and indexed local site candidates. Reuse buffers
-and existing Rayon paths; do not add allocations to per-tick/per-agent loops. Report one-time
-context snapshot costs separately from repeated preview work and from full commit costs.
-
-**Acceptance and validation for implementation**
-
-- Compare canonical road/junction vertices, heights, materials and markings with an independent
-  cold commit for straight/curved roads, bends, T/four-way/mixed-width/close junctions, slopes,
-  extensions and bridges. Both preview and final placement must use the same road authority.
-- Assert that moving and stationary previews perform no deferred terrain construction or
-  terrain mesh upload/replacement. Existing committed terrain resources remain identical through
-  preview/cancel. Unrelated roads stay visible, and terrain/render resources restore correctly
-  after invalidation, tool disposal, world replacement or a rejected click.
-- Test matching-plan click reuse without another road solve; click-before-next-frame, stale
-  cursor/source/topology/site revisions, missing renderer resources and terrain failure. Preserve
-  atomic road/terrain publication, rejection feedback, undo and save/load behavior. Adapt the
-  existing road-plan/terrain-plan Rust tests, road-tool bridge tests, `road_junction_preview_test`,
-  `road_preview_stream_test` and network-renderer regressions; do not weaken commit safety tests.
-- Run matched, unprofiled release motion workloads covering flats, hills, chunk boundaries and
-  dense junction neighborhoods. Record input-to-new-mesh latency, displayed-pose age/update
-  count, frame times and stage costs; report click-to-visible/first-idle latency separately so
-  moving work to the click is explicit. Use a one-frame (~16.7 ms at 60 Hz) ordinary-preview
-  target as an engineering aim, not a measured result or arbitrary-junction guarantee. Compare
-  medians/tails across repeated processes with enough observations for each reported percentile.
-- Repeat the existing populated-map locality check with the same neighborhood and growing remote
-  roads/buildings/parcels/agents; compare identical local road and committed terrain products.
-  Record workload/build hashes, worker settings, commands and artifacts here. Headless CPU
-  measurements do not establish GPU upload or presentation latency; include rendered verification
-  of the full moving junction and final no-overlap result. Acceptance requires demonstrated
-  moving-preview improvement, preserved correctness and a documented click-latency tradeoff.
-
-**Implementation progress**
-
-- [x] Capture current release motion/commit baselines and build identities.
-- [x] Separate reusable road geometry from complete terrain/commit readiness.
-- [x] Publish canonical junction meshes without terrain preparation or display repair.
-- [x] Complete terrain on click with reuse, dependency checks and atomic rejection/commit.
-- [x] Migrate targeted regressions and remove superseded preview plumbing.
-- [x] Verify correctness, rendered behavior, matched performance and populated-map locality.
-- [x] Update shipped contracts and record acceptance evidence.
-
-**Preview locality correction — verified, 2026-09-28**
-
-The initial renderer treated the compiler dependency neighborhood as the visible edit.
-It replaced full connected owners and lifted their meshes while terrain cutouts stayed fixed.
-The display now retains existing owners outside the bounded junction/profile footprint and
-preserves neighboring junctions. Retained-cache keys include the footprint, so moving a
-connection cannot reuse an obsolete cut boundary. No uniform preview lift is applied.
-
-Local compilation offers complete committed span/node artifacts through existing exact-input
-replay, plus one previous successful cursor certificate. Cache entries pin road invalidation,
-authored terrain and visual terrain revisions; fresh sections, mouth geometry and visibility
-checks still gate reuse. The cache replaces its last bounded entry rather than retaining drag
-history. Capture visits indexed local IDs; candidate matching is bounded by the local compile
-neighborhood. Display partitioning costs O(local triangles × local junction bounds), with
-reused scratch buffers and no allocation per triangle. Terrain reconstruction remains click-only.
-
-Fresh correction verification: 2,012 release Rust tests pass (82 ignored), including pointer
-identity reuse of the neighboring crossroads, seven-layer retained geometry, clip-union area
-conservation and cold-commit geometry/provenance parity. The 14-case headless and rendered
-junction suites pass, including flat/sloped neighboring-cross fixtures and exact cancel
-restoration. Preview instances have zero presentation lift. Reviewed captures preserve the
-existing crossroads; the new stroke can still intersect unchanged terrain. The sloped fixture
-has 13 preview-only background pixels within the local edit, so this is not terrain integration.
-
-Matched unprofiled native release runs on an i9-12900K, four Rayon workers, `METRUM_DEBUG=0`:
-`benchmark_neighboring_cross_preview` performs 32 cursor positions per flat/sloped fixture,
-excluding the first eight warm-up updates and all fixture construction. It measures local
-planning plus planned mesh export, not frontend presentation or retained GPU upload. Median /
-p95 milliseconds before → after: flat **20.154 / 22.897 → 17.112 / 18.324**; sloped
-**34.390 / 36.965 → 24.559 / 28.147**. This is one matched pair, not a replay of the user's exact
-scene or a universal frame-budget guarantee. Changing the new junction still requires solving it.
-The supplied diagnostic trace identified repeated neighboring-junction work (roughly 110 ms
-in one slow compile); it was used for diagnosis, not acceptance timing.
-
-The existing populated-map benchmark reports matching road/terrain products at 0 / 1,000 /
-10,000 / 100,000 background buildings, up to 600,024 agents and 391 remote roads. Repeated
-identical-input worker medians are **0.971 / 0.943 / 1.032 / 1.031 ms**; separate one-time context
-snapshot costs are **0.006 / 0.012 / 0.046 / 0.381 ms**. These warm-cache results do not represent
-new-junction motion. Click terrain medians remain **5.65 / 5.46 / 5.90 / 6.01 ms**.
-
-Commands: `RAYON_NUM_THREADS=4 METRUM_DEBUG=0 cargo test --offline --release --manifest-path
-rust/Cargo.toml --lib benchmark_neighboring_cross_preview -- --ignored --nocapture
---test-threads=1`, and the same command with `populated_road_plan_scaling`. Final test executable
-SHA-256: `1370ee7cf1b5cceeb8da0174b19f4dfcc348a7a094a218982eb640e7449bd452`. Baseline production was
-the preceding ROAD-28 implementation; the same benchmark body ran before and after the correction.
-Terrain clearance is still deferred to placement.
-
-The continuous-motion, chunk-renderer and zoning-road-tool headless suites also pass. Release
-build and Rustdoc are warning-free. The deployed extension SHA-256 is
-`7861fe38a4bf8d2725583d8346a4586274ad23a0c27d2ce0a32ce29920db6a14`.
-
-**Initial acceptance evidence — 2026-09-28**
-
-`RoadEditPlan` shares immutable road products through an Arc; a matching click adds its own
-terrain products and retains single-use adoption. Structural stamp/cutout preparation is also
-removed from the topology preview path. The worker publishes one canonical mesh set, and the
-initial Godot helper applied a fixed 2 cm presentation offset (removed by the locality correction above). No terrain clearance queries or
-vertex repair were performed for that offset. Complete commit readiness still requires terrain.
-
-All 2,010 active release Rust library tests pass (81 ignored), including shared-road reuse,
-road-only commit rejection, visual-only staleness, curved cold-commit mesh parity and existing
-rollback/undo/save regressions. All four headless suites pass: `road_junction_preview_test`,
-`road_preview_stream_test`, `network_tool_chunk_renderer_test` and `zoning_road_tool_test`.
-Rustdoc reports no warnings; all eight benchmark-report tests pass. A preceding full native
-run encountered a SQLite `disk I/O error` in a zoning save test; the final full rerun passes.
-
-The 12-case junction suite and eight-case moving suite also pass with Wayland, Vulkan Forward+
-and the RX 7900 XTX. Reviewed captures show complete flat junctions, accepted slope clipping
-and exposed old cutouts during bends. Cancel restores exact source coverage. The final flat
-connected fixtures have zero sky pixels inside their committed cutouts; the isolated/sloped
-fixtures retain 1–8 diagnostic edge pixels, so this is not a universal watertightness claim.
-The final explicit-Wayland junction run has no script/runtime errors or ObjectDB leak warning;
-verbose output includes hardware RGB8-to-RGBA8 image conversion warnings. Moving captures are
-visual checks only, excluded from acceptance timing; the offset chunk fixture is partly outside
-the fixed capture camera and is covered numerically by the full motion run.
-
-Matched acceptance used three separate unprofiled processes per build, ordered A/B, B/A, A/B,
-with no concurrent builds or profiling. Each motion process sends 360 inputs per fixture at
-60 Hz. Both builds use the identical extended eight-case harness. Values below are medians of
-the three process p50s/p95s and update counts; every reported latency p95 has at least 100
-observations per process. Latency measures input-to-new-mesh submission, not GPU presentation.
-
-| Moving fixture | Latency p50, before → after (ms) | Latency p95 (ms) | Updates / 360 inputs | Displayed-pose age p50 (ms) |
-|---|---:|---:|---:|---:|
-| T | 36.03 → 19.65 | 37.89 → 37.23 | 178 → 271 | 50.02 → 21.08 |
-| Four-way | 53.54 → 36.42 | 55.68 → 52.78 | 121 → 174 | 66.91 → 50.18 |
-| Wide T | 36.29 → 35.68 | 38.34 → 37.08 | 175 → 179 | 50.10 → 37.75 |
-| Bend | 35.26 → 18.14 | 36.37 → 19.21 | 225 → 347 | 35.32 → 18.15 |
-| Wide bend | 35.54 → 18.32 | 36.78 → 35.49 | 190 → 313 | 35.92 → 18.41 |
-| Sloped T | 36.22 → 35.61 | 38.18 → 37.12 | 177 → 179 | 50.04 → 37.26 |
-| Chunk-boundary T | 36.12 → 19.75 | 38.38 → 37.00 | 178 → 289 | 50.05 → 19.97 |
-| Dense T neighborhood | 37.34 → 36.68 | 40.19 → 39.13 | 176 → 179 | 50.10 → 39.83 |
-
-The improvement is strongest for ordinary T/four-way junctions and bends. Wide, sloped and
-dense cases do not demonstrate a comparable median latency gain. Most tails remain near the
-baseline, and the 16.7 ms engineering aim is not reached. More frequent completed poses also
-increase frontend work in some cases: mean tool processing per frame rises 1.61 → 2.15 ms
-for T and 1.63 → 2.32 ms at the shifted boundary; it falls 1.68 → 1.37 ms for wide T.
-There is no claim of a universal frame-time reduction.
-
-Each interaction process uses one warmup and three measured repetitions per mode (nine
-measured clicks per mode/build across processes). The following are medians of process
-medians; this sample count does not support tail estimates.
-
-| T click mode                    | Generation ready, before → after (ms) | Atomic render acknowledgment (ms) | First idle (ms) | Five-idle-frame settlement (ms) |
-| ---------------------------------| --------------------------------------:| ----------------------------------:| ----------------:| --------------------------------:|
-| Stationary completed preview    | 6.73 → 10.21                          | 27.56 → 32.54                     | 34.34 → 36.36   | 62.10 → 62.13                   |
-| After pointer trace             | 6.80 → 9.58                           | 28.71 → 27.46                     | 34.42 → 34.38   | 62.01 → 62.00                   |
-| Immediate, no completed preview | 40.09 → 38.79                         | 52.14 → 52.56                     | 59.09 → 59.51   | 86.75 → 87.07                   |
-
-Every measured candidate stationary/trace click reused its road plan; all immediate clicks
-used the cold local road compiler. Reuse eligibility takes 0.016–0.017 ms, followed by
-5.34–5.41 ms of deferred terrain preparation; an immediate click spends 13.58 ms on road
-planning and 5.04 ms on terrain. Stationary core work rises 3.39 → 8.05 ms, and its render
-acknowledgment is about 5 ms later. That is the explicit cost moved from hover to click.
-First-idle also includes foreground water/border/residency work; acknowledgment is CPU-side,
-not a presentation timestamp. Inclusive command phases must not be summed.
-
-Three separate release locality runs hold the same four-site neighborhood fixed and grow
-remote buildings/parcels/agents/roads. Each size uses three warmups and 100 observations.
-All seven local road mesh layers, including vertex/normal/UV/color attributes, and all terrain
-products remain identical. Medians of process medians:
-
-| Remote buildings | Road-only worker p50 (ms) | Deferred terrain p50 (ms) | Cold complete plan p50 (ms) | Context snapshot once (ms) |
-|---|---:|---:|---:|---:|
-| 0 | 14.08 | 5.60 | 19.41 | 0.004 |
-| 1,000 | 13.95 | 5.51 | 19.32 | 0.013 |
-| 10,000 | 14.00 | 5.64 | 19.57 | 0.048 |
-| 100,000 | 14.08 | 5.92 | 19.83 | 0.404 |
-
-The largest fixture has 600,024 agents, 100,004 parcels and 391 remote roads. Repeated planning
-follows the affected neighborhood; the separately reported context snapshot grows with resident
-state. This does not establish locality for unchanged full-commit routing or city simulation.
-
-Separate diagnostic `perf` captures (`cpu-clock:u`, 99 Hz, DWARF call stacks, 96 motion inputs)
-show terrain-CDT/contact splitting samples in the baseline. Optimized/inlined symbols and
-unresolved Godot frames limit attribution, and the capture includes fixture setup. These profiles
-are not acceptance timing or evidence for precise per-stage percentages. The click phase clocks
-above directly quantify the deferred terrain and reused/cold road work.
-
-Build/workload identity: i9-12900K, CPU affinity 0–23, `RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0`,
-Rust 1.98.1 and Godot `4.7.2.stable.arch_linux.ed1daf0bf`. Baseline runtime is git
-`7369654f6e7cc04d8b5b1c09663ecbc776966cfb`; candidate native diff SHA-256 is
-`0d29b6a7de18d5b5d4388c56236d151aecfc41272d1d15e8d04ce88e7faa8541`. Debug-stripped
-baseline/candidate library hashes begin `d29aa6117e00202e` / `e2d654c2fc5629d6f`; identical
-motion harness hash begins `1973f82ac2d06eeb`. The deployed unstripped release has SHA-256
-`236527ffcf605aa402c38dd0c2e2a867780568e5458074c90d26ec86462a234e` and matches the measured
-candidate's ELF build ID `cd1d8cdc538a57e857e1a02ccb343e874b2e8282`.
-
-Reproduction commands (run performance work without competing jobs):
-
-```bash
-env RAYON_NUM_THREADS=4 METRUM_DEBUG=0 cargo test --offline --release --manifest-path rust/Cargo.toml --lib -- --test-threads=4
-bash $ARTIFACTS/metrum-road28/run-matched.sh
-env RAYON_NUM_THREADS=4 METRUM_DEBUG=0 cargo test --offline --release --manifest-path rust/Cargo.toml --lib nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling -- --exact --ignored --nocapture --test-threads=1
-env XDG_DATA_HOME=$ARTIFACTS/metrum-road28/profile-data XDG_CONFIG_HOME=$ARTIFACTS/metrum-road28/profile-config RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_JUNCTION_PREVIEW_CAPTURE=$ARTIFACTS/metrum-road28/final godot --display-driver wayland --path $ARTIFACTS/metrum-road28/candidate/godot --script res://tests/road_junction_preview_test.gd
-```
-
-All six interaction JSON captures pass the existing benchmark reporter's validation. Projects and
-user-data profiles are isolated under that directory; user saves and installed assets are not
-benchmark inputs. The earlier five-case baseline captures are diagnostic history and are not mixed
-into the eight-case comparison above.
-
-### Road guide removal (`ROAD-27`)
-
-All road guiding lines, their guide-specific snapping, the G shortcut, global guide cache,
-render meshes and bridge APIs are removed. This includes endpoint continuations and offset
-guide grids. There is no replacement guide system.
-
-The zoning-grid checkbox still controls cell-aligned snapping, including free angles outside
-its capture range. Existing road/node connection snapping and placement distance/angle
-measurements remain. Cursor queries use the existing spatial indices; removal adds no new
-hot-path work or spatial structures. Benchmark output schema 4 omits guide readiness/count
-fields while retaining road output and generation checks.
-
-Fresh validation: all 2,010 active release Rust tests pass (81 ignored), along with Godot's
-`network_tool_chunk_renderer_test` and `road_preview_stream_test`, and eight benchmark-report
-tests. The cursor regression checks that former continuation guides no longer attract the
-cursor while zoning-grid, free-angle and real-road connection behavior remain intact. Changed
-Rust files pass formatting checks; the repository-wide formatting check still reports
-unrelated formatting in existing vegetation/zoning files.
-
-Matched unprofiled release runs compare the preceding contextual-guide executable with guide
-removal on Rust 1.98.1, i9-12900K CPU 0, `RAYON_NUM_THREADS=1 METRUM_DEBUG=0`. At 0 / 1,000
-/ 10,000 background roads, median query times are 0.069 → 0.061 / 0.077 → 0.071 / 0.080 →
-0.083 µs; all checksums match `(266240, 532480)`. Setup is excluded. These single trials
-support retained query locality, not a speedup claim; guide generation and upload no longer
-execute.
-
-### Empty generated-carrier height lookup (`ROAD-26`)
-
-The 2026-09-28 crash dump `logs/metrum-crash-20260928-191757.369-pid1460594.log`
-identifies an empty height candidate list in generated-carrier materialization. The expression
-`(heights.len() == 1).then_some(heights[0])` evaluates its indexed argument even when the
-condition is false. A point outside the generated height triangles therefore panics instead
-of returning the intended `None`, affecting both preview compilation and commit validation.
-
-The lookup now returns a height only when exactly one distinct millimetre height remains.
-Empty or ambiguous support stays unresolved for the existing height validation pipeline;
-materialization must not invent a height or widen geometric support. The final selection is
-O(1), with no additional allocations, spatial queries, or change to triangulation/deduplication.
-The targeted regression reproduces the original panic before the fix, then verifies missing
-support, shared-triangle-edge deduplication and subsequent valid lookups. Fresh release
-verification passes all 2,014 Rust tests (82 ignored), `network_tool_chunk_renderer_test`
-and `road_preview_stream_test`, including continuous movement through five junction/bend
-fixtures. The extension is deployed. This reproduces the failing lookup, not the exact road
-layout from the crash dump.
-
-Fresh matched, unprofiled release locality runs on the i9-12900K (Rust 1.98.1, CPU 0,
-`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`) use `taskset -c 0 <release-test-executable>
-populated_cell_road_plan_scaling --ignored --nocapture --test-threads=1`. Each run measures 100
-samples per size with fixed affected geometry, increasing background buildings/painted cells from 0
-to 100,000, roads from 0 to 391, parcels from 4 to 100,004 and agents from 24 to 600,024. Local
-products match at every size. Worker p50 before → after is 37.510 → 35.081, 35.919 → 35.678, 35.491
-→ 35.880 and 35.957 → 36.173 ms at 0 / 1,000 / 10,000 / 100,000 background buildings. Largest-case
-compile p50 is 35.061 → 35.198 ms; readiness is 0.150 → 0.145 ms. One-time snapshot setup is
-measured separately (0.369 → 0.366 ms at the largest size). These runs retain local planning cost;
-they do not establish a speedup.
-
-### Third-road boundary and placement feedback (`ROAD-25`)
-
-The 2026-09-13 `road.log` repeatedly rejected the third road at the existing sidewalk boundary
-`(2834.492, -8658.672) → (2835.014, -8662.223)`. Node earthwork splitting discarded distinct
-submillimetre segments using a metric length threshold. The resulting source loop had gaps even
-though its polygon still connected the vertices; later terrain union could not recover ownership.
-Splitting now discards only identical canonical XZ endpoints. Every distinct arrangement edge
-keeps its solved height and source; no tolerance expansion, invented owner or clipping bypass is used.
-The predicate is O(1) per existing local boundary subsegment; geometry/source work remains bounded
-by the affected node and terrain patches.
-
-An exact scene can carry an empty `surface_vertices` field because its geometry lives in chunks.
-On rejection, Godot now builds the fallback ribbon when that array is empty and preserves the error
-label if mesh upload fails. A queued click keeps its gesture until the simulation acknowledges
-acceptance or rollback. The bridge retains one bounded completion receiver; polling is O(1),
-nonblocking and does not acquire `SimCore`. Duplicate clicks wait, rejected strokes remain editable,
-and completions cannot clear another gesture. Logs distinguish `queued` from the authoritative
-`road_commit_result`; the replay importer understands both current and historical captures.
-`--debug road` enables logging; the existing `METRUM_DEBUG_SURFACE=1` separately enables the cyan
-surface overlay.
-
-Regression coverage includes the exact logged boundary location, a nearby third-junction hole,
-micrometre-to-submillimetre owned edges, empty exact-preview fallback rendering, and queued,
-accepted, rejected and superseded placement feedback. Fresh verification and release locality
-measurements on 2026-09-13:
-
-- `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 cargo test --offline --lib`: 1,767 passed, 60 ignored.
-- Headless `network_tool_chunk_renderer_test`, `road_junction_preview_test` and
-  `road_preview_stream_test`: all pass against the rebuilt release library. The gameplay benchmark
-  script passes Godot's parser check, the replay importer passes eight Python tests, and `run.sh`
-  passes `bash -n`.
-- A deterministic 144-layout sweep reconstructs the logged junction on the checked-in Kuopio
-  source world, varying native f32 trunk coordinates and branch length. All 144 three-road layouts
-  now preview and commit; the baseline rejected 17. Ten baseline failures identify the exact
-  boundary coordinates from `road.log`. This is a reconstruction, not a complete recorded mouse replay.
-- Three alternating unprofiled release process pairs use eight Rayon workers pinned to CPUs
-  `0,2,4,6,8,10,12,14`, 100 observations per size and the existing
-  `nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling` fixture. The local
-  roads/sites stay fixed while background buildings, parcels, agents and roads grow. All six runs
-  retain identical local products at every size. No other builds, tests or replays overlapped these
-  acceptance timings.
-
-| Background buildings | Worker p50 before → after (ms) |
-| --- | --- |
-| 0 | 20.894 → 20.694 |
-| 1,000 | 20.609 → 20.553 |
-| 10,000 | 20.659 → 20.630 |
-| 100,000 | 20.658 → 20.862 |
-
-Values are medians of the three process medians. The largest fixture contains 600,024 agents,
-100,004 parcels and 391 background roads. Compile p50 is 19.975 → 20.212 ms; readiness remains
-below 0.018 ms. Separately measured one-time snapshot cost is 0.006 → 0.007 ms with no background
-buildings and 3.403 → 3.439 ms at 100,000. The approximately 1% largest-case worker difference
-does not change locality; these measurements do not establish whole-city frame rate.
-
-Command: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact
-nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture
---test-threads=1`. Release test executable SHA-256 before:
-`088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`; after:
-`42f30b3027712d14291a762f6e8410bfddce53430e91efce86b61e2c037443b6`. Deployed library SHA-256:
-`bb5e27f6da196ecf4613b492da28f8281063ca4f10d65c7983217a34557e0151`.
-
-### Node Edit Audit Measurements (2026-09-12)
-
-All four initial regressions fail on the baseline: duplicate road bounds after a merge, an
-unchanged physical endpoint after movement, a double-translated self-loop and the wrong canonical
-parent after merging through an alias. Additional assertions cover retired-node lookup, retained
-independent height samples and refreshed grade-dependent routing cost. The unused
-`remove_node_and_merge_edges` API and its sole rejection test are removed, together with a second
-caller-side length pass, discarded split length, duplicate end-node binding and unnecessary
-geometry clone.
-
-Three alternating unprofiled CPU-0 / one-worker release pairs hold one incident road fixed while
-adding disconnected background roads. Each process takes nine samples after one warmup; fresh
-whole-graph clones, graph setup, result destruction and verification are outside mutation timing.
-The merge benchmark uses coincident endpoints so both builds have valid matching geometry/index
-products; the noncoincident correctness regression independently catches the stale-entry bug.
-Exact local geometry fingerprints and live-edge query counts match across versions/backgrounds.
-
-| Background roads | Merge before / after (µs) | Move before / after (µs) |
-| --- | --- | --- |
-| 0 | 0.124 / 0.167 | 0.150 / 0.162 |
-| 1,000 | 1.488 / 0.543 | 0.453 / 0.509 |
-| 10,000 | 19.341 / 1.852 | 1.326 / 1.957 |
-| 100,000 | 420.238 / 4.956 | 4.940 / 5.044 |
-
-The global O(E) merge scan is removed. Remaining index cost is logarithmic in city size; ordering
-is O(K log K) in the two local incident sets, and profile/cost work follows their point counts.
-The additional local correctness work is visible in the tiny cases, including a 0.631 µs move
-increase at 10,000 background roads. These figures exclude graph cloning and the later coordinated
-edit publication; no whole-frame speedup is inferred.
-
-The same final processes separately measure the corrected unequal-profile path. These are
-**after-only** measurements, because the baseline does not support those inputs correctly. Each
-case uses 21 samples after one warmup, with edge cloning, result destruction and height/position
-checks outside timing. Source profiles alternate even/odd horizontal support positions; every
-original height sample remains represented.
-
-| Control / physical supports | Shared supports | Alignment + deformation (µs) |
-| --- | --- | --- |
-| 16 / 17 | 31 | 0.435 |
-| 256 / 257 | 511 | 5.556 |
-| 4,096 / 4,097 | 8,191 | 83.470 |
-
-Three separate eight-worker pairs run the populated paved-road locality fixture. Four local
-occupied sites remain fixed while buildings, parcels, agents and roads grow. Each version retains
-identical local products across all background sizes; fixture setup is excluded and the one-time
-planning snapshot remains separately reported.
-
-| Remote buildings | Plan before / after (ms) | Worker before / after (ms) | Snapshot before / after (ms) |
-| --- | --- | --- | --- |
-| 0 | 19.930 / 19.806 | 21.021 / 20.658 | 0.006 / 0.007 |
-| 1,000 | 20.189 / 19.838 | 20.809 / 20.750 | 0.059 / 0.060 |
-| 10,000 | 20.172 / 19.711 | 20.936 / 20.694 | 0.357 / 0.349 |
-| 100,000 | 20.198 / 19.766 | 21.024 / 20.608 | 3.431 / 3.372 |
-
-The largest planning fixture contains 391 background roads and 600,024 total agents. Planning
-cost remains comparable and local; one-time snapshots still scale with the stored city. This is
-not acceptance of the remaining global agent invalidation or full pathing-rebuild costs.
-
-The exact ignored entries are
-`simulation::network::topology::node_edit_tests::benchmark_node_edit_locality` and
-`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using `--exact
---ignored --nocapture --test-threads=1`, `METRUM_DEBUG=0`, and offline release builds.
-Mutations/profiles use `taskset -c 0`, `RAYON_NUM_THREADS=1`; planning uses `taskset -c
-0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`. Rust is 1.98.1; executable SHA-256 values are
-`cc95a605c79771c82391601ef4a7b33db3bc0bf3853cb4d4cd6b8e15c3e49130` before and
-`b4746664fd713fea768dc93d62097c04e8f002df08fc63938d9097850ffb58fc` after. The initial capture hit
-quota; its incomplete executable/empty archive were removed, old artifacts were losslessly archived
-and verified, and capture was retried atomically. No measurements ran from that failed capture or
-concurrently with archival, compilation, tests or source changes.
-
-### Node Query Audit Measurements (2026-09-12)
-
-`AUDIT-01-A18` replaces the editor's complete node scan with the shared indexed search and removes
-unused query/projection code. The baseline selects node 1 instead of equally close node 0 in the
-spatial query (`node-query-before-regression.log`). Regressions retain exclusive radii, XZ versus
-3D distance, live/alias filtering, lowest-ID ties across cells and reversed retained edges, and
-rectangle results against an independent point filter, including global bounds.
-
-Five alternating matched unprofiled release process pairs use CPU 0 and one Rayon worker. A fixed
-24 m local road is surrounded by 0/1,000/10,000/100,000 disconnected remote roads (2 through
-200,002 total nodes). Each operation runs one warmup and nine samples of 64 queries, cycling three
-local hits and an empty location at radius 5 m. Setup is timed separately; result checking is
-outside the query timer. All outputs match the expected `[0, 1, 0, -1]` targets at every size.
-These are warm isolated query measurements, excluding bridge locks, rendering and a whole frame.
-
-| Background roads | Editor query µs, before → after | 3D query µs, before → after | Cursor acquisition µs, before → after |
-| ---: | ---: | ---: | ---: |
-| 0 | 0.006750 → 0.017953 | 0.035969 → 0.018266 | 0.045250 → 0.020484 |
-| 1,000 | 4.846547 → 0.042734 | 0.035109 → 0.042687 | 0.044422 → 0.060313 |
-| 10,000 | 99.944250 → 0.043125 | 0.034250 → 0.042875 | 0.043578 → 0.060750 |
-| 100,000 | 2318.796000 → 0.043391 | 0.034625 → 0.043281 | 0.043672 → 0.061203 |
-
-The editor no longer scales with unrelated nodes. With only two nodes its fixed index overhead is
-about 11 ns; on larger fixtures the already-local 3D and cursor searches add about 9 and 18 ns.
-The latter include exact bounds checks and stable node ties; no universal speedup is claimed.
-Node candidates allocate nothing. The existing edge-candidate buffer in cursor acquisition is
-outside this cleanup and remains an open audit item.
-
-Three separate populated-road planning pairs use eight physical P-cores and eight Rayon workers.
-They hold four local building sites fixed while increasing background buildings, roads and agents;
-the largest case contains 391 remote roads and 600,024 agents. Every run preserves its local
-products. Snapshot creation remains separate from repeated planning:
-
-| Background buildings | Compile ms, before → after | Worker ms, before → after | Snapshot ms, before → after |
-| ---: | ---: | ---: | ---: |
-| 0 | 19.821 → 20.108 | 20.989 → 21.034 | 0.007 → 0.007 |
-| 1,000 | 19.835 → 20.051 | 20.616 → 20.749 | 0.058 → 0.058 |
-| 10,000 | 19.913 → 19.851 | 20.789 → 20.805 | 0.339 → 0.350 |
-| 100,000 | 20.255 → 20.055 | 20.972 → 21.012 | 3.358 → 3.369 |
-
-Commands and identities:
-
-- Query: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact nodes::sim::query::tests::benchmark_editor_node_query_locality --ignored --nocapture --test-threads=1`.
-- Planning: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1`.
-- Before release test executable SHA-256: `14f7b87aaf06f9e046843fb731164e6c3d3ac63d610d7ba6cf88d537ce250c96`.
-- After: `b4cc03a9f9290b26156280c1157a66705c6c6038110994184dcb5230c2688f9a`.
-- Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
-
-Final source/test compilation is warning-free. All 1,763 release tests pass (58 ignored),
-`node-query-final-tests.log`. No builds, tests or source changes overlapped the accepted benchmark
-runs. Initial test compilation caught a missed UI-sentinel assertion during the Option-return
-conversion; it was corrected before the final suite and measurements.
-
-### Edge Hover Audit Measurements (2026-09-12)
-
-The baseline regression for `AUDIT-01-A19` selects deleted edge 0 instead of live edge 1
-(`edge-query-before-tests.log`). The second test preserves inclusive radius, lowest-ID ties,
-height-independent selection, repeated profile points, endpoint projection and empty-space results.
-Both pass with the corrected query, including reversed R-tree insertion history and deletion of
-every local road. All 1,765 release tests pass (59 ignored), `edge-query-after-tests.log`.
-
-To test the query without constructing a whole `SimCore`, the baseline moves its original full
-scan and projection arithmetic into the simulation interaction module. Both measured versions
-use that same isolated interface, with unchanged graph fixtures and the bridge's radius policy.
-Five alternating unprofiled release process pairs use CPU 0 and one Rayon worker. One fixed 28 m
-local road and 0/1,000/10,000/100,000 remote roads each contain eight profile points. One warmup
-and nine samples of 64 queries cycle three local hits and empty space at radius 5 m. Setup is
-reported separately and assertions run after each timed sample. Every output matches
-`[0, 0, 0, -1]` at every size.
-
-| Background roads | Query µs, before → after |
-| ---: | ---: |
-| 0 | 0.019000 → 0.019484 |
-| 1,000 | 18.299766 → 0.028547 |
-| 10,000 | 191.978563 → 0.034500 |
-| 100,000 | 3459.187406 → 0.038906 |
-
-These warm kernel measurements establish removal of the unrelated-road scan, not a whole-frame
-speedup. Bridge locks, input/rendering, graph construction and retired API registration are not
-part of the query timer. Cost follows visited R-tree entries plus candidate profile segments;
-dense overlapping bounds still require examining those candidates. No new spatial index or
-per-query heap storage is introduced. This batch changes selection and removes unused APIs;
-it does not change local road-edit planning, whose separate A18 measurements remain historical
-for their recorded executable.
-
-Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact simulation::network::interaction::tests::benchmark_editor_edge_query_locality --ignored --nocapture --test-threads=1`.
-
-- Before release test executable SHA-256: `a8d62cd8c19c3d6af01de5c71b327c80a08ef8ddbac92baf0ce02d749142a489`.
-- After: `d02c0c5fbe9354eb7a8e7d86ee40822d808aa83e89e607fdcf0667f261351b52`.
-- Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
-- Identities include the corrected GDScript API header alongside Rust sources.
-
-No builds, tests or source changes overlapped the accepted measurements. Test/benchmark compilation
-is warning-free, `edge-query-after-check.log`.
-
-### Retained Node-Grid Capacity Measurements (2026-09-12)
-
-`AUDIT-01-A20` corrects the visitor's choice between local grid probes and table traversal.
-`HashMap` traversal follows allocated capacity, which clear/rebuild retains, rather than the
-number of populated cells. Comparing capacity preserves results and bounds local work after undo
-or index rebuilding without shrinking storage or adding an index/buffer.
-
-Five alternating matched unprofiled release process pairs use CPU 0 and one Rayon worker. One
-20 m road has two populated node cells. The fixture reserves increasing capacity, invokes the real
-`rebuild_all_indices()`, and verifies that capacity is retained. One warmup and nine samples of 64
-queries cycle three hits and empty space at radius 5 m. Setup and output assertions are outside the
-query timer; every sample returns `[0, 1, 0, -1]`. Median process medians, in microseconds:
-
-| Retained table capacity | Editor, before → after | Cursor acquisition, before → after |
-| ---: | ---: | ---: |
-| 3 | 0.015234 → 0.015547 | 0.017547 → 0.017656 |
-| 1,792 | 0.059141 → 0.051281 | 0.043922 → 0.058469 |
-| 114,688 | 1.127375 → 0.050484 | 1.175156 → 0.058625 |
-| 1,835,008 | 22.150859 → 0.050688 | 22.372094 → 0.058484 |
-
-Local queries stop scaling with historical storage. The 1,792-capacity cursor case adds about
-15 ns; this is not a universal speedup. Fresh processes retain standard randomized hash placement,
-so baseline scan timing varies even with matched capacity and queries. These warm kernel timings
-exclude bridge locks, rendering and setup, and do not establish whole-frame speedups.
-
-Three separate matched planning pairs use eight physical P-cores and eight Rayon workers. The
-fixed local neighborhood produces identical products through 100,000 background buildings and
-600,024 agents. Compile medians remain 19.6–19.9 ms and worker medians 20.6–20.8 ms across sizes;
-at the largest size compile is 19.827 → 19.747 ms and worker is 20.778 → 20.755 ms. One-time
-snapshot creation is measured separately (3.329 → 3.413 ms at the largest size).
-
-- Query: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact simulation::network::interaction::tests::benchmark_node_grid_retained_capacity --ignored --nocapture --test-threads=1`.
-- Planning: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1`.
-- Before release test executable SHA-256: `3fbda58cf0889ebe799363b0bab112efb91ee8607abee492c0bed982220c75b0`.
-- After: `088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`.
-- Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
-
-All 1,765 release tests pass (60 ignored), `node-grid-capacity-after-tests.log`. Test/benchmark
-compilation is warning-free. No builds, tests or source changes overlapped accepted measurements.
-
-## Performance Contract
-
-Correctness without acceptable performance is not done.
-
-`AUDIT-01-G1` corrects the common integer-key rounding helper: ties round away from zero, but
-representable values immediately below a half must remain below the boundary. Large already-integral
-values and saturating conversions retain Rust's standard semantics. The former offset-plus-cast
-shortcut violated that contract. On the audited build, three alternating unprofiled release process
-pairs of `nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling --exact --ignored
---nocapture` used 24 Rayon workers, three warmups and 100 observations per background size. With
-0/1,000/10,000/100,000 remote buildings, worker p50 medians were `20.920/20.908/20.756/20.892 →
-21.453/21.600/21.712/21.676 ms`. At 100,000 buildings (600,024 agents, 391 remote roads), direct
-planning was `20.355 → 20.692 ms`; readiness stayed below 0.020 ms, and the separately measured
-one-time snapshot was `3.317 → 3.371 ms`. Every run retained identical local terrain products. The
-small bounded cost of correct rounding is accepted; repeated planning still follows the fixed
-neighborhood. The separate scalar experiment is diagnostic evidence, not a whole-city timing claim.
-
-Required bounds:
-
-- one local road edit rebuilds only touched spans, incident node pieces, and affected surface /
-  terrain chunks
-- dirty rebuilds use compiled piece coverage and `old_coverage union new_coverage`
-- bounded road undo restores the affected pre-edit surface compiler records, removes post-edit
-  owners, and rebuilds only old-plus-restored chunk shells and refined tiles; unsafe or incomplete
-  captures fall back to bounded owner compilation, while dense terrain-authoring undo remains an
-  explicit full reset
-- steady-state chunk rebuilds use sorted contributor lists; they must not scan every compiled node
-  piece in the world
-- committed road rendering uses the same normalized render-chunk span and world-minimum origin as
-  terrain and water. This keeps ordinary central edits away from the world-zero four-chunk corner;
-  the target is one chunk for a contained edit and two when it crosses one boundary. Road keys can
-  extend outside the bounded terrain grid and remain a separate ownership domain even though their
-  in-world boundaries align. A local edit rebuilds the sorted union of changed surface and earthwork chunks,
-  collects their unique owners once, and assigns each non-indexed triangle to exactly one
-  deterministic XZ-centroid home chunk. Chunk vertices are stored relative to that chunk's origin;
-  unchanged mesh buffers remain immutable and shared.
-- Rust accumulates changed chunk keys and removal tombstones until Godot acknowledges the exact
-  road generation. Godot preflights every resident dirty terrain payload before mutating any patch,
-  stages every changed road `ArrayMesh` as a detached instance, rejects stale generations before
-  the swap, and commits the complete terrain/road pair back-to-back. Engineered terrain accepts
-  only a current-contract `ok` payload with structurally valid clipped baked buffers; this includes
-  an `ok` payload that reports already-omitted pathological faces. A missing, empty, failed,
-  conflicted, still-pathological, wrong-contract, or malformed engineered payload retains the
-  complete previous terrain/road pair and cannot acknowledge the current road generation. Raw
-  heightmap terrain is never an engineered-patch fallback.
-  The bridge rejects malformed or non-finite layer arrays atomically, and a chunk-span or grid-origin
-  change is legal only in a full replacement so retained instances cannot use mixed coordinate grids.
-  World replacement clears old chunks before terrain rebuild and remains an explicit full-chunk
-  replacement, including the empty-road case. A recreated renderer hydrates from a full snapshot
-  even when the simulation has no pending dirty revision.
-- ordinary road-render work is `O(affected owners + affected triangles + changed chunk upload)`;
-  immutable snapshot publication copies only accumulated unacknowledged update metadata and `Arc`
-  handles, never the full occupied-chunk map or unchanged vertex buffers. A renderer-requested full
-  snapshot remains `O(total chunks + total vertices)` because it necessarily uploads the network.
-- `./run.sh --benchmark-road-chunks` is the reproducible scaling check. Its Rust fixture keeps one
-  central 32 m two-lane local road wholly inside one terrain-aligned chunk, with its selected owners,
-  target chunk, and emitted vertex signature fixed
-  while occupied chunks rise through 1, 64, 256, and 1,024. `chunk_emit_only` isolates targeted
-  generation, `full_network_emit` provides the former whole-network-work comparator, and
-  `dirty_compile_plus_chunk_emit_diagnostic` separately exposes the known global stale-cache scans
-  in dirty surface compilation. The Godot fixture replays the same immutable packed arrays with 4,
-  64, 256, 1,024, and 4,096 resident instances while one 8,190-vertex chunk changes, then holds
-  residency at 1,024 while 0, 1, 4, and 16 chunks change. It reports median and p95 both for command
-  staging and for a render-server synchronization fence; this headless boundary covers validation,
-  `ArrayMesh` construction, scene/RID mutation, and command drain, not physical GPU upload or frame
-  rendering. Fixture geometry digests and retained-instance checks are correctness gates;
-  wall-clock comparisons are made between release runs on the same machine rather than encoded as
-  test thresholds. `./run.sh --benchmark-road-chunk-upload` runs the Godot half without inheriting
-  thermal/boost state from Criterion.
-- Schema-3 measurements use `./run.sh --benchmark-gameplay-roads` or
-  `./run.sh --benchmark-gameplay-roads-headless`: release runs without Samply. Existing
-  `--profile-gameplay-roads[-headless]` commands profile the same selectable workloads for CPU
-  attribution. Old schema-2 timings are not directly comparable. The default `paired` matrix
-  resets the entire flat world **before every fixture**, holds the free anchor at `(100,100)`, and
-  changes only the corner variant's grid alignment. It covers the eight bend/T/four-way, oblique,
-  mixed-width, curved, close-double-T, and chunk-corner layouts. One warmup plus five measured
-  repetitions gives 48 fixtures; alternate measured cycles reverse case order deterministically.
-  Override counts with `METRUM_GAMEPLAY_BENCHMARK_REPETITIONS` / `..._WARMUP_REPETITIONS`.
-- Add `--gpu-profile` to a windowed gameplay road command, for example
-  `./run.sh --benchmark-gameplay-roads --gpu-profile`, to enable Godot's built-in GPU stage
-  diagnostics. Output is retained in the run's existing `*.godot.log` under `benchmark-results/`
-  (or the configured output directory). The modifier also works with `--profile-gameplay-roads`
-  to collect CPU and GPU diagnostics together; headless workloads are rejected before building.
-  JSON runtime metadata records `gpu_profiled: true` and `profiled: true`, so the existing paired
-  report rejects these diagnostic captures as acceptance timings. GPU stage output is a periodic
-  rendering breakdown, not per-operation GPU timing or presentation latency; existing JSON frame
-  observations keep their CPU timing contract. This reuses the road workload and does not measure
-  whole-city rendering or running-simulation contention.
-  The 2026-09-10 diagnostic before runtime grass mipmaps on the RX 7900 XTX / i9-12900K,
-  Godot 4.7.2 Forward+, 1920x1080,
-  60 FPS cap, V-Sync enabled and 24 Rayon workers passed all 48 paired fixtures with GPU profiling
-  and all 48 in the matching unprofiled release run. Post-warm-up periodic GPU averages had a
-  `2.978 ms` median (`3.071 ms` largest average), with opaque rendering accounting for `95.2%`
-  of reported time. The unprofiled operations still recorded frame intervals up to `39.820 ms`.
-  An eight-fixture CPU/GPU diagnostic recorded network/terrain renderer calls up to
-  `19.669 / 17.603 ms`, including setup/reloads; this does not identify the exact cause of the
-  unprofiled spike. The user later reported moving windows between desktops during benchmarking;
-  affected runs/time ranges are unspecified. Frame-interval outliers do not establish a game-side
-  hitch, and precise timing comparisons need an uninterrupted repeat with the window stationary.
-  These are diagnostic baselines, not speedup, individual-frame GPU-tail, or
-  whole-city claims: the fixtures contain no buildings/agents and simulation is paused.
-  Commands, build/workload identity, summaries and raw captures are retained under
-  `benchmark-results/gpu-road-analysis-Jecrzy/`; see its `analysis.txt` and `analysis.json`.
-  A subsequent repeat on the same hardware/settings, with grass mipmaps enabled and the user
-  leaving the window stationary, passed all 48 fixtures in each of two sequential release runs
-  (GPU-profiled, then unprofiled). The 78 post-warm-up GPU reports had a `0.630 ms` median and
-  `0.788 ms` largest periodic average; opaque-pass mean was `0.502 ms`. The unprofiled run's
-  996 observed frame intervals across 85 measured road operations averaged `16.360 ms` and
-  reached `40.742 ms`; 14 operations contained an interval above `33.333 ms`. This counts
-  affected operations, not individual spikes. Longer CPU callback intervals therefore recur
-  without reported desktop switching, but their cause remains unresolved; periodic GPU
-  averages cannot identify individual-frame stalls. Workload signatures and library hashes
-  match between runs. No new zero-mip baseline was captured. Commands, build identity,
-  texture hash checks and raw captures are in `benchmark-results/stationary-mipmaps-LZ6tB3/`;
-  see its `results.txt` and `analysis.json`.
-- `METRUM_GAMEPLAY_BENCHMARK_MATRIX=scaling` holds the local T edit and terrain fixed while adding
-  a remote, internally connected grid. Default sides `0,4,8` contain `0,24,112` live background edges;
-  `METRUM_GAMEPLAY_BENCHMARK_GRID_SIDES=0,8,16` gives `0,112,480`. Sizes must be unique, zero or
-  `2..64`. Every setup road uses the ordinary async command outside measured edit phases; all grid
-  junction degrees and the live edge count are verified. The local component is intentionally
-  separate. This includes full edit routing/snapshot costs, not only local mesh emission.
-  Intersection candidates and split batches now use stable edge-ID order, with node-ID ties
-  resolved explicitly. This prevents hash/R-tree iteration from changing allocated edge IDs and
-  subsequent profile authority (`ROAD-16`). Sorting is limited to indexed local candidates and
-  touched edges, `O(K log K)` with `O(K)` split-batch storage, not a city-wide scan.
-  Side 32 verifies 1,984 edges and all 1,024 grid-junction degrees. Its formerly rejected first
-  2,790 m stroke (`ROAD-14`) now passes: terrain-query span footprints are exported in 64 m
-  section-station runs so a patch union does not receive an entire multi-kilometre owner loop.
-  A failed setup remains a failure, never a large-city performance result.
-- `METRUM_GAMEPLAY_BENCHMARK_MATRIX=interaction` compares the same T with a completed preview,
-  a 24-point moving pointer trace (60 scheduled inputs/s, one 80 ms midpoint hold), and an immediate
-  click without exact preparation. This is scripted world-space motion, **not OS raycast/snapping**.
-  `pointer_idle_to_ready_ms` excludes intentional trace duration; immediate clicks have no
-  `preview_ready_ms`. Observed request counts and frame intervals accompany each operation.
-- `METRUM_GAMEPLAY_BENCHMARK_MATRIX=saved` reloads a paused city from
-  `METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH` before each T fixture. It requires
-  `METRUM_GAMEPLAY_BENCHMARK_ANCHORS_PATH`, a JSON object such as `{"t_90_2l":[100,100]}`.
-  Use matched saved states to vary actual population/building density; the suite does not fabricate
-  populations or measure running-simulation contention. Authored Kuopio `controlled`, historical
-  growing `baseline`, and targeted `double_t`/`road08` matrices remain diagnostic options. Authored
-  anchors can use the same manifest and are recorded in every capture. Different authored sites
-  confound terrain with topology: do not call these isolated complexity comparisons.
-- Milestones separate `preview_ready_ms` (exact readiness before the extra fence frame),
-  `generation_ready_ms`, `render_ack_ms` (matching atomic road/terrain acknowledgement),
-  and `first_idle_ms`
-  (also foreground water/border/residency work). `commit_ms` retains the five
-  consecutive idle frames; `settle_tail_ms` isolates the final stable tail. These are CPU frame
-  observations, **not GPU presentation timestamps**. Headless is uncapped unless
-  `METRUM_GAMEPLAY_BENCHMARK_MAX_FPS` overrides it; cadence, viewport, engine, CPU/GPU names, worker
-  counts, and source/binary/world fingerprints are recorded. Do not interpret headless/windowed
-  differences as GPU execution cost. `state_after.command` exposes generation-matched core stages:
-  command-queue wait, locking, add, finalization, surface/terrain, agents/lanes, buildings, routing,
-  mesh, snapshot, and refined-state work, plus dirty edges and rebuilt chunks. `ROAD-28` adds
-  `preview_plan_reused`, `road_plan_ms` (reuse validation or cold road solve) and `terrain_plan_ms`
-  (deferred click completion); both timings are included in `add_ms`. Finalization includes
-  its maintenance children; core work excludes queue wait, context publication and renderer work.
-  Do not add inclusive parents and children. Cardinality scans occur outside segment clocks;
-  `nodes` counts storage including aliases. Fixture totals include bookkeeping/verification and
-  are not the primary response-time KPI.
-- Authoring commands wake the simulation thread through its existing channel; they do not wait
-  for the next 60 Hz movement tick (`ROAD-18`). Completed edits publish the road/terrain render
-  snapshot even between ticks. A separate monotonic deadline gates the unchanged fixed simulation
-  delta; camera/command wakeups neither advance ticks early nor postpone their deadline, and a
-  slow edit does not trigger catch-up bursts. Coalesced speed/camera updates survive intervening
-  wakes. Scheduling adds `O(1)` work without a new queue, thread, or spatial index; edit snapshots
-  reuse the existing buffers and publication path.
-- Summaries separate `initial_road`, `edit_1`, and later edits. p95 is null below 100 observations;
-  p99 is null below 1,000. These are descriptive quantiles, not confidence intervals or independent
-  process replicates. The wrapper rejects existing outputs and validates full fixture coverage,
-  monotonic milestones and command generations through `tools/road_benchmark_report.py`.
-  Schema 4 removes the retired global-guide readiness/count fields. Paired captures still require matched
-  pre/post-edit graph, lane, agent and building cardinalities; reset fixtures must repeat road
-  output cardinalities. Schema-3 historical artifacts require their original verifier.
-  Compare separate unprofiled pairs with
-  `python3 tools/road_benchmark_report.py --baseline a1.json a2.json --candidate b1.json b2.json`
-  (default `first_idle_ms`; also `--metric render_ack_ms` or `--metric command.routing_ms`).
-  Alternate A/B and B/A process order
-  without concurrent load, using identical inputs/settings. The report rejects incompatible or
-  profiled captures and reports paired process-median deltas/ranges without significance claims.
-  Start with unchanged-build A/A runs. Early captures without ghost-generation checks could
-  silently drop guide work on lock contention and are not valid baselines or noise controls.
-  Fewer than three process pairs are explicitly exploratory; even more pairs do not establish a
-  win without repeatability beyond the measured A/A variation. Do not use this suite's default
-  single process to gate small gains.
-  Geometry rejection, unexpected generations, missing fixtures, and degree mismatches remain
-  failures, never faster samples or reasons to relocate a pinned fixture.
-- The indexed visible-height sampler was validated with three matched unprofiled release/headless
-  process pairs, alternating A/B and B/A order. Each process ran sides `0,8,16` with one warmup and
-  two measured repetitions, verifying identical guide counts and pre/post-edit graph/lane totals.
-  Both binaries included the guide-retry and deterministic-split fixes; only the sampling path
-  differed. Local T click-to-first-idle process medians fell from `251.5` to `64.9 ms` at 112
-  background edges (paired reduction `72.5–79.1%`), and from `1139.9` to `139.2 ms` at 480 edges
-  (`87.1–88.4%`). Worst observed 480-edge edit frame intervals fell from `1050.3` to `108.1 ms`.
-  The empty-background T changed from `38.1` to `41.3 ms`, within the observed unchanged-build
-  variation: no small-network gain is claimed. These are road-tool CPU responsiveness results,
-  not whole-game FPS or GPU results. Captures and A/A controls are under the ignored
-  `benchmark-results/road-perf-pass-1/stable-*` paths; earlier captures in that folder are superseded.
-  That pass left full-network guide generation and CCH ordering as the next substantial costs.
-- The subsequent `ROAD-14`/guide/CCH pass uses three matched release/headless process triplets:
-  A = footprint fix only, B = exact CCH rebuild improvements, C = B plus per-edge guide reuse.
-  Each process runs sides `0,8,16,32` once, with no extra whole-fixture warmup; remote-grid setup
-  exercises the road pipeline before local measurements. Order is A1 B1 C1 C2 B2 A2 A3 B3 C3,
-  without competing compiler/test load. All guide counts and pre/post graph/lane cardinalities match.
-  At 1,984 background edges, local T click-to-first-idle medians are `3731 → 202 ms`
-  (paired reduction `93.6–94.6%`); the routing stage alone is `3437 → 21.4 ms`.
-  With the improved router held fixed, guide reuse reduces that edit from `359 → 202 ms`
-  (`40.2–43.9%`). The worst observed T frame interval falls from `3715 → 121 ms`.
-  At 480 background edges the same edit falls from `142 → 80 ms` (`28.1–54.9%`).
-  These are descriptive process medians and CPU frame observations, not GPU/FPS claims.
-  Isolated topology-only Criterion rebuilds also improve: side 8 `0.675 → 0.309 ms`,
-  side 16 `36.3 → 1.93 ms`, and side 32 `2419 → 14.4 ms`.
-  The faster order exposed discarded shortcut alternatives and premature query termination;
-  those correctness defects are fixed and independently oracle-tested (`ROAD-17`).
-  CCH still rebuilds globally; scoring is incremental within a rebuild. Complete guide packing
-  and upload still scale with total guide vertices.
-  Small-network results are not uniformly better. Three additional process pairs at sides `0,8`,
-  each with one warmup and five measured fixture repetitions, show the empty-world first stroke
-  regressing from `36.2 → 41.2 ms` (`13.9–17.3%`), while its following T is `48.2 → 48.1 ms`.
-  The 112-edge first stroke improves `63.1 → 58.4 ms`; its T result is inconclusive.
-  That first-road regression was tracked separately as `ROAD-18`; its follow-up is below.
-  Captures, staged comparisons, superseded experiments and verification are under ignored
-  `benchmark-results/road-perf-pass-2/`.
-- `ROAD-18` follow-up isolates an existing uninterruptible simulation-thread sleep: cheap road
-  commands could spend up to one 60 Hz interval waiting to start. The interruptible channel wait
-  and immediate edit snapshot remove that scheduling delay without changing geometry or routing.
-  Three matched release/headless process pairs run sides `0,8`, one warmup and five measured
-  repetitions, in A1 B1 B2 A2 A3 B3 order without compiler/test load. Empty-network first-road
-  click-to-first-idle medians fall `43.7 → 30.8 ms` (`16.1–36.3%` lower across paired processes);
-  command-queue wait falls `7.33 → 0.079 ms`. The following T improves `41.9 → 35.3 ms`.
-  Unchanged-build process medians still vary (A1/A2 `−6.5%`, B1/B2 `+19.5%` for first-road latency),
-  so these are descriptive measurements, not significance or whole-game FPS claims.
-  At 112 background edges, first-road results are mixed across pairs; the following T improves
-  `64.8 → 52.6 ms`. Three additional side-32 pairs (one fixture each, no extra warmup after grid
-  construction) retain the large-grid gains: first road `194 → 193 ms`, local T `217 → 200 ms`.
-  Both large-grid ranges cross zero, so no further large-grid speedup is claimed. All paired
-  guide counts and pre/post graph/lane/agent/building cardinalities match. Captures, comparisons,
-  binary fingerprints, exclusions and verification are under ignored `benchmark-results/road-18/`.
-- `ROAD-19` initially added the compiled junction display without changing the moving ribbon or idle delay
-  (that scheduling is superseded by `ROAD-21`).
-  Three matched release/headless process pairs use the same current frontend/readiness-checking
-  harness with baseline and candidate native libraries, sides `0,8`, one warmup and five measured
-  repetitions, in A1 B1 B2 A2 A3 B3 order without competing build/test load. Readiness now includes
-  successful junction-mesh staging. Empty-background T preview readiness is `67.4 → 67.5 ms`;
-  with 112 background edges it is `61.3 → 67.3 ms`. Both paired ranges cross zero and unchanged-build
-  readiness varies by about 10–12% on some operations; this is a visual improvement, not a speedup.
-  Commit results are mixed: empty first stroke `32.8 → 34.2 ms`, T `40.6 → 35.6 ms`; 112-edge first
-  stroke `42.9 → 47.2 ms`, T `53.6 → 49.9 ms`. The 112-edge first-stroke paired range is `+0.3–13.2%`;
-  its mesh stage is only `0.403 → 0.445 ms`, so the total difference cannot be attributed to owner
-  recording from these observations alone. Guide output and pre/post graph/lane/agent/building
-  cardinalities match. Three additional side-32 process pairs (1,984 background edges, one fixture
-  each after grid construction, no extra whole-fixture warmup) leave T preview readiness unchanged
-  at `62.0 → 61.9 ms`, but T click-to-first-idle regresses `182.0 → 206.5 ms`
-  (`+4.4–15.2%` per pair). Its mesh stage stays `0.459 → 0.459 ms`; snapshot/surface and
-  post-command publication times account for the observed difference, without an isolated causal
-  explanation in that pass. This regression was tracked as `ROAD-20`; its later recovery is below.
-  The 48-fixture layout matrix, three interaction fixtures, saved-city delete/redraw/save/load replay,
-  four Godot suites and single-worker junction replay pass. Real-renderer T/cross/unequal-width
-  captures checked road appearance on a solid plane; they did not exercise committed terrain cutouts.
-  `ROAD-23` supersedes that incomplete seam validation and the blanket preview hover offset.
-  Captures, noise controls, fingerprints and exclusions are under ignored
-  `benchmark-results/junction-preview/`. These remain CPU/headless observations, not GPU or FPS results.
-- `ROAD-21` replaces idle-gated junction display with continuous latest-input updates. Three serial
-  release/headless captures per implementation use 96 moving inputs per T, crossing and unequal-width
-  T trace, with no midpoint pause. The old implementation shows zero junction updates during motion;
-  final captures show `58–72` for T, `40–43` for crossing and `46` for unequal-width T. Final per-process
-  median input-to-new-mesh latency is `19–37 ms`; the age of the currently displayed pose has medians
-  `20–50 ms` and maximum `84 ms`. First display takes `20–52 ms`; all remaining motion frames retain
-  a junction. Tool-process CPU medians are `0.36–2.07 ms`, maximum `15.40 ms`. These are separate
-  processes, not paired speedup estimates or GPU/FPS measurements; actual input timestamps are
-  recorded and the timers do not guarantee OS-pointer or presentation cadence. Each distribution
-  has fewer than 100 samples, so p95/p99 are intentionally absent. The final harness adds continuity
-  assertions and optional visual-only captures to the baseline trace; input geometry/cadence is unchanged.
-  A contention regression caught pending validation incorrectly clearing visible geometry; it now
-  retries while preserving the last display-only pose. All 1,566 Rust tests pass (one ignored), all
-  Criterion targets check, and five Godot suites pass. The 48-fixture matrix, three continuous-input
-  interaction fixtures, sides `0,8,32`, saved-city replay and single-worker stream also pass.
-  Software-rendered T/cross/unequal-width poses during motion and matching preview/commit captures
-  pass; visual-only captures deliberately pause for readback and are excluded from timing results.
-  Timing captures, excluded diagnostic runs and binary/frontend fingerprints live under ignored
-  `benchmark-results/junction-realtime/`. These runs did not establish recovery of the commit
-  regression; the separate `ROAD-20` follow-up is below.
-- `ROAD-22` extends the compiled scene to bends and straight continuations, including unequal
-  widths and sloped terminal reprofiles. It removes unconditional hover-ribbon construction and
-  consumes matching exact results before cheap validation. A red-before/green-after regression
-  also prevents a pending parcel check from wasting a completed display pose. Three interleaved
-  baseline/candidate release/headless pairs (A1 B1 B2 A2 A3 B3), with 100 warmups and 1,000 measured
-  calls per lane count, reduce unused-ribbon hover validation p50 from `78 → 40 µs` for two lanes
-  and `135 → 56 µs` for eight lanes. All calls validate, cost checksums match, and exported unused
-  ribbons fall from 1,000 to zero per case. This saves `38–79 µs/call`, not half of total preview time.
-  Three final 96-input motion captures show `67–90` normal-bend and `66–81` unequal-width-bend
-  updates, versus zero before; new-mesh latency medians are `18–19 ms`. Existing T/crossing update
-  counts remain within before/after variability; early higher T rates did not persist, so no stable
-  whole-preview speedup is claimed. Displayed pose age still reaches `100 ms` in a crossing run;
-  continuous updates are not a guaranteed frame-time bound. All 1,569 Rust tests pass (one ignored),
-  including cold-commit bend/continuation comparisons, plus five Godot suites, the 48-fixture matrix,
-  interaction/scaling/saved-city/single-worker replays and rendered bend/commit checks. Captures,
-  exact fingerprints and diagnostic exclusions live under ignored `benchmark-results/bend-preview/`.
-  That pass did not recover `ROAD-20`. These are CPU/headless measurements, not GPU or presentation latency.
-- `ROAD-23` removes blanket preview lift over committed coverage and closes vacated cutouts with
-  temporary ground. Nine actual-terrain rendered fixtures (T, crossing, unequal-width T, water-reset,
-  bend, unequal-width bend, continuation, adjacent T junctions and slope) reduce preview-only sky
-  pixels from `142–355` to zero; cancellation restores the exact source coverage. The slope references
-  retain six source/eight cold-commit subpixel seams: those exact reference pixels are not attributed
-  to preview or claimed fixed. Tests now use clipped CDT patches rather than a solid plane.
-  All 1,573 Rust tests pass (one ignored), plus five Godot suites, single-worker junction replay,
-  benchmark-target compilation and formatting. Three matched release/headless process pairs use
-  the identical frontend and 96-input moving traces with no competing build/test/image-analysis load.
-  Median-of-process-p50 new-mesh latency is T `35.9 → 36.5 ms`, crossing `36.7 → 36.7 ms`, unequal T
-  `35.7 → 36.0 ms`, bend `18.6 → 18.5 ms`, and unequal bend `18.4 → 19.1 ms`. Wide-bend updates are
-  `74/87/74 → 62/70/75` per 96 inputs; the added geometry has a measurable cost in two pairs.
-  T results remain noisy (one paired p50 crosses a frame boundary by `16.9 ms`); these samples do
-  not establish unchanged performance or a speedup. Maximum final displayed-pose age is `83.6 ms`.
-  Captures, exact build/input fingerprints, paired distributions and exclusions are under ignored
-  `benchmark-results/preview-seams/verification.txt`. The final release library is deployed; live
-  terrain and commit semantics remain unchanged. This is not full future excavation/grading.
-- `ROAD-20` follow-up removes redundant whole-network ghost-snap indexing from road-tool snapshot
-  publication. A current side-32 Samply capture with existing stage timers measures `31.5 ms` building
-  that index inside a `40.1 ms` T snapshot. This identifies avoidable
-  commit work, not proof that mesh-owner bookkeeping caused the historical `182 → 207 ms` delta.
-  The final implementation queries the existing immutable edge index and streams exact local guides;
-  its internal visitor uses no heap-backed traversal/candidate buffers. Equal-distance snapping uses
-  world-XZ order, and ordinary collecting graph queries retain their existing traversal order.
-  Three matched final release/headless process pairs run sides `0,8,32`, one fixture each, no extra
-  fixture warmup after grid construction, in A1 B1 B2 A2 A3 B3 order without competing build/test load.
-  At 1,984 background edges, first-road click-to-first-idle medians fall `175.3 → 152.6 ms`
-  (`9.2–19.0%` lower per pair), and T medians fall `199.2 → 140.8 ms` (`21.7–32.6%` lower).
-  T snapshot work falls `40.6 → 6.1 ms` (`84.7–86.1%` lower per pair). Unchanged-build side-32 T
-  comparisons vary up to `3.6%` for A and `13.0%` for B, below each paired T improvement.
-  Three additional pairs at sides `0,8`, with one warmup and five measured repetitions per fixture,
-  reduce 112-edge first-road medians `54.1 → 39.5 ms` and T `54.6 → 41.3 ms`; all pairs improve.
-  Empty-network first-road/T paired ranges cross zero: no empty-network speedup is claimed.
-  Preview readiness is mixed: scaling empty-network T rises `40.4 → 47.3 ms`, while
-  warmed 112-edge T falls `47.3 → 40.9 ms`. Fixed scripted inputs bypass mouse snapping; the separate
-  release cursor diagnostic measures dense queries at `98.7–98.9 µs`, versus `1.29–1.56 µs` for a
-  prebuilt reference index, at both 112 and 1,984 edges. This accepts about `0.10 ms` local cursor work
-  to eliminate whole-network edit work; it is not a query-speed or universal frame-time improvement.
-  Guide counts and pre/post graph/lane/agent/building cardinalities match in all accepted pairs.
-  All 1,575 Rust tests pass (two ignored), plus five native Godot suites, single-worker junction replay,
-  benchmark-target compilation and formatting. Exact preview geometry, terrain, commit validation and
-  visible guide generation remain intact. Final captures, unchanged-build controls, fingerprints and
-  exclusions are under ignored `benchmark-results/road-20-33koNf/verification.txt`; the final release
-  is deployed. These are descriptive CPU/headless process medians, not GPU/FPS or significance claims.
-- Criterion now distinguishes `compile_dirty_unchanged_edge` / `compile_dirty_unchanged_terrain`
-  from real `compile_dirty_lane_width_change` / `compile_dirty_changed_terrain` kernels. The grid
-  is centered inside its terrain, sample/world coordinates agree, changed samples lie inside the
-  invalidation footprint, and every compile must publish successfully. Mutation and initial cache
-  construction and input destruction are outside the compile timer; only one large prepared
-  input is retained per iteration. `cargo bench --bench surface_benchmark -- --test`
-  smoke-executes all kernels. `./run.sh --test` checks all Criterion targets for API drift and runs
-  benchmark statistics/report regressions alongside existing tests.
-- Before `ROAD-21` removed the idle gate, exact previews started after `25 ms` of pointer
-  idle instead of `100 ms`, with motion resetting the delay. A completed exact rejection still
-  replaces the earlier cheap candidate verdict, so the
-  tool turns invalid immediately rather than displaying a stale valid coarse preview. The targeted
-  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=road08` workload keeps the formerly 90-second apparent-hang
-  site pinned. The old expected rejection is stale: current geometry accepts the exact preview and
-  commits the curve, so schema 3 requires successful settlement and a degree-two junction. Two
-  clean-world replays pass. Exact validation no
-  longer invokes a cold full compile over every node copied into its bounded graph excerpt. It marks
-  only the candidate-required edges/nodes and incident topology dirty, then runs the same incremental
-  compiler used by authoritative edits; the existing required-piece checks and exact preview-to-commit
-  certificate remain unchanged. Samply attributes `18.1%` fewer preview samples to node compilation,
-  while direct compiler timing for the hardest double-T preview fell from about `41 ms` to `27 ms`.
-  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=double_t` isolates that clean-world fixture for repeated checks.
-  Exact preview topology processing also records and profiles the same bulk split-edge dirty ledger
-  consumed by simulation-thread commit finalization. The insertion-dirty-node and bulk-profile-node
-  scope builders are shared by preview and commit, keeping the work proportional to the locally
-  changed topology while preventing scope drift. On the close double-T's third commit this changes
-  exact reuse from `2/5` to `5/5` spans and from `2/4` to `4/4` nodes; direct surface compilation
-  falls from about `37.3 ms` to `0.69 ms`, and repeated end-to-end third-commit p50 falls from
-  `92.0 ms` to `83.0 ms`. The targeted regression requires complete artifact reuse across all three
-  bulk commits, and the clean 32-fixture controlled release profile passes.
-  See
-  [`reference.md`](reference.md) for artifact names, controls, and interpretation.
-- centroid ownership makes these chunks deterministic update/upload batches. A triangle may extend
-  beyond its home chunk, so this contract does not yet authorize independent chunk streaming or
-  residency; Godot derives each instance AABB from its actual vertices for normal scene culling
-- refined road-touched terrain uses fixed world-aligned bounded CDT core tiles rather than
-  connected-footprint windows whose bounds grow with the road network
-- an interior border-candidate query must reject against the immutable world snapshot without
-  acquiring the simulation-core lock; only an endpoint actually near the map border may enter the
-  authoritative node lookup
-- independent span and chunk work should use Rayon when mutation boundaries allow it
-- hot-path loops must avoid avoidable allocation
-- road materials are prewarmed when the resident road tool enters the main scene, before the first
-  committed road mesh needs them
-- shared road/site materials load only shader inputs that contribute to their output. Displacement
-  textures are not bound by these shaders. Road concrete uses geometric normals; the concrete
-  normal texture is loaded when a concrete site material actually needs it.
-- road debug output must split terrain, water, zoning, and total patch-debug timings
-- road debug output must use cached zoning statistics instead of scanning parcel payloads
-
-`AUDIT-01-G10` removes the unused displacement loads, the road-concrete shader's discarded normal
-sample and the texture loader's forwarding wrapper. Material/texture sharing and the texture assets
-remain intact. Before/after rendering produces byte-identical images for six material variants,
-three shapes (two marked road planes and a box) and two camera angles: 36 references total.
-
-Five alternating fresh-process comparisons use Godot 4.7.2, OpenGL Compatibility and Mesa 26.2.2
-llvmpipe under Xvfb, with `RAYON_NUM_THREADS=8`, `LP_NUM_THREADS=8` and CPU affinity
-`0,2,4,6,8,10,12,14`. Median road prewarm calls fall from 1.739 to 1.178 seconds. Concrete-site
-creation now loads its required normal map, so the combined road/site call time is the meaningful
-total: 1.739 to 1.439 seconds (17.3% lower). RenderingServer texture-memory deltas are constant
-within each version: 425,022,797 to 285,212,666 bytes after road prewarming, and 425,022,797 to
-374,691,150 after all six materials. That removes about 133.3 MiB at road prewarm and 48 MiB after
-the site materials are present. These are texture accounting and material-factory call timings,
-not RSS, peak memory, first-draw shader compilation or gameplay frame-rate measurements. Each
-process starts with empty factory caches; OS file caches are not flushed.
-
-The unchanged release extension is
-`2dcc2885453d135cef74f03272df8b50e437f168bd28f298f01c5a489d35ef20`.
-
-`ROAD-05` is the active refined-terrain performance contract:
-
-- each tile has stable global-grid identity and parent-patch-clipped core bounds separate from its
-  content fingerprint
-- tile inputs collect exact road/site contributors and their full required grading influence; a
-  guessed fixed-neighbor halo is not an acceptable substitute
-- the full local fingerprint covers every clipped contour and provenance record, local terrain
-  sample, grading guide/constraint, render step, core bound, and contract revision that can affect
-  output, while unrelated world geometry cannot invalidate the tile
-- an edit rebuilds `old_coverage union new_coverage` plus deterministic seam-dependency tiles, so
-  moved or removed ownership cannot leave a stale clipped hole
-- unchanged fingerprints reuse immutable compiled tile geometry and render buffers from the last
-  accepted generation; cached buffers include vertices, normals, UVs, indices, local normal-sum
-  magnitudes, and side-seam manifests, so only changed tiles enter conversion and the Rayon build
-  set
-- regular boundary-lattice samples stay local to directly adjacent seam filler; only non-lattice
-  geometry breakpoints become patch-wide filler partitions, preventing the fixed tile lattice from
-  producing a Cartesian filler-grid expansion
-- only tiles with an exact road/site contributor enter Spade; contributor-free dirty neighbors use
-  that side-manifest-aware regular filler, and each contributor's adaptive grading margin is probed
-  once then shared by coverage and guide generation; on the focused double-T workload this halves
-  the first affected patch from `16` CDT windows to `8` and lowers aggregate commit p50 by about
-  `7.8%`
-- independent contributor margin/guide jobs and independent tile clipping/sampling/fingerprint jobs
-  use ordered Rayon collection; canonical manifest aggregation stays serial, preserving exact output
-  while cutting dense double-T refined-input p50 from `10.677 ms` to `4.886 ms`; across the full
-  controlled matrix this lowers measured commit CPU samples by `16.1%` and commit wall-time sum by
-  `6.3%`, with all 32 fixtures passing
-- pre-clipped source provenance first resolves exact component edges through a deterministic sorted
-  edge index and reserves the metric `O(E * P)` overlap scan for nonexact partitions; canonical CDT
-  input skips source-vertex recovery only when every source endpoint is already present at the same
-  quantized position and height, reducing the normal path to `O((E + P) log P)`. In the controlled
-  Samply capture this removed all sampled source-split work, reduced outer road-loop clipping from
-  `567` to `386` samples (`31.9%`), canonicalization from `294` to `236` (`19.7%`), and complete
-  refined-CDT construction from `795` to `700` samples (`11.9%`), with all 32 fixtures passing
-- one refined patch is published atomically only for the exact requested generation; stale work
-  cannot publish, while the immutable last accepted generation remains the visible and reusable
-  source until a complete replacement is accepted
-- one road-surface edit stages every affected span and required node piece before changing published
-  compiler records or chunk indexes; a failed required `JunctionN` latches that invalidation
-  generation, leaves its dirty work pending, and retains the last complete surface and mesh instead
-  of repeatedly compiling or publishing a mixed old/new generation
-- replacing the runtime world publishes the new final road-surface/mesh generation before terrain
-  and water workers resume; water-only road-tool query revisions continue to use the unchanged
-  published road generation for clipping instead of forcing or waiting for an unrelated mesh rebuild
-- the current Godot contract still publishes one complete mesh per render patch, so final buffer
-  concatenation, filler, duplicate-normal reconciliation, and upload remain
-  `O(patch output vertices + indices)`; that bounded step does not re-query, re-triangulate,
-  reconvert, or rescan triangle normals and window-side vertices for reused tiles
-
-Complex `JunctionN` compilation now retains canonical contact and ownership-topology caches behind
-shallow-cloned immutable handles. An exact compile-input match during terrain-only invalidation
-keeps the final top surface and rebuilds only earthwork. An exact-XZ, height-only edit reprojects
-cached inserted contact vertices onto fresh height carriers and reuses the rail/contact topology
-when ordered node-local mouths, rail topology, and the carrier registry still match. Raw graph edge
-IDs are publication metadata rather than topology identity; projected side joins still receive the
-current generation's edge IDs. When a topology-changing edit prevents whole-rail reuse, exact
-same-material contour-pair contributors retain immutable contact results and only pairs touching a
-changed contributor rerun their overlay work. Raised-step compilation separately caches exact
-target-group unions, source/group contributions, exact source/owner-group-pair overlap,
-source/source contact points, and cross-kind contour-pair output including empty results. A fixed
-world-aligned source/target tile index and exact semantic source registry bound candidate discovery
-before cache lookup. Current-generation results are not replayed into the second pass: only newly
-introduced source contributors, pairs touching them, or changed target groups do geometry work,
-and contact-point incidence queries only the indexed local sources. Cross-kind pair fingerprints
-visit the exact owner-pair authority bucket with cached bounds instead of rescanning all constraints.
-Positional mouth or owner rebinding remains a safe cache miss rather than replaying stale output.
-
-Contact noding retains both exact pair-local candidates and final ordered-XZ output for each
-connected potential-contact component. An unchanged component replays its final keys through the
-canonical contour setter, which reprojects fresh height carriers and updates current constraints;
-any member, relevant role constraint, component merge, split, addition, or removal uses the full
-deterministic fixed-point path. Contact retention keeps exact authority buckets behind immutable
-handles, reverse-indexes source presence and owner/kind handoffs, and reuses collision-checked keep
-decisions whenever their exact relevant buckets are unchanged. One current-generation authority is
-shared by final retention and endpoint validation; building that authority after a source edit
-still traverses current source geometry once, while each decision fingerprint is proportional to
-its relevant buckets instead of all contact sources. Expensive raised-step geometry is therefore
-bounded by changed source/group contributors and source pairs touching new sources; unchanged
-noding components cost their output size, while changed components retain the existing fixed-point
-bound. Whole boolean ownership is still reused for an exact uniform canonical-mm translation across
-every paired contour and carrier height. When a topology or non-uniform-height edit requires fresh
-ownership, canonical cleanup now reuses exact contributor-local clean/union and final self-touch
-split results. Final-boundary construction reuses exact point-provenance decisions keyed by the
-locally relevant footprint point and source-local carrier geometry and heights. Once those points
-produce the same ordered owned shapes and rail constraints as the prior generation, one exact
-assembly entry replays the final footprint, region seams, boundary arrangement, and diagnostics,
-skipping footprint union, seam reconstruction, boundary-reference construction, and arrangement
-construction. Promoting that assembly also preserves only the exact seam contributor keys recorded
-while building it, so unrelated intermediate entries do not accumulate across generations.
-Region-seam extraction and noded edge-seam materialization use the same immutable
-previous-generation promotion rule: only exact contributors encountered directly or recorded as
-constituents of a reused assembly enter its replacement cache; a changed build drops entries it no
-longer encounters. Contributor caches are retained for `Terminal`, `Bend`, and
-`JunctionN`, allowing a two-road `Bend` to seed the common third-road transition; non-junction
-entries retain the contributor state without retaining complete rail and ownership payloads.
-Caches are shallow-cloned behind immutable handles. Boundary-reference construction uses the
-existing quantized point index instead of scanning every region and footprint point for every owned
-edge.
-On assembly misses, global footprint union, fixed-point convergence, arrangement validation, and
-atomic publication remain live deterministic correctness barriers. Topology-changing final
-assembly is therefore reduced by local cleanup/seam reuse but is not yet strictly proportional to
-changed regions; canonical ownership is still only partially incremental.
-
-Node export now promotes immutable semantic products from the last successful topology generation:
-final explicit-step topology, candidate height conflicts per stable exact-XZ vertex cohort, raw
-top-boundary contributions per region geometry, and raised-step spans plus unoriented face
-geometry per exact step/support fingerprint. Current-generation explicit-step authorization,
-global multi-XZ conflict aggregation, owner-wide top-edge cancellation, face deduplication,
-orientation, and sorting remain live. Positional explicit-step and grade-authority indices are
-bound only against the current generation, and a replacement export cache publishes atomically
-with the rest of the successful node topology. The discarded arrangement-derived raised-step face
-pass is test-only; production builds directly from final top support. Export diagnostics split
-final explicit-step topology time from height-split validation and report product-specific reuse.
-Final-step misses use compact edge keys, edge-relevant authority fingerprints, and the shared
-world-aligned segment-tile index, so changed work compares only changed edges with spatially
-overlapping compatible boundary candidates; negative and duplicate global pair keys are not
-materialized.
-Matching preview/commit junctions now also retain the final attached arrangement. Reuse first
-rebuilds the bounded base rails and checks the complete node-local rail key and source-carrier
-registry; boolean ownership is reusable only under an exact uniform canonical-mm translation, and
-the attached arrangement is reusable only when every carrier height has identical floating-point
-bits. This skips repeat height-field construction, arrangement noding/conflict validation,
-triangulation, triangulation validation, and face attachment without making raw graph IDs semantic.
-Complete cached top-face, boundary, and assembled node-export buffers remain later work.
-
-A remote crossing may replace one half-edge incident to an older junction while creating another
-junction elsewhere on that road. Both nodes belong to the same required publication generation.
-Boolean vertices inside the numeric-dust envelope may select an exact generated side-join over
-dust-near mouth carriers only when that unique side-join contour owns the point and every
-alternative is a declared same-source mouth carrier; raised-step authority may transfer across
-paired same-material owners only when an exact same-height, same-source-band bridge region covers
-the whole edge; and longitudinal curb/sidewalk seam endpoint drift is accepted only inside the
-deterministic overlay-dust envelope.
-
-Interactive `RoadEditPlan` previews perform final local `JunctionN` compilation on the preview
-worker; ready adoption consumes those products. The compiler itself remains synchronous, so
-missing/stale click plans and cold subsystem callers can still block while rebuilding a large
-multi-mouth node. Further responsiveness work must retain immutable versioned inputs,
-deterministic latest-result publication and the last complete visible generation. More incremental
-`JunctionN` compilation or stronger contact/export indexing remains separate from plan readiness.
-
-Do not reopen shipped `ROAD-01` geometry hardcuts for editor responsiveness unless the fix changes
-the roadbed ownership contract itself.
-
-### Retained road-surface memory (`ROAD-44`)
-
-Done 2026-10-04, found 2026-10-02 while building the `ECON-13` benchmark cities. Compiled road
-surfaces kept their visual products and junction topology caches for every road in the city, with
-no bound. They were most of the simulation's memory. Node topologies are now bounded and span
-products are rebuilt from their sections (below); node pieces and span earthwork still keep full
-geometry.
-
-Measurement: the 10k-resident `PopulatedCity` layout (`economy.md`, `ECON-13`): 94.5 km of road,
-446 spans, 247 nodes, 7,428 buildings, fully zoned and built. A temporary probe test, since
-removed, dropped each structure in turn between unique-size marker allocations under glibc
-`memusage` (`--no-timer`, `RAYON_NUM_THREADS=1`, release). The released bytes were read from the
-trace, the same marker method as `benchmarks/zoning_memory.py`. Live heap after the build was
-1.34 GB, with a peak of 1.41 GB.
-
-| Structure | Released heap | Per item |
-| --- | ---: | ---: |
-| `RoadSurfaceSystem::compiled_visual_node_topologies` | 961.7 MB | 3.9 MB per node |
-| `RoadSurfaceSystem::compiled_visual_span_pieces` | 255.1 MB | 570 KB per span |
-| `RoadSurfaceSystem::compiled_visual_node_pieces` | 81.9 MB | 330 KB per node |
-| `compiled_sections`, node inputs, earthwork boundaries, chunk caches and indices, rest of `RoadSurfaceSystem` | 16.4 MB | |
-| `LaneSystem` | 11.1 MB | |
-| `BuildingAllocator`, `ZoningSystem`, `RegionGraph`, CCH and the rest of `SimCore` | 14.1 MB | |
-
-Each `NodeCanonicalTopologyCache` holds the node's rail topology, boolean ownership,
-arrangement, explicit vertical steps, and the ownership and export incremental caches. It is kept
-so that a later edit next to that node can reuse it (see the retained `JunctionN` caches under
-[Performance Contract](#performance-contract)). `into_for_committed_node` already drops the
-ownership, arrangement and step parts for nodes that are not `JunctionN`, but the incremental
-caches stay. Every node pays this cost, including the large majority that are never edited
-again.
-
-Scale: the 1M-resident layout has about 21,000 nodes and 42,000 spans. At the measured sizes that
-is about 90 GB of node topologies and pieces, plus about 24 GB of span pieces. That is beyond a
-64 GB machine before any other state, and a real city with similar road length would hit the
-same limit.
-
-Node topologies, fixed 2026-10-02. A topology only speeds up a later compile of its node; a
-compile without one publishes identical products, which the existing cold-versus-seeded preview
-tests already require. The committed surface now keeps the topologies of the 64 most recently
-compiled nodes (`RETAINED_NODE_TOPOLOGY_LIMIT`), evicting the least recent. A committed compile of
-more than 64 nodes, such as a bulk load or a game load, drops each topology as soon as its node is
-compiled, so it never holds one per node even briefly. Preview validation surfaces still keep
-every topology of their bounded excerpt, because they hand them to the matching commit. Preview
-reuse candidates carry the topology as optional, so an unchanged neighbour with an evicted
-topology is still replayed exactly instead of recompiled. Evicted cost is edit latency only: the
-first preview next to a cold junction compiles it from scratch on the preview worker (about
-30–38 ms for a four-way `JunctionN`, see above), and the commit then replays the preview's
-products. Measured on the 10k street grid (below), an evicted neighbourhood adds 1–2 ms to the
-first preview, so junctions near the cursor are not prewarmed.
-
-Test: `committed_node_topologies_stay_bounded_and_evicted_nodes_compile_cold_products` in
-`surface/tests/junction/dirty_recompile.rs` builds an 81-node grid (no topology retained), extends
-a corner next to evicted nodes, checks the edit retained the corner's topology, compares span and
-node pieces with a cold full compile, and checks recency eviction at the limit.
-
-Derived span and node products, 2026-10-03. A span region is the strip of one band between two
-consecutive sections, so its top polygon is a pure function of those sections. Span pieces now
-keep an `Arc` of the sections they were compiled from (shared with `compiled_sections`) and
-compact descriptors; everything else that was a copy is rebuilt on read, on the stack:
-
-- Region polygons and corners: `SpanQuad` (`surface/span/quads.rs`) rebuilds a region's quad from
-  its two sections without allocating, mirroring `make_visual_strip_polygon` for four corners.
-- Asphalt, curb and sidewalk lists were copies of region polygons; they are now render-order
-  indices into the regions (`road_surface_polygons()` and siblings).
-- The span query index stored a copy of every top triangle; `SurfaceTriangleGrid` keeps the same
-  bounded grid of packed `region << 1 | triangle` ids, and sampling rebuilds candidates.
-- Raised-step faces and their sources are rebuilt from `(start_section_index, boundary_index)`
-  through the same constraint code the compile uses.
-- Earthwork surface polygons were clones of render-face polygons, in spans and nodes; pieces keep
-  a sort order over the render faces instead.
-- Node asphalt, curb and sidewalk lists were copies of owned-region polygons; they are now
-  render-order indices into `owned_regions`.
-- Published node pieces drop compile provenance: `node_grade_authorities` and the per-vertex
-  arrays of `node_top_surface_sources`. Only each region's height field stays, which earthwork
-  owner sources are rebuilt from on replay and earthwork refresh. The surface keeps provenance
-  while the `road` debug category is enabled (and in test builds), so road debug dumps still
-  carry it. A surface that does not keep it strips each node right after it compiles, so a bulk
-  compile never holds provenance for every node. `published_node_pieces_without_provenance_match_retained_products`
-  (`surface/tests/junction/dirty_recompile.rs`) compiles a junction both ways, then a
-  terrain-dirty refresh, and checks the published pieces equal the retained ones with provenance
-  removed.
-
-Products are unchanged. `derived_surface_products_match_stored_forms` (`surface/tests/span.rs`)
-checks `SpanQuad` against `make_visual_strip_polygon` and `make_vertical_quad_polygon` on 20,000+
-synthetic corner sets (collapsed tapers, dust duplicates on both sides of the dedup distance,
-closing duplicates, crossings, random quads) and on every region of a sloped double-T network,
-compares packed-grid sampling with a triangle index over the same polygons at 10,000+ points in
-each mode, and compares node band lists with the old partition of owned regions. Order-sensitive
-consumers read the same sequences as before. Reads that scan many quads (agriculture clearance)
-reject on the raw corners first, with a 1 m margin over the f32 bounds the exact test uses.
-
-Retained heap of the 10k road layout (same probe method as above, single thread):
-
-| Stage | Retained heap |
-| --- | ---: |
-| Before `ROAD-44` | 1,340 MB |
-| Node topologies capped | about 379 MB |
-| Span regions and band lists derived | 265 MB |
-| Span query grid of packed ids | 226 MB |
-| Raised-step faces derived | 198 MB |
-| Earthwork surface polygons as order | 180 MB |
-| Node band lists as order | 168 MB |
-| Node compile provenance dropped | about 145 MB |
-| Retained lists shrunk to size at publication | about 141 MB |
-
-`ECON-13` benchmark (`cargo bench --bench economy_tick_benchmark -- operational_hour/100k`;
-since 2026-10-15 the 100k tier also needs `ECONOMY_TICK_TIERS=100k`),
-peak RSS sampled with `ps`, release bench profile, default workers, nothing else running. City
-records were identical in every run:
-
-| City | Before | Topologies capped | Now (2026-10-03) |
-| --- | ---: | ---: | ---: |
-| 10k residents (94.5 km of road), build time | 17.4 s | 17.6 s | 17.8 s |
-| 100k residents, peak RSS | 14,806 MB | 5,421 MB | 2,028 MB |
-| 100k residents, build time | 518 s | 518 s | 493 s |
-
-At 100k, in-use heap after the build is about 2.1 GB against 2.3 GB RSS (glibc `mallinfo2`,
-all arenas), so the peak is retained data, not allocator overhead. Of it, the road layout alone
-(roads, buildings and zoning, no households) is about 1.6 GB and scales linearly from 10k.
-Scaling 100k linearly puts the 1M city at about 20 GB peak. What remains at 10k, largest first:
-span render earthwork faces (25 MB; non-convex faces use a constrained triangulation, so they
-cannot be rebuilt like span quads), span terrain-clip loops (14 MB), span region descriptors
-(13.5 MB), node owned regions (11.4 MB), `LaneSystem` (11 MB), the node triangle query index
-(9 MB), node top-source records without their arrays (7.5 MB) and sections (7 MB). The largest
-are tracked as `ROAD-45`–`ROAD-49` (below).
-
-Exit checks:
-
-- **1M build, measured 2026-10-04.** The 1M `PopulatedCity` builds in 2,353 s with 16.5 GB peak
-  RSS, 11.5 GB after the build: 1,104,604 residents, 553,789 households, 742,165 buildings. The
-  first attempt stopped at row z = 600 and found `ROAD-51`. A temporary build-only probe, since
-  removed, ran `PopulatedCity::build_timed(1_000_000)` and read `VmHWM` from `/proc/self/status`;
-  an outside sampler logged RSS every 10 s. Release, `a4635166`, 24 logical CPUs, default Rayon
-  workers, single run; phase times are in `economy.md` (`ECON-13`).
-
-  Before the run, `ROAD-45`–`ROAD-49` had brought the 100k build to 1.9 GB peak RSS
-  (10k: 434 MB), projecting about 20 GB at 1M. Time was the blocker, not memory. Phase timers
-  on the 10k, 30k and 100k builds show building spawns (1.7 s → 175 s, `ALLOC-02`, since fixed) and household
-  admission (1.5 s → about 132 s, `ALLOC-03`, since fixed) growing quadratically, and the 48 warm-up hours
-  (1.7 s → 90 s) following the near-quadratic hourly tick (`ECON-15`). The 1M build projected to
-  10+ hours, so it waited for those three. All were done 2026-10-03, with `ALLOC-04`; the 100k
-  build fell from 505 s to 177 s and the 100k hour from 1.47 s to 29 ms. See
-  [`building_allocator.md`](building_allocator.md#city-scale-spawn-and-admission-cost-alloc-02-alloc-03)
-  and `economy.md`.
-- **Cold-node edit latency, measured 2026-10-03.** The ignored test `cold_node_edit_latency`
-  (`nodes/sim/core/tests/cold_node_edit_latency.rs`) builds the street grid of the 10k
-  `PopulatedCity` (`street_grid`, unzoned). The full city's zoning covers the first 24 m past
-  every street end, so these extensions would need a bulldoze first. It finalizes the network as
-  the simulation thread does after a load or an undo, then previews and commits three edits on
-  the east edge: a row-end T becoming a four-way, the corner bend becoming a T, and a new T 25 m
-  from two T junctions. Each runs 15 times with the nearby topologies evicted and 15 times with
-  them retained (the pre-`ROAD-44` state), alternating, undone between runs. The committed local
-  products are identical in every run. The first run found `ROAD-50` (commits next to long spans
-  were rejected), fixed above.
-
-  `cargo test --release --lib cold_node_edit_latency -- --ignored --nocapture --test-threads=1`,
-  24 Rayon workers, nothing else running, p50 of 15 runs each:
-
-  | Edit | Preview, evicted / retained | Commit surface compile, evicted / retained | Whole commit, evicted / retained |
-  | --- | ---: | ---: | ---: |
-  | T → four-way | 36.2 / 34.4 ms | 27.1 / 26.5 ms | 519 / 522 ms |
-  | Bend → T | 22.3 / 21.3 ms | 18.6 / 18.4 ms | 480 / 481 ms |
-  | New T between two Ts | 31.4 / 29.2 ms | 26.8 / 28.1 ms | 523 / 521 ms |
-
-  An evicted neighbourhood adds 1–2 ms to the first preview and nothing measurable to the
-  commit, which replays the preview's products. Prewarming junctions near the cursor is not
-  needed.
-
-Exit: retained road-surface memory stays bounded per node and per span. Candidates include
-keeping only what a local edit needs and rebuilding the rest on demand, or evicting caches for
-nodes away from recent edits; the choice is open. Committed and preview products stay
-identical. Edit latency next to a cold node is measured against today's reuse path, and the 1M
-`PopulatedCity` builds within 64 GB.
-
-### Remaining retained road memory (`ROAD-45`–`ROAD-49`)
-
-Done; split from `ROAD-44` on 2026-10-03. Sizes are retained heap of the 100k `ECON-13` road
-layout (roads, buildings and zoning, no households; about 1.6 GB in all), measured with the
-`ROAD-44` probe as glibc `mallinfo2` deltas while dropping each structure. Each item must keep
-committed and preview products identical and must not slow the 10k or 100k benchmark build.
-
-- **`ROAD-45` Triangle storage as indices (done 2026-10-03).** `RoadSurfaceVisualPolygon` stored
-  every triangle as three f64 points (72 B), copies of points the polygon already holds. It now
-  keeps a private `PolygonTriangulation` chosen at construction: a fan marker when the triangles
-  are exactly the fan `(0, i, i + 1)` over every point, otherwise `u16` index triples into the
-  points, and explicit triangles only when a vertex is not one of the points bit for bit (or the
-  points overflow `u16`). The triangulators return index triples, so building a polygon does not
-  search for its vertices. Readers use `triangles()` and `triangle_count()`, which rebuild each
-  triangle from the points without allocating. Equality compares the triangles, not the form, so
-  two equal polygons stored differently still compare equal. Single-triangle owned regions are
-  always fans. In the 10k layout no triangle vertex is outside its polygon's points, and what the
-  span earthwork faces still retain is exactly their records and points (53,866 faces × 336 B =
-  18.1 MB), so none of them keeps per-triangle storage.
-
-  Products are unchanged: `visual_polygon_triangles_round_trip_through_every_storage_form`
-  (`surface/tests/preview.rs`) checks every form bit for bit, including a sign-only difference
-  that must stay explicit, and the existing preview-versus-commit tests compare polygons through
-  the same equality. Retained heap, same temporary probe (`mallinfo2` deltas, release, default
-  workers, run against `HEAD` and the change on the same machine):
-
-  | Structure, 100k road layout | Before | After |
-  | --- | ---: | ---: |
-  | Span render earthwork faces | 263.0 MB | 178.3 MB |
-  | Node owned regions | 125.9 MB | 80.7 MB |
-  | Node render earthwork faces | 55.1 MB | 37.1 MB |
-  | Node raised-step faces | 26.8 MB | 13.5 MB |
-  | Whole road layout | 1,744 MB | 1,585 MB |
-
-  The 10k layout fell from 184.2 MB to 168.2 MB. `ECON-13` 10k benchmark build, matched
-  alternating runs: 17.9 s and 17.7 s before, 17.8 s and 17.7 s after, with identical city
-  records. Each span earthwork face still keeps its record (224 B, 120 B of it the face source)
-  and four points; those are not triangle storage and are not part of `ROAD-45`.
-- **`ROAD-46` Span terrain-clip loops (done 2026-10-03).** Each span kept its terrain-clip loops
-  as points plus one 176 B source edge per point: two copied endpoints, the edge kind and a full
-  `SpanSupportBoundary` source, almost all of it derivable from the span. Spans now keep
-  `SpanTerrainClipLoop` (`surface/span/clip_loops.rs`): the loop points and, per edge, a 16 B key
-  of two endpoint indices, band index, band kind and section pair. The edge id, class, support
-  policy, role, stations and edge kind are rebuilt from the piece and its sections. Endpoints
-  that are not loop points bit for bit are kept in a short per-loop extra list; these are the
-  curb-step corners of handoff edges, which the loop polygon merges. Compile keeps the keyed
-  form only when every edge rebuilds bit for bit, otherwise the loop keeps explicit edges.
-  Keyed edges take the edge id from the piece, so remapping an edge id no longer rewrites them.
-  Readers rebuild only the loops that overlap their query. Terrain grading checks its cache
-  against the stored points and rebuilds a loop only when it must grade it.
-
-  Rebuilding loops from regions on every read was tried first and rejected. It saved all
-  138 MB, but every read reran the boundary build, about 36 µs per loop. The 10k patch clip
-  queries went from 101 to 193 ms and grading from 1.6 to 62 ms.
-
-  Products are unchanged. `span_clip_loops_rebuild_every_storage_form_bit_for_bit`
-  (`surface/span/clip_loops.rs`) covers the keyed, extra-point and explicit forms and edge-id
-  remapping. `compiled_span_clip_loops_store_keyed_edges_and_remap_sources`
-  (`surface/tests/terrain_clip/loops.rs`) compiles a curved hillside road and a bridge with
-  grounded abutments, checks every loop is keyed, and checks that both remap paths rebuild
-  remapped sources. A temporary probe hashed every span loop, every terrain patch's CDT road
-  loops (patch bounds plus query margin) and the grading margins of every patch. The hashes
-  were identical to `HEAD` at 10k and 100k. Matched release runs, same machine, default workers:
-
-  | Layout | Before | After |
-  | --- | ---: | ---: |
-  | 10k road layout, retained heap | 168.0 MB | 157.3 MB |
-  | 100k road layout, retained heap | 1,584.6 MB | 1,478.3 MB |
-  | 10k patch clip queries, 36 patches | 101–103 ms | 103 ms |
-  | 100k patch clip queries, 225 patches | 1,032 ms | 1,050 ms |
-  | 100k grading margins, 183 patches, warm cache | 24.7 ms | 26.6 ms |
-
-  At 100k the span loops hold 17,798 loops and 679,818 points. They now retain about 32 MB
-  instead of 138 MB, mostly the points themselves. `ECON-13` 10k benchmark build, alternating
-  runs: 17.7 s and 17.4 s before, 17.3 s and 16.8 s after, with identical city records.
-- **`ROAD-47` Span region records (done 2026-10-03).** `RoadSurfaceSpanOwnedRegion` was 56 B: an
-  edge id, band owner, role, two section indices and two stations. The edge id was the
-  sections', the end section always start + 1, and the stations the sections'. Regions are only
-  resolved between sections whose band kinds match, so the role follows from the kind. A record
-  is now 8 B: `u32` start section, `u16` band index and band kind. The edge id, end section,
-  stations and role are read from the piece's sections, and support and handoff sources are
-  built from them. Remapping an edge id no longer copies or rewrites region lists; remapped
-  pieces share them. The sort keys that followed from the start section are dropped, so the
-  order is unchanged.
-
-  Products are unchanged. `compiled_span_regions_derive_sources_from_sections`
-  (`surface/tests/terrain_clip/loops.rs`) checks the 8 B size, the derived source fields
-  against the sections for visible and bridge support regions, and that both remap paths share
-  the region lists and rebuild remapped sources. A temporary probe hashed, per span, every
-  region's expanded fields (edge id, owner, role, sections, station bits), the top quads,
-  surface-query triangles, raised steps, outer and earthwork boundary loops and earthwork faces
-  with their sources, plus the `ROAD-46` span-loop, patch CDT loop and grading hashes. All were
-  identical to `HEAD` at 10k and 100k. Matched release runs, same machine, default workers:
-
-  | Layout | Before | After |
-  | --- | ---: | ---: |
-  | 10k road layout, retained heap | 157.3, 157.1 MB | 145.8, 145.8 MB |
-  | 100k road layout, retained heap | 1,477.8 MB | 1,362.4 MB |
-  | 100k span pieces | 411.5 MB | 295.7 MB |
-  | 100k patch clip queries, 225 patches, warm rounds | 1,048–1,049 ms | 1,060–1,062 ms |
-  | 100k grading margins, 183 patches, warm cache | 27.9 ms | 27.7 ms |
-
-  The 100k layout holds 1,398,726 visible regions and as many support regions; standard spans
-  with equal ranges share one list. Regions now retain about 20 MB instead of 135 MB. `ECON-13` 10k
-  benchmark build, alternating runs: 15.4 s and 15.4 s before, 16.0 s and 15.2 s after, with
-  identical city records.
-- **`ROAD-48` Lane data (done 2026-10-03).** Measured first with the same probe, dropping each
-  part. At 100k, `LaneSystem` held 183,687 lanes in 160 B records: 41.9 MB, because the vector's
-  capacity is 262,144. Their 3.33M points took 44.0 MB of geometry and 16.2 MB of cumulative
-  distances. Successor lists took 6.9 MB and the edge and node id lists 2.9 MB. Most lanes are
-  pedestrian junction connectors: 133,272 lanes holding 1.84M points. Each incoming sidewalk
-  mouth gets one stored route to every reachable outgoing mouth, built from the node's crosswalk
-  and corner steps. Vehicle connectors add 24,771 lanes, and road lanes 25,644. The excess:
-
-  - `crosswalk_edge_id` and `crosswalk_marking` took 56 B in every record. They are set only on
-    connectors that are a single crosswalk, and only the crosswalk renderers and the crosswalk
-    query read them. They now live in a private `LaneSystem` table keyed by lane id, read
-    through `crosswalk` and `crosswalk_marking`.
-  - Every connector has exactly one successor, and each one sat in its own 32 B heap chunk.
-    `next_lanes` is now `LaneSuccessors` (`lanes/successors.rs`, 16 B). It keeps one id inline
-    and stores longer lists as exact-length boxed slices, and reads go through `[usize]`.
-  - Edge and node id lists keep only their ids after build, and edge-lane successor lists are
-    exact.
-  - Tombstoned connectors left by incremental rebuilds kept their geometry, distance and
-    successor buffers. They now free them and drop their crossings. Lane ids are never reused,
-    so the tombstone records stay.
-
-  A record is now 96 B. What remains is product data or growth:
-
-  - Points and cumulative distances are what agent movement reads, the distances for its binary
-    search.
-  - Pedestrian routes hold 1.84M points, about 29 MB at 100k with their distances. Each route
-    copies the steps it is built from. Sharing the steps would change how movement reads lanes,
-    so it is not part of `ROAD-48`.
-  - Of the 25.2 MB of records, 7.5 MB is spare capacity from vector doubling. Shrinking after a
-    full rebuild would be undone by the next edit. Reserving exactly would copy every record on
-    every edit.
-  - Physical lanes retired by incremental rebuilds still keep their buffers. Nobody has checked
-    whether anything reads them after agents are reattached, so they were left as they are.
-
-  Products are unchanged. A temporary probe hashed every lane's fields bit for bit: edge,
-  direction, index, points, length, frontage penalty, distances, type, crossing edge and
-  marking, successors and node. It also hashed the edge and node id lists. The hashes were
-  identical to `HEAD` at 10k (18,255 lanes) and 100k (183,687 lanes).
-  `successors_keep_one_id_inline_and_longer_lists_exact` covers the successor forms, and
-  `incremental_rebuild_repairs_connectors_at_expanded_edge_far_end` checks that tombstoned
-  connectors free their buffers and crossings. The crosswalk tests read the table.
-
-  Matched release runs, same machine, default workers:
-
-  | Measure | Before | After |
-  | --- | ---: | ---: |
-  | 10k road layout, retained heap | 145.6–145.7 MB | 143.2 MB |
-  | 100k road layout, retained heap | 1,362.1–1,362.5 MB | 1,341.4, 1,341.5 MB |
-  | 100k `LaneSystem` | 111.9 MB | 91.0 MB |
-  | 100k lane records | 41.9 MB | 25.2 MB |
-  | 100k successor lists | 6.9 MB | 1.6 MB |
-  | 100k full lane rebuild, warm | 63.6–65.2 ms | 62.1–66.0 ms |
-  | `AgentSystem::tick/on_road`, 100k agents | 4.77, 4.72 ms | 4.68, 4.35 ms |
-  | `AgentSystem::tick/on_road`, 1M agents | 22.37, 22.26 ms | 22.30, 22.53 ms |
-
-  The 91.0 MB includes the crossing table, 1.9 MB at 100k. `ECON-13` 10k benchmark build, five
-  alternating pairs, three of them with the change run first: 16.8–17.1 s before (mean 16.9 s)
-  and 16.5–17.9 s after (mean 17.2 s), with identical city records. The lane rebuild inside the
-  build is unchanged (5.6–6.1 ms at 10k), so the gap is within the spread of the runs.
-
-  A first version also shrank each pedestrian route's geometry to fit and grew successor lists
-  with two reallocations per push. The 100k lane rebuild took 73 ms instead of 65 ms. The
-  shrinking saved only 0.4 MB, because most routes had less spare room than glibc can split off.
-  Both were replaced.
-- **`ROAD-49` Node triangle query index (done 2026-10-03).** Each node piece copied every top
-  triangle, with a carriageway flag (80 B), into its own `RoadSurfaceTriangleQueryIndex`, although
-  its owned regions already hold those triangles. Node pieces now keep only a
-  `SurfaceTriangleGrid` whose items are `region_index << bits | triangle_index` into
-  `owned_regions`. `bits` is the fewest that index the region with the most triangles. It is zero
-  in both layouts, because every compiled node top region is a single triangle (556,054 at 100k).
-  Sampling rebuilds each candidate from its region on the stack, through the same
-  `sample_grid_height` that spans and terrain tiles use. The carriageway flag is the region's band
-  kind, the same rule that splits regions into material lists. Terrain tiles are now the only
-  users of `RoadSurfaceTriangleQueryIndex`, which keeps bare triangles (72 B instead of 80 B).
-
-  With the shared 4 m cells, the first version halved node sampling speed. Each candidate now
-  costs two dependent loads, the region and then its points, instead of one contiguous read, and
-  a sample checked about 18 candidates. The 100k probe pass took 2,165 ms instead of 1,106 ms, and
-  the full lane height sync took 14 % longer. Node grids therefore use 1 m cells, with at most
-  four cells per triangle (256 minimum), which leaves about 5 candidates per sample. In the 10k
-  sweep, 0.5 m cells were faster still but kept 5.6 of the 8.7 MB. Two cells per triangle was 3 %
-  slower than `HEAD`.
-
-  Sampling is unchanged. A temporary probe sampled every node piece on a 0.5 m lattice over its
-  bounds plus 0.5 m, through the lane owner query (all owners and carriageway only) and
-  `sample_visible_surface_height`, and hashed the bits. The hash matched `HEAD` at 10k (415,678
-  points) and 100k (3,959,692 points). `derived_surface_products_match_stored_forms` now checks span
-  and node sampling against a scan of every top triangle.
-  `node_surface_query_resolves_every_triangle_of_multi_triangle_regions` covers regions with
-  several triangles, which compiled layouts do not produce.
-
-  Matched alternating release runs, same machine, default workers. Each timing row is one probe
-  pass; the lane sync re-drapes every lane in place:
-
-  | Measure | Before | After |
-  | --- | ---: | ---: |
-  | 10k node triangle queries | 8.7 MB | 2.3 MB |
-  | 100k node triangle queries | 89.4 MB | 22.6 MB |
-  | 100k road layout, retained heap | 1,341.3–1,341.4 MB | 1,274.4, 1,274.5 MB |
-  | 100k node sampling, 0.25 m lattice | 1,106–1,108 ms | 1,060–1,069 ms |
-  | 100k full lane height sync | 1,509–1,514 ms | 1,473–1,484 ms |
-  | 10k node sampling | 111.6–111.7 ms | 107.7–108.3 ms |
-  | 10k full lane height sync | 151.8–152.6 ms | 148.2–149.3 ms |
-
-  `ECON-13` 10k benchmark build, four alternating pairs, two of them with the change run first:
-  17.1–17.6 s before (mean 17.4 s) and 16.2–17.2 s after (mean 16.7 s). City records were
-  identical in every run.
-
-### Street grid build scaling (`ROAD-52`)
-
-Done 2026-10-04. The `ROAD-44` 1M build spent 1,032 s on the `ECON-13` street grid, against
-711 s projected from 300k. The growth exponent rose with size: 1.2 from 30k to 100k, 1.3 from
-100k to 300k, 1.65 from 300k to 1M. A temporary probe timed every road add, and frame-pointer
-profiles of the 30k and 300k grids found three costs:
-
-- **Long remainders.** Cross streets were added whole, then every row split each one. The split
-  leaves the remaining run north of the row as one edge, up to the city side long, and the
-  commit validator recompiles that span. Total span work grew with rows × crosses × side: span
-  compile was 15 % of the 30k grid and 37 % of the 300k grid. `PopulatedCity` now adds cross
-  streets one block at a time, so a row meets existing junctions and recompiles only 50 m spans.
-  The topology and junction clips are the same. Knot spacing along cross streets changes, from
-  5.99 m with knots as close as 1.8 m to a junction to an even 5.56 m per block, so the city
-  changes: 10k buildings 7,428 → 7,396, households 5,617 → 5,597.
-- **Bulk lot marking.** A bulk load keeps every edge it has dirtied until `finalize_bulk_load`, and
-  each unplanned `add_road_internal` passed that whole set to `mark_cell_lots_for_roads`. Each
-  add then cost time in proportion to the load so far: block-by-block 50 m adds took 4.4 ms at
-  30k and 11.6 ms at 300k. The add now marks only its own edges and merges them back into the
-  set. Alignment refresh already widens to edges at the touched nodes, as in-game commits do.
-  Records are identical.
-- **Self-crossing test.** `polygon_has_strict_edge_crossing_xz` tested all segment pairs; span
-  earthwork outlines have points in proportion to their length. Loops over 64 points now sort
-  segments along the loop's longer axis and test only pairs whose bounds overlap. A strict
-  crossing needs both endpoints on opposite sides by a margin far above f64 rounding, so crossing
-  segments always share bounds and the answer is the same.
-  `swept_strict_crossing_matches_all_pairs_on_long_loops` compares both on long outlines, random
-  loops and stars. Records are identical.
-
-Street grid phase of `populated_city_scaling`, release, single runs, default Rayon workers. Before
-is `a4635166` through the probe; after is the 30k–300k scaling run:
-
-| Tier | Before | After |
-| --- | ---: | ---: |
-| 30k | 7.9 s | 6.6 s |
-| 100k | 32.9 s | 22.6 s |
-| 300k | 142 s | 66.5 s |
-| 1M | 1,032 s measured | about 220 s projected (exponent 0.98) |
-
-Splitting a long road still recompiles its whole remaining span: an edit's cost follows the length
-of the edges it splits, not only the neighbourhood around the split.
-
-## Kuopio Terrain Regression Replay (`ROAD-24`)
-
-Current status: the planning/adoption contract and captured geometry/performance acceptance are
-complete. See [coverage and saved-reference completion](#coverage-and-saved-reference-completion)
-and [controlled performance acceptance](#controlled-performance-acceptance) for the latest evidence.
-The historical milestone results below are retained for comparison, not as pending work or current
-failure counts. The capture is a regression fixture, not proof for all possible road geometry.
-
-`benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` is the immutable, version-59
-user capture with 70 saved road edges (about 27 MB). `placements.json` reconstructs 37 logged
-two-point placement attempts as 12 connected-site sequences plus a separate rejected-attempt
-case. The importer verifies the final accepted physical polylines against the save and every
-source-terrain sample against `godot/bootstrap/worlds/kuopio_324km2_10m.sqlite`. The processed
-Kuopio database is a different file and is not substituted. Runtime checks pin both asset hashes.
-
-```bash
-./run.sh --replay-road-terrain-headless
-./run.sh --replay-road-terrain
-# Select one location, including its preceding road edits:
-METRUM_GAMEPLAY_TERRAIN_CASE=kuopio_04 ./run.sh --replay-road-terrain
-```
-
-These commands select the existing gameplay harness's `terrain` matrix. One invocation runs
-each selected case once; use independent invocations for repeatability. Each case reloads clean
-source terrain, retains its ordered road edits, and drives production RoadTool preview/commit
-with the existing generation/render/guide settlement fences. Inputs use recovered post-snap
-XZ endpoints and recorded lane counts; heights are resampled from current source/visible
-surfaces, never copied from the broken committed profiles. This is **location reconstruction,
-not an exact mouse/control-point/Shift-key replay**. Unsupported or incomplete log imports fail;
-failing locations are neither relocated nor prefiltered. A failed step stops dependent steps,
-but independent cases continue. Rolled-back staged geometry never seeds subsequent inputs.
-
-The diagnostic helper exports prepared preview profiles and Rust-produced physical road/source
-height pairs after each step, records expected edge counts, and writes checkpointed metrics.
-The windowed path also captures paired `before`, `preview`, and `committed`/`failed` screenshots
-using the actual gameplay viewport. Outputs stay under ignored `benchmark-results/`: metrics,
-`.terrain-audit.json`, and a `*.metrics-artifacts/` image directory. Source saves are never written.
-The profile export is O(edge slots + profile points), parallel across edges with Rayon, and
-runs only at diagnostic boundaries, not in production per-frame paths.
-
-The Python audit explicitly checks severe profile budgets: grade ratio 1.0 (45 degrees),
-absolute source offset 5 m, and adjacent longitudinal pitch change 30 degrees. These are
-fixture acceptance budgets, **not new gameplay grade limits or a complete road design spec**.
-It reports offending positions, source grades, cut/fill, and pitch changes; nonfinite/vertical
-profiles, incomplete cases, and failed placement/render work fail the run. Exit 2 indicates a
-completed diagnostic with failed audit checks. Frozen reference-save profiles are reported
-separately, not treated as desired heights or required to change before repaired replays pass.
-The Python audit alone does not prove surface coverage. The Rust replay also exercises actual
-atomic adoption, exact retained/cold patch agreement, zero omitted terrain faces, strict tile
-containment, matching shared-side heights and retained road constraints. The saved reference's
-27 terrain patches are compiled as well. Screenshots still require visual review; settlement
-alone is not a universal watertightness proof.
-
-### Current replay and plan contract
-
-`RoadEditPlan` replaces the preview validation certificate with an immutable,
-shared prepared input: authored points, source/surface revisions, lane counts, snap mode, road
-class, prepared longitudinal profile, validation result and terminal-extension changes. Exact
-matching costs O(raw points) and lets commit borrow the worker's solve instead of preparing it
-again. It retains the already finalized validation graph as a bounded delta, copying
-changed profiles only. Explicit local-to-live maps preserve the planned split order and final
-topology; split-dependent building/occupancy migration uses the existing journal with captured
-pre-finalization split lengths. Live congestion, speed and frontage metadata survive adoption;
-changed speed costs are recalculated without altering profiles. Merge survivors clear obsolete
-turn restrictions. Solved junctions and moved/merged source nodes require complete live incidence
-in the excerpt, even when the source node's position is unchanged.
-
-Capture is O(local records + profile points). Adoption is O(local profile points + summed local
-degree * log(degree) + changed edges * log(resident edges)), plus existing split-dependent
-migration costs. There is no new city-wide scan or clone. The bounded source scope feeds the
-existing undo checkpoint. Live water/parcel checks, exact road-product matching and terrain adoption,
-rollback, lane/agent updates, routing, building references and charging still run in their existing
-order. Optional compiled surface products transfer only after matching. The terrain-product slice
-now precompiles road cutouts, local site grading, CDT tiles, joined patch buffers and structural stamps against the local old/new
-ownership footprint. Work is bounded by local owner coverage, indexed patch contributors, source
-samples and the existing CDT/raster/patch-composition cost; independent patch/tile builds use Rayon. Commit's exact
-adoption checks are linear in local samples/products and borrow immutable terrain buffers.
-Local site capture/validation costs O(queried index cells + local candidates log(local candidates) +
-captured footprint vertices), summed over affected patches. Visible-height probes retain the
-existing allocation-free owner-local triangle grids; nearest-road probes use the existing R-tree.
-Exact site changes invalidate readiness; commit checks the post-topology site set independently.
-Structural writes/resets now feed ownership/clip discovery, planned patch samples and all
-CDT/grading samplers. Site snapshots use each patch's final production query margin. Visual-only
-edits stale the terrain candidate even without a source revision change. Post-topology site
-changes and full commit readiness/dependencies are now covered by the contract above. Complete paired
-previews share the accepted geometry; incomplete displays remain explicitly provisional.
-
-The source-profile solve uses a per-interval grade envelope: the greater of the 16% design target
-and the sampled source/support grade at that interval. Net endpoint slope does not describe an
-interior hill or valley; pin-to-pin feasibility alone must not flatten that relief. Local bounds
-also prevent a steep interval from relaxing an entire otherwise gentle road. Envelope construction
-is O(profile points); the existing fixed-count smoothing/curvature solve stays O(points), with
-unchanged pinned heights. Source terrain and the captured save remain unchanged.
-
-### Historical implementation milestones
-
-The intermediate failures, missing features and test counts in this section describe their named
-runs only. Later completion results supersede them; no historical failure budget is accepted today.
-
-The initial profile-plan fixes make all 13 sequences place, including the formerly rejected
-crossing. `kuopio_04`'s first stroke now stays within 0.23 m of source terrain instead of 37.34 m;
-both `kuopio_04` and `kuopio_07` pass the diagnostic profile budgets. Across all 158 audited edge
-profiles, maximum grade falls from 11.76 (about 85 degrees) to 0.80 (about 39 degrees). The full
-audit deliberately remains failing: 32 edge/checkpoint entries exceed the source-offset budget
-(up to 16.13 m), and one also exceeds the pitch-change budget (36.03 degrees). These entries are
-not 32 independent roads. Terrain gaps still require the next coverage/terrain-plan stage.
-Targeted Rust regressions check source preparation, junction solve/regrade and clip rebuild
-separately; repeated support materialization and edge splits must preserve physical heights.
-`--debug road` reports `road_edit_plan reused=...` and `road_edit_topology adopted=...` to stdout.
-Targeted regressions assert exact planned/cold-commit profiles, clips, costs and compiled node/span
-products for crossings, close double-Ts and terminal extensions. Further tests cover ID remapping,
-remote geometry/index preservation, live metadata, merge restrictions, incomplete frontiers,
-stale-plan fallback and terrain-rejection rollback of split-dependent buildings/occupancy.
-The Godot log file alone excludes Rust stdout.
-
-Verification: 1,599 Rust tests pass (two ignored), all five headless Godot bridge suites and 15
-Python checks pass, and benchmark targets compile. New tests cover exact CDT mesh/buffer equality
-and Arc reuse, changed source/input/frame/site-manifest rejection, nonempty structural stamps,
-unmapped neighboring ownership and affected visual-terrain restoration after rejection. The patch
-follow-up adds multi-tile joined-buffer identity/parity, missing-tile and fresh-manifest/error gates,
-and a real newly derived building site: its affected patch recompiles while unaffected neighbors
-may still reuse. Fresh patch metadata and payload revisions match cold compilation.
-The site follow-up proves exact joined-buffer reuse for an actually site-influenced patch,
-planned/live height and candidate-ID equality including unmapped neighbors, source/site staleness,
-and pending status without rebuilding a dirty allocator index. Godot checks the visible provisional
-label and stale terrain status after a road revision. The display follow-up checks canonical
-unlifted road/cold-commit mesh parity, deterministic terrain batches, exact terrain-buffer parity
-and deferral of structural display. Structural sample regressions additionally compare ordered
-overlapping resets/writes, sparse-default resets, border/interpolation samples, nonempty tunnel
-stamps, road/site grading guides, composed CDT buffers and exact post-reset commit reuse. A huge
-sparse-world test verifies that the overlay only captures touched storage chunks.
-Flat/sloped Godot fixtures verify paired publication, malformed
-batch atomicity, exact cancellation restoration, invalidation before patch recycling and
-provisional fallback for missing resident patches. Isolated-road regressions now cover flat/sloped
-cold-commit mesh parity across chunk boundaries, preservation of an unrelated same-chunk road,
-empty retained batches on a blank map, curved native previews and unchanged-preview upload reuse.
-The moving-ribbon diagnostic explicitly requests fallback geometry after exact chunk display.
-Fresh-world reference patch loading honors native retry requests; ignoring these caused an
-intermittent first-road test timeout, now fixed by sharing the existing capture retry protocol.
-Rustdoc builds without missing-doc warnings
-(11 pre-existing broken/private intra-doc links remain).
-The `terrain-plan-products-01` headless and `terrain-plan-products-render-01` Forward+ runs complete
-all 13 cases / 39 strokes. The headless debug log confirms topology adoption on every stroke and
-719 planned CDT tiles reused across 30 strokes; nine use fresh compilation. Their 158-profile
-audits match each other and the previous `terrain-plan-topology-02` audit exactly. The rendered run saved 117 screenshots;
-spot checks still show blue terrain gaps and junction bumps. Both diagnostics intentionally exit
-2 for the same 32 quality failures, not placement failures. The earlier `terrain-plan-topology-01`
-debug run hit a settlement timeout with water work pending after a successful commit; it is retained
-as a failed run, not counted as acceptance. The final headless and Forward+ runs did not repeat it.
-
-The patch-composition follow-up `terrain-plan-patches-01` completes 13 cases / 39 strokes and
-reuses 815 tiles across 33 strokes; 26 strokes reuse 42 complete patch buffers. Its profile audit is byte-identical
-to `terrain-plan-products-01`, including the 32 quality failures and diagnostic exit 2. The pinned
-save checksum remains unchanged. `--debug road` now reports actual `reused_patch_buffers` identity
-reuse separately from tile reuse. This follow-up has no new rendered capture or watertightness
-certification.
-
-The local-site follow-up `terrain-plan-sites-01` also completes 13 cases / 39 strokes, with the
-same 815 reused tiles and 42 complete patch buffers. Its 158-profile audit is byte-identical to
-`terrain-plan-patches-01`: 32 failures and diagnostic exit 2, with the pinned save unchanged.
-No new rendered capture or terrain-gap fix is claimed. The matched unprofiled
-`terrain-plan-sites-after-01` / `terrain-plan-patches-after-01` pair validates all 32 fixtures.
-Per-operation preview-ready median deltas span -6.75 to +6.81 ms (candidate 13.57–47.92 ms);
-first-idle deltas span -6.97 to +6.93 ms. This is one exploratory pair, not a speedup/regression
-claim. These fixtures have no buildings: they measure the empty-site path, not populated-site
-scaling. Populated-site geometry is covered by targeted parity tests; scaling measurements remain
-necessary before full-plan performance sign-off.
-
-The paired-display follow-up `terrain-plan-display-render-01` completes all 13 cases / 39 strokes
-and saves 117 Forward+ screenshots. Debug output confirms actual paired terrain publication for
-23 strokes; the other previews remain provisional road-only displays. The 158-profile audit is
-byte-identical to `terrain-plan-sites-01`: the same 32 failures and diagnostic exit 2. Spot checks
-of `kuopio_04` and `kuopio_07` still show junction bumps/blue gaps, not a geometry-quality fix.
-The pinned save checksum is unchanged. The matched unprofiled `terrain-plan-display-after-02` /
-`terrain-plan-sites-after-01` pair validates all 32 fixtures. Per-operation preview-ready medians
-are 20.20–48.44 ms, with deltas -0.17 to +6.85 ms; first-idle medians are 20.49–34.38 ms, with deltas
--6.93 to +13.89 ms. This is one exploratory pair, not a performance sign-off. The preliminary
-`terrain-plan-display-after-01` instrumentation run recorded 32 paired displays across 68 placements
-(warmups included), but changed the benchmark harness and is excluded from timing comparisons;
-the final timing run restores the original harness and keeps display counts behind `--debug road`.
-
-The isolated-road follow-up `terrain-plan-isolated-render-01` completes 13 cases / 39 strokes and
-saves 117 Forward+ captures. Paired terrain is actually displayed on 35 strokes, versus 23 in the
-connected-only run. The 158-profile audit remains byte-identical, with the same 32 quality failures
-and diagnostic exit 2; the pinned save is unchanged. `kuopio_04`'s first stroke now displays the
-canonical terrain-following road/terrain pair. Four previews remained road-only because their planned
-terrain reports `missing_terrain_clip_loops`: `kuopio_02` attempt 4 in patches `(17,18)` / `(18,18)`,
-and `kuopio_11` attempts 31–33 in `(17,20)`. These were candidate ownership failures despite
-successful fresh commit compilation, not placement failures.
-
-The ownership follow-up `terrain-plan-ownership-render-01` resolves all four: all 39 strokes now
-display paired terrain, with 13 completed cases and 117 Forward+ captures. Planning now uses the
-live cached per-loop grading ownership calculation, excluding superseded owners before merging
-the planned contribution, and the live site-overlap rule. Clip queries use actual per-patch grading
-margins. Padded query hits no longer claim ordinary patches, independently of CDT output; genuinely
-owned patches still fail on missing sources, loops or windows. Targeted regressions reproduce the
-original failure, verify exact planned/cold patch ownership, margins and buffers through a branch,
-and prove vacated patches lose replaced-road ownership. The coverage validator is unchanged.
-The 158-profile audit is byte-identical to the isolated run (32 quality failures, diagnostic exit 2),
-and the pinned save checksum is unchanged. Spot checks of `kuopio_02` and `kuopio_11` show matching
-road/terrain poses, but junction bumps and blue gaps remain. This is not watertightness certification.
-Structural stamp presentation, post-topology site changes and full readiness remained at this milestone;
-the later structural/readiness passes below complete those contract items.
-
-The approach-profile follow-up separates ownership handoffs from the geometric crossing core.
-`RoadEditPlan` and direct insertion finalize the physical profile through one shared solve;
-grounded section compilation no longer adds a second longitudinal flattening blend. Bends fit
-incident grades. Node-owned straight approach boundaries retain physical-profile stations, and
-rounded corners carry their endpoint heights and grades. Material offsets and source-height
-precision survive contour cleanup, reuse and triangulation; topology identity rounding is not a
-replacement height source. Adjacent-face normal checks exclude only triangles whose XZ altitude
-is unresolved at source-coordinate precision; coverage and direct face validation still inspect
-those triangles. There is no new global scan or spatial index.
-
-The first rendered run, `approach-profile-render-01`, exposed two terrain constraint rejections
-(`kuopio_11` attempt 33 and `kuopio_12` attempt 37). Both are now targeted production-pipeline
-Rust regressions. Terrain noding had interpreted distinct near-parallel approach segments as
-collinear overlap using its millimetre identity tolerance. Incidence now uses the micrometre
-contour resolution; actual overlap and conflicting-height regressions remain enforced. The
-approach contract and its seam follow-up pass 1,606 Rust tests (2 ignored), 15 Python tests and
-all five headless Godot bridge suites. The full quality/performance follow-up is separate from
-these correctness checks; structural writes/resets and full ready/atomic adoption were still open
-at this milestone and are completed by the later passes below.
-
-`approach-profile-render-02` places all 39 strokes across 13 cases and displays all 39 paired
-previews, retaining 117 captures. Commit reuses 1,027 CDT tiles on 34 strokes and 58 joined patch
-buffers on 31 strokes. All 158 physical profiles are audited: worst pitch change falls from
-36.03 to 6.78 degrees, and maximum grade from 0.80 to 0.7568. However, 34 profile entries exceed
-the 5 m source-offset budget (previously 32); two `kuopio_04` crossing profiles now reach 5.35 m
-and 5.61 m. Maximum source offset remains 16.13 m. The saved reference fails node 34 compilation
-and its render settlement fence, adding a separate audit failure (35 total, diagnostic exit 2).
-The SQLite checksum is unchanged. Spot checks show successful previously rejected placements,
-but blue terrain gaps remain. This is a validated profile-contract slice, not geometry-quality
-or saved-map migration sign-off.
-
-The unprofiled `approach-profile-after-01` run passes all 32 fixtures with 3 measured repetitions
-and 1 warmup. Per-operation preview-ready medians are 20.29–47.94 ms; first-idle medians are
-27.31–34.26 ms. The strict report refuses comparison with `terrain-plan-ownership-after-01`:
-the harness, inputs and state cardinalities match, but additional profile supports change
-ghost-guide vertex counts. That guard remains intact; no matched A/B improvement is claimed.
-
-The source-relief follow-up, `relief-profile-render-01`, clears all 34 cut/fill failures without
-changing locations, the SQLite reference, source terrain or quality budgets. All 39 strokes place,
-all 39 paired road/terrain previews display, and 117 captures are retained. Across 158 physical
-profiles, maximum absolute source offset falls 16.1289→3.9450 m and maximum grade
-0.7568→0.6296. The two `kuopio_04` attempt-10 failures (edges 0/2) fall 5.3471/5.6130→0.4581/0.2234 m;
-every profile in that case is below 1.82 m. Worst pitch change rises 6.7805→11.9874 degrees,
-remaining below the unchanged 30-degree diagnostic limit. The audit still exits 2 solely because
-the unchanged saved reference fails node 34 compilation/settlement. Spot checks still show small
-blue terrain gaps; longitudinal acceptance does not certify watertight terrain or saved-map repair.
-
-The complete Rust replay regression now covers every recorded stroke and all 158 checkpoints,
-including cold terrain constraints. Additional tests cover interior hills/valleys with feasible
-endpoints, steep corridor authority through splits, exact planned/cold geometry, non-accumulating
-topology-only profile updates, both straight-join approach domains and discarded CDT spurs.
-The three flat-node polygon goldens reflect CDT retessellation after unused vertex removal;
-polygon/carrier counts and source-authority identities are unchanged. All 1,612 Rust tests
-(2 ignored), 15 Python tests and five Godot bridge suites pass with `./run.sh --test --release`.
-
-`relief-profile-after-01` passes the unprofiled 32-fixture matrix (3 repetitions, 1 warmup) and
-strict matched comparison with `approach-profile-after-01`. Per-operation preview-ready medians
-are 20.19–48.07 ms (deltas -0.53 to +6.64 ms); first-idle medians are 27.22–34.34 ms
-(deltas -6.84 to +6.96 ms). The harness, inputs and work-cardinality checks remain unchanged.
-This single process pair is exploratory evidence, not a speedup claim or completed-plan
-performance certification.
-
-The structural-sample follow-up passes 1,616 Rust tests (2 ignored), including the unchanged
-158-profile Kuopio regression. Ordered resets/nonempty stamps, sparse-default coverage, clamped
-texture borders, road/site grading, composed CDT buffers and exact post-reset reuse are tested.
-The final `structural-samples-static-01` unprofiled capture validates all 32 fixtures with the same
-harness, inputs and cardinalities as `relief-profile-after-01`. Preview-ready medians are
-13.51–47.85 ms (deltas -6.84 to +0.54 ms); first-idle medians are 20.53–34.48 ms
-(deltas -6.97 to +7.06 ms). Initial dynamically dispatched captures `structural-samples-after-01`
-and `after-02` were slower and are not the final implementation. The final comparison remains
-one exploratory process pair, not a speedup claim or full-plan/populated-site performance sign-off.
-The subsequent post-stamp ownership slice removes the structural paired-display gate by moving
-ownership/clip discovery onto the same final samples. Regressions cover visual-only cache
-invalidation, preview cache isolation, nonempty tunnel stamps and post-reset patch reuse.
-All 1,618 Rust tests (2 ignored), including the 158-profile Kuopio replay, and five Godot suites pass.
-Three unchanged-build unprofiled captures (`poststamp-ownership-01/02/03`) validate 32 fixtures each
-and strict matching against `structural-samples-static-01`. Preview-ready medians are respectively
-27.22–68.19 / 20.26–49.61 / 13.50–48.03 ms; per-operation deltas against that baseline span
-+6.55 to +22.12 / -6.89 to +6.90 / -6.85 to +13.01 ms. First-idle medians are respectively
-27.17–34.34 / 27.39–34.32 / 20.52–34.38 ms. The repeated candidate runs expose substantial
-run-to-run variation; these are not three independent baseline/candidate pairs or performance
-sign-off. That milestone did not claim full readiness, atomic commit or watertight terrain coverage.
-
-The readiness/adoption pass completes post-topology site dependencies and the transaction contract.
-Building splits/attachment repair preserve authored site pose and support; grading uses final planned
-roads. Ready plans pin exact inputs and road/source/visual/site dependencies and recheck live water
-and parcel clearance under the simulation lock. Stale/missing click plans rebuild locally before
-mutation. Commit checks remapped road products, final visual samples, patch coverage/ownership and
-exact query contributor sets, then installs the existing terrain buffers with new payload metadata.
-It never runs another CDT/input assembly to replace a ready plan's result. A mismatch restores local
-graph/split references and exact visual storage chunks; undo retains that same visual checkpoint.
-The bounded compiler halo now includes complete incidence at span endpoints: a remote four-way
-approach can no longer compile as a preview terminal. This adds two fixed adjacency layers, not a
-recursive graph expansion. Surface-valid bridge/tunnel candidates use canonical scene export too;
-an explicit empty terrain batch is ready, while failed/nonresident batches remain provisional.
-All 1,625 Rust tests (2 ignored) and 15 Python checks pass, including actual terrain adoption for
-all 39 Kuopio strokes / 158 profile checkpoints, crossing/extension/close-double-T, site repair,
-water/parcel invalidation and exact rollback/undo. Benchmark targets compile; rustdoc has no
-missing-doc warnings (11 pre-existing link warnings). All five Godot suites pass, including bridge
-readiness with unchanged terrain, empty batches, paired display and stale-plan invalidation.
-The 14 terrain-plan tests also pass with one Rayon worker, including the full Kuopio replay.
-This completes the planning contract, not
-the separately tracked blue-gap/saved-reference geometry repair.
-
-The initial unprofiled `ready-adoption-01/02/03` runs validate 32 fixtures each and strict matching against
-`poststamp-ownership-01/02/03` (same harness, inputs, cadence and output cardinalities). Preview-ready
-medians are 13.54–48.08 / 13.42–47.90 / 20.30–48.02 ms; first-idle medians are respectively
-20.56–34.33 / 27.34–34.36 / 27.05–41.29 ms. Across process-median aggregates, preview deltas are
--19.85 to +0.06 ms and first-idle deltas -6.87 to +6.91 ms. First-idle is not uniformly faster;
-the earlier unchanged-build variance prevents a general speedup claim. These runs precede the
-final invalid-verdict propagation and retained-provisional-display fixes.
-
-The final-behavior `ready-adoption-04/05/06` captures also validate all 32 fixtures each and strict
-matching, but their aggregate preview medians are higher: 32.81–67.09 ms (deltas -0.19 to +25.71 ms
-against the three poststamp baselines). First-idle remains 27.17–34.28 ms (deltas -6.86 to +6.84 ms).
-Unchanged-build repeat `ready-adoption-07` retains the increase (preview medians 29.91–65.91 ms).
-The formatting-only final rebuild, `ready-adoption-08`, measures 26.28–66.99 ms preview medians
-and 27.18–41.19 ms first-idle medians; all 32 fixtures pass.
-A performance-core-only diagnostic (`ready-adoption-pcore-diagnostic-01`, 16 Rayon workers) does
-not consistently recover earlier latency; it is not a matched comparison or a game-default change.
-`ready-adoption-diagnostic-01` retains a CPU profile for investigation, not headline latency evidence.
-Two temporary valid-road-only controls also remain slower: omitting rejection propagation recreates
-the exact `ready-adoption-01` binary hash but measures 32.63–68.33 ms preview medians;
-restoring the old display-clearing/label path measures 25.89–61.50 ms. Neither control isolates
-the increase to the final presentation fixes. Both complete behaviors are restored afterward;
-these controls are diagnostic captures, not alternate supported implementations.
-At that milestone, the slower captures were not dismissed as noise: correctness/readiness/adoption
-was implemented, but preview-latency acceptance remained open. The completion investigation below
-supersedes that status; the historical captures remain available for comparison.
-
-### Coverage and saved-reference completion
-
-The coverage investigation identified input and ownership defects, not a need for another
-RoadEditPlan abstraction. Terrain CDT now keeps the uncut grading halo separate from the clipped
-ownership polygon. Shared tile sides use the same grade-limited height authority; road guides
-use the common visual/source terrain field instead of independently conflicting parent-edge
-heights. Strict tile bounds exclude outside sliver vertices, and retained guides touching road
-seams participate in constraint noding. Constraint intersections use metric incidence tolerance,
-not a fraction of segment length that falsely extended long edges. Neither Rust nor Godot may
-publish a terrain patch after discarding pathological faces: an incomplete patch invalidates the
-whole paired publication. The original slope and cut/fill budgets are unchanged.
-
-The Kuopio test now runs the actual atomic-adoption validator at every stroke. This exposed a
-missing dirty approach in `kuopio_06`: the plan compiler now consumes the final profile solver's
-entire dirty ledger, matching commit's products and terrain coverage exactly. The regression
-also checks cold/retained patch agreement, zero omitted faces, strict tile containment, shared
-tile-side heights and retained constraints. The rendered `completion-coverage-final` replay passes
-all 39 placements and 158 profile checks with zero audit failures, including saved-reference
-settlement, and retains 117 before/preview/committed captures. Reviewed hill junctions no longer
-show the previously observed blue gaps or vertical end ramps. This is coverage of the captured
-regressions, not a claim that arbitrary future inputs are mathematically watertight.
-
-The immutable saved reference failed at node 34 because an old approach contained a 17 cm height
-jump over roughly 3.5 cm. Load now first compiles saved geometry unchanged; only rejected grounded
-junctions enter one bounded pass of the shared junction-profile finalizer. The detached loaded
-graph must then compile successfully before publication, or load returns an error. Valid saved
-roads retain authority; this is not a city-wide source-terrain regrade. The regression proves
-every nonincident road profile remains exactly unchanged, and all 27 saved terrain patches pass.
-The checked-in SQLite checksum remains
-`e1d7e0baf4eefd23293f0a770345f50e455815124c0a0920aefe10cc7a1033c0`.
-
-Source provenance recovery uses the existing R-tree dependency for bounded loop-local queries,
-with deterministic semantic source selection. Halo grading excludes only segments beyond the
-maximum input height range divided by the existing slope limit; exhaustive/bounded regressions
-compare identical canonical results. For V input vertices, S local source edges, P queried
-segments and H candidates, cost is O(V + S log S + P log S + H), with no new resident city-wide
-spatial structure.
-Guide/DEM constraint noding likewise queries a tile-local R-tree and reuses its hit buffer;
-sorting hits by original edge index preserves the exhaustive path's height authority exactly.
-The existing edge/edge incidence pass remains bounded to that tile, not the city graph.
-
-The populated-neighborhood measurement is an ignored, release-only Rust benchmark:
-
-```bash
-cd rust
-cargo test --release --lib populated_road_plan_scaling -- --ignored --nocapture --test-threads=1
-```
-
-It retains four occupied local sites and grows remote background state through 0 / 1,000 /
-10,000 / 100,000 buildings, with real indexed parcels, six housed agents per building and
-4 / 40 / 391 remote streets. Each level measures 100 observations after three warmups. It
-separately reports borrowed-core plan compilation, readiness and the preview worker's local
-road-mesh/site/terrain preparation, while proving identical local terrain products. Fixture
-construction, global index preparation and the once-per-edit immutable context snapshot are
-outside cursor-work timing; snapshot cost is reported explicitly. This is a locality test,
-not Godot upload timing or a claim about actively ticking 600,024 full-FSM agents. Run it
-alone, repeat in separate processes, and use the matched Godot matrix for end-to-end latency.
-
-`road-plan-populated-completion-01/02/03.log` all pass with 24 Rayon workers. The table reports
-the median of the three process-specific statistics, not a pooled latency distribution:
-
-| Remote buildings | Plan p50 (ms) | Worker p50 (ms) | Worker p95 (ms) |
-| ---: | ---: | ---: | ---: |
-| 0 | 19.08 | 20.19 | 25.31 |
-| 1,000 | 19.10 | 20.13 | 25.60 |
-| 10,000 | 18.97 | 20.05 | 25.57 |
-| 100,000 | 19.45 | 20.52 | 26.45 |
-
-At 100,000 remote buildings, plan and worker medians grow about 2.0% and 1.6%, respectively;
-readiness medians remain below 0.019 ms in every process. The one-time context snapshot grows
-from roughly 0.01 ms to 3.37–3.47 ms as the road background grows, and is not hidden inside a
-claim of constant snapshot cost. Local terrain products are identical at every level.
-
-For larger timing samples of specific paired fixtures, set
-`METRUM_GAMEPLAY_BENCHMARK_CASES=double_t_close_2l,four_way_mixed_8l_2l` with
-`METRUM_GAMEPLAY_BENCHMARK_MATRIX=paired`. Selection preserves the original fixture order,
-geometry and synthetic-world anchors; unknown or duplicate case IDs fail the workload. The
-recorded matrix descriptors and harness hash keep baseline/candidate workload matching strict.
-Other matrix modes do not accept this selector. The default remains the complete eight-case matrix.
-
-### Controlled performance acceptance
-
-The preserved pre-completion `ready-adoption-08` binary is the baseline (SHA-256
-`e7db00089ff4f671ed567d45eff2f2aec0fda6a37e959280818b20e1cf17ac94`). Both sides use the same
-Godot runtime, hardware, fixture definitions, cadence and guide cardinalities, with diagnostics
-disabled. Each comparison uses three independent process pairs in AB / BA / AB order. CPU
-profiles are separate diagnostics: they identified extra canonicalization work in full-halo source
-recovery and grading queries. Those queries are now indexed/bounded; no thresholds or required
-terrain products were removed to improve timings. Unchanged baseline runs also exhibit large
-variation, so the historical 20–25 ms jumps cannot be assigned to RoadEditPlan from those samples.
-
-The final complete-matrix `completion-local-{baseline,candidate}-01/02/03` runs validate 32
-fixtures each (three measured repetitions, one warmup). Per-operation candidate preview medians
-range 32.53–77.89 ms, and first-idle medians 27.06–34.35 ms. This small-sample screen retains a
-10.52 ms wide-junction delta, so it was not used alone to dismiss the earlier regression.
-
-The larger `completion-targeted-{baseline,candidate}-01/02/03` comparison keeps the two variable
-fixtures at their original locations, with 20 measured repetitions and three warmups per process;
-all 46 fixtures pass in every process. Median-of-process-median preview readiness is:
-
-| Operation | Baseline (ms) | Completed plan (ms) |
-| --- | ---: | ---: |
-| Close double-T: initial road | 33.50 | 35.58 |
-| Close double-T: first branch | 46.94 | 47.26 |
-| Close double-T: second branch | 50.89 | 53.98 |
-| Mixed-width crossing: initial road | 38.74 | 39.64 |
-| Mixed-width crossing: crossing | 67.37 | 69.70 |
-
-The remaining cost is real, not a speedup: approximately 3.09 ms for the second T and 2.33 ms
-for the wide crossing. First-idle changes across these operations are only -0.05 to +0.09 ms
-in the process-median aggregates. Reports use the pattern
-`benchmark-results/road-plan-completion-{local,targeted}-{preview,idle}-comparison.json`.
-There are insufficient observations for
-end-to-end p95/p99 claims; the populated benchmark above has its own 100-observation p95s.
-
-For this completion pass, that small measured increase is accepted for the
-correct shared terrain solution: the expensive work is asynchronous and bounded to the edit,
-ready-plan adoption does not introduce another terrain solve, and the 100,000-building worker
-measurement stays near 20 ms with roughly 2% background-growth cost. This is not a promise of
-60 FPS, a general speedup, or zero cost for a more complete geometric solution. The former
-unexplained large-regression blocker is replaced by reproducible controlled measurements and an
-explicitly recorded tradeoff. Reference fixtures and quality limits are unchanged; historical
-failures remain recorded.
-
-All 1,633 active Rust tests, 15 Python checks and five Godot bridge suites pass; the 15 terrain-plan
-tests pass with one Rayon worker too. Release benchmark targets compile. The final optimized
-headless `completion-local-validation` replay again passes 39 placements / 158 profiles and saved
-reference settlement with zero audit failures. Together with the rendered capture and exhaustive
-query-parity tests, this closes the four RoadEditPlan completion items for the captured workload.
-
-### September 9 audit follow-up
-
-The combined staged/unstaged audit checked topology/profile ownership, local invalidation,
-source/visual/site dependencies, atomic adoption/rollback, terrain coverage and Godot presentation.
-It found a common-validation gap: successful CDT windows could pass without present, valid final
-render buffers. Pre-composition checks now remain separate from final acceptance; clipped patches
-cannot enter the cache or publication through missing/invalid buffers. This adds constant-time
-checks per patch, with no extra spatial query, geometry solve or city scan. The regression also
-proves ordinary loop-free patches remain valid without clipped buffers.
-
-Obsolete two-pass regrade APIs, the zero-valued `regrade` timing field and the old bulk-finalizer
-alias are removed. The remaining conservative source-fit helper is test-only; production profile
-finalization is shared. Cold subsystem compilation and test-only cold/reuse parity oracles remain
-intentional, not alternate interactive commit paths. Rustdoc's 11 broken/private links and stale
-load, site, undo, lock-duration and final-worker descriptions are corrected. Historical measurements
-above remain evidence for their original binaries, not new performance claims for this audit.
-
-Verification: 1,634 Rust tests pass (3 ignored), all 15 terrain-plan tests pass with one Rayon
-worker, 15 Python checks and five Godot bridge suites pass. Release build, benchmark-target check
-and rustdoc complete without warnings; formatting, source headers and diff whitespace checks pass.
-The pinned SQLite checksum is unchanged. The unprofiled audit locality run, retained in
-`benchmark-results/road-plan-audit-scaling-20260909.log`, keeps identical local products across
-0 / 1,000 / 10,000 / 100,000 remote buildings (100 observations per level, 24 Rayon workers).
-Worker p50 at the endpoints is 20.41 / 20.27 ms; readiness p50 is 0.0157 / 0.0169 ms and the
-one-time context snapshot is 0.007 / 3.427 ms. This single-process recheck supports locality,
-not a fresh matched A/B speedup claim. The separate historical `ROAD-06`/`ROAD-07` reports are
-[parked](roadmap.md#parked-historical-reports), not current blockers or pending acceptance work.
-Their geometry is not declared repaired by this capture; reopening requires a current reproduction.
-
-### Historical exploratory timing runs
-
-These earlier measurements do not supersede the completed matched acceptance above.
-
-The matched unprofiled `terrain-plan-ownership-after-01` / `terrain-plan-isolated-after-03`
-comparison validates all 32 fixtures. Per-operation preview-ready medians are 25.34–78.05 ms,
-with deltas -16.41 to +8.53 ms; first-idle medians are 20.89–34.78 ms, with deltas -6.82 to +7.25 ms.
-The harness and input matrix are unchanged. This is one exploratory pair, not a speedup or
-full-plan performance sign-off; populated-site scaling remains unmeasured by this matrix.
-
-The isolated-road timing runs `terrain-plan-isolated-after-01` / `after-02` validate all 32
-fixtures but show preview-ready medians 8–30 ms above the older `terrain-plan-display-after-02`
-baseline. A same-session `terrain-plan-isolated-control-01` temporarily restores only the old
-connected-only export gate and also rises to 26.09–74.95 ms, so the earlier increase cannot be
-attributed to isolated export alone. The gate is restored for `terrain-plan-isolated-after-03`,
-which validates all 32 fixtures with the same binary hash as `after-02`: preview-ready medians
-25.67–69.53 ms, deltas -15.59 to +15.65 ms versus the control; first-idle medians 23.27–34.44 ms,
-deltas -7.07 to +7.19 ms. These unprofiled runs keep the same harness and input matrix, but provide
-only one disabled-gate control, not repeated process pairs or full-plan performance sign-off.
-
-The patch-composition slice's unprofiled `terrain-plan-patches-after-01`, matched against
-`terrain-plan-products-after-01`, validates all 32 fixtures. Per-operation preview-ready medians are
-5.5–26.2 ms lower; first-idle deltas range from 11.4 ms lower to 7.6 ms higher. This is one exploratory
-pair, not a demonstrated speedup or a performance sign-off for the still-incomplete full preview.
-
-The earlier terrain-product slice's matched unprofiled `terrain-plan-stamps-before-01` /
-`terrain-plan-products-after-01` captures both validate all 32 fixtures. Per-operation preview-ready
-medians range from 5.5 ms lower to 20.6 ms higher (most rise by 6–21 ms as CDT work moves before
-click); first-idle medians range from 19.1 ms lower to 9.0 ms higher. This single pair exposes the
-tradeoff, not a speedup or city-scale performance certification. Further preview-cache/locality
-work must preserve exact dependency checks.
-
-The topology-only milestone's matched, unprofiled schema-3 `terrain-plan-topology-before-01` / `after-01` captures both
-validate all 32 fixtures (eight cases, three measured repetitions plus one warmup). In this single
-process pair, per-operation backend core-work medians are 14–78% lower, while first-idle medians
-range from 39% lower to 25% higher. These are exploratory observations only: frame cadence and
-noise matter, and three or more process pairs plus unchanged-build A/A measurements are still
-required for a performance claim. No city-scale performance certification is implied.
-
-Before these fixes, release/headless and Forward+ validation completed all 13 cases with identical
-profile audit results: 12 settled their full sequences and the recorded terrain-conflict case rejected
-again. The rendered run saved 117 before/preview/commit-or-failure images. Replays reached grade 11.76 (about 85 degrees),
-37.34 m source offset, and 117.78 degrees adjacent pitch change. These are reproduced defects,
-not accepted baseline quality. Dumps/screenshots run outside operation timers but perturb caches
-and preview dwell; these diagnostic timings are **not accepted performance measurements**.
-Use matched unprofiled schema-4 workloads for new performance claims. Run launchers serially:
-`run.sh` redeploys the shared GDExtension library.
-
-To import a fresh capture without overwriting an existing manifest:
-
-```bash
-python3 tools/road_terrain_replay.py --import-log road-terrain-locations.log \
-  --output benchmark-results/kuopio-placements-check.json
-python3 -m unittest discover -s tools -p test_road_terrain_replay.py
-```
-
-## Debug And Diagnostics
-
-`--debug road` must report enough data to locate ownership failures before rendering hides them:
-
-- dirty edge / node / chunk counts
-- node kind and incident mouth count
-- rail, ownership, arrangement, triangulation, export, and validation timings
-- contact candidate counts; source/group, source-pair, noding pair/component, and retention-cache
-  hits/misses; and emitted constraint counts
-- terrain CDT input/output counters
-- per-patch final terrain mesh face-delta, face-slope, tie-in widening, retaining-wall face, and
-  longest-triangle-edge summaries after the regular filler mesh has been appended
-- retained road seam constraint counters
-- final span / node top-region polygons and triangles with owner, material, and provenance keys
-- compact cut/fill summaries for touched roads, including max fill, max cut, max grade, and a
-  `near-grade` / `fill-heavy` / `cut-heavy` / `mixed` mode label
-- post-boolean node footprint / asphalt / non-road shapes, owned-region contours, side-join
-  contour provenance, and corner-trim application state when geometry-dump debug capture is active
-- opt-in `METRUM_DEBUG_ROAD_PROBE=1` hover probes that log every final road-surface triangle under
-  or near the probed XZ point, including material, owner, node/span source, region id, and triangle
-  coordinates
-- provider-specific terrain / water / zoning debug timings
-- structured node diagnostics with stage, backend, owner, source band, height field, canonical key,
-  point / edge, residual, seam, and constraint metadata
-
-Missing source rails, missing carrier provenance, rejected residuals, open boundaries, duplicate
-exposed edges, non-explicit boundary vertices, ambiguous carrier support, and height conflicts are
-diagnostics. They must not become silent visual fallbacks.
-
 ## Forbidden Regressions
 
 Do not reintroduce:
 
+- polygon booleans, winding or claim-priority ownership, arrangement noding, generated contacts, or
+  provenance / height-authority rules in the road compiler
+- caches of intermediate compiler stages
+- a second implementation of corner, mouth or height geometry in lanes, render, terrain or Godot
 - centerline-only road lifting or terrain flattening
 - terrain fallback sampling for road height
 - nearest-height, nearest-owner, min/max, averaging, owner-priority, or old-road-wins repair
+- tolerance snapping or vertex deduplication to hide mismatched geometry
 - render z-bias as geometry
 - shader, water, zoning, material-order, cull-mode, or background masking for missing topology
-- seam strips, closure carpets, guard strips, miter caps, or connector patches not derived from
-  final canonical ownership
-- paired adjacent-mouth strips as final node ownership
-- generic node disks, annuli, halos, or global sidewalk rings
+- seam strips, closure carpets, guard strips, or connector patches
 - Godot-side road topology, terrain clipping, or road-height decisions
-- fallback from Spade CDT failure into old terrain clipping
+- fallback from Spade CDT failure into other terrain clipping
 - full-network road or terrain rebuilds for one local edit
-- treating tiny boundary-touching missing material shapes as acceptable unless they are proven
-  canonical numeric dust under the documented budget
-
-`FinalTopBoundaryPair` is diagnostic only. It must not become an emitted road-surface vertical-face
-source again.
+- an asynchronous preview queue, stale-result path or second preview mode without a measured need
 
 ## Test Contract
 
-Maintained coverage must continue to prove:
+Maintained coverage must prove:
 
-- flat and cross-slope grounded spans
-- bridge spans and tunnel portals
-- terminal cap ownership
-- bend ownership across acute, right, obtuse, shallow, and arbitrary angles
-- T, 4-way, and `N > 4` `JunctionN` ownership
-- mixed-width, mixed-profile, no-sidewalk, and one-sided footpath cases
-- preview / commit parity
-- visible-world query precedence
-- terrain CDT preservation of road seam constraints
-- terrain-CDT clipping retains every positive-overlap source segment when one output edge spans
-  multiple source-owned boundary IDs
-- terrain-CDT grading envelope behavior for convex and concave roadbed footprints
-- rejection of terrain faces inside road-owned footprints
-- authored and imported DEM terrain agreement
-- deterministic rebuilds and equivalent edit-order identity
-- local invalidation without unrelated chunk rebuilds
-- refined-CDT unchanged-tile reuse, changed-tile rebuild, old-coverage removal, deterministic shared
-  tile seams, and stale-generation rejection
-- rendered mesh upload containing the same canonical raised-step intervals as the compiled surface
-- a missing, empty, failed, conflicted, still-pathological, wrong-contract, or malformed engineered
-  terrain payload prevents all sibling terrain uploads, road-chunk swaps, and network
-  acknowledgement for that generation; production-shaped Godot coverage exercises the real
-  prepare/stage/commit transaction; only complete `ok` output with zero omitted faces remains a
-  baked clipped mesh
-- road render chunk partitioning preserves the complete global triangle multiset across shifted,
-  positive, and negative chunk boundaries, with no duplicate triangle ownership
-- the terrain-aligned road grid keeps a representative central local road in one render chunk
-- the deterministic road-chunk benchmark preserves identical local owner/output signatures at each
-  Rust scale and identical changed payloads at each Godot resident-instance scale
+- the profile band table for every edge type
+- layout:
+  - invariance to arm order
+  - corner endpoints bitwise equal to their offset-curve points
+  - mouth stations
+  - fitting and every `LayoutError`
+  - degrees 1–6 and arm angles from 25° to 180°
+- watertightness within each piece and across mouths, curb faces on every carriageway boundary
+  except mouths, and no overlapping material triangles
+- node vertices at `P + level`, and span heights equal to the section evaluation
+- query heights and ray hits equal to the rendered triangles
+- bitwise determinism across runs, Rayon worker counts, and edit orders that produce the same graph
+- dirty-closure locality, with no unrelated chunk or terrain patch rebuilt
+- terrain:
+  - no faces inside footprints
+  - seam vertex identity
+  - holes
+  - seams across patch boundaries
+  - road–site shared vertices
+  - bridge and tunnel terrain support
+- bitwise preview = commit = undo = load
+- the crossing contract: a zebra marking and its pedestrian connectors share one kerb segment
+- render:
+  - chunk partitioning preserves the global triangle multiset
+  - stale generations are rejected
+  - road and terrain swap atomically in production-shaped Godot tests
+- the deterministic road-chunk benchmark keeps identical local signatures at every scale
 
-Use the focused surface tests for narrow changes and the full `surface` suite when changing shared
-ownership, terrain, query, node, or render contracts.
+## Debug And Diagnostics
+
+`--debug road` reports, per edit:
+
+- dirty-closure counts
+- layout, piece, terrain, packing and install timings
+- per-node layout summaries: arms, sector kinds and angles, the radius `R` used, and mouth stations
+- typed layout and profile errors, with node and arm
+- per-patch chain and loop counts, and CDT counters
+
+The road debug overlay draws mouths, corner centres, tangent stations and outer chains from the same
+layout and pieces the mesh uses. Errors are diagnostics and placement rejections, never visual
+fallbacks.
 
 ## Archive
 
-The archived hardcut history remains useful when investigating why a repair path is forbidden or
-why a particular provenance rule exists:
+- [`archive/roads_legacy_surface_2026-10-23.md`](archive/roads_legacy_surface_2026-10-23.md): the
+  legacy surface compiler; `ROAD-01`–`ROAD-67` history and measurements; the full `ROAD-67-A`
+  baseline method; the stopped `ROAD-67-B` prototype notes; and the legacy preview, terrain and
+  commit pipeline details
+- [`archive/roads_hardcut_history_2026-05-31.md`](archive/roads_hardcut_history_2026-05-31.md):
+  the earlier roadbed hardcut spec
 
-- [`archive/roads_hardcut_history_2026-05-31.md`](archive/roads_hardcut_history_2026-05-31.md)
-
-Do not update the archive as live planning. Update this file, [`roadmap.md`](roadmap.md), and
+Do not update the archives as live planning. Update this file, [`roadmap.md`](roadmap.md) and
 [`project.md`](project.md) for current road status.
