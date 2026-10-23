@@ -14,6 +14,9 @@
 extends "res://scripts/tools/network_tool.gd"
 
 const GameSettings = preload("res://scripts/core/game_settings.gd")
+const PreviewPublisher := preload("res://scripts/tools/road_preview_publisher.gd")
+const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
+const PREVIEW_PUBLISH_PROCESS_PRIORITY := 100
 
 enum State { IDLE, SETTING_CONTROL, SETTING_END }
 var current_state = State.IDLE
@@ -59,6 +62,25 @@ var _preview_display_request: RefCounted
 var _preview_request_id: int = 0
 var _preview_drawn_request_id: int = 0
 var _preview_update_pending: bool = false
+var _preview_publication_pending: bool = false
+var _preview_publisher: Node
+var _preview_sample_points := PackedVector3Array()
+var _preview_sample_validation: Dictionary = {}
+var _preview_sample_path_id: int = 0
+var _preview_sample_has_pointer: bool = false
+var _preview_sample_pointer := Vector3.ZERO
+var _preview_sample_start := Vector3.ZERO
+var _preview_sample_control := Vector3.ZERO
+var _preview_sample_mode: int = -1
+var _preview_sample_state: int = -1
+var _preview_sample_fwd_lanes: int = -1
+var _preview_sample_bkw_lanes: int = -1
+var _preview_sample_snap_node: int = -1
+var _preview_sample_snap_edge: int = -1
+var _preview_sample_snap_generation: int = -1
+var _preview_sample_surface_generation: int = -1
+var _preview_sample_zoning_revision: int = -1
+var _preview_sample_field_revision: int = -1
 var _preview_result_pending: bool:
 	get: return not _preview_requests.is_empty()
 var _commit_request_id: int = 0
@@ -103,6 +125,8 @@ var _angle_snapped: bool = false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
+		if is_instance_valid(_preview_publisher):
+			_preview_publisher.cancel_publication()
 		_terrain_preview.reset()
 
 func set_road_preview_mode(mode: int) -> void:
@@ -134,6 +158,11 @@ func _preview_frame_completed() -> void:
 
 func _ready():
 	super._ready()
+	process_priority = PREVIEW_SAMPLE_PROCESS_PRIORITY
+	_preview_publisher = PreviewPublisher.new()
+	_preview_publisher.bind(self, PREVIEW_PUBLISH_PROCESS_PRIORITY)
+	add_child(_preview_publisher)
+	set_preview_publication_active(active)
 	add_to_group("road_preview_tools")
 	_road_preview_mode = GameSettings.get_road_preview_mode()
 	if blueprint_mesh:
@@ -191,6 +220,8 @@ func _process(delta):
 	if _preview_update_pending or _preview_result_pending:
 		_preview_update_pending = false
 		_update_preview()
+	if (_preview_result_pending or _preview_publication_pending) and is_instance_valid(_preview_publisher):
+		_preview_publisher.request_publication()
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
 	if _info_label and _info_label.visible:
@@ -199,6 +230,14 @@ func _process(delta):
 			var screen_pos: Vector2 = camera.unproject_position(_label_world_pos)
 			# Offset slightly so the label sits above-right of the midpoint.
 			_info_label.position = screen_pos + Vector2(8.0, -24.0)
+
+func set_preview_publication_active(enabled: bool) -> void:
+	if not is_instance_valid(_preview_publisher):
+		return
+	if enabled:
+		_preview_publisher.request_publication()
+	else:
+		_preview_publisher.cancel_publication()
 
 func _snap_to_roads_enabled() -> bool:
 	return true
@@ -300,48 +339,115 @@ func _update_preview():
 		preview_metrics.sample(points, _preview_input_us if _preview_input_us > 0 else Time.get_ticks_usec())
 	if _preview_display_request != null and not _preview_display_request.matches_context(self):
 		_clear_preview_visual()
-	_poll_pending_preview_result()
 	var exact := _cached_preview_surface_for_points(points)
-	# Consume exact work before invoking hover validation; an exact current result needs neither
+	# Reuse exact work before invoking hover validation; an exact current result needs neither
 	# a second validity check nor a fallback ribbon that will never be displayed.
 	var validation := exact if not exact.is_empty() else _candidate_validation_for_points(points)
 	if not exact.is_empty():
 		_remember_candidate_validation(points, exact)
 	is_valid = bool(validation.get("is_valid", false))
-	if bool(validation.get("is_pending", false)) and _junction_preview.generation >= 0:
-		# A busy parcel check is unknown, not a rejection. Preserve the last display-only pose
-		# while retrying; neither this pose nor the pending verdict can authorize a click.
-		_preview_update_pending = true
-		_update_preview_measurement_label(validation.get("prepared_points", points), validation)
-		return
+	_remember_preview_sample(points, validation)
 	if is_valid and exact.is_empty() and points.size() > 1 and not _preview_input_is_requested(points):
 		var dispatch_us := Time.get_ticks_usec() if preview_metrics != null else 0
 		_preview_request_id = simulation_node.request_preview_road_surface_with_options(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), _road_preview_mode == 1)
 		if preview_metrics != null:
 			preview_metrics.dispatch(_preview_request_id, dispatch_us, Time.get_ticks_usec(), _road_preview_mode == 1)
 		_preview_requests.append(PreviewRequest.new(self, points, _preview_request_id))
-	if is_valid and not exact.is_empty():
+	_preview_publication_pending = true
+
+func _publish_preview_result_late() -> bool:
+	# This callback stays enabled while the road tool is selected so Godot schedules it before
+	# the frame begins. The idle path performs no allocation or native call.
+	if _preview_requests.is_empty() and not _preview_publication_pending:
+		return false
+	if not _preview_sample_is_current():
+		_clear_preview_cache()
+		# A dependency can change after sampling even while the pointer stays still.
+		if active and current_path != null:
+			_preview_update_pending = true
+		return false
+	if not _preview_requests.is_empty() and _poll_pending_preview_result():
+		_preview_publication_pending = true
+	if not _preview_publication_pending:
+		return not _preview_requests.is_empty()
+	var points := _preview_sample_points
+	var exact := _cached_preview_surface_for_points(points)
+	var validation := exact if not exact.is_empty() else _preview_sample_validation
+	is_valid = bool(validation.get("is_valid", false))
+	if not exact.is_empty():
+		_remember_candidate_validation(points, exact)
+	if bool(validation.get("is_pending", false)) or not bool(validation.get("is_valid", false)):
+		_preview_publication_pending = false
+		if bool(validation.get("is_pending", false)) and _junction_preview.generation >= 0:
+			_preview_update_pending = true
+			_update_preview_measurement_label(validation.get("prepared_points", points), validation)
+		else:
+			_draw_candidate_preview(points, validation)
+		return not _preview_requests.is_empty()
+	if not exact.is_empty():
 		if _draw_compiled_preview_surface(points, exact, validation):
 			_preview_display_request = _preview_cache_request
-			return
-	elif is_valid:
-		# A result may have arrived during a pending parcel check on an earlier frame. Keep it
-		# eligible for display after recovery, not just on the single frame that polled it.
-		var newer_scene: bool = (
-			_preview_cache_request != null and _preview_cache_request.id != _preview_drawn_request_id
-			and _preview_cache_surface.get("is_valid", false) and _preview_cache_surface.has("junction_preview")
-		)
-		if newer_scene:
-			# Older poses are display-only; context/source changes must still retire them.
-			if _preview_cache_request.matches_context(self) and _preview_surface_generation_is_current(_preview_cache_surface):
-				if _draw_compiled_preview_surface(points, _preview_cache_surface, validation):
-					_preview_display_request = _preview_cache_request
-		# An invalid result for an older pointer must not erase the retained display for
-		# this new, provisionally valid input. Exact current rejections take the path below.
-		if _junction_preview.generation >= 0:
-			_update_preview_measurement_label(validation.get("prepared_points", points), validation, "provisional")
-			return
-	_draw_candidate_preview(points, validation)
+			_preview_publication_pending = false
+		else:
+			_preview_update_pending = true
+		return _preview_publication_pending or not _preview_requests.is_empty()
+	# Older poses are display-only while exact work for this sample is pending.
+	var newer_scene: bool = (
+		_preview_cache_request != null and _preview_cache_request.id != _preview_drawn_request_id
+		and _preview_cache_surface.get("is_valid", false)
+		and _preview_cache_surface.has("junction_preview")
+		and _preview_cache_request.matches_context(self)
+		and _preview_surface_generation_is_current(_preview_cache_surface)
+	)
+	if newer_scene:
+		if _draw_compiled_preview_surface(points, _preview_cache_surface, validation):
+			_preview_display_request = _preview_cache_request
+			_preview_publication_pending = false
+		else:
+			_preview_update_pending = true
+		return _preview_publication_pending or not _preview_requests.is_empty()
+	if _junction_preview.generation >= 0:
+		_update_preview_measurement_label(validation.get("prepared_points", points), validation, "provisional")
+	else:
+		_draw_candidate_preview(points, validation)
+	_preview_publication_pending = false
+	return not _preview_requests.is_empty()
+
+func _remember_preview_sample(points: PackedVector3Array, validation: Dictionary) -> void:
+	_preview_sample_points = points
+	_preview_sample_validation = validation
+	_preview_sample_path_id = current_path.get_instance_id() if current_path != null else 0
+	_preview_sample_has_pointer = _has_last_world_mouse_pos
+	_preview_sample_pointer = _last_world_mouse_pos
+	_preview_sample_start = start_pos
+	_preview_sample_control = control_pos
+	_preview_sample_mode = draw_mode
+	_preview_sample_state = current_state
+	_preview_sample_fwd_lanes = fwd_lanes
+	_preview_sample_bkw_lanes = bkw_lanes
+	_preview_sample_snap_node = int(_sticky_network_snap.get("snap_node", -1))
+	_preview_sample_snap_edge = int(_sticky_network_snap.get("snap_edge", -1))
+	_preview_sample_snap_generation = int(_sticky_network_snap.get("surface_generation", -1))
+	_preview_sample_surface_generation = simulation_node.get_road_tool_surface_generation()
+	_preview_sample_zoning_revision = simulation_node.get_zoning_overlay_revision()
+	_preview_sample_field_revision = simulation_node.get_agriculture_field_overlay_revision()
+
+func _preview_sample_is_current() -> bool:
+	return (
+		active and current_path != null
+		and current_path.get_instance_id() == _preview_sample_path_id
+		and _has_last_world_mouse_pos == _preview_sample_has_pointer
+		and _last_world_mouse_pos == _preview_sample_pointer
+		and start_pos == _preview_sample_start and control_pos == _preview_sample_control
+		and draw_mode == _preview_sample_mode and current_state == _preview_sample_state
+		and fwd_lanes == _preview_sample_fwd_lanes and bkw_lanes == _preview_sample_bkw_lanes
+		and int(_sticky_network_snap.get("snap_node", -1)) == _preview_sample_snap_node
+		and int(_sticky_network_snap.get("snap_edge", -1)) == _preview_sample_snap_edge
+		and int(_sticky_network_snap.get("surface_generation", -1)) == _preview_sample_snap_generation
+		and simulation_node.get_road_tool_surface_generation() == _preview_sample_surface_generation
+		and simulation_node.get_zoning_overlay_revision() == _preview_sample_zoning_revision
+		and simulation_node.get_agriculture_field_overlay_revision() == _preview_sample_field_revision
+	)
 
 # Starts a stroke at `pos`. Rust supplies `kind` (0 means no road reference) and `direction`
 # for the HUD and straight-road angle snapping; curves always choose a free control point.
@@ -506,9 +612,12 @@ func _poll_pending_preview_result() -> bool:
 			preview_metrics.poll(request.id, Time.get_ticks_usec() - poll_us, preview)
 		if preview == null:
 			continue
-		for older in _preview_requests.slice(0, index):
-			_forget_preview_request(older)
-		_preview_requests = _preview_requests.slice(index + 1)
+		for older_index in range(index):
+			_forget_preview_request(_preview_requests[older_index])
+		var remaining := _preview_requests.size() - index - 1
+		for remaining_index in range(remaining):
+			_preview_requests[remaining_index] = _preview_requests[index + 1 + remaining_index]
+		_preview_requests.resize(remaining)
 		# Older completed poses stay usable as display-only feedback while their context holds.
 		if request.matches_context(self) and _preview_surface_generation_is_current(preview):
 			_remember_preview_surface(request.points, preview, request)
@@ -520,14 +629,15 @@ func _poll_pending_preview_result() -> bool:
 func _retire_preview_requests(started: int) -> void:
 	# Keep the running request and the latest submission if it may still be pending. Other newer
 	# ones were displaced from the mailbox unrun; context changes retire every request.
-	var kept: Array[RefCounted] = []
 	var latest: RefCounted = _preview_requests.back() if not _preview_requests.is_empty() else null
+	var write_index := 0
 	for request in _preview_requests:
 		if (request.id == started or (request == latest and request.id > started)) and request.matches_context(self):
-			kept.append(request)
+			_preview_requests[write_index] = request
+			write_index += 1
 		else:
 			_forget_preview_request(request)
-	_preview_requests = kept
+	_preview_requests.resize(write_index)
 
 func _preview_input_is_requested(points: PackedVector3Array) -> bool:
 	# The latest submission already covers this pose; resubmitting would only restart the worker.
@@ -1101,6 +1211,11 @@ func _cached_preview_surface_for_points(points: PackedVector3Array) -> Dictionar
 	return _preview_cache_surface
 
 func _clear_preview_cache() -> void:
+	_preview_sample_points = PackedVector3Array()
+	_preview_sample_validation = {}
+	_preview_sample_path_id = 0
+	_preview_sample_has_pointer = false
+	_preview_publication_pending = false
 	_preview_cache_points = PackedVector3Array()
 	_preview_cache_surface = {}
 	_preview_cache_request = null
@@ -1116,7 +1231,6 @@ func _clear_preview_cache() -> void:
 	_candidate_cache_surface_generation = -1
 	_preview_request_id = 0
 	_preview_drawn_request_id = 0
-	_preview_result_pending = false
 
 func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
 	# A completed preview must describe the current candidate, even for sub-5 cm pointer motion.

@@ -53,6 +53,429 @@ The roadbed rewrite is shipped for the current surface-road scope:
 The old centerline-lift, generic node-patch, seam-strip, and renderer-owned road-hole paths are
 retired.
 
+## Surface compiler replacement (`ROAD-67`)
+
+**Status: in progress (2026-10-23), native prototypes after the fresh baseline.** This is the road work following
+`SIM-02`, on the `road` branch. The requirements below govern the replacement; they do not
+claim that the existing implementation or an unmeasured prototype meets the latency target.
+The shipped contracts elsewhere in this document remain in force during migration.
+
+### Outcome and ownership
+
+At 60 Hz, a supported local edit should produce its exact road-and-terrain preview in less
+than 16.7 ms from sampled world-space pointer input to the first rendered matching result.
+That preview must remain usable while simulation is paused. A matching click adopts the
+same solved geometry after validating live dependencies. Geometry, queries and terrain
+publish as one complete generation; terrain cannot penetrate the road, overlap it with
+coplanar faces, or leave open seams. Render bias and masking do not establish these guarantees.
+
+Keep the logical network, physical-profile rules, lanes and routing, existing spatial
+indices, scheduler, high-level edit mutators and transaction/rollback guarantees. Replace
+the derived surface compiler and terrain integration where measurement demonstrates the
+need. Godot remains an input/render bridge. Road materials, crossing paint, cloud shadows,
+building sites, bridges, tunnel portals, picking, save/load and undo retain their contracts.
+
+The scheduler's fixed simulation-slot `PureJob` application rule does not govern hover
+previews. Preview computation consumes immutable versioned inputs outside the core mutex;
+the latest complete applicable result is published independently of simulation time. Click
+validation and authoritative mutations remain ordered simulation operations. Preserve the
+`ROAD-54`, `ROAD-57`, `ROAD-65`, `ROAD-66` and three-vertex terrain-seam regressions.
+
+### Proposed representation and terrain experiment
+
+Use one solved local boundary representation with explicit material and height ownership.
+Share boundary vertices and identifiers between top surfaces, raised faces, terrain seams
+and queries. Span extrusion and node face construction consume those same boundaries;
+ownership must not be reconstructed independently by each exporter. Reuse the existing
+arrangement machinery and geometry libraries where they satisfy this contract. The first
+prototype must demonstrate which repeated boolean/arrangement stages it removes, rather
+than adding another cache around the complete old pipeline.
+
+The regular-terrain experiment kept connectivity outside boundary-crossed cells, updated
+heights within the grading envelope, omitted ground covered by the final footprint, and
+triangulated boundary-crossed cells against the authoritative seam. Its first matched
+release comparison was slower, so **retain full-patch CDT for the first complete road gate**.
+Any future replacement must preserve source-edge provenance, holes, tile/LOD
+seams, concave footprints, terrain-pad interaction and grade limits. In particular, a coarse
+cell containing an entire small footprint still needs clipping; testing only its corners
+does not establish coverage. Bridges retain ground beneath them. Source terrain is never
+rewritten by this derived mesh. Shared engineered-ground rules remain in `earthworks.md`;
+any accepted change to them must be documented there when implemented.
+
+Both old and new footprint/grading coverage enter invalidation. Unaffected render sections
+stay resident, but exact profile dependencies may extend beyond the pointer neighborhood.
+A long logical edge must not force unrelated mesh sections to rebuild merely because it
+was split. Use existing spatial/chunk indices, with explicit mapping from logical edits
+to affected visual sections; do not add a second city-wide spatial structure.
+
+### Complexity and resource bounds
+
+Let `N` be the city-wide indexed population, `K` the local candidates returned by existing
+indices, `S` the affected boundary segments, `X` their intersections, `G` the terrain cells
+in the union of old/new grading envelopes, and `M` the emitted mesh size. Indexed capture
+should follow the existing spatial query cost (typically `O(log N + K)`, with overlap/output
+cost explicit). The proposed boundary construction targets `O((S + X) log S + M)` and local
+terrain work targets visited cells plus their boundary intersections and output. These are
+design targets: each implemented stage must state and verify its actual bound. `X` may be
+quadratic in `S`; no constant-time claim is made for arbitrary intersections or edit lengths.
+
+No per-pose city scan or full-network clone is allowed. Measure immutable snapshot/setup
+cost separately, including refreshes after commits. Keep worker scratch and packed buffers
+reusable; no new allocations in idle/per-frame checks. Parallel independent jobs use owned
+Rayon pools with the existing shutdown contract. Record worker counts and contention with
+simulation/rendering; extra pools are not free CPU capacity.
+
+### Measurement and acceptance
+
+Baseline build: `b75e03c9f472213945b468540da59c9ab3768b9d`, before replacement code. Reuse
+the `ROAD-30` rendered preview matrix and native locality fixtures. Record actual hardware,
+runtime/renderer, resolution, VSync/FPS cap, worker configuration, extension hash and exact
+commands with results. Keep captures under `$ARTIFACTS`; cite no local artifact paths here.
+Run matched unprofiled release processes without overlapping builds, tests or other benchmarks.
+Profile separately to attribute CPU/allocation costs. Historical September results are not
+validation of this build.
+
+- First complete gate: `sloped_t`, then `sloped_branch` (adding the fourth leg), moving and
+  stationary, including full terrain, a matching click and undo. Flat counterparts also pass.
+- Final representative gate: the existing flat/sloped neighboring-junction, cross and dense
+  preview fixtures. Record their lengths, affected nodes, segments, terrain cells and output
+  sizes so the workload cannot quietly shrink. Acute, mixed-width/profile, footpath, bridge,
+  tunnel and site cases retain correctness coverage even when outside this timing workload.
+- Report sampled input to first rendered matching generation, displayed pose age, final-pose
+  settling, maximum/p50/p95/p99 where sample counts justify them, deadline misses, coalesced
+  input and superseded requests. Queue wait, compilation, terrain, lock/capture, live checks,
+export, upload submission and installation are distinct stages; overlapping measurements
+must not be summed. A stale result is not a successful update for a newer sampled pose.
+- `frame_post_draw` is a rendered boundary, not proof of physical monitor presentation or
+  isolated GPU upload duration. Headless timings cannot establish rendered acceptance. Count
+  real elapsed misses, including contention; do not inherit `PERF-07`'s preemption exclusion.
+- The deliberately withheld-residency fixture tests atomic retries and recovery. Report its
+  injected delay separately; do not present it as normal residency or hide its missed updates.
+- Repeat with simulation paused and active on populated fixtures. Hold the edited neighborhood
+  fixed while increasing remote roads, buildings, parcels and agents; verify identical local
+  semantic products and locality. The deferred `PERF-08` simulation workload remains separately
+  identified and does not turn a road compile measurement into a full-game frame guarantee.
+
+The initial engineering allowance is about 6.5 ms for capture, solve, terrain and CPU
+publication (0.5 / 3 / 2 / 1 ms respectively), leaving margin within the end-to-end 16.7 ms
+target. These are provisional stage budgets, not measured results or permission to consume
+the whole render frame. Use the actual critical path and revise stage allocations openly if
+measurement supports it, without relaxing the end-to-end target.
+
+The baseline tool polled before dispatch in one `_process`, imposing another frame on a newly
+submitted result. The branch now orders camera input, pending camera-clearance updates,
+sampling/dispatch, ordinary scene processing and late publication at priorities
+`-300 / -200 / -100 / 0 / +100`. One RoadTool-owned publisher makes the visual decision after
+polling, preserving atomic road/terrain staging and live dependency checks. It is enabled when
+Road/Walkway mode activates: a real SceneTree regression showed that enabling it during the
+early callback defers its first execution until the next frame. While selected and idle, it
+checks pending flags without allocations or native calls. Ordinary node staging in
+`frame_pre_draw` does not establish same-frame visibility;
+the water renderer already needs direct RID updates at that late hook. A late nonblocking poll
+alone cannot meet the target when a cheap main-thread frame finishes before its worker.
+Only if measurements justify it, add an exact-request completion wait with an absolute sample
+deadline and an export/stage/render reserve, holding no core or result lock while waiting.
+Timeout, unavailable live checks and stale/superseded results remain reported misses.
+
+Fresh headless validation, `godot --headless --path godot --script
+res://tests/network_tool_chunk_renderer_test.gd`, passes actual same-frame callback ordering,
+late exact-result selection without resampling or a fallback upload, rejection, stale/cancel
+handling and failed-stage retention/retry. A dependency change between sampling and first
+publication queues a fresh early update; a stationary-pointer regression verifies recovery.
+The run reports three ObjectDB instances and one
+resource remaining at shutdown; the archived October 20 run of this same test/runtime reports
+the same counts. These are callback and bridge checks, not rendered latency acceptance or
+evidence of a compiler speedup. The gameplay benchmark also activates the publisher before
+its first sample, using the same tool lifecycle as interactive placement.
+
+Maintain the surface/terrain regression suites and production Godot transaction checks.
+Compare material ownership, heights, topology, seam coverage and queries; an equivalent new
+triangulation need not preserve the old triangle order. Verify repeatability and worker-count
+independence, preview/commit parity, stale-result rejection, deletion, rollback, save/load and
+undo. Run the required Clippy checks and rendered checks for material/seam changes.
+
+### First baseline and compiler decision (2026-10-23)
+
+Fresh rendered baseline, one unprofiled process for `sloped_t,sloped_branch` and one for
+`flat_cross,sloped_cross`, with a separate diagnostic process for the slope cases. Release
+extension SHA-256: `da43b17f643c982c47461d92111aae05b43a51b361a0829bbbbf946652dff1f3`.
+The original extension and measurement scripts were retained before any source changes.
+Source is the baseline commit above; later captures include only the three documentation
+changes introducing `ROAD-67`. This is a baseline, not a before/after speedup claim.
+
+Reference machine: i9-12900K (24 logical CPUs), RX 7900 XTX / RADV, Godot 4.7.2 Forward+,
+X11, 1920×1080, VSync on, 60 FPS cap, four Rayon workers, simulation paused. Full road-and-terrain
+mode, eight warmup poses, 100 stationary poses and 400 scheduled 60 Hz moving inputs per case.
+The synthetic 512 m world uses 8 m cells, 128 m chunks, and a 2.5% slope in sloped cases.
+The T begins with one edge; the branch begins with a three-way junction; each cross begins
+with four parallel roads. No buildings or agents are present. Populated acceptance remains
+outstanding. The initial sandboxed display launch failed before the workload; only the
+subsequent rendered runs below are evidence.
+
+| Fixture | Stationary input-to-frame p50 / p95 / max, ms | Moving displayed-age p50 / p95 / max, ms | New moving results / scheduled inputs | Stop to exact frame, ms |
+| --- | --- | --- | --- | --- |
+| `sloped_t` | 57.02 / 63.91 / 75.92 | 53.10 / 69.69 / 87.05 | 245 / 400 | 57.25 |
+| `sloped_branch` | 57.24 / 77.10 / 96.32 | 74.01 / 103.64 / 185.54 | 154 / 400 | 97.49 |
+| `flat_cross` | 74.50 / 77.19 / 96.06 | 102.89 / 136.82 / 170.52 | 108 / 400 | 75.34 |
+| `sloped_cross` | 91.62 / 109.15 / 126.31 | 120.18 / 186.92 / 286.64 | 85 / 400 | 141.89 |
+
+All four captures pass the existing correlation, state-preservation and exact-final-pose
+validator; no trace overflow or frame longer than 33.333 ms was reported. Nevertheless all
+996 captured result rows (stationary, moving and final) exceed 16.7 ms, and none of the moving
+result rows matches the latest sampled input at its rendered frame. Smooth frame cadence
+therefore does not establish responsive previews.
+
+The old schema's `dropped=0` means no measurement-buffer loss. It does not mean every scheduled
+or sampled pointer pose was displayed. Scheduled inputs may coalesce before the tool samples
+them, and pending requests may be superseded. The table must not be used to infer an exact
+number of missed sampled inputs. The old frame report has distributions, not raw frame intervals.
+
+Schema 2 adds scheduled-input dispositions, per-sampled-input deadline accounting and raw
+frame intervals. A fresh rendered run with the archived baseline extension and the new
+collector passed the report validator for both slope fixtures. The denominator includes
+every sampled pose; an exact result must show the latest pose in strictly less than 16.7 ms.
+An older pose displayed within that time still misses. Buffer overflow is reported separately.
+
+| Fixture | Scheduled / sampled | Coalesced before sampling | Superseded without display | Displayed stale | Exact deadline met / missed | Frames over 16.7 ms / total | Maximum frame, ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sloped_t` | 400 / 380 | 20 | 140 | 240 | 0 / 380 | 317 / 769 | 34.555 |
+| `sloped_branch` | 400 / 370 | 30 | 216 | 154 | 0 / 370 | 357 / 847 | 28.572 |
+
+All 750 sampled moving poses missed; neither case lost collector records. The T capture had
+one frame above 33.333 ms. The collector and reporter focused suites passed (Godot collector,
+10 Python reporter cases), including superseded requests, stale results, preserving the first
+exact result and rejecting equality at the deadline. Schema-1 reports remain readable.
+
+This run used the same hardware/settings and extension hash as above, launched directly with
+`godot --path godot --windowed --resolution 1920x1080 -- --gameplay-road-benchmark` and the same
+benchmark environment, plus launcher identity metadata and a fresh run ID. It did not rebuild
+the extension from the modified tree. Replay-helper SHA-256:
+`e2dcd631aed843b82f648bec6091e5e73f9477668631cc552a614ebcf5c28190`;
+trace/collector SHA-256: `d7efc8fa9aeb1dee59f3a2b4fa2f43beed7d05c82ca4aa41dc5aca2ecfb408d7`.
+Frame means changed from 16.672/16.678 to 16.676/16.669 ms (T/branch); stationary preview
+medians changed from 57.02/57.24 to 56.64/58.10 ms. These separate single-process observations
+show no material cadence shift but do not establish a paired harness-overhead bound. The
+opt-in collector still allocates diagnostic records; subsequent comparisons use the same schema.
+
+Separate diagnostic medians / p95, milliseconds (not acceptance timings):
+
+| Fixture | Worker total | Road | Terrain | Earthwork preparation | Queue wait | Worker end to poll | Stage/install |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sloped_t` | 25.35 / 28.99 | 20.65 / 24.49 | 3.48 / 4.82 | 0.89 / 1.17 | 7.56 / 14.32 | 8.52 / 16.00 | 2.01 / 3.13 |
+| `sloped_branch` | 38.92 / 51.90 | 33.38 / 47.19 | 3.70 / 5.25 | 0.97 / 1.22 | 8.37 / 25.54 | 8.91 / 15.16 | 1.95 / 3.03 |
+
+Road construction remains the largest worker stage. Queue/poll cadence and installation also
+consume material time, so reducing the compiler alone does not prove end-to-end acceptance.
+The replacement builds one constrained planar subdivision from raw semantic contours and
+source constraints, with material/source labels per face, retaining independent owner/height contexts
+at shared XZ positions. Raised curbs must never collapse to one shared height. Existing Spade
+supports the triangulation; every semantic boundary must be constrained and globally noded,
+and conflicting constraints are errors. Exact integer winding is a test oracle; evaluating
+every boundary for every face costs `O(F*S)` and is not the intended production classifier.
+Investigate propagation of signed contour contributions across shared edges, then derive the
+owned faces, seam provenance and final triangles from that same subdivision. This replaces
+repeated ownership operations rather than caching another copy of their outputs.
+
+The first native sloped T/four-way checks pass for material/owner/source labels, per-label
+coverage in both directions and exclusion of unlabeled faces from the footprint. These are
+test-only subdivision checks; they do not yet prove evaluated heights, final meshes or runtime
+performance. Raw rail contours contain unsplit crossings even in the T fixture, so the shared
+subdivision needs explicit global noding before triangulation. Sparse winding propagation now
+updates aggregate ownership counters across constrained edges. The indexed noder below replaces
+the initial exhaustive discovery, but still requires a bounded rounding-closure contract.
+The existing region-based height solver cannot simply consume one region per CDT triangle:
+that changes seam participation and makes arbitrary triangulation edges enter grade decisions.
+Connected ownership cycles remain necessary for boundary export; height normalization should
+operate once on canonical vertex contexts and authorized contact incidence.
+
+The exhaustive noder costs `O(sum_i(E_i*V_i + E_i^2))` across rounding-closure passes,
+plus split sorting. Its final provenance rescan also costs `O(A*E + U*V)` for atomic
+edges/vertices `A/U`. The next measured step reuses deterministic sorted-axis candidate
+filtering and carries source incidences through splitting. Its bound must include actual
+bounding-box candidates and closure passes; it is not a one-pass snap-rounding proof.
+Interior height checks must use authorized source fields and final seam/grade rules. Two
+independently triangulated nonplanar contours need not interpolate identical interior heights;
+exact boundary/source anchors and contact authority remain required.
+The revised T proof passes these focused checks. The four-way exposed a 31.167 mm curb
+height difference at a common boundary context. Restoring internal seam records did not
+resolve it. A focused trace confirms identical 4.100000 m source-field values and agreement
+through the first four normalization passes; only explicit material-seam normalization
+diverges, selecting 4.131167 m in the reference. The reference passes arrangement construction
+and final triangulation validation, and the failing context is unique in both results.
+Canonical contact spans and all participating vertex contexts remain under investigation.
+Shared edges and point contacts must retain height authority
+even when adjacent material/owner labels match; exterior region cycles alone are insufficient.
+The four-way discrepancy remains a prototype correctness blocker. Five indexed-noder checks
+pass, including a newly covered point-only carrier that lies on an edge only after intersection
+rounding. Segment-only planarity verification missed that contact; the replacement explicitly
+verifies vertex/segment completeness as well.
+
+The direct raw-input height probe also remains incomplete. Before field construction, noded
+generated contours must interpolate their original carriers and apply the existing authorized
+shared-height synchronization. Build source-carrier provenance from that synchronized geometry;
+the raw rail builder's empty registry is not evidence that no authority applies. Reuse canonical
+claim selection and typed conflict handling, then resolve one `(point, owner, height field)`
+context with the selected claim as metadata. A synthetic split must not suppress a genuine
+source-height disagreement. Repeated triangle-local seam attachment is not the replacement.
+Provenance-derived carrier points must be materialized before field construction, preserving
+the existing dependency order. The independent probe now performs that step. A source trace
+resolved its first 39 mm discrepancy as an oracle setup mismatch: the new graph vertex at
+XZ (1 m, 1 m) has no old owned context or provenance record. Registering the new owned
+incidence selects its explicit 4.200 m source segment; the old arbitrary-point oracle had
+not registered that support and selected a 4.161143 m generated side-join patch. The corrected
+oracle must register the same requested support and retain independent existing-anchor and
+source-segment checks. That correction and the complete source proof remain pending; no
+height tolerance has been relaxed and this is not an accepted replacement yet.
+The separate flat grade consumer passes focused group-order and three-stage raised-seam checks,
+plus 12 existing seam-selector and four grade regressions. It resolves each pass from a stable
+input state before applying writes. Canonical graph-incidence integration remains outstanding.
+Before replacing final triangulation, preserve and test the existing long sloped carriageway
+interior-guide contract; raw carrier constraints alone do not prove equivalent output coverage.
+
+Fresh exhaustive-graph component timing used the ownership proof fixture (mouths at
+±10 m X / ±12 m Z, relative mouth heights 0 / +0.25 / −0.15 / +0.4 m), four Rayon workers,
+one warmup and 21 samples. It excludes reference setup, height solving, mesh export, terrain
+and Godot; it is not the 96 m-arm compiler fixture or the rendered preview workload.
+
+| Proof fixture | Raw contours median / p90, ms | Shared graph median / p90, ms | Noding passes | Point/segment tests | Segment-pair tests | Atomic edges / faces |
+| --- | --- | --- | --- | --- | --- | --- |
+| Sloped T | 0.154 / 0.166 | 3.218 / 3.313 | 1 | 36,680 | 137,026 | 139 / 164 |
+| Sloped four-way | 0.276 / 0.291 | 9.868 / 9.957 | 1 | 101,700 | 404,550 | 260 / 312 |
+
+These counters omit verification and final provenance scans; the indexed comparison adds
+discovery/verification/output accounting. Run from `rust/`: `RUSTC_WRAPPER= RAYON_NUM_THREADS=4
+cargo test --release shared_subdivision_raw_constant_factors --lib -- --ignored --nocapture`.
+Archived executable SHA-256: `1571649d0545766e984b9fec6e0d2cd183d9a8543dfd7d40199f1888008dfce1`;
+proof fixture source SHA-256: `fe60d1543150a5e554fd9685c9509a9b16aebd0aec94b2ebbb4fa2b05804060a`.
+This establishes the component baseline for the indexing change, not full compiler acceptance.
+
+The indexed implementation's matched release run, using the same fixture and command, reduced
+shared-graph median / p90 to **1.385 / 1.411 ms for T** and **2.838 / 2.891 ms for four-way**
+(about 57% / 71% below that exhaustive baseline). A second run of the archived indexed binary
+gave medians 1.388 / 2.832 ms. These are component observations; final normalized heights,
+export, terrain and rendered latency are still outstanding. Indexed executable SHA-256:
+`b07be6dc87001af077b6f8d6b6c05f80c8df7e2337f49301c640526922fa01e7`;
+noder source SHA-256: `6da5d4ba40e18049ead67e25f46dfd07f80ca5ed88fa1d7b76c01dda31997d22`.
+
+T / four-way inputs contain 218 / 310 paths, 715 / 1,170 point incidences and 524 / 900
+segment incidences. Point discovery visits 2,209 / 4,470 axis-range entries and retains
+1,236 / 2,136 exact predicates; segment discovery visits 36,957 / 85,951 entries and retains
+10,034 / 20,606 pairs. Both finish in one pass with unchanged 139 / 260 atomic edges.
+Separate final verification includes 308 / 610 segment pairs and 280 / 526 point/segment
+predicates; source assembly emits 1,020 / 2,116 edge and 1,139 / 2,290 vertex incidences.
+This removes the provenance rescan, but dense candidate ranges remain quadratic and rounded
+closure still lacks a useful production pass bound. Passing this component comparison does
+not resolve that remaining algorithm contract or the four-way height discrepancy.
+
+The independent regular-terrain experiment passed focused checks for regular connectivity,
+contained footprints, holes and sourced seams; its shared output-assembly extraction passed
+the existing terrain CDT suite. The latest coherent experimental binary passed six focused
+checks and 70 active CDT checks (one ignored). These validate that experimental checkpoint,
+not adoption: full assembly of near-coincident grid/seam vertices and broader authored terrain
+cases were still outstanding when timing rejected the approach for the first road gate.
+
+Matched unprofiled release comparison on identical synthetic 64 m tiles with 8 m grids,
+10 warmups and 50 measured samples per path:
+
+| Sloped footprint | Full-patch CDT median, ms | Regular/component median, ms | Change | Full vertices / faces | Safe / boundary cells | Component vertices / constraints | Extra grid cuts / output faces |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| T | 0.0657 | 0.0942 | +43.4% | 80 / 119 | 42 / 22 | 50 / 50 | 15 / 134 |
+| Four-way | 0.0794 | 0.1258 | +58.4% | 82 / 118 | 36 / 28 | 64 / 64 | 18 / 136 |
+
+Each case forms one connected boundary component. Partitioning, grid cuts and extra output
+cost more than reducing CDT vertices saves. These are synthetic footprint fixtures, not actual
+road-surface-export inputs or the complete 3.5–3.7 ms rendered terrain stage; the result does
+not prove all regular-terrain algorithms slower. It does reject this candidate as a justified
+replacement now. The experimental sources, patches, binaries and raw results were archived
+locally, then all five terrain experiment files were restored or removed. Existing full-patch
+CDT remains unchanged while work targets the measured road compiler bottleneck. No change to
+terrain or engineered-ground behavior is accepted.
+
+The experimental release binary has SHA-256
+`43d8568d8dae59e2404049d9d27ce65898d6b627edee0eb91ca038bf95bc19cf`.
+Its ignored native fixture was run from `rust/` with `RUSTC_WRAPPER= cargo test --release
+benchmark_regular_component_cdt_against_full_patch --lib -- --ignored --nocapture`.
+It uses one sloped plane, 9 × 9 grid samples and an exact-grid T/plus footprint with 8/12
+boundary vertices. This rejected fixture is retained in the local experiment archive, not
+the production test suite. Eleven subsequent serial runs of the archived release executable,
+with `RAYON_NUM_THREADS` unset and no competing build/test, confirmed the direction: median
+paired ratios were 1.505 for T and 1.592 for four-way. These local algorithms run serially;
+the surrounding harness used default Rayon settings, not the four-worker rendered workload.
+
+Native cost attribution changed the implementation priority. A fresh release run of
+`junction_compile_constant_factors` used the unchanged production road compiler, one warmup
+and 21 samples per case. Median times were 14.07/19.79 ms for flat/sloped T, 21.54/22.91 ms
+for flat/sloped cross, 36.36 ms for sloped oblique and 101.02 ms for five-way. This isolated
+fixture uses 96 m arms and precompiled spans; it excludes terrain patch generation, Godot
+and rendering. It used **default Rayon settings**, unlike the rendered four-worker baseline;
+the actual pool size was not recorded, so it is diagnostic baseline evidence, not a matched
+acceptance comparison. Future comparisons must set and record worker counts explicitly.
+Test-binary SHA-256: `0841bddc795cb54ef04bf043ce04bbad4330b2063aab0b72b6b364e98c35e47f`.
+
+A separate diagnostic run, after initializing the existing debug subsystem in that ignored
+benchmark, gave these sloped-cross pipeline medians (ms):
+
+| Rails | Ownership | Heights | Arrangement | Triangulation + validation | Attach | Export | Pipeline total |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 8.680 | 5.582 | 3.037 | 1.589 | 0.834 | 0.237 | 1.787 | 21.916 |
+
+Medians do not sum to the median total, and nested substage timers overlap. Diagnostic binary:
+`ccf8ac253bbd22172b2d5e1444fcd75b7dbc8590d495fc26bf9789f77f4159b5`.
+Both runs used `RUSTC_WRAPPER= METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road cargo test --release
+junction_compile_constant_factors -- --ignored --nocapture` from `rust/`, with no competing
+build or benchmark. Debug variables were inert in the first binary because the test harness
+had not initialized logging. Source was the baseline commit plus the test-only prototypes,
+visibility/shared terrain-assembly changes, and (for diagnostics) benchmark debug initialization;
+production road construction was unchanged. These are fresh measurements, not acceptance of
+the replacement.
+
+Raw four-way contour construction costs about 0.25 ms in the diagnostic fixture; most rail
+time follows it. The 52 contours and 164 source constraints expand to 832 flat / 911 sloped
+final constraints through repeated contact synthesis, noding and retained-authority processing.
+The replacement input boundary must therefore move before `finish_base_with_profile`:
+consume raw semantic contours and source constraints once, derive final adjacent owner contexts
+from the shared subdivision, and retain source height authority explicitly on its atomic edges
+and vertices. Point-only contacts, exact source-span requirements and authorized reownership
+remain part of that contract; material kinds alone cannot establish seam authority.
+Finished rails remain a reference oracle during proof. Replacing only boolean ownership after
+paying the existing rail cost cannot meet the budget.
+
+Reproduction (run build and measurements sequentially; choose a fresh run ID each time):
+
+```bash
+RUSTC_WRAPPER= cargo build --release --manifest-path rust/Cargo.toml
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_DEBUG_PERF=0 \
+METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview \
+METRUM_GAMEPLAY_BENCHMARK_CASES=sloped_t,sloped_branch \
+METRUM_GAMEPLAY_BENCHMARK_REPETITIONS=100 \
+METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS=8 \
+METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60 \
+METRUM_GAMEPLAY_BENCHMARK_OUTPUT_DIR="$ARTIFACTS" \
+METRUM_GAMEPLAY_BENCHMARK_RUN_ID=road67-baseline-slope \
+./run.sh --benchmark-gameplay-roads
+```
+
+The cross run changes the cases to `flat_cross,sloped_cross` and uses its own run ID. The
+diagnostic changes `METRUM_DEBUG_PERF=1` on the slope cases with a third run ID. The launcher
+deploys the release extension and records source, binary and harness identity in each capture.
+
+### Migration gates
+
+| Gate | Status | Required evidence before advancing |
+| --- | --- | --- |
+| `ROAD-67-A` | complete | Fresh release baseline and diagnostic attribution; rendered schema-2 deadline accounting validated; shared-boundary design and complexity targets recorded. |
+| `ROAD-67-B` | in progress | Native prototypes underway; complete sloped T and four-way replacement still requires terrain, preview/commit/undo parity and measured frame-budget acceptance. |
+| `ROAD-67-C` | open | Supported geometry families and neighboring/site interactions, deterministic correctness and locality. |
+| `ROAD-67-D` | open | Production input/render scheduling, click consequences and active-city end-to-end acceptance. |
+| `ROAD-67-E` | open | Superseded production paths/caches removed; final cross-system checks and matched release evidence. |
+
+Keep the game usable between changes. Experimental code may coexist in test/benchmark
+harnesses while being proved; do not introduce permanent runtime feature flags, compatibility
+shims, or a silent fallback to a different geometry contract. If the complete prototype misses
+the target, revise it before expanding. A fast isolated ribbon or passing narrow unit suite
+does not complete `ROAD-67-B`, and documentation or baseline completion does not complete the
+refactor.
+
 ## Road marking lighting — RENDER-12
 
 Lane lines use shared, non-emissive per-pixel lighting with roughness 1.0. Their existing

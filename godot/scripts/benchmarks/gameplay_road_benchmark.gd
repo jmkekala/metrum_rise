@@ -1072,6 +1072,7 @@ func _begin_scripted_road(
 ) -> void:
 	road_tool.cancel_road()
 	road_tool.active = true
+	road_tool.set_preview_publication_active(true)
 	road_tool.draw_mode = int(segment["draw_mode"])
 	road_tool.fwd_lanes = int(segment["fwd_lanes"])
 	road_tool.bkw_lanes = int(segment["bkw_lanes"])
@@ -1368,6 +1369,7 @@ func _stop_scripted_tool() -> void:
 	if road_tool != null:
 		road_tool.cancel_road()
 		road_tool.active = false
+		road_tool.set_preview_publication_active(false)
 		road_tool.set_scripted_pointer(false)
 
 func _write_metrics() -> bool:

@@ -41,6 +41,8 @@ const WORLD_CAMERA_NEAR_CLIP_M := 0.5
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 const GameSettings := preload("res://scripts/core/game_settings.gd")
+const CAMERA_INPUT_PROCESS_PRIORITY := -300
+const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
 var _current_save_path := ""
 var _simulation_speed: float = 0.0
@@ -53,6 +55,11 @@ var _alt_orbit := false
 var _last_gesture := ""
 
 func _ready():
+	# Camera input and native clearance settling must precede RoadTool's cursor sample.
+	process_priority = CAMERA_INPUT_PROCESS_PRIORITY
+	var frame_camera := get_node_or_null("../CameraNode")
+	if frame_camera != null:
+		frame_camera.process_priority = CAMERA_SETTLE_PROCESS_PRIORITY
 	if not has_node("../CulDeSacTool"):
 		var rt = Node3D.new()
 		rt.name = "CulDeSacTool"
@@ -363,6 +370,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				if not enabled:
 					road_tool.cancel_road()
 				road_tool.active = enabled
+				road_tool.set_preview_publication_active(enabled)
 				if enabled:
 					road_tool.fwd_lanes = 1
 					road_tool.bkw_lanes = 1
@@ -374,6 +382,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				if not enabled:
 					road_tool.cancel_road()
 				road_tool.active = enabled
+				road_tool.set_preview_publication_active(enabled)
 				if enabled:
 					road_tool.fwd_lanes = 0
 					road_tool.bkw_lanes = 0

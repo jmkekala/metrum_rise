@@ -76,6 +76,80 @@ class RoadBenchmarkReportTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 validate_capture(bad)
 
+    def test_preview_schema_two_accounts_for_every_sampled_pose(self):
+        def row(request, input_id, input_us=100, frame_us=500, exact=True):
+            return dict(request_id=request, input_id=input_id, input_us=input_us,
+                        dispatch_us=input_us + 1, received_us=input_us + 2,
+                        installed_us=frame_us - 1, frame_us=frame_us,
+                        input_to_frame_ms=(frame_us - input_us) / 1000,
+                        exact_at_frame=exact, native={},
+                        full_terrain=True, frame_boundary="frame_post_draw")
+
+        state = dict.fromkeys(("generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"), 0)
+        lifecycle = [
+            dict(schedule_id=1, scheduled_us=10, emitted_us=11,
+                 disposition="coalesced_before_sampling", schedule_lateness_ms=0.001),
+            dict(schedule_id=2, scheduled_us=20, emitted_us=21, sampled_us=22,
+                 sampled_input_id=1, disposition="stale_displayed", strict_16_7_met=False,
+                 first_stale_request_id=11, first_stale_frame_us=522,
+                 sample_to_stale_frame_ms=0.5, sample_to_resolution_ms=0.1),
+            dict(schedule_id=3, scheduled_us=30, emitted_us=31, sampled_us=32,
+                 sampled_input_id=2, disposition="late_exact", strict_16_7_met=False,
+                 exact_request_id=13, frame_us=20032,
+                 sample_to_frame_ms=20.0, sample_to_resolution_ms=20.0),
+            dict(schedule_id=4, scheduled_us=40, emitted_us=41, sampled_us=42,
+                 sampled_input_id=3, disposition="exact_on_time", strict_16_7_met=True,
+                 exact_request_id=14, frame_us=10042,
+                 sample_to_frame_ms=10.0, sample_to_resolution_ms=10.0),
+            dict(schedule_id=5, scheduled_us=50, emitted_us=51, sampled_us=52,
+                 sampled_input_id=4, disposition="sampled_but_superseded", strict_16_7_met=False,
+                 sample_to_resolution_ms=0.1),
+        ]
+        deadline = dict(
+            contract="RoadTool pose sample to exact frame; every sampled pose is in the denominator",
+            budget_ms=16.7, scheduled_count=5, sampled_count=4, exact_frame_count=2,
+            met_count=1, miss_count=3,
+            disposition_counts={"coalesced_before_sampling": 1, "stale_displayed": 1,
+                                "late_exact": 1, "exact_on_time": 1,
+                                "sampled_but_superseded": 1},
+        )
+        case = dict(case_id="flat_t", mode=1, ok=True, dropped=0,
+                    stationary=[row(10, 10)],
+                    moving=[row(11, 1, 22, 522, False),
+                            row(13, 2, 32, 20032, True),
+                            row(14, 3, 42, 10042, True)],
+                    final=row(12, 12),
+                    state_before=state, state_after=state, scheduled_input_count=5,
+                    scheduled_input_hz=1, moving_interval_ms=5000, frame_ms={"count": 2, "max": 18.0},
+                    frame_wall_ms=[16.0, 18.0], frames_over_16_7ms=1,
+                    scheduled_input_lifecycle=lifecycle, sampled_input_deadline=deadline)
+        data = dict(benchmark="road_preview_latency", schema_version=2, success=True,
+                    samples=1, expected_cases=["flat_t"], modes=[1],
+                    mode="windowed", cases=[case])
+        self.assertIs(validate_capture(data), data)
+
+        for change in ("missing_input", "stale_pass", "bad_counts", "bad_frame_count",
+                       "invented_exact", "equality"):
+            bad = copy.deepcopy(data)
+            if change == "missing_input":
+                bad["cases"][0]["scheduled_input_lifecycle"].pop()
+            elif change == "stale_pass":
+                bad["cases"][0]["scheduled_input_lifecycle"][1]["strict_16_7_met"] = True
+            elif change == "bad_counts":
+                bad["cases"][0]["sampled_input_deadline"]["miss_count"] = 2
+            elif change == "bad_frame_count":
+                bad["cases"][0]["frames_over_16_7ms"] = 0
+            elif change == "invented_exact":
+                bad["cases"][0]["scheduled_input_lifecycle"][2]["exact_request_id"] = 99
+            else:
+                lifecycle_row = bad["cases"][0]["scheduled_input_lifecycle"][3]
+                lifecycle_row["frame_us"] = lifecycle_row["sampled_us"] + 16700
+                lifecycle_row["sample_to_frame_ms"] = 16.7
+                bad["cases"][0]["moving"][2]["frame_us"] = lifecycle_row["frame_us"]
+                bad["cases"][0]["moving"][2]["input_to_frame_ms"] = 16.7
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_capture(bad)
+
     def test_valid_capture_and_paired_process_delta(self):
         self.assertIsNotNone(validate_capture(capture()))
         result = compare_pairs([capture(), capture()], [capture(0.8), capture(1.0)], "render_ack_ms")

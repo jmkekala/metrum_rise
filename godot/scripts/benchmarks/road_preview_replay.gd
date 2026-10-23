@@ -21,7 +21,7 @@ func run(bench: Node) -> void:
 	if bench.mode != "headless":
 		DisplayServer.window_set_title("Metrum Rise - road preview benchmark")
 	_report = {
-		"schema_version": 1, "benchmark": "road_preview_latency", "success": false,
+		"schema_version": 2, "benchmark": "road_preview_latency", "success": false,
 		"runtime": bench._runtime_metadata(), "cases": [], "phases": [], "mode": bench.mode, "modes": [MODE],
 		"expected_cases": CASES.filter(func(name): return bench.selected_case_ids.is_empty() or name in bench.selected_case_ids),
 		"samples": bench.repetitions, "warmups": bench.warmup_repetitions,
@@ -124,7 +124,9 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 		var due_us := move_start + int(float(index) * 1000000.0 / 60.0)
 		while Time.get_ticks_usec() < due_us:
 			await bench.get_tree().process_frame
-		input_lateness_ms.append(float(Time.get_ticks_usec() - due_us) / 1000.0)
+		var emitted_us := Time.get_ticks_usec()
+		input_lateness_ms.append(float(emitted_us - due_us) / 1000.0)
+		trace.schedule(due_us, emitted_us)
 		_set_pointer(bench, _moving_pose(scenario, index))
 	while Time.get_ticks_usec() < move_start + int(float(input_count) * 1000000.0 / 60.0):
 		await bench.get_tree().process_frame
@@ -132,6 +134,7 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	result["scheduled_input_hz"] = 60
 	result["input_lateness_ms"] = Metrics.distribution(input_lateness_ms)
 	var stop_us := Time.get_ticks_usec()
+	trace.finish_scheduled_inputs(stop_us)
 	var observed_service_ms: float = trace.worker_service_ms - moving_service_start
 	_set_pointer(bench, _pose(scenario, 9.0 / 16.0))
 	if not await _wait_exact(bench):
@@ -148,15 +151,42 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	result["gpu_contract"] = "latest engine viewport timing, potentially delayed; not a per-request upload timer; zero/unavailable samples are not evidence of zero GPU work"
 	result["final"] = trace.last_rendered
 	result["frame_ms"] = Metrics.distribution(trace.frame_ms)
+	result["frame_wall_ms"] = trace.frame_ms.duplicate()
+	result["frames_over_16_7ms"] = trace.frame_ms.filter(func(ms): return ms > 16.7).size()
 	result["frames_over_33ms"] = trace.frame_ms.filter(func(ms): return ms > 33.333).size()
 	result["frames_over_50ms"] = trace.frame_ms.filter(func(ms): return ms > 50.0).size()
 	result["stationary_ms"] = Metrics.distribution(result.stationary.map(func(row): return row.input_to_frame_ms))
 	result["new_result_age_ms"] = Metrics.distribution(result.moving.map(func(row): return row.input_to_frame_ms))
 	result["moving_display_age_samples"] = trace.display_age_samples.filter(func(row): return row.frame_us >= move_start and row.frame_us <= stop_us)
 	result["moving_display_age_ms"] = Metrics.distribution(result.moving_display_age_samples.map(func(row): return row.age_ms))
+	result["scheduled_input_lifecycle"] = trace.scheduled_input_lifecycle()
+	var sampled_lifecycle: Array = result.scheduled_input_lifecycle.filter(func(row): return row.has("sampled_us"))
+	var exact_lifecycle: Array = sampled_lifecycle.filter(func(row): return row.disposition in ["exact_on_time", "late_exact"])
+	var stale_lifecycle: Array = sampled_lifecycle.filter(func(row): return row.disposition == "stale_displayed")
+	var disposition_counts := {}
+	for row in result.scheduled_input_lifecycle:
+		disposition_counts[row.disposition] = int(disposition_counts.get(row.disposition, 0)) + 1
+	result["sampled_input_deadline"] = {
+		"contract": "RoadTool pose sample to first frame boundary showing that exact latest pose; every sampled pose is in the denominator",
+		"budget_ms": 16.7,
+		"scheduled_count": result.scheduled_input_lifecycle.size(),
+		"sampled_count": sampled_lifecycle.size(),
+		"exact_frame_count": exact_lifecycle.size(),
+		"met_count": sampled_lifecycle.filter(func(row): return bool(row.get("strict_16_7_met", false))).size(),
+		"miss_count": sampled_lifecycle.filter(func(row): return not bool(row.get("strict_16_7_met", false))).size(),
+		"disposition_counts": disposition_counts,
+		"sample_to_resolution_ms": Metrics.distribution(sampled_lifecycle.map(func(row): return row.sample_to_resolution_ms)),
+		"sample_to_exact_frame_ms": Metrics.distribution(exact_lifecycle.map(func(row): return row.sample_to_frame_ms)),
+		"sample_to_stale_frame_ms": Metrics.distribution(stale_lifecycle.map(func(row): return row.sample_to_stale_frame_ms)),
+	}
 	result["state_after"] = sim.get_road_benchmark_state()
-	result["dropped"] = trace.dropped + trace.dropped_frames
-	result.ok = result.dropped == 0 and not result.moving.is_empty()
+	result["dropped"] = trace.dropped + trace.dropped_frames + trace.dropped_lifecycle
+	result.ok = (
+		result.dropped == 0
+		and not result.moving.is_empty()
+		and result.scheduled_input_lifecycle.size() == input_count
+		and int(result.sampled_input_deadline.sampled_count) + int(disposition_counts.get("coalesced_before_sampling", 0)) == input_count
+	)
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		result.ok = result.ok and result.state_before[field] == result.state_after[field]
 	if MetrumDebug.is_enabled("perf"):

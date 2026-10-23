@@ -58,6 +58,7 @@ const CASES: [CompileBenchCase; 6] = [
 #[test]
 #[ignore = "matched release JunctionN compile timing; setup and digests are not timed"]
 fn junction_compile_constant_factors() {
+    crate::debug::init();
     let flat = planar_world_terrain(1601, 1601, 1.0, 150.0, 0.0, 0.0);
     let sloped = planar_world_terrain(1601, 1601, 1.0, 150.0, 0.035, -0.014);
     let mut total_ms = 0.0;

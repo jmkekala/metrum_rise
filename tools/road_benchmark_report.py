@@ -73,8 +73,9 @@ def validate_capture(data):
 
 def validate_preview_capture(data):
     """Reject incomplete modes, stale correlations and invalid timing boundaries."""
-    if data.get("schema_version") != 1 or data.get("success") is not True:
-        raise ValueError("preview capture must be successful schema 1")
+    schema = data.get("schema_version")
+    if schema not in (1, 2) or data.get("success") is not True:
+        raise ValueError("preview capture must be successful schema 1 or 2")
     # Older captures ran both modes and do not record them.
     expected = {(name, mode) for name in data["expected_cases"] for mode in data.get("modes", (0, 1))}
     seen = set()
@@ -88,6 +89,8 @@ def validate_preview_capture(data):
         target_ms = case["scheduled_input_count"] * 1000 / case["scheduled_input_hz"]
         if not target_ms <= case["moving_interval_ms"] <= target_ms + case["frame_ms"]["max"] + 1:
             raise ValueError(f"moving input cadence drift: {key}")
+        if schema == 2:
+            validate_preview_lifecycle(case, key)
         ids = set()
         for row in case["stationary"] + case["moving"] + [case["final"]]:
             if row["request_id"] in ids:
@@ -123,6 +126,119 @@ def validate_preview_capture(data):
     if not expected or expected != seen:
         raise ValueError("incomplete preview mode matrix")
     return data
+
+
+def validate_preview_lifecycle(case, key):
+    """Validate exhaustive scheduled/sampled pose accounting for schema-2 captures."""
+    lifecycle = case.get("scheduled_input_lifecycle", [])
+    summary = case.get("sampled_input_deadline", {})
+    if len(lifecycle) != case["scheduled_input_count"] or summary.get("scheduled_count") != len(lifecycle):
+        raise ValueError(f"incomplete scheduled input lifecycle: {key}")
+    if [row.get("schedule_id") for row in lifecycle] != list(range(1, len(lifecycle) + 1)):
+        raise ValueError(f"non-contiguous scheduled input IDs: {key}")
+    allowed = {
+        "coalesced_before_sampling", "sampled_but_superseded", "stale_displayed",
+        "exact_on_time", "late_exact",
+    }
+    sampled = []
+    sampled_ids = []
+    disposition_counts = {}
+    for row in lifecycle:
+        disposition = row.get("disposition")
+        if disposition not in allowed:
+            raise ValueError(f"unresolved input disposition: {key}: {disposition}")
+        disposition_counts[disposition] = disposition_counts.get(disposition, 0) + 1
+        scheduled_us, emitted_us = row.get("scheduled_us"), row.get("emitted_us")
+        if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in (scheduled_us, emitted_us)):
+            raise ValueError(f"invalid scheduled input time: {key}")
+        if emitted_us < scheduled_us:
+            raise ValueError(f"input emitted before its deadline: {key}")
+        if disposition == "coalesced_before_sampling":
+            if "sampled_us" in row or "strict_16_7_met" in row:
+                raise ValueError(f"coalesced input was counted as sampled: {key}")
+            continue
+        sampled.append(row)
+        sampled_us = row.get("sampled_us")
+        if not isinstance(sampled_us, (int, float)) or not math.isfinite(sampled_us) or sampled_us < emitted_us:
+            raise ValueError(f"pose sampled before it was emitted: {key}")
+        sampled_input_id = row.get("sampled_input_id")
+        if type(sampled_input_id) is not int or sampled_input_id <= 0:
+            raise ValueError(f"invalid sampled input ID: {key}")
+        sampled_ids.append(sampled_input_id)
+        met = row.get("strict_16_7_met")
+        if not isinstance(met, bool) or met != (disposition == "exact_on_time"):
+            raise ValueError(f"incorrect strict deadline classification: {key}")
+        resolution = row.get("sample_to_resolution_ms")
+        if not isinstance(resolution, (int, float)) or not math.isfinite(resolution) or resolution < 0:
+            raise ValueError(f"invalid sampled-pose resolution time: {key}")
+        if disposition in ("exact_on_time", "late_exact"):
+            latency = row.get("sample_to_frame_ms")
+            if not isinstance(latency, (int, float)) or not math.isfinite(latency) or latency < 0:
+                raise ValueError(f"invalid exact frame latency: {key}")
+            frame_us = row.get("frame_us")
+            if not isinstance(frame_us, (int, float)) or not math.isfinite(frame_us):
+                raise ValueError(f"invalid exact frame timestamp: {key}")
+            if abs(latency - (frame_us - sampled_us) / 1000) > 0.001:
+                raise ValueError(f"inconsistent exact frame latency: {key}")
+            if (latency < 16.7) != met:
+                raise ValueError(f"exact frame deadline mismatch: {key}")
+        elif disposition == "stale_displayed":
+            latency = row.get("sample_to_stale_frame_ms")
+            if not isinstance(latency, (int, float)) or not math.isfinite(latency) or latency < 0:
+                raise ValueError(f"invalid stale frame latency: {key}")
+            if met:
+                raise ValueError(f"stale display passed exact deadline: {key}")
+            frame_us = row.get("first_stale_frame_us")
+            if not isinstance(frame_us, (int, float)) or not math.isfinite(frame_us):
+                raise ValueError(f"invalid stale frame timestamp: {key}")
+            if abs(latency - (frame_us - sampled_us) / 1000) > 0.001:
+                raise ValueError(f"inconsistent stale frame latency: {key}")
+    if sampled_ids != sorted(sampled_ids) or len(sampled_ids) != len(set(sampled_ids)):
+        raise ValueError(f"sampled input IDs must be unique and ordered: {key}")
+
+    observed = {}
+    for row in case["moving"]:
+        observed.setdefault(row.get("input_id"), []).append(row)
+    for row in sampled:
+        disposition = row["disposition"]
+        if disposition in ("exact_on_time", "late_exact"):
+            matches = [candidate for candidate in observed.get(row["sampled_input_id"], [])
+                       if candidate.get("request_id") == row.get("exact_request_id")
+                       and candidate.get("input_us") == row.get("sampled_us")
+                       and candidate.get("frame_us") == row.get("frame_us")
+                       and candidate.get("exact_at_frame") is True]
+            if len(matches) != 1:
+                raise ValueError(f"exact lifecycle has no matching observed result: {key}")
+        elif disposition == "stale_displayed":
+            matches = [candidate for candidate in observed.get(row["sampled_input_id"], [])
+                       if candidate.get("request_id") == row.get("first_stale_request_id")
+                       and candidate.get("input_us") == row.get("sampled_us")
+                       and candidate.get("frame_us") == row.get("first_stale_frame_us")
+                       and candidate.get("exact_at_frame") is False]
+            if len(matches) != 1:
+                raise ValueError(f"stale lifecycle has no matching observed result: {key}")
+    expected = {
+        "scheduled_count": len(lifecycle),
+        "sampled_count": len(sampled),
+        "exact_frame_count": sum(row["disposition"] in ("exact_on_time", "late_exact") for row in sampled),
+        "met_count": sum(row["disposition"] == "exact_on_time" for row in sampled),
+        "miss_count": sum(row["disposition"] != "exact_on_time" for row in sampled),
+        "disposition_counts": disposition_counts,
+    }
+    for field, value in expected.items():
+        if summary.get(field) != value:
+            raise ValueError(f"incorrect sampled deadline summary {field}: {key}")
+    if summary.get("budget_ms") != 16.7 or "every sampled pose" not in summary.get("contract", ""):
+        raise ValueError(f"wrong sampled deadline contract: {key}")
+    frames = case.get("frame_wall_ms")
+    if not isinstance(frames, list) or len(frames) != case["frame_ms"]["count"]:
+        raise ValueError(f"missing raw wall-time frames: {key}")
+    if any(not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 for value in frames):
+        raise ValueError(f"invalid raw wall-time frame: {key}")
+    if frames and abs(max(frames) - case["frame_ms"]["max"]) > 0.001:
+        raise ValueError(f"raw frame maximum mismatch: {key}")
+    if case.get("frames_over_16_7ms") != sum(value > 16.7 for value in frames):
+        raise ValueError(f"raw frame deadline count mismatch: {key}")
 
 
 def load_capture(path):

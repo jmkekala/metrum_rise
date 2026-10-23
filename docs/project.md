@@ -325,6 +325,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
+- **Road surface compiler replacement (`ROAD-67`, in progress)**: after `SIM-02`, replace
+  repeated surface construction and investigate exact local terrain clipping for WYSIWYG
+  road-and-terrain previews below 16.7 ms on a declared workload. The fresh baseline and deadline
+  collector are validated, and same-frame dispatch/publication ordering passes Godot bridge checks.
+  The sloped T/four-way prototype must still prove preview/commit/undo parity and rendered latency.
+  See the [design and migration gates](roads.md#surface-compiler-replacement-road-67).
+
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
   Old saves break; continuous income and per-entity settlement windows are accepted gameplay
