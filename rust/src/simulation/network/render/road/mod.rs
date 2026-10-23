@@ -491,6 +491,11 @@ pub(super) fn footpath_color(edge: &crate::simulation::network::graph::Edge) -> 
     )
 }
 
+// Junction asphalt: zero alpha, so the asphalt shader draws it without road space.
+pub(super) fn road_color() -> Color {
+    Color::from_rgba(0.0, 0.0, 0.0, 0.0)
+}
+
 pub(super) fn curb_color() -> Color {
     Color::from_rgba(0.56, 0.55, 0.53, 1.0)
 }

@@ -331,10 +331,11 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   directly from their arms (corners, round joins, mouth stations, heights `plane + level`) and feed
   the existing terrain CDT through oriented outer chains. Preview runs synchronously; commit adopts
   the preview's pieces. The targets are an exact road-and-terrain preview within 16.7 ms and a
-  commit within one frame. The game may break between gates `ROAD-68-A`–`H`. `ROAD-68-A` and
-  `ROAD-68-B` are done: roads render as span pieces between the graph clips, queries answer from
-  the rendered triangles and buildings place again, while junction areas stay empty until
-  `ROAD-68-C`. Tests that need later gates are disabled until then.
+  commit within one frame. The game may break between gates `ROAD-68-A`–`H`. `ROAD-68-A`,
+  `ROAD-68-B` and `ROAD-68-C` are done: roads render as span pieces between node pieces built from
+  each junction's layout, queries answer from the rendered triangles and buildings place again.
+  Terrain is not yet clipped to the roads (`ROAD-68-D`). Tests that need later gates are disabled
+  until then.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
@@ -1091,6 +1092,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-68-C` (branch `road`): junctions, bends and road ends render again as node pieces built from their junction layouts: carriageway core, curbs, sidewalks and curb faces sharing exact mouth sections with the spans, heights on each node's solved plane. Graph clips and the profile solve's hard zone come from the layout mouths, obtuse corners between two- and four-lane arms fit by extending the wider arm backwards, and layout failures reject placements with reasons. A four-way node piece builds in 0.071 ms. See [`roads.md`](roads.md#road-68-c--junction-layout-and-node-pieces).
 - `ROAD-68-B` (branch `road`): roads render again as constructive span pieces (carriageway, curbs, sidewalks, footpaths and curb faces) between the graph clips, with lane markings, street lights and signs on their sections. Height, band, ray, overlap and lane queries answer from the rendered triangles through a 32 m query-cell index, so lanes snap and buildings place on their frontage again. Junction, bend and terminal areas stay empty until `ROAD-68-C`. A 100 m span builds in 0.017 ms. See [`roads.md`](roads.md#road-68-b--profiles-and-spans).
 - `ROAD-68-A` (branch `road`): the legacy road-surface compiler (`surface/`, 432 files) and the asynchronous road preview worker are removed. Consumers read the empty `roadbed/` façade, so roads render nothing and buildings cannot be placed until `ROAD-68-B`; the road preview validates synchronously. Tests that need road geometry are disabled until their gate. See [`roads.md`](roads.md#road-68-a--remove-legacy-stand-up-the-façade).
 - `VEG-25`: trees no longer turn darker as the camera comes within 60 m. The near trees' detailed shadow casters shaded their own crowns; they now stand back from the sun as the far casters do, and the ground shadows are unchanged. See [the shadows paragraph](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27).

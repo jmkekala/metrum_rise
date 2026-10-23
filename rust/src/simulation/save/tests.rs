@@ -2030,7 +2030,7 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
 }
 
 #[test]
-#[ignore = "ROAD-68-C: junction pieces from the loaded graph"]
+#[ignore = "ROAD-68-F: node 1 joins a footpath to two roads (D5), so it has no node piece yet"]
 fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();

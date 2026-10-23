@@ -23,6 +23,9 @@ i_overlay = "5.0"
 imbl = "7.0.0"
 parry2d = { version = "0.26", features = ["enhanced-determinism"] }
 rstar = "0.12"
+# Exact orientation predicates (already built for spade), so the junction core check agrees
+# with the constrained triangulation that consumes the loop.
+robust = "1.2"
 soa_derive = "0.14"
 spade = "2.15"
 splines = { version = "5.0", features = ["glam"] }
@@ -59,4 +62,8 @@ harness = false
 
 [[bench]]
 name = "economy_tick_benchmark"
+harness = false
+
+[[bench]]
+name = "roadbed_layout_benchmark"
 harness = false

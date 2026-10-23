@@ -1,51 +1,36 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Junction mouth clipping and incident-edge collection.
+//! Junction mouth clips from the junction layout (`ROAD-68-C`), and incident-edge collection.
+//!
+//! An edge's clip at a bend or junction node is its arm's mouth station in that node's layout:
+//! horizontal metres along the roadbed centreline from the node. Terminals, pass-through nodes
+//! and nodes whose layout fails (a placement rejection) keep a zero clip. Each layout is
+//! `O(degree * arm points)`; a full rebuild lays out every node on the shared pool.
 
 use super::super::data::{Edge, RegionGraph};
-use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+use crate::simulation::network::roadbed::{EdgeEnd, NodeArms, NodeKind};
+use crate::simulation::network::types::TransitType;
 use godot::prelude::{Vector2, Vector3};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const CLIP_MIN_SIN: f32 = 0.0001;
-const CLIP_LENGTH_RESERVE_M: f32 = 0.1;
-const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.1;
-const CLIP_ACUTE_MAX_HALFWIDTH_FACTOR: f32 = 5.0;
-
-#[derive(Clone, Copy)]
-struct ClipIncident {
-    edge_idx: usize,
-    direction_xz: Vector2,
-    half_width_m: f32,
-}
-
-#[derive(Default)]
-struct ClipNodeStats {
-    connection_count: usize,
-    max_road_width_m: f32,
-    min_road_width_m: f32,
-    max_half_width_m: f32,
-    incidents: Vec<ClipIncident>,
-}
 
 impl RegionGraph {
-    /// Recalculates the start/end clipping distances for all edges meeting at junctions.
-    ///
-    /// This prevents road geometry from overlapping in the center of an intersection
-    /// and ensures space for the junction mesh.
+    /// Recalculates the start/end clipping distances for all edges from their nodes' junction
+    /// layouts.
     pub fn rebuild_intersection_clips(&mut self) {
-        let edge_indices = (0..self.edges.len()).collect::<Vec<_>>();
-        let clip_stats = self.build_clip_node_stats(&edge_indices, None);
-        let computed_clips = self.compute_intersection_clips(&edge_indices, &clip_stats, None);
-
-        for (edge_idx, start_clip, end_clip) in computed_clips {
+        // Layouts read node adjacency, so it must be current first.
+        self.rebuild_adjacency_list();
+        let nodes: Vec<u32> = (0..self.nodes.len().min(self.adjacency.len()) as u32)
+            .filter(|&node| self.get_valid_node(node) == node)
+            .collect();
+        let mouths = self.layout_mouth_stations(&nodes);
+        for edge_idx in 0..self.edges.len() {
+            let (start_clip, end_clip) = Self::edge_clips(edge_idx, &mouths);
             let edge = &mut self.edges[edge_idx];
             edge.start_clip = start_clip;
             edge.end_clip = end_clip;
-
-            // Clips describe ownership only. Control geometry includes hard profile-plane
-            // supports that must never overwrite the separately eased physical road profile.
         }
 
         // Re-index all roads after a massive batch clip rebuild (e.g. after terrain sync)
@@ -53,17 +38,13 @@ impl RegionGraph {
         for i in 0..self.edges.len() {
             self.add_to_spatial_index(i);
         }
-        self.rebuild_adjacency_list();
     }
 
-    /// Rebuilds intersection clips for only the edges incident to `affected_nodes`.
+    /// Rebuilds intersection clips for only the edge ends at `affected_nodes`.
     ///
-    /// Equivalent to [`Self::rebuild_intersection_clips`] but scoped to the nodes touched
-    /// by a single road placement. Avoids the full O(E) resample pass and full
-    /// R-tree / adjacency rebuild — only the O(K) incident edges are updated.
-    ///
-    /// Use this from the `AddRoad` handler. Use the full rebuild for bulk operations
-    /// such as save-load restore or terrain sync.
+    /// Equivalent to [`Self::rebuild_intersection_clips`] for those ends, scoped to the nodes
+    /// touched by a single road placement: `O(affected degree * arm points)` plus the R-tree
+    /// updates of the incident edges.
     pub fn rebuild_intersection_clips_for_nodes(&mut self, affected_nodes: &HashSet<u32>) {
         if affected_nodes.is_empty() {
             return;
@@ -74,11 +55,15 @@ impl RegionGraph {
             self.remove_from_spatial_index(edge_idx);
         }
 
-        let clip_stats = self.build_clip_node_stats(&reindex_ids, Some(affected_nodes));
-        let computed_clips =
-            self.compute_intersection_clips(&reindex_ids, &clip_stats, Some(affected_nodes));
-
-        for (edge_idx, start_clip, end_clip) in computed_clips {
+        let mut nodes: Vec<u32> = affected_nodes
+            .iter()
+            .map(|&node| self.get_valid_node(node))
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        let mouths = self.layout_mouth_stations(&nodes);
+        for &edge_idx in &reindex_ids {
+            let (start_clip, end_clip) = Self::edge_clips(edge_idx, &mouths);
             let (start_node, end_node) = {
                 let edge = &self.edges[edge_idx];
                 (
@@ -100,6 +85,40 @@ impl RegionGraph {
             self.add_to_spatial_index(edge_idx);
         }
         // Adjacency is unchanged — no rebuild needed.
+    }
+
+    // Mouth stations by `(edge, at_start)` at the bend and junction nodes among `nodes`.
+    fn layout_mouth_stations(&self, nodes: &[u32]) -> HashMap<(usize, bool), f32> {
+        let per_node: Vec<Vec<((usize, bool), f32)>> = crate::thread_pools::install(|| {
+            nodes
+                .par_iter()
+                .map(|&node| {
+                    let Some(arms) = NodeArms::collect(self, node) else {
+                        return Vec::new();
+                    };
+                    match arms.layout() {
+                        Ok(layout) if layout.kind != NodeKind::Terminal => layout
+                            .arms
+                            .iter()
+                            .filter(|arm| {
+                                self.edges[arm.key.edge].primary_type == TransitType::Road
+                            })
+                            .map(|arm| {
+                                let at_start = arm.key.end == EdgeEnd::Start;
+                                ((arm.key.edge, at_start), arm.mouth_station_m as f32)
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    }
+                })
+                .collect()
+        });
+        per_node.into_iter().flatten().collect()
+    }
+
+    fn edge_clips(edge_idx: usize, mouths: &HashMap<(usize, bool), f32>) -> (f32, f32) {
+        let clip = |at_start: bool| mouths.get(&(edge_idx, at_start)).copied().unwrap_or(0.0);
+        (clip(true), clip(false))
     }
 
     pub(super) fn surface_edges_touching_nodes(&self, affected_nodes: &HashSet<u32>) -> Vec<usize> {
@@ -129,211 +148,8 @@ impl RegionGraph {
         edge_ids
     }
 
-    fn build_clip_node_stats(
-        &self,
-        edge_indices: &[usize],
-        affected_nodes: Option<&HashSet<u32>>,
-    ) -> HashMap<u32, ClipNodeStats> {
-        let mut stats: HashMap<u32, ClipNodeStats> = HashMap::new();
-
-        for &edge_idx in edge_indices {
-            let Some(edge) = self.edges.get(edge_idx) else {
-                continue;
-            };
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-
-            let endpoints = [
-                (
-                    self.get_valid_node(edge.start_node),
-                    Self::edge_endpoint_direction_xz(edge, true),
-                ),
-                (
-                    self.get_valid_node(edge.end_node),
-                    Self::edge_endpoint_direction_xz(edge, false),
-                ),
-            ];
-            let half_width_m = Self::roadbed_half_width_m(edge);
-
-            for (node_id, direction_xz) in endpoints {
-                if affected_nodes.is_some_and(|affected| !affected.contains(&node_id)) {
-                    continue;
-                }
-
-                let node_stats = stats.entry(node_id).or_insert_with(|| ClipNodeStats {
-                    min_road_width_m: f32::MAX,
-                    ..Default::default()
-                });
-                node_stats.connection_count += 1;
-                node_stats.max_road_width_m = node_stats.max_road_width_m.max(edge.width);
-                node_stats.min_road_width_m = node_stats.min_road_width_m.min(edge.width);
-                node_stats.max_half_width_m = node_stats.max_half_width_m.max(half_width_m);
-
-                if let Some(direction_xz) = direction_xz {
-                    node_stats.incidents.push(ClipIncident {
-                        edge_idx,
-                        direction_xz,
-                        half_width_m,
-                    });
-                }
-            }
-        }
-
-        for node_stats in stats.values_mut() {
-            node_stats.incidents.sort_by(|a, b| {
-                a.edge_idx
-                    .cmp(&b.edge_idx)
-                    .then(a.direction_xz.x.total_cmp(&b.direction_xz.x))
-                    .then(a.direction_xz.y.total_cmp(&b.direction_xz.y))
-            });
-        }
-
-        stats
-    }
-
-    fn compute_intersection_clips(
-        &self,
-        edge_indices: &[usize],
-        clip_stats: &HashMap<u32, ClipNodeStats>,
-        affected_nodes: Option<&HashSet<u32>>,
-    ) -> Vec<(usize, f32, f32)> {
-        let mut computed = Vec::with_capacity(edge_indices.len());
-
-        for &edge_idx in edge_indices {
-            let Some(edge) = self.edges.get(edge_idx) else {
-                continue;
-            };
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-
-            let start_node = self.get_valid_node(edge.start_node);
-            let end_node = self.get_valid_node(edge.end_node);
-            if affected_nodes.is_some_and(|affected| {
-                !affected.contains(&start_node) && !affected.contains(&end_node)
-            }) {
-                continue;
-            }
-
-            let length_m = Self::edge_geometry_length_m(edge);
-            let start_clip = if affected_nodes.is_none_or(|affected| affected.contains(&start_node))
-            {
-                self.clip_for_edge_at_node(edge_idx, start_node, length_m, clip_stats)
-            } else {
-                edge.start_clip
-            };
-            let end_clip = if affected_nodes.is_none_or(|affected| affected.contains(&end_node)) {
-                self.clip_for_edge_at_node(edge_idx, end_node, length_m, clip_stats)
-            } else {
-                edge.end_clip
-            };
-            let (start_clip, end_clip) =
-                Self::fit_clips_to_edge_length(start_clip, end_clip, length_m);
-            computed.push((edge_idx, start_clip, end_clip));
-        }
-
-        computed
-    }
-
-    fn clip_for_edge_at_node(
-        &self,
-        edge_idx: usize,
-        node_id: u32,
-        edge_length_m: f32,
-        clip_stats: &HashMap<u32, ClipNodeStats>,
-    ) -> f32 {
-        let Some(stats) = clip_stats.get(&node_id) else {
-            return 0.0;
-        };
-        if self.nodes[node_id as usize].node_type != NodeType::Junction {
-            return 0.0;
-        }
-        if !Self::node_requires_clip(stats) {
-            return 0.0;
-        }
-
-        let mut clip_m = stats.max_half_width_m * CLIP_WIDTH_PADDING_FACTOR;
-        let widths_differ = (stats.max_road_width_m - stats.min_road_width_m).abs() > 0.1;
-        let acute_clip_limit_m = if widths_differ {
-            edge_length_m
-        } else {
-            stats.max_half_width_m * CLIP_ACUTE_MAX_HALFWIDTH_FACTOR
-        };
-        let Some(self_incident) = stats
-            .incidents
-            .iter()
-            .find(|incident| incident.edge_idx == edge_idx)
-            .copied()
-        else {
-            return clip_m.min(edge_length_m);
-        };
-
-        for other in &stats.incidents {
-            if other.edge_idx == edge_idx
-                || Self::directions_are_pass_through(self_incident.direction_xz, other.direction_xz)
-            {
-                continue;
-            }
-
-            let dot = self_incident
-                .direction_xz
-                .dot(other.direction_xz)
-                .clamp(-1.0, 1.0);
-            let cross = Self::cross_xz(self_incident.direction_xz, other.direction_xz).abs();
-            // The arms' facing edges meet this far along this arm: past the inner corner, where
-            // the two roadbeds overlap. Arms more than 90 degrees apart diverge on the outer side,
-            // so only that inner corner counts; a gentle bend needs almost none (TRAFFIC-04).
-            let required_m = if cross <= CLIP_MIN_SIN {
-                edge_length_m
-            } else {
-                ((other.half_width_m + self_incident.half_width_m * dot) / cross).max(0.0)
-            };
-            if required_m.is_finite() {
-                clip_m = clip_m.max(required_m.min(acute_clip_limit_m));
-            } else {
-                clip_m = clip_m.max(acute_clip_limit_m);
-            }
-        }
-
-        clip_m.clamp(0.0, edge_length_m.max(0.0))
-    }
-
-    fn node_requires_clip(stats: &ClipNodeStats) -> bool {
-        let widths_differ = (stats.max_road_width_m - stats.min_road_width_m).abs() > 0.1;
-        stats.connection_count >= 3 || widths_differ || Self::node_has_non_pass_through_pair(stats)
-    }
-
-    fn node_has_non_pass_through_pair(stats: &ClipNodeStats) -> bool {
-        for (index, a) in stats.incidents.iter().enumerate() {
-            for b in stats.incidents.iter().skip(index + 1) {
-                if !Self::directions_are_pass_through(a.direction_xz, b.direction_xz) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     pub(super) fn directions_are_pass_through(a: Vector2, b: Vector2) -> bool {
         a.dot(b) <= -CLIP_PASS_THROUGH_DOT_THRESHOLD
-    }
-
-    fn cross_xz(a: Vector2, b: Vector2) -> f32 {
-        a.x * b.y - a.y * b.x
-    }
-
-    fn roadbed_half_width_m(edge: &Edge) -> f32 {
-        if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
-            return edge.width.max(2.0) * 0.5;
-        }
-
-        let sidewalk_width = if edge.allowed_types & TransitFlags::FOOT != 0 {
-            crate::config::SIDEWALK_WIDTH
-        } else {
-            0.0
-        };
-        edge.width.max(crate::config::LANE_WIDTH) * 0.5 + sidewalk_width
     }
 
     pub(super) fn edge_endpoint_direction_xz(edge: &Edge, at_start: bool) -> Option<Vector2> {
@@ -362,13 +178,6 @@ impl RegionGraph {
         None
     }
 
-    fn edge_geometry_length_m(edge: &Edge) -> f32 {
-        edge.geometry
-            .windows(2)
-            .map(|window| window[0].distance_to(window[1]))
-            .sum()
-    }
-
     pub(super) fn edge_profile_length_m(edge: &Edge) -> f32 {
         edge.geometry
             .windows(2)
@@ -382,26 +191,5 @@ impl RegionGraph {
         b: Vector3,
     ) -> f32 {
         (a.x - b.x).hypot(a.z - b.z)
-    }
-
-    fn fit_clips_to_edge_length(
-        start_clip_m: f32,
-        end_clip_m: f32,
-        edge_length_m: f32,
-    ) -> (f32, f32) {
-        if edge_length_m <= CLIP_LENGTH_RESERVE_M {
-            return (0.0, 0.0);
-        }
-
-        let max_sum = (edge_length_m - CLIP_LENGTH_RESERVE_M).max(0.0);
-        let start_clip_m = start_clip_m.clamp(0.0, edge_length_m);
-        let end_clip_m = end_clip_m.clamp(0.0, edge_length_m);
-        let sum = start_clip_m + end_clip_m;
-        if sum <= max_sum || sum <= f32::EPSILON {
-            return (start_clip_m, end_clip_m);
-        }
-
-        let scale = max_sum / sum;
-        (start_clip_m * scale, end_clip_m * scale)
     }
 }

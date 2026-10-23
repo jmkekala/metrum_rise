@@ -3,26 +3,37 @@
 //! Constructive roadbed (`ROAD-68`): road cross-section profiles, immutable road pieces, the
 //! road chunk index and visible-surface queries, all derived from the road graph.
 //!
-//! `ROAD-68-B` builds span pieces between the mouth stations the graph clips give; junction,
-//! bend and terminal pieces arrive in `ROAD-68-C`. `docs/roads.md` owns the contract and the gate
-//! plan.
+//! Junction, bend and terminal nodes get node pieces from their layouts (`ROAD-68-C`), and span
+//! pieces run between the mouth sections those node pieces evaluate. `docs/roads.md` owns the
+//! contract and the gate plan.
 
+mod arms;
 #[cfg(test)]
 pub(crate) mod fixtures;
 mod geometry;
 mod index;
+mod layout;
 mod mesh;
+mod node;
 mod profile;
 mod query;
 mod section;
 mod span;
 mod system;
 
+pub(crate) use arms::NodeArms;
 pub(crate) use geometry::{
     RoadSurfaceTriangleQueryIndex, ray_xz_interval_for_bounds, road_ray_triangle_intersection_t,
     triangulate_constrained_rings_xz,
 };
+pub use layout::{
+    ArmBand, ArmInput, ArmKey, ArmKnot, ArmLayout, ArmSide, BoundaryBand, CoreVertex,
+    CoreVertexSource, Corner, CornerTangent, EdgeEnd, JunctionLayout, LayoutError, NodeKind,
+    SectorBoundary, SectorKind, SectorLayout, Side,
+};
 pub use mesh::{OuterChain, PieceMesh};
+pub(crate) use node::check_node;
+pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
 pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
 pub use query::{LaneSurfaceQuery, PieceId};

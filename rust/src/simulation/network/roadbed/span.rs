@@ -6,23 +6,29 @@
 //! class steps of 8 / 12 / 10 m, a 2 m cadence through profile transitions and width tapers,
 //! protected samples, the width-change taper at degree-two width-change nodes, a section frame
 //! from centered secants with exact mouth directions, the junction profile-plane blend, and the
-//! bisected shared axis at pass-through nodes. Until `ROAD-68-C` the mouth stations are the graph
-//! clips.
+//! bisected shared axis at pass-through nodes. A span runs between the mouth sections its two
+//! node pieces evaluated; an end without a node piece (a pass-through node) evaluates its own at
+//! the graph clip.
 
 mod model;
 
+use model::SpanModel;
 pub(crate) use model::SpanScratch;
-use model::{EdgeEnd, SpanModel};
+pub(super) use model::{
+    PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge,
+};
 
 use super::index::{PieceFootprint, RenderGrid};
+use super::layout::EdgeEnd;
 use super::mesh::{PieceMesh, build_span_mesh};
 use super::profile::RoadProfile;
 use super::{RoadSection, RoadVec3};
 use crate::simulation::network::graph::RegionGraph;
 use std::sync::Arc;
 
-/// Cross-section at one end of a span: evaluated once by the span model's mouth function and
-/// copied into every piece that meets there, so their shared vertices are bit-identical.
+/// Cross-section at one end of a span: evaluated once, by the node piece at that end (or by the
+/// span model at a pass-through node), and copied into every piece that meets there, so their
+/// shared vertices are bit-identical.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MouthSection {
     /// The evaluated section at the mouth station.
@@ -38,9 +44,11 @@ pub struct MouthSection {
 #[derive(Debug, PartialEq)]
 pub struct SpanPiece {
     edge_idx: usize,
+    // The edge's start and end nodes when built, so a reconnected edge's old nodes rebuild.
+    nodes: [u32; 2],
     sections: Box<[RoadSection]>,
-    start_mouth: MouthSection,
-    end_mouth: MouthSection,
+    start_mouth: Arc<MouthSection>,
+    end_mouth: Arc<MouthSection>,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
 }
@@ -78,15 +86,21 @@ impl SpanPiece {
     pub(super) fn footprint(&self) -> &PieceFootprint {
         &self.footprint
     }
+
+    pub(super) fn nodes(&self) -> [u32; 2] {
+        self.nodes
+    }
 }
 
-/// Builds the span piece of `edge_idx`, or `None` when the edge has no span: it is missing,
-/// deleted, not a road or footpath, or its two mouths leave no length between them.
+/// Builds the span piece of `edge_idx` between the node pieces' mouth sections at its start and
+/// end, or `None` when the edge has no span: it is missing, deleted, not a road or footpath, or
+/// its two mouths leave no length between them.
 ///
 /// `O(sections * bands)` plus the piece grid; allocates only the piece.
 pub(crate) fn build_span_piece(
     graph: &RegionGraph,
     edge_idx: usize,
+    mouths: [Option<&Arc<MouthSection>>; 2],
     grid: RenderGrid,
     scratch: &mut SpanScratch,
 ) -> Option<SpanPiece> {
@@ -97,9 +111,16 @@ pub(crate) fn build_span_piece(
         protected,
         footprint,
     } = scratch;
-    let model = SpanModel::new(graph, edge_idx, points, cumulative)?;
-    let start_mouth = model.mouth_section(EdgeEnd::Start);
-    let end_mouth = model.mouth_section(EdgeEnd::End);
+    let model = SpanModel::new(
+        graph,
+        edge_idx,
+        points,
+        cumulative,
+        mouths.map(|mouth| mouth.map(Arc::as_ref)),
+    )?;
+    let own_mouth = |end: EdgeEnd| Arc::new(model.mouth_section(end));
+    let start_mouth = mouths[0].map_or_else(|| own_mouth(EdgeEnd::Start), Arc::clone);
+    let end_mouth = mouths[1].map_or_else(|| own_mouth(EdgeEnd::End), Arc::clone);
     model.interior_stations(stations, protected);
     let mut sections = Vec::with_capacity(stations.len() + 2);
     sections.push(start_mouth.section.clone());
@@ -107,8 +128,10 @@ pub(crate) fn build_span_piece(
     sections.push(end_mouth.section.clone());
     let mesh = build_span_mesh(&sections, &start_mouth, &end_mouth, model.layout());
     let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
+    let edge = graph.edge(edge_idx);
     Some(SpanPiece {
         edge_idx,
+        nodes: [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)),
         sections: sections.into_boxed_slice(),
         start_mouth,
         end_mouth,

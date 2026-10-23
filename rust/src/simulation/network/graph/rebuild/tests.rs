@@ -3,8 +3,7 @@
 //! Junction profile rebuild regression tests.
 
 use super::junction_profiles::{
-    JUNCTION_PROFILE_MOUTH_MAX_GRADE, JUNCTION_PROFILE_SOLVE_SAMPLE_M,
-    JUNCTION_PROFILE_SUPPORT_STEP_M, JunctionEndpointProfilePlane,
+    JUNCTION_PROFILE_MOUTH_MAX_GRADE, JUNCTION_PROFILE_SOLVE_SAMPLE_M, JunctionEndpointProfilePlane,
 };
 use crate::simulation::network::graph::data::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
@@ -43,6 +42,7 @@ fn final_junction_profile_preserves_a_supported_hillside_corridor() {
             edge.end_node = end_node;
             graph.add_edge(edge);
         }
+        graph.rebuild_intersection_clips();
         graph.finalize_junction_endpoint_profiles_for_edges(
             &HashSet::from([center]),
             &HashSet::from([0, 1, 2, 3]),
@@ -80,6 +80,7 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
     }
     let nodes = HashSet::from([center]);
     let dirty_edges = HashSet::from([0, 1, 2]);
+    graph.rebuild_intersection_clips();
     graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &dirty_edges, &HashSet::from([2]));
     let solved: Vec<_> = graph
         .edges()
@@ -125,7 +126,8 @@ fn repeated_junction_solve_does_not_import_hard_control_pins_into_physical_profi
         grade_z: 0.0,
     };
     for _ in 0..2 {
-        let core = RegionGraph::junction_profile_hard_zone_m(&edge, 80.0);
+        // A hard zone, as a junction layout mouth station gives it.
+        let core = 1.75;
         RegionGraph::apply_junction_profile_plane_to_edge(
             &mut edge, true, plane, true, false, core, true, None,
         );
@@ -359,7 +361,8 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
     north_edge.end_node = north;
     graph.add_edge(north_edge);
 
-    graph.rebuild_adjacency_list();
+    // Clips come from the junction layouts and set the solve's hard zones.
+    graph.rebuild_intersection_clips();
     let adaptable_edges = HashSet::from([0, 1]);
     let changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
         &HashSet::from([center]),
@@ -407,19 +410,18 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
         "visible solve-distance support must be eased toward, not pinned to, the capped profile plane: delta={visible_solve_sample_delta_m:.6} original_delta={original_delta_m:.6} sample={visible_solve_sample:?} expected_y={visible_expected_y:.6}"
     );
 
-    let transition_sample = RegionGraph::sample_edge_geometry_from_endpoint(
-        &visible_edge,
-        true,
-        solve_sample_m + JUNCTION_PROFILE_SUPPORT_STEP_M * 2.0,
-    )
-    .expect("vertical-curve transition sample should exist");
+    // The hard zone is the bend's layout mouth (9.5 m); sample a solve distance beyond it.
+    let transition_m = graph.edge(0).start_clip + JUNCTION_PROFILE_SOLVE_SAMPLE_M;
+    let transition_sample =
+        RegionGraph::sample_edge_geometry_from_endpoint(&visible_edge, true, transition_m)
+            .expect("vertical-curve transition sample should exist");
     let transition_plane_y = plane.height_at_xz(transition_sample.x, transition_sample.z);
     assert!(
         (transition_sample.y - transition_plane_y).abs() > 0.05,
         "post-hard-zone sample should have started easing away from the platform plane"
     );
-    let local_grade = (transition_sample.y - visible_solve_sample.y).abs()
-        / (JUNCTION_PROFILE_SUPPORT_STEP_M * 2.0);
+    let local_grade =
+        (transition_sample.y - visible_solve_sample.y).abs() / (transition_m - solve_sample_m);
     assert!(
         local_grade < source_grade * 1.5,
         "profile support transition should not create a near-vertical cliff: local_grade={local_grade:.3}"
@@ -435,7 +437,8 @@ fn conservative_profile_materializes_supports_for_visible_vertical_curve() {
         grade_z: 0.0,
     };
 
-    let core = RegionGraph::junction_profile_hard_zone_m(&edge, 80.0);
+    // A hard zone, as a junction layout mouth station gives it.
+    let core = 1.75;
     RegionGraph::apply_junction_profile_plane_to_edge(
         &mut edge, true, plane, false, false, core, true, None,
     );
@@ -493,7 +496,8 @@ fn junction_profile_preserves_authority_corridor_when_branch_connects_from_hill(
     north_edge.end_node = north;
     graph.add_edge(north_edge);
 
-    graph.rebuild_adjacency_list();
+    // Clips come from the junction layouts and set the solve's hard zones.
+    graph.rebuild_intersection_clips();
     let changed_edges = graph.solve_junction_endpoint_profiles_for_edges(
         &HashSet::from([center]),
         &HashSet::from([1, 2]),
@@ -564,7 +568,8 @@ fn pass_through_bridge_approach_profile_does_not_exceed_authored_grade_cap() {
     approach.start_node = center;
     approach.end_node = east;
     let approach_idx = graph.add_edge(approach);
-    graph.rebuild_adjacency_list();
+    // Clips come from the junction layouts and set the solve's hard zones.
+    graph.rebuild_intersection_clips();
     let authored_profile = graph.edge(approach_idx).physical_geometry.clone();
 
     graph.finalize_junction_endpoint_profiles_for_edges(
@@ -639,7 +644,8 @@ fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
         edge.end_node = end;
         graph.add_edge(edge);
     }
-    graph.rebuild_adjacency_list();
+    // Clips come from the junction layouts and set the solve's hard zones.
+    graph.rebuild_intersection_clips();
 
     let before = graph
         .junction_endpoint_profile_plane(center)
@@ -649,7 +655,8 @@ fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
     opposite_edge.start_node = center;
     opposite_edge.end_node = opposite_branch;
     graph.add_edge(opposite_edge);
-    graph.rebuild_adjacency_list();
+    // Clips come from the junction layouts and set the solve's hard zones.
+    graph.rebuild_intersection_clips();
     let changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
         &HashSet::from([center]),
         &HashSet::from([3]),

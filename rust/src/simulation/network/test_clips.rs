@@ -3,10 +3,33 @@
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
+    use crate::simulation::network::roadbed::{EdgeEnd, NodeArms};
     use crate::simulation::network::types::{
         EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
     };
     use godot::prelude::Vector3;
+
+    // Each arm's mouth station in the node's junction layout (`ROAD-68-C`), by edge and end.
+    fn layout_mouths(g: &RegionGraph, node: u32) -> Vec<(usize, bool, f32)> {
+        let arms = NodeArms::collect(g, node).expect("node has a layout");
+        let layout = arms.layout().expect("node lays out");
+        layout
+            .arms
+            .iter()
+            .map(|arm| {
+                let at_start = arm.key.end == EdgeEnd::Start;
+                (arm.key.edge, at_start, arm.mouth_station_m as f32)
+            })
+            .collect()
+    }
+
+    fn clip(g: &RegionGraph, edge: usize, at_start: bool) -> f32 {
+        if at_start {
+            g.edges[edge].start_clip
+        } else {
+            g.edges[edge].end_clip
+        }
+    }
 
     fn road_edge(start_node: u32, end_node: u32, start: Vector3, end: Vector3, width: f32) -> Edge {
         Edge {
@@ -170,14 +193,13 @@ mod tests {
 
         g.rebuild_intersection_clips();
 
+        // Clips are the layout's mouth stations; the 30 degree corner reaches far down the branch.
+        for (edge, at_start, mouth_m) in layout_mouths(&g, center) {
+            assert_eq!(clip(&g, edge, at_start), mouth_m);
+        }
         assert!(
-            g.edges[2].end_clip > 5.5,
-            "acute branch clip did not expand beyond the orthogonal roadbed margin: {}",
-            g.edges[2].end_clip
-        );
-        assert!(
-            (g.edges[2].end_clip - 18.660254).abs() <= 1.0e-4,
-            "30 degree branch should use the angle-aware clip without hitting the cap, got {}",
+            g.edges[2].end_clip > g.edges[0].end_clip.min(g.edges[1].start_clip),
+            "acute branch clip did not expand beyond the obtuse side: {}",
             g.edges[2].end_clip
         );
     }
@@ -222,15 +244,14 @@ mod tests {
 
         g.rebuild_intersection_clips();
 
-        for (edge_idx, clip_m) in [
-            (0, g.edges[0].end_clip),
-            (1, g.edges[1].start_clip),
-            (2, g.edges[2].end_clip),
-            (3, g.edges[3].start_clip),
-        ] {
+        // Right-angle curb returns of 6 m beyond the 3.5 m carriageway edge, plus the 3 m
+        // crosswalk of a crossable arm (D1, D8).
+        for (edge, at_start, mouth_m) in layout_mouths(&g, center) {
+            let clip_m = clip(&g, edge, at_start);
+            assert_eq!(clip_m, mouth_m);
             assert!(
-                (clip_m - 5.5).abs() <= 1.0e-4,
-                "standard orthogonal junction edge {edge_idx} should keep only a small roadbed margin, got {clip_m:.3}"
+                (clip_m - 12.5).abs() <= 1.0e-4,
+                "orthogonal junction edge {edge} clips at its layout mouth, got {clip_m:.3}"
             );
         }
     }
@@ -283,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_one_degree_conflict_collapses_span_before_overlap() {
+    fn test_one_degree_conflict_has_no_layout_and_no_clip() {
         let mut g = RegionGraph::new();
         let center = g.add_node(Vector3::ZERO, NodeType::Junction);
         let east = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
@@ -317,8 +338,11 @@ mod tests {
 
         g.rebuild_intersection_clips();
 
-        assert!((g.edges[0].start_clip - 25.0).abs() <= 1.0e-4);
-        assert!((g.edges[1].start_clip - 25.0).abs() <= 1.0e-4);
+        // Arms a degree apart have no layout (a placement rejection), so the node keeps no clip.
+        let arms = NodeArms::collect(&g, center).unwrap();
+        assert!(arms.layout().is_err());
+        assert_eq!(g.edges[0].start_clip, 0.0);
+        assert_eq!(g.edges[1].start_clip, 0.0);
     }
 
     #[test]

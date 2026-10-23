@@ -12,7 +12,9 @@ use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;
+use crate::simulation::network::roadbed::{
+    LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
+};
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::network::validate::{RoadGeometryLimits, RoadGeometryViolation};
 use crate::simulation::network::{
@@ -33,6 +35,12 @@ const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
 const PREVIEW_TIGHT_CURVE_REASON: &str = "road_tight_curve";
 const PREVIEW_JUNCTION_ANGLE_REASON: &str = "junction_arm_angle";
 const PREVIEW_JUNCTION_DEGREE_REASON: &str = "junction_degree";
+const PREVIEW_JUNCTION_CORNER_REASON: &str = "junction_corner_does_not_fit";
+const PREVIEW_JUNCTION_CORE_REASON: &str = "junction_core_not_simple";
+const PREVIEW_JUNCTION_BANDS_REASON: &str = "junction_band_mismatch";
+const PREVIEW_JUNCTION_ARM_REASON: &str = "junction_arm_too_short";
+const PREVIEW_JUNCTION_PROFILE_REASON: &str = "junction_profile_mismatch";
+const PREVIEW_JUNCTION_LAYOUT_REASON: &str = "junction_layout_invalid";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
 // Degenerate profile steps shorter than this carry no grade.
@@ -431,6 +439,9 @@ fn validate_against_graph(
         &source_node_ids,
     ) {
         return (refuse_geometry(validation, &refused), None);
+    }
+    if let Some(reason) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
+        return (validation.with_invalid_reason(reason), None);
     }
 
     let topology_plan = RoadTopologyPlan::capture(
@@ -876,6 +887,26 @@ fn edit_geometry_violation(
         existing_graph,
         &RoadGeometryLimits::default(),
     )
+}
+
+// The first node, in id order, whose junction layout or mouth heights fail (`ROAD-68-C`). The
+// excerpt holds every affected node's full incidence. O(affected degree * arm points).
+fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Option<&'static str> {
+    let mut nodes: Vec<u32> = affected_nodes.iter().copied().collect();
+    nodes.sort_unstable();
+    let error = nodes
+        .into_iter()
+        .find_map(|node| check_node(graph, node).err())?;
+    Some(match error {
+        NodeError::Layout(LayoutError::CornerDoesNotFit { .. }) => PREVIEW_JUNCTION_CORNER_REASON,
+        NodeError::Layout(LayoutError::CoreNotSimple) | NodeError::Triangulation => {
+            PREVIEW_JUNCTION_CORE_REASON
+        }
+        NodeError::Layout(LayoutError::BandMismatch { .. }) => PREVIEW_JUNCTION_BANDS_REASON,
+        NodeError::Layout(LayoutError::ArmTooShort { .. }) => PREVIEW_JUNCTION_ARM_REASON,
+        NodeError::Layout(_) => PREVIEW_JUNCTION_LAYOUT_REASON,
+        NodeError::NoPlane | NodeError::MouthOffPlane { .. } => PREVIEW_JUNCTION_PROFILE_REASON,
+    })
 }
 
 fn refuse_geometry(

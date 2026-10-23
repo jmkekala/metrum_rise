@@ -37,7 +37,7 @@ fn lights_for(roads: &[(&[Vector3], u8, u8)]) -> Vec<StreetLight> {
 const STREET: [Vector3; 2] = [Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)];
 
 #[test]
-#[ignore = "ROAD-68-C: terminal mouths move span ends in from the node"]
+#[ignore = "ROAD-68-F: lights keep a span-end clearance; the terminal cap needs layout-based furniture stations"]
 fn a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb() {
     let lights = lights_for(&[(&STREET, 1, 1)]);
     assert!(

@@ -95,7 +95,6 @@ fn commit_ready_with_lanes(
 }
 
 #[test]
-#[ignore = "ROAD-68-C: junction outer boundaries"]
 fn kuopio_third_road_preserves_existing_junction_boundary_owners() {
     for (trunk_end_x, branch_end) in [
         (2_889.749_8, (3020.0, -8_622.83)),
@@ -137,12 +136,14 @@ fn ready_plan_atomically_adopts_crossings_extensions_and_close_double_t() {
     let mut core = test_core();
     core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 129, 0.0);
     core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
+    // Each junction end needs half of its arm for the 3.5 m carriageway edge, the 2 m minimum
+    // curb return and the 3 m crosswalk (D1, D8), so neighbouring junctions sit 18 m apart.
     for ends in [
         ((-60.0, 0.0), (60.0, 0.0)),
         ((0.0, -48.0), (0.0, 48.0)),
         ((60.0, 0.0), (100.0, 0.0)),
-        ((32.0, -48.0), (32.0, 0.0)),
-        ((48.0, 48.0), (48.0, 0.0)),
+        ((24.0, -48.0), (24.0, 0.0)),
+        ((42.0, 48.0), (42.0, 0.0)),
     ] {
         let points = [ends.0, ends.1]
             .map(|(x, z)| Vector3::new(x, 0.0, z))
@@ -349,7 +350,7 @@ fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
 }
 
 #[test]
-#[ignore = "ROAD-68-C: junction pieces and their terrain patches"]
+#[ignore = "ROAD-68-E: a pre-ROAD-68-C save re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration"]
 fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -699,7 +700,6 @@ fn assert_orthogonal_block_cells(
 }
 
 #[test]
-#[ignore = "ROAD-68-C: four-way junction pieces on slopes"]
 fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
     // The sloped benchmark leg ending at (-70.6, -44.4) put a shared carriageway vertex on
     // an exact half-millimetre height; f32 rounding split its bands into a false conflict.

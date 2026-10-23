@@ -7,8 +7,6 @@ use crate::simulation::network::types::{NodeType, TransitType};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
-const JUNCTION_PROFILE_HARD_ZONE_MIN_M: f32 = 1.0;
-const JUNCTION_PROFILE_HARD_ZONE_MAX_M: f32 = 2.0;
 pub(crate) const JUNCTION_PROFILE_BLEND_ZONE_M: f32 = 32.0;
 pub(super) const JUNCTION_PROFILE_SOLVE_SAMPLE_M: f32 = 12.0;
 const JUNCTION_PROFILE_MIN_SAMPLE_M: f32 = 1.0;
@@ -57,7 +55,7 @@ enum JunctionProfileLimitMode {
 }
 
 /// Node-local profile plane used to make incident Bend/JunctionN mouth rails height-compatible.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct JunctionEndpointProfilePlane {
     pub(super) origin: Vector3,
     pub(super) grade_x: f32,
@@ -68,6 +66,23 @@ impl JunctionEndpointProfilePlane {
     /// Evaluates the solved endpoint profile height at an arbitrary world XZ coordinate.
     pub(crate) fn height_at_xz(&self, x: f32, z: f32) -> f32 {
         self.origin.y + self.grade_x * (x - self.origin.x) + self.grade_z * (z - self.origin.z)
+    }
+
+    /// A terminal's plane (`ROAD-68-C`): through the road end and its mouth centreline point,
+    /// with the arm's end grade along that run and no crossfall; `None` when they coincide in
+    /// plan.
+    pub(crate) fn terminal(end: Vector3, mouth: Vector3) -> Option<Self> {
+        let (dx, dz) = (mouth.x - end.x, mouth.z - end.z);
+        let run_m = dx.hypot(dz);
+        if run_m <= f32::EPSILON {
+            return None;
+        }
+        let grade = (mouth.y - end.y) / run_m;
+        Some(Self {
+            origin: end,
+            grade_x: grade * dx / run_m,
+            grade_z: grade * dz / run_m,
+        })
     }
 
     pub(super) fn grade(&self) -> f32 {
@@ -265,7 +280,8 @@ impl RegionGraph {
                     solve.plane,
                     materialize_supports,
                     adapt_control,
-                    self.junction_profile_crossing_core_m(incident.edge_idx, incident.at_start),
+                    // The hard zone is the arm's layout mouth: the node piece's extent.
+                    self.junction_profile_hard_zone_m(incident.edge_idx, incident.at_start),
                     previous_plane,
                 ));
             }
@@ -833,9 +849,16 @@ impl RegionGraph {
         if hard_zone_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
             return;
         }
+        let preserve_solved_supports = previous_plane.is_some() && !adapt_control;
+        // Heights interpolate linearly between knots, so pinning the arm to the plane exactly up
+        // to its mouth needs a knot there. An adapted arm takes it in its control polyline, on its
+        // own segment, so every later resample of the physical profile keeps it; stable control
+        // is never rewritten (`ROAD-68` open question 7).
+        if adapt_control {
+            Self::ensure_edge_endpoint_profile_support(edge, at_start, hard_zone_m);
+        }
         let saved_control = (!adapt_control).then(|| edge.geometry.clone());
         let solve_sample_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(blend_end_m);
-        let preserve_solved_supports = previous_plane.is_some() && !adapt_control;
         let should_materialize_supports = !preserve_solved_supports
             && (materialize_supports
                 || Self::endpoint_profile_support_delta_m(edge, at_start, plane, solve_sample_m)
@@ -849,11 +872,20 @@ impl RegionGraph {
             );
         }
 
-        let mut physical_geometry = if preserve_solved_supports {
+        // Stable control without new supports keeps its physical knots, so the knot pinning the
+        // other end's mouth survives this end's solve.
+        let keep_physical =
+            preserve_solved_supports || (!adapt_control && !should_materialize_supports);
+        let mut physical_geometry = if keep_physical && edge.physical_geometry.len() >= 2 {
             edge.physical_geometry.clone()
         } else {
             Self::physical_profile_on_control_alignment(edge)
         };
+        // Stable control is never rewritten, so its arm takes the mouth knot in the physical
+        // profile alone.
+        if !adapt_control && !preserve_solved_supports {
+            Self::ensure_profile_support(&mut physical_geometry, at_start, hard_zone_m);
+        }
         let solve_sample_m = should_materialize_supports.then_some(solve_sample_m);
         let distances = Self::edge_endpoint_distances(edge, at_start);
         for (point, distance_m) in edge.geometry.iter_mut().zip(distances.iter().copied()) {
@@ -974,59 +1006,15 @@ impl RegionGraph {
         Self::ensure_edge_endpoint_profile_support(edge, at_start, blend_end_m);
     }
 
-    /// End of the incident roadbed overlap, independent of node/span material ownership.
-    /// Costs O(local incident profile points), with no city-wide lookup.
-    pub(crate) fn junction_profile_crossing_core_m(&self, edge_idx: usize, at_start: bool) -> f32 {
-        use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
+    /// Hard zone of an endpoint: the arm's mouth station in its node's junction layout, which
+    /// the graph clip holds (`ROAD-68-C`). Clips must be current before the solve.
+    pub(crate) fn junction_profile_hard_zone_m(&self, edge_idx: usize, at_start: bool) -> f32 {
         let edge = &self.edges[edge_idx];
-        let length = Self::edge_profile_length_m(edge);
-        let mut core = Self::junction_profile_hard_zone_m(edge, length);
-        let Some(direction) = Self::edge_endpoint_direction_xz(edge, at_start) else {
-            return core;
-        };
-        let node = self.get_valid_node(if at_start {
-            edge.start_node
+        if at_start {
+            edge.start_clip
         } else {
-            edge.end_node
-        });
-        let width = visual_roadbed_half_width_m(edge);
-        for &other_idx in self.node_adjacency(node) {
-            let other = &self.edges[other_idx];
-            if other_idx == edge_idx || other.deleted || other.primary_type != TransitType::Road {
-                continue;
-            }
-            let other_start = self.get_valid_node(other.start_node) == node;
-            let Some(other_direction) = Self::edge_endpoint_direction_xz(other, other_start) else {
-                continue;
-            };
-            if Self::directions_are_pass_through(direction, other_direction) {
-                continue;
-            }
-            let dot = direction.dot(other_direction).clamp(-1.0, 1.0);
-            let sin = direction.cross(other_direction).abs();
-            let other_width = visual_roadbed_half_width_m(other);
-            // Extreme vertex of the intersection of two forward roadbed strips.
-            // Unlike ownership, this does not reserve a whole extra roadbed width.
-            let overlap = if sin <= f32::EPSILON {
-                length
-            } else if width + other_width * dot >= 0.0 {
-                (other_width + width * dot) / sin
-            } else {
-                other_width * sin
-            };
-            core = core.max(overlap);
+            edge.end_clip
         }
-        core.min(length * 0.5)
-    }
-
-    /// Minimum central pin for an endpoint without a wider crossing overlap.
-    pub(crate) fn junction_profile_hard_zone_m(edge: &Edge, total_length_m: f32) -> f32 {
-        (edge.width * 0.25)
-            .clamp(
-                JUNCTION_PROFILE_HARD_ZONE_MIN_M,
-                JUNCTION_PROFILE_HARD_ZONE_MAX_M,
-            )
-            .min(total_length_m * 0.25)
     }
 
     fn smootherstep(t: f32) -> f32 {
@@ -1035,13 +1023,19 @@ impl RegionGraph {
     }
 
     fn ensure_edge_endpoint_profile_support(edge: &mut Edge, at_start: bool, distance_m: f32) {
+        Self::ensure_profile_support(&mut edge.geometry, at_start, distance_m);
+    }
+
+    // Inserts a knot `distance_m` along `points` from one end unless one lies within
+    // `JUNCTION_PROFILE_SUPPORT_EPS_M` of it.
+    fn ensure_profile_support(points: &mut Vec<Vector3>, at_start: bool, distance_m: f32) {
         if !distance_m.is_finite() || distance_m <= JUNCTION_PROFILE_SUPPORT_EPS_M {
             return;
         }
-        if edge.geometry.len() < 2 {
+        if points.len() < 2 {
             return;
         }
-        let distances = Self::edge_endpoint_distances(edge, at_start);
+        let distances = Self::profile_endpoint_distances(points, at_start);
         let Some(&total_length_m) = distances.iter().max_by(|a, b| a.total_cmp(b)) else {
             return;
         };
@@ -1056,7 +1050,7 @@ impl RegionGraph {
         }
 
         if at_start {
-            for index in 0..edge.geometry.len() - 1 {
+            for index in 0..points.len() - 1 {
                 let start_d = distances[index];
                 let end_d = distances[index + 1];
                 if distance_m < start_d - JUNCTION_PROFILE_SUPPORT_EPS_M
@@ -1066,12 +1060,12 @@ impl RegionGraph {
                 }
                 let segment_m = (end_d - start_d).max(f32::EPSILON);
                 let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
-                let point = edge.geometry[index].lerp(edge.geometry[index + 1], t);
-                edge.geometry.insert(index + 1, point);
+                let point = points[index].lerp(points[index + 1], t);
+                points.insert(index + 1, point);
                 return;
             }
         } else {
-            for index in (1..edge.geometry.len()).rev() {
+            for index in (1..points.len()).rev() {
                 let start_d = distances[index];
                 let end_d = distances[index - 1];
                 if distance_m < start_d - JUNCTION_PROFILE_SUPPORT_EPS_M
@@ -1081,8 +1075,8 @@ impl RegionGraph {
                 }
                 let segment_m = (end_d - start_d).max(f32::EPSILON);
                 let t = ((distance_m - start_d) / segment_m).clamp(0.0, 1.0);
-                let point = edge.geometry[index].lerp(edge.geometry[index - 1], t);
-                edge.geometry.insert(index, point);
+                let point = points[index].lerp(points[index - 1], t);
+                points.insert(index, point);
                 return;
             }
         }

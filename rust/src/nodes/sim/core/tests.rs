@@ -605,7 +605,6 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
 }
 
 #[test]
-#[ignore = "ROAD-68-C: failed junction piece path"]
 fn failed_junction_precompute_retains_matching_render_and_road_tool_generation() {
     let mut core = test_core();
     let center_pos = Vector3::ZERO;
@@ -683,7 +682,7 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     core.precompute_road_mesh_data();
 
     assert!(
-        !core.transit_network.roadbed.is_current(),
+        !core.transit_network.roadbed.failed_nodes().is_empty(),
         "the contradictory JunctionN must exercise the failed-production path"
     );
     assert!(published_mesh.iter().all(|(chunk, mesh)| {

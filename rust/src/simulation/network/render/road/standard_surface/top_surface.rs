@@ -5,11 +5,14 @@
 //! Band kinds map to layers as the legacy top-surface renderer did: carriageway to the road
 //! layer with road-space UVs, curb or shoulder to the curb layer, every other band to the
 //! sidewalk layer (road-space footpath colour on footpath edges), and curb faces to the
-//! raised-step layer. The triangles are the pieces' own, so queries answer from what renders.
+//! raised-step layer. Node pieces use world UVs throughout, and their carriageway keeps
+//! `road_color`'s zero alpha: junction asphalt has no road space. The triangles are the pieces'
+//! own, so queries answer from what renders.
 
 use super::super::{
     MeshLayer, NetworkMeshData, NetworkMeshOwner, curb_color, footpath_color, push_triangle,
-    push_triangle_preserving_winding_with_exact_normal, road_space_color, sidewalk_color,
+    push_triangle_preserving_winding_with_exact_normal, road_color, road_space_color,
+    sidewalk_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::triangle_is_too_small;
@@ -74,6 +77,40 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             MeshLayer::Road,
             Uvs::RoadSpace,
             road_space_color(edge),
+        );
+    }
+    for &node in &coverage.node_ids {
+        let Some(piece) = roadbed.node_piece(node) else {
+            continue;
+        };
+        mesh.set_owner(NetworkMeshOwner::Node(node));
+        let piece = piece.mesh();
+        emit_band(
+            mesh,
+            piece,
+            BandKind::CurbOrShoulder,
+            MeshLayer::Curb,
+            Uvs::World,
+            curb_color(),
+        );
+        emit_curb_faces(mesh, piece);
+        for kind in NON_ROAD_KINDS {
+            emit_band(
+                mesh,
+                piece,
+                kind,
+                MeshLayer::Sidewalk,
+                Uvs::World,
+                sidewalk_color(),
+            );
+        }
+        emit_band(
+            mesh,
+            piece,
+            BandKind::Carriageway,
+            MeshLayer::Road,
+            Uvs::World,
+            road_color(),
         );
     }
 }
@@ -160,8 +197,10 @@ mod tests {
 
         let (span_m, (origin_x, origin_z)) = (roadbed.chunk_span_m(), roadbed.chunk_origin_m());
         let mut expected: BTreeMap<SurfaceChunkKey, Vec<Triangle>> = BTreeMap::new();
-        for edge in 0..graph.edge_count() {
-            let piece = roadbed.span_piece(edge).unwrap().mesh();
+        let spans = (0..graph.edge_count()).map(|edge| roadbed.span_piece(edge).unwrap().mesh());
+        let nodes = (0..graph.node_count() as u32)
+            .filter_map(|node| roadbed.node_piece(node).map(|piece| piece.mesh()));
+        for piece in spans.chain(nodes) {
             for triangle in piece.triangles() {
                 let world = triangle.map(|vertex| {
                     let p = piece.positions()[vertex as usize];

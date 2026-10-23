@@ -188,6 +188,29 @@ fn validation_detail(
             "the grounded road corridor crosses visible water; build it as a bridge".to_owned(),
             None,
         ),
+        "junction_corner_does_not_fit" => (
+            "a junction corner does not fit within half of an arm, even at its minimum radius"
+                .to_owned(),
+            None,
+        ),
+        "junction_core_not_simple" => (
+            "a junction's carriageway outline crosses itself".to_owned(),
+            None,
+        ),
+        "junction_band_mismatch" => (
+            "the cross-sections meeting at a junction do not match (footpaths join roads in \
+             ROAD-68-F)"
+                .to_owned(),
+            None,
+        ),
+        "junction_arm_too_short" => (
+            "an arm is too short for its junction's minimum extent and crosswalk".to_owned(),
+            None,
+        ),
+        "junction_profile_mismatch" => (
+            "a solved road centreline misses its junction plane by more than 1 mm".to_owned(),
+            None,
+        ),
         "field_overlap" => ("the road corridor overlaps a farm field".to_owned(), None),
         "parcel_overlap" => ("the road corridor overlaps zoned parcels".to_owned(), None),
         "validation_unavailable" => (

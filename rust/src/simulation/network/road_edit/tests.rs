@@ -186,6 +186,14 @@ fn assert_cold_geometry_matches(actual: &Fixture, cold: &Fixture) {
             "edge {id} span mesh"
         );
     }
+    for node in 0..actual.graph.node_count() as u32 {
+        assert_eq!(
+            actual_bed.node_piece(node).map(|piece| piece.mesh()),
+            cold_bed.node_piece(node).map(|piece| piece.mesh()),
+            "node {node} piece mesh"
+        );
+        assert_eq!(actual_bed.node_error(node), cold_bed.node_error(node));
+    }
     let pieces = |roadbed: &RoadbedSystem| {
         roadbed
             .pieces_in_bounds([f64::MIN, f64::MIN, f64::MAX, f64::MAX])
@@ -373,6 +381,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
     }
     fixture.network.roadbed.compile_dirty(graph);
     assert!(fixture.network.roadbed.is_current());
+    assert!(fixture.network.roadbed.node_piece(2).is_some());
     let mut local = graph.clone();
     local.unite_nodes(1, 2);
     local.rebuild_adjacency_list();
@@ -426,6 +435,8 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
         .unwrap();
     assert_eq!(graph.get_valid_node(2), 1);
     assert!(graph.node(1).lane_connections.is_empty());
+    // Pieces change when the adopted generation publishes.
+    fixture.network.roadbed.compile_dirty(graph);
     assert!(
         !fixture
             .network

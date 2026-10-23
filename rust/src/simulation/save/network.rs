@@ -281,6 +281,9 @@ pub(super) fn rebuild_loaded_graph_runtime(
         .filter(|&edge| !graph.edge(edge).deleted)
         .collect::<std::collections::HashSet<_>>();
     if !edges.is_empty() {
+        // Saves before `ROAD-68-C` hold clips from the legacy setback rule; the solve pins each
+        // arm up to its layout mouth, which the clip must hold first.
+        graph.rebuild_intersection_clips_for_nodes(&nodes);
         let changed = graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &edges, &edges);
         transit_network.mark_surface_dirty_from_sets(&changed, &nodes);
         transit_network.roadbed.compile_dirty(graph);
@@ -292,9 +295,10 @@ pub(super) fn rebuild_loaded_graph_runtime(
             transit_network.roadbed.failed_nodes().len()
         );
     }
-    if let Some(node) = transit_network.roadbed.failed_nodes().first() {
+    if let Some(&node) = transit_network.roadbed.failed_nodes().first() {
         return Err(SaveLoadError::custom(format!(
-            "road surface load failed: node {node} piece did not build"
+            "road surface load failed: node {node} piece did not build ({:?})",
+            transit_network.roadbed.node_error(node)
         )));
     }
     Ok(())

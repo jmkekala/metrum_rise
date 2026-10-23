@@ -87,6 +87,18 @@ impl PieceFootprint {
         }
     }
 
+    /// Footprint of a node piece: every chunk and cell its XZ bounds touch.
+    pub(super) fn of_bounds(
+        bounds: [f64; 4],
+        grid: RenderGrid,
+        scratch: &mut Vec<(i32, i32)>,
+    ) -> Self {
+        Self {
+            render_chunks: covered_keys(std::iter::once(bounds), scratch, |x, z| grid.key_at(x, z)),
+            query_cells: covered_keys(std::iter::once(bounds), scratch, query_cell_at),
+        }
+    }
+
     pub(super) fn render_chunks(&self) -> &[SurfaceChunkKey] {
         &self.render_chunks
     }

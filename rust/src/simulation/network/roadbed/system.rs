@@ -3,21 +3,61 @@
 //! `RoadbedSystem` state: published pieces, the chunk index, dirty marks and the source /
 //! compiled generation gate.
 
-use super::index::{PieceIndex, RenderGrid};
+use super::index::{PieceFootprint, PieceIndex, RenderGrid};
+use super::layout::{ArmKey, EdgeEnd};
+use super::mesh::PieceMesh;
+use super::node::{NodeError, NodePiece, NodePlan, NodeScratch, build_node_piece, plan_node};
 use super::query::PieceId;
-use super::span::{SpanPiece, SpanScratch, build_span_piece};
+use super::span::{MouthSection, SpanPiece, SpanScratch, build_span_piece};
 use super::{RoadSection, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
 use rayon::prelude::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+// Two mouths of one edge closer than this share one section and leave no span (the span
+// model's station tolerance).
+const SHARED_MOUTH_M: f32 = 0.001;
+
+// A published piece.
+#[derive(Clone)]
+pub(super) enum Piece {
+    Span(Arc<SpanPiece>),
+    Node(Arc<NodePiece>),
+}
 
 // A published piece with the generation that built it.
 #[derive(Clone)]
 pub(super) struct PublishedPiece {
     pub(super) build_generation: u64,
-    pub(super) span: Arc<SpanPiece>,
+    pub(super) piece: Piece,
 }
+
+impl PublishedPiece {
+    pub(super) fn mesh(&self) -> &PieceMesh {
+        match &self.piece {
+            Piece::Span(span) => span.mesh(),
+            Piece::Node(node) => node.mesh(),
+        }
+    }
+
+    fn shared_mesh(&self) -> &Arc<PieceMesh> {
+        match &self.piece {
+            Piece::Span(span) => span.shared_mesh(),
+            Piece::Node(node) => node.shared_mesh(),
+        }
+    }
+
+    fn footprint(&self) -> &PieceFootprint {
+        match &self.piece {
+            Piece::Span(span) => span.footprint(),
+            Piece::Node(node) => node.footprint(),
+        }
+    }
+}
+
+// This compile's node plans, by node.
+type Plans = BTreeMap<u32, Result<Option<NodePlan>, NodeError>>;
 
 /// Roadbed pieces derived from the road graph, with their chunk index and generation gate.
 ///
@@ -38,6 +78,9 @@ pub struct RoadbedSystem {
     pub(super) index: PieceIndex,
     // Render chunks changed since the mesh publisher last took them.
     changed_chunks: BTreeSet<SurfaceChunkKey>,
+    // Nodes whose piece failed in the published generation, with the reason, and their ids.
+    failed: imbl::OrdMap<u32, NodeError>,
+    failed_ids: Arc<Vec<u32>>,
 }
 
 impl RoadbedSystem {
@@ -61,6 +104,8 @@ impl RoadbedSystem {
             pieces: imbl::OrdMap::new(),
             index: PieceIndex::default(),
             changed_chunks: BTreeSet::new(),
+            failed: imbl::OrdMap::new(),
+            failed_ids: Arc::default(),
         }
     }
 
@@ -74,6 +119,8 @@ impl RoadbedSystem {
         self.dirty_nodes.clear();
         self.pieces = imbl::OrdMap::new();
         self.index = PieceIndex::default();
+        self.failed = imbl::OrdMap::new();
+        self.failed_ids = Arc::default();
     }
 
     /// Marks an edge's span piece, and through it the dirty closure, for the next compile.
@@ -103,28 +150,105 @@ impl RoadbedSystem {
     /// pending changes nothing. The first compile of a fresh or cleared system builds every
     /// piece.
     ///
-    /// In `ROAD-68-B` the closure is the dirty edges plus the edges incident to dirty nodes, and
-    /// only span pieces exist. Spans build in parallel on the shared pool and publish in
-    /// ascending edge order, so the result does not depend on the worker count. `O(closure spans * sections * bands)`.
+    /// The closure is the dirty edges, every node incident to them and every edge incident to
+    /// those nodes, whose mouths may move. Nodes are planned first (layout, plane and mouth
+    /// sections), then node pieces and the spans between their mouths build, all in parallel on
+    /// the shared pool and published in ascending piece order, so the result does not depend on
+    /// the worker count. `O(closure nodes * node piece + closure spans * sections * bands)`.
     pub fn compile_dirty(&mut self, graph: &RegionGraph) -> Vec<SurfaceChunkKey> {
         if self.is_current() {
             return Vec::new();
         }
-        let closure = self.dirty_closure(graph);
+        let (nodes, edges) = self.dirty_closure(graph);
+        let mut plans = plan_nodes(graph, &nodes);
+        // An edge whose two mouths coincide shares one mouth section; its end node rebuilds with
+        // the start node's.
+        let far: BTreeSet<u32> = edges
+            .iter()
+            .filter_map(|&edge_idx| {
+                let [start, end] = self.edge_mouths(graph, edge_idx, &plans)?;
+                let (start, end) = (start?, end?);
+                let end_node = graph.get_valid_node(graph.edge(edge_idx).end_node);
+                (end.section.s_m - start.section.s_m <= SHARED_MOUTH_M
+                    && !plans.contains_key(&end_node))
+                .then_some(end_node)
+            })
+            .collect();
+        plans.extend(plan_nodes(graph, &far));
+        for &edge_idx in &edges {
+            let Some([Some(start), Some(end)]) = self.edge_mouths(graph, edge_idx, &plans) else {
+                continue;
+            };
+            if end.section.s_m - start.section.s_m > SHARED_MOUTH_M {
+                continue;
+            }
+            let end_node = graph.get_valid_node(graph.edge(edge_idx).end_node);
+            if let Some(Ok(Some(plan))) = plans.get_mut(&end_node) {
+                let key = ArmKey {
+                    edge: edge_idx,
+                    end: EdgeEnd::End,
+                };
+                plan.share_mouth(key, start);
+            }
+        }
+        let span_mouths: Vec<_> = edges
+            .iter()
+            .map(|&edge_idx| {
+                self.edge_mouths(graph, edge_idx, &plans)
+                    .unwrap_or_default()
+            })
+            .collect();
         let grid = self.grid;
         // The shared pool, never Rayon's global one (`CODE-17`); inline on a pool worker.
-        let built: Vec<_> = crate::thread_pools::install(|| {
-            closure
+        let (built_spans, built_nodes): (Vec<_>, Vec<_>) = crate::thread_pools::install(|| {
+            let spans = edges
                 .par_iter()
-                .map_init(SpanScratch::default, |scratch, &edge_idx| {
-                    build_span_piece(graph, edge_idx, grid, scratch)
+                .zip(&span_mouths)
+                .map_init(SpanScratch::default, |scratch, (&edge_idx, mouths)| {
+                    build_span_piece(
+                        graph,
+                        edge_idx,
+                        [&mouths[0], &mouths[1]].map(Option::as_ref),
+                        grid,
+                        scratch,
+                    )
                 })
-                .collect()
+                .collect();
+            let nodes = plans
+                .into_par_iter()
+                .map_init(NodeScratch::default, |scratch, (node, plan)| {
+                    let built = match plan {
+                        Ok(Some(plan)) => build_node_piece(plan, grid, scratch).map(Some),
+                        Ok(None) => Ok(None),
+                        Err(error) => Err(error),
+                    };
+                    (node, built)
+                })
+                .collect();
+            (spans, nodes)
         });
         self.generation = self.generation.wrapping_add(1);
         let mut changed = BTreeSet::new();
-        for (&edge_idx, span) in closure.iter().zip(built) {
-            self.replace_piece(PieceId::Span(edge_idx), span, &mut changed);
+        for (&edge_idx, span) in edges.iter().zip(built_spans) {
+            let piece = span.map(|span| Piece::Span(Arc::new(span)));
+            self.replace_piece(PieceId::Span(edge_idx), piece, &mut changed);
+        }
+        let failures_before = self.failed.len();
+        let mut failures_changed = false;
+        for (node, built) in built_nodes {
+            failures_changed |= self.failed.remove(&node).is_some();
+            let piece = match built {
+                Ok(piece) => piece.map(|piece| Piece::Node(Arc::new(piece))),
+                Err(error) => {
+                    self.failed.insert(node, error);
+                    failures_changed = true;
+                    None
+                }
+            };
+            self.replace_piece(PieceId::Node(node), piece, &mut changed);
+        }
+        if failures_changed || failures_before != self.failed.len() {
+            self.failed_ids = Arc::new(self.failed.keys().copied().collect());
         }
         self.changed_chunks.extend(changed.iter().copied());
         self.dirty_edges.clear();
@@ -133,23 +257,96 @@ impl RoadbedSystem {
         changed.into_iter().collect()
     }
 
-    /// Builds one edge's span piece without publishing it, for benchmarks and isolated checks;
-    /// `None` when the edge has no span.
-    pub fn build_span_piece(&self, graph: &RegionGraph, edge_idx: usize) -> Option<SpanPiece> {
-        build_span_piece(graph, edge_idx, self.grid, &mut SpanScratch::default())
+    // The node mouth sections at an edge's two ends: from this compile's plans, else from the
+    // published node pieces; `None` at an end without a node piece. `None` overall for a missing
+    // edge.
+    fn edge_mouths(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        plans: &Plans,
+    ) -> Option<[Option<Arc<MouthSection>>; 2]> {
+        let edge = graph.get_edge(edge_idx)?;
+        let mouth = |node: u32, end: EdgeEnd| {
+            let node = graph.get_valid_node(node);
+            let key = ArmKey {
+                edge: edge_idx,
+                end,
+            };
+            match plans.get(&node) {
+                Some(Ok(Some(plan))) => plan.mouth(key).cloned(),
+                Some(_) => None,
+                None => self
+                    .node_piece(node)
+                    .and_then(|piece| piece.mouth(key).cloned()),
+            }
+        };
+        Some([
+            mouth(edge.start_node, EdgeEnd::Start),
+            mouth(edge.end_node, EdgeEnd::End),
+        ])
     }
 
-    // Sorted closure: dirty edges, edges incident to dirty nodes and published spans of edges
-    // the graph no longer has; every surface edge on the first compile.
-    fn dirty_closure(&self, graph: &RegionGraph) -> Vec<usize> {
+    /// Builds one edge's span piece between the published node pieces' mouths without
+    /// publishing it, for benchmarks and isolated checks; `None` when the edge has no span.
+    pub fn build_span_piece(&self, graph: &RegionGraph, edge_idx: usize) -> Option<SpanPiece> {
+        let mouths = self
+            .edge_mouths(graph, edge_idx, &Plans::new())
+            .unwrap_or_default();
+        build_span_piece(
+            graph,
+            edge_idx,
+            [&mouths[0], &mouths[1]].map(Option::as_ref),
+            self.grid,
+            &mut SpanScratch::default(),
+        )
+    }
+
+    /// Plans and builds one node's piece without publishing it, for benchmarks and isolated
+    /// checks; `Ok(None)` when the node has no piece.
+    pub fn build_node_piece(
+        &self,
+        graph: &RegionGraph,
+        node: u32,
+    ) -> Result<Option<NodePiece>, NodeError> {
+        plan_node(graph, node)?
+            .map(|plan| build_node_piece(plan, self.grid, &mut NodeScratch::default()))
+            .transpose()
+    }
+
+    // Sorted closure nodes and edges: the dirty nodes and the nodes of dirty edges, the edges
+    // incident to them, the dirty edges, and published pieces the graph no longer has; every node
+    // and edge on the first compile.
+    fn dirty_closure(&self, graph: &RegionGraph) -> (BTreeSet<u32>, Vec<usize>) {
+        let node_limit = graph.node_adjacency_count().min(graph.node_count()) as u32;
         if !self.compiled {
-            return (0..graph.edge_count()).collect();
+            let nodes = (0..node_limit)
+                .filter(|&node| graph.get_valid_node(node) == node)
+                .collect();
+            return (nodes, (0..graph.edge_count()).collect());
         }
+        let mut nodes = self.dirty_nodes.clone();
+        for &edge_idx in &self.dirty_edges {
+            if let Some(edge) = graph.get_edge(edge_idx) {
+                nodes.insert(graph.get_valid_node(edge.start_node));
+                nodes.insert(graph.get_valid_node(edge.end_node));
+            }
+            // A reconnected or deleted edge's previous nodes rebuild too.
+            if let Some(span) = self.span_piece(edge_idx) {
+                nodes.extend(span.nodes());
+            }
+        }
+        nodes.extend(self.pieces.range(PieceId::Node(node_limit)..).filter_map(
+            |(id, _)| match id {
+                PieceId::Node(node) => Some(*node),
+                PieceId::Span(_) => None,
+            },
+        ));
         let mut closure = self.dirty_edges.clone();
-        for &node_id in &self.dirty_nodes {
-            let node_id = graph.get_valid_node(node_id);
-            if (node_id as usize) < graph.node_adjacency_count() {
-                closure.extend(graph.node_adjacency(node_id).iter().copied());
+        for &node in &nodes {
+            let valid = graph.get_valid_node(node);
+            if valid < node_limit {
+                closure.extend(graph.node_adjacency(valid).iter().copied());
             }
         }
         closure.extend(
@@ -160,31 +357,30 @@ impl RoadbedSystem {
                     PieceId::Node(_) => None,
                 }),
         );
-        closure.into_iter().collect()
+        (nodes, closure.into_iter().collect())
     }
 
     fn replace_piece(
         &mut self,
         id: PieceId,
-        span: Option<SpanPiece>,
+        piece: Option<Piece>,
         changed: &mut BTreeSet<SurfaceChunkKey>,
     ) {
         if let Some(old) = self.pieces.remove(&id) {
-            self.index.remove(id, old.span.footprint());
-            changed.extend(old.span.footprint().render_chunks().iter().copied());
+            self.index.remove(id, old.footprint());
+            changed.extend(old.footprint().render_chunks().iter().copied());
         }
-        let Some(span) = span else {
+        let Some(piece) = piece else {
             return;
         };
-        self.index.insert(id, span.shared_mesh(), span.footprint());
-        changed.extend(span.footprint().render_chunks().iter().copied());
-        self.pieces.insert(
-            id,
-            PublishedPiece {
-                build_generation: self.generation,
-                span: Arc::new(span),
-            },
-        );
+        let published = PublishedPiece {
+            build_generation: self.generation,
+            piece,
+        };
+        self.index
+            .insert(id, published.shared_mesh(), published.footprint());
+        changed.extend(published.footprint().render_chunks().iter().copied());
+        self.pieces.insert(id, published);
     }
 
     /// Sorted render chunks changed by compiles since the mesh publisher last took them.
@@ -213,9 +409,13 @@ impl RoadbedSystem {
     }
 
     /// Nodes whose pieces failed to build in the published generation, in ascending order.
-    /// Node pieces arrive in `ROAD-68-C`.
     pub fn failed_nodes(&self) -> &[u32] {
-        &[]
+        &self.failed_ids
+    }
+
+    /// Why a node's piece failed in the published generation.
+    pub fn node_error(&self, node: u32) -> Option<NodeError> {
+        self.failed.get(&node).copied()
     }
 
     /// Span of one render chunk, in metres.
@@ -249,8 +449,32 @@ impl RoadbedSystem {
 
     /// The published span piece of an edge.
     pub fn span_piece(&self, edge_idx: usize) -> Option<&SpanPiece> {
-        self.pieces
-            .get(&PieceId::Span(edge_idx))
-            .map(|published| published.span.as_ref())
+        match &self.pieces.get(&PieceId::Span(edge_idx))?.piece {
+            Piece::Span(span) => Some(span),
+            Piece::Node(_) => None,
+        }
     }
+
+    /// The published junction, bend or terminal piece of a node.
+    pub fn node_piece(&self, node: u32) -> Option<&NodePiece> {
+        match &self.pieces.get(&PieceId::Node(node))?.piece {
+            Piece::Node(node) => Some(node),
+            Piece::Span(_) => None,
+        }
+    }
+}
+
+// Plans the given nodes in parallel on the shared pool.
+fn plan_nodes(graph: &RegionGraph, nodes: &BTreeSet<u32>) -> Plans {
+    if nodes.is_empty() {
+        return Plans::new();
+    }
+    let nodes: Vec<u32> = nodes.iter().copied().collect();
+    let planned: Vec<_> = crate::thread_pools::install(|| {
+        nodes
+            .par_iter()
+            .map(|&node| (node, plan_node(graph, node)))
+            .collect()
+    });
+    planned.into_iter().collect()
 }

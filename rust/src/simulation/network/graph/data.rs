@@ -81,11 +81,11 @@ pub struct Edge {
     pub base_cost: f32,
     /// Arc length of `physical_geometry` in metres.
     pub physical_length: f32,
-    /// Metres of `geometry` clipped from the start end at junctions; the roadbed's start mouth
-    /// station until `ROAD-68-C`.
+    /// Horizontal metres along the roadbed centreline from the start node to this arm's mouth in
+    /// that node's junction layout; zero at terminals and pass-through nodes. Lanes stop here,
+    /// and the junction profile solve pins the arm to its node plane up to it.
     pub start_clip: f32,
-    /// Metres of `geometry` clipped from the end at junctions; the roadbed's end mouth station
-    /// until `ROAD-68-C`.
+    /// As `start_clip`, from the end node.
     pub end_clip: f32,
     /// Unclipped polyline control points (may extend into junction areas), used for zoning placement.
     pub geometry: Vec<Vector3>,

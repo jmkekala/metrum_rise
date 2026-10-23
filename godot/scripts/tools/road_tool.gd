@@ -885,6 +885,18 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 				float(preview.get("geometry_measured", 0.0)),
 				float(preview.get("geometry_limit", 0.0)),
 			]
+		"junction_corner_does_not_fit":
+			return "Junction corner does not fit; lengthen the roads between junctions"
+		"junction_core_not_simple":
+			return "Junction roads overlap; widen the angle between them"
+		"junction_band_mismatch":
+			return "These road types cannot meet at a junction yet"
+		"junction_arm_too_short":
+			return "Road too short for its junction"
+		"junction_profile_mismatch":
+			return "Junction heights do not fit; adjust the road grade"
+		"junction_layout_invalid":
+			return "Junction could not be laid out"
 		"junction_degree":
 			return "Too many roads at one junction (%d, at most %d)" % [
 				int(preview.get("geometry_measured", 0.0)),

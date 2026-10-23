@@ -3,6 +3,7 @@
 //! The legacy section model of one edge: stations, frame, plane blend, width taper and section
 //! evaluation, ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules.
 
+use super::super::layout::EdgeEnd;
 use super::super::mesh::{RowLayout, push_section_row};
 use super::super::profile::RoadProfile;
 use super::super::{RoadBand, RoadSection, RoadVec2, RoadVec3};
@@ -18,7 +19,7 @@ use godot::prelude::Vector3;
 // Station and direction tolerance of the section model.
 const SAMPLE_EPSILON_M: f32 = 0.001;
 // Two incident directions at least this opposed form a pass-through node.
-const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
+pub(in crate::simulation::network::roadbed) const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 // Longitudinal section sampling cadence by road-edge class.
 const STANDARD_SECTION_STEP_M: f32 = 8.0;
 const BRIDGE_SECTION_STEP_M: f32 = 12.0;
@@ -43,13 +44,6 @@ pub(crate) struct SpanScratch {
     pub(super) stations: Vec<f32>,
     pub(super) protected: Vec<f32>,
     pub(super) footprint: Vec<(i32, i32)>,
-}
-
-/// One end of an edge.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum EdgeEnd {
-    Start,
-    End,
 }
 
 // Legacy visual node classification from incident edge directions.
@@ -131,11 +125,15 @@ pub(super) struct SpanModel<'a> {
 
 impl<'a> SpanModel<'a> {
     /// Prepares the model, or `None` when the edge has no span. Fills `points` and `cumulative`.
+    ///
+    /// `mouths` holds the node pieces' mouth sections at the start and end; an end without one
+    /// (a pass-through node, or a node without a piece) takes its mouth at the graph clip.
     pub(super) fn new(
         graph: &'a RegionGraph,
         edge_idx: usize,
         points: &'a mut Vec<RoadVec3>,
         cumulative: &'a mut Vec<f32>,
+        mouths: [Option<&MouthSection>; 2],
     ) -> Option<Self> {
         let edge = graph.get_edge(edge_idx)?;
         if !is_surface_edge(edge) {
@@ -160,9 +158,12 @@ impl<'a> SpanModel<'a> {
             return None;
         }
 
-        // Mouth stations come from the graph clips until `ROAD-68-C` lays junctions out.
-        let start_mouth_m = edge.start_clip.clamp(0.0, total_length_m);
-        let end_mouth_m = (total_length_m - edge.end_clip).clamp(0.0, total_length_m);
+        let start_mouth_m = mouths[0]
+            .map_or(edge.start_clip, |mouth| mouth.section.s_m)
+            .clamp(0.0, total_length_m);
+        let end_mouth_m = mouths[1]
+            .map_or(total_length_m - edge.end_clip, |mouth| mouth.section.s_m)
+            .clamp(0.0, total_length_m);
         if end_mouth_m - start_mouth_m <= SAMPLE_EPSILON_M {
             return None;
         }
@@ -179,7 +180,15 @@ impl<'a> SpanModel<'a> {
             (start_mouth_m, end_mouth_m),
             total_length_m,
         );
-        let tapers = edge_width_tapers(graph, edge_idx, edge, total_length_m);
+        // Node pieces own width changes at bends and junctions; the legacy taper remains only
+        // where two spans meet at a pass-through node.
+        let tapers = edge_width_tapers(
+            graph,
+            edge_idx,
+            edge,
+            total_length_m,
+            [start_kind, end_kind].map(|kind| kind == Some(NodeKind::PassThrough)),
+        );
 
         let mut start_tangent = sample_polyline(points, cumulative, start_mouth_m, None).1;
         let mut end_tangent = sample_polyline(points, cumulative, end_mouth_m, None).1;
@@ -188,6 +197,13 @@ impl<'a> SpanModel<'a> {
         }
         if total_length_m - end_mouth_m <= SAMPLE_EPSILON_M {
             end_tangent = end_pass_through.unwrap_or(end_tangent);
+        }
+        // A node piece's mouth fixes the frame at that end.
+        if let Some(mouth) = mouths[0] {
+            start_tangent = mouth.section.tangent_xz;
+        }
+        if let Some(mouth) = mouths[1] {
+            end_tangent = mouth.section.tangent_xz;
         }
         Some(Self {
             edge,
@@ -217,8 +233,8 @@ impl<'a> SpanModel<'a> {
         &self.layout
     }
 
-    /// The mouth section at one end. The one function that evaluates a mouth: spans copy it, and
-    /// `ROAD-68-C` node pieces copy it too.
+    /// The mouth section at an end without a node piece (a pass-through node). Node pieces
+    /// evaluate their own mouths (`node::mouth_section`), which spans copy.
     pub(super) fn mouth_section(&self, end: EdgeEnd) -> MouthSection {
         let s_m = match end {
             EdgeEnd::Start => self.mouths_m.0,
@@ -339,14 +355,7 @@ impl<'a> SpanModel<'a> {
         let edge = self.edge;
         let total_length = self.total_length_m;
         let (start_mouth_m, end_mouth_m) = self.mouths_m;
-        for distance_m in [
-            0.0,
-            total_length,
-            edge.start_clip,
-            total_length - edge.end_clip,
-            start_mouth_m,
-            end_mouth_m,
-        ] {
+        for distance_m in [0.0, total_length, start_mouth_m, end_mouth_m] {
             push_protected_section_sample(samples, protected, distance_m, total_length);
         }
 
@@ -430,12 +439,12 @@ impl<'a> SpanModel<'a> {
     }
 }
 
-fn is_surface_edge(edge: &Edge) -> bool {
+pub(in crate::simulation::network::roadbed) fn is_surface_edge(edge: &Edge) -> bool {
     !edge.deleted && matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
 }
 
 // The physical profile when present, otherwise the control polyline.
-fn edge_points(edge: &Edge) -> &[Vector3] {
+pub(in crate::simulation::network::roadbed) fn edge_points(edge: &Edge) -> &[Vector3] {
     if edge.physical_geometry.is_empty() {
         &edge.geometry
     } else {
@@ -455,7 +464,10 @@ fn node_at(graph: &RegionGraph, edge: &Edge, end: EdgeEnd) -> u32 {
 }
 
 // Direction away from the node, from the endpoint to the first distinct point.
-fn incident_direction(edge: &Edge, end: EdgeEnd) -> Option<RoadVec2> {
+pub(in crate::simulation::network::roadbed) fn incident_direction(
+    edge: &Edge,
+    end: EdgeEnd,
+) -> Option<RoadVec2> {
     let points = edge_points(edge);
     if points.len() < 2 {
         return None;
@@ -646,25 +658,27 @@ fn edge_width_tapers(
     edge_idx: usize,
     edge: &Edge,
     total_length_m: f32,
+    [start_passes, end_passes]: [bool; 2],
 ) -> EdgeWidthTapers {
     if !edge_supports_width_change_taper(edge) || total_length_m <= SAMPLE_EPSILON_M {
         return EdgeWidthTapers::default();
     }
+    let taper = |passes: bool, node: u32| {
+        passes
+            .then(|| {
+                edge_endpoint_width_taper(
+                    graph,
+                    edge_idx,
+                    edge,
+                    graph.get_valid_node(node),
+                    total_length_m,
+                )
+            })
+            .flatten()
+    };
     EdgeWidthTapers {
-        start: edge_endpoint_width_taper(
-            graph,
-            edge_idx,
-            edge,
-            graph.get_valid_node(edge.start_node),
-            total_length_m,
-        ),
-        end: edge_endpoint_width_taper(
-            graph,
-            edge_idx,
-            edge,
-            graph.get_valid_node(edge.end_node),
-            total_length_m,
-        ),
+        start: taper(start_passes, edge.start_node),
+        end: taper(end_passes, edge.end_node),
     }
 }
 

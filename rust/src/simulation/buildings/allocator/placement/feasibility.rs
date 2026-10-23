@@ -307,7 +307,6 @@ mod tests {
     use crate::simulation::network::types::NodeType;
 
     #[test]
-    #[ignore = "ROAD-68-C: needs span and node pieces in the chunk index"]
     fn road_dependencies_use_query_grid_and_invalidate_local_pieces() {
         let allocator = BuildingAllocator::new();
         let terrain = TerrainSystem::new(128, 128);

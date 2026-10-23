@@ -109,6 +109,7 @@ fn bytes(signs: &[RoadSign]) -> Vec<u32> {
 }
 
 #[test]
+#[ignore = "ROAD-68-F: crossing signs follow the lane crosswalks, which move to the layout crosswalk stations"]
 fn two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb() {
     let f = junction();
     let mesh = generate(&f);

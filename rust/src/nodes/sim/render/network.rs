@@ -23,7 +23,9 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
-        if !self.transit_network.roadbed.is_current() {
+        // A node piece that failed keeps the last good chunks published.
+        let roadbed = &self.transit_network.roadbed;
+        if !roadbed.is_current() || !roadbed.failed_nodes().is_empty() {
             return;
         }
         self.transit_network

@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Isolated roadbed span-piece build and publish costs (`ROAD-68-B`).
+//! Isolated roadbed span- and node-piece build and publish costs (`ROAD-68-B`, `ROAD-68-C`).
 //!
-//! Each case is one edge between two terminal nodes, so no junction plane or graph clip applies:
-//! `build` measures sections, mesh, outer chains, triangle grid and chunk footprint for one span;
-//! `publish` adds the dirty-closure compile and chunk-index update for that span inside a T
-//! junction. The target is a 100 m span in 0.05 ms.
+//! Span cases are one edge between two terminal nodes: `build` measures sections, mesh, outer
+//! chains, triangle grid and chunk footprint for one span; `publish` adds the dirty-closure
+//! compile and chunk-index update for that span inside a T junction. The target is a 100 m span
+//! in 0.05 ms.
+//!
+//! Junction cases (`roadbed_junction`) build one node piece from the graph: arms, layout, plane,
+//! mouth sections, core CDT, strips, curb faces, chains, grid and footprint. Arms are 100 m
+//! two-lane roads with sidewalks and crosswalks, 12 m knots, on a 2.5% slope. Targets: a
+//! four-way in 0.1 ms and a six-way in 0.3 ms. `publish/t_closure` marks a T's node dirty and
+//! compiles its closure: the node piece and its three incident spans.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::Vector3;
@@ -221,5 +227,65 @@ fn bench_roadbed_span(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_roadbed_span);
+// A node at the origin with one 100 m arm per angle, each ending at a terminal; odd arms run into
+// the node.
+fn junction(angles_deg: &[f32]) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    for (index, angle) in angles_deg.iter().enumerate() {
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let mut points: Vec<Vector3> = (0..=9)
+            .map(|i| {
+                let s = 100.0 * i as f32 / 9.0;
+                let (x, z) = (cos * s, sin * s);
+                Vector3::new(x, SLOPE * x, z)
+            })
+            .collect();
+        let far = graph.add_node(points[points.len() - 1], NodeType::Junction);
+        let (start, end) = if index % 2 == 0 {
+            (center, far)
+        } else {
+            points.reverse();
+            (far, center)
+        };
+        graph.add_edge(edge_through(start, end, points));
+    }
+    graph.rebuild_intersection_clips();
+    graph
+}
+
+fn bench_roadbed_junction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("roadbed_junction");
+    group.sample_size(200);
+    group.warm_up_time(Duration::from_secs(2));
+    group.measurement_time(Duration::from_secs(4));
+    let roadbed = RoadbedSystem::new(RENDER_CHUNK_SPAN_M);
+    let cases: [(&str, &[f32]); 3] = [
+        ("t", &[0.0, 180.0, 270.0]),
+        ("four_way", &[0.0, 90.0, 180.0, 270.0]),
+        ("six_way", &[0.0, 60.0, 120.0, 180.0, 240.0, 300.0]),
+    ];
+    for (name, angles) in cases {
+        let graph = junction(angles);
+        let piece = roadbed.build_node_piece(&graph, 0).expect("node builds");
+        assert!(piece.expect("node has a piece").mesh().top_triangle_count() > 0);
+        group.bench_function(BenchmarkId::new("build", name), |b| {
+            b.iter(|| black_box(roadbed.build_node_piece(black_box(&graph), 0)))
+        });
+    }
+
+    let graph = junction(&[0.0, 180.0, 270.0]);
+    let mut published = RoadbedSystem::new(RENDER_CHUNK_SPAN_M);
+    published.compile_dirty(&graph);
+    assert!(published.failed_nodes().is_empty());
+    group.bench_function(BenchmarkId::new("publish", "t_closure"), |b| {
+        b.iter(|| {
+            published.mark_node_dirty(0);
+            black_box(published.compile_dirty(black_box(&graph)))
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_roadbed_span, bench_roadbed_junction);
 criterion_main!(benches);

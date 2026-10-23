@@ -30,7 +30,7 @@ pub enum PieceId {
 
 /// Prepared owner-local surface lookup, reused for every point of one lane.
 pub struct LaneSurfaceQuery<'a> {
-    // The lane owner's span; junction lanes have no owner piece until `ROAD-68-C`.
+    // The lane owner's span, or a junction lane's node piece.
     owner: Option<&'a PieceMesh>,
     carriageway_only: bool,
 }
@@ -224,16 +224,23 @@ impl RoadbedSystem {
         }
     }
 
-    /// Prepares the surface lookup for one lane owned by `edge_id` or, for a junction lane,
-    /// `node_id`.
+    /// Prepares the surface lookup for one lane owned by `edge_id` (its span) or, for a junction
+    /// lane, `node_id` (its node piece).
     pub fn lane_query(
         &self,
         edge_id: usize,
-        _node_id: usize,
+        node_id: usize,
         carriageway_only: bool,
     ) -> LaneSurfaceQuery<'_> {
+        let span = self.span_piece(edge_id).map(|span| span.mesh());
+        let node = || {
+            u32::try_from(node_id)
+                .ok()
+                .and_then(|node| self.node_piece(node))
+                .map(|piece| piece.mesh())
+        };
         LaneSurfaceQuery {
-            owner: self.span_piece(edge_id).map(|span| span.mesh()),
+            owner: span.or_else(node),
             carriageway_only,
         }
     }
@@ -301,7 +308,7 @@ impl RoadbedSystem {
             * (i64::from(last.1) - i64::from(first.1) + 1);
         if cells as u64 > self.pieces.len() as u64 {
             return self.pieces.iter().any(|(&id, published)| {
-                let mesh = published.span.mesh();
+                let mesh = published.mesh();
                 bounds_intersect(mesh.bounds_xz(), bounds) && visit(id, mesh)
             });
         }

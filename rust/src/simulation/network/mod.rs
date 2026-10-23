@@ -402,6 +402,8 @@ impl TransitNetwork {
                     affected_edges.insert(new_eid);
                 }
             }
+            // Clips come from the junction layouts, and the profile solve pins arms up to them.
+            graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
             let authored_edges = std::mem::take(&mut self.profile_authored_edges);
             let profile_changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
                 &affected_nodes,
@@ -409,7 +411,6 @@ impl TransitNetwork {
                 &authored_edges,
             );
             affected_edges.extend(profile_changed_edges);
-            graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
             zoning.mark_cell_lots_for_roads(graph, affected_edges.iter().copied());
             self.lane_system
                 .rebuild_edges_incremental(graph, &affected_edges);

@@ -9,12 +9,12 @@
 use super::geometry::SurfaceTriangleGrid;
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
 use super::span::MouthSection;
-use super::{BandKind, RoadSection, RoadVec3};
+use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
 
 // Band-kind groups in `BandKind` declaration order, then the curb faces.
 const BAND_GROUPS: usize = 8;
-const CURB_FACE_GROUP: usize = BAND_GROUPS;
-const GROUPS: usize = BAND_GROUPS + 1;
+pub(super) const CURB_FACE_GROUP: usize = BAND_GROUPS;
+pub(super) const GROUPS: usize = BAND_GROUPS + 1;
 
 /// Footprint boundary polyline: vertex indices into its piece's positions, ordered so the road
 /// lies on the left, from one mouth corner to the next.
@@ -225,13 +225,44 @@ pub(super) fn push_section_row(
     layout: &RowLayout,
     positions: &mut Vec<RoadVec3>,
 ) {
+    push_section_row_at(
+        section,
+        layout,
+        |lateral_m| section.center_xz + section.lateral_xz * f64::from(lateral_m),
+        positions,
+    );
+}
+
+/// [`push_section_row`] with the boundary XZ taken from `xz(lateral offset)`: a node piece's
+/// mouth places its row on the arm's offset curves.
+pub(super) fn push_section_row_at(
+    section: &RoadSection,
+    layout: &RowLayout,
+    xz: impl Fn(f32) -> RoadVec2,
+    positions: &mut Vec<RoadVec3>,
+) {
     for_each_boundary(section, layout, |lateral_m, height_m| {
-        positions.push(RoadVec3::new(
-            section.center_xz.x + section.lateral_xz.x * f64::from(lateral_m),
-            f64::from(height_m),
-            section.center_xz.y + section.lateral_xz.y * f64::from(lateral_m),
-        ));
+        let point = xz(lateral_m);
+        positions.push(RoadVec3::new(point.x, f64::from(height_m), point.y));
     });
+}
+
+/// The `(lateral offset, level)` of each vertex slot of a section row, left to right: one per
+/// band boundary per level, the left band's first at a level change.
+pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Level)> + '_ {
+    let bands = profile.bands();
+    (0..=bands.len()).flat_map(move |boundary| {
+        let (lateral_m, level) = match boundary {
+            0 => (bands[0].start_m, bands[0].level),
+            _ if boundary == bands.len() => (bands[boundary - 1].end_m, bands[boundary - 1].level),
+            _ => (bands[boundary].start_m, bands[boundary].level),
+        };
+        let doubled = boundary > 0
+            && boundary < bands.len()
+            && bands[boundary - 1].level != bands[boundary].level;
+        let left = doubled.then(|| (lateral_m, bands[boundary - 1].level));
+        left.into_iter().chain(std::iter::once((lateral_m, level)))
+    })
 }
 
 fn push_road_space_row(section: &RoadSection, layout: &RowLayout, road_space: &mut Vec<[f32; 2]>) {
@@ -351,6 +382,42 @@ pub(super) fn build_span_mesh(
         outer_chains,
         bounds_xz: mesh_bounds,
         grid,
+    }
+}
+
+impl PieceMesh {
+    /// Assembles a mesh from its triangle groups (band kinds in declaration order, then curb
+    /// faces) and builds its bounds and top-triangle grid.
+    pub(super) fn from_groups(
+        positions: Vec<RoadVec3>,
+        road_space: Vec<[f32; 2]>,
+        groups: &[Vec<[u32; 3]>; GROUPS],
+        outer_chains: Vec<Box<[u32]>>,
+    ) -> Self {
+        let mut group_starts = [0u32; GROUPS + 1];
+        for (group, triangles) in groups.iter().enumerate() {
+            group_starts[group + 1] = group_starts[group] + triangles.len() as u32;
+        }
+        let triangles: Vec<[u32; 3]> = groups.iter().flatten().copied().collect();
+        let top_count = group_starts[CURB_FACE_GROUP] as usize;
+        let grid = SurfaceTriangleGrid::from_triangles(
+            triangles[..top_count]
+                .iter()
+                .map(|triangle| triangle.map(|vertex| positions[vertex as usize])),
+            |triangle| triangle as u32,
+        );
+        Self {
+            bounds_xz: bounds_xz(&positions),
+            positions,
+            road_space,
+            triangles,
+            group_starts,
+            outer_chains: outer_chains
+                .into_iter()
+                .map(|vertices| OuterChain { vertices })
+                .collect(),
+            grid,
+        }
     }
 }
 

@@ -228,7 +228,10 @@ A `Terminal` has one sector of `2 pi`, which is convex.
 `R` the curb-return radius ([D1](#product-decisions)).
 
 1. The corner centre `C` is the first intersection, by distance from the node, of
-   `o_a(., la + R)` and `o_b(., -(lb + R))`.
+   `o_a(., la + R)` and `o_b(., -(lb + R))`. When they do not cross at stations `>= 0`, as in an
+   obtuse sector between a narrower and a wider carriageway, the search also uses each arm's
+   first offset segment extended behind the node (station `< 0`), and the tangent station on
+   the wider arm may be negative ([open question 6](#road-68-open-questions)).
 2. The tangent stations `sa*` and `sb*` are the stations of `C` on those two curves. Every band
    boundary on that side reaches the corner at the same station, because each lies on the arm's
    lateral line through `C`.
@@ -245,7 +248,9 @@ width there and tapers along the corner.
 **Round join.** On straight and convex sectors, band boundary `j` is an arc about the node from
 `o_a(0, la_j)` to `o_b(0, lb_j)`, with the radius interpolated linearly by angle. A straight
 sector between unequal widths gives a radial step at the node; its taper is
-[D4](#product-decisions).
+[D4](#product-decisions). In a straight sector narrower than `pi`, the arms overlap, so each
+boundary starts where its offset curve crosses the sector bisector instead of at station zero
+([open question 5](#road-68-open-questions)).
 
 **Mouth stations.** For each arm, the mouth station is the larger of `s_min` and the tangent
 stations of its concave corners, plus the crosswalk depth on crossable arms
@@ -277,8 +282,10 @@ pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
 
 - `Bend` and `JunctionN` use their solved plane `P`. The profile finalizer pins each incident
   arm's physical profile to `P` on `[0, mouth station]` and blends back to the source grade outside
-  it, as today. A `Terminal` gets a plane through its end section, with the arm's end grade and no
-  crossfall, solved by the same finalizer.
+  it, as today. A knot at the mouth station makes the pin exact there: an adapted arm takes it in
+  its control polyline, a stable one in its physical profile only. A `Terminal` gets a plane
+  through its road end and its mouth centreline point, with the arm's end grade along that run and
+  no crossfall; it is read from the solved profile, so the finalizer leaves terminals alone.
 - Every node-piece vertex is at `P(x, z) + level`. A curb face is a vertical quad between the
   ground and raised vertices at the same XZ.
 - Mouth sections are evaluated directly as `P(x, z) + level`. Span sections at full blend weight
@@ -292,8 +299,9 @@ pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
 **Node piece.**
 
 - **Carriageway core.** One closed loop crosses each arm's mouth, follows its carriageway edges
-  back to the corners, and runs along each sector's carriageway-edge curve. Spade CDT triangulates
-  it. The core is planar, so no interior guide vertices are needed.
+  back to the corners, and runs along each sector's carriageway-edge curve. It is fanned from the
+  node when the node sees every loop edge, and Spade CDT triangulates it otherwise (a `ROAD-68-C`
+  correction). The core is planar, so no other interior vertices are needed.
 - **Raised strips.** Quad strips between consecutive band boundaries, for each sector and arm
   side.
 - **Curb faces.** Along every carriageway boundary except the mouths.
@@ -507,7 +515,7 @@ A test that cannot pass until a later gate is marked
 | --- | --- | --- |
 | `ROAD-68-A` | done | Remove the legacy compiler; add the roadbed façade; the crate compiles |
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
-| `ROAD-68-C` | open | Junction layout and node pieces for car roads |
+| `ROAD-68-C` | done (screenshots pending) | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
@@ -579,17 +587,18 @@ that heads its table. Tests of deleted mechanisms were deleted, not listed.
 `bridge_entry_points_never_use_the_global_pool` to `ROAD-68-F` (tables below, and the
 [`ROAD-68-B` result](#road-68-b--profiles-and-spans)).
 
-`ROAD-68-C` (7):
-
-| Module | Tests | Reason |
-| --- | --- | --- |
-| `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | terminal mouths move span ends in from the node (moved from `ROAD-68-F` in `ROAD-68-B`) |
-| `nodes::sim::core::tests` | `failed_junction_precompute_retains_matching_render_and_road_tool_generation` | failed junction piece path |
-| `nodes::sim::core::tests::road_terrain_plan` | `branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope` | four-way junction pieces on slopes |
-| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_third_road_preserves_existing_junction_boundary_owners` | junction outer boundaries |
-| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_repairs_rejected_junction_before_publication` | junction pieces and their terrain patches |
-| `simulation::save::tests` | `headlight_house_junction_full_load_compiles_with_terrain_earthwork` | junction pieces from the loaded graph |
-| `simulation::buildings::allocator::placement::feasibility::tests` | `road_dependencies_use_query_grid_and_invalidate_local_pieces` | needs span and node pieces in the chunk index |
+`ROAD-68-C` (7): re-enabled by `ROAD-68-C`. Four pass:
+`failed_junction_precompute_retains_matching_render_and_road_tool_generation` (its failure probe now
+reads `failed_nodes`, since a failed node no longer leaves the roadbed dirty),
+`branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope`,
+`kuopio_third_road_preserves_existing_junction_boundary_owners` and
+`road_dependencies_use_query_grid_and_invalidate_local_pieces`. Three moved:
+`kuopio_saved_reference_repairs_rejected_junction_before_publication` to `ROAD-68-E`, and
+`a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` and
+`headlight_house_junction_full_load_compiles_with_terrain_earthwork` to `ROAD-68-F` (tables
+below). `road_edit::tests::assert_cold_geometry_matches` compares node-piece meshes and errors
+again, and `node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier` again
+requires the merged node's piece before the merge.
 
 `ROAD-68-D` (25):
 
@@ -602,16 +611,21 @@ that heads its table. Tests of deleted mechanisms were deleted, not listed.
 | `nodes::simulation_node::tests::async_payload` | `conservative_road_grading_pad_filters_only_margin_only_engineered_patches`, `unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes` | road terrain patches |
 | `nodes::simulation_node::tests::cdt` | `terrain_cdt_adjacent_tiles_emit_identical_shared_side_vertices`, `terrain_cdt_guides_use_shared_source_height_and_final_grade_limits`, `terrain_cdt_input_keeps_multi_loop_tie_in_guides_unconstrained`, `terrain_cdt_local_bounds_expand_for_required_grading_distance` | road terrain patches |
 
-`ROAD-68-E` (1):
+`ROAD-68-E` (2):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
 | `nodes::sim::editing::tests` | `undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology` | undo restores the exact pre-edit junction pieces and mesh |
+| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_repairs_rejected_junction_before_publication` | a save from before `ROAD-68-C` re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration (moved from `ROAD-68-C`, [open question 8](#road-68-open-questions)) |
 
-`ROAD-68-F` (3):
+`ROAD-68-F` (7):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
+| `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | lights keep a span-end clearance; the terminal cap needs layout furniture stations (moved from `ROAD-68-C`) |
+| `simulation::save::tests` | `headlight_house_junction_full_load_compiles_with_terrain_earthwork` | node 1 joins a footpath to two roads (D5), so it has no node piece yet (moved from `ROAD-68-C`) |
+| `simulation::network::lanes::tests` | `sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk` | pedestrian corner routes follow the legacy corner path, not the layout corners the clips now end at (since `ROAD-68-C`) |
+| `simulation::network::render::road::road_signs::tests` | `two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb` | crossing signs follow the lane crosswalks, which move to the layout crosswalk stations (since `ROAD-68-C`) |
 | `nodes::sim::core::tests::zoning_buildability::cell_zoning::movement` | `node_move_into_paint_or_erased_occupied_claim_is_atomic`, `node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor` | node-move reservation check against moved pieces |
 | `nodes::simulation_node::tests::global_pool` | `bridge_entry_points_never_use_the_global_pool` | unchecked node moves leave a saved parcel over the moved road, so the load entry fails; every other entry point keeps to the shared pool (moved from `ROAD-68-B`) |
 
@@ -622,14 +636,14 @@ Godot scripts skipped by `run.sh --test`:
 
 | Gate | Script | Reason |
 | --- | --- | --- |
-| `ROAD-68-C` | `zoning_reference_test` | lots exclude the junction sidewalk footprint |
 | `ROAD-68-E` | `network_tool_chunk_renderer_test` | the moving preview uploads a road mesh |
 | `ROAD-68-E` | `road_junction_preview_test` | the preview exports the junction scene and a ready plan |
 | `ROAD-68-E` | `road_preview_stream_test` | junction previews update while the pointer moves |
 | `ROAD-68-F` | `zoning_cells_tool_test` | node moves check painted cells; parcels beside cells need frontage |
 
 `zoning_road_tool_test` (`ROAD-68-B`: parcel lots need road frontage heights) passes again and
-runs since `ROAD-68-B`.
+runs since `ROAD-68-B`. `zoning_reference_test` (`ROAD-68-C`: lots exclude the junction sidewalk
+footprint) passes again and runs since `ROAD-68-C`.
 
 #### `ROAD-68` open questions
 
@@ -657,6 +671,65 @@ These need a user decision; work that does not depend on them continues.
    - **Verification.** The manifest's other integrity checks (attempts 1–37, attempt 36
      rejected, 70 live edges, source terrain) pass against the committed save, and all 8
      `test_road_terrain_replay.py` tests pass.
+5. **Straight sectors narrower than a half turn (`ROAD-68-C`).** The [round join](#junction-layout)
+   from station zero makes the carriageway core cross itself whenever `phi < pi` and the two
+   widths are equal: the arms overlap in a sliver of angle `pi - phi`, and their carriageway edges
+   cross at station `la * tan((pi - phi) / 2)`. A straight road split by a side road lands on
+   either side of `pi` by float noise, so about half of all such T junctions would fail with
+   `CoreNotSimple` (the layout test `nearly_straight_sectors_keep_the_core_simple` fails that way
+   with the literal rule). A concave corner is no substitute there: its centre is ill-conditioned
+   near `pi`, and it does not exist for unequal widths. Current default: below `pi`, each boundary
+   starts where its offset curve crosses the sector bisector, so the arms meet in a miter. Equal
+   widths share one miter point, and a width change steps radially along the bisector (D4). At
+   `pi` and above, the round join is unchanged. Options: keep the miter, or join every straight
+   sector at station zero and reject the overlapping half.
+6. **Obtuse corners between unequal widths (`ROAD-68-C`) — defaulted: backward extension
+   (2026-10-24); the user may override it.**
+   - **The problem.** A concave corner needs `o_a(., la + R)` and `o_b(., -(lb + R))` to cross at
+     positive stations. With a narrower arm `a`, that requires `la + R >= (lb + R) * cos(pi - phi)`,
+     and shrinking `R` only makes it harder. A two-lane arm (3.5 m) next to a four-lane arm (7 m)
+     fits only up to about 137°, so a side road meeting a four-lane through road at 40° failed with
+     `CornerDoesNotFit` on its 140° side.
+   - **The default.** When no crossing exists at stations `>= 0`, the search also uses each arm's
+     first offset segment extended behind the node. The corner centre then lies on the wider arm's
+     curb-offset line about 0.7 m behind its station zero, and its tangent station there is
+     negative. The fillet reaches into the neighbouring straight sector's span of that line, where
+     the carriageway edge continues anyway; `CoreNotSimple` still guards the result, and
+     `CornerDoesNotFit` remains only when no crossing exists even then.
+   - **Why.** It keeps the curb-return construction, its exact endpoints and one radius per
+     corner, and it rejects nothing a player would expect to build. Accepting the rejection until
+     `ROAD-68-F` tapers would refuse every oblique side road on a wider road; widening `eps` only
+     moves the boundary.
+   - **Evidence.** Layout tests `obtuse_corners_between_unequal_widths_extend_the_wider_arm_backwards`
+     (120°–160°, both orders) and `a_two_lane_side_road_meets_a_four_lane_through_road` (40°, 60°,
+     90°), and the node fixtures `mixed_40`, `mixed_60` and `mixed_90`, flat and sloped.
+7. **Stable arms pinned at both ends (`ROAD-68-C`).** The profile solve pins an arm to `P` up to its
+   mouth with a knot there. An adapted arm takes the knot in its control polyline, so it survives
+   every later solve. A stable arm's control polyline must not change, so it takes the knot in its
+   physical profile only, and keeps its physical knots on later solves unless that solve adds new
+   supports. When the other end's solve does add supports, it resamples the physical profile on
+   the control polyline and drops this end's knot; the node then fails with `MouthOffPlane`
+   (`junction_profile_mismatch`). No fixture hits it. Options: accept the rejection (current); keep
+   pinned physical knots through the resample; or let the solve add mouth knots to stable control.
+8. **Saves from before `ROAD-68-C` (`ROAD-68-C`).** Their clips come from the legacy setback rule
+   (about 5.5 m at a right-angle T) and their profiles are pinned only that far, while layout mouths
+   sit at 9.5–16 m. On load most of their junctions fail the 1 mm mouth check, and the existing
+   load repair re-solves them after recomputing their clips: the Kuopio reference fixture loads,
+   but about ten of its junction profiles change. Options: accept the load repair (current); re-pin the
+   reference fixtures; or a save migration with `ROAD-68-E`'s load rebuild.
+9. **Width steps on straight sectors (`ROAD-68-C`).** D4's radial step has no face of its own. A
+   straight sector between a narrower and a wider carriageway gets the generic strips, which are
+   zero-area slivers along the step, and the carriageway-edge curb face runs the whole step, up to
+   the wider carriageway edge. The piece is watertight (fixture `width_step`), but beyond the
+   narrower arm's sidewalk a 12 cm face stands at the wider carriageway's edge and the outer chain
+   runs along the step at raised level, which `ROAD-68-D` will see. Options: accept until
+   `ROAD-68-F`'s taper (current); build explicit step faces and chain segments now.
+10. **Crossings before `ROAD-68-F`.** The layout's crossable rule (car-road arms with sidewalks at
+    junctions of three or more arms; bend arms only when the node forces a crossing) decides the
+    3 m mouth extension (D8). Pedestrian lanes still place crosswalks by the `ROAD-64` lane rule,
+    which also crosses one bend arm by default, against clips that now end at the layout mouths.
+    Two lane and sign tests are disabled for `ROAD-68-F`. Options: keep the layout rule and move
+    the lanes in `ROAD-68-F` (current); or match the lane rule's default bend crossing now.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -788,6 +861,223 @@ Acceptance:
 - rebuilds stay local
 - a new `roadbed_junction` Criterion benchmark meets the isolated targets, with its worker count
   recorded
+
+#### Layout module (part 1)
+
+`roadbed/layout.rs` builds a `JunctionLayout` from abstract arms. Each `ArmInput` carries:
+
+- a key (edge index and end)
+- centreline knots oriented away from the node, with left lateral axes and stations
+- left and right bands outward from the centreline, with the core bands marked
+- `max_station_m`
+- a crossable flag
+
+The module does not read the graph or spans. Part 2 feeds it from the section frame and wires
+its products into clips, the profile solve and node pieces. Construction follows the
+[junction layout](#junction-layout) rules, with these choices:
+
+- The corner centre is the crossing of the two offset curves with the smallest `max(sa, sb)`,
+  over stations up to each arm's `max_station_m`; when there is none, the first crossing that
+  extends an arm's first offset segment behind the node (part 2, open question 6).
+- Straight sectors narrower than `pi` meet in a miter on the sector bisector
+  ([open question 5](#road-68-open-questions)).
+- Bands beyond the carriageway edge match by position outward. A band on one side only tapers to
+  zero width. Matched bands must agree in kind and level, or layout fails with `BandMismatch`;
+  footpaths meeting roads (D5) arrive in `ROAD-68-F`.
+- Fitting bisects `R` in 20 steps between `R_min` and 6 m and keeps the largest radius that fits.
+- The core loop check uses exact orientation predicates (`robust`, already built for Spade), so
+  it agrees with the triangulation that consumes the loop.
+- Typed errors: `NoArms`, `NonFiniteNode`, `NonFinite`, `DuplicateArm`, `DegenerateArm`,
+  `InvalidBands`, `DuplicateDirection`, `BandMismatch`, `ArmTooShort`, `CornerDoesNotFit` and
+  `CoreNotSimple`.
+
+Layout constants:
+
+| Constant | Value | Reason |
+| --- | --- | --- |
+| `CURB_RETURN_RADIUS_M` | 6 m | D1 |
+| `CURB_RETURN_CLEARANCE_M` | 0.5 m | D1: `R_min` is the corner's raised width plus 0.5 m |
+| `CROSSWALK_DEPTH_M` | 3 m | D8; the crosswalk station is the middle of the depth |
+| `MIN_MOUTH_STATION_M` (`s_min`) | 1 m | keeps every mouth off the node's lateral line, where round joins start |
+| `STRAIGHT_SECTOR_EPS_RAD` (`eps`) | 1° | covers the direction noise of a split straight road (f32 knots, below about 1e-3 rad anywhere in a 20 km world); a visually straight width change is a radial step (D4) |
+| `MIN_SECTOR_ANGLE_RAD` | 1° | consecutive arms closer than this fail with `DuplicateDirection` |
+| `MAX_SAMPLE_SEGMENT_M` | 0.5 m | longest sampled boundary segment |
+| `MAX_SAMPLE_ANGLE_RAD` | 10° | largest turn per boundary sample |
+| `RADIUS_BISECTION_STEPS` | 20 | resolves 6 m to 2 m to under 4 µm |
+| arm direction run | 1 m, at least 5 cm | as `validate.rs` measures it |
+
+Tests (`roadbed/layout/tests.rs`, 20):
+
+- invariance to arm input order (bitwise) and to rotating and moving the junction
+- mirrored layouts for a symmetric cross and Y
+- corner endpoints bitwise equal to the offset-curve points
+- concentric arcs for straight equal arms
+- the 3 m crosswalk extension and `s_min`
+- `R` shrinking to fit, and `CornerDoesNotFit` on short arms
+- `CoreNotSimple`
+- degrees 1 to 6; arm angles of 25°, 40°, 60°, 90° and 180°; bends from 10° to 170°
+- the terminal round cap
+- two-lane meeting four-lane arms, with a tapered sidewalk
+- the straight width-change step
+- nearly straight sectors from 1e-9 rad to 0.9°
+- curved arms
+- obtuse unequal-width corners, extended backwards (part 2)
+- the typed errors
+
+Every fixture also checks exact endpoint copies, sample counts, mouth limits, a counter-clockwise
+core and the provenance of every core vertex.
+
+Layout timings, measured fresh on 2026-10-23 with `roadbed_layout_benchmark`:
+
+- **Build:** release, sources of `a7b98f04`
+- **Machine:** i9-12900K, pinned to P-cores
+- **Workers:** one thread; the layout uses no Rayon
+- **Method:** Criterion defaults, 100 samples, and no overlapping build or benchmark (exclusive
+  timing lock)
+- **Fixtures:** straight two-lane arms with sidewalks and crosswalks, 6 m knots and 50 m of reach
+
+```bash
+cargo bench --bench roadbed_layout_benchmark --no-run
+taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot
+```
+
+| Case | Samples | Layout time | Share of the isolated node-piece target |
+| --- | --- | --- | --- |
+| `layout/t` | 126 | 7.06 µs | — |
+| `layout/four_way` | 240 | 12.39 µs | 12% of 0.1 ms |
+| `layout/six_way` | 486 | 28.24 µs | 9% of 0.3 ms |
+
+The node-piece mesh and its CDT come in part 2, inside the same targets.
+
+#### Graph integration and node pieces (part 2)
+
+Result (done 2026-10-24; the rendered screenshots are added separately): every bend, junction
+and road terminal gets a node piece, so junction areas render again, and spans run between the
+mouth sections their node pieces evaluate. `roadbed/` holds 5,784 production lines (tests,
+fixtures and test-only helpers excluded).
+
+- **Arms** (`roadbed/arms.rs`): one `ArmInput` per live incident edge end. Knots are the span's
+  centreline points (physical profile, else control polyline) walked away from the node, exact
+  duplicates dropped; stations are horizontal metres; laterals are the span frame's (centred
+  secant at interior knots, segment direction at the ends) turned left of the outward direction.
+  Bands come from `RoadProfile`: at an edge's start the layout's left is the positive lateral
+  side, at its end both swap. A node has no layout when it is merged into another, has no surface
+  arm, is a pass-through pair, has a footpath arm (D5, `ROAD-68-F`) or is a bridge or tunnel
+  terminal (`ROAD-68-F`).
+- **Mouth sections**: one per arm, evaluated by the node on the arm's offset curves at its mouth
+  station (`ArmInput::offset_point(s, ±l)`), with every height `P(x, z) + level`. The span and
+  the node piece copy the same `Arc<MouthSection>`; spans at pass-through nodes evaluate their
+  own, as in `ROAD-68-B`. When an edge's two mouths are within 1 mm, there is no span and the end
+  node copies the start node's section. The mouth's span station is the span model's `f32` 3-D
+  station of the same centreline point.
+- **Heights**: `P` is the solved junction plane (`solved_junction_endpoint_profile_plane`) at bends
+  and junctions and the terminal plane at terminals. A finalized centreline more than 1 mm from
+  `P` at a mouth fails the node with `NodeError::MouthOffPlane`.
+- **Node piece** (`roadbed/node.rs`): the carriageway core is the layout's core loop with each
+  mouth row's interior carriageway vertices inserted, fanned from the node when the node sees
+  every loop edge (exact orientation) and triangulated by Spade's CDT otherwise; one strip per band
+  per sector (sample quads) and per arm side (zipped by station from the sector to the mouth);
+  curb faces along every level change except mouths; one outer chain per sector, from one mouth
+  corner to the next with the road on the left. Vertices are shared by exact position.
+- **Graph**: `graph/rebuild/clips.rs` sets each clip to the arm's layout mouth station at bends and
+  junctions (zero at terminals, pass-through nodes and failing nodes); the width padding and acute
+  heuristics are gone. The edit pipeline runs clips before the profile solve, whose hard zone is
+  the clip (`junction_profile_crossing_core_m` is removed). Load repair recomputes the clips of
+  failing nodes before re-solving them.
+- **Rejections**: placement validation checks every affected node on the post-edit excerpt
+  (`roadbed::check_node`) and rejects with `junction_corner_does_not_fit`,
+  `junction_core_not_simple`, `junction_band_mismatch`, `junction_arm_too_short`,
+  `junction_profile_mismatch` or `junction_layout_invalid`, for preview and commit alike; a node
+  that still fails at compile rolls the commit back as before.
+- **System**: the dirty closure is the dirty edges, their nodes (and a reconnected edge's previous
+  nodes), and those nodes' incident edges. Nodes plan first (arms, layout, plane, mouths), then
+  node pieces and spans build on the shared pool and publish in piece order. `failed_nodes` and
+  `node_error` report failures; mesh publication and the road-tool snapshot keep the last good
+  production while a node fails. Queries, raycasts, `pieces_in_bounds`, chunks and generations
+  cover node pieces; `lane_query` answers junction lanes from their node piece; the renderer emits
+  node pieces under their node owner with world UVs (junction asphalt keeps `road_color`).
+
+Tests (`roadbed::node::tests`, fixtures flat and at a 2.5% slope: T, four-, five- and six-way;
+Y at 25°, 40° and 60°; bends of 10° to 160°; mixed four-lane through roads with a two-lane side
+road at 40°, 60° and 90°; a straight width step; every arm ending in a terminal):
+
+- every node builds its piece (`Bend`, `Junction`, `Terminal`) and every edge its span
+- node pieces are watertight (every edge borders two triangles except outer-chain and mouth
+  edges), every open mouth edge is an open mouth edge of the span there bitwise, spans hold the
+  node's mouth section, and every curb face looks at ground level
+- every node vertex is bitwise `P(x, z) + level`
+- every mouth vertex is bitwise `offset_point(mouth station, ±l)` on the layout's arm
+- node pieces do not change with edge insertion order or direction
+- two junctions on a 10–40 m link either fit within half of the link each or fail with
+  `CornerDoesNotFit`
+- an edit rebuilds exactly its closure
+- layout: obtuse corners between two- and four-lane arms at 120–160°, and a four-lane through
+  road with a two-lane side road at 40°, 60° and 90°
+
+Checks (fresh, on the gate sources):
+
+- Debug library suite (`RAYON_NUM_THREADS=4`): 1,797 passed, 0 failed, 187 ignored
+  (`ROAD-68-B`: 1,767, 0, 189). `ROAD-68` ignores: D 25, E 2, F 7 (tables above).
+- Clippy (`--all-targets`) reports the same 59 warnings as the legacy tree. `cargo doc` reports no
+  missing docs.
+- `./run.sh --test` (isolated profile, no display) exits 0: the Kuopio replay checks,
+  `cargo check --benches`, `cargo test` (the library as above and `tests/growth_scenario.rs`: 4
+  passed) and the Godot bridge suites with no script errors, including the re-enabled
+  `zoning_reference_test` (8 layouts). Four scripts stay skipped until `ROAD-68-E` and
+  `ROAD-68-F`; the two Forward+ vegetation tests need a display and did not run.
+
+Benchmark (`roadbed_benchmark`, 2026-10-24): release build, i9-12900K, pinned to the P-cores,
+`RAYON_NUM_THREADS=4`, Criterion defaults with 200 samples, no other build or benchmark running.
+`roadbed_junction/build/*` plans and builds one node piece from the graph (arms, layout, plane,
+mouth sections, core, strips, curb faces, chains, grid, footprint); arms are 100 m two-lane roads
+with sidewalks and crosswalks, 12 m knots, on a 2.5% slope. `publish/t_closure` marks a T's node
+dirty and compiles its closure: the node piece and its three spans.
+
+```bash
+cargo bench --bench roadbed_benchmark --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot
+```
+
+| Case | Median | Target |
+| --- | --- | --- |
+| `roadbed_junction/build/t` | 41.35 µs | — |
+| `roadbed_junction/build/four_way` | 70.80 µs | 100 µs |
+| `roadbed_junction/build/six_way` | 127.22 µs | 300 µs |
+| `roadbed_junction/publish/t_closure` | 131.74 µs | — |
+| `roadbed_span/build/span_100m` | 16.38 µs | 50 µs |
+| `roadbed_span/publish/span_100m_t_arm` | 134.81 µs | — |
+| `layout/four_way` (`roadbed_layout_benchmark`) | 12.26 µs | — |
+
+The first build measured 223 µs (four-way) and 473 µs (six-way). A profile showed 43% in Spade's
+exact incircle fallback: the corner samples are cocircular, so every Delaunay flip near a corner
+took the exact path. Fanning the core from the node when it sees every core edge, a shared
+`f64`-bits hasher for vertex deduplication and one id lookup per sector sample brought them under
+target. `publish/span_100m_t_arm` grew from 37.6 µs because one dirty arm now rebuilds its two
+nodes and the T node's three spans.
+
+Spec corrections in `ROAD-68-C`:
+
+- **Obtuse unequal corners** search backwards along each arm's first offset segment when the
+  curves do not cross ahead of the node ([open question 6](#road-68-open-questions)).
+- **Core triangulation**: the core is fanned from the node when the node sees every core edge,
+  and only otherwise goes through Spade's CDT. Both are exact triangulations of the same loop;
+  the fan avoids the CDT's exact incircle path on the cocircular corner samples.
+- **Mouth sections** are evaluated by node pieces on the arms' offset curves rather than by the
+  span's section function, so `offset_point(mouth, l)` and the stored row are the same values.
+- **Clips** are horizontal metres along the roadbed centreline, the layout's station measure;
+  terminals keep a zero clip, so lanes still run onto the terminal cap.
+- **Terminal planes** run through the road end and the mouth centreline point and are read from
+  the solved profile; the finalizer does not re-solve terminals.
+- **Mouth knots**: the finalizer inserts a knot at each pinned mouth (control polyline of an
+  adapted arm, physical profile of a stable one), and a stable arm without new supports keeps its
+  physical knots, so the other end's pin survives.
+- **Width tapers** apply only at pass-through nodes; node pieces own width changes at bends and
+  junctions.
+- **Crossable arms** (D8) in this gate: car-road arms with sidewalks at junctions of three or more
+  arms, bend arms only where the node forces a crossing, none where a node override removes it.
+  Pedestrian lanes still place crossings by the `ROAD-64` lane rule until `ROAD-68-F`.
+- **Nodes without pieces**: footpath nodes and footpaths meeting roads (D5), and bridge and tunnel
+  terminals, keep the `ROAD-68-B` span ends until `ROAD-68-F`.
 
 ### `ROAD-68-D` — footprint and terrain
 

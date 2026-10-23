@@ -7,9 +7,11 @@ use super::model::test_support::{knot_stations, sample_with_mouth_frame};
 use super::model::{SpanModel, SpanScratch};
 use super::*;
 use crate::simulation::network::roadbed::fixtures::{
-    connect, mixed_profiles, point, road_edge, t_junction,
+    SLOPE, connect, mixed_profiles, point, road_edge, t_junction,
 };
 use crate::simulation::network::roadbed::geometry::triangle_height_at_xz;
+use crate::simulation::network::roadbed::layout::EdgeEnd;
+use crate::simulation::network::roadbed::mesh::PieceMesh;
 use crate::simulation::network::roadbed::profile::Level;
 use crate::simulation::network::roadbed::{BandKind, PieceId, RoadVec2, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, NodeType};
@@ -27,6 +29,15 @@ fn spans<'a>(roadbed: &'a RoadbedSystem, graph: &RegionGraph) -> Vec<&'a SpanPie
     (0..graph.edge_count())
         .filter_map(|edge| roadbed.span_piece(edge))
         .collect()
+}
+
+// Every published piece's mesh with its id: spans, then node pieces.
+fn meshes<'a>(roadbed: &'a RoadbedSystem, graph: &RegionGraph) -> Vec<(PieceId, &'a PieceMesh)> {
+    let spans = (0..graph.edge_count())
+        .filter_map(|edge| Some((PieceId::Span(edge), roadbed.span_piece(edge)?.mesh())));
+    let nodes = (0..graph.node_count() as u32)
+        .filter_map(|node| Some((PieceId::Node(node), roadbed.node_piece(node)?.mesh())));
+    spans.chain(nodes).collect()
 }
 
 // Expected section row: (lateral offset, height) per vertex, left to right.
@@ -124,11 +135,17 @@ fn span_vertices_are_the_section_evaluation() {
         let SpanScratch {
             points, cumulative, ..
         } = &mut scratch;
-        let model = SpanModel::new(&graph, span.edge_idx(), points, cumulative).unwrap();
+        let mouths = [Some(span.start_mouth()), Some(span.end_mouth())];
+        let model = SpanModel::new(&graph, span.edge_idx(), points, cumulative, mouths).unwrap();
         assert_eq!(span.sections()[0], span.start_mouth().section);
         assert_eq!(span.sections().last(), Some(&span.end_mouth().section));
         let stride = span.start_mouth().vertices.len();
+        let rows = span.sections().len();
         for (row, section) in span.sections().iter().enumerate() {
+            // Mouth rows are the node pieces' mouth sections (`node::tests`).
+            if row == 0 || row + 1 == rows {
+                continue;
+            }
             assert_eq!(
                 *section,
                 model.section_at(section.s_m),
@@ -161,27 +178,31 @@ fn span_vertices_are_the_section_evaluation() {
 }
 
 #[test]
-fn span_sections_run_between_the_graph_clips() {
+fn span_sections_run_between_the_node_mouths() {
     let graph = t_junction(false);
     let roadbed = compiled(&graph, 64.0);
     for edge_idx in 0..graph.edge_count() {
         let edge = graph.edge(edge_idx);
-        let sections = roadbed.sections(edge_idx).unwrap();
-        let length: f32 = knot_stations(
-            &edge
-                .physical_geometry
-                .iter()
-                .map(|p| RoadVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)))
-                .collect::<Vec<_>>(),
-        )
-        .last()
-        .copied()
-        .unwrap();
-        assert_eq!(sections[0].s_m, edge.start_clip.clamp(0.0, length));
-        assert_eq!(
-            sections.last().unwrap().s_m,
-            (length - edge.end_clip).clamp(0.0, length)
-        );
+        let span = roadbed.span_piece(edge_idx).unwrap();
+        let sections = span.sections();
+        // Both mouths are the node pieces' own sections, shared by pointer.
+        let node_mouth = |node: u32, end: EdgeEnd| {
+            let key = crate::simulation::network::roadbed::ArmKey {
+                edge: edge_idx,
+                end,
+            };
+            Arc::clone(roadbed.node_piece(node).unwrap().mouth(key).unwrap())
+        };
+        assert!(Arc::ptr_eq(
+            &node_mouth(edge.start_node, EdgeEnd::Start),
+            &span.start_mouth
+        ));
+        assert!(Arc::ptr_eq(
+            &node_mouth(edge.end_node, EdgeEnd::End),
+            &span.end_mouth
+        ));
+        assert_eq!(sections[0], span.start_mouth().section);
+        assert_eq!(sections.last(), Some(&span.end_mouth().section));
         // Standard roads keep the 8 m class step between knots.
         assert!(
             sections
@@ -190,24 +211,23 @@ fn span_sections_run_between_the_graph_clips() {
             "edge {edge_idx} keeps the class step"
         );
     }
-    // The junction arms end at their clips; the far ends reach their terminal nodes.
+    // Junction arms clip at their layout mouths; terminals keep no clip, and their mouths sit
+    // 1 m in from the end (`s_min`).
     assert!(graph.edge(0).end_clip > 0.0 && graph.edge(0).start_clip == 0.0);
+    let west = roadbed.span_piece(0).unwrap();
+    assert!((west.sections()[0].s_m - 1.0).abs() < 1e-6);
 }
 
 #[test]
 fn query_heights_and_bands_equal_the_rendered_triangles() {
     let graph = mixed_profiles(true);
     let roadbed = compiled(&graph, 64.0);
-    let all: Vec<[RoadVec3; 3]> = spans(&roadbed, &graph)
-        .iter()
-        .flat_map(|span| {
-            let mesh = span.mesh();
-            (0..mesh.top_triangle_count()).map(move |i| mesh.triangle_points(i))
-        })
+    let all: Vec<[RoadVec3; 3]> = meshes(&roadbed, &graph)
+        .into_iter()
+        .flat_map(|(_, mesh)| (0..mesh.top_triangle_count()).map(move |i| mesh.triangle_points(i)))
         .collect();
     let mut checked = 0;
-    for span in spans(&roadbed, &graph) {
-        let mesh = span.mesh();
+    for (id, mesh) in meshes(&roadbed, &graph) {
         for triangle in 0..mesh.top_triangle_count() {
             let points = mesh.triangle_points(triangle);
             let centroid = (points[0] + points[1] + points[2]) / 3.0;
@@ -219,12 +239,7 @@ fn query_heights_and_bands_equal_the_rendered_triangles() {
                 .fold(None, |best: Option<f32>, h| {
                     Some(best.map_or(h, |b| b.max(h)))
                 });
-            assert_eq!(
-                roadbed.height_at(x, z),
-                expected,
-                "edge {}",
-                span.edge_idx()
-            );
+            assert_eq!(roadbed.height_at(x, z), expected, "{id:?}");
             let kind = mesh.triangle_band(triangle).unwrap();
             if kind == BandKind::Carriageway {
                 assert_eq!(roadbed.carriageway_height_at(x, z), expected);
@@ -309,12 +324,12 @@ fn query_heights_and_bands_equal_the_rendered_triangles() {
     assert!(kinds.contains(&BandKind::Carriageway));
     let world = [f64::MIN, f64::MIN, f64::MAX, f64::MAX];
     let ids: Vec<_> = roadbed.pieces_in_bounds(world).map(|(id, _)| id).collect();
-    assert_eq!(
-        ids,
-        (0..graph.edge_count())
-            .map(PieceId::Span)
-            .collect::<Vec<_>>()
-    );
+    let mut expected: Vec<_> = meshes(&roadbed, &graph)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
 }
 
 // Every published bit of every span, for exact comparison.
@@ -383,28 +398,37 @@ fn an_edit_rebuilds_only_its_closure_and_chunks_accumulate() {
     assert_eq!(first_changed, roadbed.occupied_chunks().collect::<Vec<_>>());
     roadbed.clear_changed_chunks();
 
-    // Dirty edge 4 only: no other piece takes the new generation.
+    // Dirty edge 4 only: its span and its two terminal node pieces rebuild, nothing else.
     roadbed.mark_edge_dirty(4);
     let changed = roadbed.compile_dirty(&graph);
     let after: BTreeMap<_, _> = roadbed.pieces_in_bounds(world).collect();
+    let ends = [graph.edge(4).start_node, graph.edge(4).end_node];
     for (id, generation) in &after {
-        let rebuilt = *id == PieceId::Span(4);
+        let rebuilt = *id == PieceId::Span(4) || matches!(id, PieceId::Node(n) if ends.contains(n));
         assert_eq!(generation != &before[id], rebuilt, "{id:?}");
     }
-    let span_4: Vec<_> = roadbed
+    let mut closure_chunks: Vec<_> = roadbed
         .span_piece(4)
         .unwrap()
         .footprint()
         .render_chunks()
         .to_vec();
-    assert_eq!(changed, span_4);
+    // Edge 4 is the footpath: its ends have no node pieces until `ROAD-68-F`.
+    for node in ends {
+        if let Some(piece) = roadbed.node_piece(node) {
+            closure_chunks.extend(piece.footprint().render_chunks());
+        }
+    }
+    closure_chunks.sort_unstable();
+    closure_chunks.dedup();
+    assert_eq!(changed, closure_chunks);
 
     // A dirty node rebuilds its incident edges; chunks accumulate until taken.
     roadbed.mark_node_dirty(0);
     let second = roadbed.compile_dirty(&graph);
     let after_node: BTreeMap<_, _> = roadbed.pieces_in_bounds(world).collect();
     for (id, generation) in &after_node {
-        let rebuilt = matches!(id, PieceId::Span(0..=2));
+        let rebuilt = matches!(id, PieceId::Span(0..=2) | PieceId::Node(0));
         assert_eq!(generation != &after[id], rebuilt, "{id:?}");
     }
     let mut pending: Vec<_> = changed.iter().chain(&second).copied().collect();
@@ -422,6 +446,11 @@ fn an_edit_rebuilds_only_its_closure_and_chunks_accumulate() {
         .iter()
         .flat_map(|span| span.footprint().render_chunks().to_vec())
         .collect();
+    for node in 0..graph.node_count() as u32 {
+        if let Some(piece) = roadbed.node_piece(node) {
+            covered.extend(piece.footprint().render_chunks());
+        }
+    }
     covered.sort_unstable();
     covered.dedup();
     assert_eq!(occupied, covered);
@@ -436,16 +465,18 @@ fn carriageway_half_width(section: &RoadSection) -> f32 {
         .fold(0.0, f32::max)
 }
 
+// Node pieces own width changes at bends and junctions (`ROAD-68-C`); the taper remains where two
+// spans meet at a pass-through node.
 #[test]
-fn angled_width_change_sections_taper_wider_endpoint() {
+fn pass_through_width_change_sections_taper_wider_endpoint() {
     let mut graph = RegionGraph::new();
-    let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 15.0), NodeType::Junction);
+    let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 2.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
     graph.add_edge(road_edge(
         n0,
         n1,
-        vec![Vector3::new(-25.0, 0.0, 15.0), Vector3::ZERO],
+        vec![Vector3::new(-25.0, 0.0, 2.0), Vector3::ZERO],
         7.0,
     ));
     let wide = graph.add_edge(road_edge(
@@ -458,7 +489,7 @@ fn angled_width_change_sections_taper_wider_endpoint() {
     let SpanScratch {
         points, cumulative, ..
     } = &mut scratch;
-    let model = SpanModel::new(&graph, wide, points, cumulative).unwrap();
+    let model = SpanModel::new(&graph, wide, points, cumulative, [None, None]).unwrap();
     let first = model.section_at(0.0);
     let after_taper = model.section_at(20.0);
     assert!(
@@ -547,7 +578,7 @@ fn inserted_samples_keep_short_profile_interval_bands_unfolded() {
 }
 
 #[test]
-fn a_single_edge_without_clips_reaches_both_nodes() {
+fn a_single_edge_runs_between_its_terminal_mouths() {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(point(0.0, 0.0, true), NodeType::Junction);
     let b = graph.add_node(point(100.0, 0.0, true), NodeType::Junction);
@@ -555,9 +586,12 @@ fn a_single_edge_without_clips_reaches_both_nodes() {
     let roadbed = compiled(&graph, 64.0);
     let span = roadbed.span_piece(edge).unwrap();
     let sections = span.sections();
-    assert_eq!(sections[0].s_m, 0.0);
-    assert!((sections.last().unwrap().s_m - graph.edge(edge).physical_length).abs() < 1e-3);
-    // 0, 8, 16, 20 (knot), ... 100: the class step restarts at every knot.
+    // Terminal mouths sit 1 m (`s_min`) in from both ends; the round caps cover the rest.
+    let slope_factor = (1.0 + f64::from(SLOPE).powi(2)).sqrt() as f32;
+    assert!((sections[0].s_m - slope_factor).abs() < 1e-4);
+    let length = graph.edge(edge).physical_length;
+    assert!((sections.last().unwrap().s_m - (length - slope_factor)).abs() < 1e-3);
+    // 1 (mouth), 8, 16, 20 (knot), ... 96, 99 (mouth): the class step restarts at every knot.
     assert_eq!(sections.len(), 5 * 3 + 1);
     assert_eq!(
         span.mesh().curb_face_triangles().len(),

@@ -220,6 +220,10 @@ impl TransitNetwork {
         let mut dirty_edges = std::mem::take(&mut self.bulk_dirty_edges);
         let authored_edges = std::mem::take(&mut self.profile_authored_edges);
         let affected_nodes = self.bulk_surface_profile_nodes(graph, &dirty_edges);
+        // XZ -> layout -> clips -> profile solve: the solve pins each arm up to its layout mouth.
+        let start = Instant::now();
+        graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+        let clips_us = start.elapsed().as_micros();
         let start = Instant::now();
         dirty_edges.extend(graph.finalize_junction_endpoint_profiles_for_edges(
             &affected_nodes,
@@ -228,13 +232,11 @@ impl TransitNetwork {
         ));
         let profile_us = start.elapsed().as_micros();
         self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
-        let start = Instant::now();
-        graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
         FinalizedRoadGeometry {
             dirty_edges,
             affected_nodes,
             profile_us,
-            clips_us: start.elapsed().as_micros(),
+            clips_us,
         }
     }
 
