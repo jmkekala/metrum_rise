@@ -42,7 +42,7 @@ The game may break between gates on branch `road`, and save compatibility is not
 `ROAD-68-A` (remove legacy, add the façade) is done: the legacy compiler is deleted and consumers
 use the roadbed façade. `ROAD-68-B` (profiles and spans) is done: span pieces render between the
 graph clips, queries answer from their triangles, and buildings place again; a 100 m span builds in
-0.017 ms. `ROAD-68-C` (junction layout and node pieces) is done apart from its screenshots: bends,
+0.017 ms. `ROAD-68-C` (junction layout and node pieces) is done, with rendered reference screenshots: bends,
 junctions and terminals render as node pieces built from their layouts, graph clips and the
 profile hard zone come from the layout mouths, and layout failures reject placements with
 reasons; a four-way node piece builds in 0.071 ms and a six-way in 0.127 ms. Tests that need

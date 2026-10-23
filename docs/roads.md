@@ -515,7 +515,7 @@ A test that cannot pass until a later gate is marked
 | --- | --- | --- |
 | `ROAD-68-A` | done | Remove the legacy compiler; add the roadbed façade; the crate compiles |
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
-| `ROAD-68-C` | done (screenshots pending) | Junction layout and node pieces for car roads |
+| `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
@@ -1078,6 +1078,57 @@ Spec corrections in `ROAD-68-C`:
   Pedestrian lanes still place crossings by the `ROAD-64` lane rule until `ROAD-68-F`.
 - **Nodes without pieces**: footpath nodes and footpaths meeting roads (D5), and bridge and tunnel
   terminals, keep the `ROAD-68-B` span ends until `ROAD-68-F`.
+
+#### Rendered reference screenshots
+
+**Status:** done 2026-10-24, release build `ae9c8d4b`.
+
+**Test and fixtures.** `godot/tests/road_junction_reference_test.gd` builds scripted fixtures through the real
+`SimulationNode`, the production road chunk renderer and the terrain mesh. Every road is 1+1 lanes with
+sidewalks and 80 m arms, in a 512 m synthetic world, flat and on a 2.5% slope rising toward +x:
+
+- T
+- four-way
+- Y at 25°, 40° and 60° (the branches leave the stem's end at ±angle/2)
+- a 45° bend
+- a terminal
+- a T whose through road is 2+2 lanes
+
+**Views.** Each fixture is captured at a fixed 1600×1000 in three views:
+
+- oblique, with terrain
+- the same oblique camera with the terrain node hidden, so the ground-level carriageway is not
+  hidden by the coplanar unclipped terrain until `ROAD-68-D`
+- a top-down orthographic plan, 60 × 37.5 m, with terrain hidden
+
+**Results.** The 48 images and the manifest report no fixture failures.
+
+- Corners are rounded and sidewalks wrap them continuously.
+- Straight sides stay straight.
+- Mouths are seamless on both slopes.
+- Curb faces run along every carriageway boundary.
+- Terminals get the round cap (D2).
+- The 25° Y's inner corner lies about 20 m from the node, as its angle requires.
+
+**Run command.** Use an isolated profile, and render on gamescope's headless GPU backend so the
+run does not depend on the physical display:
+
+```bash
+env -u WAYLAND_DISPLAY -u DISPLAY XDG_DATA_HOME="$ARTIFACTS/profile/data" \
+  XDG_CONFIG_HOME="$ARTIFACTS/profile/config" \
+  METRUM_ROAD_JUNCTION_REFERENCE_DIR="$ARTIFACTS/screenshots" \
+  gamescope --backend headless -W 1600 -H 1000 -- \
+  godot --path godot --script res://tests/road_junction_reference_test.gd
+```
+
+The profile also needs a unique `config/name` override, as `./run.sh --test` builds one. Do not
+use `xvfb-run`: without DRI3, Godot falls back to the session's real Wayland display and stalls
+while the monitor sleeps.
+
+**Known limits (cosmetic).** Junction asphalt carries none of the span asphalt's crack and patch
+detail, so the mouth line is faintly visible. Lane lines end at the mouths. Terrain shows through
+or over roads in the terrain views until `ROAD-68-D`, and the preview stays empty until
+`ROAD-68-E`.
 
 ### `ROAD-68-D` — footprint and terrain
 
