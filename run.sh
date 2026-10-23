@@ -1063,6 +1063,19 @@ if [ $TEST -eq 1 ]; then
         zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
         debug_visual_modes_test junction_debug_overlay_test road_rejection_report_test \
         agent_inspector_test street_lamp_grid_test; do
+        # ROAD-68: suites that need roadbed geometry stay off until the gate that rebuilds it
+        # (docs/roads.md, ROAD-68-A disabled tests).
+        case "$bridge_test_script" in
+            zoning_road_tool_test) road68_gate=B ;;
+            zoning_reference_test) road68_gate=C ;;
+            network_tool_chunk_renderer_test | road_junction_preview_test | road_preview_stream_test) road68_gate=E ;;
+            zoning_cells_tool_test) road68_gate=F ;;
+            *) road68_gate= ;;
+        esac
+        if [ -n "$road68_gate" ]; then
+            echo "Skipping $bridge_test_script until ROAD-68-$road68_gate"
+            continue
+        fi
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then

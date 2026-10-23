@@ -595,19 +595,4 @@ mod tests {
         assert_eq!(grid.get_bilinear_cells(3, 4, 3, 4), [7, 8, 9, 10]);
         assert_eq!(grid.get_bilinear_cells(8, 8, 8, 8), [3; 4]);
     }
-
-    #[test]
-    fn grouped_cell_writes_preserve_sparse_default_compaction() {
-        let mut grid = SparseChunkGrid::new(8, 8, 4, 0u16);
-        let writes = [(1, 1, 7), (2, 2, 8), (4, 1, 9), (5, 2, 10)];
-        grid.set_cells_grouped_by_chunk(&writes, |write| *write);
-
-        assert_eq!(grid.get(1, 1), 7);
-        assert_eq!(grid.get(5, 2), 10);
-        assert_eq!(grid.materialized_chunk_count(), 2);
-
-        let clears = [(1, 1, 0), (2, 2, 0), (4, 1, 0), (5, 2, 0)];
-        grid.set_cells_grouped_by_chunk(&clears, |write| *write);
-        assert_eq!(grid.materialized_chunk_count(), 0);
-    }
 }

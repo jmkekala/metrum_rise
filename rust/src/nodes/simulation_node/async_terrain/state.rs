@@ -181,16 +181,6 @@ impl TerrainPatchPayloadBuildSource {
             .as_ref()
             .map(|previous| previous.surface_generation)
     }
-
-    pub(in crate::nodes::simulation_node) fn local_tile_keys(&self) -> Option<&[(i64, i64)]> {
-        let Self::Refined(source) = self else {
-            return None;
-        };
-        let RefinedTerrainAssemblyScope::LocalTiles(tile_keys) = &source.assembly_scope else {
-            return None;
-        };
-        Some(tile_keys)
-    }
 }
 
 pub(in crate::nodes::simulation_node) struct RefinedTerrainPatchBuildSource {

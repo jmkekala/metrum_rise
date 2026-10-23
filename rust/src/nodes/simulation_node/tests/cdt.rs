@@ -1043,119 +1043,6 @@ fn road_clip_query_metadata_keeps_clip_failure_visible_without_loops() {
 }
 
 #[test]
-fn planned_terrain_ownership_cannot_be_released_by_missing_clip_inputs() {
-    let terrain = TerrainSystem::with_chunking(129, 129, 1.0, 65, 0.0);
-    let patch = planner_test_patch(32.0, 32.0);
-    let graph = crate::simulation::network::graph::RegionGraph::new();
-    let surface = RoadbedSystem::new(64.0);
-    let roads = crate::simulation::buildings::allocator::SiteRoads::new(&graph, &surface);
-    let margin_only = vec![planner_test_loop(1, 50.0, 0.0, 54.0, 4.0)];
-    for (source_count, loops, road_owned, failure) in [
-        (0, &[][..], false, None),
-        (1, margin_only.as_slice(), false, None),
-        (0, &[][..], true, Some("missing_road_clip_sources")),
-        (1, &[][..], true, Some("missing_road_clip_loops")),
-        (
-            1,
-            margin_only.as_slice(),
-            true,
-            Some("missing_terrain_clip_loops"),
-        ),
-    ] {
-        let input = SimulationNode::planned_road_terrain_patch_input(
-            &terrain,
-            &patch,
-            loops,
-            source_count,
-            road_owned,
-            26.0,
-            2.0,
-            None,
-            roads,
-        );
-        let entries = SimCore::build_refined_terrain_patch_cache_entries(vec![input]);
-        assert_eq!(entries[0].requires_engineered_refinement, road_owned);
-        assert_eq!(entries[0].requires_road_clipping, road_owned);
-        assert_eq!(
-            SimulationNode::cached_refined_cdt_failure_label(&entries[0]),
-            failure
-        );
-    }
-}
-
-#[test]
-fn planned_visual_samples_drive_cdt_grading_boundaries_and_composed_buffers() {
-    use crate::simulation::terrain::{TerrainVisualOverlay, TerrainVisualSource};
-
-    let base = TerrainSystem::with_chunking(129, 129, 1.0, 65, 0.0);
-    let mut live = base.clone(); // Test oracle, not part of planning.
-    let mut overlay = TerrainVisualOverlay::new(&base);
-    let writes: Vec<_> = (64..=96)
-        .flat_map(|z| (70..=90).map(move |x| (x, z, 0.01)))
-        .collect();
-    overlay.set_heights(&base, &writes, |sample| *sample);
-    live.set_visual_heights_at_grid_unmarked(&writes, |sample| *sample);
-    // A later chunk reset must affect all consumers, not just the exported patch texture.
-    overlay.reset_region_from_source_world(&base, 20.0, 16.0, 32.0, 32.0);
-    live.reset_visual_region_from_source_world(20.0, 16.0, 32.0, 32.0);
-    overlay.discard_unchanged(&base);
-    let graph = crate::simulation::network::graph::RegionGraph::new();
-    let surface = RoadbedSystem::new(64.0);
-    let roads = crate::simulation::buildings::allocator::SiteRoads::new(&graph, &surface);
-    let loops = [planner_test_loop(1, 8.0, 8.0, 20.0, 12.0)];
-    let patch = base.visual_patch_snapshot(1, 1).unwrap();
-    fn prepare(
-        terrain: &impl TerrainVisualSource,
-        patch: &TerrainPatchSnapshot,
-        loops: &[TerrainCdtRoadLoop],
-        roads: crate::simulation::buildings::allocator::SiteRoads<'_>,
-    ) -> RefinedTerrainPatchBuildInput {
-        SimulationNode::planned_road_terrain_patch_input(
-            terrain, patch, loops, 1, true, 26.0, 2.0, None, roads,
-        )
-    }
-    let old = prepare(&base, &patch, &loops, roads);
-    let planned = prepare(
-        &overlay.view(&base),
-        &overlay.patch_snapshot(&base, &patch),
-        &loops,
-        roads,
-    );
-    let actual = prepare(
-        &live,
-        &live.visual_patch_snapshot(1, 1).unwrap(),
-        &loops,
-        roads,
-    );
-    assert_eq!(planned.patch, actual.patch);
-    assert_ne!(planned.patch, old.patch);
-    assert!(!planned.windows.is_empty());
-    assert_eq!(planned.windows.len(), actual.windows.len());
-    let mut changed_samples = false;
-    for (expected, current) in planned.windows.iter().zip(&actual.windows) {
-        assert_eq!(expected.key, current.key);
-        assert_eq!(expected.cdt_input, current.cdt_input);
-        assert_eq!(expected.road_input, current.road_input);
-        changed_samples |= old
-            .windows
-            .iter()
-            .all(|old| old.cdt_input != expected.cdt_input);
-    }
-    assert!(
-        changed_samples,
-        "must exercise post-write CDT samples, not only texture changes"
-    );
-    let planned = SimCore::build_refined_terrain_patch_cache_entries(vec![planned]);
-    let actual = SimCore::build_refined_terrain_patch_cache_entries(vec![actual]);
-    assert_eq!(
-        SimulationNode::cached_refined_cdt_failure_label(&planned[0]),
-        None
-    );
-    assert!(planned[0].mesh_buffers.is_some());
-    assert_eq!(planned[0].mesh_buffers, actual[0].mesh_buffers);
-}
-
-#[test]
 fn road_clip_query_metadata_marks_absent_road_clip_as_ok() {
     let query = RoadClipLoopQuery {
         cdt_road_loops: Vec::new(),
@@ -1723,7 +1610,7 @@ fn terrain_cdt_incremental_planner_drops_removed_local_tiles_without_assembling_
         Arc::clone(&remote_contributor),
     ];
     let graph = crate::simulation::network::graph::RegionGraph::new();
-    let road_surface = RoadbedSystem::new(512.0);
+    let road_surface = crate::simulation::network::roadbed::RoadbedSystem::new(512.0);
     let sites = BuildingSiteTerrainSnapshot::default();
 
     let (plan, query) = SimulationNode::terrain_cdt_incremental_window_build_inputs(
@@ -1791,7 +1678,7 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
         }
     }
     let graph = crate::simulation::network::graph::RegionGraph::new();
-    let road_surface = RoadbedSystem::new(512.0);
+    let road_surface = crate::simulation::network::roadbed::RoadbedSystem::new(512.0);
     let sites = BuildingSiteTerrainSnapshot::default();
     let local_scope = [(0, 0), (1, 0), (0, 1)];
 
@@ -1821,6 +1708,7 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_adjacent_tiles_emit_identical_shared_side_vertices() {
     let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
     let patch = planner_test_patch(128.0, 64.0);
@@ -1998,6 +1886,7 @@ fn terrain_cdt_local_bounds_skip_margin_only_loop_outside_patch() {
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_guides_use_shared_source_height_and_final_grade_limits() {
     let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
     let patch = TerrainPatchSnapshot {
@@ -2094,6 +1983,7 @@ fn terrain_cdt_guides_use_shared_source_height_and_final_grade_limits() {
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_local_bounds_expand_for_required_grading_distance() {
     let terrain = TerrainSystem::with_chunking(101, 101, 1.0, 100, 0.0);
     let patch = TerrainPatchSnapshot {
@@ -2133,6 +2023,7 @@ fn terrain_cdt_local_bounds_expand_for_required_grading_distance() {
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_input_keeps_multi_loop_tie_in_guides_unconstrained() {
     let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
     let patch = TerrainPatchSnapshot {

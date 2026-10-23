@@ -310,12 +310,9 @@ impl SimulationNode {
         z: f32,
         altitude_offset_m: f32,
     ) -> f32 {
-        query
-            .roadbed
-            .height_at(x, z)
-            .unwrap_or_else(|| {
-                query.terrain.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
-                    + altitude_offset_m
-            })
+        query.roadbed.height_at(x, z).unwrap_or_else(|| {
+            query.terrain.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
+                + altitude_offset_m
+        })
     }
 }

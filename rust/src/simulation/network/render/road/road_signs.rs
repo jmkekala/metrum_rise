@@ -815,14 +815,11 @@ fn offset(section: &RoadSection, side: f32) -> Option<(f32, Option<f32>)> {
             Some(h0 + (h1 - h0) * (distance - near) / (far - near)),
         ));
     }
-    let far = [
-        BandKind::CurbOrShoulder,
-        BandKind::Carriageway,
-    ]
-    .into_iter()
-    .filter_map(band_on_side)
-    .map(|b| b.1)
-    .max_by(f32::total_cmp)?;
+    let far = [BandKind::CurbOrShoulder, BandKind::Carriageway]
+        .into_iter()
+        .filter_map(band_on_side)
+        .map(|b| b.1)
+        .max_by(f32::total_cmp)?;
     Some((far + 0.75, None))
 }
 

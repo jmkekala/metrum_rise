@@ -69,6 +69,12 @@ impl RoadbedSystem {
         &self.dirty_nodes
     }
 
+    // Edges marked dirty since the last compile; tests assert edit marking through it.
+    #[cfg(test)]
+    pub(crate) fn dirty_edges(&self) -> &BTreeSet<usize> {
+        &self.dirty_edges
+    }
+
     /// Rebuilds the pieces of the dirty closure and returns the sorted render chunks they changed.
     /// A compile with nothing pending changes nothing and keeps [`Self::last_changed_chunks`].
     ///

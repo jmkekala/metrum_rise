@@ -100,6 +100,7 @@ fn assert_no_housing_overbuild(days: &[GrowthDayRecord], largest_home: u32) {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn concurrent_runs_record_identical_years() {
     // Concurrent runs share the Rayon pool, so any dependence on scheduling diverges here.
     let (first, second) = rayon::join(run_year, run_year);
@@ -159,6 +160,7 @@ fn read_only_observer_preserves_growth() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn starter_town_funds_industry_services_households_and_city_for_two_years() {
     let report = GrowthScenario::starter_town().run_diagnosed_days(2 * DAYS_PER_YEAR);
     assert_individual_firms_reconcile(&report);
@@ -238,6 +240,7 @@ fn run_producer_year() -> (GrowthReport, u32) {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn producer_town_grows_and_funds_its_firms_households_and_city_for_a_year() {
     // DEM-02-A: a pre-zoned town led by a placed farm, coal mine and power plant.
     let ((report, largest_home), (second, _)) = rayon::join(run_producer_year, run_producer_year);

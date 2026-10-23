@@ -106,10 +106,7 @@ impl SimulationNode {
         }
         if !core.zoning.cells.chunk_state(chunk).1
             || !core.allocator.building_site_query_index_ready()
-            || !core
-                .transit_network
-                .roadbed
-                .is_current()
+            || !core.transit_network.roadbed.is_current()
         {
             let world_generation = core.terrain_payload_global_generation;
             // Release the core borrow before mutating bridge-only scheduling state. The worker

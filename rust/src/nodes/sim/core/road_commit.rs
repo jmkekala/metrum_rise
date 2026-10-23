@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use super::frame::record_crash_phase_for_core;
 use super::road_edit_plan::RoadEditPlan;
-use super::road_preview::{RoadPreviewRequest, RoadToolQuerySnapshot, road_tool_snapshot_from_core};
+use super::road_preview::{
+    RoadPreviewRequest, RoadToolQuerySnapshot, road_tool_snapshot_from_core,
+};
 use super::road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;

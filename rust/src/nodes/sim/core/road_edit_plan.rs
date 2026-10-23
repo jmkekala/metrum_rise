@@ -31,6 +31,7 @@ pub(crate) struct RoadEditPlan {
 #[derive(Clone, Copy)]
 enum FailedCheck {
     Validation(&'static str),
+    Fields,
     CellZoning,
     Parcels { count: usize, first: u64 },
 }
@@ -62,8 +63,8 @@ impl RoadEditPlan {
         )
     }
 
-    /// Readiness against the live core. Local water, parcel and cell queries repeat under the
-    /// commit lock, so changes in these independent systems cannot authorize an obsolete result.
+    /// Readiness against the live core. Local water, field, parcel and cell queries repeat under
+    /// the commit lock, so changes in these independent systems cannot authorize an obsolete result.
     pub(crate) fn status(&self, core: &SimCore) -> &'static str {
         if !self.validation.is_valid {
             return "invalid";
@@ -87,7 +88,7 @@ impl RoadEditPlan {
         "ready"
     }
 
-    // The first live-state check that refuses this road: water, painted cells or parcels.
+    // The first live-state check that refuses this road: water, fields, painted cells or parcels.
     fn failed_check(&self, core: &SimCore) -> Option<FailedCheck> {
         let fwd = self.request.fwd_lanes.clamp(0, 255) as u8;
         let bkw = self.request.bkw_lanes.clamp(0, 255) as u8;
@@ -104,6 +105,13 @@ impl RoadEditPlan {
         }
         let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
         let half_width_m = width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH;
+        if core
+            .allocator
+            .field_clearance
+            .overlaps_road_corridor(&self.prepared.points, half_width_m)
+        {
+            return Some(FailedCheck::Fields);
+        }
         if core
             .zoning
             .cells_overlap_road_corridor(&self.prepared.points, half_width_m)
@@ -134,6 +142,9 @@ impl RoadEditPlan {
             return match check {
                 FailedCheck::Validation(reason) => {
                     RoadRejection::from_validation(reason, validation, prepared)
+                }
+                FailedCheck::Fields => {
+                    RoadRejection::from_validation("field_overlap", validation, prepared)
                 }
                 FailedCheck::CellZoning => RoadRejection::new(
                     "zoning_cell_overlap",

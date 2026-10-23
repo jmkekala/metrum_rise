@@ -213,7 +213,7 @@ mod tests {
                 Vector2::new(4.0, 3.5),
                 Vector2::new(4.0, -3.5),
             ],
-            road_color(),
+            Color::from_rgba(0.0, 0.0, 0.0, 0.0), // junction asphalt: no road space
         );
         assert!(mesh.marking_vertices.is_empty());
         assert_eq!(mesh.road_crossings.len(), mesh.road_vertices.len());

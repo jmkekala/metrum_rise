@@ -592,10 +592,7 @@ impl SimCore {
             let edge = self.region_graph.edge(building.edge_idx);
             edge_debug.claimed_road_sample =
                 claimed_road_side_connection_sample(self, edge, building).map(|sample| {
-                    let road_height_m = self
-                        .transit_network
-                        .roadbed
-                        .height_at(sample.x, sample.y);
+                    let road_height_m = self.transit_network.roadbed.height_at(sample.x, sample.y);
                     (sample, road_height_m)
                 });
         }
@@ -762,11 +759,7 @@ fn building_site_debug_visible_road_sample(
     point: Vector2,
     nearest_radius_m: f32,
 ) -> Option<(Vector2, f32)> {
-    if let Some(height_m) = core
-        .transit_network
-        .roadbed
-        .height_at(point.x, point.y)
-    {
+    if let Some(height_m) = core.transit_network.roadbed.height_at(point.x, point.y) {
         return Some((point, height_m));
     }
     let radius_m = nearest_radius_m.max(0.0);
@@ -806,11 +799,7 @@ fn building_site_debug_visible_road_sample(
         if dist_sq > radius_m * radius_m {
             continue;
         }
-        let Some(height_m) = core
-            .transit_network
-            .roadbed
-            .height_at(probe.x, probe.y)
-        else {
+        let Some(height_m) = core.transit_network.roadbed.height_at(probe.x, probe.y) else {
             continue;
         };
         let replace = best

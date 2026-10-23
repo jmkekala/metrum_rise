@@ -128,12 +128,7 @@ fn emit_compiled_bridge_piers(
     }
 }
 
-fn emit_bridge_pier(
-    mesh: &mut NetworkMeshData,
-    section: &RoadSection,
-    base_y: f32,
-    top_y: f32,
-) {
+fn emit_bridge_pier(mesh: &mut NetworkMeshData, section: &RoadSection, base_y: f32, top_y: f32) {
     let tangent = Vector2::new(section.tangent_xz.x as f32, section.tangent_xz.y as f32);
     let lateral = Vector2::new(section.lateral_xz.x as f32, section.lateral_xz.y as f32);
     if tangent.length_squared() <= 1e-8 || lateral.length_squared() <= 1e-8 {

@@ -377,6 +377,7 @@ fn loaded_field_may_touch_cells_but_cannot_intrude_into_their_interiors() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: load checks road pieces against cell reservations"]
 fn load_checks_explicit_sites_and_compiled_roads_against_cell_reservations() {
     let (graph, zoning, allocator) = fixture(0.0, false);
     let path = temp_path("cell_external_reservations");

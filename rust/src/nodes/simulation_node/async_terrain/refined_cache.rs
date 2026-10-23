@@ -198,12 +198,10 @@ impl SimCore {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
-        if !self
-            .transit_network
+        self.transit_network
             .roadbed
-            .is_current()
-        {
+            .compile_dirty(&self.region_graph);
+        if !self.transit_network.roadbed.is_current() {
             return Vec::new();
         }
         let mut dirty_patches: Vec<(usize, usize)> = self
@@ -334,7 +332,9 @@ impl SimCore {
         &mut self,
         render_step_m: f32,
     ) -> usize {
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
         let patch_cols = self.heightmap.render_patch_cols();
         let patch_rows = self.heightmap.render_patch_rows();
         let mut patch_keys = Vec::with_capacity(patch_cols.saturating_mul(patch_rows));
@@ -351,12 +351,10 @@ impl SimCore {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
-        if !self
-            .transit_network
+        self.transit_network
             .roadbed
-            .is_current()
-        {
+            .compile_dirty(&self.region_graph);
+        if !self.transit_network.roadbed.is_current() {
             return 0;
         }
         let mut dirty_patches: Vec<(usize, usize)> = self

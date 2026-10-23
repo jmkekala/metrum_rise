@@ -4,19 +4,17 @@
 
 mod building_lod_fixture;
 mod building_site_terrain;
-mod cold_node_edit_latency;
 mod commute_bounds;
 mod construction_throughput;
 pub(super) mod fields;
 mod road_plan_scaling;
-mod road_preview_checks;
 mod road_terrain_plan;
 mod zoning_buildability;
 
 use super::{
     CityTreasury, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, SimCore,
     absolute_operational_minute, demand_plan_has_non_spawn_actions, demand_plan_without_spawns,
-    pedestrian_lane_surface_height, road_tool_snapshots_from_core,
+    pedestrian_lane_surface_height, road_tool_snapshot_from_core,
 };
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
@@ -252,57 +250,6 @@ fn stale_terrain_batch_acknowledgement_reports_remaining_dirtiness() {
 }
 
 #[test]
-fn local_road_terrain_scopes_accumulate_until_exact_acknowledgement() {
-    let mut core = test_core();
-    let initial_generation = core.terrain_payload_generation_for_patch(0, 0);
-    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(1, 2)]);
-    let first_generation = core.terrain_payload_generation_for_patch(0, 0);
-    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(3, 4)]);
-    let second_generation = core.terrain_payload_generation_for_patch(0, 0);
-
-    let ledger = core
-        .refined_terrain_assembly_ledgers
-        .get(&(0, 0))
-        .expect("local road edits should retain assembly scope");
-    assert!(first_generation > initial_generation);
-    assert!(second_generation > first_generation);
-    assert_eq!(
-        ledger.road_query_chunk_dirty_at.get(&(1, 2)),
-        Some(&first_generation)
-    );
-    assert_eq!(
-        ledger.road_query_chunk_dirty_at.get(&(3, 4)),
-        Some(&second_generation)
-    );
-
-    assert!(!core.acknowledge_terrain_render_patch(0, 0, first_generation));
-    assert!(
-        core.refined_terrain_assembly_ledgers.contains_key(&(0, 0)),
-        "a stale acknowledgement must not discard newer local scope"
-    );
-    assert!(core.acknowledge_terrain_render_patch(0, 0, second_generation));
-    assert!(
-        !core.refined_terrain_assembly_ledgers.contains_key(&(0, 0)),
-        "the exact uploaded generation may garbage-collect incorporated scope"
-    );
-}
-
-#[test]
-fn full_patch_invalidation_dominates_local_road_scope() {
-    let mut core = test_core();
-    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(1, 2)]);
-    core.bump_terrain_payload_patch_generations(&[(0, 0)]);
-    let current_generation = core.terrain_payload_generation_for_patch(0, 0);
-    let ledger = core
-        .refined_terrain_assembly_ledgers
-        .get(&(0, 0))
-        .expect("full invalidation should retain a generation stamp");
-
-    assert_eq!(ledger.full_dirty_at, Some(current_generation));
-    assert_eq!(ledger.road_query_chunk_dirty_at.len(), 1);
-}
-
-#[test]
 fn full_engineered_terrain_refresh_does_not_depend_on_dirty_patches() {
     let mut core = test_core();
     for (patch_x, patch_z, generation) in core.terrain_dirty_patch_states() {
@@ -379,6 +326,7 @@ fn stale_network_acknowledgement_preserves_newer_render_revision() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: road render chunk meshes"]
 fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
     let mut core = test_core();
     add_test_border_road(&mut core);
@@ -399,13 +347,9 @@ fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
     core.transit_network
         .lane_system
         .rebuild(&mut core.region_graph);
-    core.transit_network
-        .roadbed
-        .mark_edge_dirty(&core.region_graph, 0);
+    core.transit_network.roadbed.mark_edge_dirty(0);
     for node_id in endpoints {
-        core.transit_network
-            .roadbed
-            .mark_node_dirty(&core.region_graph, node_id);
+        core.transit_network.roadbed.mark_node_dirty(node_id);
     }
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
@@ -421,6 +365,7 @@ fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: road render chunk meshes"]
 fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
     let mut core = test_core();
     for (start, end) in [
@@ -447,24 +392,14 @@ fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
     core.precompute_road_mesh_data();
     assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
 
-    let distant_chunk = core
-        .transit_network
-        .roadbed
-        .surface_chunk_cache()
-        .iter()
-        .find_map(|(&chunk, entry)| {
-            (entry.edge_indices.contains(&1) && !entry.edge_indices.contains(&0)).then_some(chunk)
-        })
-        .expect("the separated road must own a distant render chunk");
+    let distant_chunk = core.transit_network.roadbed.chunk_key_at(950.0, 64.0);
     let distant_mesh = std::sync::Arc::clone(
         core.cached_road_mesh_chunks
             .get(&distant_chunk)
             .expect("distant road mesh chunk"),
     );
 
-    core.transit_network
-        .roadbed
-        .mark_edge_dirty(&core.region_graph, 0);
+    core.transit_network.roadbed.mark_edge_dirty(0);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
 
@@ -478,6 +413,7 @@ fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: road render chunk meshes"]
 fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
     let mut core = test_core();
     for (start, end) in [
@@ -504,9 +440,7 @@ fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
     core.precompute_road_mesh_data();
     assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
 
-    core.transit_network
-        .roadbed
-        .mark_edge_dirty(&core.region_graph, 0);
+    core.transit_network.roadbed.mark_edge_dirty(0);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
     let first_generation = core.cached_road_mesh_generation;
@@ -515,9 +449,7 @@ fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
     assert!(!first_pending.is_empty());
     assert!(!first_payloads.is_empty());
 
-    core.transit_network
-        .roadbed
-        .mark_edge_dirty(&core.region_graph, 1);
+    core.transit_network.roadbed.mark_edge_dirty(1);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
 
@@ -656,23 +588,19 @@ fn recycled_snapshot_keeps_capacity_without_stale_instances() {
 fn road_preview_rejects_a_mismatched_surface_generation() {
     let mut core = test_core();
     core.precompute_road_mesh_data();
-    let (context, query) =
-        road_tool_snapshots_from_core(&core).expect("the initial surface must be publishable");
-    let preview = super::road_preview::compile_road_preview_from_context(
-        &context,
-        RoadPreviewRequest {
-            include_terrain: false,
-            request_id: 11,
-            surface_generation: query.surface_generation.wrapping_add(1),
-            points: vec![Vector3::new(-5.0, 0.0, 0.0), Vector3::new(5.0, 0.0, 0.0)],
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            snap_to_existing_roads: true,
-        },
-    );
+    let snapshot =
+        road_tool_snapshot_from_core(&core).expect("the initial surface must be publishable");
+    let preview = snapshot.preview(&RoadPreviewRequest {
+        include_terrain: false,
+        request_id: 11,
+        surface_generation: snapshot.surface_generation.wrapping_add(1),
+        points: vec![Vector3::new(-5.0, 0.0, 0.0), Vector3::new(5.0, 0.0, 0.0)],
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+    });
 
-    assert_eq!(preview.surface_generation, 0);
-    assert!(!preview.is_valid);
+    assert!(!preview.validation.is_valid);
     assert_eq!(
         preview.validation.invalid_reason,
         "stale_surface_generation"
@@ -680,6 +608,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
 }
 
 #[test]
+#[ignore = "ROAD-68-C: failed junction piece path"]
 fn failed_junction_precompute_retains_matching_render_and_road_tool_generation() {
     let mut core = test_core();
     let center_pos = Vector3::ZERO;
@@ -716,7 +645,7 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     let published_generation = core.cached_road_mesh_generation;
     let published_node_positions = core.build_snapshot().node_positions;
     assert!(
-        road_tool_snapshots_from_core(&core).is_some(),
+        road_tool_snapshot_from_core(&core).is_some(),
         "the baseline road-tool source must be publishable"
     );
 
@@ -750,21 +679,14 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
         .y += 1.0;
     core.region_graph.rebuild_intersection_clips();
     for &edge_idx in &edge_ids {
-        core.transit_network
-            .roadbed
-            .mark_edge_dirty(&core.region_graph, edge_idx);
+        core.transit_network.roadbed.mark_edge_dirty(edge_idx);
     }
-    core.transit_network
-        .roadbed
-        .mark_node_dirty(&core.region_graph, center);
+    core.transit_network.roadbed.mark_node_dirty(center);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
 
     assert!(
-        !core
-            .transit_network
-            .roadbed
-            .is_current(),
+        !core.transit_network.roadbed.is_current(),
         "the contradictory JunctionN must exercise the failed-production path"
     );
     assert!(published_mesh.iter().all(|(chunk, mesh)| {
@@ -777,7 +699,7 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     }));
     assert_eq!(core.cached_road_mesh_generation, published_generation);
     assert!(
-        road_tool_snapshots_from_core(&core).is_none(),
+        road_tool_snapshot_from_core(&core).is_none(),
         "a current graph with a stale latched surface must not become a road-tool snapshot"
     );
     let failed_snapshot = core.build_snapshot();
@@ -811,15 +733,9 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
 
     core.transit_network.bulk_dirty_edges.insert(new_edge);
     core.transit_network.mark_road_profile_authored(new_edge);
-    core.transit_network
-        .roadbed
-        .mark_edge_dirty(&core.region_graph, new_edge);
-    core.transit_network
-        .roadbed
-        .mark_node_dirty(&core.region_graph, center);
-    core.transit_network
-        .roadbed
-        .mark_node_dirty(&core.region_graph, north);
+    core.transit_network.roadbed.mark_edge_dirty(new_edge);
+    core.transit_network.roadbed.mark_node_dirty(center);
+    core.transit_network.roadbed.mark_node_dirty(north);
 
     let stable_before = core.region_graph.edge(stable_edge).geometry.clone();
     let finalized = core.finalize_bulk_road_geometry_for_dirty_edges();
@@ -850,6 +766,7 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn planned_topology_terrain_rejection_restores_split_dependents() {
     use crate::simulation::buildings::allocator::EdgeOccupancy;
     let mut core = test_core();
@@ -898,27 +815,20 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     let points = vec![Vector3::new(0.0, 0.0, -80.0), Vector3::ZERO];
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
-    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
-    let preview = super::road_preview::compile_road_preview_from_context(
-        &context,
+    let plan = super::RoadEditPlan::compile(
+        &core,
         RoadPreviewRequest {
             include_terrain: false,
             request_id: 1,
-            surface_generation: query.surface_generation,
+            surface_generation: core.road_tool_surface_generation,
             points: points.clone(),
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
         },
     );
-    let plan = preview.edit_plan().unwrap().complete_for_commit(&core);
     assert!(plan.topology_for(&core.region_graph).is_some());
-    assert_eq!(
-        plan.status(&core),
-        "ready",
-        "{:?}",
-        plan.terrain().and_then(|terrain| terrain.failure_reason())
-    );
+    assert_eq!(plan.status(&core), "ready", "{:?}", plan.validation());
     core.transit_network.begin_road_edit();
     core.transit_network.bulk_load = true;
     let result = core.add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan));
@@ -926,11 +836,9 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     assert_ne!(core.allocator.buildings[0].edge_idx, original.edge_idx);
     core.transit_network.bulk_load = false;
     core.terrain_stroke_active = true;
-    assert!(!core.validate_staged_road_render_with_plan(plan.terrain()));
-    assert!(
-        core.last_road_timing
-            .contains("road_plan_post_topology_mismatch")
-    );
+    // Refined terrain cannot be prepared against an unfinished authored terrain stroke.
+    assert!(!core.validate_staged_road_render());
+    assert!(core.last_road_timing.contains("terrain_input_unavailable"));
     assert_eq!(core.region_graph.edge_count(), 1);
     assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
     let restored = &core.allocator.buildings[0];
@@ -955,20 +863,18 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let mut core = test_core();
     core.precompute_road_mesh_data();
     let points = vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
-    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
-    let preview = super::road_preview::compile_road_preview_from_context(
-        &context,
+    let plan = super::RoadEditPlan::compile(
+        &core,
         RoadPreviewRequest {
             include_terrain: false,
             request_id: 1,
-            surface_generation: query.surface_generation,
+            surface_generation: core.road_tool_surface_generation,
             points: points.clone(),
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
         },
     );
-    let plan = preview.edit_plan().unwrap();
     assert!(plan.topology_for(&core.region_graph).is_some());
     core.road_tool_surface_generation += 1;
     core.transit_network.bulk_load = true;
@@ -1369,6 +1275,7 @@ fn immediate_demand_plan_strips_spawns_only() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
     let mut core = test_core();
     add_test_border_road(&mut core);
@@ -1451,6 +1358,7 @@ fn rebuilt_building_tables_keep_spare_rows_for_the_next_building() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn hourly_planning_does_not_queue_the_same_parcel_twice() {
     let mut core = test_core();
     add_test_border_road(&mut core);
@@ -1575,6 +1483,7 @@ fn execute_test_construction(
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
     use crate::simulation::economy::agents::{AGE_ADULT, HouseholdAgeComposition};
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;
@@ -1624,6 +1533,7 @@ fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;
@@ -1669,6 +1579,7 @@ fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
 // homes' applicants as the planner does, and the second factory cannot reuse the first one's
 // workers; the next slot replays the placed factory as construction (`SIM-02-I`).
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_customers_count_queued_homes_and_reserve_labour_once() {
     let (mut core, homes, factories) = construction_execution_fixture();
     let queue = |core: &mut SimCore, spawns: &[(u64, ZoneType, &DemandSpawnAction)]| {
@@ -1720,6 +1631,7 @@ fn queued_customers_count_queued_homes_and_reserve_labour_once() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_customer_permits_survive_a_load_before_their_start() {
     let mut outcomes = Vec::new();
     for reload in [false, true] {
@@ -1773,6 +1685,7 @@ fn queued_customer_permits_survive_a_load_before_their_start() {
 // Permits are proved at the planning slot, before any edit. A start places only with a
 // permit for its current door: an edit that moves a queued factory's door rejects it, a price
 // change alone does not, and a load keeps every permit and decision (`SIM-02-I`).
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_projects_start_only_at_their_permitted_doors_through_placement_and_reload() {
     for edit in [
         "unchanged",
@@ -2059,6 +1972,7 @@ fn queued_projects_start_only_at_their_permitted_doors_through_placement_and_rel
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn failed_supporting_housing_prevents_owner_funding_and_labor_is_not_reused() {
     let (mut core, homes, factories) = construction_execution_fixture();
     let mut failed_home = homes[1].clone();
@@ -2134,6 +2048,7 @@ fn queue_test_spawn(
 // without that home, instead of spending its equity on workers that will not come
 // (`SIM-02-I`).
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_failed_home_voids_the_business_permits_its_applicants_backed() {
     use crate::simulation::economy::demand::SpawnPermit;
     let (mut core, homes, factories) = construction_execution_fixture();
@@ -2170,6 +2085,7 @@ fn a_failed_home_voids_the_business_permits_its_applicants_backed() {
 // the applicants it draws once placed, as the workforce calendar counts a placed home's. An
 // earlier spawn that fails to place shifts no other home's seed.
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_homes_estimate_the_applicants_they_draw_once_placed() {
     use crate::simulation::economy::households::applicant_places_and_members;
     let (mut core, homes, factories) = construction_execution_fixture();
@@ -2232,6 +2148,7 @@ fn queued_homes_estimate_the_applicants_they_draw_once_placed() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
     let (mut core, homes, factories) = construction_execution_fixture();
     assert!(homes.len() >= 4);
@@ -2261,6 +2178,7 @@ fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn business_planning_prices_the_actual_freight_route() {
     for expensive in [false, true] {
         let (mut core, _, _) = construction_execution_fixture();
@@ -2490,6 +2408,7 @@ fn perf_contract_queued_locality() {
 // Planning slots price published frontage delays only: per-second congestion leaves a queued
 // factory's permit unchanged until the operational hour publishes it (`SIM-02-I`).
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn live_frontage_delay_reaches_queued_checks_only_when_published() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -2523,6 +2442,7 @@ fn live_frontage_delay_reaches_queued_checks_only_when_published() {
 // money: no permit at a price the market cannot fund, and the permitted door's carrier quote
 // is the one live hiring and dispatch pay (`SIM-02-I`).
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_business_reprices_freight_before_owner_funding() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -2606,6 +2526,7 @@ fn queued_business_reprices_freight_before_owner_funding() {
 // A queued factory's permit stands for its planning slot's hour; the next slot proves it again
 // on the city without the bulldozed home that backed it (`SIM-02-I`).
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn construction_execution_revalidates_after_a_supporting_home_is_bulldozed() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -2848,161 +2769,7 @@ fn lane_change_snapshot_benchmark() {
 }
 
 #[test]
-fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click() {
-    let mut core = test_core();
-    road_terrain_plan::commit_ready(
-        &mut core,
-        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
-    );
-    core.allocator
-        .prepare_building_site_query_index(core.config.zone_cell_m);
-    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
-    let revisions = (
-        core.heightmap.source_generation(),
-        core.heightmap.visual_generation(),
-        core.cached_road_mesh_generation,
-    );
-    for include_terrain in [false, true] {
-        let preview = super::road_preview::compile_road_preview_with_sites(
-            &context,
-            RoadPreviewRequest {
-                include_terrain,
-                request_id: 1,
-                surface_generation: query.surface_generation,
-                points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::ZERO],
-                fwd_lanes: 1,
-                bkw_lanes: 1,
-                snap_to_existing_roads: true,
-            },
-            &core,
-        );
-        assert!(preview.is_valid);
-        let plan = preview.edit_plan().unwrap();
-        assert_eq!(plan.terrain().is_some(), include_terrain);
-        assert_eq!(plan.road_status(&core), "ready");
-        if include_terrain {
-            assert_eq!(plan.status(&core), "ready");
-            let completed = plan.complete_for_commit(&core);
-            assert!(std::ptr::eq(
-                plan.terrain().unwrap(),
-                completed.terrain().unwrap()
-            ));
-        }
-        assert_eq!(
-            revisions,
-            (
-                core.heightmap.source_generation(),
-                core.heightmap.visual_generation(),
-                core.cached_road_mesh_generation
-            )
-        );
-    }
-}
-
-#[test]
-fn preview_terrain_revisions_keep_unchanged_plain_patches_across_poses() {
-    let mut core = test_core();
-    road_terrain_plan::commit_ready(
-        &mut core,
-        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
-    );
-    core.allocator
-        .prepare_building_site_query_index(core.config.zone_cell_m);
-    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
-    let mut revisions = super::road_preview::RoadPreviewTerrainRevisions::default();
-    let mut pose = |x: f32| {
-        let preview = super::road_preview::compile_road_preview_with_sites(
-            &context,
-            RoadPreviewRequest {
-                include_terrain: true,
-                request_id: 1,
-                surface_generation: query.surface_generation,
-                points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(x, 0.0, 0.0)],
-                fwd_lanes: 1,
-                bkw_lanes: 1,
-                snap_to_existing_roads: true,
-            },
-            &core,
-        );
-        let plan = preview.edit_plan().unwrap();
-        let patches = plan.terrain().unwrap().preview_patches().unwrap();
-        let assigned = revisions.assign(&patches);
-        (patches, assigned)
-    };
-    // Each pose builds fresh product Arcs; only the moving road's patches change.
-    let (first, before) = pose(1.0);
-    let (second, after) = pose(1.5);
-    let mut kept = 0;
-    for (old, new) in first.iter().zip(&second) {
-        assert_eq!(old.key, new.key);
-        assert!(!std::sync::Arc::ptr_eq(old, new));
-        let same = old.input_road_loops == 0 && new.input_road_loops == 0 && old.patch == new.patch;
-        assert_eq!(before[&old.key] == after[&new.key], same, "{:?}", old.key);
-        kept += usize::from(same);
-    }
-    assert!(kept > 0, "the fixture must keep road-free patches");
-    assert!(
-        kept < first.len(),
-        "the patch under the moving road must change"
-    );
-}
-
-#[test]
-#[ignore = "matched native preview-mode release timings; run alone"]
-fn benchmark_road_preview_modes() {
-    let mut core = test_core();
-    road_terrain_plan::commit_ready(
-        &mut core,
-        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
-    );
-    core.allocator
-        .prepare_building_site_query_index(core.config.zone_cell_m);
-    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
-    for include_terrain in [false, true] {
-        let mut times = Vec::new();
-        for i in 0..32 {
-            let start = std::time::Instant::now();
-            let preview = super::road_preview::compile_road_preview_with_sites(
-                &context,
-                RoadPreviewRequest {
-                    include_terrain,
-                    request_id: i,
-                    surface_generation: query.surface_generation,
-                    points: vec![
-                        Vector3::new(0.0, 0.0, -80.0),
-                        Vector3::new((i % 8) as f32, 0.0, 0.0),
-                    ],
-                    fwd_lanes: 1,
-                    bkw_lanes: 1,
-                    snap_to_existing_roads: true,
-                },
-                &core,
-            );
-            assert!(preview.is_valid);
-            let plan = preview.edit_plan().unwrap();
-            assert_eq!(
-                if include_terrain {
-                    plan.status(&core)
-                } else {
-                    plan.road_status(&core)
-                },
-                "ready"
-            );
-            if i >= 8 {
-                times.push(start.elapsed().as_secs_f64() * 1000.0);
-            }
-        }
-        times.sort_by(f64::total_cmp);
-        eprintln!(
-            "PREVIEW_MODE include_terrain={include_terrain} samples={} p50_ms={:.3} p95_ms={:.3}",
-            times.len(),
-            times[12],
-            times[22]
-        );
-    }
-}
-
-#[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;

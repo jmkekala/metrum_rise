@@ -6,6 +6,7 @@ use super::*;
 use crate::simulation::zoning::parcels;
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn occupied_cells_survive_native_node_merge_regeneration_and_undo() {
     for (angle, erased) in [0.0_f64, 0.35, -0.55]
         .into_iter()

@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadEditPlan;
-use crate::simulation::network::roadbed::RoadbedSystem;
 use godot::prelude::Vector2;
 use std::time::Instant;
 
@@ -14,7 +13,6 @@ mod memory;
 enum CellScenario {
     None,
     Placement,
-    NodeMovement,
     Snapshot,
     Memory,
 }
@@ -53,17 +51,6 @@ fn populated_cell_road_plan_scaling() {
 #[ignore = "snapshot component diagnostic; run release alone without profiling"]
 fn populated_cell_snapshot_scaling() {
     measure_populated_road_plan_scaling(false, false, false, CellScenario::Snapshot);
-}
-
-#[test]
-#[ignore = "populated node-move reservation validation; run release alone without profiling"]
-fn populated_cell_node_move_validation_scaling() {
-    // Opt into existing compiler phase diagnostics only for a separate diagnostic run.
-    // Acceptance timings keep METRUM_DEBUG=0 and never initialize logging here.
-    if std::env::var("METRUM_DEBUG").is_ok_and(|value| value == "1") {
-        crate::debug::init();
-    }
-    measure_populated_road_plan_scaling(false, false, false, CellScenario::NodeMovement);
 }
 
 fn measure_populated_road_plan_scaling(
@@ -129,16 +116,9 @@ fn measure_populated_road_plan_scaling(
     }
     let edge_template = core.region_graph.edge(0).clone();
     let mut background_roads = 0;
-    let mut previous_patches: Option<Vec<_>> = None;
-    let mut previous_road_meshes: Option<
-        std::collections::BTreeMap<
-            (i32, i32),
-            std::sync::Arc<crate::simulation::network::render::NetworkMeshData>,
-        >,
-    > = None;
+    let mut previous_preview: Option<Vec<Vector3>> = None;
     let mut initial_site_solves = None;
     let mut background_cells = 0;
-    let mut previous_move_surfaces: [Option<RoadbedSystem>; 2] = [None, None];
     let cell_grid = if cells {
         use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape, GridFrame};
         use glam::DVec2;
@@ -197,9 +177,7 @@ fn measure_populated_road_plan_scaling(
             edge.end_clip = 0.0;
             edge.physical_length = 6144.0;
             let id = core.region_graph.add_edge(edge);
-            core.transit_network
-                .roadbed
-                .mark_edge_dirty(&core.region_graph, id);
+            core.transit_network.roadbed.mark_edge_dirty(id);
             background_roads += 1;
         }
         while core.allocator.buildings.len() < remote_buildings + 4 {
@@ -247,11 +225,7 @@ fn measure_populated_road_plan_scaling(
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
         core.precompute_road_mesh_data();
-        assert!(
-            core.transit_network
-                .roadbed
-                .is_current()
-        );
+        assert!(core.transit_network.roadbed.is_current());
         if scenario == CellScenario::Memory {
             let products = memory::measure(&mut core, remote_buildings, &mut memory_phase);
             if let Some(previous) = &previous_memory_products {
@@ -265,71 +239,6 @@ fn measure_populated_road_plan_scaling(
         }
         if scenario == CellScenario::Snapshot {
             measure_snapshot_components(&core, remote_buildings);
-            continue;
-        }
-        if scenario == CellScenario::NodeMovement {
-            let node = core.region_graph.edge(0).end_node;
-            let original_position = core.region_graph.node(node).pos;
-            for (index, (position, blocked)) in [
-                (Vector3::new(120.0, 0.0, 0.0), false),
-                (Vector3::new(96.0, 0.0, -12.0), true),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let check = || {
-                    let surface = core
-                        .transit_network
-                        .roadbed
-                        .compile_node_move_surface(
-                            &core.region_graph,
-                            &core.heightmap,
-                            &core.zoning,
-                            node,
-                            position,
-                        )
-                        .unwrap();
-                    assert_eq!(surface.overlaps_cell_zoning(&core.zoning), blocked);
-                    surface
-                };
-                for _ in 0..5 {
-                    std::hint::black_box(check());
-                }
-                let mut samples = Vec::with_capacity(100);
-                for _ in 0..100 {
-                    let start = Instant::now();
-                    let surface = std::hint::black_box(check());
-                    drop(surface);
-                    samples.push(start.elapsed().as_secs_f64() * 1000.0);
-                }
-                samples.sort_by(f64::total_cmp);
-                let surface = check();
-                if let Some(previous) = &previous_move_surfaces[index] {
-                    assert_eq!(
-                        surface.compiled_visual_span_pieces(),
-                        previous.compiled_visual_span_pieces()
-                    );
-                    assert_eq!(
-                        surface.compiled_visual_node_pieces(),
-                        previous.compiled_visual_node_pieces()
-                    );
-                }
-                assert_eq!(core.region_graph.node(node).pos, original_position);
-                println!(
-                    "CELL_NODE_MOVE_VALIDATION_SCALING {}",
-                    serde_json::json!({
-                        "remote_buildings": remote_buildings, "remote_roads": background_roads,
-                        "agents": core.agents.len(), "parcels": core.zoning.parcels().len(),
-                        "remote_cells": background_cells, "blocked": blocked,
-                        "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
-                        "p50_ms": (samples[49] + samples[50]) * 0.5, "p95_ms": samples[94],
-                        "spans": surface.compiled_visual_span_pieces().len(),
-                        "nodes": surface.compiled_visual_node_pieces().len(),
-                        "identical_local_products": true,
-                    })
-                );
-                previous_move_surfaces[index] = Some(surface);
-            }
             continue;
         }
         if zoning_only {
@@ -377,14 +286,11 @@ fn measure_populated_road_plan_scaling(
             continue;
         }
         let snapshot_start = Instant::now();
-        let (context, _) = road_tool_snapshots_from_core(&core).unwrap();
+        let snapshot = road_tool_snapshot_from_core(&core).unwrap();
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
         let mut samples = Vec::new();
         let mut status_samples = Vec::new();
-        let mut worker_samples = Vec::new();
-        let mut full_worker_samples = Vec::new();
-        let mut terrain_samples = Vec::new();
-        let mut frame_checks_samples = Vec::new();
+        let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
             include_terrain: false,
@@ -402,120 +308,27 @@ fn measure_populated_road_plan_scaling(
             let status_start = Instant::now();
             assert_eq!(plan.status(&core), "ready");
             let status_ms = status_start.elapsed().as_secs_f64() * 1000.0;
-            let patches = plan.terrain().unwrap().preview_patches().unwrap();
-            if let Some(previous) = previous_patches.as_ref() {
-                assert!(
-                    plan.terrain().unwrap().entries_match(previous),
+            let preview_start = Instant::now();
+            let preview = snapshot.preview(&request());
+            let preview_ms = preview_start.elapsed().as_secs_f64() * 1000.0;
+            assert!(preview.validation.is_valid);
+            if let Some(previous) = &previous_preview {
+                assert_eq!(
+                    &preview.prepared_points, previous,
                     "remote state changed local products"
                 );
             } else {
-                assert!(patches.iter().any(|patch| patch.site_clip_loop_count > 0));
-                previous_patches = Some(patches);
+                previous_preview = Some(preview.prepared_points);
             }
-            let worker_start = Instant::now();
-            let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
-                &context,
-                request(),
-            );
-            let worker_ms = worker_start.elapsed().as_secs_f64() * 1000.0;
-            assert!(preview.is_valid && preview.junction_preview.is_some());
-            let meshes = &preview.junction_preview.as_ref().unwrap().planned;
-            if let Some(previous) = &previous_road_meshes {
-                assert!(meshes.keys().eq(previous.keys()));
-                for (key, current) in meshes {
-                    let original = &previous[key];
-                    macro_rules! same_layer {
-                        ($($field:ident),+) => {
-                            $(assert_eq!(current.$field, original.$field, "remote state changed road {}", stringify!($field));)+
-                        };
-                    }
-                    same_layer!(road_vertices, road_normals, road_uvs, road_colors);
-                    same_layer!(
-                        sidewalk_vertices,
-                        sidewalk_normals,
-                        sidewalk_uvs,
-                        sidewalk_colors
-                    );
-                    same_layer!(curb_vertices, curb_normals, curb_uvs, curb_colors);
-                    same_layer!(
-                        raised_step_vertices,
-                        raised_step_normals,
-                        raised_step_uvs,
-                        raised_step_colors
-                    );
-                    same_layer!(
-                        marking_vertices,
-                        marking_normals,
-                        marking_uvs,
-                        marking_colors
-                    );
-                    same_layer!(
-                        earthwork_vertices,
-                        earthwork_normals,
-                        earthwork_uvs,
-                        earthwork_colors
-                    );
-                    same_layer!(
-                        concrete_vertices,
-                        concrete_normals,
-                        concrete_uvs,
-                        concrete_colors
-                    );
-                }
-            } else {
-                previous_road_meshes = Some(meshes.clone());
-            }
-            let road_plan = preview.edit_plan().unwrap();
-            assert!(road_plan.terrain().is_none());
-            assert_eq!(road_plan.road_status(&core), "ready");
-            let terrain_start = Instant::now();
-            let worker_plan = road_plan.complete_for_commit(&core);
-            let terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(worker_plan.status(&core), "ready");
-            assert!(
-                worker_plan
-                    .terrain()
-                    .unwrap()
-                    .entries_match(previous_patches.as_ref().unwrap())
-            );
-            let mut full_request = request();
-            full_request.include_terrain = true;
-            let full_start = Instant::now();
-            let full = super::super::road_preview::compile_road_preview_with_sites(
-                &context,
-                full_request,
-                &core,
-            );
-            let full_ms = full_start.elapsed().as_secs_f64() * 1000.0;
-            // The simulation frame's re-evaluation of the current preview (`ROAD-54`).
-            let frame_checks_start = Instant::now();
-            let frame_checks =
-                super::super::road_preview::RoadPreviewLiveChecks::evaluate(&full, &core);
-            let frame_checks_ms = frame_checks_start.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(frame_checks.plan_state, Some("ready"));
-            let full_plan = full.edit_plan().unwrap();
-            assert_eq!(full_plan.status(&core), "ready");
-            assert!(
-                full_plan
-                    .terrain()
-                    .unwrap()
-                    .entries_match(previous_patches.as_ref().unwrap())
-            );
             if iteration >= 3 {
                 samples.push(compile_ms);
                 status_samples.push(status_ms);
-                worker_samples.push(worker_ms);
-                full_worker_samples.push(full_ms);
-                terrain_samples.push(terrain_ms);
-                frame_checks_samples.push(frame_checks_ms);
+                preview_samples.push(preview_ms);
             }
         }
         samples.sort_by(f64::total_cmp);
         status_samples.sort_by(f64::total_cmp);
-        worker_samples.sort_by(f64::total_cmp);
-        full_worker_samples.sort_by(f64::total_cmp);
-        terrain_samples.sort_by(f64::total_cmp);
-        frame_checks_samples.sort_by(f64::total_cmp);
+        preview_samples.sort_by(f64::total_cmp);
         println!(
             "ROAD_PLAN_SCALING {}",
             serde_json::json!({
@@ -526,10 +339,7 @@ fn measure_populated_road_plan_scaling(
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
                 "compile_p50_ms": (samples[49] + samples[50]) * 0.5, "compile_p95_ms": samples[94],
                 "readiness_p50_ms": (status_samples[49] + status_samples[50]) * 0.5, "readiness_p95_ms": status_samples[94],
-                "worker_p50_ms": (worker_samples[49] + worker_samples[50]) * 0.5, "worker_p95_ms": worker_samples[94],
-                "full_worker_p50_ms": (full_worker_samples[49] + full_worker_samples[50]) * 0.5, "full_worker_p95_ms": full_worker_samples[94],
-                "click_terrain_p50_ms": (terrain_samples[49] + terrain_samples[50]) * 0.5, "click_terrain_p95_ms": terrain_samples[94],
-                "frame_checks_p50_ms": (frame_checks_samples[49] + frame_checks_samples[50]) * 0.5, "frame_checks_p95_ms": frame_checks_samples[94],
+                "preview_p50_ms": (preview_samples[49] + preview_samples[50]) * 0.5, "preview_p95_ms": preview_samples[94],
                 "snapshot_once_per_edit_ms": snapshot_ms,
                 "identical_local_products": true,
             })
@@ -557,7 +367,7 @@ fn measure_snapshot_components(core: &SimCore, background: usize) {
         assert!(surface.is_current());
         drop((terrain, graph, surface, water));
         let start = Instant::now();
-        let snapshot = black_box(road_tool_snapshots_from_core(core).unwrap());
+        let snapshot = black_box(road_tool_snapshot_from_core(core).unwrap());
         let snapshot_us = start.elapsed().as_secs_f64() * 1_000_000.0;
         let start = Instant::now();
         drop(snapshot);
@@ -590,50 +400,6 @@ fn measure_snapshot_components(core: &SimCore, background: usize) {
         result[name] = serde_json::json!({ "p50_us": values[10], "p95_us": values[19] });
     }
     println!("CELL_SNAPSHOT_COMPONENTS {result}");
-    measure_surface_snapshot_fields(&core.transit_network.roadbed, background);
-}
-
-fn measure_surface_snapshot_fields(surface: &RoadbedSystem, background: usize) {
-    fn clone_us<T: Clone>(value: &T) -> f64 {
-        let mut samples = [0.0_f64; 21];
-        for iteration in 0..24 {
-            let start = Instant::now();
-            let cloned = std::hint::black_box(value.clone());
-            let elapsed = start.elapsed().as_secs_f64() * 1_000_000.0;
-            drop(cloned);
-            if iteration >= 3 {
-                samples[iteration - 3] = elapsed;
-            }
-        }
-        samples.sort_by(f64::total_cmp);
-        samples[10]
-    }
-    let mut result = serde_json::json!({ "background": background });
-    macro_rules! measure {
-        ($($field:ident),+ $(,)?) => {
-            $(result[stringify!($field)] = serde_json::json!(clone_us(&surface.$field));)+
-        };
-    }
-    measure!(
-        compiled_sections,
-        compiled_visual_span_pieces,
-        compiled_visual_node_pieces,
-        compiled_visual_node_inputs,
-        compiled_visual_node_earthwork_boundaries,
-        compiled_visual_node_topologies,
-        surface_span_chunks,
-        surface_node_chunks,
-        earthwork_span_chunks,
-        earthwork_node_chunks,
-        query_span_chunks,
-        query_node_chunks,
-        surface_chunk_cache,
-        earthwork_chunk_cache,
-        last_rebuilt_surface_chunks,
-        last_rebuilt_terrain_chunks,
-        last_rebuilt_query_chunks,
-    );
-    println!("CELL_SURFACE_SNAPSHOT_FIELDS {result}");
 }
 
 fn insert_populated_site(core: &mut SimCore, mut building: Building) {

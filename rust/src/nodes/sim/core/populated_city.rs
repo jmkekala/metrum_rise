@@ -376,7 +376,9 @@ fn fill_lots(core: &mut SimCore) {
         core.prepare_cell_lots_internal();
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
-        core.transit_network.roadbed.compile_dirty(&core.region_graph);
+        core.transit_network
+            .roadbed
+            .compile_dirty(&core.region_graph);
         let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
             &core.zoning,
             &core.region_graph,

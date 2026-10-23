@@ -229,7 +229,7 @@ impl DemandSystem {
         let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(self.runtime_tuning.as_ref());
         let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
         let mut road_surface = crate::simulation::network::roadbed::RoadbedSystem::new(512.0);
-        road_surface.compile_dirty(graph, &terrain);
+        road_surface.compile_dirty(graph);
         let mut routing_graph = graph.clone();
         let mut network = TransitNetwork::new();
         network.lane_system.rebuild(&mut routing_graph);

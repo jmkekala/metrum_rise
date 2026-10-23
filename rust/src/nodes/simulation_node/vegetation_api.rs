@@ -781,11 +781,7 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard
         // building pad does: the test is the same predicate, and nothing is destroyed, so the
         // stand returns if the field is redrawn or the farm is removed.
         if core.watermap.visible_depth_world(p.x, p.y) > 0.001
-            || core
-                .transit_network
-                .roadbed
-                .height_at(p.x, p.y)
-                .is_some()
+            || core.transit_network.roadbed.height_at(p.x, p.y).is_some()
             || if yard {
                 core.allocator.building_site_blocks_yard_plant(p)
             } else {

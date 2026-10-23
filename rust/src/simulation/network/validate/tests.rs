@@ -99,7 +99,8 @@ fn hairpin_below_visual_half_width_is_illegal_radius() {
         Vector3::new(2.0, 0.0, 0.0),
         Vector3::new(0.0, 0.0, 0.2),
     ]);
-    let half_width = crate::simulation::network::roadbed::visual_roadbed_half_width_m(graph.edge(id));
+    let half_width =
+        crate::simulation::network::roadbed::visual_roadbed_half_width_m(graph.edge(id));
     let out = edge_violations(&graph, id);
     assert!(
         matches!(out.as_slice(), [RoadGeometryViolation::HorizontalRadius {

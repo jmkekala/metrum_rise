@@ -64,7 +64,6 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBuildPlan {
 }
 
 impl SimulationNode {
-
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -1491,8 +1490,10 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
     ) -> Option<(f32, f32, f32, f32)> {
-        let margin_m =
-            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain.terrain(), render_step_m);
+        let margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            terrain.terrain(),
+            render_step_m,
+        );
         Self::terrain_cdt_local_sample_bounds_for_world_bounds_with_margin(
             patch_bounds,
             road_loops,

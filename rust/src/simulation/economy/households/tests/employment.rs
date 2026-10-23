@@ -1729,7 +1729,7 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
             );
             let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
             let mut surface = crate::simulation::network::roadbed::RoadbedSystem::new(512.0);
-            surface.compile_dirty(&graph, &terrain);
+            surface.compile_dirty(&graph);
             demand.publish_census_if_stale_for_test(
                 allocator,
                 &mut households,

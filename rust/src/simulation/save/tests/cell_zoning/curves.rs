@@ -54,12 +54,8 @@ fn curved_fixture() -> (RegionGraph, ZoningSystem, CellBounds) {
         &mut BuildingAllocator::new(),
     );
     let mut network = TransitNetwork::new_for_world(&config);
-    crate::simulation::save::network::rebuild_loaded_graph_runtime(
-        &mut graph,
-        &mut network,
-        &mut TerrainSystem::from_world_config(&config),
-    )
-    .unwrap();
+    crate::simulation::save::network::rebuild_loaded_graph_runtime(&mut graph, &mut network)
+        .unwrap();
     let blocked = |corners: &[DVec2; 4]| {
         PolygonFootprint::from_precise_points(
             road_contact_interior(corners)

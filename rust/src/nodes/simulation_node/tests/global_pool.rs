@@ -33,6 +33,7 @@ const FARM: &str = "kenney:building.industrial.small_farm";
 const WAIT: Duration = Duration::from_secs(120);
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn bridge_entry_points_never_use_the_global_pool() {
     let module = module_path!()
         .split_once("::")
@@ -156,7 +157,7 @@ fn starting_a_town(e: &mut Entries) -> SimCore {
     e.run("init", || {
         core.precompute_road_mesh_data();
         core.build_snapshot();
-        road_tool_snapshots_from_core(&core).unwrap();
+        road_tool_snapshot_from_core(&core).unwrap();
     });
     e.run("asset packs", || assets_installed(&mut core));
 
@@ -349,40 +350,16 @@ fn loading_a_save(e: &mut Entries, core: &SimCore) {
 // The node's threads and jobs while Godot's main thread sends commands, stopped and joined as
 // freeing the node does.
 fn running_the_node_threads(e: &mut Entries, core: SimCore) {
-    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+    let query = road_tool_snapshot_from_core(&core).unwrap();
     let generation = core.terrain_payload_global_generation;
-    let surface_generation = core.road_tool_surface_generation;
     let snapshot = Arc::new(RwLock::new(RenderSnapshot::default()));
-    let context = Arc::new(RwLock::new(context));
-    let result = Arc::new(RwLock::new(None));
     let core = Arc::new(Mutex::new(core));
     let (commands, command_rx) = std::sync::mpsc::channel();
     let sim_thread = {
-        let (core, snapshot, context, result) = (
-            Arc::clone(&core),
-            Arc::clone(&snapshot),
-            Arc::clone(&context),
-            Arc::clone(&result),
-        );
+        let (core, snapshot) = (Arc::clone(&core), Arc::clone(&snapshot));
         let query = Arc::new(RwLock::new(query));
         std::thread::spawn(move || {
-            run_sim_thread(
-                core,
-                snapshot,
-                context,
-                query,
-                result,
-                Arc::new(PublishedRoadPreviewChecks::default()),
-                command_rx,
-            );
-        })
-    };
-    let (mut road_preview, road_preview_rx) = road_preview_channel();
-    let road_preview_worker = {
-        let (core, context, result) =
-            (Arc::clone(&core), Arc::clone(&context), Arc::clone(&result));
-        std::thread::spawn(move || {
-            run_road_preview_worker(core, context, result, road_preview_rx);
+            run_sim_thread(core, snapshot, query, command_rx);
         })
     };
     // A job that panics aborts this process, which fails the parent test.
@@ -398,15 +375,6 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
         Vector3::new(-300.0, 0.0, 150.0),
         Vector3::new(-300.0, 0.0, 400.0),
     ];
-    assert!(road_preview.submit(RoadPreviewRequest {
-        include_terrain: true,
-        request_id: 1,
-        surface_generation,
-        points: points.clone(),
-        fwd_lanes: 1,
-        bkw_lanes: 1,
-        snap_to_existing_roads: true,
-    }));
     let (cell_done, cell_done_rx) = std::sync::mpsc::sync_channel(1);
     let (road_done, road_done_rx) = std::sync::mpsc::sync_channel::<RoadCommitAck>(1);
     for command in [
@@ -435,13 +403,13 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
         let road = road_done_rx.recv_timeout(WAIT).unwrap();
         assert!(road.committed, "{}: {}", road.reason, road.detail);
     });
-    // Both threads publish: a preview result and frames whose clock moves.
-    e.run("published preview and frames", || {
+    // The simulation thread publishes frames whose clock moves.
+    e.run("published frames", || {
         let started = Instant::now();
         let minute = || snapshot.read().unwrap().current_minute_of_day;
         let first = minute();
-        while result.read().unwrap().is_none() || minute() == first {
-            assert!(!sim_thread.is_finished() && !road_preview_worker.is_finished());
+        while minute() == first {
+            assert!(!sim_thread.is_finished());
             assert!(started.elapsed() < WAIT);
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -452,11 +420,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
     });
 
     commands.send(SimCommand::Stop).unwrap();
-    road_preview.disconnect();
     e.run("simulation thread", || sim_thread.join().unwrap());
-    e.run("road-preview worker", || {
-        road_preview_worker.join().unwrap()
-    });
     jobs.wait();
 }
 

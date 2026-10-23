@@ -291,11 +291,7 @@ impl SimulationNode {
                 mask_bytes: Vec::new(),
             }));
         }
-        if !core
-            .transit_network
-            .roadbed
-            .is_current()
-        {
+        if !core.transit_network.roadbed.is_current() {
             return None;
         }
         if core.terrain_stroke_active {
@@ -676,11 +672,7 @@ impl SimulationNode {
         if core.cached_road_mesh_generation != request.surface_generation {
             return None;
         }
-        if !core
-            .transit_network
-            .roadbed
-            .is_current()
-        {
+        if !core.transit_network.roadbed.is_current() {
             return None;
         }
         let patch = core
@@ -711,11 +703,7 @@ impl SimulationNode {
         patch_z: usize,
         lod_step: usize,
     ) -> Option<(WaterPatchMeshCacheKey, WaterPatchMeshBuildInput)> {
-        if !core
-            .transit_network
-            .roadbed
-            .is_current()
-        {
+        if !core.transit_network.roadbed.is_current() {
             return None;
         }
         let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;

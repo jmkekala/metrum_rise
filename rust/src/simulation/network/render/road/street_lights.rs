@@ -544,8 +544,7 @@ fn pole_offset(
             .max_by(|x, y| x.1.total_cmp(&y.1))
     };
     if kind == StreetLightKind::Path {
-        let (_, far, _, _) =
-            on_side(&[BandKind::Footpath, BandKind::Sidewalk])?;
+        let (_, far, _, _) = on_side(&[BandKind::Footpath, BandKind::Sidewalk])?;
         return Some((far + PATH_VERGE_OFFSET_M, None));
     }
     if let Some((near, far, near_h, far_h)) = on_side(&[BandKind::Sidewalk])
@@ -555,10 +554,7 @@ fn pole_offset(
         let t = (offset - near) / (far - near);
         return Some((offset, Some(near_h + (far_h - near_h) * t)));
     }
-    let (_, far, _, _) = on_side(&[
-        BandKind::CurbOrShoulder,
-        BandKind::Carriageway,
-    ])?;
+    let (_, far, _, _) = on_side(&[BandKind::CurbOrShoulder, BandKind::Carriageway])?;
     Some((far + VERGE_OFFSET_M, None))
 }
 

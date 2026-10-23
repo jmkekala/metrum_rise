@@ -10,7 +10,6 @@ use glam::DVec2;
 use godot::prelude::Vector3;
 
 impl ZoningSystem {
-
     /// Tests arbitrary (including concave) field/site footprints against both zoning workflows.
     pub(crate) fn overlaps_reservation(&self, footprint: &PolygonFootprint) -> bool {
         self.parcels.overlaps_polygon(footprint) || self.cells_overlap_footprint(footprint, false)

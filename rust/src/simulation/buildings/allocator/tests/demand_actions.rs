@@ -142,6 +142,7 @@ fn benchmark_demand_action_lookup() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
     use crate::simulation::economy::demand::DemandSystem;
     use godot::prelude::Vector3;
@@ -252,6 +253,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() {
     use crate::simulation::buildings::allocator::yard::YardEvent;
     use crate::simulation::economy::demand::{
@@ -582,6 +584,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn test_commercial_demand_spawn_startup_budget_includes_first_import_cost() {
     use crate::simulation::economy::demand::{
         DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,

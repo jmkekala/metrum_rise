@@ -93,7 +93,11 @@ impl SimulationNode {
         _bkw_lanes: i32,
         surface_generation: i64,
     ) -> Variant {
-        let generation = self.road_tool_query_snapshot.read().unwrap().surface_generation;
+        let generation = self
+            .road_tool_query_snapshot
+            .read()
+            .unwrap()
+            .surface_generation;
         if i64::try_from(generation).unwrap_or(i64::MAX) != surface_generation {
             return Variant::nil();
         }

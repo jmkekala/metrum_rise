@@ -34,6 +34,11 @@ pub(crate) fn validate_road_candidate_against_water(
 #[cfg(test)]
 mod tests {
     use super::{ROAD_WATER_REQUIRES_BRIDGE_REASON, validate_road_candidate_against_water};
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::road_edit::{
+        PreparedRoadInput, RoadPreviewValidation, prepare_road_input_for_tool,
+        validate_road_candidate_fast,
+    };
     use crate::simulation::network::roadbed::RoadbedSystem;
     use crate::simulation::network::types::EdgeClass;
     use crate::simulation::terrain::TerrainSystem;
@@ -42,24 +47,18 @@ mod tests {
 
     #[test]
     fn standard_road_candidate_crossing_water_requires_bridge() {
-        let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let water = test_center_lake();
-        let surface = RoadbedSystem::new(30.0);
-        let preview = surface.compile_preview_surface(
-            &[Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)],
-            1,
-            1,
-            &terrain,
-        );
+        let (preview, validation) =
+            prepare(&[Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)]);
 
-        assert_eq!(preview.edge_class, EdgeClass::Standard);
+        assert_eq!(preview.class, EdgeClass::Standard);
         let validation = validate_road_candidate_against_water(
-            preview.edge_class,
-            &preview.prepared_points,
+            preview.class,
+            &preview.points,
             1,
             1,
             &water,
-            preview.validation,
+            validation,
         );
 
         assert!(!validation.is_valid);
@@ -68,28 +67,21 @@ mod tests {
 
     #[test]
     fn bridge_candidate_crossing_water_remains_valid() {
-        let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let water = test_center_lake();
-        let surface = RoadbedSystem::new(30.0);
-        let preview = surface.compile_preview_surface(
-            &[
-                Vector3::new(-30.0, 3.0, 0.0),
-                Vector3::new(0.0, 3.0, 0.0),
-                Vector3::new(30.0, 3.0, 0.0),
-            ],
-            1,
-            1,
-            &terrain,
-        );
+        let (preview, validation) = prepare(&[
+            Vector3::new(-30.0, 3.0, 0.0),
+            Vector3::new(0.0, 3.0, 0.0),
+            Vector3::new(30.0, 3.0, 0.0),
+        ]);
 
-        assert_eq!(preview.edge_class, EdgeClass::Bridge);
+        assert_eq!(preview.class, EdgeClass::Bridge);
         let validation = validate_road_candidate_against_water(
-            preview.edge_class,
-            &preview.prepared_points,
+            preview.class,
+            &preview.points,
             1,
             1,
             &water,
-            preview.validation,
+            validation,
         );
 
         assert!(validation.is_valid);
@@ -97,30 +89,33 @@ mod tests {
 
     #[test]
     fn standard_road_candidate_beside_water_remains_valid() {
-        let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let water = test_center_lake();
-        let surface = RoadbedSystem::new(30.0);
-        let preview = surface.compile_preview_surface(
-            &[
-                Vector3::new(-30.0, 0.0, 30.0),
-                Vector3::new(30.0, 0.0, 30.0),
-            ],
-            1,
-            1,
-            &terrain,
-        );
+        let (preview, validation) = prepare(&[
+            Vector3::new(-30.0, 0.0, 30.0),
+            Vector3::new(30.0, 0.0, 30.0),
+        ]);
 
-        assert_eq!(preview.edge_class, EdgeClass::Standard);
+        assert_eq!(preview.class, EdgeClass::Standard);
         let validation = validate_road_candidate_against_water(
-            preview.edge_class,
-            &preview.prepared_points,
+            preview.class,
+            &preview.points,
             1,
             1,
             &water,
-            preview.validation,
+            validation,
         );
 
         assert!(validation.is_valid);
+    }
+
+    // Prepares and fast-validates a stroke on flat terrain with no existing roads.
+    fn prepare(points: &[Vector3]) -> (PreparedRoadInput, RoadPreviewValidation) {
+        let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
+        let graph = RegionGraph::new();
+        let prepared =
+            prepare_road_input_for_tool(points, &terrain, &graph, &RoadbedSystem::new(30.0), false);
+        let validation = validate_road_candidate_fast(&prepared, &terrain, &graph);
+        (prepared, validation)
     }
 
     fn test_center_lake() -> WaterSystem {

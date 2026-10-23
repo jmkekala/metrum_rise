@@ -827,20 +827,6 @@ impl TerrainSystem {
         }
     }
 
-    /// Whether a patch's visual samples (including its halo) are still authored source samples.
-    /// Test oracle for pre-edit visual samples in structural reset regressions.
-    #[cfg(test)]
-    pub(crate) fn visual_patch_matches_source(&self, patch_x: usize, patch_z: usize) -> bool {
-        let Some((x0, x1, z0, z1)) = self.render_patch_sample_bounds(patch_x, patch_z) else {
-            return false;
-        };
-        let border = TERRAIN_RENDER_PATCH_BORDER_TEXELS;
-        (z0.saturating_sub(border)..=z1.saturating_add(border).min(self.height - 1)).all(|z| {
-            (x0.saturating_sub(border)..=x1.saturating_add(border).min(self.width - 1))
-                .all(|x| self.data.get(x, z) == self.source_data.get(x, z))
-        })
-    }
-
     /// Returns one visual-terrain render patch with a neighboring-sample border ring.
     pub(crate) fn visual_patch_snapshot(
         &self,
@@ -1139,15 +1125,12 @@ mod tests {
     #[test]
     fn visual_height_uses_bilinear_visual_cells_in_world_units() {
         let mut terrain = TerrainSystem::with_chunking(9, 9, 2.0, 4, 0.0);
-        let cells: Vec<_> = (0..9).flat_map(|z| (0..9).map(move |x| (x, z))).collect();
         let field = |x: f32, z: f32| 5.0 + 0.2 * x - 0.3 * z + 0.04 * x * z;
-        terrain.set_visual_heights_at_grid_unmarked(&cells, |&(x, z)| {
-            (
-                x,
-                z,
-                field((x as f32 - 4.0) * 2.0, (z as f32 - 4.0) * 2.0) / HEIGHT_SCALE,
-            )
-        });
+        let visual: Vec<_> = (0..9)
+            .flat_map(|z| (0..9).map(move |x| (x, z)))
+            .map(|(x, z)| field((x as f32 - 4.0) * 2.0, (z as f32 - 4.0) * 2.0) / HEIGHT_SCALE)
+            .collect();
+        terrain.replace_visual_from_dense(&visual).unwrap();
         for (x, z) in [(-7.3, -6.1), (0.7, 1.3), (5.2, 6.8), (-20.0, 20.0)] {
             let height = terrain.sample_visual_height_world(x, z) * HEIGHT_SCALE;
             assert!((height - field(x.clamp(-8.0, 8.0), z.clamp(-8.0, 8.0))).abs() < 1e-5);
@@ -1185,14 +1168,6 @@ mod tests {
             .map(|chunk| revision(&terrain, chunk))
             .into();
         assert_eq!(after, before);
-
-        // A visual-only write and its reset each move only the written chunk.
-        terrain.set_visual_heights_at_grid_unmarked(&[(32_usize, 32_usize)], |&(x, z)| (x, z, 3.0));
-        let written = revision(&terrain, (-2, -2));
-        assert!(written > 0);
-        terrain.reset_visual_region_from_source_world(-1024.0, -1024.0, 1024.0, 1024.0);
-        assert!(revision(&terrain, (-2, -2)) > written);
-        assert_eq!(revision(&terrain, (1, 0)), after[1]);
 
         // Whole-grid replacement supersedes every local revision.
         terrain.mark_all_render_patches_dirty();

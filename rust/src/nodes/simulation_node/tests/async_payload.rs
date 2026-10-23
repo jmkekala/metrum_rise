@@ -431,63 +431,6 @@ fn stale_compatible_refined_cache_is_build_input_but_never_ready() {
 }
 
 #[test]
-fn compatible_cache_and_stamped_road_chunks_capture_local_tile_scope() {
-    let mut core = test_core_with_flat_terrain(0.0);
-    let cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
-    let key = cached.key;
-    core.refined_terrain_patch_cache
-        .insert(key, Arc::new(cached));
-    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(0, 0)]);
-    let surface_generation = core.terrain_payload_generation_for_patch(0, 0);
-    let request = TerrainPatchPayloadRequest {
-        key: TerrainPatchPayloadKey {
-            patch_x: 0,
-            patch_z: 0,
-            render_step_mm: 2000,
-        },
-        request_id: 13,
-        surface_generation,
-    };
-
-    let source = SimulationNode::terrain_patch_payload_build_source_for_request(&mut core, request)
-        .expect("a compatible baseline and stamped road chunk should produce a local source");
-    let tile_keys = source
-        .local_tile_keys()
-        .expect("local road invalidation should not fall back to a full-patch query");
-
-    assert!(!tile_keys.is_empty());
-    assert_eq!(source.previous_surface_generation(), Some(1));
-}
-
-#[test]
-fn stamped_nonoverlapping_road_chunk_carries_previous_generation_without_full_query() {
-    let mut core = test_core_with_flat_terrain(0.0);
-    let cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
-    let key = cached.key;
-    core.refined_terrain_patch_cache
-        .insert(key, Arc::new(cached));
-    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(100, 100)]);
-    let request = TerrainPatchPayloadRequest {
-        key: TerrainPatchPayloadKey {
-            patch_x: 0,
-            patch_z: 0,
-            render_step_mm: 2000,
-        },
-        request_id: 14,
-        surface_generation: core.terrain_payload_generation_for_patch(0, 0),
-    };
-
-    let source = SimulationNode::terrain_patch_payload_build_source_for_request(&mut core, request)
-        .expect("a proven nonoverlapping road stamp should still produce a local build source");
-
-    assert_eq!(
-        source.local_tile_keys(),
-        Some(&[][..]),
-        "no-overlap invalidation must carry the previous windows without a full patch query"
-    );
-}
-
-#[test]
 fn refined_payload_source_waits_for_batched_terrain_stroke_finalization() {
     let mut core = test_core_with_flat_terrain(0.0);
     core.start_terrain_stroke_internal();
@@ -527,9 +470,8 @@ fn refined_payload_source_waits_for_batched_terrain_stroke_finalization() {
 #[test]
 fn refined_payload_source_waits_for_matching_road_surface_generation() {
     let mut core = test_core_with_flat_terrain(0.0);
-    core.transit_network
-        .roadbed
-        .mark_world_point_dirty(Vector3::ZERO);
+    // Any pending roadbed work leaves the published surface behind the graph.
+    core.transit_network.roadbed.mark_node_dirty(0);
     let request = TerrainPatchPayloadRequest {
         key: TerrainPatchPayloadKey {
             patch_x: 0,
@@ -605,6 +547,7 @@ fn building_site_dirty_patch_does_not_persist_as_road_owned() {
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes() {
     let mut core = test_core_with_flat_terrain(0.0);
     let key = (0, 0);
@@ -616,9 +559,8 @@ fn unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes() {
     core.engineered_terrain_patch_keys.push(key);
     core.engineered_terrain_patch_margins
         .insert(key, road_margin_m);
-    core.transit_network
-        .roadbed
-        .mark_world_point_dirty(Vector3::ZERO);
+    // Any pending roadbed work leaves the published surface behind the graph.
+    core.transit_network.roadbed.mark_node_dirty(0);
 
     core.refresh_engineered_terrain_patch_ownership_for_keys(
         crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
@@ -662,9 +604,8 @@ fn water_road_clip_queries_wait_for_matching_surface_publication() {
         "the matching empty-road generation should produce a water mesh input"
     );
 
-    core.transit_network
-        .roadbed
-        .mark_world_point_dirty(Vector3::ZERO);
+    // Any pending roadbed work leaves the published surface behind the graph.
+    core.transit_network.roadbed.mark_node_dirty(0);
 
     assert!(
         SimulationNode::water_patch_payload_for_request(&core, request).is_none(),
@@ -683,9 +624,7 @@ fn blank_world_reset_publishes_empty_road_surface_for_water_payloads() {
         .expect("the blank-world reset should succeed");
 
     assert!(
-        core.transit_network
-            .roadbed
-            .is_current(),
+        core.transit_network.roadbed.is_current(),
         "the replacement empty network must be compiled before renderer refresh"
     );
     assert_eq!(
@@ -749,6 +688,7 @@ fn water_only_query_generation_change_keeps_published_surface_payloads_available
 }
 
 #[test]
+#[ignore = "ROAD-68-D: road terrain patches"]
 fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{

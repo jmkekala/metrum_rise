@@ -180,6 +180,9 @@ pub(crate) enum TerrainCdtEdgeClass {
     Tunnel,
 }
 
+// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
+// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TerrainCdtRoadBandKind {
     Carriageway,
@@ -206,6 +209,9 @@ pub(crate) enum TerrainCdtEarthworkSupportPolicy {
     TunnelVisiblePortals,
 }
 
+// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
+// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TerrainCdtNodePieceKind {
     Terminal,
@@ -219,6 +225,9 @@ pub(crate) struct TerrainCdtNodeFootprintBoundaryDirectSource {
     pub(crate) grade_authority_index: u64,
 }
 
+// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
+// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum TerrainCdtNodeFootprintBoundaryVertexSource {
     Direct(TerrainCdtNodeFootprintBoundaryDirectSource),
@@ -240,6 +249,9 @@ pub(crate) struct TerrainCdtNodeFootprintBoundarySegmentSource {
     pub(crate) end: TerrainCdtNodeFootprintBoundaryVertexSource,
 }
 
+// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
+// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TerrainCdtRoadBoundarySource {
     SpanSupportBoundary {
@@ -584,16 +596,6 @@ pub(crate) struct TerrainCdtStats {
 pub(crate) enum TerrainCdtTieInKind {
     OrdinaryTerrain,
     RetainingWall,
-}
-
-#[cfg(test)]
-impl TerrainCdtTieInKind {
-    pub(crate) fn debug_code(self) -> i32 {
-        match self {
-            Self::OrdinaryTerrain => 0,
-            Self::RetainingWall => 1,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

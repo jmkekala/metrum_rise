@@ -8,7 +8,7 @@ use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::network::TransitNetwork;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
 use metrum_rise::simulation::network::render::NetworkMeshData;
-use metrum_rise::simulation::network::roadbed::SurfaceChunkKey;
+use metrum_rise::simulation::network::roadbed::{PieceId, SurfaceChunkKey};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -104,10 +104,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
             },
         );
 
-        fixture
-            .network
-            .roadbed
-            .mark_edge_dirty(&fixture.graph, fixture.local_edge);
+        fixture.network.roadbed.mark_edge_dirty(fixture.local_edge);
         let dirty_warmup = fixture
             .network
             .try_generate_mesh_chunks(&fixture.graph, &fixture.terrain, &fixture.target_chunks)
@@ -126,7 +123,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                     fixture
                         .network
                         .roadbed
-                        .mark_edge_dirty(black_box(&fixture.graph), fixture.local_edge);
+                        .mark_edge_dirty(black_box(fixture.local_edge));
                     let chunks = black_box(&mut fixture.network)
                         .try_generate_mesh_chunks(
                             black_box(&fixture.graph),
@@ -188,22 +185,15 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
 
     let mut network = TransitNetwork::new_for_world(&config);
     network.lane_system.rebuild(&mut graph);
-    assert!(network.roadbed.compile_dirty(&graph));
+    network.roadbed.compile_dirty(&graph);
+    assert!(network.roadbed.is_current());
 
-    let target_chunks = network
-        .roadbed
-        .surface_chunk_cache()
-        .iter()
-        .filter_map(|(&chunk, entry)| entry.edge_indices.contains(&local_edge).then_some(chunk))
-        .chain(
-            network
-                .roadbed
-                .earthwork_chunk_cache()
-                .iter()
-                .filter_map(|(&chunk, entry)| {
-                    entry.edge_indices.contains(&local_edge).then_some(chunk)
-                }),
-        )
+    let roadbed = &network.roadbed;
+    let chunk_pieces =
+        |chunk: SurfaceChunkKey| roadbed.pieces_in_bounds(roadbed.chunk_bounds(chunk));
+    let target_chunks = roadbed
+        .occupied_chunks()
+        .filter(|&chunk| chunk_pieces(chunk).any(|(piece, _)| piece == PieceId::Span(local_edge)))
         .collect::<BTreeSet<_>>();
     assert_eq!(
         target_chunks,
@@ -211,60 +201,22 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
         "a typical central edit must stay wholly inside one terrain-aligned render chunk"
     );
 
-    let occupied_chunks = network
-        .roadbed
-        .surface_chunk_cache()
-        .keys()
-        .chain(network.roadbed.earthwork_chunk_cache().keys())
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .len();
+    let occupied_chunks = roadbed.occupied_chunks().count();
     assert_eq!(
         occupied_chunks,
         distant_chunks + 1,
         "each isolated fixture road must occupy exactly one distinct chunk"
     );
 
-    let target_edge_count = target_chunks
+    let target_pieces = target_chunks
         .iter()
-        .flat_map(|chunk| {
-            network
-                .roadbed
-                .surface_chunk_cache()
-                .get(chunk)
-                .into_iter()
-                .flat_map(|entry| entry.edge_indices.iter().copied())
-                .chain(
-                    network
-                        .roadbed
-                        .earthwork_chunk_cache()
-                        .get(chunk)
-                        .into_iter()
-                        .flat_map(|entry| entry.edge_indices.iter().copied()),
-                )
-        })
-        .collect::<BTreeSet<_>>()
-        .len();
-    let target_node_count = target_chunks
+        .flat_map(|&chunk| chunk_pieces(chunk).map(|(piece, _)| piece))
+        .collect::<BTreeSet<_>>();
+    let target_edge_count = target_pieces
         .iter()
-        .flat_map(|chunk| {
-            network
-                .roadbed
-                .surface_chunk_cache()
-                .get(chunk)
-                .into_iter()
-                .flat_map(|entry| entry.node_ids.iter().copied())
-                .chain(
-                    network
-                        .roadbed
-                        .earthwork_chunk_cache()
-                        .get(chunk)
-                        .into_iter()
-                        .flat_map(|entry| entry.node_ids.iter().copied()),
-                )
-        })
-        .collect::<BTreeSet<_>>()
-        .len();
+        .filter(|piece| matches!(piece, PieceId::Span(_)))
+        .count();
+    let target_node_count = target_pieces.len() - target_edge_count;
 
     let expected_chunks = network
         .try_generate_mesh_chunks(&graph, &terrain, &target_chunks)

@@ -1121,9 +1121,7 @@ mod tests {
             "the authored lake must survive world instantiation"
         );
         assert!(
-            core.transit_network
-                .roadbed
-                .is_current(),
+            core.transit_network.roadbed.is_current(),
             "the replacement empty road surface must be published after authored water rebuild"
         );
         assert!(core.cached_road_mesh_chunks.is_empty());

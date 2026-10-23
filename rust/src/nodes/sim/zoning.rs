@@ -107,7 +107,9 @@ impl SimCore {
     fn prepare_cell_site_queries(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
     }
 
     /// Captures the authoring inputs that can invalidate a retained cell gesture or overlay.
@@ -116,9 +118,7 @@ impl SimCore {
             self.road_tool_surface_generation,
             self.heightmap.source_generation(),
             self.heightmap.visual_generation(),
-            self.transit_network
-                .roadbed
-                .generation(),
+            self.transit_network.roadbed.generation(),
             self.allocator.building_ref_revision(),
             self.allocator.registry.revision(),
             self.zoning.overlay_revision(),

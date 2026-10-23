@@ -1190,7 +1190,9 @@ impl SimCore {
             }
         }
         let compile_start = Instant::now();
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
         let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
         let execute_start = Instant::now();
         let execution = self.allocator.execute_single_demand_spawn_action(
@@ -1522,7 +1524,9 @@ impl SimCore {
             .then(Instant::now);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
         self.demand.prepare_planning_setup(
             slot,
@@ -1567,7 +1571,9 @@ impl SimCore {
             .then(Instant::now);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
         self.demand
             .set_admission_candidate_hour(day_index, minute_of_day);
         self.refresh_demand_construction_queue(day_index, minute_of_day);

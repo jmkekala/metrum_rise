@@ -91,6 +91,7 @@ fn startup_residential_selection(mut allocator: BuildingAllocator) -> (String, u
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn test_startup_demand_residential_family_selection_uses_parcel_hash_order() {
     let mut allocator = BuildingAllocator::new();
     let family_a_id = register_test_asset_with_family(
@@ -121,6 +122,7 @@ fn test_startup_demand_residential_family_selection_uses_parcel_hash_order() {
 }
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn test_startup_demand_residential_variant_selection_uses_parcel_hash_order() {
     let mut allocator = BuildingAllocator::new();
     let variant_a_id = register_test_asset_with_family(

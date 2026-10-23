@@ -284,7 +284,9 @@ impl SimCore {
         }
         let cell_m = self.config.zone_cell_m;
         self.allocator.prepare_building_site_query_index(cell_m);
-        self.transit_network.roadbed.compile_dirty(&self.region_graph);
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
         let catalog = self.demand.shared_runtime_catalog();
         let mut applied_any = false;
         let mut taken = 0;

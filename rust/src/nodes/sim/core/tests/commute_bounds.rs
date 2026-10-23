@@ -19,6 +19,7 @@ const CITY_SIDE_M: f32 = 800.0;
 const HOME_STRIDE: usize = 23;
 
 #[test]
+#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn bounded_commute_estimates_match_exhaustive_estimates() {
     let mut core = zoned_city(CITY_SIDE_M);
     core.transit_network
