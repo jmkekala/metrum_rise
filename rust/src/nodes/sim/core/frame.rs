@@ -220,7 +220,7 @@ impl SimCore {
         let pathing_start = Instant::now();
         record_crash_phase_for_core(self, "lane surface sync");
         self.transit_network
-            .sync_new_lane_heights(&self.region_graph, &self.heightmap);
+            .sync_new_lane_heights(&self.region_graph);
         record_crash_phase_for_core(self, "pathing rebuild");
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);

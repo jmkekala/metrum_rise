@@ -12,11 +12,8 @@ use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
-use crate::simulation::network::surface::{
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem,
-};
+use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::TransitType;
-use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Color, Vector2, Vector3};
 use std::collections::{BTreeSet, HashMap};
 
@@ -66,8 +63,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
     lane_system: &LaneSystem,
-    road_surface: &RoadSurfaceSystem,
-    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
     let crosswalk_endpoint_flags =
@@ -83,14 +79,9 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
 
-        let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {
+        let Some(sections) = roadbed.sections(edge_idx).filter(|s| s.len() >= 2) else {
             continue;
         };
-        let ranges =
-            road_surface.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
-        if ranges.is_empty() {
-            continue;
-        }
         let marking_s_range = edge_lane_marking_s_range(
             edge,
             sections,
@@ -107,26 +98,14 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         };
         for divider in 1..total_lanes {
-            for (start_index, end_index) in &ranges {
-                if *end_index <= *start_index {
-                    continue;
-                }
-                emit_lane_marking_sections(
-                    mesh,
-                    &sections[*start_index..=*end_index],
-                    divider,
-                    total_lanes,
-                    marking_s_range,
-                    line,
-                );
-            }
+            emit_lane_marking_sections(mesh, sections, divider, total_lanes, marking_s_range, line);
         }
     }
 }
 
 fn emit_lane_marking_sections(
     mesh: &mut NetworkMeshData,
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
     divider: usize,
     total_lanes: usize,
     marking_s_range: (f32, f32),
@@ -184,7 +163,7 @@ fn emit_lane_marking_sections(
 
 fn edge_lane_marking_s_range(
     edge: &Edge,
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
     crosswalk_endpoint_flags: (bool, bool),
 ) -> (f32, f32) {
     let total_s = sections.last().map_or(0.0, |section| section.s_m);
@@ -332,11 +311,11 @@ fn walk_edge_geometry_from_end(
     }
 }
 
-fn carriageway_bounds(section: &RoadSurfaceSection) -> Option<(f32, f32)> {
+fn carriageway_bounds(section: &RoadSection) -> Option<(f32, f32)> {
     let mut carriageway = section
         .bands
         .iter()
-        .filter(|band| band.kind == RoadSurfaceBandKind::Carriageway);
+        .filter(|band| band.kind == BandKind::Carriageway);
     let first_band = carriageway.next()?;
     let last_band = carriageway.next_back().unwrap_or(first_band);
     Some((first_band.lateral_start_m, last_band.lateral_end_m))

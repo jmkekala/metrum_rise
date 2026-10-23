@@ -8,7 +8,7 @@ use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::network::TransitNetwork;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
 use metrum_rise::simulation::network::render::NetworkMeshData;
-use metrum_rise::simulation::network::surface::SurfaceChunkKey;
+use metrum_rise::simulation::network::roadbed::SurfaceChunkKey;
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -106,7 +106,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
 
         fixture
             .network
-            .road_surface
+            .roadbed
             .mark_edge_dirty(&fixture.graph, fixture.local_edge);
         let dirty_warmup = fixture
             .network
@@ -125,7 +125,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                 b.iter(|| {
                     fixture
                         .network
-                        .road_surface
+                        .roadbed
                         .mark_edge_dirty(black_box(&fixture.graph), fixture.local_edge);
                     let chunks = black_box(&mut fixture.network)
                         .try_generate_mesh_chunks(
@@ -188,16 +188,16 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
 
     let mut network = TransitNetwork::new_for_world(&config);
     network.lane_system.rebuild(&mut graph);
-    assert!(network.road_surface.compile_dirty(&graph, &terrain));
+    assert!(network.roadbed.compile_dirty(&graph));
 
     let target_chunks = network
-        .road_surface
+        .roadbed
         .surface_chunk_cache()
         .iter()
         .filter_map(|(&chunk, entry)| entry.edge_indices.contains(&local_edge).then_some(chunk))
         .chain(
             network
-                .road_surface
+                .roadbed
                 .earthwork_chunk_cache()
                 .iter()
                 .filter_map(|(&chunk, entry)| {
@@ -212,10 +212,10 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
     );
 
     let occupied_chunks = network
-        .road_surface
+        .roadbed
         .surface_chunk_cache()
         .keys()
-        .chain(network.road_surface.earthwork_chunk_cache().keys())
+        .chain(network.roadbed.earthwork_chunk_cache().keys())
         .copied()
         .collect::<BTreeSet<_>>()
         .len();
@@ -229,14 +229,14 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
         .iter()
         .flat_map(|chunk| {
             network
-                .road_surface
+                .roadbed
                 .surface_chunk_cache()
                 .get(chunk)
                 .into_iter()
                 .flat_map(|entry| entry.edge_indices.iter().copied())
                 .chain(
                     network
-                        .road_surface
+                        .roadbed
                         .earthwork_chunk_cache()
                         .get(chunk)
                         .into_iter()
@@ -249,14 +249,14 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
         .iter()
         .flat_map(|chunk| {
             network
-                .road_surface
+                .roadbed
                 .surface_chunk_cache()
                 .get(chunk)
                 .into_iter()
                 .flat_map(|entry| entry.node_ids.iter().copied())
                 .chain(
                     network
-                        .road_surface
+                        .roadbed
                         .earthwork_chunk_cache()
                         .get(chunk)
                         .into_iter()

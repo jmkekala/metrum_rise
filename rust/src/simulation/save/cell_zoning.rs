@@ -11,7 +11,7 @@ use super::{
 use crate::simulation::agriculture::{AgricultureSystem, PolygonFootprint};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::zoning::cells::{
     CellCurveSource, CellKey, CellLot, GridFrame, RoadCellAlignment,
 };
@@ -242,7 +242,7 @@ pub(super) fn validate_reservations(
     zoning: &ZoningSystem,
     allocator: &BuildingAllocator,
     agriculture: &AgricultureSystem,
-    roads: &RoadSurfaceSystem,
+    roads: &RoadbedSystem,
 ) -> SaveLoadResult<()> {
     if !zoning.cells.has_reservations() {
         return Ok(());
@@ -272,20 +272,16 @@ pub(super) fn validate_reservations(
             "saved explicit site overlaps reserved zoning cells",
         ));
     }
-    let overlaps = |polygon| zoning.cells_overlap_road_polygon(polygon);
-    if roads
-        .compiled_visual_span_pieces
-        .par_iter()
-        .any(|(_, piece)| {
-            piece
-                .surface_polygons()
-                .any(|quad| zoning.cells_overlap_road_points_world(quad.points()))
-        })
-        || roads
-            .compiled_visual_node_pieces
-            .par_iter()
-            .any(|(_, piece)| piece.surface_polygons().any(overlaps))
-    {
+    // One-time load pass over every visible road triangle.
+    let world = [
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+    ];
+    if roads.any_top_triangle_in_bounds(world, |triangle, _| {
+        zoning.cells_overlap_road_points_world(&triangle)
+    }) {
         return Err(SaveLoadError::custom(
             "saved road overlaps reserved zoning cells",
         ));

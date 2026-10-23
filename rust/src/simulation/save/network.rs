@@ -5,7 +5,6 @@
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
@@ -252,24 +251,20 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
 pub(super) fn rebuild_loaded_graph_runtime(
     graph: &mut RegionGraph,
     transit_network: &mut TransitNetwork,
-    terrain: &mut TerrainSystem,
 ) -> SaveLoadResult<()> {
     // Node positions, grades, physical lengths and junction clips are saved authority. Terrain
     // synchronization is an edit: running it here moves roads away from their restored parcels
     // and changes the boundary geometry consumed by the renderer.
-    transit_network.rebuild_all_terrain_earthworks(graph, terrain);
-    if transit_network
-        .road_surface
-        .published_generation_matches_source()
-    {
+    transit_network.rebuild_roadbed(graph);
+    if transit_network.roadbed.failed_nodes().is_empty() {
         return Ok(());
     }
     // Legacy saves can contain contradictory junction supports. Repair only rejected
     // grounded junctions using the edit planner's finalizer, before lane/agent restoration.
     // The source SQLite and terrain are not rewritten; valid saved profiles stay authoritative.
     let nodes = transit_network
-        .road_surface
-        .failed_node_ids()
+        .roadbed
+        .failed_nodes()
         .iter()
         .copied()
         .filter(|&node| {
@@ -287,28 +282,19 @@ pub(super) fn rebuild_loaded_graph_runtime(
         .collect::<std::collections::HashSet<_>>();
     if !edges.is_empty() {
         let changed = graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &edges, &edges);
-        transit_network.mark_surface_dirty_from_sets(graph, &changed, &nodes);
-        transit_network.rebuild_all_terrain_earthworks(graph, terrain);
+        transit_network.mark_surface_dirty_from_sets(&changed, &nodes);
+        transit_network.roadbed.compile_dirty(graph);
         crate::debug_log!(
             "save",
-            "loaded_junction_profile_repair nodes={} changed_edges={} compiled={}",
+            "loaded_junction_profile_repair nodes={} changed_edges={} failed_nodes={}",
             nodes.len(),
             changed.len(),
-            transit_network
-                .road_surface
-                .published_generation_matches_source()
+            transit_network.roadbed.failed_nodes().len()
         );
     }
-    if !transit_network
-        .road_surface
-        .published_generation_matches_source()
-    {
+    if let Some(node) = transit_network.roadbed.failed_nodes().first() {
         return Err(SaveLoadError::custom(format!(
-            "road surface load failed: {}",
-            transit_network
-                .road_surface
-                .last_compile_failure_label()
-                .unwrap_or("incomplete surface")
+            "road surface load failed: node {node} piece did not build"
         )));
     }
     Ok(())

@@ -152,14 +152,14 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         .restore_parcel_from_attachment(1, edge_idx, 1, 0.85, 20.0, 20.0, 0, &graph)
         .unwrap();
     let mut network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut network, &mut terrain).unwrap();
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut network).unwrap();
     network.lane_system.rebuild(&mut graph);
     assert_eq!(graph.node(start).pos, points[0]);
     assert_eq!(graph.node(end).pos, points[1]);
     assert_eq!(graph.edge(edge_idx).geometry, points);
     assert_eq!(graph.edge(edge_idx).physical_geometry, points);
     assert_eq!(graph.edge(edge_idx).physical_length, length);
-    assert_eq!(network.road_surface.compiled_visual_span_pieces().len(), 1);
+    assert_eq!(network.roadbed.compiled_visual_span_pieces().len(), 1);
     let parcel = &zoning.parcels()[0];
     let mut restored = ZoningSystem::new(&config);
     restored
@@ -2043,12 +2043,12 @@ fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
     let mut graph = network::load_graph(&conn).unwrap();
     let saved_edges = graph.edges().to_vec();
     let mut transit = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit, &mut terrain).unwrap();
-    assert!(transit.road_surface.published_generation_matches_source());
-    assert!(transit.road_surface.last_compile_failure_label().is_none());
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit).unwrap();
+    assert!(transit.roadbed.is_current());
+    assert!(transit.roadbed.last_compile_failure_label().is_none());
     assert!(
         transit
-            .road_surface
+            .roadbed
             .compiled_visual_node_pieces()
             .contains_key(&1)
     );

@@ -2,7 +2,8 @@
 
 //! Road-tool query helpers shared by Godot-facing bridge methods.
 
-use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
+use crate::simulation::network::road_edit::RoadPreviewValidation;
+use crate::simulation::network::roadbed::preview_candidate_roadbed_half_width_m;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::water::WaterSystem;
 use godot::prelude::Vector3;
@@ -22,12 +23,8 @@ pub(crate) fn validate_road_candidate_against_water(
     if !validation.is_valid || edge_class != EdgeClass::Standard || prepared_points.len() < 2 {
         return validation;
     }
-    let half_width_m = RoadSurfaceSystem::preview_candidate_roadbed_half_width_m(
-        prepared_points,
-        edge_class,
-        fwd_lanes,
-        bkw_lanes,
-    );
+    let half_width_m =
+        preview_candidate_roadbed_half_width_m(prepared_points, edge_class, fwd_lanes, bkw_lanes);
     if water.road_corridor_overlaps_visible_water(prepared_points, half_width_m) {
         return validation.with_invalid_reason(ROAD_WATER_REQUIRES_BRIDGE_REASON);
     }
@@ -37,7 +34,7 @@ pub(crate) fn validate_road_candidate_against_water(
 #[cfg(test)]
 mod tests {
     use super::{ROAD_WATER_REQUIRES_BRIDGE_REASON, validate_road_candidate_against_water};
-    use crate::simulation::network::surface::RoadSurfaceSystem;
+    use crate::simulation::network::roadbed::RoadbedSystem;
     use crate::simulation::network::types::EdgeClass;
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
@@ -47,7 +44,7 @@ mod tests {
     fn standard_road_candidate_crossing_water_requires_bridge() {
         let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let water = test_center_lake();
-        let surface = RoadSurfaceSystem::new(30.0);
+        let surface = RoadbedSystem::new(30.0);
         let preview = surface.compile_preview_surface(
             &[Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)],
             1,
@@ -73,7 +70,7 @@ mod tests {
     fn bridge_candidate_crossing_water_remains_valid() {
         let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let water = test_center_lake();
-        let surface = RoadSurfaceSystem::new(30.0);
+        let surface = RoadbedSystem::new(30.0);
         let preview = surface.compile_preview_surface(
             &[
                 Vector3::new(-30.0, 3.0, 0.0),
@@ -102,7 +99,7 @@ mod tests {
     fn standard_road_candidate_beside_water_remains_valid() {
         let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
         let water = test_center_lake();
-        let surface = RoadSurfaceSystem::new(30.0);
+        let surface = RoadbedSystem::new(30.0);
         let preview = surface.compile_preview_surface(
             &[
                 Vector3::new(-30.0, 0.0, 30.0),

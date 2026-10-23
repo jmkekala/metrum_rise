@@ -19,7 +19,7 @@ use crate::simulation::economy::households::{
     scaled_output_buffer_capacity_units_for_building,
 };
 use crate::simulation::extraction::{validate_player_polygon, validate_polygon_near_building};
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::work_area::{
     explicit_work_area_scale, remove_work_area_owner, top_up_explicit_work_area_startup_budget,
 };
@@ -152,7 +152,7 @@ impl AgricultureSystem {
         polygon_world: Vec<Vector2>,
         allocator: &mut BuildingAllocator,
         zoning: &ZoningSystem,
-        roads: &RoadSurfaceSystem,
+        roads: &RoadbedSystem,
     ) -> Result<FieldSiteSummary, String> {
         let area_m2 = self.validate_site(building_idx, &polygon_world, allocator, zoning, roads)?;
         let building = allocator
@@ -199,7 +199,7 @@ impl AgricultureSystem {
         polygon_world: &[Vector2],
         allocator: &BuildingAllocator,
         zoning: &ZoningSystem,
-        roads: &RoadSurfaceSystem,
+        roads: &RoadbedSystem,
     ) -> Result<f32, String> {
         let building = allocator
             .buildings

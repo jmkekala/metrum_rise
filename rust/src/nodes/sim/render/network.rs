@@ -6,7 +6,7 @@
 
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::{RoadSurfaceCompileReason, SurfaceChunkKey};
+use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,49 +20,23 @@ impl SimCore {
     pub(crate) fn precompute_road_mesh_data(&mut self) {
         let road_debug = debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::MeshPrecompute,
-        );
-        if !self
-            .transit_network
-            .road_surface
-            .published_generation_matches_source()
-        {
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        if !self.transit_network.roadbed.is_current() {
             return;
         }
         self.transit_network
-            .sync_new_lane_heights(&self.region_graph, &self.heightmap);
+            .sync_new_lane_heights(&self.region_graph);
         let mut target_chunks = BTreeSet::new();
         if self.road_mesh_full_replace {
-            target_chunks.extend(
-                self.transit_network
-                    .road_surface
-                    .surface_chunk_cache()
-                    .keys()
-                    .copied(),
-            );
-            target_chunks.extend(
-                self.transit_network
-                    .road_surface
-                    .earthwork_chunk_cache()
-                    .keys()
-                    .copied(),
-            );
+            target_chunks.extend(self.transit_network.roadbed.occupied_chunks());
             target_chunks.extend(self.cached_road_mesh_chunks.keys().copied());
         } else {
             target_chunks.extend(
                 self.transit_network
-                    .road_surface
-                    .last_rebuilt_surface_chunks
-                    .iter()
-                    .copied(),
-            );
-            target_chunks.extend(
-                self.transit_network
-                    .road_surface
-                    .last_rebuilt_terrain_chunks
+                    .roadbed
+                    .last_changed_chunks()
                     .iter()
                     .copied(),
             );
@@ -322,49 +296,30 @@ impl SimCore {
         dict
     }
 
-    /// Returns compiled road-surface debug line data for editor visualization.
+    /// Returns road-surface debug line data for editor visualization. `ROAD-68-A` has no pieces,
+    /// so every line list is empty.
     pub fn get_road_surface_debug_data_internal(&mut self) -> VarDictionary {
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::MeshPrecompute,
-        );
-        let debug = self
-            .transit_network
-            .road_surface
-            .build_debug_line_data(&self.region_graph, &self.heightmap);
-
         let mut dict = VarDictionary::new();
-        dict.set(
+        for key in [
             "section_lines",
-            PackedVector3Array::from_iter(debug.section_lines),
-        );
-        dict.set(
             "band_lines",
-            PackedVector3Array::from_iter(debug.band_lines),
-        );
-        dict.set(
             "piece_boundary_lines",
-            PackedVector3Array::from_iter(debug.piece_boundary_lines),
-        );
-        dict.set(
             "earthwork_chunk_lines",
-            PackedVector3Array::from_iter(debug.earthwork_chunk_lines),
-        );
+        ] {
+            dict.set(key, PackedVector3Array::new());
+        }
         dict
     }
 
     /// Returns a JSON debug dump of final road-surface triangles at one world-space probe point.
+    /// `ROAD-68-A` has no pieces, so the dump lists none.
     pub fn get_road_surface_probe_debug_internal(&mut self, world_pos: Vector3) -> GString {
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::MeshPrecompute,
-        );
-        let dump = self
-            .transit_network
-            .road_surface
-            .build_road_surface_probe_debug_dump(&self.region_graph, &self.heightmap, world_pos);
-        GString::from(dump.as_str())
+        GString::from(
+            format!(
+                "{{\"probe\":[{},{},{}],\"triangles\":[]}}",
+                world_pos.x, world_pos.y, world_pos.z
+            )
+            .as_str(),
+        )
     }
 }

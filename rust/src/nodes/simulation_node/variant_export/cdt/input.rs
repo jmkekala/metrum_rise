@@ -64,94 +64,6 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBuildPlan {
 }
 
 impl SimulationNode {
-    /// Assembles planned road and captured site inputs for production CDT/patch compilation.
-    /// This is a candidate: fresh ownership/site inputs still govern commit acceptance.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn planned_road_terrain_patch_input(
-        terrain: &impl TerrainVisualSource,
-        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        loops: &[TerrainCdtRoadLoop],
-        source_count: usize,
-        road_owned: bool,
-        query_margin_m: f32,
-        render_step_m: f32,
-        sites: Option<&BuildingSiteTerrainSnapshot>,
-        roads: crate::simulation::network::surface::RoadSurfaceView<'_>,
-    ) -> RefinedTerrainPatchBuildInput {
-        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
-            terrain.terrain(),
-            render_step_m,
-        );
-        let site_owned = sites.is_some_and(|sites| {
-            sites.has_building_site_for_world_bounds(
-                patch.world_origin_x - site_margin_m,
-                patch.world_origin_z - site_margin_m,
-                patch.world_origin_x + patch.world_size_x + site_margin_m,
-                patch.world_origin_z + patch.world_size_z + site_margin_m,
-            )
-        });
-        // Fresh commit sends ordinary patches directly to the regular-terrain exporter. A
-        // padded query hit must not claim them, nor may empty CDT output release actual owners.
-        let engineered = road_owned || site_owned;
-        let (loops, source_count) = if engineered {
-            (loops, source_count)
-        } else {
-            (&[][..], 0)
-        };
-        let site_loops = sites
-            .filter(|_| engineered)
-            .map(|sites| {
-                sites.terrain_cdt_site_loops_for_world_bounds(
-                    patch.world_origin_x - query_margin_m,
-                    patch.world_origin_z - query_margin_m,
-                    patch.world_origin_x + patch.world_size_x + query_margin_m,
-                    patch.world_origin_z + patch.world_size_z + query_margin_m,
-                )
-            })
-            .unwrap_or_default();
-        let site_loop_count = site_loops.len();
-        let combined;
-        let all_loops = if site_loops.is_empty() {
-            loops
-        } else {
-            combined = loops.iter().cloned().chain(site_loops).collect::<Vec<_>>();
-            &combined
-        };
-        let plan = Self::terrain_cdt_window_build_inputs(
-            terrain,
-            patch,
-            all_loops,
-            render_step_m,
-            sites.map(|sites| TerrainCdtSiteGradingContext {
-                source: TerrainCdtSiteGradingSource::Snapshot(sites),
-                roads,
-            }),
-            None,
-        );
-        RefinedTerrainPatchBuildInput {
-            site_surfaces: sites.map_or_else(Vec::new, |sites| sites.paving_surfaces()),
-            key: Self::refined_patch_cache_key(patch.patch_x, patch.patch_z, render_step_m),
-            // The authoritative patch payload revision is assigned after exact commit matching.
-            surface_generation: 0,
-            patch: patch.clone(),
-            previous_patch: None,
-            windows: plan.windows,
-            reused_windows: plan.reused_windows,
-            input_clip_loop_count: plan.represented_road_loop_count,
-            omitted_margin_clip_loop_count: plan.omitted_margin_loop_count,
-            expected_road_clip_fingerprints: plan.expected_road_clip_fingerprints,
-            expected_site_clip_fingerprints: plan.expected_site_clip_fingerprints,
-            requires_engineered_refinement: engineered,
-            requires_road_clipping: road_owned || source_count > 0 || !loops.is_empty(),
-            clip_source_count: source_count + site_loop_count,
-            road_clip_source_count: source_count,
-            road_clip_loop_count: loops.len(),
-            site_clip_loop_count: site_loop_count,
-            clip_error_label: None,
-            clip_query_margin_m: query_margin_m,
-            derive_clip_counts_from_windows: false,
-        }
-    }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs(
         terrain: &impl TerrainVisualSource,
@@ -305,7 +217,7 @@ impl SimulationNode {
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         graph: &crate::simulation::network::graph::RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &crate::simulation::network::roadbed::RoadbedSystem,
         sites: &BuildingSiteTerrainSnapshot,
         tile_keys: &[(i64, i64)],
         render_step_m: f32,
@@ -337,8 +249,6 @@ impl SimulationNode {
             .filter_map(|tile_ids| {
                 let bounds = Self::terrain_cdt_tile_group_bounds(patch, &tile_ids)?;
                 let query = Self::road_clip_loop_query_for_snapshot(
-                    graph,
-                    road_surface,
                     sites,
                     bounds.0 - query_margin_m,
                     bounds.1 - query_margin_m,
@@ -439,7 +349,7 @@ impl SimulationNode {
                     safe_render_step_m,
                     Some(TerrainCdtSiteGradingContext {
                         source: TerrainCdtSiteGradingSource::Snapshot(sites),
-                        roads: crate::simulation::network::surface::RoadSurfaceView::new(
+                        roads: crate::simulation::buildings::allocator::SiteRoads::new(
                             graph,
                             road_surface,
                         ),
@@ -532,30 +442,19 @@ impl SimulationNode {
         render_step_m: f32,
     ) -> Option<TerrainCdtTileContributor> {
         let road_loops = std::slice::from_ref(&road_loop);
-        let grading_margin_m = RoadSurfaceSystem::terrain_cdt_required_grading_margin_m(
-            terrain,
-            road_loops,
+        // Roads add no loops until `ROAD-68-D`, which also restores their grading envelope.
+        // Building-site loops take the base sample margin and no roadbed guides.
+        let grading_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            terrain.terrain(),
             render_step_m,
         );
         let influence_bounds =
             Self::terrain_cdt_local_sample_bounds_with_margin(patch, road_loops, grading_margin_m)?;
-        let mut guide_samples = Vec::new();
-        let mut guide_constraints = Vec::new();
-        let mut sample_keys = HashSet::new();
-        RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope_with_margin(
-            terrain,
-            road_loops,
-            render_step_m,
-            grading_margin_m,
-            &mut guide_samples,
-            &mut guide_constraints,
-            &mut sample_keys,
-        );
         Some(TerrainCdtTileContributor {
             road_loop: Arc::new(road_loop),
             influence_bounds,
-            guide_samples,
-            guide_constraints,
+            guide_samples: Vec::new(),
+            guide_constraints: Vec::new(),
         })
     }
 
@@ -689,17 +588,6 @@ impl SimulationNode {
         site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
     ) -> TerrainCdtInput {
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        let mut guide_samples = Vec::new();
-        let mut guide_constraints = Vec::new();
-        let mut sample_keys = HashSet::new();
-        RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
-            terrain,
-            road_loops,
-            safe_render_step_m,
-            &mut guide_samples,
-            &mut guide_constraints,
-            &mut sample_keys,
-        );
         let patch_model =
             Self::terrain_cdt_patch_for_bounds(terrain, bounds.0, bounds.1, bounds.2, bounds.3);
         let clipped_loops = road_loops
@@ -712,8 +600,8 @@ impl SimulationNode {
             clipped_loops,
             safe_render_step_m,
             bounds,
-            guide_samples,
-            guide_constraints,
+            Vec::new(),
+            Vec::new(),
             site_grading,
         )
     }
@@ -1603,11 +1491,8 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
     ) -> Option<(f32, f32, f32, f32)> {
-        let margin_m = RoadSurfaceSystem::terrain_cdt_required_grading_margin_m(
-            terrain,
-            road_loops,
-            render_step_m,
-        );
+        let margin_m =
+            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain.terrain(), render_step_m);
         Self::terrain_cdt_local_sample_bounds_for_world_bounds_with_margin(
             patch_bounds,
             road_loops,

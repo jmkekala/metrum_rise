@@ -300,7 +300,6 @@ pub(super) fn commit_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            edit_plan: None,
         },
         Instant::now(),
         Default::default(),

@@ -308,7 +308,7 @@ fn perf_contract_phase() {
             &core.transit_network,
             &mut core.logistics,
             crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-                road_surface: &core.transit_network.road_surface,
+                road_surface: &core.transit_network.roadbed,
                 terrain: &core.heightmap,
             },
             60,

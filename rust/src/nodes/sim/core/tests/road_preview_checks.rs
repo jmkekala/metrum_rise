@@ -15,7 +15,6 @@ fn compile_preview(core: &SimCore, request_id: u64) -> RoadPreviewSnapshot {
     super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id,
             surface_generation: core.road_tool_surface_generation,
@@ -96,8 +95,8 @@ fn dense_four_way_preview_fixture() -> SimCore {
     core.precompute_road_mesh_data();
     assert!(
         core.transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
     );
     core.zoning.generate_cells(
         &core.region_graph,
@@ -140,7 +139,6 @@ fn code_17_four_way_preview_stream_keeps_live_validation_local_and_commit_exact(
         let preview = super::super::road_preview::compile_road_preview_from_context(
             &context,
             RoadPreviewRequest {
-                enqueued_at: None,
                 include_terrain: false,
                 request_id,
                 surface_generation: generation,

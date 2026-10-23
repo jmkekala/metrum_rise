@@ -10,11 +10,7 @@ use super::frame::{
     run_sim_phase,
 };
 use super::road_commit::RoadCommitRequest;
-use super::road_edit_plan::RoadEditPlan;
-use super::road_preview::{
-    PublishedRoadPreviewChecks, RoadPreviewSnapshot, RoadPreviewWorkerContext,
-    RoadToolQuerySnapshot, road_tool_snapshots_from_core,
-};
+use super::road_preview::{RoadToolQuerySnapshot, road_tool_snapshot_from_core};
 use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
@@ -55,8 +51,6 @@ pub(crate) enum SimCommand {
         bkw_lanes: i32,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
-        /// Successful exact preview tied to the same immutable road-surface generation.
-        edit_plan: Option<Arc<RoadEditPlan>>,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
@@ -75,26 +69,19 @@ pub(crate) enum SimCommand {
 
 // Parallel rebuilds: they run in the shared pool, as every phase under the core lock does
 // (CODE-17). The lock stays on this thread; a pool worker never waits for it (`SIM-01`).
-fn finalize_network_render_products(
-    core: &mut SimCore,
-) -> Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)> {
+fn finalize_network_render_products(core: &mut SimCore) -> Option<RoadToolQuerySnapshot> {
     crate::thread_pools::install(|| {
         core.rebuild_network_surface_terrain_internal();
         core.precompute_road_mesh_data();
         core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        road_tool_snapshots_from_core(core)
+        road_tool_snapshot_from_core(core)
     })
 }
 
-fn publish_road_tool_snapshots(
-    road_preview_context: &RwLock<RoadPreviewWorkerContext>,
+fn publish_road_tool_snapshot(
     road_query_snapshot: &RwLock<RoadToolQuerySnapshot>,
-    preview_context: RoadPreviewWorkerContext,
     query_snapshot: RoadToolQuerySnapshot,
 ) {
-    *road_preview_context
-        .write()
-        .expect("road preview context lock poisoned") = preview_context;
     *road_query_snapshot
         .write()
         .expect("road query snapshot lock poisoned") = query_snapshot;
@@ -111,15 +98,11 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
 /// Movement runs at ~60 Hz; queued edits wake the thread independently of that cadence.
 /// Movement ticks and structural edits own the core mutex while they execute. Render-facing APIs consume
 /// immutable snapshots or use nonblocking acquisition, and snapshot publication occurs
-/// after releasing the core mutex. Each frame also publishes the current road preview's live
-/// checks under the core mutex, for preview polls that find it held.
+/// after releasing the core mutex.
 pub(crate) fn run_sim_thread(
     core: Arc<Mutex<SimCore>>,
     snapshot: Arc<RwLock<RenderSnapshot>>,
-    road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
     road_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
-    road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
-    road_preview_checks: Arc<PublishedRoadPreviewChecks>,
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
 ) {
     let target = Duration::from_micros(16_667); // ~60 Hz
@@ -193,7 +176,7 @@ pub(crate) fn run_sim_thread(
                 Ok(SimCommand::Undo) => {
                     commands_processed += 1;
                     undo_commands += 1;
-                    let road_snapshots = {
+                    let road_snapshot = {
                         let mut core = core.lock().expect("simulation core lock poisoned");
                         record_crash_command_for_core(&core, CrashCommand::Undo);
                         record_crash_phase_for_core(&core, "undo command");
@@ -207,19 +190,14 @@ pub(crate) fn run_sim_thread(
                             None
                         }
                     };
-                    if let Some((preview_context, query_snapshot)) = road_snapshots {
-                        publish_road_tool_snapshots(
-                            &road_preview_context,
-                            &road_query_snapshot,
-                            preview_context,
-                            query_snapshot,
-                        );
+                    if let Some(query_snapshot) = road_snapshot {
+                        publish_road_tool_snapshot(&road_query_snapshot, query_snapshot);
                     }
                 }
                 Ok(SimCommand::Bulldoze { target }) => {
                     commands_processed += 1;
                     bulldoze_commands += 1;
-                    let road_snapshots = {
+                    let road_snapshot = {
                         let mut core = core.lock().expect("simulation core lock poisoned");
                         record_crash_command_for_core(&core, CrashCommand::Bulldoze);
                         record_crash_phase_for_core(&core, "bulldoze command");
@@ -233,13 +211,8 @@ pub(crate) fn run_sim_thread(
                             None
                         }
                     };
-                    if let Some((preview_context, query_snapshot)) = road_snapshots {
-                        publish_road_tool_snapshots(
-                            &road_preview_context,
-                            &road_query_snapshot,
-                            preview_context,
-                            query_snapshot,
-                        );
+                    if let Some(query_snapshot) = road_snapshot {
+                        publish_road_tool_snapshot(&road_query_snapshot, query_snapshot);
                     }
                 }
                 Ok(SimCommand::AddRoad {
@@ -247,7 +220,6 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    edit_plan,
                     enqueued_at,
                     completion,
                 }) => {
@@ -282,19 +254,13 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
-                                edit_plan,
                             },
                             road_total,
                             edit_metrics,
                         )
                     };
-                    if let Some((preview_context, query_snapshot)) = outcome.road_snapshots {
-                        publish_road_tool_snapshots(
-                            &road_preview_context,
-                            &road_query_snapshot,
-                            preview_context,
-                            query_snapshot,
-                        );
+                    if let Some(query_snapshot) = outcome.road_snapshot {
+                        publish_road_tool_snapshot(&road_query_snapshot, query_snapshot);
                     }
                     if crate::debug::Channel::Perf.enabled() {
                         println!(
@@ -410,11 +376,6 @@ pub(crate) fn run_sim_thread(
                 core.build_snapshot_reusing(available_snapshot)
             });
             snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
-            // Same state as the snapshot: a preview poll that finds the lock held reads these.
-            record_crash_phase_for_core(&core, "road preview checks");
-            run_sim_phase("road preview checks", || {
-                road_preview_checks.publish_frame(&core, &road_preview_result)
-            });
             lock_held_ms = lock_held_start.elapsed().as_secs_f64() * 1000.0;
             agent_count = snapshot.agent_count;
             pathfind_count = snapshot.pathfind_count;

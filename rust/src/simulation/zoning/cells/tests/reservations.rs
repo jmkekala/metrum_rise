@@ -69,7 +69,6 @@ fn road_contact_uses_precision_bound_without_allowing_millimetre_encroachment() 
 
 #[test]
 fn borrowed_road_checks_preserve_precise_concavity_contact_and_large_coordinates() {
-    use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
     use glam::DVec3;
 
     for origin in [DVec2::splat(-512.0), DVec2::new(10000.25, -10000.75)] {
@@ -104,27 +103,20 @@ fn borrowed_road_checks_preserve_precise_concavity_contact_and_large_coordinates
                 let owned =
                     PolygonFootprint::from_precise_points(points.into_iter().map(|p| [p.x, p.y]));
                 assert_eq!(owned.overlaps(&reserved), expected);
-                let polygon = RoadSurfaceVisualPolygon::from_parts(
-                    points
-                        .into_iter()
-                        .map(|p| DVec3::new(p.x, 0.0, p.y))
-                        .collect(),
-                    &[],
-                );
-                assert_eq!(zoning.cells_overlap_road_polygon(&polygon), expected);
-            }
-            let empty = RoadSurfaceVisualPolygon::from_parts(Vec::new(), &[]);
-            assert!(!zoning.cells_overlap_road_polygon(&empty));
-            // Global reservations must not cause a distant polygon to enter the exact path.
-            let distant = RoadSurfaceVisualPolygon::from_parts(
-                frame
-                    .corners(key.x + 1000, key.y + 1000)
+                let polygon: Vec<_> = points
                     .into_iter()
                     .map(|p| DVec3::new(p.x, 0.0, p.y))
-                    .collect(),
-                &[],
-            );
-            assert!(!zoning.cells_overlap_road_polygon(&distant));
+                    .collect();
+                assert_eq!(zoning.cells_overlap_road_points_world(&polygon), expected);
+            }
+            assert!(!zoning.cells_overlap_road_points_world(&[]));
+            // Global reservations must not cause a distant polygon to enter the exact path.
+            let distant: Vec<_> = frame
+                .corners(key.x + 1000, key.y + 1000)
+                .into_iter()
+                .map(|p| DVec3::new(p.x, 0.0, p.y))
+                .collect();
+            assert!(!zoning.cells_overlap_road_points_world(&distant));
         }
     }
 }

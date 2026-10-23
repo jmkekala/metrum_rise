@@ -1211,8 +1211,8 @@ impl SimulationNode {
             core.heightmap.source_generation(),
             core.heightmap.visual_generation(),
             core.transit_network
-                .road_surface
-                .compile_invalidation_generation,
+                .roadbed
+                .generation(),
             core.allocator.building_ref_revision(),
             core.allocator.registry.revision(),
             core.zoning.overlay_revision(),

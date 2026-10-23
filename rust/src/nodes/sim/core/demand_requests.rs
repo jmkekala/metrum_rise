@@ -33,7 +33,7 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::demand::{DemandBuildingActionPlan, LevelChangeRefusal};
 use crate::simulation::economy::households::QueuedAdmission;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::RoadSurfaceCompileReason;
+
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 
 #[cfg(doc)]
@@ -284,11 +284,7 @@ impl SimCore {
         }
         let cell_m = self.config.zone_cell_m;
         self.allocator.prepare_building_site_query_index(cell_m);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         let catalog = self.demand.shared_runtime_catalog();
         let mut applied_any = false;
         let mut taken = 0;
@@ -325,7 +321,7 @@ impl SimCore {
                     cell_m,
                     &self.region_graph,
                     BuildingSiteEnvironment {
-                        road_surface: &self.transit_network.road_surface,
+                        road_surface: &self.transit_network.roadbed,
                         terrain: &self.heightmap,
                     },
                 )

@@ -3,11 +3,15 @@
 //! Bridge underside concrete and terrain-supported pier emission.
 
 use super::super::{
-    MeshLayer, NetworkMeshData, concrete_color, push_triangle_preserving_winding_with_exact_normal,
+    MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color,
+    push_triangle_preserving_winding_with_exact_normal,
 };
+use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_boundary_world_point, triangle_is_too_small};
 use crate::config;
-use crate::simulation::network::surface::RoadSurfaceSection;
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::roadbed::{RoadSection, RoadbedSystem};
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 
@@ -18,10 +22,30 @@ const BRIDGE_PIER_HALF_WIDTH_M: f32 = 0.55;
 const BRIDGE_PIER_MIN_CLEARANCE_M: f32 = 1.0;
 const BRIDGE_PIER_SPACING_M: f32 = 28.0;
 
-pub(super) fn emit_compiled_bridge_concrete(
+/// Emits underside concrete and piers for every covered bridge edge that has a span piece.
+pub(in crate::simulation::network::render::road) fn emit_bridge_structures(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    roadbed: &RoadbedSystem,
+    terrain: &TerrainSystem,
+    coverage: &CompiledSurfaceCoverage,
+) {
+    for &edge_idx in &coverage.edge_indices {
+        if graph.edge(edge_idx).class != EdgeClass::Bridge {
+            continue;
+        }
+        let Some(sections) = roadbed.sections(edge_idx) else {
+            continue;
+        };
+        mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
+        emit_compiled_bridge_concrete(mesh, terrain, sections);
+    }
+}
+
+fn emit_compiled_bridge_concrete(
     mesh: &mut NetworkMeshData,
     terrain: &TerrainSystem,
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
 ) {
     if sections.len() < 2 {
         return;
@@ -81,7 +105,7 @@ pub(super) fn emit_compiled_bridge_concrete(
 fn emit_compiled_bridge_piers(
     mesh: &mut NetworkMeshData,
     terrain: &TerrainSystem,
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
 ) {
     let mut last_emitted_s_m = f32::NEG_INFINITY;
     for (section_index, section) in sections.iter().enumerate() {
@@ -106,7 +130,7 @@ fn emit_compiled_bridge_piers(
 
 fn emit_bridge_pier(
     mesh: &mut NetworkMeshData,
-    section: &RoadSurfaceSection,
+    section: &RoadSection,
     base_y: f32,
     top_y: f32,
 ) {
@@ -178,7 +202,7 @@ fn emit_bridge_pier_quad(mesh: &mut NetworkMeshData, vertices: [Vector3; 4], nor
     }
 }
 
-fn outer_surface_bounds(section: &RoadSurfaceSection) -> Option<((f32, f32), (f32, f32))> {
+fn outer_surface_bounds(section: &RoadSection) -> Option<((f32, f32), (f32, f32))> {
     let first_band = section.bands.first()?;
     let last_band = section.bands.last()?;
     Some((

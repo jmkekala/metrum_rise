@@ -3,7 +3,7 @@
 //! Lane geometry and junction-connectivity regression tests.
 
 use super::super::graph::{Edge, RegionGraph};
-use super::super::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem};
+use super::super::surface::{CURB_STEP_HEIGHT_M, RoadbedSystem};
 use super::super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use super::{LaneSystem, LaneType};
 use crate::simulation::terrain::TerrainSystem;
@@ -109,7 +109,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         }
     }
 
-    let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let mut road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
     road_surface.compile_dirty(&graph, &terrain);
     lanes.sync_heights_to_visible_surface(&graph, &terrain, &road_surface);
 
@@ -132,7 +132,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         .expect("sidewalk lane");
     for point in &sidewalk_lane.geometry {
         let expected_top_y = road_surface
-            .sample_visible_surface_height(&graph, &terrain, point.x, point.z)
+            .height_at(point.x, point.z)
             .expect("sidewalk lane vertex should be over visible sidewalk");
         assert!((point.y + CURB_STEP_HEIGHT_M - expected_top_y).abs() <= 1e-4);
     }
@@ -161,7 +161,7 @@ fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
         ..Default::default()
     });
     graph.rebuild_adjacency_list();
-    let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let mut road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
     road_surface.compile_dirty(&graph, &terrain);
 
     let mut lanes = LaneSystem::new();

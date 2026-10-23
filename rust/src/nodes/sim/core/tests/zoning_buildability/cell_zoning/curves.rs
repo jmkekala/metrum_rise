@@ -64,7 +64,7 @@ fn occupied_curved_grid_survives_native_branch_commit_and_undo() {
                 action,
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning(),

@@ -1728,7 +1728,7 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
                 &crate::simulation::core::config::WorldConfig::default(),
             );
             let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
-            let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
+            let mut surface = crate::simulation::network::roadbed::RoadbedSystem::new(512.0);
             surface.compile_dirty(&graph, &terrain);
             demand.publish_census_if_stale_for_test(
                 allocator,

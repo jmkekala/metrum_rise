@@ -36,8 +36,8 @@ pub(in crate::nodes::sim::core) fn farm_fixture() -> (SimCore, usize, Vec<Vector
         &mut core.allocator,
     );
     core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
+        .roadbed
+        .compile_dirty(&core.region_graph);
     let id = register_test_asset(&mut core.allocator, "field_test", ZoneType::Industrial);
     let mut manifest = core.allocator.registry.get(&id).unwrap().manifest.clone();
     let building = manifest.building.as_mut().unwrap();
@@ -349,7 +349,7 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
                     &core.zoning,
                     &core.region_graph,
                     BuildingSiteEnvironment {
-                        road_surface: &core.transit_network.road_surface,
+                        road_surface: &core.transit_network.roadbed,
                         terrain: &core.heightmap
                     }
                 )
@@ -487,8 +487,8 @@ fn field_removal_and_undo_refresh_cached_cells_beyond_the_farm_footprint() {
         &mut core.allocator,
     );
     core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
+        .roadbed
+        .compile_dirty(&core.region_graph);
     let distant_farm = core
         .place_industry_building_internal("test:field_test", 4_096.0, 8.0)
         .unwrap();

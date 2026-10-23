@@ -5,9 +5,9 @@
 use super::*;
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::surface::{
-    PreparedRoadInput, RoadPreviewTopologyReuse, RoadSurfaceSystem,
-};
+use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::network::road_edit::PreparedRoadInput;
+use crate::simulation::network::surface::{RoadPreviewTopologyReuse}; // TODO-ROAD68
 use crate::simulation::network::{build_surface_edge, types::EdgeClass};
 use crate::simulation::terrain::TerrainSystem;
 
@@ -33,7 +33,7 @@ impl Fixture {
         }
         let graph = RegionGraph::new();
         let mut network = TransitNetwork::new_with_surface_chunk_span(256.0);
-        network.road_surface.compile_dirty(&graph, &terrain);
+        network.roadbed.compile_dirty(&graph);
         Self {
             graph,
             network,
@@ -55,8 +55,8 @@ impl Fixture {
         RoadTopologyPlan,
         Option<RoadPreviewTopologyReuse>,
     ) {
-        let surface = &self.network.road_surface;
-        let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+        let surface = &self.network.roadbed;
+        let prepared = RoadbedSystem::prepare_road_input_for_tool(
             raw,
             &self.terrain,
             &self.graph,
@@ -97,7 +97,7 @@ impl Fixture {
             let nodes = HashSet::from([edge.start_node, edge.end_node]);
             self.graph.add_to_spatial_index(id);
             self.network
-                .mark_surface_dirty_from_sets(&self.graph, &HashSet::from([id]), &nodes);
+                .mark_surface_dirty_from_sets(&HashSet::from([id]), &nodes);
             self.network.bulk_dirty_edges.insert(id);
             self.network.mark_road_profile_authored(id);
         }
@@ -114,8 +114,8 @@ impl Fixture {
         self.network.bulk_load = false;
         assert!(
             self.network
-                .road_surface
-                .compile_dirty(&self.graph, &self.terrain)
+                .roadbed
+                .compile_dirty(&self.graph)
         );
     }
 
@@ -123,7 +123,7 @@ impl Fixture {
         let earthworks = plan
             .roads()
             .unwrap()
-            .compile_earthworks(&self.network.road_surface, &self.graph, &self.terrain)
+            .compile_earthworks(&self.network.roadbed, &self.graph, &self.terrain)
             .map(Arc::new);
         let old_node_count = self.graph.node_count();
         let old_edge_count = self.graph.edge_count();
@@ -132,7 +132,7 @@ impl Fixture {
             .adopt_road_topology_plan(&mut self.graph, plan, &self.zoning, &mut self.allocator)
             .unwrap();
         self.network
-            .road_surface
+            .roadbed
             .enqueue_planned_earthworks(earthworks);
         assert_eq!((result.profile_us, result.clips_us), (0, 0));
         let mut next_node = old_node_count as u32;
@@ -169,15 +169,15 @@ impl Fixture {
         }
         if let Some(reuse) = reuse {
             self.network
-                .road_surface
+                .roadbed
                 .enqueue_preview_topology_reuse(reuse);
         }
         assert!(
             self.network
-                .road_surface
-                .compile_dirty(&self.graph, &self.terrain),
+                .roadbed
+                .compile_dirty(&self.graph),
             "{:?}",
-            self.network.road_surface.last_compile_failure_label()
+            self.network.roadbed.last_compile_failure_label()
         );
         // A full rebuild of derived indices is an independent oracle, never the adoption path.
         let mut rebuilt = self.graph.clone();
@@ -211,11 +211,11 @@ fn assert_cold_geometry_matches(actual: &Fixture, cold: &Fixture) {
         assert_eq!((a.start_clip, a.end_clip), (b.start_clip, b.end_clip));
     }
     assert_eq!(
-        actual.network.road_surface.compiled_visual_span_pieces(),
-        cold.network.road_surface.compiled_visual_span_pieces()
+        actual.network.roadbed.compiled_visual_span_pieces(),
+        cold.network.roadbed.compiled_visual_span_pieces()
     );
-    let actual_nodes = actual.network.road_surface.compiled_visual_node_pieces();
-    let cold_nodes = cold.network.road_surface.compiled_visual_node_pieces();
+    let actual_nodes = actual.network.roadbed.compiled_visual_node_pieces();
+    let cold_nodes = cold.network.roadbed.compiled_visual_node_pieces();
     assert_eq!(actual_nodes.len(), cold_nodes.len());
     for (id, a) in actual_nodes {
         let b = &cold_nodes[id];
@@ -342,13 +342,13 @@ fn terminal_extension_adopts_existing_road_reprofile() {
         ));
         fixture
             .network
-            .road_surface
+            .roadbed
             .mark_edge_dirty(&fixture.graph, 0);
         assert!(
             fixture
                 .network
-                .road_surface
-                .compile_dirty(&fixture.graph, &fixture.terrain)
+                .roadbed
+                .compile_dirty(&fixture.graph)
         );
     }
     let (prepared, plan, reuse) =
@@ -378,8 +378,8 @@ fn adoption_preserves_remote_geometry_and_live_metadata_and_rejects_missing_sour
     ));
     fixture
         .network
-        .road_surface
-        .compile_dirty(&fixture.graph, &fixture.terrain);
+        .roadbed
+        .compile_dirty(&fixture.graph);
     let (_, plan, reuse) =
         fixture.plan(&[Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)]);
     assert!(plan.source_topology_ids().0.is_empty());
@@ -444,18 +444,18 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
     }
     graph.add_lane_connection(1, 0, 0, 0, 0);
     for id in [0, 1] {
-        fixture.network.road_surface.mark_edge_dirty(graph, id);
+        fixture.network.roadbed.mark_edge_dirty(graph, id);
     }
     assert!(
         fixture
             .network
-            .road_surface
-            .compile_dirty(graph, &fixture.terrain)
+            .roadbed
+            .compile_dirty(graph)
     );
     assert!(
         fixture
             .network
-            .road_surface
+            .roadbed
             .compiled_visual_node_pieces()
             .contains_key(&2)
     );
@@ -515,7 +515,7 @@ fn node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier() 
     assert!(
         !fixture
             .network
-            .road_surface
+            .roadbed
             .compiled_visual_node_pieces()
             .contains_key(&2),
         "merged-node surface ownership must be evicted even with a canonical-only finalization scope"

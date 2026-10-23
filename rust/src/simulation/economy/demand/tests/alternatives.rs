@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
 
 #[test]
@@ -300,7 +300,7 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             );
         }
         let terrain = TerrainSystem::new(4, 4);
-        let mut surface = RoadSurfaceSystem::new(512.0);
+        let mut surface = RoadbedSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
         demand.publish_census_if_stale_for_test(
             &allocator,
@@ -633,7 +633,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         network.rebuild_cch_and_check(&graph);
         let mut zoning = two_lots(&graph, ZoneType::Industrial);
         let terrain = TerrainSystem::new(4, 4);
-        let mut surface = RoadSurfaceSystem::new(512.0);
+        let mut surface = RoadbedSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
         let mut allocator = BuildingAllocator::new();
         let old = register_family_asset_with_economy_profile(
@@ -1115,7 +1115,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                 target_asset_id: target.clone(),
             },
         );
-        network.road_surface.compile_dirty(&graph, &terrain);
+        network.roadbed.compile_dirty(&graph);
         let mut blocked = terrain.clone();
         for z in 0..blocked.height {
             for x in 0..blocked.width {
@@ -1317,7 +1317,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             network.rebuild_cch_and_check(&graph);
             let mut zoning = two_lots(&graph, ZoneType::Industrial);
             let terrain = TerrainSystem::new(4, 4);
-            network.road_surface.compile_dirty(&graph, &terrain);
+            network.roadbed.compile_dirty(&graph);
             let mut allocator = BuildingAllocator::new();
             let old = register_family_asset_with_economy_profile(
                 &mut allocator,
@@ -1365,7 +1365,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                     &mut zoning,
                     &graph,
                     &network.lane_system,
-                    &network.road_surface,
+                    &network.roadbed,
                     &terrain,
                     &catalog,
                     &tuning,
@@ -1709,7 +1709,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
     network.lane_system.rebuild(&mut graph);
     network.rebuild_cch_and_check(&graph);
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(&graph, &terrain);
     let mut allocator = BuildingAllocator::new();
     let farm_asset =
@@ -3222,7 +3222,7 @@ fn plan_with_supply(
     let tuning = load_runtime_economy_tuning().unwrap();
     let snapshot = planning_snapshot(workers, sales);
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(graph, &terrain);
     let mut demand = DemandSystem::new();
     demand.plan_hour_for_test(
@@ -3317,7 +3317,7 @@ fn alternative_reservations_commit_the_winner_after_later_rejected_probes() {
     let zoning = two_lots(&graph, ZoneType::Industrial);
     let catalog = load_runtime_economy_catalog().unwrap();
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(&graph, &terrain);
     let environment = BuildingSiteEnvironment {
         road_surface: &surface,
@@ -3524,7 +3524,7 @@ fn scarce_workforce_can_select_smaller_factory_on_the_same_lot() {
     let zoning = industrial_zoning_run(&graph);
     let catalog = load_runtime_economy_catalog().unwrap();
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(&graph, &terrain);
     let candidates = allocator.collect_demand_spawn_candidates_by_use(
         &zoning,
@@ -3688,7 +3688,7 @@ fn upgrades_share_ready_workers_and_preserve_incumbent_job_reservations() {
             .set_export_expansion_available(true);
         let graph = graph_with_connected_border();
         let terrain = TerrainSystem::new(4, 4);
-        let mut surface = RoadSurfaceSystem::new(512.0);
+        let mut surface = RoadbedSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
         let mut funding = crate::simulation::economy::hiring::JobFunding::default();
         funding.capacities = vec![funded, funded];
@@ -4060,7 +4060,7 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
             .set_export_expansion_available(exports);
         let graph = graph_with_connected_border();
         let terrain = TerrainSystem::new(4, 4);
-        let mut surface = RoadSurfaceSystem::new(512.0);
+        let mut surface = RoadbedSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
         let mut funding = crate::simulation::economy::hiring::JobFunding::default();
         funding.see_operating_for_test(&allocator.buildings);
@@ -4166,7 +4166,7 @@ fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
             empty_zoning()
         };
         let terrain = TerrainSystem::new(4, 4);
-        let mut surface = RoadSurfaceSystem::new(512.0);
+        let mut surface = RoadbedSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
         let mut snapshot = vacant_admission_snapshot();
         snapshot.vacant_household_slots = 12;
@@ -4278,7 +4278,7 @@ fn an_available_lower_tier_cannot_hide_a_viable_upgrade() {
         .set_export_expansion_available(true);
     let graph = graph_with_connected_border();
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(&graph, &terrain);
     let mut demand = DemandSystem::new();
     demand.upgrade_action_credit.industrial = 1.0;
@@ -4387,7 +4387,7 @@ fn benchmark_active_level_change_planning() {
     let graph = graph_with_connected_border();
     let zoning = empty_zoning();
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(&graph, &terrain);
     for pairs in [1_024_usize, 8_192, 65_536] {
         let mut allocator = BuildingAllocator::new();
@@ -4899,7 +4899,7 @@ fn plan_slot(
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
     let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
+    let mut surface = RoadbedSystem::new(512.0);
     surface.compile_dirty(graph, &terrain);
     let fee = tuning.logistics.dispatch_fee_currency;
     demand.plan_private_building_actions(

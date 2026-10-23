@@ -81,7 +81,7 @@ pub(super) fn compiled_flat_test_terrain(
     graph: &RegionGraph,
 ) -> TerrainSystem {
     let terrain = flat_test_terrain();
-    network.road_surface.compile_dirty(graph, &terrain);
+    network.roadbed.compile_dirty(graph);
     terrain
 }
 

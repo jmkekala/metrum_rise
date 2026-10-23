@@ -1047,8 +1047,8 @@ fn planned_terrain_ownership_cannot_be_released_by_missing_clip_inputs() {
     let terrain = TerrainSystem::with_chunking(129, 129, 1.0, 65, 0.0);
     let patch = planner_test_patch(32.0, 32.0);
     let graph = crate::simulation::network::graph::RegionGraph::new();
-    let surface = RoadSurfaceSystem::new(64.0);
-    let roads = crate::simulation::network::surface::RoadSurfaceView::new(&graph, &surface);
+    let surface = RoadbedSystem::new(64.0);
+    let roads = crate::simulation::buildings::allocator::SiteRoads::new(&graph, &surface);
     let margin_only = vec![planner_test_loop(1, 50.0, 0.0, 54.0, 4.0)];
     for (source_count, loops, road_owned, failure) in [
         (0, &[][..], false, None),
@@ -1100,15 +1100,15 @@ fn planned_visual_samples_drive_cdt_grading_boundaries_and_composed_buffers() {
     live.reset_visual_region_from_source_world(20.0, 16.0, 32.0, 32.0);
     overlay.discard_unchanged(&base);
     let graph = crate::simulation::network::graph::RegionGraph::new();
-    let surface = RoadSurfaceSystem::new(64.0);
-    let roads = crate::simulation::network::surface::RoadSurfaceView::new(&graph, &surface);
+    let surface = RoadbedSystem::new(64.0);
+    let roads = crate::simulation::buildings::allocator::SiteRoads::new(&graph, &surface);
     let loops = [planner_test_loop(1, 8.0, 8.0, 20.0, 12.0)];
     let patch = base.visual_patch_snapshot(1, 1).unwrap();
     fn prepare(
         terrain: &impl TerrainVisualSource,
         patch: &TerrainPatchSnapshot,
         loops: &[TerrainCdtRoadLoop],
-        roads: crate::simulation::network::surface::RoadSurfaceView<'_>,
+        roads: crate::simulation::buildings::allocator::SiteRoads<'_>,
     ) -> RefinedTerrainPatchBuildInput {
         SimulationNode::planned_road_terrain_patch_input(
             terrain, patch, loops, 1, true, 26.0, 2.0, None, roads,
@@ -1723,7 +1723,7 @@ fn terrain_cdt_incremental_planner_drops_removed_local_tiles_without_assembling_
         Arc::clone(&remote_contributor),
     ];
     let graph = crate::simulation::network::graph::RegionGraph::new();
-    let road_surface = RoadSurfaceSystem::new(512.0);
+    let road_surface = RoadbedSystem::new(512.0);
     let sites = BuildingSiteTerrainSnapshot::default();
 
     let (plan, query) = SimulationNode::terrain_cdt_incremental_window_build_inputs(
@@ -1791,7 +1791,7 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
         }
     }
     let graph = crate::simulation::network::graph::RegionGraph::new();
-    let road_surface = RoadSurfaceSystem::new(512.0);
+    let road_surface = RoadbedSystem::new(512.0);
     let sites = BuildingSiteTerrainSnapshot::default();
     let local_scope = [(0, 0), (1, 0), (0, 1)];
 

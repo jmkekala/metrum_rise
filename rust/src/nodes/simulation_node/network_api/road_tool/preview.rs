@@ -4,7 +4,7 @@
 
 use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
-use crate::simulation::network::surface::RoadPreviewVisualMesh;
+use crate::simulation::network::road_edit::{prepare_road_input_for_tool, validate_road_edit};
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -34,47 +34,25 @@ impl SimulationNode {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
-        let clone_start = road_debug.then(Instant::now);
-        let points = points.to_vec();
-        let clone_ms = clone_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let validate_start = road_debug.then(Instant::now);
-        let (prepared_points, validation, surface_generation) = {
+        let preview = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
-                &points,
-                &query.terrain,
-                &query.region_graph,
-                &query.road_surface,
+            query.preview(&RoadPreviewRequest {
+                include_terrain: false,
+                request_id: 0,
+                surface_generation: query.surface_generation,
+                points: points.to_vec(),
+                fwd_lanes,
+                bkw_lanes,
                 snap_to_existing_roads,
-            );
-            let validation = query.road_surface.validate_prepared_road_candidate_fast(
-                &prepared_input,
-                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                &query.terrain,
-                &query.region_graph,
-            );
-            let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-                prepared_input.class,
-                &prepared_input.points,
-                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                &query.water,
-                validation,
-            );
-            (prepared_input.points, validation, query.surface_generation)
+            })
         };
-        let validate_ms = validate_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
+        let validation = &preview.validation;
         if road_debug {
             debug_log!(
                 "road",
-                "road_candidate_fast_validation points={} prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} endpoint_snap=({},{}) clone_ms={:.3} validate_ms={:.3} total_ms={:.3}",
+                "road_candidate_fast_validation points={} prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} endpoint_snap=({},{}) total_ms={:.3}",
                 point_count,
-                prepared_points.len(),
+                preview.prepared_points.len(),
                 fwd_lanes,
                 bkw_lanes,
                 validation.is_valid,
@@ -83,8 +61,6 @@ impl SimulationNode {
                 validation.allowed_grade,
                 validation.start_endpoint_snapped_node_id,
                 validation.end_endpoint_snapped_node_id,
-                clone_ms,
-                validate_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
@@ -92,50 +68,43 @@ impl SimulationNode {
         }
 
         let result = self.road_candidate_validation_to_variant(
-            &validation,
-            &prepared_points,
+            validation,
+            &preview.prepared_points,
             fwd_lanes,
             bkw_lanes,
         );
         let mut dict = result.to::<VarDictionary>();
         dict.set(
             "surface_generation",
-            i64::try_from(surface_generation).unwrap_or(i64::MAX),
+            i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
         );
         dict.to_variant()
     }
 
     /// Builds display-only fallback geometry from an already-prepared road profile.
     ///
-    /// Returns nil if the source terrain/road revision changed. Does not snap or validate again;
-    /// cost is O(profile samples × lateral strips), with constant-time terrain-grid sampling.
-    /// The lifted vertices are never authoritative placement inputs.
+    /// Returns nil if the source terrain/road revision changed. `ROAD-68-A` builds no road
+    /// geometry, so the arrays are empty until the roadbed supplies span pieces.
     #[func]
     pub fn build_road_preview_ribbon(
         &self,
-        prepared_points: PackedVector3Array,
-        fwd_lanes: i32,
-        bkw_lanes: i32,
+        _prepared_points: PackedVector3Array,
+        _fwd_lanes: i32,
+        _bkw_lanes: i32,
         surface_generation: i64,
     ) -> Variant {
-        let query = self.road_tool_query_snapshot.read().unwrap().clone();
-        if i64::try_from(query.surface_generation).unwrap_or(i64::MAX) != surface_generation {
+        let generation = self.road_tool_query_snapshot.read().unwrap().surface_generation;
+        if i64::try_from(generation).unwrap_or(i64::MAX) != surface_generation {
             return Variant::nil();
         }
-        let mesh = query.road_surface.build_preview_visual_mesh(
-            &prepared_points.to_vec(),
-            &[],
-            fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-            bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-            &query.terrain,
-        );
         let mut dict = VarDictionary::new();
         dict.set("surface_generation", surface_generation);
-        Self::append_road_preview_visual_mesh(&mut dict, &mesh);
+        Self::append_empty_road_preview_mesh(&mut dict);
         dict.to_variant()
     }
 
-    /// Validates a road-tool candidate by compiling temporary surface geometry with optional snap.
+    /// Validates a road-tool candidate against the committed graph's local edit plan, including
+    /// the `ROAD-54` junction and curve limits, with optional snapping.
     #[func]
     pub fn validate_road_candidate_for_commit_with_snap(
         &self,
@@ -147,41 +116,25 @@ impl SimulationNode {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
-        let clone_start = road_debug.then(Instant::now);
         let points = points.to_vec();
-        let clone_ms = clone_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let validate_start = road_debug.then(Instant::now);
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            let prepared_input = prepare_road_input_for_tool(
                 &points,
                 &query.terrain,
                 &query.region_graph,
-                &query.road_surface,
+                &query.roadbed,
                 snap_to_existing_roads,
             );
-            let new_edge_validation = query.road_surface.validate_prepared_road_surface(
-                &prepared_input.points,
-                prepared_input.class,
+            let (validation, _) = validate_road_edit(
+                &prepared_input,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 &query.terrain,
+                &query.region_graph,
             );
-            let validation = query
-                .road_surface
-                .validate_prepared_road_input_against_graph_with_compile_reason(
-                    &prepared_input,
-                    fwd_lanes_u8,
-                    bkw_lanes_u8,
-                    &query.terrain,
-                    &query.region_graph,
-                    new_edge_validation,
-                    RoadSurfaceCompileReason::CommitValidator,
-                );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
                 prepared_input.class,
                 &prepared_input.points,
@@ -192,13 +145,10 @@ impl SimulationNode {
             );
             (prepared_input.points, validation, query.surface_generation)
         };
-        let validate_ms = validate_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
         if road_debug {
             debug_log!(
                 "road",
-                "road_candidate_commit_validation points={} prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} endpoint_snap=({},{}) clone_ms={:.3} validate_ms={:.3} total_ms={:.3}",
+                "road_candidate_commit_validation points={} prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} endpoint_snap=({},{}) total_ms={:.3}",
                 point_count,
                 prepared_points.len(),
                 fwd_lanes,
@@ -209,8 +159,6 @@ impl SimulationNode {
                 validation.allowed_grade,
                 validation.start_endpoint_snapped_node_id,
                 validation.end_endpoint_snapped_node_id,
-                clone_ms,
-                validate_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
@@ -323,6 +271,9 @@ impl SimulationNode {
     }
 
     /// Requests either road-only or complete road-and-terrain temporary geometry.
+    ///
+    /// The stroke is validated synchronously and published at once through
+    /// [`Self::get_preview_road_surface_result`]. `ROAD-68-A` carries no road or terrain pieces.
     #[func]
     pub fn request_preview_road_surface_with_options(
         &self,
@@ -332,120 +283,76 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
         include_terrain: bool,
     ) -> i64 {
-        let road_debug = crate::debug::Channel::Road.enabled();
-        let total_start = road_debug.then(Instant::now);
         let request_id = self
             .road_preview_request_counter
             .fetch_add(1, Ordering::Relaxed)
             + 1;
-        let point_count = points.len();
-        let clone_start = road_debug.then(Instant::now);
-        let points = points.to_vec();
-        let clone_ms = clone_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let surface_generation = self
-            .road_tool_query_snapshot
-            .read()
-            .expect("road query snapshot lock poisoned")
-            .surface_generation;
-        let send_start = road_debug.then(Instant::now);
-        let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
-            enqueued_at: None,
-            include_terrain,
-            request_id,
-            surface_generation,
-            points,
-            fwd_lanes,
-            bkw_lanes,
-            snap_to_existing_roads,
-        });
-        let send_ms = send_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        if road_debug {
-            debug_log!(
-                "road",
-                "preview_surface_request request_id={} points={} fwd_lanes={} bkw_lanes={} clone_ms={:.3} send_ms={:.3} send_ok={} total_ms={:.3}",
+        let preview = {
+            let query = self
+                .road_tool_query_snapshot
+                .read()
+                .expect("road query snapshot lock poisoned");
+            query.preview(&RoadPreviewRequest {
+                include_terrain,
                 request_id,
-                point_count,
+                surface_generation: query.surface_generation,
+                points: points.to_vec(),
                 fwd_lanes,
                 bkw_lanes,
-                clone_ms,
-                send_ms,
-                send_ok,
-                total_start
-                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0)
-            );
-        }
+                snap_to_existing_roads,
+            })
+        };
+        *self
+            .road_preview_result
+            .write()
+            .expect("road preview result lock poisoned") = Some(preview);
         i64::try_from(request_id).unwrap_or(i64::MAX)
     }
 
-    /// Latest preview request the worker has started, or zero. Every older request has already
-    /// published or been abandoned; newer ones are pending or were displaced and never run.
-    /// Read it before polling results to retire outstanding requests exactly, in O(1).
+    /// Latest preview request that has started, or zero. Requests complete when they are made,
+    /// so this is also the latest published result.
     #[func]
     pub fn get_preview_road_surface_started_request_id(&self) -> i64 {
-        i64::try_from(self.road_preview_tx.started()).unwrap_or(i64::MAX)
+        let started = self
+            .road_preview_result
+            .read()
+            .expect("road preview result lock poisoned")
+            .as_ref()
+            .map_or(0, |preview| preview.request_id);
+        i64::try_from(started).unwrap_or(i64::MAX)
     }
 
-    /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
-    /// `retained_revision` identifies retained geometry already installed by the caller; zero
-    /// requests a complete payload. A matching revision omits unchanged retained mesh buffers.
-    /// `terrain_revisions` lists preview terrain products the caller still holds; each matching
-    /// patch is exported as metadata plus `unchanged`, and every other patch is complete.
-    /// Never waits on the simulation: while it holds the core lock, the live checks are the ones
-    /// it published at the end of its last frame, as current as the render snapshot.
+    /// Returns the completed road-tool preview for `request_id`, or `null` when it was superseded
+    /// or the simulation holds its lock for the corridor checks. The retained and terrain
+    /// revisions are accepted for the road tool's protocol; `ROAD-68-A` exports no meshes.
     #[func]
     pub fn get_preview_road_surface_result(
         &self,
         request_id: i64,
-        retained_revision: i64,
-        terrain_revisions: PackedInt64Array,
+        _retained_revision: i64,
+        _terrain_revisions: PackedInt64Array,
     ) -> Variant {
         let Ok(request_id) = u64::try_from(request_id) else {
             return Variant::nil();
         };
-        let result_lock_start = crate::debug::Channel::Perf.enabled().then(Instant::now);
-        let preview_result = self.road_preview_result.read().unwrap();
-        let result_lock_ms = result_lock_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let Some(preview) = preview_result.as_ref() else {
+        let preview_result = self
+            .road_preview_result
+            .read()
+            .expect("road preview result lock poisoned");
+        let Some(preview) = preview_result
+            .as_ref()
+            .filter(|preview| preview.request_id == request_id)
+        else {
             return Variant::nil();
         };
-        if preview.request_id != request_id {
-            return Variant::nil();
-        }
-
-        self.road_preview_snapshot_to_variant(
-            preview,
-            u64::try_from(retained_revision).unwrap_or(0),
-            terrain_revisions.as_slice(),
-            result_lock_ms,
-        )
-    }
-
-    fn road_preview_snapshot_to_variant(
-        &self,
-        preview: &RoadPreviewSnapshot,
-        retained_revision: u64,
-        held_terrain: &[i64],
-        result_lock_ms: f64,
-    ) -> Variant {
-        let export_start = preview.timing.as_ref().map(|_| Instant::now());
-        // Nil only while this result has no evaluation yet (pending) or is stale.
-        let Some(checks) = self.road_preview_checks.poll(&self.core, preview) else {
-            return Variant::nil();
-        };
-        let mut dict = Self::road_candidate_validation_to_dictionary(
+        let Some(mut dict) = self.road_candidate_dictionary_with_parcel_clearance(
             &preview.validation,
             &preview.prepared_points,
-        );
-        if let Some(clearance) = &checks.clearance {
-            Self::apply_corridor_clearance(&mut dict, clearance);
-        }
+            preview.fwd_lanes,
+            preview.bkw_lanes,
+        ) else {
+            return Variant::nil();
+        };
         dict.set(
             "request_id",
             i64::try_from(preview.request_id).unwrap_or(i64::MAX),
@@ -454,143 +361,17 @@ impl SimulationNode {
             "surface_generation",
             i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
         );
-        // Road-only readiness does not wait for terrain; full mode pins both products.
-        // Preview readiness describes road geometry only. Terrain and full commit readiness
-        // are resolved after the exact click under the simulation lock.
-        let mut terrain_patches = None;
         dict.set("include_terrain", preview.include_terrain);
         let valid = dict.get("is_valid").is_some_and(|value| value.to::<bool>());
         dict.set("plan_state", if valid { "provisional" } else { "invalid" });
-        // Present only for a plan whose stroke is still valid after the corridor checks.
-        if let Some(state) = checks.plan_state {
-            if preview.include_terrain && state == "ready" {
-                terrain_patches = preview
-                    .edit_plan()
-                    .and_then(|plan| plan.terrain().and_then(|terrain| terrain.preview_patches()));
-            }
-            dict.set("plan_state", state);
-            if let Some(reason) = checks.plan_invalid_reason {
-                dict.set("is_valid", false);
-                dict.set("invalid_reason", reason);
-            }
-        }
-        let readiness_ms = export_start.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-        Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
-        if let Some(scene) = &preview.junction_preview {
-            let empty = BTreeSet::new();
-            let export = |meshes| {
-                SimCore::road_mesh_chunks_dict(
-                    meshes,
-                    &empty,
-                    true,
-                    preview.surface_generation,
-                    scene.chunk_span_m,
-                    scene.chunk_origin_x_m,
-                    scene.chunk_origin_z_m,
-                )
-            };
-            let mut replacement = export(&scene.planned);
-            // Approach clips follow the moving junction bounds, so they travel with every pose.
-            replacement.set(
-                "approach_chunks",
-                export(&scene.approach).get("chunks").unwrap(),
-            );
-            if scene.retained_revision != retained_revision || retained_revision == 0 {
-                let retained = export(scene.retained.as_ref());
-                replacement.set("retained_chunks", retained.get("chunks").unwrap());
-            }
-            replacement.set(
-                "retained_revision",
-                i64::try_from(scene.retained_revision).unwrap_or(i64::MAX),
-            );
-            replacement.set(
-                "source_mesh_generation",
-                i64::try_from(scene.source_mesh_generation).unwrap_or(i64::MAX),
-            );
-            replacement.set(
-                "replacement_keys",
-                PackedInt32Array::from_iter(
-                    scene
-                        .replacement_chunks
-                        .iter()
-                        .flat_map(|key| [key.0, key.1]),
-                ),
-            );
-            if let Some(patches) = terrain_patches {
-                let mut payloads = Array::<VarDictionary>::new();
-                for patch in patches {
-                    let revision = preview.terrain_revisions.get(&patch.key).copied();
-                    let revision = revision.and_then(|r| i64::try_from(r).ok()).unwrap_or(0);
-                    // The caller's display for this revision is identical: send only the metadata
-                    // that its residency and generation checks need. O(held revisions) per patch.
-                    let unchanged = revision > 0 && held_terrain.contains(&revision);
-                    let mut data = if unchanged {
-                        Self::terrain_patch_metadata_dict(&patch.patch)
-                    } else if patch.input_road_loops == 0 {
-                        Self::terrain_patch_dict(&patch.patch, &[])
-                    } else {
-                        Self::cached_refined_terrain_patch_dict(&patch, false, &[])
-                    };
-                    data.set("terrain_revision", revision);
-                    data.set("unchanged", unchanged);
-                    data.set(
-                        "surface_generation",
-                        i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
-                    );
-                    data.set("render_step_mm", i64::from(patch.key.render_step_mm));
-                    data.set(
-                        "terrain_requires_engineered_refinement",
-                        patch.input_road_loops > 0,
-                    );
-                    payloads.push(&data);
-                }
-                let mut batch = VarDictionary::new();
-                batch.set("patches", payloads);
-                dict.set("terrain_preview", batch);
-            }
-            dict.set("junction_preview", replacement);
-        }
-        if let (Some(t), Some(start)) = (&preview.timing, export_start) {
-            let mut metrics = VarDictionary::new();
-            for (name, value) in [
-                ("result_read_lock_ms", result_lock_ms),
-                ("queue_ms", t.queue_ms),
-                ("idle_ms", t.idle_ms),
-                ("context_ms", t.context_ms),
-                ("road_ms", t.road_ms),
-                ("earthworks_ms", t.earthworks_ms),
-                ("core_wait_ms", t.core_wait_ms),
-                ("capture_ms", t.capture_ms),
-                ("terrain_ms", t.terrain_ms),
-                ("retained_ms", t.retained_ms),
-                ("worker_ms", t.worker_ms),
-                (
-                    "worker_end_to_poll_ms",
-                    start.duration_since(t.completed_at).as_secs_f64() * 1000.0,
-                ),
-                ("readiness_ms", readiness_ms.unwrap_or(0.0)),
-                (
-                    "packing_ms",
-                    start.elapsed().as_secs_f64() * 1000.0 - readiness_ms.unwrap_or(0.0),
-                ),
-            ] {
-                metrics.set(name, value);
-            }
-            dict.set("preview_timing", metrics);
-        }
+        Self::append_empty_road_preview_mesh(&mut dict);
         dict.to_variant()
     }
 
-    fn append_road_preview_visual_mesh(dict: &mut VarDictionary, mesh: &RoadPreviewVisualMesh) {
-        dict.set(
-            "surface_vertices",
-            PackedVector3Array::from(mesh.vertices.as_slice()),
-        );
-        dict.set("surface_uvs", PackedVector2Array::from(mesh.uvs.as_slice()));
-        dict.set(
-            "surface_colors",
-            PackedColorArray::from(mesh.colors.as_slice()),
-        );
+    fn append_empty_road_preview_mesh(dict: &mut VarDictionary) {
+        dict.set("surface_vertices", PackedVector3Array::new());
+        dict.set("surface_uvs", PackedVector2Array::new());
+        dict.set("surface_colors", PackedColorArray::new());
     }
 
     fn road_candidate_validation_to_variant(

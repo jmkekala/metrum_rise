@@ -6,7 +6,7 @@
 use super::core::SimCore;
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::network::surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::zoning::cells::{
     CellBounds, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
 };
@@ -70,7 +70,7 @@ impl SimCore {
             self.prepare_cell_site_queries();
             if let Some(bounds) = self.zoning.cells.chunk_generation_bounds(chunk) {
                 let allocator = &self.allocator;
-                let roads = &self.transit_network.road_surface;
+                let roads = &self.transit_network.roadbed;
                 let cell_m = self.config.zone_cell_m;
                 self.zoning
                     .generate_cells(&self.region_graph, bounds, |corners| {
@@ -88,7 +88,7 @@ impl SimCore {
     pub(crate) fn warm_loaded_cells(&mut self) {
         self.prepare_cell_site_queries();
         let allocator = &self.allocator;
-        let roads = &self.transit_network.road_surface;
+        let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let (warmed, cold) = self
             .zoning
@@ -107,11 +107,7 @@ impl SimCore {
     fn prepare_cell_site_queries(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
     }
 
     /// Captures the authoring inputs that can invalidate a retained cell gesture or overlay.
@@ -121,8 +117,8 @@ impl SimCore {
             self.heightmap.source_generation(),
             self.heightmap.visual_generation(),
             self.transit_network
-                .road_surface
-                .compile_invalidation_generation,
+                .roadbed
+                .generation(),
             self.allocator.building_ref_revision(),
             self.allocator.registry.revision(),
             self.zoning.overlay_revision(),
@@ -141,7 +137,7 @@ impl SimCore {
     ) -> CellToolPreview {
         self.prepare_cell_site_queries();
         let allocator = &self.allocator;
-        let roads = &self.transit_network.road_surface;
+        let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let selection = self
             .zoning
@@ -173,7 +169,7 @@ impl SimCore {
             return false;
         }
         let allocator = &self.allocator;
-        let roads = &self.transit_network.road_surface;
+        let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let selection = CellSelection {
             revision: self.zoning.cells.revision(),
@@ -198,7 +194,7 @@ impl SimCore {
     pub(crate) fn restore_cell_gesture_internal(&mut self, edit: &CellZoningEdit) -> bool {
         self.prepare_cell_site_queries();
         let allocator = &self.allocator;
-        let roads = &self.transit_network.road_surface;
+        let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         if self
             .zoning
@@ -259,7 +255,7 @@ impl SimCore {
         });
         let mut result = CellLotGeneration::default();
         let allocator = &self.allocator;
-        let roads = &self.transit_network.road_surface;
+        let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
         let mut region = Some(first);
@@ -312,7 +308,7 @@ impl SimCore {
 
 fn cell_site_blocked(
     allocator: &BuildingAllocator,
-    roads: &RoadSurfaceSystem,
+    roads: &RoadbedSystem,
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
@@ -349,7 +345,7 @@ mod tests {
                 Vector2::new(100.0, 30.0),
             ],
         );
-        let roads = RoadSurfaceSystem::new(512.0);
+        let roads = RoadbedSystem::new(512.0);
         for (offset, blocked) in [(-0.000001, false), (0.0, false), (0.000001, true)] {
             let frame = GridFrame::new(DVec2::new(offset, 0.0), DVec2::X, 10.0).unwrap();
             let key = frame.local(DVec2::new(95.0, 15.0)).floor();

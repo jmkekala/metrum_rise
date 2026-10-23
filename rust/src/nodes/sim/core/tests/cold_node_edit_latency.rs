@@ -8,7 +8,7 @@ use super::super::populated_city::street_grid;
 use super::super::road_commit::RoadCommitRequest;
 use super::{RoadPreviewRequest, SimCore, road_tool_snapshots_from_core};
 use crate::nodes::sim::core::road_preview::compile_road_preview_from_context;
-use crate::simulation::network::surface::{RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece};
+use crate::simulation::network::surface::{RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece}; // TODO-ROAD68
 use godot::prelude::Vector3;
 use std::time::Instant;
 
@@ -84,11 +84,10 @@ fn cold_node_edit_latency() {
             set_neighbourhood_topologies(&mut core, points[0], warm);
             let generation = core
                 .transit_network
-                .road_surface
-                .compile_invalidation_generation;
+                .roadbed
+                .generation();
             let (context, _) = road_tool_snapshots_from_core(&core).unwrap();
             let request = RoadPreviewRequest {
-                enqueued_at: None,
                 include_terrain: false,
                 request_id: repetition as u64,
                 surface_generation: core.road_tool_surface_generation,
@@ -139,8 +138,8 @@ fn cold_node_edit_latency() {
             assert_ne!(
                 generation,
                 core.transit_network
-                    .road_surface
-                    .compile_invalidation_generation,
+                    .roadbed
+                    .generation(),
                 "the next preview must not replay this one's cursor cache"
             );
         }
@@ -164,14 +163,14 @@ fn cold_node_edit_latency() {
 // around `centre` so they retain theirs, as every node did before `ROAD-44`.
 fn set_neighbourhood_topologies(core: &mut SimCore, centre: Vector3, warm: bool) {
     core.transit_network
-        .road_surface
+        .roadbed
         .compiled_visual_node_topologies
         .clear();
     if !warm {
         return;
     }
     let nodes = neighbourhood_nodes(core, centre);
-    let surface = &mut core.transit_network.road_surface;
+    let surface = &mut core.transit_network.roadbed;
     for &node in &nodes {
         // A node whose input is unchanged is reused or only refreshes earthwork; dropping the
         // stored input forces the full compile that produces a topology.
@@ -181,7 +180,7 @@ fn set_neighbourhood_topologies(core: &mut SimCore, centre: Vector3, warm: bool)
     finalize_network(core);
     let topologies = &core
         .transit_network
-        .road_surface
+        .roadbed
         .compiled_visual_node_topologies;
     assert!(nodes.iter().all(|node| topologies.contains_key(node)));
 }
@@ -200,7 +199,7 @@ fn finalize_network(core: &mut SimCore) {
 fn neighbourhood_nodes(core: &SimCore, centre: Vector3) -> Vec<u32> {
     let mut nodes: Vec<u32> = core
         .transit_network
-        .road_surface
+        .roadbed
         .compiled_visual_node_pieces
         .keys()
         .copied()
@@ -215,7 +214,7 @@ fn neighbourhood_nodes(core: &SimCore, centre: Vector3) -> Vec<u32> {
 }
 
 fn local_products(core: &SimCore, centre: Vector3) -> LocalProducts {
-    let surface = &core.transit_network.road_surface;
+    let surface = &core.transit_network.roadbed;
     let nodes = neighbourhood_nodes(core, centre);
     let mut edges: Vec<usize> = nodes
         .iter()

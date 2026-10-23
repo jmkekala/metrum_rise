@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RoadEditPlan, RoadRejection,
+    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadRejection,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
@@ -16,10 +16,11 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::network::road_edit::FinalizedRoadGeometry;
-use crate::simulation::network::surface::{
-    RoadExtensionReprofile, RoadPreviewTopologyReuse, RoadSurfaceCompileReason, RoadSurfaceSystem,
+use crate::simulation::network::road_edit::{
+    FinalizedRoadGeometry, RoadExtensionReprofile, prepare_road_input_for_tool,
+    validate_road_candidate_fast, validate_road_edit,
 };
+use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -51,8 +52,6 @@ pub(crate) struct RoadAddOutcome {
     pub(crate) committed: bool,
     /// Deferred treasury charge for the committed physical road length.
     pub(crate) build_cost: f64,
-    /// Preview-produced canonical topology offered only after exact edit-plan matching.
-    pub(crate) preview_topology_reuse: Option<RoadPreviewTopologyReuse>,
     /// Already adopted local geometry; absent when authoritative preparation must finalize it.
     pub(crate) finalized_geometry: Option<FinalizedRoadGeometry>,
 }
@@ -62,40 +61,21 @@ impl RoadAddOutcome {
         Self {
             committed: false,
             build_cost: 0.0,
-            preview_topology_reuse: None,
             finalized_geometry: None,
         }
     }
 }
 
 impl SimCore {
-    /// Accepts a road only after the road surface and every affected terrain payload succeed.
-    #[cfg(test)]
+    /// Accepts a road only after the roadbed and every affected terrain payload succeed,
+    /// restoring the staged checkpoint otherwise.
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_with_plan(None)
-    }
-
-    /// Adopts complete planned products after local dependency checks, with checkpoint rollback.
-    pub(crate) fn validate_staged_road_render_with_plan(
-        &mut self,
-        plan: Option<&super::core::RoadTerrainPlan>,
-    ) -> bool {
         let patches = self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
-        let validation = if self
-            .transit_network
-            .road_surface
-            .published_generation_matches_source()
-        {
-            crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
-                self, &patches, plan,
-            )
-        } else {
-            Err(self
-                .transit_network
-                .road_surface
-                .last_compile_failure_label()
-                .unwrap_or("surface_geometry_invalid_after_commit")
-                .to_owned())
+        let validation = match self.transit_network.roadbed.failed_nodes().first() {
+            None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
+                self, &patches,
+            ),
+            Some(node) => Err(format!("node_piece_failed node={node}")),
         };
         match validation {
             Ok(entries) => {
@@ -168,26 +148,6 @@ fn point_segment_distance_sq_xz(pos: Vector2, a: Vector3, b: Vector3) -> (f32, V
 }
 
 impl SimCore {
-    const ROAD_GEOMETRY_DUMP_DEFAULT_MAX_BYTES: usize = 256 * 1024;
-
-    fn road_geometry_dump_enabled() -> bool {
-        std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
-            .map(|value| !value.is_empty() && value != "0")
-            .unwrap_or(false)
-    }
-
-    fn road_geometry_dump_max_bytes() -> Option<usize> {
-        if std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP_FULL")
-            .map(|value| !value.is_empty() && value != "0")
-            .unwrap_or(false)
-        {
-            return None;
-        }
-        std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP_MAX_BYTES")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .or(Some(Self::ROAD_GEOMETRY_DUMP_DEFAULT_MAX_BYTES))
-    }
 
     fn road_commit_full_validation_debug_enabled() -> bool {
         std::env::var("METRUM_DEBUG_ROAD_COMMIT_FULL_VALIDATION")
@@ -247,26 +207,10 @@ impl SimCore {
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.agents
             .restore_lane_identities(&lane_identities, &self.transit_network.lane_system);
-        let road_surface_had_dirty_work =
-            self.transit_network.road_surface.has_pending_rebuild_work();
-        let dirty_chunks = self
-            .transit_network
-            .rebuild_dirty_terrain_earthworks_with_reason(
-                &self.region_graph,
-                &mut self.heightmap,
-                RoadSurfaceCompileReason::TerrainEarthwork,
-            );
-        let dirty_patch_keys = self
-            .transit_network
-            .road_surface
-            .mark_render_patches_for_chunk_grading_envelopes(
-                &mut self.heightmap,
-                &dirty_chunks,
-                ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-            );
-        if road_surface_had_dirty_work {
-            self.bump_terrain_payload_patch_generations(&dirty_patch_keys);
-        }
+        // Terrain edits never move placed roads; only the graph sync above re-grades them.
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
         // Terrain-authoring APIs publish their snapshot immediately rather than passing through the
         // simulation command finalizer. Build the matching road delta here so NetworkRenderer does
         // not repeatedly observe a newer source generation paired with the previous mesh.
@@ -544,13 +488,8 @@ impl SimCore {
         for point in &edge.physical_geometry {
             let y = self
                 .transit_network
-                .road_surface
-                .sample_visible_surface_height(
-                    &self.region_graph,
-                    &self.heightmap,
-                    point.x,
-                    point.z,
-                )
+                .roadbed
+                .height_at(point.x, point.z)
                 .unwrap_or(point.y);
             points.push(Vector3::new(
                 point.x,
@@ -560,13 +499,8 @@ impl SimCore {
         }
         let center_y = self
             .transit_network
-            .road_surface
-            .sample_visible_surface_height(
-                &self.region_graph,
-                &self.heightmap,
-                closest.x,
-                closest.z,
-            )
+            .roadbed
+            .height_at(closest.x, closest.z)
             .unwrap_or(closest.y);
         Some(BulldozeTarget {
             kind: BulldozeTargetKind::Road,
@@ -683,13 +617,11 @@ impl SimCore {
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
         self.transit_network.mark_surface_dirty_from_sets(
-            &self.region_graph,
             &affected_edges,
             &affected_nodes,
         );
         for point in &edge_points {
             self.transit_network.mark_point_dirty(*point);
-            self.transit_network.mark_surface_point_dirty(*point);
         }
 
         self.region_graph.remove_from_spatial_index(edge_idx);
@@ -766,8 +698,6 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .sculpt(center_x, center_y, radius_cells, strength);
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
@@ -784,8 +714,6 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .sculpt(center_x, center_y, radius_cells, strength);
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
@@ -807,8 +735,6 @@ impl SimCore {
             target_height_m / config::HEIGHT_SCALE,
             strength,
         );
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
@@ -820,8 +746,6 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .smooth(center_x, center_y, radius_cells, strength);
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
@@ -859,8 +783,6 @@ impl SimCore {
             end_height_m / config::HEIGHT_SCALE,
             strength,
         );
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
@@ -883,8 +805,6 @@ impl SimCore {
             target_height_m / config::HEIGHT_SCALE,
             strength,
         );
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
@@ -900,8 +820,6 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .smooth(center_x, center_y, radius_cells, strength);
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
@@ -938,8 +856,6 @@ impl SimCore {
             end_height_m / config::HEIGHT_SCALE,
             strength,
         );
-        self.transit_network
-            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
@@ -998,7 +914,7 @@ impl SimCore {
             } else {
                 edge.geometry.as_slice()
             };
-            let half_width_m = RoadSurfaceSystem::visual_roadbed_half_width_m(edge);
+            let half_width_m = visual_roadbed_half_width_m(edge);
             if self
                 .watermap
                 .road_corridor_overlaps_visible_water(points, half_width_m)
@@ -1074,7 +990,6 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
-                    enqueued_at: None,
                     include_terrain: false,
                     request_id: 0,
                     surface_generation: self.road_tool_surface_generation,
@@ -1123,11 +1038,11 @@ impl SimCore {
         let prepared_input = if let Some(prepared) = planned_input {
             prepared
         } else {
-            fresh_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            fresh_input = prepare_road_input_for_tool(
                 &points,
                 &self.heightmap,
                 &self.region_graph,
-                &self.transit_network.road_surface,
+                &self.transit_network.roadbed,
                 snap_to_existing_roads,
             );
             &fresh_input
@@ -1142,16 +1057,8 @@ impl SimCore {
             self.road_tool_surface_generation
         );
 
-        let fast_validation = self
-            .transit_network
-            .road_surface
-            .validate_prepared_road_candidate_fast(
-                prepared_input,
-                fwd_lanes_u8,
-                bkw_lanes_u8,
-                &self.heightmap,
-                &self.region_graph,
-            );
+        let fast_validation =
+            validate_road_candidate_fast(prepared_input, &self.heightmap, &self.region_graph);
         let fast_validation = validate_road_candidate_against_water(
             prepared_input.class,
             &prepared_input.points,
@@ -1166,28 +1073,13 @@ impl SimCore {
                 validation = plan.validation().clone();
             } else {
                 let full_validation_start = Instant::now();
-                let new_edge_validation = self
-                    .transit_network
-                    .road_surface
-                    .validate_prepared_road_surface(
-                        &prepared_input.points,
-                        prepared_input.class,
-                        fwd_lanes_u8,
-                        bkw_lanes_u8,
-                        &self.heightmap,
-                    );
-                let full_validation = self
-                    .transit_network
-                    .road_surface
-                    .validate_prepared_road_input_against_graph_with_compile_reason(
-                        prepared_input,
-                        fwd_lanes_u8,
-                        bkw_lanes_u8,
-                        &self.heightmap,
-                        &self.region_graph,
-                        new_edge_validation,
-                        RoadSurfaceCompileReason::CommitValidator,
-                    );
+                let (full_validation, _) = validate_road_edit(
+                    prepared_input,
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    &self.heightmap,
+                    &self.region_graph,
+                );
                 let full_validation = validate_road_candidate_against_water(
                     prepared_input.class,
                     &prepared_input.points,
@@ -1279,7 +1171,6 @@ impl SimCore {
         if self
             .zoning
             .cells_overlap_road_corridor(&fixed_points, corridor_half_width_m)
-            || edit_plan.is_some_and(|plan| plan.overlaps_cell_zoning(self))
         {
             self.last_road_timing = "rejected=zoning_cell_overlap".to_owned();
             self.last_road_rejection = Some(RoadRejection::new(
@@ -1317,7 +1208,6 @@ impl SimCore {
             .allocator
             .field_clearance
             .overlaps_road_corridor(&fixed_points, corridor_half_width_m)
-            || edit_plan.is_some_and(|plan| plan.overlaps_fields(self))
         {
             self.last_road_timing = "rejected=field_overlap".to_owned();
             self.last_road_rejection = Some(RoadRejection::from_validation(
@@ -1328,8 +1218,6 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
-        // Claim the products only after every preflight check; a rejection must not consume them.
-        let preview_topology_reuse = edit_plan.and_then(|plan| plan.take_topology_reuse());
         let t_undo = Instant::now();
         let topology_plan = edit_plan
             .filter(|_| planned_input.is_some())
@@ -1343,13 +1231,6 @@ impl SimCore {
             }
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
-
-        if let Some(terrain) = edit_plan.and_then(|plan| plan.terrain())
-            && (!self.benchmark_mode || self.transit_network.road_edit_is_staged())
-            && let Some(checkpoint) = self.undo_stack.back_mut()
-        {
-            checkpoint.road_visual_terrain = Some(terrain.visual_checkpoint(&self.heightmap));
-        }
 
         if topology_plan.is_none() {
             self.apply_road_extension_reprofile(prepared_input.extension.as_ref());
@@ -1398,11 +1279,6 @@ impl SimCore {
             );
             None
         };
-        if finalized_geometry.is_some()
-            && let Some(terrain) = edit_plan.and_then(|plan| plan.terrain())
-        {
-            terrain.enqueue_earthworks(&mut self.transit_network.road_surface);
-        }
         debug_log!(
             "road",
             "road_edit_topology adopted={}",
@@ -1432,7 +1308,6 @@ impl SimCore {
         RoadAddOutcome {
             committed: true,
             build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
-            preview_topology_reuse,
             finalized_geometry,
         }
     }
@@ -1490,13 +1365,9 @@ impl SimCore {
         self.transit_network
             .mark_point_dirty(extension.snapped_node_pos);
         self.transit_network.mark_surface_dirty_from_sets(
-            &self.region_graph,
             &affected_edges,
             &affected_nodes,
         );
-        self.transit_network.mark_surface_point_dirty(old_node_pos);
-        self.transit_network
-            .mark_surface_point_dirty(extension.snapped_node_pos);
 
         self.transit_network.mark_road_profile_authored(edge_idx);
         if self.transit_network.bulk_load {
@@ -1543,7 +1414,7 @@ impl SimCore {
             Vector2::new(world_x, world_z),
             &self.zoning,
             &self.region_graph,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
         )
@@ -1565,7 +1436,7 @@ impl SimCore {
             Vector2::new(world_x, world_z),
             &self.zoning,
             &self.region_graph,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
             &tuning,
@@ -1599,7 +1470,7 @@ impl SimCore {
             Vector2::new(world_x, world_z),
             &self.zoning,
             &self.region_graph,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
         )
@@ -1621,7 +1492,7 @@ impl SimCore {
             Vector2::new(world_x, world_z),
             &self.zoning,
             &self.region_graph,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
             &self.heightmap,
             &catalog,
             &tuning,
@@ -1724,11 +1595,7 @@ impl SimCore {
     }
 
     fn prepare_field_polygon_validation(&mut self) -> Result<(), String> {
-        if !self
-            .transit_network
-            .road_surface
-            .published_generation_matches_source()
-        {
+        if !self.transit_network.roadbed.is_current() {
             return Err("road surfaces are updating; try again shortly".to_owned());
         }
         self.allocator
@@ -1748,7 +1615,7 @@ impl SimCore {
             polygon_world,
             &self.allocator,
             &self.zoning,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
         )
     }
 
@@ -1800,7 +1667,7 @@ impl SimCore {
             polygon_world,
             &mut self.allocator,
             &self.zoning,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
         )?;
         self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
         for bounds in [previous, committed].into_iter().flatten() {
@@ -1867,8 +1734,8 @@ impl SimCore {
         true
     }
 
-    /// Repositions a network node only if its compiled roads preserve cell reservations.
-    /// Rejected and unchanged moves leave authoritative state and undo history untouched.
+    /// Repositions a network node. Unchanged moves leave authoritative state and undo history
+    /// untouched.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
             let node_id = self.region_graph.get_valid_node(node_id as u32);
@@ -1876,21 +1743,7 @@ impl SimCore {
             if old_pos == pos {
                 return false;
             }
-            if self.zoning.cells.has_reservations()
-                && self
-                    .transit_network
-                    .road_surface
-                    .compile_node_move_surface(
-                        &self.region_graph,
-                        &self.heightmap,
-                        &self.zoning,
-                        node_id,
-                        pos,
-                    )
-                    .is_none_or(|surface| surface.overlaps_cell_zoning(&self.zoning))
-            {
-                return false;
-            }
+            // ROAD-68-F restores the cell-reservation check against the moved pieces.
             let mut affected_edges: HashSet<usize> = self
                 .region_graph
                 .node_adjacency(node_id)
@@ -1946,11 +1799,9 @@ impl SimCore {
                 .rebuild_cch_and_check(&self.region_graph);
             self.transit_network.flow_fields.mark_all_dirty();
             self.transit_network.mark_surface_dirty_from_sets(
-                &self.region_graph,
                 &affected_edges,
                 &affected_nodes,
             );
-            self.transit_network.mark_surface_point_dirty(old_pos);
             self.mark_local_network_render_dirty();
             return true;
         }
@@ -2159,48 +2010,22 @@ impl SimCore {
     ) -> Vec<(usize, usize)> {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
-        let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
 
-        let earthwork_start = road_debug.then(Instant::now);
-        let road_surface_had_dirty_work =
-            self.transit_network.road_surface.has_pending_rebuild_work();
-        let dirty_chunks = self
+        let compile_start = road_debug.then(Instant::now);
+        let changed_chunks = self
             .transit_network
-            .rebuild_dirty_terrain_earthworks_with_reason(
-                &self.region_graph,
-                &mut self.heightmap,
-                RoadSurfaceCompileReason::SimCommit,
-            );
-        let road_locked_dirty_patch_keys = self
-            .transit_network
-            .road_surface
-            .mark_render_patches_for_chunk_grading_envelopes(
-                &mut self.heightmap,
-                &dirty_chunks,
-                ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-            );
-        if road_surface_had_dirty_work {
-            let dirty_query_chunks = self
-                .transit_network
-                .road_surface
-                .last_rebuilt_query_chunks()
-                .to_vec();
-            // Generated trees keep clear of walkways and poles beside them, possibly from a
-            // neighboring terrain patch; the canopy margin covers both setbacks.
-            for &chunk in &dirty_query_chunks {
-                let (min, max) = RoadSurfaceSystem::query_chunk_world_bounds(chunk);
-                self.invalidate_vegetation_over((
-                    Vector2::new(min.x as f32, min.z as f32),
-                    Vector2::new(max.x as f32, max.z as f32),
-                ));
-            }
-            self.bump_local_road_terrain_payload_generations(
-                &road_locked_dirty_patch_keys,
-                &dirty_query_chunks,
-            );
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        // Generated trees keep clear of walkways and poles beside them, possibly from a
+        // neighboring terrain patch; the canopy margin covers both setbacks.
+        for &chunk in &changed_chunks {
+            let [min_x, min_z, max_x, max_z] = self.transit_network.roadbed.chunk_bounds(chunk);
+            self.invalidate_vegetation_over((
+                Vector2::new(min_x as f32, min_z as f32),
+                Vector2::new(max_x as f32, max_z as f32),
+            ));
         }
-        let road_locked_dirty_patches = road_locked_dirty_patch_keys.len();
-        let earthwork_ms = earthwork_start
+        let compile_ms = compile_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
 
@@ -2212,70 +2037,22 @@ impl SimCore {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
 
-        let mut dump_build_ms = 0.0;
-        let mut dump_print_ms = 0.0;
-        let mut dump_bytes = 0usize;
-        if crate::debug::Channel::Road.enabled()
-            && Self::road_geometry_dump_enabled()
-            && !debug_edges.is_empty()
-        {
-            let dump_start = Instant::now();
-            for line in self
-                .transit_network
-                .road_surface
-                .build_road_cut_fill_debug_lines(&self.region_graph, &self.heightmap, &debug_edges)
-            {
-                debug_log!("road", "{}", line);
-            }
-            match Self::road_geometry_dump_max_bytes() {
-                Some(max_bytes) => {
-                    dump_build_ms = dump_start.elapsed().as_secs_f64() * 1000.0;
-                    let dump_print_start = Instant::now();
-                    debug_log!(
-                        "road",
-                        "road_geometry_dump_skipped dump_edges={} max_bytes={} reason=capped_mode enable_full_with=METRUM_DEBUG_ROAD_GEOMETRY_DUMP_FULL",
-                        debug_edges.len(),
-                        max_bytes
-                    );
-                    dump_print_ms = dump_print_start.elapsed().as_secs_f64() * 1000.0;
-                }
-                None => {
-                    let dump = self
-                        .transit_network
-                        .road_surface
-                        .build_edge_geometry_debug_dump(
-                            &self.region_graph,
-                            &self.heightmap,
-                            &debug_edges,
-                        );
-                    dump_build_ms = dump_start.elapsed().as_secs_f64() * 1000.0;
-                    dump_bytes = dump.len();
-                    let dump_print_start = Instant::now();
-                    debug_log!("road", "{}", dump);
-                    dump_print_ms = dump_print_start.elapsed().as_secs_f64() * 1000.0;
-                }
-            }
-        }
         self.terrain_dirty = true;
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_rebuild_detail earthworks_ms={:.3} dirty_chunks={} road_locked_dirty_patches={} dirty_render_patches={} entrances_ms={:.3} dump_edges={} dump_bytes={} dump_build_ms={:.3} dump_print_ms={:.3} total_ms={:.3}",
-                earthwork_ms,
-                dirty_chunks.len(),
-                road_locked_dirty_patches,
+                "terrain_rebuild_detail roadbed_ms={:.3} changed_chunks={} dirty_render_patches={} entrances_ms={:.3} total_ms={:.3}",
+                compile_ms,
+                changed_chunks.len(),
                 self.heightmap.dirty_render_patches().len(),
                 entrances_ms,
-                debug_edges.len(),
-                dump_bytes,
-                dump_build_ms,
-                dump_print_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
             );
         }
-        road_locked_dirty_patch_keys
+        // Terrain receives no road loops until `ROAD-68-D`, so no road-locked patch changes.
+        Vec::new()
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within
@@ -2431,11 +2208,9 @@ impl SimCore {
                 }
             }
             self.transit_network.mark_surface_dirty_from_sets(
-                &self.region_graph,
                 &affected_edges,
                 &affected_nodes,
             );
-            self.transit_network.mark_surface_point_dirty(old_pos);
             // The moved end changes the road's grid alignment source; a stale one fails to load.
             self.zoning
                 .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
@@ -3716,11 +3491,11 @@ mod tests {
             "bounded road undo must retain the immutable previous terrain generation"
         );
         assert!(
-            core.transit_network.road_surface.compiled_once,
+            core.transit_network.roadbed.compiled_once,
             "bounded road undo must not force the next surface pass through compile_all"
         );
         assert!(
-            core.transit_network.road_surface.has_pending_rebuild_work(),
+            core.transit_network.roadbed.has_pending_rebuild_work(),
             "removed road coverage must remain queued for local cleanup"
         );
         assert_eq!(core.cached_road_mesh_chunks.len(), previous_mesh.len());
@@ -3809,7 +3584,7 @@ mod tests {
             !core.refined_terrain_patch_cache.is_empty(),
             "undo must keep the complete post-edit generation as an immutable reuse source"
         );
-        assert!(core.transit_network.road_surface.compiled_once);
+        assert!(core.transit_network.roadbed.compiled_once);
         assert_eq!(core.cached_road_mesh_chunks.len(), previous_mesh.len());
         assert!(previous_mesh.iter().all(|(chunk, mesh)| {
             Arc::ptr_eq(
@@ -3885,28 +3660,28 @@ mod tests {
 
         let baseline_piece = core
             .transit_network
-            .road_surface
+            .roadbed
             .compiled_visual_node_pieces
             .get(&center)
             .expect("three-mouth JunctionN must compile")
             .clone();
         let baseline_input = core
             .transit_network
-            .road_surface
+            .roadbed
             .compiled_visual_node_inputs
             .get(&center)
             .expect("three-mouth JunctionN must retain its compiler input")
             .clone();
         let baseline_boundaries = core
             .transit_network
-            .road_surface
+            .roadbed
             .compiled_visual_node_earthwork_boundaries
             .get(&center)
             .expect("JunctionN must retain its earthwork boundary")
             .clone();
         let baseline_topology = core
             .transit_network
-            .road_surface
+            .roadbed
             .compiled_visual_node_topologies
             .get(&center)
             .expect("JunctionN must retain its canonical topology")
@@ -3965,7 +3740,7 @@ mod tests {
         assert!(
             !Arc::ptr_eq(
                 core.transit_network
-                    .road_surface
+                    .roadbed
                     .compiled_visual_node_topologies
                     .get(&center)
                     .expect("four-mouth JunctionN topology"),
@@ -3978,7 +3753,7 @@ mod tests {
         assert_eq!(core.region_graph.edge_count(), 3);
         assert_eq!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .compiled_visual_node_pieces
                 .get(&center),
             Some(&baseline_piece),
@@ -3986,7 +3761,7 @@ mod tests {
         );
         assert_eq!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .compiled_visual_node_inputs
                 .get(&center),
             Some(&baseline_input),
@@ -3994,7 +3769,7 @@ mod tests {
         );
         assert!(Arc::ptr_eq(
             core.transit_network
-                .road_surface
+                .roadbed
                 .compiled_visual_node_earthwork_boundaries
                 .get(&center)
                 .expect("restored earthwork boundary"),
@@ -4002,7 +3777,7 @@ mod tests {
         ));
         assert!(Arc::ptr_eq(
             core.transit_network
-                .road_surface
+                .roadbed
                 .compiled_visual_node_topologies
                 .get(&center)
                 .expect("restored canonical topology"),
@@ -4011,85 +3786,85 @@ mod tests {
         assert!(
             !core
                 .transit_network
-                .road_surface
+                .roadbed
                 .compiled_sections
                 .contains_key(&appended_edge)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .compiled_visual_span_pieces
                     .contains_key(&appended_edge)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .compiled_visual_node_pieces
                     .contains_key(&appended_node)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .compiled_visual_node_inputs
                     .contains_key(&appended_node)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .compiled_visual_node_earthwork_boundaries
                     .contains_key(&appended_node)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .compiled_visual_node_topologies
                     .contains_key(&appended_node)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .surface_span_chunks
                     .contains_key(&appended_edge)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .earthwork_span_chunks
                     .contains_key(&appended_edge)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .query_span_chunks
                     .contains_key(&appended_edge)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .surface_node_chunks
                     .contains_key(&appended_node)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .earthwork_node_chunks
                     .contains_key(&appended_node)
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .query_node_chunks
                     .contains_key(&appended_node),
             "appended post-edit surface owners must be removed"
         );
         assert!(
-            core.transit_network.road_surface.dirty_edges.is_empty()
-                && core.transit_network.road_surface.dirty_nodes.is_empty(),
+            core.transit_network.roadbed.dirty_edges.is_empty()
+                && core.transit_network.roadbed.dirty_nodes.is_empty(),
             "an exact cache restore must not enqueue owner recompilation"
         );
         assert!(
             !core
                 .transit_network
-                .road_surface
+                .roadbed
                 .dirty_surface_chunks
                 .is_empty()
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .dirty_terrain_chunks
                     .is_empty()
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .dirty_query_chunks
                     .is_empty(),
             "old and new owner coverage must enqueue only chunk-shell rebuilds"
@@ -4098,21 +3873,21 @@ mod tests {
         core.rebuild_network_surface_terrain_internal();
         core.precompute_road_mesh_data();
         assert!(
-            core.transit_network.road_surface.dirty_edges.is_empty()
-                && core.transit_network.road_surface.dirty_nodes.is_empty()
+            core.transit_network.roadbed.dirty_edges.is_empty()
+                && core.transit_network.roadbed.dirty_nodes.is_empty()
                 && core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .dirty_surface_chunks
                     .is_empty()
                 && core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .dirty_terrain_chunks
                     .is_empty()
                 && core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .dirty_query_chunks
                     .is_empty(),
             "terrain finalization must rebuild dirty chunk shells without compiling owners"
@@ -4120,31 +3895,31 @@ mod tests {
         assert!(
             !core
                 .transit_network
-                .road_surface
+                .roadbed
                 .last_rebuilt_surface_chunks
                 .is_empty()
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .last_rebuilt_terrain_chunks
                     .is_empty()
                 && !core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .last_rebuilt_query_chunks
                     .is_empty(),
             "the restored old/new coverage must be committed to every chunk cache"
         );
         assert!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .surface_chunk_cache
                 .values()
                 .all(|entry| !entry.edge_indices.contains(&appended_edge)
                     && !entry.node_ids.contains(&appended_node))
                 && core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .earthwork_chunk_cache
                     .values()
                     .all(|entry| !entry.edge_indices.contains(&appended_edge)
@@ -4201,7 +3976,7 @@ mod tests {
         finalize_network_render_for_test(&mut core);
 
         core.transit_network
-            .road_surface
+            .roadbed
             .mark_edge_dirty(&core.region_graph, edge_idx);
         core.push_network_undo_for_local_topology(
             HashSet::from([edge_idx]),
@@ -4225,12 +4000,12 @@ mod tests {
         );
         assert!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .dirty_edges
                 .contains(&edge_idx)
                 && core
                     .transit_network
-                    .road_surface
+                    .roadbed
                     .dirty_nodes
                     .contains(&start),
             "invalid cache capture must fall back to the bounded owner recompile path"
@@ -4272,26 +4047,26 @@ mod tests {
 
         assert!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .dirty_edges()
                 .contains(&edge_idx)
         );
         assert!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .dirty_nodes()
                 .contains(&n0)
         );
         assert!(
             core.transit_network
-                .road_surface
+                .roadbed
                 .dirty_nodes()
                 .contains(&n1)
         );
         assert!(
             !core
                 .transit_network
-                .road_surface
+                .roadbed
                 .dirty_terrain_chunks()
                 .is_empty()
         );

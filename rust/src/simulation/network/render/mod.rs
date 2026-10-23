@@ -4,9 +4,8 @@
 
 mod ownership;
 pub mod road;
-pub mod test_road_mesh;
 use super::graph::RegionGraph;
-use super::surface::SurfaceChunkKey;
+use super::roadbed::SurfaceChunkKey;
 use godot::prelude::*;
 pub(crate) use ownership::NetworkMeshOwner;
 use ownership::OwnedVertexRange;

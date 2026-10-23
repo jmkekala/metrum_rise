@@ -1122,8 +1122,8 @@ mod tests {
         );
         assert!(
             core.transit_network
-                .road_surface
-                .published_generation_matches_source(),
+                .roadbed
+                .is_current(),
             "the replacement empty road surface must be published after authored water rebuild"
         );
         assert!(core.cached_road_mesh_chunks.is_empty());
@@ -1197,7 +1197,7 @@ mod tests {
 
         assert_eq!(core.config.terrain_render_chunk_span_m(), 8.0);
         assert_eq!(core.heightmap.chunk_span_m(), 8.0);
-        assert_eq!(core.transit_network.road_surface.chunk_span_m(), 8.0);
+        assert_eq!(core.transit_network.roadbed.chunk_span_m(), 8.0);
     }
 
     #[test]

@@ -977,7 +977,7 @@ impl RegionGraph {
     /// End of the incident roadbed overlap, independent of node/span material ownership.
     /// Costs O(local incident profile points), with no city-wide lookup.
     pub(crate) fn junction_profile_crossing_core_m(&self, edge_idx: usize, at_start: bool) -> f32 {
-        use crate::simulation::network::surface::RoadSurfaceSystem;
+        use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
         let edge = &self.edges[edge_idx];
         let length = Self::edge_profile_length_m(edge);
         let mut core = Self::junction_profile_hard_zone_m(edge, length);
@@ -989,7 +989,7 @@ impl RegionGraph {
         } else {
             edge.end_node
         });
-        let width = RoadSurfaceSystem::visual_roadbed_half_width_m(edge);
+        let width = visual_roadbed_half_width_m(edge);
         for &other_idx in self.node_adjacency(node) {
             let other = &self.edges[other_idx];
             if other_idx == edge_idx || other.deleted || other.primary_type != TransitType::Road {
@@ -1004,7 +1004,7 @@ impl RegionGraph {
             }
             let dot = direction.dot(other_direction).clamp(-1.0, 1.0);
             let sin = direction.cross(other_direction).abs();
-            let other_width = RoadSurfaceSystem::visual_roadbed_half_width_m(other);
+            let other_width = visual_roadbed_half_width_m(other);
             // Extreme vertex of the intersection of two forward roadbed strips.
             // Unlike ownership, this does not reserve a whole extra roadbed width.
             let overlap = if sin <= f32::EPSILON {

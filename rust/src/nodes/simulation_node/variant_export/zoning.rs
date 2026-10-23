@@ -7,11 +7,9 @@ use super::super::*;
 pub(in crate::nodes::simulation_node) fn prepare_zoning_site_queries(core: &mut SimCore) {
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
-    core.transit_network.road_surface.compile_dirty_with_reason(
-        &core.region_graph,
-        &core.heightmap,
-        crate::simulation::network::surface::RoadSurfaceCompileReason::SimCommit,
-    );
+    core.transit_network
+        .roadbed
+        .compile_dirty(&core.region_graph);
 }
 
 pub(in crate::nodes::simulation_node) fn zoning_geometry_feasibility(
@@ -25,7 +23,7 @@ pub(in crate::nodes::simulation_node) fn zoning_geometry_feasibility(
         &core.zoning,
         &core.region_graph,
         crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-            road_surface: &core.transit_network.road_surface,
+            road_surface: &core.transit_network.roadbed,
             terrain: &core.heightmap,
         },
     )

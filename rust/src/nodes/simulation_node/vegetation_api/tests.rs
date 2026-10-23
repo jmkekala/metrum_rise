@@ -43,7 +43,7 @@ fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u
     });
     core.region_graph.rebuild_all_indices();
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, edge);
 }
 
@@ -59,8 +59,8 @@ fn vegetation_footpath_clearance_catches_gaps_between_footprint_samples() {
     );
     assert!(
         core.transit_network
-            .road_surface
-            .compile_dirty(&core.region_graph, &core.heightmap)
+            .roadbed
+            .compile_dirty(&core.region_graph)
     );
     // Neither the old centre row nor its +/-6 m rows touch the paving.
     assert!(clear_site(
@@ -117,10 +117,10 @@ fn vegetation_later_footpath_edit_clears_trees_by_the_same_rule() {
 fn vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries() {
     use crate::simulation::network::render::NetworkMeshData;
     use crate::simulation::network::render::road::street_lights::{StreetLight, StreetLightKind};
-    use crate::simulation::network::surface::RoadSurfaceSystem;
+    use crate::simulation::network::roadbed::RoadbedSystem;
     use std::sync::Arc;
     let mut core = core();
-    core.transit_network.road_surface = RoadSurfaceSystem::new_with_chunk_grid(512.0, 37.0, -20.0);
+    core.transit_network.roadbed = RoadbedSystem::new_with_chunk_grid(512.0, 37.0, -20.0);
     // Footpath paving spans z -7.05..-4.95; its post-top light stands 0.5 m beyond.
     vegetation_test_path(
         &mut core,
@@ -130,8 +130,8 @@ fn vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries() {
     );
     assert!(
         core.transit_network
-            .road_surface
-            .compile_dirty(&core.region_graph, &core.heightmap)
+            .roadbed
+            .compile_dirty(&core.region_graph)
     );
     let mut mesh = NetworkMeshData::new();
     // World position (36, -4.45), one metre before a shifted chunk boundary.

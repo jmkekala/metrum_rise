@@ -13,8 +13,8 @@ use super::NetworkMeshData;
 use super::standard_surface::CompiledSurfaceCoverage;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::lanes::{CrosswalkMarking, LaneSystem};
-use crate::simulation::network::surface::{
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem, RoadVec2,
+use crate::simulation::network::roadbed::{
+    BandKind, RoadSection, RoadVec2, RoadbedSystem, visual_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::network::validate::{
@@ -507,7 +507,7 @@ fn hazards(
         |station| {
             let edge =
                 graph.edge(measurement_span(spans, canonical(station), &mut window_index).edge_id);
-            RADIUS_WINDOW_HALF_WIDTHS * RoadSurfaceSystem::visual_roadbed_half_width_m(edge)
+            RADIUS_WINDOW_HALF_WIDTHS * visual_roadbed_half_width_m(edge)
         },
         |station, radius, turn, measured| {
             let edge =
@@ -774,7 +774,7 @@ impl PoleGrid {
     }
 }
 
-fn offset(section: &RoadSurfaceSection, side: f32) -> Option<(f32, Option<f32>)> {
+fn offset(section: &RoadSection, side: f32) -> Option<(f32, Option<f32>)> {
     let band_on_side = |kind| {
         section
             .bands
@@ -800,12 +800,12 @@ fn offset(section: &RoadSurfaceSection, side: f32) -> Option<(f32, Option<f32>)>
             })
             .max_by(|a, b| a.1.total_cmp(&b.1))
     };
-    if let Some((near, far, h0, h1)) = band_on_side(RoadSurfaceBandKind::Sidewalk)
+    if let Some((near, far, h0, h1)) = band_on_side(BandKind::Sidewalk)
         && far - near >= 0.5
     {
         // The sidewalk begins behind the raised kerb band. Measure from the carriageway
         // boundary (the kerb face), rather than adding another 0.5 m behind that band.
-        let kerb_face = band_on_side(RoadSurfaceBandKind::Carriageway)?.1;
+        let kerb_face = band_on_side(BandKind::Carriageway)?.1;
         let distance = (kerb_face + SIGN_KERB_OFFSET_M).max(near);
         if distance >= far {
             return None;
@@ -816,8 +816,8 @@ fn offset(section: &RoadSurfaceSection, side: f32) -> Option<(f32, Option<f32>)>
         ));
     }
     let far = [
-        RoadSurfaceBandKind::CurbOrShoulder,
-        RoadSurfaceBandKind::Carriageway,
+        BandKind::CurbOrShoulder,
+        BandKind::Carriageway,
     ]
     .into_iter()
     .filter_map(band_on_side)
@@ -827,7 +827,7 @@ fn offset(section: &RoadSurfaceSection, side: f32) -> Option<(f32, Option<f32>)>
 }
 
 fn pose(
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
     terrain: &TerrainSystem,
     s: f32,
     side: f32,
@@ -867,7 +867,7 @@ fn pose(
 
 #[allow(clippy::too_many_arguments)]
 fn place(
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
     terrain: &TerrainSystem,
     poles: &PoleGrid,
     s: f32,
@@ -926,7 +926,7 @@ fn place(
     }
 }
 
-fn crossing_s(sections: &[RoadSurfaceSection], marking: CrosswalkMarking) -> Option<f32> {
+fn crossing_s(sections: &[RoadSection], marking: CrosswalkMarking) -> Option<f32> {
     let center = (marking.start + marking.end) * 0.5;
     let point = RoadVec2::new(f64::from(center.x), f64::from(center.z));
     sections
@@ -1033,7 +1033,7 @@ impl SignSpacing {
 // Progress is monotone along this edge. Crossing poles are registered at their zebra poses.
 #[allow(clippy::too_many_arguments)]
 fn place_spaced(
-    sections: &[RoadSurfaceSection],
+    sections: &[RoadSection],
     terrain: &TerrainSystem,
     poles: &PoleGrid,
     mut s: f32,
@@ -1101,7 +1101,7 @@ pub(super) fn emit_road_signs(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
     lanes: &LaneSystem,
-    surface: &RoadSurfaceSystem,
+    roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
@@ -1121,25 +1121,18 @@ pub(super) fn emit_road_signs(
     let mut spacing = SignSpacing::new(capacity);
     let mut signs = Vec::with_capacity(coverage.edge_indices.len() * 12);
     let mut changed_limits = HashMap::with_capacity(coverage.node_ids.len());
-    // The visibility query allocates its range vector. Share one result across priorities.
-    let mut visible_edges = Vec::with_capacity(edges.len());
-    for &edge_id in &edges {
-        let Some(sections) = surface.compiled_sections().get(&edge_id) else {
-            continue;
-        };
-        if let Some(&(start, end)) = surface
-            .visible_section_ranges_for_edge(graph, terrain, edge_id, sections)
-            .first()
-            && end > start
-        {
-            visible_edges.push((edge_id, start, end));
-        }
-    }
+    // Span sections run between the edge's two mouths; edges without a span are skipped.
+    let visible_edges: Vec<_> = edges
+        .iter()
+        .filter_map(|&edge_id| {
+            let sections = roadbed.sections(edge_id)?;
+            (sections.len() >= 2).then_some((edge_id, sections))
+        })
+        .collect();
     for priority in 0..3 {
-        for &(edge_id, start, end) in &visible_edges {
+        for &(edge_id, sections) in &visible_edges {
             let edge = graph.edge(edge_id);
-            let sections = &surface.compiled_sections()[&edge_id];
-            let visible = &sections[start..=end];
+            let visible = sections;
             let span = &stations[&edge_id];
             let mut starts = [visible[0].s_m + 2.0, visible.last().unwrap().s_m - 2.0];
             let mut speed_starts = starts;

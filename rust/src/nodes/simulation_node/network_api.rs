@@ -62,12 +62,6 @@ impl SimulationNode {
         let clone_ms = clone_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        let edit_plan = self
-            .road_preview_result
-            .read()
-            .expect("road preview result lock poisoned")
-            .as_ref()
-            .and_then(RoadPreviewSnapshot::edit_plan);
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
         self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
@@ -79,7 +73,6 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                edit_plan,
                 enqueued_at: Instant::now(),
                 completion,
             })
@@ -298,11 +291,11 @@ impl SimulationNode {
             let (chunks, generation, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m) = {
                 let core = self.lock_core();
                 let (chunk_origin_x_m, chunk_origin_z_m) =
-                    core.transit_network.road_surface.chunk_origin_m();
+                    core.transit_network.roadbed.chunk_origin_m();
                 (
                     core.cached_road_mesh_chunks.clone(),
                     core.cached_road_mesh_generation,
-                    core.transit_network.road_surface.chunk_span_m(),
+                    core.transit_network.roadbed.chunk_span_m(),
                     chunk_origin_x_m,
                     chunk_origin_z_m,
                 )

@@ -50,7 +50,7 @@ use crate::simulation::grid::sweep::EnvironmentSweep;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::road_edit::FinalizedRoadGeometry;
-use crate::simulation::network::surface::{RoadSurfaceCompileReason, SurfaceChunkKey};
+use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
@@ -491,33 +491,6 @@ impl SimCore {
         }
     }
 
-    /// Advances patch revisions while retaining fixed query-chunk scope for local road edits.
-    pub(crate) fn bump_local_road_terrain_payload_generations(
-        &mut self,
-        patch_keys: &[(usize, usize)],
-        query_chunks: &[(i32, i32)],
-    ) {
-        if patch_keys.is_empty() {
-            return;
-        }
-        if query_chunks.is_empty() {
-            self.bump_terrain_payload_patch_generations(patch_keys);
-            return;
-        }
-        let generation = self.next_terrain_payload_generation();
-        for &key in patch_keys {
-            self.terrain_payload_patch_generations
-                .insert(key, generation);
-            let ledger = self
-                .refined_terrain_assembly_ledgers
-                .entry(key)
-                .or_default();
-            for &chunk in query_chunks {
-                ledger.road_query_chunk_dirty_at.insert(chunk, generation);
-            }
-        }
-    }
-
     pub(crate) fn terrain_payload_generation_for_patch(
         &self,
         patch_x: usize,
@@ -715,15 +688,11 @@ impl SimCore {
     /// lane lengths and therefore arrival times. One-time O(lane geometry vertices).
     pub(crate) fn fit_lanes_to_road_surface(&mut self) {
         self.transit_network
-            .road_surface
-            .compile_dirty(&self.region_graph, &self.heightmap);
+            .roadbed
+            .compile_dirty(&self.region_graph);
         self.transit_network
             .lane_system
-            .sync_heights_to_visible_surface(
-                &self.region_graph,
-                &self.heightmap,
-                &self.transit_network.road_surface,
-            );
+            .sync_heights_to_visible_surface(&self.region_graph, &self.transit_network.roadbed);
     }
 
     /// Rebuilds derived queue promises after planning or loading persisted pending actions.
@@ -1221,11 +1190,7 @@ impl SimCore {
             }
         }
         let compile_start = Instant::now();
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
         let execute_start = Instant::now();
         let execution = self.allocator.execute_single_demand_spawn_action(
@@ -1235,7 +1200,7 @@ impl SimCore {
             &mut self.zoning,
             &self.region_graph,
             &self.transit_network.lane_system,
-            &self.transit_network.road_surface,
+            &self.transit_network.roadbed,
             &self.heightmap,
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
@@ -1557,11 +1522,7 @@ impl SimCore {
             .then(Instant::now);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
         self.demand.prepare_planning_setup(
             slot,
@@ -1574,7 +1535,7 @@ impl SimCore {
             &self.fiscal_policy,
             &self.transit_network,
             crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-                road_surface: &self.transit_network.road_surface,
+                road_surface: &self.transit_network.roadbed,
                 terrain: &self.heightmap,
             },
             minute_of_day,
@@ -1606,11 +1567,7 @@ impl SimCore {
             .then(Instant::now);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         self.demand
             .set_admission_candidate_hour(day_index, minute_of_day);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
@@ -1626,7 +1583,7 @@ impl SimCore {
             &self.transit_network,
             &mut self.logistics,
             crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-                road_surface: &self.transit_network.road_surface,
+                road_surface: &self.transit_network.roadbed,
                 terrain: &self.heightmap,
             },
             minute_of_day,

@@ -28,8 +28,8 @@ fn queued_cell_preparation_uses_current_roads_and_discards_replaced_worlds() {
     assert!(core.allocator.building_site_query_index_ready());
     assert!(
         core.transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
     );
     assert!(core.prepare_requested_cell_chunk((0, 0), request_generation));
     assert_eq!(core.zoning.cells.chunk_state((0, 0)), ready);
@@ -248,7 +248,7 @@ fn occupied_cell_building_follows_a_road_commit_and_undo_without_moving() {
                 action,
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning(),
@@ -360,7 +360,7 @@ fn painted_cells_use_asset_lots_and_the_existing_growth_path() {
                 action,
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning(),
@@ -513,7 +513,7 @@ fn catalog_refresh_replaces_empty_lots_but_preserves_occupied_coverage() {
             action,
             &mut core.zoning,
             &core.region_graph,
-            &core.transit_network.road_surface,
+            &core.transit_network.roadbed,
             &core.heightmap,
             core.demand.runtime_catalog(),
             core.demand.runtime_tuning(),
@@ -689,7 +689,7 @@ fn consecutive_cell_gesture_undo_preserves_buildings_created_after_paint() {
             &action,
             &mut core.zoning,
             &core.region_graph,
-            &core.transit_network.road_surface,
+            &core.transit_network.roadbed,
             &core.heightmap,
             core.demand.runtime_catalog(),
             core.demand.runtime_tuning(),
@@ -765,7 +765,7 @@ fn erased_lot_invalidates_queued_growth_without_scanning_the_pending_queue() {
                 &action,
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning(),

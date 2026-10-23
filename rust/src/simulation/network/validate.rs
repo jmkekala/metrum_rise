@@ -9,7 +9,7 @@
 //! transit modes have different design constraints and are excluded.
 
 use super::graph::{Edge, RegionGraph};
-use super::surface::RoadSurfaceSystem;
+use super::roadbed::visual_roadbed_half_width_m;
 use super::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
 use rayon::prelude::*;
@@ -282,7 +282,7 @@ pub fn validate_edge(
     let mut worst_grade = (0.0, 0.0);
     let mut worst_change = (0.0, 0.0);
     let points = centreline(edge);
-    let half_width_m = RoadSurfaceSystem::visual_roadbed_half_width_m(edge);
+    let half_width_m = visual_roadbed_half_width_m(edge);
     let smallest_radius = smallest_turning_radius(points, RADIUS_WINDOW_HALF_WIDTHS * half_width_m);
     visit_grades(points, |station, length, grade, change| {
         if grade.abs() > worst_grade.0 {

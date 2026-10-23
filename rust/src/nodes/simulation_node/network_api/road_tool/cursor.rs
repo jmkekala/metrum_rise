@@ -65,12 +65,7 @@ impl SimulationNode {
         let half_h = world_h * 0.5;
         let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
 
-        let road_hit = query.road_surface.raycast_road_visible_surface(
-            &query.region_graph,
-            &query.terrain,
-            ray_origin,
-            ray_dir,
-        );
+        let road_hit = query.roadbed.raycast(ray_origin, ray_dir);
         let terrain_hit = query.terrain.raycast_visual_terrain(ray_origin, ray_dir);
         let mut pos = match Self::road_tool_closest_cursor_hit(ray_origin, road_hit, terrain_hit) {
             Some((hit, true)) => hit,
@@ -316,8 +311,8 @@ impl SimulationNode {
         altitude_offset_m: f32,
     ) -> f32 {
         query
-            .road_surface
-            .sample_visible_surface_height(&query.region_graph, &query.terrain, x, z)
+            .roadbed
+            .height_at(x, z)
             .unwrap_or_else(|| {
                 query.terrain.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
                     + altitude_offset_m

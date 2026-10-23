@@ -783,8 +783,8 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard
         if core.watermap.visible_depth_world(p.x, p.y) > 0.001
             || core
                 .transit_network
-                .road_surface
-                .sample_visible_surface_height(&core.region_graph, &core.heightmap, p.x, p.y)
+                .roadbed
+                .height_at(p.x, p.y)
                 .is_some()
             || if yard {
                 core.allocator.building_site_blocks_yard_plant(p)

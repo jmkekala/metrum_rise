@@ -100,19 +100,6 @@ impl BuildingSiteTerrainSnapshot {
             .flat_map(|site| site.surfaces.iter().cloned())
             .collect()
     }
-    /// Tests exact site bounds within this already-local capture, matching live site ownership.
-    pub(crate) fn has_building_site_for_world_bounds(
-        &self,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> bool {
-        self.sites
-            .iter()
-            .any(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
-    }
-
     pub(crate) fn terrain_cdt_site_loops_for_world_bounds(
         &self,
         min_x: f32,

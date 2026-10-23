@@ -108,13 +108,13 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         env: BuildingSiteEnvironment<'_>,
     ) -> Verdict {
-        if !env.road_surface.published_generation_matches_source() {
+        if !env.road_surface.is_current() {
             return Err(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing);
         }
         let epoch = (
             env.terrain.source_generation(),
             env.terrain.visual_generation(),
-            env.road_surface.compile_invalidation_generation,
+            env.road_surface.generation(),
             self.building_ref_revision(),
             0, // Asset registration cannot change this footprint or its terrain verdict.
         );
@@ -171,7 +171,7 @@ impl BuildingAllocator {
         .ok_or(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing)?;
         let preferred = env
             .road_surface
-            .sample_visible_surface_height(graph, env.terrain, point.x, point.y)
+            .height_at(point.x, point.y)
             .ok_or(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing)?;
         let footprint = key
             .footprint

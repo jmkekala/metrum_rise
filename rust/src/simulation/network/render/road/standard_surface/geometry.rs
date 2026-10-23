@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Shared triangle emission, section projection, winding, normals, and UV helpers.
+//! Shared section projection and quad emission helpers for section-based road meshes.
 
-use super::super::{
-    MeshLayer, NetworkMeshData, push_triangle, push_triangle_preserving_winding_with_exact_normal,
-    push_triangle_with_normal,
-};
-use crate::simulation::network::surface::{
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3, SpanQuad,
-};
+use super::super::{MeshLayer, NetworkMeshData, push_triangle};
+use crate::simulation::network::roadbed::RoadSection;
 use godot::prelude::{Color, Vector2, Vector3};
 
 const BAND_EPSILON_M: f32 = 0.001;
 const MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
 
 pub(super) fn section_world_point_at_lateral_offset(
-    section: &RoadSurfaceSection,
+    section: &RoadSection,
     lateral_offset_m: f32,
 ) -> Option<Vector3> {
     for band in &section.bands {
@@ -44,187 +39,8 @@ pub(super) fn section_world_point_at_lateral_offset(
     None
 }
 
-pub(super) fn emit_surface_polygon(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    polygon: &RoadSurfaceVisualPolygon,
-    color: Color,
-) {
-    emit_surface_triangles(mesh, layer, polygon.triangles(), color);
-}
-
-// Emits a span quad with its road-space corner coordinates as UVs. A quad triangle's points are
-// copies of its region corners, so each takes the coordinates of the corner it coincides with.
-pub(super) fn emit_road_space_quad(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    quad: &SpanQuad,
-    corners: &[RoadVec3; 4],
-    road_space: &[[f32; 2]; 4],
-    color: Color,
-) {
-    for &triangle in quad.triangles() {
-        if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle) {
-            continue;
-        }
-        let uvs = triangle.map(|point| {
-            let corner = (0..4)
-                .min_by(|&a, &b| {
-                    (corners[a] - point)
-                        .length_squared()
-                        .total_cmp(&(corners[b] - point).length_squared())
-                })
-                .unwrap_or(0);
-            Vector2::new(road_space[corner][0], road_space[corner][1])
-        });
-        push_triangle(mesh, layer, road_triangle_to_render(triangle), uvs, color);
-    }
-}
-
-pub(super) fn emit_surface_triangles(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
-    color: Color,
-) {
-    emit_surface_triangles_with_group_normal(mesh, layer, triangles, color, None);
-}
-
-pub(super) fn emit_node_top_surface_polygons<'a>(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    polygons: impl Iterator<Item = &'a RoadSurfaceVisualPolygon> + Clone,
-    color: Color,
-) {
-    let group_normal = stable_surface_group_normal(polygons.clone());
-    for polygon in polygons {
-        emit_surface_triangles_with_group_normal(
-            mesh,
-            layer,
-            polygon.triangles(),
-            color,
-            group_normal,
-        );
-    }
-}
-
-fn emit_surface_triangles_with_group_normal(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
-    color: Color,
-    group_normal: Option<Vector3>,
-) {
-    for triangle in triangles {
-        if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle) {
-            continue;
-        }
-        let triangle = road_triangle_to_render(triangle);
-        if let Some(normal) = group_normal {
-            push_triangle_with_normal(
-                mesh,
-                layer,
-                triangle,
-                world_xz_uvs_for_triangle(triangle),
-                color,
-                normal,
-            );
-        } else {
-            push_triangle(
-                mesh,
-                layer,
-                triangle,
-                world_xz_uvs_for_triangle(triangle),
-                color,
-            );
-        }
-    }
-}
-
-pub(super) fn emit_vertical_surface_triangles(
-    mesh: &mut NetworkMeshData,
-    triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
-    color: Color,
-) {
-    for triangle in triangles {
-        let triangle = road_triangle_to_render(triangle);
-        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
-            continue;
-        }
-        let normal = vertical_surface_visible_normal(triangle);
-        push_triangle_preserving_winding_with_exact_normal(
-            mesh,
-            MeshLayer::RaisedStep,
-            triangle,
-            [
-                Vector2::ZERO,
-                Vector2::new(1.0, 0.0),
-                Vector2::new(1.0, 1.0),
-            ],
-            color,
-            normal,
-        );
-    }
-}
-
-pub(super) fn emit_vertical_surface_polygon(
-    mesh: &mut NetworkMeshData,
-    polygon: &RoadSurfaceVisualPolygon,
-    color: Color,
-) {
-    if polygon.triangle_count() != 0 {
-        emit_vertical_surface_triangles(mesh, polygon.triangles(), color);
-        return;
-    }
-
-    let [upper_start, lower_start, lower_end, upper_end] = polygon.points_world.as_slice() else {
-        return;
-    };
-
-    let vertices = [
-        road_vec3_to_render(*upper_start),
-        road_vec3_to_render(*lower_start),
-        road_vec3_to_render(*lower_end),
-        road_vec3_to_render(*upper_end),
-    ];
-    let uvs = [
-        Vector2::ZERO,
-        Vector2::new(1.0, 0.0),
-        Vector2::new(1.0, 1.0),
-        Vector2::new(0.0, 1.0),
-    ];
-
-    for (triangle, triangle_uvs) in [
-        (
-            [vertices[0], vertices[1], vertices[2]],
-            [uvs[0], uvs[1], uvs[2]],
-        ),
-        (
-            [vertices[0], vertices[2], vertices[3]],
-            [uvs[0], uvs[2], uvs[3]],
-        ),
-    ] {
-        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
-            continue;
-        }
-        let normal = vertical_surface_visible_normal(triangle);
-        push_triangle_preserving_winding_with_exact_normal(
-            mesh,
-            MeshLayer::RaisedStep,
-            triangle,
-            triangle_uvs,
-            color,
-            normal,
-        );
-    }
-}
-
-fn vertical_surface_visible_normal(triangle: [Vector3; 3]) -> Vector3 {
-    -((triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]))
-}
-
 pub(super) fn section_boundary_world_point(
-    section: &RoadSurfaceSection,
+    section: &RoadSection,
     lateral_offset_m: f32,
     height_m: f32,
 ) -> Vector3 {
@@ -235,49 +51,9 @@ pub(super) fn section_boundary_world_point(
     )
 }
 
-fn road_vec3_to_render(point: RoadVec3) -> Vector3 {
-    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
-}
-
-fn road_triangle_to_render(triangle: [RoadVec3; 3]) -> [Vector3; 3] {
-    [
-        road_vec3_to_render(triangle[0]),
-        road_vec3_to_render(triangle[1]),
-        road_vec3_to_render(triangle[2]),
-    ]
-}
-
 pub(super) fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool {
     let double_area_squared = (b - a).cross(c - a).length_squared();
     double_area_squared <= MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2 * MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2
-}
-
-pub(super) fn stable_surface_group_normal<'a>(
-    polygons: impl IntoIterator<Item = &'a RoadSurfaceVisualPolygon>,
-) -> Option<Vector3> {
-    let mut normal = Vector3::ZERO;
-    for polygon in polygons {
-        for triangle in polygon.triangles() {
-            if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle) {
-                continue;
-            }
-            let triangle = road_triangle_to_render(triangle);
-            let mut triangle_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
-            if triangle_normal.y < 0.0 {
-                triangle_normal = -triangle_normal;
-            }
-            normal += triangle_normal;
-        }
-    }
-    (normal.length_squared() > 1e-8).then(|| normal.normalized())
-}
-
-pub(super) fn world_xz_uvs_for_triangle(triangle: [Vector3; 3]) -> [Vector2; 3] {
-    [
-        Vector2::new(triangle[0].x, triangle[0].z),
-        Vector2::new(triangle[1].x, triangle[1].z),
-        Vector2::new(triangle[2].x, triangle[2].z),
-    ]
 }
 
 pub(super) fn emit_surface_quad(

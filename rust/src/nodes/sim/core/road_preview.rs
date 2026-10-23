@@ -1,522 +1,153 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Asynchronous road-preview requests, worker snapshots, and compilation.
+//! Road-tool preview requests, the immutable road-tool query snapshot and the synchronous
+//! `ROAD-68-A` preview, which validates the stroke and carries no geometry.
 
-mod live_checks;
-mod reclaim;
-mod requests;
-mod terrain_revisions;
-mod timing;
-#[cfg(test)]
-pub(crate) use live_checks::RoadPreviewLiveChecks;
-pub(crate) use live_checks::{PublishedRoadPreviewChecks, RoadCorridorClearance};
-pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
-pub(super) use terrain_revisions::RoadPreviewTerrainRevisions;
-pub(crate) use timing::RoadPreviewTiming;
+use std::sync::Arc;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock, TryLockError};
-use std::time::{Duration, Instant};
+use godot::prelude::Vector3;
 
-use super::road_edit_plan::RoadEditPlan;
-use super::road_terrain_plan::RoadTerrainSiteInputs;
 use super::state::SimCore;
-use super::terrain_payloads::RefinedTerrainPatchCacheKey;
-use crate::debug_log;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::render::road::preview::{
-    RoadJunctionPreview, RoadPreviewRetainedCache,
+use crate::simulation::network::road_edit::{
+    RoadPreviewValidation, prepare_road_input_for_tool, validate_road_candidate_fast,
 };
-use crate::simulation::network::surface::{
-    RoadPreviewValidation, RoadPreviewVisualMesh, RoadSurfaceSystem,
-};
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
-use crate::thread_pools::JoinedPool;
 
-#[derive(Clone, Debug)]
-pub(crate) struct RoadPreviewSnapshot {
-    /// Fixed-size worker stage measurements, present only in performance captures.
-    pub(crate) timing: Option<RoadPreviewTiming>,
-    pub(crate) include_terrain: bool,
-    pub(crate) request_id: u64,
-    pub(crate) surface_generation: u64,
-    /// Forward vehicle lanes used for live parcel-clearance validation when publishing the result.
-    pub(crate) fwd_lanes: u8,
-    /// Backward vehicle lanes used for live parcel-clearance validation when publishing the result.
-    pub(crate) bkw_lanes: u8,
-    pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
-    pub(crate) visual_mesh: RoadPreviewVisualMesh,
-    pub(crate) junction_preview: Option<RoadJunctionPreview>,
-    /// Display revision of each full-mode terrain product; equal revisions display identically.
-    pub(crate) terrain_revisions: HashMap<RefinedTerrainPatchCacheKey, u64>,
-    pub(crate) validation: RoadPreviewValidation,
-    pub(crate) is_valid: bool,
-    edit_plan: Option<Arc<RoadEditPlan>>,
-}
-
-impl RoadPreviewSnapshot {
-    /// Shares a successful plan without consuming its products before the exact click check.
-    pub(crate) fn edit_plan(&self) -> Option<Arc<RoadEditPlan>> {
-        self.live_edit_plan().cloned()
-    }
-
-    // The plan of a valid result compiled against a published road surface.
-    fn live_edit_plan(&self) -> Option<&Arc<RoadEditPlan>> {
-        (self.is_valid && self.surface_generation > 0)
-            .then_some(self.edit_plan.as_ref())
-            .flatten()
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct RoadPreviewWorkerContext {
-    terrain: Arc<TerrainSystem>,
-    region_graph: Arc<RegionGraph>,
-    road_surface: Arc<RoadSurfaceSystem>,
-    water: Arc<WaterSystem>,
-    surface_chunk_span_m: f32,
-    surface_chunk_origin_x_m: f32,
-    surface_chunk_origin_z_m: f32,
-    surface_generation: u64,
-    source_mesh_generation: u64,
-}
-
+/// One road-tool stroke submitted for preview or commit planning.
 #[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
-    /// Diagnostic enqueue clock; absent outside performance captures.
-    pub(crate) enqueued_at: Option<Instant>,
     pub(crate) include_terrain: bool,
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
-    pub(crate) points: Vec<godot::prelude::Vector3>,
+    pub(crate) points: Vec<Vector3>,
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap_to_existing_roads: bool,
 }
 
+/// The validated result of one preview request; `ROAD-68-E` adds its road and terrain pieces.
+#[derive(Clone, Debug)]
+pub(crate) struct RoadPreviewSnapshot {
+    pub(crate) include_terrain: bool,
+    pub(crate) request_id: u64,
+    pub(crate) surface_generation: u64,
+    pub(crate) fwd_lanes: i32,
+    pub(crate) bkw_lanes: i32,
+    pub(crate) prepared_points: Vec<Vector3>,
+    pub(crate) validation: RoadPreviewValidation,
+}
+
+/// Corridor clearance of a stroke against live parcels and field reservations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RoadCorridorClearance {
+    /// Parcels the corridor overlaps; any overlap refuses the stroke (`parcel_overlap`).
+    pub(crate) overlapping_parcels: usize,
+    /// Lowest overlapping parcel id, present when any parcel overlaps.
+    pub(crate) first_overlapping_parcel: Option<u64>,
+    /// Whether the corridor overlaps a committed field reservation (`field_overlap`).
+    pub(crate) field_overlap: bool,
+    /// Zoning overlay revision the parcel query read.
+    pub(crate) zoning_revision: u64,
+    /// Agriculture field revision the field query read.
+    pub(crate) field_revision: u64,
+}
+
+impl RoadCorridorClearance {
+    /// Queries the parcel chunk index and the field reservations along the corridor that the
+    /// lanes and sidewalks cover. O(corridor segments × parcels and fields in the touched chunks).
+    pub(crate) fn evaluate(
+        core: &SimCore,
+        points: &[Vector3],
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> Self {
+        let lanes = fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
+        let half_width = (lanes as f32 * crate::config::LANE_WIDTH).max(2.0) * 0.5
+            + crate::config::SIDEWALK_WIDTH;
+        let parcels = core
+            .zoning
+            .parcel_ids_overlapping_road_corridor(points, half_width);
+        Self {
+            overlapping_parcels: parcels.len(),
+            first_overlapping_parcel: parcels.first().copied(),
+            field_overlap: core
+                .allocator
+                .field_clearance
+                .overlaps_road_corridor(points, half_width),
+            zoning_revision: core.zoning.overlay_revision(),
+            field_revision: core.agriculture.visual_revision(),
+        }
+    }
+}
+
+/// Immutable road-tool inputs from one published simulation generation.
 #[derive(Clone)]
 pub(crate) struct RoadToolQuerySnapshot {
     /// Persistent curb frames from the same publication as the graph.
     pub(crate) zoning_grid: crate::simulation::zoning::cells::RoadGridSnap,
     pub(crate) terrain: Arc<TerrainSystem>,
     pub(crate) region_graph: Arc<RegionGraph>,
-    pub(crate) road_surface: Arc<RoadSurfaceSystem>,
+    pub(crate) roadbed: Arc<RoadbedSystem>,
     /// Immutable authored-water state used by road placement validation.
     pub(crate) water: Arc<WaterSystem>,
     pub(crate) surface_generation: u64,
 }
 
-pub(crate) fn road_tool_snapshots_from_core(
-    core: &SimCore,
-) -> Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)> {
-    if !core
-        .transit_network
-        .road_surface
-        .published_generation_matches_source()
-    {
+impl RoadToolQuerySnapshot {
+    /// Prepares and validates one stroke against this snapshot: the profile, endpoint and water
+    /// checks of the hover path. O(stroke points + endpoint snap lookups).
+    pub(crate) fn preview(&self, request: &RoadPreviewRequest) -> RoadPreviewSnapshot {
+        let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let prepared = prepare_road_input_for_tool(
+            &request.points,
+            &self.terrain,
+            &self.region_graph,
+            &self.roadbed,
+            request.snap_to_existing_roads,
+        );
+        let validation = validate_road_candidate_fast(&prepared, &self.terrain, &self.region_graph);
+        let mut validation = validate_road_candidate_against_water(
+            prepared.class,
+            &prepared.points,
+            fwd_lanes,
+            bkw_lanes,
+            &self.water,
+            validation,
+        );
+        if request.surface_generation != self.surface_generation {
+            validation = validation.with_invalid_reason("stale_surface_generation");
+        }
+        RoadPreviewSnapshot {
+            include_terrain: request.include_terrain,
+            request_id: request.request_id,
+            surface_generation: self.surface_generation,
+            fwd_lanes: request.fwd_lanes,
+            bkw_lanes: request.bkw_lanes,
+            prepared_points: prepared.points,
+            validation,
+        }
+    }
+}
+
+/// Captures the road-tool query snapshot once the roadbed matches the graph.
+pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQuerySnapshot> {
+    if !core.transit_network.roadbed.is_current() {
         return None;
     }
-    let snapshot_start = Instant::now();
-    let terrain_start = Instant::now();
-    let terrain = Arc::new(core.heightmap.clone());
-    let terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
-    let graph_start = Instant::now();
-    let region_graph = Arc::new(core.region_graph.clone());
-    let graph_ms = graph_start.elapsed().as_secs_f64() * 1000.0;
-    let surface_start = Instant::now();
-    let road_surface = Arc::new(core.transit_network.road_surface.clone());
-    let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
-    let water_start = Instant::now();
-    let water = Arc::new(core.watermap.clone());
-    let water_ms = water_start.elapsed().as_secs_f64() * 1000.0;
-    let surface_chunk_span_m = road_surface.chunk_span_m();
-    let (surface_chunk_origin_x_m, surface_chunk_origin_z_m) = road_surface.chunk_origin_m();
-    let surface_generation = core.road_tool_surface_generation;
-    if crate::debug::Channel::Perf.enabled() {
-        println!(
-            "[DEBUG:perf] road_tool_snapshot generation={} edges={} terrain_ms={:.3} graph_ms={:.3} surface_ms={:.3} water_ms={:.3} total_ms={:.3}",
-            surface_generation,
-            region_graph.edge_count(),
-            terrain_ms,
-            graph_ms,
-            surface_ms,
-            water_ms,
-            snapshot_start.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-
-    Some((
-        RoadPreviewWorkerContext {
-            terrain: Arc::clone(&terrain),
-            region_graph: Arc::clone(&region_graph),
-            road_surface: Arc::clone(&road_surface),
-            water: Arc::clone(&water),
-            surface_chunk_span_m,
-            surface_chunk_origin_x_m,
-            surface_chunk_origin_z_m,
-            surface_generation,
-            source_mesh_generation: core.cached_road_mesh_generation,
-        },
-        RoadToolQuerySnapshot {
-            zoning_grid: core
-                .zoning
-                .cells
-                .road_grid_snap(f64::from(core.config.zone_cell_m)),
-            terrain,
-            region_graph,
-            road_surface,
-            water,
-            surface_generation,
-        },
-    ))
-}
-
-pub(crate) fn run_road_preview_worker(
-    core: Arc<Mutex<SimCore>>,
-    context: Arc<RwLock<RoadPreviewWorkerContext>>,
-    result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
-    rx: requests::RoadPreviewReceiver,
-) {
-    // One pool for the worker's lifetime, sized like Rayon's global default: one thread per
-    // logical CPU (or RAYON_NUM_THREADS). Node compiles are indivisible 15–45 ms tasks; in the
-    // extension's shared pool they stall every main-thread caller that joins it. Returning
-    // drops the reclaimer and then the pool, joining their threads (CODE-17).
-    let pool = JoinedPool::build(
-        rayon::ThreadPoolBuilder::new().thread_name(|index| format!("road-preview-{index}")),
-    )
-    .expect("road preview thread pool must start");
-    // Superseded snapshots own a planned surface and its topology caches; free them elsewhere.
-    let reclaimer = reclaim::Reclaimer::spawn("road-preview-reclaim");
-    let mut ready_request = None;
-    let mut retained_cache = RoadPreviewRetainedCache::default();
-    let mut terrain_revisions = RoadPreviewTerrainRevisions::default();
-    // Diagnostic only: when the worker last became free, to expose scheduling gaps.
-    let mut free_since = Instant::now();
-    'requests: loop {
-        let Some(request) = ready_request.take().or_else(|| rx.recv().ok()) else {
-            return;
-        };
-
-        let mut timing = request
-            .enqueued_at
-            .map(|enqueued| RoadPreviewTiming::new(enqueued, free_since));
-        let road_debug = crate::debug::Channel::Road.enabled();
-        let total_start = road_debug.then(Instant::now);
-        let point_count = request.points.len();
-        let include_terrain = request.include_terrain;
-        // O(1) immutable Arc snapshot; compiling/exporting must not delay a newer context.
-        let context = context
-            .read()
-            .expect("road preview context lock poisoned")
-            .clone();
-        if let Some(t) = &mut timing {
-            t.finish_context();
-        }
-        let mut preview = pool.install(|| prepare_road_preview_from_context(&context, request));
-        if let Some(t) = &mut timing {
-            t.finish_road();
-        }
-        let retained_reused = preview
-            .junction_preview
-            .as_mut()
-            .is_some_and(|scene| retained_cache.reuse(scene));
-        let earthworks = pool
-            .install(|| {
-                include_terrain.then(|| {
-                    preview.edit_plan.as_ref().and_then(|plan| {
-                        plan.preview_earthworks(
-                            &context.terrain,
-                            &context.region_graph,
-                            &context.road_surface,
-                        )
-                    })
-                })
-            })
-            .flatten();
-        if let Some(t) = &mut timing {
-            t.finish_earthworks();
-        }
-        if earthworks.is_some() || (preview.junction_preview.is_some() && !retained_reused) {
-            // Snapshot only the affected chunk Arcs. Never hold SimCore while filtering meshes
-            // or doing Rayon work, and never wait for it while retaining the context read lock.
-            let inputs = loop {
-                match core.try_lock() {
-                    Ok(core) => {
-                        if let Some(t) = &mut timing {
-                            t.finish_core_wait();
-                        }
-                        if core.road_tool_surface_generation != preview.surface_generation
-                            || core.terrain_stroke_active
-                            || preview.junction_preview.as_ref().is_some_and(|scene| {
-                                core.cached_road_mesh_generation != scene.source_mesh_generation
-                            })
-                        {
-                            break None;
-                        }
-                        let meshes = preview
-                            .junction_preview
-                            .as_ref()
-                            .filter(|_| !retained_reused)
-                            .map(|scene| {
-                                scene
-                                    .replacement_chunks
-                                    .iter()
-                                    .filter_map(|key| {
-                                        core.cached_road_mesh_chunks
-                                            .get(key)
-                                            .map(|mesh| (*key, Arc::clone(mesh)))
-                                    })
-                                    .collect()
-                            });
-                        let sites = earthworks
-                            .as_ref()
-                            .and_then(|plan| RoadTerrainSiteInputs::capture(&core, plan));
-                        if let Some(t) = &mut timing {
-                            t.finish_capture();
-                        }
-                        break Some((sites, meshes));
-                    }
-                    Err(TryLockError::Poisoned(_)) => panic!("simulation core lock poisoned"),
-                    Err(TryLockError::WouldBlock) => {}
-                }
-                // Keep the completed compile while contended, but a newer pointer request wins.
-                match rx.recv_timeout(Duration::from_millis(1)) {
-                    Ok(next) => {
-                        reclaimer.retire(preview);
-                        ready_request = Some(next);
-                        free_since = Instant::now();
-                        continue 'requests;
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-                }
-            };
-            if let Some((sites, meshes)) = inputs {
-                if let Some(earthworks) = &earthworks
-                    && let Some(plan) = &preview.edit_plan
-                {
-                    let plan = pool.install(|| {
-                        plan.with_preview_terrain(
-                            &context.terrain,
-                            &context.region_graph,
-                            &context.road_surface,
-                            earthworks,
-                            sites,
-                        )
-                    });
-                    if let Some(patches) = plan.terrain().and_then(|t| t.preview_patches()) {
-                        preview.terrain_revisions = terrain_revisions.assign(&patches);
-                    }
-                    preview.edit_plan = Some(Arc::new(plan));
-                }
-                if let Some(t) = &mut timing {
-                    t.finish_terrain();
-                }
-                if let Some(scene) = &mut preview.junction_preview
-                    && let Some(meshes) = meshes
-                {
-                    pool.install(|| scene.retain_existing(&meshes));
-                    retained_cache.store(scene);
-                }
-            } else {
-                preview.junction_preview = None;
-                preview.surface_generation = 0;
-                preview.is_valid = false;
-                preview.validation.is_valid = false;
-                preview.validation.invalid_reason = "stale_surface_generation";
-            }
-        }
-        // A reused split keeps its resident meshes; only the moved approach clips are rebuilt.
-        if retained_reused && let Some(scene) = &mut preview.junction_preview {
-            pool.install(|| scene.clip_approaches());
-        }
-        if let Some(t) = &mut timing {
-            t.finish_retained();
-        }
-        preview.timing = timing;
-        let prepared_count = preview.prepared_points.len();
-        let surface_vertex_count = preview.visual_mesh.vertices.len();
-        let is_valid = preview.is_valid;
-        if road_debug {
-            let validation = &preview.validation;
-            debug_log!(
-                "road",
-                "preview_surface_worker points={} prepared_points={} surface_vertices={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} span=({:.3},{:.3}) run={:.3} dy={:.3} span_y=({:.3},{:.3}) span_terrain=({:.3},{:.3}) span_delta=({:.3},{:.3}) endpoint_snap=({},{}) endpoint_delta=({:.3},{:.3}) total_ms={:.3}",
-                point_count,
-                prepared_count,
-                surface_vertex_count,
-                is_valid,
-                validation.invalid_reason,
-                validation.max_grade,
-                validation.allowed_grade,
-                validation.offending_span_start_m,
-                validation.offending_span_end_m,
-                validation.offending_span_run_m,
-                validation.offending_span_height_delta_m,
-                validation.offending_span_start_height_m,
-                validation.offending_span_end_height_m,
-                validation.offending_span_start_terrain_height_m,
-                validation.offending_span_end_terrain_height_m,
-                validation.offending_span_start_support_delta_m,
-                validation.offending_span_end_support_delta_m,
-                validation.start_endpoint_snapped_node_id,
-                validation.end_endpoint_snapped_node_id,
-                validation.start_endpoint_support_delta_m,
-                validation.end_endpoint_support_delta_m,
-                total_start
-                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0)
-            );
-        }
-        // O(1) under the lock; readers never wait for the previous snapshot's destruction.
-        let previous = result
-            .write()
-            .expect("road preview result lock poisoned")
-            .replace(preview);
-        if let Some(previous) = previous {
-            reclaimer.retire(previous);
-        }
-        free_since = Instant::now();
-    }
-}
-
-#[cfg(test)]
-/// Compiles exactly the road-only worker products against an immutable test context.
-pub(crate) fn compile_road_preview_from_context(
-    context: &RoadPreviewWorkerContext,
-    request: RoadPreviewRequest,
-) -> RoadPreviewSnapshot {
-    prepare_road_preview_from_context(context, request)
-}
-
-#[cfg(test)]
-/// Runs optional terrain completion using the same bounded site capture as the worker.
-pub(crate) fn compile_road_preview_with_sites(
-    context: &RoadPreviewWorkerContext,
-    request: RoadPreviewRequest,
-    core: &SimCore,
-) -> RoadPreviewSnapshot {
-    let mut preview = prepare_road_preview_from_context(context, request);
-    if preview.include_terrain
-        && let Some(plan) = &preview.edit_plan
-        && let Some(earthworks) = plan.preview_earthworks(
-            &context.terrain,
-            &context.region_graph,
-            &context.road_surface,
-        )
-    {
-        let sites = RoadTerrainSiteInputs::capture(core, &earthworks);
-        preview.edit_plan = Some(Arc::new(plan.with_preview_terrain(
-            &context.terrain,
-            &context.region_graph,
-            &context.road_surface,
-            &earthworks,
-            sites,
-        )));
-    }
-    preview
-}
-
-fn prepare_road_preview_from_context(
-    context: &RoadPreviewWorkerContext,
-    request: RoadPreviewRequest,
-) -> RoadPreviewSnapshot {
-    let request_surface_generation = request.surface_generation;
-    let include_terrain = request.include_terrain;
-    let preview_surface = RoadSurfaceSystem::new_with_chunk_grid(
-        context.surface_chunk_span_m,
-        context.surface_chunk_origin_x_m,
-        context.surface_chunk_origin_z_m,
-    );
-    let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
-        &request.points,
-        &context.terrain,
-        &context.region_graph,
-        &context.road_surface,
-        request.snap_to_existing_roads,
-    );
-    let (mut preview, topology_reuse, render_input, topology_plan) = preview_surface
-        .compile_prepared_preview_surface_with_topology_reuse(
-            &prepared,
-            fwd_lanes,
-            bkw_lanes,
-            context.terrain.as_ref(),
-            context.region_graph.as_ref(),
-            context.road_surface.as_ref(),
-        );
-    preview.validation = validate_road_candidate_against_water(
-        preview.edge_class,
-        &preview.prepared_points,
-        fwd_lanes,
-        bkw_lanes,
-        context.water.as_ref(),
-        preview.validation,
-    );
-    preview.is_valid = preview.validation.is_valid;
-    let generation_matches = request_surface_generation == context.surface_generation;
-    if !generation_matches {
-        preview.validation.is_valid = false;
-        preview.validation.invalid_reason = "stale_surface_generation";
-        preview.is_valid = false;
-    }
-    let topology_reuse = (preview.is_valid && generation_matches)
-        .then_some(topology_reuse)
-        .flatten();
-    let junction_preview = (preview.is_valid && generation_matches)
-        .then_some(render_input)
-        .flatten()
-        .and_then(|input| {
-            let mut scene = input.render(&context.terrain, &context.road_surface)?;
-            // Water-only query changes retain the previous, still-correct road meshes.
-            scene.source_mesh_generation = context.source_mesh_generation;
-            Some(scene)
-        });
-
-    // A junction scene already contains the candidate road. Do not build/export a second ribbon.
-    let visual_mesh = if junction_preview.is_some() {
-        RoadPreviewVisualMesh::default()
-    } else {
-        preview_surface.build_preview_visual_mesh(
-            &preview.prepared_points,
-            &preview.compiled_sections,
-            fwd_lanes,
-            bkw_lanes,
-            context.terrain.as_ref(),
-        )
-    };
-    let request_id = request.request_id;
-    let edit_plan = (preview.is_valid && generation_matches).then(|| {
-        Arc::new(RoadEditPlan::new(
-            request,
-            context.terrain.source_generation(),
-            context.terrain.visual_generation(),
-            prepared,
-            preview.validation.clone(),
-            topology_reuse,
-            topology_plan,
-        ))
-    });
-    RoadPreviewSnapshot {
-        timing: None,
-        include_terrain,
-        request_id,
-        surface_generation: if generation_matches {
-            context.surface_generation
-        } else {
-            0
-        },
-        fwd_lanes,
-        bkw_lanes,
-        prepared_points: preview.prepared_points,
-        visual_mesh,
-        junction_preview,
-        terrain_revisions: HashMap::new(),
-        validation: preview.validation,
-        is_valid: preview.is_valid,
-        edit_plan,
-    }
+    Some(RoadToolQuerySnapshot {
+        zoning_grid: core
+            .zoning
+            .cells
+            .road_grid_snap(f64::from(core.config.zone_cell_m)),
+        terrain: Arc::new(core.heightmap.clone()),
+        region_graph: Arc::new(core.region_graph.clone()),
+        roadbed: Arc::new(core.transit_network.roadbed.clone()),
+        water: Arc::new(core.watermap.clone()),
+        surface_generation: core.road_tool_surface_generation,
+    })
 }

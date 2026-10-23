@@ -20,7 +20,8 @@ use super::{BuildingSiteClient, building_site_support_tie_in_is_valid};
 use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart, SiteSurfaceMaterial};
 use crate::simulation::buildings::allocator::{BuildingAllocator, indexed_test_building};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{RoadSurfaceSystem, RoadSurfaceView};
+use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::buildings::allocator::SiteRoads;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
@@ -402,18 +403,18 @@ fn site_support_validation_target_uses_visible_road_surface() {
         10.0,
         crate::simulation::network::types::EdgeClass::Bridge,
     ));
-    let mut road_surface = RoadSurfaceSystem::new(16.0);
+    let mut road_surface = RoadbedSystem::new(16.0);
     road_surface.compile_dirty(&graph, &terrain);
 
     let pos = Vector2::ZERO;
     let expected_height_m = road_surface
-        .sample_visible_surface_height(&graph, &terrain, pos.x, pos.y)
+        .height_at(pos.x, pos.y)
         .expect("bridge surface should own the grading sample");
     let graded_height_m = building_site_raw_tie_in_target_height(
         pos,
         100.0,
         &terrain,
-        RoadSurfaceView::new(&graph, &road_surface),
+        SiteRoads::new(&graph, &road_surface),
     );
 
     assert!(
@@ -458,7 +459,7 @@ fn site_grading_guides_are_soft_samples_outside_flat_support() {
     };
     let terrain = TerrainSystem::with_chunking(8, 8, 1.0, 4, 0.0);
     let graph = RegionGraph::new();
-    let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
     let mut samples = Vec::new();
     let mut sample_keys = HashSet::new();
 
@@ -483,7 +484,7 @@ fn site_grading_guides_are_soft_samples_outside_flat_support() {
 fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
     let terrain = TerrainSystem::with_chunking(257, 65, 1.0, 64, 0.0);
     let graph = RegionGraph::new();
-    let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
     let snapshot = BuildingSiteTerrainSnapshot {
         sites: vec![BuildingSiteTerrainClient {
             surfaces: Vec::new(),
@@ -503,7 +504,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
     snapshot.append_terrain_cdt_site_grading_guides_for_world_bounds(
         BuildingSiteGradingRequest::new(
             &terrain,
-            RoadSurfaceView::new(&graph, &road_surface),
+            SiteRoads::new(&graph, &road_surface),
             (64.0, 0.0, 128.0, 64.0),
             2.0,
         ),
@@ -591,7 +592,7 @@ fn neighboring_different_height_site_loops_with_grading_space_compile() {
 fn support_tie_in_accepts_flat_surroundings() {
     let terrain = TerrainSystem::with_chunking(32, 32, 1.0, 8, 0.0);
     let graph = RegionGraph::new();
-    let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
 
     assert!(building_site_support_tie_in_is_valid(
         &square_site_with_surface().footprint_world,
@@ -606,7 +607,7 @@ fn support_tie_in_accepts_flat_surroundings() {
 fn support_tie_in_rejects_oversteep_surroundings() {
     let terrain = TerrainSystem::with_chunking(32, 32, 1.0, 8, 0.0);
     let graph = RegionGraph::new();
-    let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let road_surface = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
 
     assert!(!building_site_support_tie_in_is_valid(
         &square_site_with_surface().footprint_world,
@@ -749,7 +750,7 @@ fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
         &mut allocator,
     );
     let terrain = TerrainSystem::with_chunking(96, 96, 1.0, 16, 0.0);
-    network.road_surface.compile_dirty(&graph, &terrain);
+    network.roadbed.compile_dirty(&graph);
 
     let edge_idx = graph.edge_count() - 1;
     let edge = graph.edge(edge_idx);
@@ -759,13 +760,13 @@ fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
     let road_edge_probe = center + normal * building_site_road_connection_lateral_offset_m(edge);
     let apron_probe = road_edge_probe + normal * 0.5;
     let expected_height_m = network
-        .road_surface
-        .sample_visible_surface_height(&graph, &terrain, road_edge_probe.x, road_edge_probe.y)
+        .roadbed
+        .height_at(road_edge_probe.x, road_edge_probe.y)
         .expect("road surface edge should be queryable");
 
     let (probe, height_m) = nearest_building_site_road_surface_sample(
         &terrain,
-        RoadSurfaceView::new(&graph, &network.road_surface),
+        SiteRoads::new(&graph, &network.roadbed),
         apron_probe,
         BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M,
     )
@@ -882,8 +883,8 @@ fn site_grading_consumes_planned_visual_writes_and_resets() {
         }],
     };
     let graph = RegionGraph::new();
-    let surface = RoadSurfaceSystem::new(64.0);
-    let roads = RoadSurfaceView::new(&graph, &surface);
+    let surface = RoadbedSystem::new(64.0);
+    let roads = SiteRoads::new(&graph, &surface);
     let guides = |terrain: &dyn TerrainVisualSource| {
         let mut samples = Vec::new();
         sites.append_terrain_cdt_site_grading_guides_for_world_bounds(

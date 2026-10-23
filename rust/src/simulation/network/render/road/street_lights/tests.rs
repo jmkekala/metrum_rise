@@ -161,7 +161,7 @@ fn a_street_drawn_as_short_edges_is_lit_as_one_street() {
 fn fixture(
     points: &[Vector3],
     links: &[(usize, usize, u8, u8)],
-) -> (RegionGraph, super::RoadSurfaceSystem, TerrainSystem) {
+) -> (RegionGraph, super::RoadbedSystem, TerrainSystem) {
     use crate::simulation::network::graph::{Edge, Node};
     use crate::simulation::network::types::{TransitFlags, TransitType};
     use std::collections::HashMap;
@@ -207,13 +207,13 @@ fn fixture(
     graph.set_nodes_edges_for_test(nodes, edges);
     graph.rebuild_all_indices();
     let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
-    let mut surface = super::RoadSurfaceSystem::new(64.0);
+    let mut surface = super::RoadbedSystem::new(64.0);
     surface.compile_dirty(&graph, &terrain);
     (graph, surface, terrain)
 }
 
 fn emit(
-    f: &(RegionGraph, super::RoadSurfaceSystem, TerrainSystem),
+    f: &(RegionGraph, super::RoadbedSystem, TerrainSystem),
     edges: Vec<usize>,
 ) -> Vec<StreetLight> {
     let mut mesh = super::NetworkMeshData::new();
@@ -243,7 +243,7 @@ fn signature(lights: &[StreetLight]) -> Vec<[u32; 5]> {
 }
 
 fn assert_arm_clearance_and_partition(
-    f: &(RegionGraph, super::RoadSurfaceSystem, TerrainSystem),
+    f: &(RegionGraph, super::RoadbedSystem, TerrainSystem),
     arms: &[Vec<usize>],
 ) {
     let lights: Vec<_> = arms.iter().map(|edges| emit(f, edges.clone())).collect();

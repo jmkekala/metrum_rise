@@ -12,77 +12,34 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> RoadClipLoopQuery {
-        let site_loops = core
-            .allocator
-            .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
         Self::road_clip_loop_query_for_sources(
-            &core.region_graph,
-            &core.transit_network.road_surface,
-            site_loops,
-            min_x,
-            min_z,
-            max_x,
-            max_z,
+            core.allocator
+                .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z),
         )
     }
 
     pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_snapshot(
-        graph: &crate::simulation::network::graph::RegionGraph,
-        road_surface: &RoadSurfaceSystem,
         sites: &BuildingSiteTerrainSnapshot,
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
     ) -> RoadClipLoopQuery {
-        let site_loops = sites.terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
         Self::road_clip_loop_query_for_sources(
-            graph,
-            road_surface,
-            site_loops,
-            min_x,
-            min_z,
-            max_x,
-            max_z,
+            sites.terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z),
         )
     }
 
-    fn road_clip_loop_query_for_sources(
-        graph: &crate::simulation::network::graph::RegionGraph,
-        road_surface: &RoadSurfaceSystem,
-        site_loops: Vec<TerrainCdtRoadLoop>,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> RoadClipLoopQuery {
-        match road_surface
-            .terrain_cdt_road_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z)
-        {
-            Ok((mut cdt_road_loops, source_count)) => {
-                let road_loop_count = cdt_road_loops.len();
-                let site_loop_count = site_loops.len();
-                cdt_road_loops.extend(site_loops);
-                RoadClipLoopQuery {
-                    cdt_road_loops,
-                    source_count: source_count + site_loop_count,
-                    road_source_count: source_count,
-                    road_loop_count,
-                    site_loop_count,
-                    clip_error_label: None,
-                }
-            }
-            Err(err) => {
-                let site_loop_count = site_loops.len();
-                RoadClipLoopQuery {
-                    cdt_road_loops: site_loops,
-                    source_count: site_loop_count,
-                    road_source_count: 0,
-                    road_loop_count: 0,
-                    site_loop_count,
-                    clip_error_label: Some(err.debug_label()),
-                }
-            }
+    // Roads contribute no terrain loops until `ROAD-68-D`; building-site boundaries still clip.
+    fn road_clip_loop_query_for_sources(site_loops: Vec<TerrainCdtRoadLoop>) -> RoadClipLoopQuery {
+        let site_loop_count = site_loops.len();
+        RoadClipLoopQuery {
+            cdt_road_loops: site_loops,
+            source_count: site_loop_count,
+            road_source_count: 0,
+            road_loop_count: 0,
+            site_loop_count,
+            clip_error_label: None,
         }
     }
 

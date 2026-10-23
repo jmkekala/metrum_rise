@@ -22,7 +22,6 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-            edit_plan: None,
         },
         std::time::Instant::now(),
         Default::default(),
@@ -48,7 +47,6 @@ fn road_only_preview_completes_on_click_without_copying_or_resolving_roads() {
     let preview = super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 7,
             surface_generation: generation,
@@ -113,7 +111,6 @@ fn road_only_preview_rejects_visual_terrain_changes_before_click_reuse() {
     let road = RoadEditPlan::compile_road(
         &core,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: core.road_tool_surface_generation,
@@ -160,7 +157,6 @@ fn prepare_with_lanes(
     let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
@@ -196,7 +192,7 @@ fn adopt(
     assert!(result.committed && result.finalized_geometry.is_some());
     if let Some(reuse) = result.preview_topology_reuse.take() {
         core.transit_network
-            .road_surface
+            .roadbed
             .enqueue_preview_topology_reuse(reuse);
     }
     core.transit_network.bulk_load = false;
@@ -237,7 +233,7 @@ fn commit_ready_with_lanes(
     assert!(added.finalized_geometry.is_some());
     core.transit_network.bulk_load = false;
     core.transit_network
-        .road_surface
+        .roadbed
         .enqueue_preview_topology_reuse(added.preview_topology_reuse.take().unwrap());
     assert!(
         core.validate_staged_road_render_with_plan(plan.terrain()),
@@ -437,7 +433,6 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     let rebuilt = RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 2,
             surface_generation: core.road_tool_surface_generation,
@@ -586,7 +581,7 @@ fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
         assert!(added.committed);
         core.transit_network.bulk_load = false;
         core.transit_network
-            .road_surface
+            .roadbed
             .enqueue_preview_topology_reuse(added.preview_topology_reuse.take().unwrap());
         assert!(
             core.validate_staged_road_render_with_plan(plan.terrain()),
@@ -646,14 +641,14 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
     core.precompute_road_mesh_data();
     assert!(
         core.transit_network
-            .road_surface
-            .published_generation_matches_source(),
+            .roadbed
+            .is_current(),
         "{:?}\n{}",
         core.transit_network
-            .road_surface
+            .roadbed
             .last_compile_failure_label(),
         core.transit_network
-            .road_surface
+            .roadbed
             .build_edge_geometry_debug_dump(
                 &core.region_graph,
                 &core.heightmap,
@@ -1465,7 +1460,6 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
             let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
                 &context,
                 RoadPreviewRequest {
-                    enqueued_at: None,
                     include_terrain: false,
                     request_id: step + 1,
                     surface_generation: query.surface_generation,

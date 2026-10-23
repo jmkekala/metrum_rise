@@ -24,10 +24,10 @@ fn stamp_and_compare(planned: &mut Fixture, cold: &mut Fixture) -> usize {
     let source_generation = planned.terrain.source_generation();
     let chunks = planned
         .network
-        .road_surface
+        .roadbed
         .rebuild_dirty_earthworks(&planned.graph, &mut planned.terrain);
     cold.network
-        .road_surface
+        .roadbed
         .rebuild_dirty_earthworks(&cold.graph, &mut cold.terrain);
     assert_visual_terrain_equal(&planned.terrain, &cold.terrain);
     assert_eq!(planned.terrain.source_generation(), source_generation);
@@ -35,7 +35,7 @@ fn stamp_and_compare(planned: &mut Fixture, cold: &mut Fixture) -> usize {
     assert_eq!(
         planned
             .network
-            .road_surface
+            .roadbed
             .last_reused_earthwork_chunk_count,
         chunks.len()
     );
@@ -67,12 +67,12 @@ fn planned_stamps_match_cold_crossing_close_t_and_terminal_extension() {
             // Publication consumes the offer; no stale products leak into the next rebuild.
             planned
                 .network
-                .road_surface
+                .roadbed
                 .rebuild_dirty_earthworks(&planned.graph, &mut planned.terrain);
             assert_eq!(
                 planned
                     .network
-                    .road_surface
+                    .roadbed
                     .last_reused_earthwork_chunk_count,
                 0
             );
@@ -90,7 +90,7 @@ fn planned_stamps_keep_unmapped_neighbors_in_shared_chunks() {
         fixture.cold_add(&prepared);
         fixture
             .network
-            .road_surface
+            .roadbed
             .rebuild_dirty_earthworks(&fixture.graph, &mut fixture.terrain);
     }
     let neighbor_before = planned.terrain.sample_visual_height_world(0.0, 100.0);
@@ -136,21 +136,21 @@ fn stamp_offer_rejects_source_changes_and_changed_support_with_same_ids() {
             }
             fixture
                 .network
-                .road_surface
+                .roadbed
                 .mark_edge_dirty(&fixture.graph, 0);
         }
-        let mut cold_surface = fixture.network.road_surface.clone();
+        let mut cold_surface = fixture.network.roadbed.clone();
         cold_surface.enqueue_planned_earthworks(None);
         let mut cold_terrain = fixture.terrain.clone();
         fixture
             .network
-            .road_surface
+            .roadbed
             .rebuild_dirty_earthworks(&fixture.graph, &mut fixture.terrain);
         cold_surface.rebuild_dirty_earthworks(&fixture.graph, &mut cold_terrain);
         assert_eq!(
             fixture
                 .network
-                .road_surface
+                .roadbed
                 .last_reused_earthwork_chunk_count,
             0
         );
@@ -160,7 +160,7 @@ fn stamp_offer_rejects_source_changes_and_changed_support_with_same_ids() {
 
 #[test]
 fn planned_road_queries_match_committed_owners_and_keep_unmapped_neighbors() {
-    use crate::simulation::network::surface::RoadSurfaceView;
+    use crate::simulation::buildings::allocator::SiteRoads;
 
     let mut fixture = Fixture::new(true);
     for z in [100.0, 0.0] {
@@ -171,10 +171,10 @@ fn planned_road_queries_match_committed_owners_and_keep_unmapped_neighbors() {
     assert!(!plan.source_topology_ids().0.contains(&0));
     // Test-only independent source copy: production borrows the already-pinned world context.
     let source_graph = fixture.graph.clone();
-    let source_surface = fixture.network.road_surface.clone();
+    let source_surface = fixture.network.roadbed.clone();
     let planned = plan.roads().unwrap().view(&source_graph, &source_surface);
     fixture.adopt(&plan, reuse);
-    let actual = RoadSurfaceView::new(&fixture.graph, &fixture.network.road_surface);
+    let actual = SiteRoads::new(&fixture.graph, &fixture.network.roadbed);
     let mut covered = 0;
     for z in (-56..=108).step_by(2) {
         for x in (-68..=68).step_by(2) {
@@ -191,7 +191,7 @@ fn planned_road_queries_match_committed_owners_and_keep_unmapped_neighbors() {
     assert!(covered > 100);
     // Both split/new and unaffected road candidates use the IDs the live query sees, exactly once.
     for pos in [Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)] {
-        let candidates = |view: RoadSurfaceView<'_>| {
+        let candidates = |view: SiteRoads<'_>| {
             let mut values = Vec::new();
             view.visit_edges_near_point(pos, 16.0, |graph, local, live| {
                 let edge = graph.edge(local);

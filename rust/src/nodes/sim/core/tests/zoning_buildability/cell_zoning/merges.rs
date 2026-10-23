@@ -48,7 +48,7 @@ fn occupied_cells_survive_native_node_merge_regeneration_and_undo() {
                 action,
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning(),

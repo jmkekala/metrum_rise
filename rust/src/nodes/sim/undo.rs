@@ -23,11 +23,9 @@ impl SimCore {
             return;
         }
         self.push_undo_snapshot(SimulationSnapshot {
-            road_visual_terrain: None,
             terrain: None,
             water: None,
             trans_graph: None,
-            road_surface_topology: None,
             zoning: None,
             runtime: Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)),
         });
@@ -60,7 +58,6 @@ impl SimCore {
         inc_runtime: bool,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
-            road_visual_terrain: None,
             terrain: if inc_terrain {
                 Some(self.heightmap.clone_visual_dense())
             } else {
@@ -78,7 +75,6 @@ impl SimCore {
             } else {
                 None
             },
-            road_surface_topology: None,
             zoning: None,
             runtime: if inc_runtime {
                 Some(SimulationRuntimeSnapshot::PendingDemandSpawns(
@@ -129,17 +125,10 @@ impl SimCore {
         graph: RegionGraphUndoDelta,
         zoning: Option<ZoningParcelRemovalUndo>,
     ) {
-        let (edge_ids, node_ids) = graph.stored_topology_ids();
-        let road_surface_topology = self
-            .transit_network
-            .road_surface
-            .capture_topology_undo(&edge_ids, &node_ids);
         self.push_undo_snapshot(SimulationSnapshot {
-            road_visual_terrain: None,
             terrain: None,
             water: None,
             trans_graph: Some(graph),
-            road_surface_topology,
             zoning,
             runtime: None,
         });
@@ -166,11 +155,9 @@ impl SimCore {
             return;
         }
         self.push_undo_snapshot(SimulationSnapshot {
-            road_visual_terrain: None,
             terrain: None,
             water: None,
             trans_graph: None,
-            road_surface_topology: None,
             zoning: None,
             runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(journal)),
         });
@@ -202,11 +189,8 @@ impl SimCore {
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
-        self.reset_local_network_render_state(&edge_ids, &node_ids, state.road_surface_topology);
+        self.reset_local_network_render_state(&edge_ids, &node_ids);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
-        if let Some(visual) = state.road_visual_terrain {
-            visual.restore(&mut self.heightmap);
-        }
     }
 
     /// Accepts a staged road and only then applies the undo-history size limit.
@@ -225,11 +209,9 @@ impl SimCore {
             return false;
         };
         self.push_undo_snapshot(SimulationSnapshot {
-            road_visual_terrain: None,
             terrain: None,
             water: None,
             trans_graph: None,
-            road_surface_topology: None,
             zoning: None,
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(Box::new(
                 runtime,
@@ -417,10 +399,8 @@ impl SimCore {
             }
             let SimulationSnapshot {
                 terrain,
-                road_visual_terrain,
                 water,
                 trans_graph,
-                road_surface_topology,
                 zoning,
                 runtime,
             } = state;
@@ -519,16 +499,8 @@ impl SimCore {
                     self.zoning.invalidate_cell_lot_assets();
                     self.reset_network_render_state(old_engineered_patch_keys);
                 } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
-                    self.reset_local_network_render_state(
-                        &edge_ids,
-                        &node_ids,
-                        road_surface_topology,
-                    );
+                    self.reset_local_network_render_state(&edge_ids, &node_ids);
                 }
-            }
-            if let Some(visual) = road_visual_terrain {
-                self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
-                visual.restore(&mut self.heightmap);
             }
             return true;
         }
@@ -547,7 +519,7 @@ impl SimCore {
             }
         }
 
-        self.transit_network.road_surface.clear();
+        self.transit_network.roadbed.clear();
         self.refined_terrain_patch_cache.clear();
         self.refined_terrain_assembly_ledgers.clear();
         self.road_locked_terrain_patch_keys.clear();
@@ -559,22 +531,14 @@ impl SimCore {
         self.mark_network_render_dirty();
     }
 
+    // Undo restores the graph; the roadbed rebuilds the restored owners' pieces from it.
     fn reset_local_network_render_state(
         &mut self,
         edge_ids: &HashSet<usize>,
         node_ids: &HashSet<u32>,
-        road_surface_topology: Option<crate::simulation::network::surface::RoadSurfaceTopologyUndo>,
     ) {
-        let restored = road_surface_topology.is_some_and(|topology| {
-            self.transit_network
-                .road_surface
-                .restore_topology_undo(topology, edge_ids, node_ids)
-        });
-        if !restored {
-            self.transit_network
-                .road_surface
-                .mark_topology_restore_dirty(&self.region_graph, edge_ids, node_ids);
-        }
+        self.transit_network
+            .mark_surface_dirty_from_sets(edge_ids, node_ids);
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
     }

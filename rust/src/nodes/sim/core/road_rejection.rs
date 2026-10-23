@@ -8,7 +8,7 @@
 //! console's `dump` writes. Reports are built only when a stroke is refused.
 
 use crate::debug_log;
-use crate::simulation::network::surface::RoadPreviewValidation;
+use crate::simulation::network::road_edit::RoadPreviewValidation;
 use godot::prelude::Vector3;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};

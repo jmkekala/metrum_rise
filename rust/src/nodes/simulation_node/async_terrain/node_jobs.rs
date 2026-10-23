@@ -13,23 +13,11 @@ impl SimulationNode {
     pub(crate) fn validate_staged_road_terrain(
         core: &mut SimCore,
         patch_keys: &[(usize, usize)],
-        plan: Option<&crate::nodes::sim::core::RoadTerrainPlan>,
     ) -> Result<Vec<Arc<CachedRefinedTerrainPatch>>, String> {
-        if let Some(plan) = plan {
-            if !plan.adopted_dependencies_match(core) {
-                return Err("road_plan_post_topology_mismatch".to_owned());
-            }
-            if !plan.coverage_matches(patch_keys) {
-                return Err("road_plan_coverage_mismatch".to_owned());
-            }
-        }
         core.refresh_engineered_terrain_patch_ownership_for_keys(
             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             patch_keys,
         );
-        if let Some(plan) = plan {
-            return plan.adopt_products(core);
-        }
         let mut sources = Vec::with_capacity(patch_keys.len());
         for &(patch_x, patch_z) in patch_keys {
             if !core.terrain_patch_requires_engineered_refinement(patch_x, patch_z) {
@@ -53,7 +41,7 @@ impl SimulationNode {
             .map(|source| {
                 Self::terrain_patch_payload_build_job_for_world(
                     &core.region_graph,
-                    &core.transit_network.road_surface,
+                    &core.transit_network.roadbed,
                     &core.heightmap,
                     core.road_tool_surface_generation,
                     source,
@@ -305,8 +293,8 @@ impl SimulationNode {
         }
         if !core
             .transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
         {
             return None;
         }
@@ -443,14 +431,14 @@ impl SimulationNode {
                 continue;
             }
             has_relevant_road_chunks = true;
-            let (chunk_min, chunk_max) = RoadSurfaceSystem::query_chunk_world_bounds(chunk);
+            let [min_x, min_z, max_x, max_z] = core.transit_network.roadbed.chunk_bounds(chunk);
             dirty_tiles.extend(Self::terrain_cdt_tile_ids_for_bounds(
                 patch,
                 (
-                    chunk_min.x as f32 - expansion_m,
-                    chunk_min.z as f32 - expansion_m,
-                    chunk_max.x as f32 + expansion_m,
-                    chunk_max.z as f32 + expansion_m,
+                    min_x as f32 - expansion_m,
+                    min_z as f32 - expansion_m,
+                    max_x as f32 + expansion_m,
+                    max_z as f32 + expansion_m,
                 ),
             ));
         }
@@ -483,7 +471,7 @@ impl SimulationNode {
     ) -> TerrainPatchPayloadBuildJob {
         Self::terrain_patch_payload_build_job_for_world(
             &query.region_graph,
-            &query.road_surface,
+            &query.roadbed,
             &query.terrain,
             query.surface_generation,
             source,
@@ -492,7 +480,7 @@ impl SimulationNode {
 
     fn terrain_patch_payload_build_job_for_world(
         graph: &crate::simulation::network::graph::RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &crate::simulation::network::roadbed::RoadbedSystem,
         terrain: &TerrainSystem,
         surface_generation: u64,
         source: TerrainPatchPayloadBuildSource,
@@ -515,8 +503,6 @@ impl SimulationNode {
         let (window_plan, road_clip_query) = match &source.assembly_scope {
             RefinedTerrainAssemblyScope::FullPatch => {
                 let road_clip_query = Self::road_clip_loop_query_for_snapshot(
-                    graph,
-                    road_surface,
                     &source.sites,
                     source.patch.world_origin_x - source.road_locked_margin_m,
                     source.patch.world_origin_z - source.road_locked_margin_m,
@@ -534,7 +520,7 @@ impl SimulationNode {
                     render_step_m,
                     Some(TerrainCdtSiteGradingContext {
                         source: TerrainCdtSiteGradingSource::Snapshot(&source.sites),
-                        roads: crate::simulation::network::surface::RoadSurfaceView::new(
+                        roads: crate::simulation::buildings::allocator::SiteRoads::new(
                             graph,
                             road_surface,
                         ),
@@ -692,8 +678,8 @@ impl SimulationNode {
         }
         if !core
             .transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
         {
             return None;
         }
@@ -727,8 +713,8 @@ impl SimulationNode {
     ) -> Option<(WaterPatchMeshCacheKey, WaterPatchMeshBuildInput)> {
         if !core
             .transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
         {
             return None;
         }

@@ -11,9 +11,7 @@
 use super::NetworkMeshData;
 use super::standard_surface::CompiledSurfaceCoverage;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::surface::{
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem,
-};
+use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -111,7 +109,7 @@ fn rule_for_edge(edge: &Edge) -> Option<Rule> {
 pub(super) fn emit_street_lights(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
-    road_surface: &RoadSurfaceSystem,
+    roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
@@ -120,13 +118,12 @@ pub(super) fn emit_street_lights(
             continue;
         };
         let chain = street_chain(graph, edge_idx, rule.family);
-        let Some(runs) = chain_runs(graph, road_surface, terrain, &chain) else {
+        let Some(runs) = chain_runs(roadbed, &chain) else {
             continue;
         };
         let (start, end) = chain_end_nodes(graph, &chain);
-        let start_m = separated_end_margin(graph, road_surface, terrain, start, chain[0].0);
-        let end_m =
-            separated_end_margin(graph, road_surface, terrain, end, chain[chain.len() - 1].0);
+        let start_m = separated_end_margin(graph, roadbed, terrain, start, chain[0].0);
+        let end_m = separated_end_margin(graph, roadbed, terrain, end, chain[chain.len() - 1].0);
         place_along_chain(
             mesh, terrain, &chain, &runs, edge_idx, &rule, start_m, end_m,
         );
@@ -135,27 +132,19 @@ pub(super) fn emit_street_lights(
 
 // The visible stretch of one chain edge, in chain order.
 struct Run<'a> {
-    sections: &'a [RoadSurfaceSection],
+    sections: &'a [RoadSection],
     // Where this edge's stretch starts along the chain, node gaps collapsed.
     offset_m: f32,
     length_m: f32,
 }
 
-fn chain_runs<'a>(
-    graph: &RegionGraph,
-    road_surface: &'a RoadSurfaceSystem,
-    terrain: &TerrainSystem,
-    chain: &[(usize, bool)],
-) -> Option<Vec<Run<'a>>> {
+fn chain_runs<'a>(roadbed: &'a RoadbedSystem, chain: &[(usize, bool)]) -> Option<Vec<Run<'a>>> {
     let mut runs = Vec::with_capacity(chain.len());
     let mut offset_m = 0.0;
     for &(edge_idx, _) in chain {
-        let sections = road_surface.compiled_sections().get(&edge_idx)?;
-        let (start, end) = road_surface
-            .visible_section_ranges_for_edge(graph, terrain, edge_idx, sections)
-            .into_iter()
-            .find(|&(start, end)| end > start)?;
-        let sections = &sections[start..=end];
+        let sections = roadbed
+            .sections(edge_idx)
+            .filter(|sections| sections.len() >= 2)?;
         let length_m = (sections[sections.len() - 1].s_m - sections[0].s_m).max(0.0);
         runs.push(Run {
             sections,
@@ -287,7 +276,7 @@ fn arm_rank(graph: &RegionGraph, edge: usize) -> Option<(u8, usize)> {
 // no dependency cycle. O(degree * (chain sections + walk steps * degree)) per call, degree <= 6.
 fn separated_end_margin(
     graph: &RegionGraph,
-    surface: &RoadSurfaceSystem,
+    roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
     node: u32,
     target: usize,
@@ -321,7 +310,7 @@ fn separated_end_margin(
         previous = Some(rank);
         let rule = rule_for_edge(graph.edge(edge)).unwrap();
         let chain = street_chain(graph, edge, rule.family);
-        let Some(runs) = chain_runs(graph, surface, terrain, &chain) else {
+        let Some(runs) = chain_runs(roadbed, &chain) else {
             continue;
         };
         let total = runs.iter().map(|run| run.length_m).sum::<f32>();
@@ -491,8 +480,8 @@ fn chain_side(first: &Run, forward: bool) -> f32 {
 
 fn place_at(
     terrain: &TerrainSystem,
-    a: &RoadSurfaceSection,
-    b: &RoadSurfaceSection,
+    a: &RoadSection,
+    b: &RoadSection,
     s: f32,
     side: f32,
     kind: StreetLightKind,
@@ -525,11 +514,11 @@ fn place_at(
 // Lateral distance of the pole from the centreline on `side`, and the surface height there when
 // the pole stands on a compiled band (None: on the verge, use the terrain).
 fn pole_offset(
-    section: &RoadSurfaceSection,
+    section: &RoadSection,
     side: f32,
     kind: StreetLightKind,
 ) -> Option<(f32, Option<f32>)> {
-    let on_side = |kinds: &[RoadSurfaceBandKind]| {
+    let on_side = |kinds: &[BandKind]| {
         section
             .bands
             .iter()
@@ -556,10 +545,10 @@ fn pole_offset(
     };
     if kind == StreetLightKind::Path {
         let (_, far, _, _) =
-            on_side(&[RoadSurfaceBandKind::Footpath, RoadSurfaceBandKind::Sidewalk])?;
+            on_side(&[BandKind::Footpath, BandKind::Sidewalk])?;
         return Some((far + PATH_VERGE_OFFSET_M, None));
     }
-    if let Some((near, far, near_h, far_h)) = on_side(&[RoadSurfaceBandKind::Sidewalk])
+    if let Some((near, far, near_h, far_h)) = on_side(&[BandKind::Sidewalk])
         && far - near > 2.0 * SIDEWALK_BACK_INSET_M
     {
         let offset = far - SIDEWALK_BACK_INSET_M;
@@ -567,8 +556,8 @@ fn pole_offset(
         return Some((offset, Some(near_h + (far_h - near_h) * t)));
     }
     let (_, far, _, _) = on_side(&[
-        RoadSurfaceBandKind::CurbOrShoulder,
-        RoadSurfaceBandKind::Carriageway,
+        BandKind::CurbOrShoulder,
+        BandKind::Carriageway,
     ])?;
     Some((far + VERGE_OFFSET_M, None))
 }

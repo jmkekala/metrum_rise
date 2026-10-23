@@ -19,7 +19,6 @@ mod road_commit;
 mod road_edit_plan;
 mod road_preview;
 mod road_rejection;
-mod road_terrain_plan;
 mod scenario;
 mod schedule;
 mod snapshot;
@@ -35,7 +34,6 @@ pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTime
 pub(crate) use road_commit::RoadCommitAck;
 pub(crate) use road_edit_plan::RoadEditPlan;
 pub(crate) use road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
-pub(crate) use road_terrain_plan::RoadTerrainPlan;
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
 };
@@ -49,9 +47,8 @@ pub(crate) use budget::{
     SERVICE_BUILD_COST_PER_LOT_CELL, SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    PublishedRoadPreviewChecks, RoadCorridorClearance, RoadPreviewRequest, RoadPreviewSender,
-    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_preview_channel,
-    road_tool_snapshots_from_core, run_road_preview_worker,
+    RoadCorridorClearance, RoadPreviewRequest, RoadPreviewSnapshot, RoadToolQuerySnapshot,
+    road_tool_snapshot_from_core,
 };
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,

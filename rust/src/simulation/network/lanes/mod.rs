@@ -7,11 +7,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{
-    CURB_STEP_HEIGHT_M, RoadLaneSurfaceQuery, RoadSurfaceSystem,
-};
+use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, LaneSurfaceQuery, RoadbedSystem};
 use crate::simulation::network::types::TransitType;
-use crate::simulation::terrain::TerrainSystem;
 
 mod bounds;
 /// Lane geometry generation and offset calculations.
@@ -176,11 +173,10 @@ impl LaneSystem {
     pub(crate) fn sync_heights_to_visible_surface(
         &mut self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
-        road_surface: &RoadSurfaceSystem,
+        roadbed: &RoadbedSystem,
     ) {
         for lane in &mut self.lanes {
-            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+            sync_lane_height_to_visible_surface(lane, graph, roadbed);
         }
         self.surface_synced_len = self.lanes.len();
     }
@@ -198,12 +194,11 @@ impl LaneSystem {
     pub(crate) fn sync_new_lanes_to_visible_surface(
         &mut self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
-        road_surface: &RoadSurfaceSystem,
+        roadbed: &RoadbedSystem,
     ) {
         let start = self.surface_synced_len.min(self.lanes.len());
         for lane in &mut self.lanes[start..] {
-            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+            sync_lane_height_to_visible_surface(lane, graph, roadbed);
         }
         self.surface_synced_len = self.lanes.len();
     }
@@ -211,8 +206,7 @@ impl LaneSystem {
     pub(crate) fn sync_heights_to_visible_surface_for_owners(
         &mut self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
-        road_surface: &RoadSurfaceSystem,
+        roadbed: &RoadbedSystem,
         edge_indices: &[usize],
         node_ids: &[u32],
     ) {
@@ -235,7 +229,7 @@ impl LaneSystem {
             let Some(lane) = self.lanes.get_mut(lane_id) else {
                 continue;
             };
-            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+            sync_lane_height_to_visible_surface(lane, graph, roadbed);
         }
         let edge_ms = edge_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -259,7 +253,7 @@ impl LaneSystem {
             let Some(lane) = self.lanes.get_mut(lane_id) else {
                 continue;
             };
-            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+            sync_lane_height_to_visible_surface(lane, graph, roadbed);
         }
         if road_debug {
             crate::debug_log!(
@@ -281,8 +275,7 @@ impl LaneSystem {
 fn sync_lane_height_to_visible_surface(
     lane: &mut Lane,
     graph: &RegionGraph,
-    terrain: &TerrainSystem,
-    road_surface: &RoadSurfaceSystem,
+    roadbed: &RoadbedSystem,
 ) {
     if lane.geometry.is_empty() {
         return;
@@ -296,24 +289,12 @@ fn sync_lane_height_to_visible_surface(
     let lane_type = lane.lane_type;
     let edge_id = lane.edge_id;
     let node_id = lane.node_id;
-    let owner_query = road_surface.lane_owner_surface_query(
-        graph,
-        terrain,
-        edge_id,
-        node_id,
-        lane_type == LaneType::Vehicle,
-    );
+    let owner_query = roadbed.lane_query(edge_id, node_id, lane_type == LaneType::Vehicle);
 
     let mut changed = false;
     for point in &mut lane.geometry {
-        let Some(surface_y) = lane_visible_surface_height(
-            lane_type,
-            graph,
-            terrain,
-            road_surface,
-            &owner_query,
-            point,
-        ) else {
+        let Some(surface_y) = lane_visible_surface_height(lane_type, roadbed, &owner_query, point)
+        else {
             continue;
         };
         let target_y = surface_y - sidewalk_base_offset;
@@ -343,22 +324,18 @@ fn lane_is_road_sidewalk(lane: &Lane, graph: &RegionGraph) -> bool {
 
 fn lane_visible_surface_height(
     lane_type: LaneType,
-    graph: &RegionGraph,
-    terrain: &TerrainSystem,
-    road_surface: &RoadSurfaceSystem,
-    owner_query: &RoadLaneSurfaceQuery<'_>,
+    roadbed: &RoadbedSystem,
+    owner_query: &LaneSurfaceQuery<'_>,
     point: &Vector3,
 ) -> Option<f32> {
     let carriageway_only = lane_type == LaneType::Vehicle;
-    owner_query.sample_height(point.x, point.z).or_else(|| {
+    owner_query.height_at(point.x, point.z).or_else(|| {
         if carriageway_only {
-            road_surface
-                .sample_visible_carriageway_height(graph, terrain, point.x, point.z)
-                .or_else(|| {
-                    road_surface.sample_visible_surface_height(graph, terrain, point.x, point.z)
-                })
+            roadbed
+                .carriageway_height_at(point.x, point.z)
+                .or_else(|| roadbed.height_at(point.x, point.z))
         } else {
-            road_surface.sample_visible_surface_height(graph, terrain, point.x, point.z)
+            roadbed.height_at(point.x, point.z)
         }
     })
 }

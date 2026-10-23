@@ -22,7 +22,7 @@ use crate::simulation::economy::demand::{
     private_zone_index,
 };
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::work_area::{
@@ -582,7 +582,7 @@ impl BuildingAllocator {
         action: &DemandSpawnAction,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -608,7 +608,7 @@ impl BuildingAllocator {
         applicant_seed: Option<u64>,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -635,7 +635,7 @@ impl BuildingAllocator {
         point: Vector2,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
@@ -654,13 +654,13 @@ impl BuildingAllocator {
         &self,
         mut placement: ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         zoning: &ZoningSystem,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         // Keep a resolved invalid pose, but avoid apron work when cheap overlap checks reject it.
         let (preferred_height, connections) = self
-            .resolve_site_support_connections(&placement, graph, road_surface, terrain)
+            .resolve_site_support_connections(&placement, graph, road_surface)
             .map_err(explicit_rejection_from_site_rejection)?;
         placement.support_height_m = preferred_height;
         let rejection = self
@@ -699,7 +699,7 @@ impl BuildingAllocator {
         point: Vector2,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -730,7 +730,7 @@ impl BuildingAllocator {
         point: Vector2,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
@@ -752,7 +752,7 @@ impl BuildingAllocator {
         point: Vector2,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -781,7 +781,7 @@ impl BuildingAllocator {
         &mut self,
         mut placement: ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -1271,7 +1271,7 @@ impl BuildingAllocator {
         &self,
         placement: &ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
     ) -> Result<(), DemandSpawnPlacementRejection> {
         let footprint_world = self.placement_required_flat_support_footprint(placement);
@@ -1340,12 +1340,9 @@ impl BuildingAllocator {
         if self.placement_overlaps_existing_flat_support(&placement) {
             return false;
         }
-        let Ok((_, connections)) = self.resolve_site_support_connections(
-            &placement,
-            graph,
-            environment.road_surface,
-            environment.terrain,
-        ) else {
+        let Ok((_, connections)) =
+            self.resolve_site_support_connections(&placement, graph, environment.road_surface)
+        else {
             return false;
         };
         self.finalize_site_support(
@@ -1364,11 +1361,11 @@ impl BuildingAllocator {
         &self,
         placement: &mut ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
     ) -> Result<(), DemandSpawnPlacementRejection> {
         let (preferred_height, connections) =
-            self.resolve_site_support_connections(placement, graph, road_surface, terrain)?;
+            self.resolve_site_support_connections(placement, graph, road_surface)?;
         placement.support_height_m = preferred_height;
         let half_m = |cells: usize| cells as f32 * placement.zone_cell_m * 0.5;
         placement.front_gap_m = super::geometry::lot_front_gaps(
@@ -1386,7 +1383,7 @@ impl BuildingAllocator {
         placement: &mut ResolvedPlacement,
         connections: &[(Vector2, f32)],
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
     ) -> Result<(), DemandSpawnPlacementRejection> {
         let footprint = self.placement_required_flat_support_footprint(placement);
@@ -1407,14 +1404,13 @@ impl BuildingAllocator {
         &self,
         placement: &ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
-        terrain: &TerrainSystem,
+        road_surface: &RoadbedSystem,
     ) -> Result<(f32, Vec<(Vector2, f32)>), DemandSpawnPlacementRejection> {
-        if !road_surface.published_generation_matches_source() {
+        if !road_surface.is_current() {
             return Err(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing);
         }
         let driveway_candidates =
-            self.driveway_connection_candidates(placement, graph, road_surface, terrain);
+            self.driveway_connection_candidates(placement, graph, road_surface);
         if !driveway_candidates.is_empty() {
             if let Some(missing) = driveway_candidates
                 .iter()
@@ -1474,7 +1470,7 @@ impl BuildingAllocator {
         }
 
         if let Some(frontage_height) =
-            self.frontage_connection_height(placement, graph, road_surface, terrain)
+            self.frontage_connection_height(placement, graph, road_surface)
         {
             let point = Self::claimed_road_side_connection_pos(
                 graph,
@@ -1514,8 +1510,7 @@ impl BuildingAllocator {
         &self,
         placement: &ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
-        terrain: &TerrainSystem,
+        road_surface: &RoadbedSystem,
     ) -> Vec<DrivewayConnectionCandidate> {
         let Some(entry) = self.registry.get(&placement.asset_id) else {
             return Vec::new();
@@ -1559,12 +1554,7 @@ impl BuildingAllocator {
                     placement.side,
                     edge_t,
                 )?;
-                let height_m = road_surface.sample_visible_surface_height(
-                    graph,
-                    terrain,
-                    connection_pos.x,
-                    connection_pos.y,
-                );
+                let height_m = road_surface.height_at(connection_pos.x, connection_pos.y);
                 Some(DrivewayConnectionCandidate {
                     connection_pos,
                     name: anchor.name.clone(),
@@ -1582,8 +1572,7 @@ impl BuildingAllocator {
         &self,
         placement: &ResolvedPlacement,
         graph: &RegionGraph,
-        road_surface: &RoadSurfaceSystem,
-        terrain: &TerrainSystem,
+        road_surface: &RoadbedSystem,
     ) -> Option<f32> {
         let pos = Self::claimed_road_side_connection_pos(
             graph,
@@ -1591,7 +1580,7 @@ impl BuildingAllocator {
             placement.side,
             placement.frontage_t,
         )?;
-        road_surface.sample_visible_surface_height(graph, terrain, pos.x, pos.y)
+        road_surface.height_at(pos.x, pos.y)
     }
 
     fn claimed_road_side_connection_pos(

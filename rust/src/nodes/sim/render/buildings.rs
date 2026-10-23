@@ -594,13 +594,8 @@ impl SimCore {
                 claimed_road_side_connection_sample(self, edge, building).map(|sample| {
                     let road_height_m = self
                         .transit_network
-                        .road_surface
-                        .sample_visible_surface_height(
-                            &self.region_graph,
-                            &self.heightmap,
-                            sample.x,
-                            sample.y,
-                        );
+                        .roadbed
+                        .height_at(sample.x, sample.y);
                     (sample, road_height_m)
                 });
         }
@@ -769,8 +764,8 @@ fn building_site_debug_visible_road_sample(
 ) -> Option<(Vector2, f32)> {
     if let Some(height_m) = core
         .transit_network
-        .road_surface
-        .sample_visible_surface_height(&core.region_graph, &core.heightmap, point.x, point.y)
+        .roadbed
+        .height_at(point.x, point.y)
     {
         return Some((point, height_m));
     }
@@ -813,8 +808,8 @@ fn building_site_debug_visible_road_sample(
         }
         let Some(height_m) = core
             .transit_network
-            .road_surface
-            .sample_visible_surface_height(&core.region_graph, &core.heightmap, probe.x, probe.y)
+            .roadbed
+            .height_at(probe.x, probe.y)
         else {
             continue;
         };

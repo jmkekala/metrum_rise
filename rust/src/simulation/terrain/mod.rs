@@ -684,30 +684,6 @@ impl TerrainSystem {
         Ok(())
     }
 
-    /// Writes visual terrain samples grouped by sparse storage chunk.
-    pub(crate) fn set_visual_heights_at_grid_unmarked<U>(
-        &mut self,
-        writes: &[U],
-        mut sample: impl FnMut(&U) -> (usize, usize, f32),
-    ) {
-        // Render patches are the caller's concern; draped overlays still need the exact extent.
-        let mut rect = (usize::MAX, 0, usize::MAX, 0);
-        for write in writes {
-            let (x, z, _) = sample(write);
-            rect = (rect.0.min(x), rect.1.max(x), rect.2.min(z), rect.3.max(z));
-        }
-        self.data.set_cells_grouped_by_chunk(writes, &mut sample);
-        if !writes.is_empty() {
-            self.visual_generation = self.visual_generation.wrapping_add(1);
-            self.record_height_grid_rect(rect.0, rect.1, rect.2, rect.3);
-        }
-    }
-
-    /// Returns the sparse terrain storage-chunk extent in samples.
-    pub(crate) fn storage_chunk_size_cells(&self) -> usize {
-        self.data.chunk_size()
-    }
-
     /// Returns the full terrain extent in metres.
     pub(crate) fn world_size(&self) -> (f32, f32) {
         (
@@ -839,11 +815,6 @@ impl TerrainSystem {
             return;
         };
         self.mark_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
-    }
-
-    /// Returns the terrain grid dimensions in samples.
-    pub(crate) fn grid_dimensions(&self) -> (usize, usize) {
-        (self.width, self.height)
     }
 
     /// Marks every terrain render patch dirty after a whole-world replacement.

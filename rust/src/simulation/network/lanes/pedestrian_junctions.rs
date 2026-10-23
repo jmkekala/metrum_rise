@@ -3,14 +3,17 @@
 //! Authoritative pedestrian junction routes and rendered-crossing geometry.
 
 use super::super::graph::RegionGraph;
-use super::super::surface::{RoadVec2, rounded_sidewalk_corner_path_xz};
+use super::super::roadbed::RoadVec2;
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{build_cum_dist, road_half_width};
 use super::{CrosswalkMarking, Lane, LaneCrosswalk, LaneSuccessors, LaneType};
 use crate::config;
+use corner_path::rounded_sidewalk_corner_path_xz;
 use godot::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::f32::consts::{PI, TAU};
+
+mod corner_path;
 
 const CONNECTION_POINT_EPSILON_M: f32 = 0.001;
 const CORNER_ARC_MAX_STEP_RAD: f32 = PI / 12.0;

@@ -528,7 +528,7 @@ fn refined_payload_source_waits_for_batched_terrain_stroke_finalization() {
 fn refined_payload_source_waits_for_matching_road_surface_generation() {
     let mut core = test_core_with_flat_terrain(0.0);
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_world_point_dirty(Vector3::ZERO);
     let request = TerrainPatchPayloadRequest {
         key: TerrainPatchPayloadKey {
@@ -617,7 +617,7 @@ fn unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes() {
     core.engineered_terrain_patch_margins
         .insert(key, road_margin_m);
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_world_point_dirty(Vector3::ZERO);
 
     core.refresh_engineered_terrain_patch_ownership_for_keys(
@@ -663,7 +663,7 @@ fn water_road_clip_queries_wait_for_matching_surface_publication() {
     );
 
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_world_point_dirty(Vector3::ZERO);
 
     assert!(
@@ -684,8 +684,8 @@ fn blank_world_reset_publishes_empty_road_surface_for_water_payloads() {
 
     assert!(
         core.transit_network
-            .road_surface
-            .published_generation_matches_source(),
+            .roadbed
+            .is_current(),
         "the replacement empty network must be compiled before renderer refresh"
     );
     assert_eq!(
@@ -798,10 +798,10 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
         core.region_graph = graph;
         // This fixture replaces the graph directly, so it must explicitly invalidate the
         // previously published empty surface before querying road-owned terrain margins.
-        core.transit_network.road_surface.clear();
+        core.transit_network.roadbed.clear();
         core.transit_network
-            .road_surface
-            .compile_dirty(&core.region_graph, &core.heightmap);
+            .roadbed
+            .compile_dirty(&core.region_graph);
         core.refresh_engineered_terrain_patch_ownership_for_keys(render_step_m, &[key]);
         core.road_locked_terrain_patch_margins.contains_key(&key)
     };

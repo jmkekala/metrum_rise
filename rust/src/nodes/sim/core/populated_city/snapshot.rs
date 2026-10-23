@@ -476,7 +476,7 @@ fn bulk_fixture_lane_geometry_matches_loaded_rebuild() {
         .sync_heights_to_visible_surface(
             &core.region_graph,
             &core.heightmap,
-            &core.transit_network.road_surface,
+            &core.transit_network.roadbed,
         );
     assert_eq!(before, geometry(&core));
 }

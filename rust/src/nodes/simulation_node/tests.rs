@@ -172,8 +172,8 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         ..SimCore::new(config)
     };
     core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
+        .roadbed
+        .compile_dirty(&core.region_graph);
     core
 }
 

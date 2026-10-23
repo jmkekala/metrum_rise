@@ -2,9 +2,8 @@
 
 //! Attribute-preserving preview partitions at the bounded junction/profile edit footprint.
 
-use super::{NetworkMeshData, NetworkMeshOwner};
+use super::NetworkMeshData;
 use godot::prelude::{Color, Vector2, Vector3, Vector4};
-use std::collections::HashSet;
 
 /// Attributes interpolated when a road triangle is partitioned.
 #[derive(Clone, Copy, Default)]
@@ -43,20 +42,6 @@ pub(in crate::simulation::network::render) struct Polygon {
 }
 
 impl Polygon {
-    fn split(self, axis: usize, boundary: f32) -> (Self, Self) {
-        self.split_impl(
-            |v| if axis == 0 { v.p.x } else { v.p.z },
-            boundary,
-            |v| {
-                if axis == 0 {
-                    v.p.x = boundary;
-                } else {
-                    v.p.z = boundary;
-                }
-            },
-        )
-    }
-
     /// Splits at a linear coordinate, preserving all surface attributes.
     pub(in crate::simulation::network::render) fn split_by(
         self,
@@ -116,168 +101,6 @@ impl Polygon {
 }
 
 impl NetworkMeshData {
-    /// Partitions only selected owners. Entirely untouched triangles keep all attributes bitwise.
-    /// Bounds are the solver's junction/profile support envelope, in world XZ coordinates.
-    /// O(local mesh triangles × local edit bounds), with reusable clipping scratch buffers.
-    pub(crate) fn preview_partition(
-        &self,
-        whole: &HashSet<NetworkMeshOwner>,
-        bounded: &HashSet<NetworkMeshOwner>,
-        bounds: &[[f32; 4]],
-        origin: Vector2,
-        inside: bool,
-    ) -> Self {
-        let mut output = Self::new();
-        let mut pending = Vec::new();
-        let mut remaining = Vec::new();
-        let mut selected = Vec::new();
-        macro_rules! layer {
-            ($index:expr, $p:ident, $n:ident, $uv:ident, $c:ident) => {{
-                let mut range_index = 0;
-                // Owner membership is constant within a range, so hash once per range, not per
-                // triangle.
-                let mut classified_range = usize::MAX;
-                let (mut full, mut partial) = (false, false);
-                for start in (0..self.$p.len()).step_by(3) {
-                    while self.owner_ranges[$index]
-                        .get(range_index)
-                        .is_some_and(|r| r.end <= start)
-                    {
-                        range_index += 1;
-                    }
-                    let owner = self.owner_ranges[$index]
-                        .get(range_index)
-                        .and_then(|r| r.owner);
-                    if classified_range != range_index {
-                        classified_range = range_index;
-                        full = owner.is_some_and(|o| whole.contains(&o));
-                        partial = owner.is_some_and(|o| bounded.contains(&o));
-                    }
-                    selected.clear();
-                    let mut triangle = Polygon {
-                        vertices: [Vertex::default(); 8],
-                        len: 3,
-                    };
-                    for i in 0..3 {
-                        triangle.vertices[i] = Vertex {
-                            p: self.$p[start + i],
-                            n: self.$n[start + i],
-                            uv: self.$uv[start + i],
-                            c: self.$c[start + i],
-                            crossing: if $index == 4 {
-                                self.road_crossings[start + i]
-                            } else {
-                                Vector4::ZERO
-                            },
-                        };
-                    }
-                    if full || !partial {
-                        if full == inside {
-                            selected.push(triangle);
-                        }
-                    } else {
-                        pending.clear();
-                        pending.push(triangle);
-                        for bound in bounds {
-                            remaining.clear();
-                            for polygon in pending.drain(..) {
-                                let mut inner = polygon;
-                                for (axis, boundary, keep_high) in [
-                                    (0, bound[0] - origin.x, true),
-                                    (0, bound[2] - origin.x, false),
-                                    (1, bound[1] - origin.y, true),
-                                    (1, bound[3] - origin.y, false),
-                                ] {
-                                    if inner.len < 3 {
-                                        break;
-                                    }
-                                    let (low, high) = inner.split(axis, boundary);
-                                    let outer;
-                                    (inner, outer) =
-                                        if keep_high { (high, low) } else { (low, high) };
-                                    if outer.len >= 3 {
-                                        remaining.push(outer);
-                                    }
-                                }
-                                if inside && inner.len >= 3 {
-                                    selected.push(inner);
-                                }
-                            }
-                            std::mem::swap(&mut pending, &mut remaining);
-                        }
-                        if !inside {
-                            selected.extend_from_slice(&pending);
-                        }
-                    }
-                    for polygon in &selected {
-                        for i in 1..polygon.len.saturating_sub(1) {
-                            let vertices = [
-                                polygon.vertices[0],
-                                polygon.vertices[i],
-                                polygon.vertices[i + 1],
-                            ];
-                            if (vertices[1].p - vertices[0].p)
-                                .cross(vertices[2].p - vertices[0].p)
-                                .length_squared()
-                                == 0.0
-                            {
-                                continue;
-                            }
-                            for v in vertices {
-                                output.$p.push(v.p);
-                                output.$n.push(v.n);
-                                output.$uv.push(v.uv);
-                                output.$c.push(v.c);
-                                if $index == 4 {
-                                    output.road_crossings.push(v.crossing);
-                                }
-                            }
-                            output.current_owner = owner;
-                            output.record_owner_triangle($index, output.$p.len());
-                        }
-                    }
-                }
-            }};
-        }
-        layer!(
-            0,
-            earthwork_vertices,
-            earthwork_normals,
-            earthwork_uvs,
-            earthwork_colors
-        );
-        layer!(1, curb_vertices, curb_normals, curb_uvs, curb_colors);
-        layer!(
-            2,
-            raised_step_vertices,
-            raised_step_normals,
-            raised_step_uvs,
-            raised_step_colors
-        );
-        layer!(
-            3,
-            sidewalk_vertices,
-            sidewalk_normals,
-            sidewalk_uvs,
-            sidewalk_colors
-        );
-        layer!(4, road_vertices, road_normals, road_uvs, road_colors);
-        layer!(
-            5,
-            marking_vertices,
-            marking_normals,
-            marking_uvs,
-            marking_colors
-        );
-        layer!(
-            6,
-            concrete_vertices,
-            concrete_normals,
-            concrete_uvs,
-            concrete_colors
-        );
-        output
-    }
 }
 
 #[cfg(test)]

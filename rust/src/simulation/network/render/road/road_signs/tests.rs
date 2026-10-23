@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 fn fixture(
     points: &[Vector3],
     links: &[(usize, usize, u8, u8)],
-) -> (RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem) {
+) -> (RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem) {
     let nodes = points
         .iter()
         .map(|&pos| Node {
@@ -51,21 +51,21 @@ fn fixture(
         graph.set_crosswalk_override(end as u32, edge, false);
     }
     let terrain = TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
-    let mut surface = RoadSurfaceSystem::new(64.0);
+    let mut surface = RoadbedSystem::new(64.0);
     surface.compile_dirty(&graph, &terrain);
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
     (graph, lanes, surface, terrain)
 }
 
-fn junction() -> (RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem) {
+fn junction() -> (RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem) {
     junction_with_lanes(1, 1)
 }
 
 fn junction_with_lanes(
     fwd: u8,
     bkw: u8,
-) -> (RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem) {
+) -> (RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem) {
     let points = [
         Vector3::ZERO,
         Vector3::new(120.0, 0.0, 0.0),
@@ -82,7 +82,7 @@ fn junction_with_lanes(
     (graph, lanes, surface, terrain)
 }
 
-fn generate(f: &(RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem)) -> NetworkMeshData {
+fn generate(f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem)) -> NetworkMeshData {
     RoadRenderer.generate_mesh_data_with_surface(&f.0, &f.1, &f.3, &f.2)
 }
 
@@ -326,7 +326,7 @@ fn repeated_output_is_byte_identical_and_chunk_replacements_match_full_mesh() {
     assert_chunk_output(&mut f);
 }
 
-fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem)) {
+fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem)) {
     let first = generate(f);
     assert_eq!(bytes(&first.road_signs), bytes(&generate(f).road_signs));
     let chunks: BTreeSet<_> = (-3..=3)
@@ -401,7 +401,7 @@ fn every_sign_pole_uses_the_kerb_face_and_interpolated_sidewalk_height() {
     let mut sections = f.2.compiled_sections()[&0].as_ref().clone();
     for section in &mut sections {
         for band in &mut section.bands {
-            if band.kind == RoadSurfaceBandKind::Sidewalk {
+            if band.kind == BandKind::Sidewalk {
                 band.height_start_m = 1.0;
                 band.height_end_m = 2.0;
             }
@@ -413,7 +413,7 @@ fn every_sign_pole_uses_the_kerb_face_and_interpolated_sidewalk_height() {
             .bands
             .iter()
             .find(|band| {
-                band.kind == RoadSurfaceBandKind::Sidewalk
+                band.kind == BandKind::Sidewalk
                     && if side > 0.0 {
                         band.lateral_end_m > 0.0
                     } else {
@@ -466,7 +466,7 @@ fn without_a_sidewalk_the_sign_uses_the_verge_and_terrain_height() {
     for section in &mut sections {
         section
             .bands
-            .retain(|band| band.kind != RoadSurfaceBandKind::Sidewalk);
+            .retain(|band| band.kind != BandKind::Sidewalk);
     }
     for side in [1.0, -1.0] {
         let (distance, height) = offset(&sections[sections.len() / 2], side).unwrap();
@@ -477,7 +477,7 @@ fn without_a_sidewalk_the_sign_uses_the_verge_and_terrain_height() {
             .filter(|band| {
                 matches!(
                     band.kind,
-                    RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Carriageway
+                    BandKind::CurbOrShoulder | BandKind::Carriageway
                 )
             })
             .map(|band| {
@@ -503,7 +503,7 @@ fn profile(
     points: &[Vector3],
     fwd: u8,
     bkw: u8,
-) -> (RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem) {
+) -> (RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem) {
     let mut f = fixture(&[points[0], *points.last().unwrap()], &[(0, 1, fwd, bkw)]);
     let edge = f.0.edge_mut(0);
     edge.physical_geometry = points.to_vec();
@@ -515,7 +515,7 @@ fn profile(
 }
 
 fn warning_kinds(
-    f: &(RegionGraph, LaneSystem, RoadSurfaceSystem, TerrainSystem),
+    f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem),
 ) -> Vec<RoadSignKind> {
     generate(f)
         .road_signs

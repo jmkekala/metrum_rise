@@ -6,7 +6,7 @@ use crate::simulation::buildings::allocator::BuildingSiteSurfaceClient;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::simulation::network::surface::SurfaceChunkKey;
+use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::simulation::terrain::TerrainPatchSnapshot;
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch, TerrainCdtRoadLoop,
@@ -144,7 +144,7 @@ pub(crate) struct CachedTerrainCdtRoadInput {
 pub(crate) struct CachedRefinedTerrainCdtWindow {
     /// Existing owner-local triangle grid, built off-thread and reused with the immutable tile.
     pub(crate) ground_query:
-        Arc<crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex>,
+        Arc<crate::simulation::network::roadbed::RoadSurfaceTriangleQueryIndex>,
     /// Window cache key.
     pub(crate) key: RefinedTerrainCdtWindowKey,
     /// Number of road loops supplied to the CDT builder.

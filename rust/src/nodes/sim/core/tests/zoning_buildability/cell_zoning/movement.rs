@@ -3,7 +3,7 @@
 //! Node movement must preserve cell reservations before publishing road or dependent state.
 
 use super::*;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 
 #[test]
 fn node_move_reuse_matches_cold_geometry_and_ignores_dirty_live_cache() {
@@ -19,17 +19,17 @@ fn node_move_reuse_matches_cold_geometry_and_ignores_dirty_live_cache() {
         core.precompute_road_mesh_data();
         let edge = core.region_graph.edge_count() - 1;
         let node = core.region_graph.edge(edge).end_node;
-        let live = &core.transit_network.road_surface;
-        assert!(live.published_generation_matches_source());
+        let live = &core.transit_network.roadbed;
+        assert!(live.is_current());
         let (origin_x, origin_z) = live.chunk_origin_m();
-        let cold = RoadSurfaceSystem::new_with_chunk_grid(live.chunk_span_m(), origin_x, origin_z);
+        let cold = RoadbedSystem::new_with_chunk_grid(live.chunk_span_m(), origin_x, origin_z);
         // Smooth deformation changes the interior mouth samples at both ends of this
         // prepared road, even though only one endpoint moves. Neither cap may be reused.
         for (target, expected_reuse) in [
             (core.region_graph.node(node).pos, 2),
             (Vector3::new(120.0, 0.0, z), 0),
         ] {
-            let compile = |surface: &RoadSurfaceSystem| {
+            let compile = |surface: &RoadbedSystem| {
                 surface
                     .compile_node_move_surface(
                         &core.region_graph,
@@ -93,7 +93,7 @@ fn unrelated_cell_paint_does_not_block_a_clear_bridge_terminal_move() {
     assert!(
         !core
             .transit_network
-            .road_surface
+            .roadbed
             .compiled_visual_node_pieces()
             .contains_key(&node),
         "the bridge span owns its terminal rather than requiring a separate cap"
@@ -131,13 +131,13 @@ fn node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor() {
     assert!(
         !core.zoning.cells_overlap_road_corridor(
             &candidate.edge(0).physical_geometry,
-            RoadSurfaceSystem::visual_roadbed_half_width_m(candidate.edge(0)),
+            RoadbedSystem::visual_roadbed_half_width_m(candidate.edge(0)),
         ),
         "the straight corridor alone does not reach the reserved cell"
     );
     let surface = core
         .transit_network
-        .road_surface
+        .roadbed
         .compile_node_move_surface(
             &core.region_graph,
             &core.heightmap,
@@ -181,7 +181,7 @@ fn fixture(angle: f64, occupied: bool, erased: bool) -> SimCore {
                 action,
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning(),
@@ -218,7 +218,7 @@ fn node_move_into_paint_or_erased_occupied_claim_is_atomic() {
             assert!(
                 core.zoning.cells_overlap_road_corridor(
                     &candidate.edge(0).physical_geometry,
-                    RoadSurfaceSystem::visual_roadbed_half_width_m(candidate.edge(0)),
+                    RoadbedSystem::visual_roadbed_half_width_m(candidate.edge(0)),
                 ),
                 "the final road must actually intersect a reserved cell"
             );

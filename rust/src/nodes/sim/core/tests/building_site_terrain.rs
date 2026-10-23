@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::nodes::simulation_node::SimulationNode;
-use crate::simulation::network::surface::{RoadVec3, road_ray_triangle_intersection_t};
+use crate::simulation::network::roadbed::{RoadVec3, road_ray_triangle_intersection_t};
 use godot::prelude::Vector2;
 use std::sync::Arc;
 
@@ -80,7 +80,7 @@ fn place_yard_at(
         },
         &mut core.zoning,
         &core.region_graph,
-        &core.transit_network.road_surface,
+        &core.transit_network.roadbed,
         &core.heightmap,
         &catalog,
         core.demand.runtime_tuning(),
@@ -182,8 +182,8 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
             let inside = p + (d - a).normalized() * 0.025;
             let road = core
                 .transit_network
-                .road_surface
-                .sample_visible_surface_height(&core.region_graph, &core.heightmap, p.x, p.y)
+                .roadbed
+                .height_at(p.x, p.y)
                 .unwrap();
             let yard = rendered_paving_height(core, inside).expect("paved frontage coverage");
             assert!(
@@ -1055,13 +1055,8 @@ fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
             let point = frontage + toward_road * distance;
             let height = core
                 .transit_network
-                .road_surface
-                .sample_visible_surface_height(
-                    &core.region_graph,
-                    &core.heightmap,
-                    point.x,
-                    point.y,
-                )
+                .roadbed
+                .height_at(point.x, point.y)
                 .unwrap();
             points.push((building, point, height));
         }
@@ -1215,13 +1210,8 @@ fn check_access_snapshot_heights(core: &mut SimCore, points: &[(usize, Vector2, 
                     "mode={mode} phase={phase} point={point:?}: rendered agent y={} != ground {height} + clearance; road={:?} site={:?} cdt={:?}",
                     transform[7],
                     core.transit_network
-                        .road_surface
-                        .sample_visible_surface_height(
-                            &core.region_graph,
-                            &core.heightmap,
-                            point.x,
-                            point.y
-                        ),
+                        .roadbed
+                        .height_at(point.x, point.y),
                     core.allocator.sample_building_site_height(point),
                     core.sample_engineered_ground_height(point),
                 );

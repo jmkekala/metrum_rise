@@ -23,9 +23,7 @@ use crate::simulation::extraction::ExtractorSite;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::{Lane, LaneType};
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::{
-    CURB_STEP_HEIGHT_M, RoadSurfaceTopologyUndo, SurfaceChunkKey,
-};
+use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, SurfaceChunkKey};
 use crate::simulation::vegetation::edits::{CellEdit, VegetationCell};
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::Vector3;
@@ -238,14 +236,10 @@ pub(crate) struct BuildingRemovalUndo {
 pub(crate) struct SimulationSnapshot {
     /// Terrain heightmap data.
     pub(crate) terrain: Option<Vec<f32>>,
-    /// Exact bounded visual samples overwritten by a planned road's structural resets/writes.
-    pub(crate) road_visual_terrain: Option<crate::simulation::terrain::TerrainVisualOverlay>,
     /// Water runtime state.
     pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.
     pub(crate) trans_graph: Option<RegionGraphUndoDelta>,
-    /// Bounded pre-edit road-surface compiler state matching `trans_graph`.
-    pub(crate) road_surface_topology: Option<RoadSurfaceTopologyUndo>,
     /// Parcels removed by one road bulldoze.
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
     /// Building/economy runtime state.
@@ -550,9 +544,9 @@ impl SimCore {
         snapshot.road_mesh_chunks = Arc::clone(&self.published_road_mesh_chunks);
         snapshot.pending_road_mesh_chunks = Arc::clone(&self.pending_road_mesh_chunks);
         snapshot.road_mesh_full_replace = self.road_mesh_full_replace;
-        snapshot.road_mesh_chunk_span_m = self.transit_network.road_surface.chunk_span_m();
+        snapshot.road_mesh_chunk_span_m = self.transit_network.roadbed.chunk_span_m();
         let (road_chunk_origin_x_m, road_chunk_origin_z_m) =
-            self.transit_network.road_surface.chunk_origin_m();
+            self.transit_network.roadbed.chunk_origin_m();
         snapshot.road_mesh_chunk_origin_x_m = road_chunk_origin_x_m;
         snapshot.road_mesh_chunk_origin_z_m = road_chunk_origin_z_m;
         snapshot.engineered_terrain_patch_keys =

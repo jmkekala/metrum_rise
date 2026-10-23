@@ -289,7 +289,7 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
     use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
     use crate::simulation::economy::agents::age_group_can_work;
     use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-    use crate::simulation::network::surface::RoadSurfaceCompileReason;
+    
 
     let mut scenario = GrowthScenario::starter_town();
     scenario.run_days(365);
@@ -324,11 +324,7 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
     core.prepare_cell_lots_internal();
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
-    core.transit_network.road_surface.compile_dirty_with_reason(
-        &core.region_graph,
-        &core.heightmap,
-        RoadSurfaceCompileReason::SimCommit,
-    );
+    core.transit_network.roadbed.compile_dirty(&core.region_graph);
     let new_lots = industrial_lots(core) - lots_before;
     assert!(
         new_lots >= 20,
@@ -341,7 +337,7 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
         &catalog,
         &[],
         BuildingSiteEnvironment {
-            road_surface: &core.transit_network.road_surface,
+            road_surface: &core.transit_network.roadbed,
             terrain: &core.heightmap,
         },
     );
@@ -1119,7 +1115,7 @@ fn queue_fitting_level_change(core: &mut SimCore, zone: Option<ZoneType>) -> Opt
                 cell_m,
                 &core.region_graph,
                 BuildingSiteEnvironment {
-                    road_surface: &core.transit_network.road_surface,
+                    road_surface: &core.transit_network.roadbed,
                     terrain: &core.heightmap,
                 },
             )
@@ -1367,7 +1363,7 @@ fn a_stale_level_change_permit_is_rejected() {
                 core.config.zone_cell_m,
                 &core.region_graph,
                 BuildingSiteEnvironment {
-                    road_surface: &core.transit_network.road_surface,
+                    road_surface: &core.transit_network.roadbed,
                     terrain: &core.heightmap,
                 },
             )

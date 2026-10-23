@@ -44,8 +44,8 @@ impl SimCore {
         site_height: impl FnOnce() -> Option<f32>,
     ) -> f32 {
         self.transit_network
-            .road_surface
-            .sample_visible_surface_height(&self.region_graph, &self.heightmap, pos.x, pos.y)
+            .roadbed
+            .height_at(pos.x, pos.y)
             .or_else(site_height)
             .or_else(|| self.sample_engineered_ground_height(pos))
             .unwrap_or_else(|| {
@@ -73,10 +73,7 @@ impl SimCore {
     ) -> Option<Vector3> {
         self.allocator
             .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
-        let road_hit = self
-            .transit_network
-            .road_surface
-            .raycast_road_visible_surface(&self.region_graph, &self.heightmap, ray_origin, ray_dir);
+        let road_hit = self.transit_network.roadbed.raycast(ray_origin, ray_dir);
         let (half_w, half_h) = self.heightmap.half_world_extents();
         let site_hit = self.allocator.raycast_building_site_surface(
             ray_origin,
@@ -89,13 +86,8 @@ impl SimCore {
             .filter(|hit| {
                 let pos = Vector2::new(hit.x, hit.z);
                 self.transit_network
-                    .road_surface
-                    .sample_visible_surface_height(
-                        &self.region_graph,
-                        &self.heightmap,
-                        pos.x,
-                        pos.y,
-                    )
+                    .roadbed
+                    .height_at(pos.x, pos.y)
                     .is_none()
                     && self.allocator.sample_building_site_height(pos).is_none()
                     && self.sample_engineered_ground_height(pos).is_none()

@@ -113,63 +113,6 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         chunk[local_idx] = value;
     }
 
-    /// Applies cells grouped by storage chunk while making each shared chunk mutable once.
-    ///
-    /// The caller must keep equal chunk keys contiguous. Repeated groups remain correct but lose
-    /// the batching benefit. Coordinates must be in bounds.
-    pub(crate) fn set_cells_grouped_by_chunk<U>(
-        &mut self,
-        cells: &[U],
-        mut cell_value: impl FnMut(&U) -> (usize, usize, T),
-    ) {
-        let mut group_start = 0;
-        while group_start < cells.len() {
-            let (first_x, first_y, _) = cell_value(&cells[group_start]);
-            debug_assert!(first_x < self.width && first_y < self.height);
-            let first_chunk_x = first_x / self.chunk_size;
-            let first_chunk_y = first_y / self.chunk_size;
-            let key = Self::chunk_key(first_chunk_x, first_chunk_y);
-            let mut group_end = group_start + 1;
-            while group_end < cells.len() {
-                let (x, y, _) = cell_value(&cells[group_end]);
-                debug_assert!(x < self.width && y < self.height);
-                if x / self.chunk_size != first_chunk_x || y / self.chunk_size != first_chunk_y {
-                    break;
-                }
-                group_end += 1;
-            }
-
-            let group = &cells[group_start..group_end];
-            let group_has_non_default = group
-                .iter()
-                .any(|cell| cell_value(cell).2 != self.default_value);
-            if self.chunks.contains_key(&key) || group_has_non_default {
-                let default_value = self.default_value;
-                let chunk_len = self.chunk_len();
-                let mut wrote_default = false;
-                let remove_chunk = {
-                    let chunk = self
-                        .chunks
-                        .entry(key)
-                        .or_insert_with(|| Arc::new(vec![default_value; chunk_len]));
-                    let chunk = Arc::make_mut(chunk);
-                    for cell in group {
-                        let (x, y, value) = cell_value(cell);
-                        wrote_default |= value == default_value;
-                        let local_x = x - first_chunk_x * self.chunk_size;
-                        let local_y = y - first_chunk_y * self.chunk_size;
-                        chunk[local_y * self.chunk_size + local_x] = value;
-                    }
-                    wrote_default && chunk.iter().all(|cell| *cell == default_value)
-                };
-                if remove_chunk {
-                    self.chunks.remove(&key);
-                }
-            }
-            group_start = group_end;
-        }
-    }
-
     /// Returns the fixed storage-chunk width and height in cells.
     pub(crate) fn chunk_size(&self) -> usize {
         self.chunk_size

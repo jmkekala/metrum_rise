@@ -583,7 +583,7 @@ pub(crate) fn load_from_sqlite(
     validate_time_state(&time, time_r.5)?;
     let weather = weather::load_weather_state(&conn)?;
 
-    let mut terrain = world::load_terrain(&conn, &config)?;
+    let terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
     let resource_deposits = world::load_resource_deposits(&conn, &config)?;
     let demand_row = conn.query_row(
@@ -756,13 +756,11 @@ pub(crate) fn load_from_sqlite(
     }
 
     let mut transit_network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain)?;
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network)?;
     transit_network.lane_system.rebuild(&mut graph);
-    transit_network.lane_system.sync_heights_to_visible_surface(
-        &graph,
-        &terrain,
-        &transit_network.road_surface,
-    );
+    transit_network
+        .lane_system
+        .sync_heights_to_visible_surface(&graph, &transit_network.roadbed);
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     allocator.rebuild_loaded_entrance_cache(&graph, &transit_network.lane_system, registry);
@@ -772,7 +770,7 @@ pub(crate) fn load_from_sqlite(
         &zoning,
         &allocator,
         &agriculture,
-        &transit_network.road_surface,
+        &transit_network.roadbed,
     )?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;

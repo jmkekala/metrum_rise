@@ -4,21 +4,12 @@
 
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
-use crate::simulation::network::surface::{RoadSurfaceVisualPolygon, RoadVec3};
+use crate::simulation::network::roadbed::RoadVec3;
 use crate::simulation::zoning::cells::{CellBounds, road_contact_interior};
 use glam::DVec2;
 use godot::prelude::Vector3;
 
 impl ZoningSystem {
-    /// Visits reserved cell interiors in one local road-query envelope. The cell store's chunk
-    /// and reservation-mask indices bound the work; the callback supplies the exact road test.
-    pub(crate) fn reserved_road_cells_overlap_bounds(
-        &self,
-        bounds: CellBounds,
-        test: impl FnMut([DVec2; 4]) -> bool,
-    ) -> bool {
-        self.reserved_cells_overlap(bounds, true, test)
-    }
 
     /// Tests arbitrary (including concave) field/site footprints against both zoning workflows.
     pub(crate) fn overlaps_reservation(&self, footprint: &PolygonFootprint) -> bool {
@@ -50,14 +41,6 @@ impl ZoningSystem {
                         .map(|p| [p.x, p.y]),
                 )
         })
-    }
-
-    /// Tests finalized road/junction polygons using the same road-contact rounding contract.
-    pub(crate) fn cells_overlap_road_polygon(&self, polygon: &RoadSurfaceVisualPolygon) -> bool {
-        if !self.cells.has_reservations() {
-            return false;
-        }
-        self.cells_overlap_road_points_world(&polygon.points_world)
     }
 
     /// Whether a road surface polygon given by its world points overlaps reserved cells.

@@ -7,9 +7,7 @@ use crate::nodes::sim::core::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainPatchCacheKey,
 };
 use crate::nodes::simulation_node::SimulationNode;
-use crate::simulation::network::surface::{
-    RoadVec2, RoadVec3, ray_xz_interval_for_bounds, road_ray_triangle_intersection_t,
-};
+use crate::simulation::network::roadbed::{RoadVec2, RoadVec3, ray_xz_interval_for_bounds, road_ray_triangle_intersection_t};
 
 impl SimCore {
     fn current_ground_patch(&self, x: usize, z: usize) -> Option<&CachedRefinedTerrainPatch> {

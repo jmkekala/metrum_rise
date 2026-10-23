@@ -480,7 +480,7 @@ fn benchmark_cell_load_reservations() {
                     black_box(&loaded.zoning),
                     black_box(&allocator),
                     black_box(&agriculture),
-                    black_box(&loaded.transit_network.road_surface),
+                    black_box(&loaded.transit_network.roadbed),
                 )
                 .unwrap()
             };

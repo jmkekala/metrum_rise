@@ -115,12 +115,11 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
-    CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, PublishedRoadPreviewChecks,
-    ROAD_BUILD_COST_PER_METER, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
-    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
-    RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
-    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, road_preview_channel,
-    road_tool_snapshots_from_core, run_road_preview_worker, run_sim_thread,
+    CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
+    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
+    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
+    RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
+    road_tool_snapshot_from_core, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -133,9 +132,7 @@ use crate::simulation::buildings::allocator::{
     BuildingSiteGradingRequest, BuildingSiteTerrainSnapshot, ExplicitServicePlacementRejection,
 };
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::network::surface::{
-    RoadPreviewValidation, RoadSurfaceCompileReason, RoadSurfaceSystem,
-};
+use crate::simulation::network::road_edit::RoadPreviewValidation;
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
@@ -202,7 +199,7 @@ const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
 #[derive(Clone, Copy)]
 struct TerrainCdtSiteGradingContext<'a> {
     source: TerrainCdtSiteGradingSource<'a>,
-    roads: crate::simulation::network::surface::RoadSurfaceView<'a>,
+    roads: crate::simulation::buildings::allocator::SiteRoads<'a>,
 }
 
 #[derive(Clone, Copy)]
@@ -257,16 +254,8 @@ pub struct SimulationNode {
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
     pub(crate) road_commit_result:
         Option<std::sync::mpsc::Receiver<crate::nodes::sim::core::RoadCommitAck>>,
-    /// Bounded latest-input mailbox for the worker outside the simulation thread.
-    pub(crate) road_preview_tx: RoadPreviewSender,
-    /// Road-preview worker thread, joined when the node is freed.
-    road_preview_worker: Option<std::thread::JoinHandle<()>>,
-    /// Immutable context consumed by the road-preview worker.
-    pub(crate) road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
-    /// Latest completed road-tool preview from the dedicated preview worker.
-    pub(crate) road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
-    /// That result's live checks, for preview polls that find the core lock held.
-    pub(crate) road_preview_checks: Arc<PublishedRoadPreviewChecks>,
+    /// Latest road-tool preview, validated synchronously when it was requested.
+    pub(crate) road_preview_result: RwLock<Option<RoadPreviewSnapshot>>,
     /// Immutable road-tool query state used by cursor picking without locking SimCore.
     pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
@@ -282,7 +271,7 @@ pub struct SimulationNode {
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Payload and mesh jobs in flight on Rayon's pool, waited for when the node is freed.
     async_jobs: Arc<async_jobs::AsyncJobs>,
-    /// Monotonic ids for stale-safe asynchronous road preview requests.
+    /// Monotonic ids of road preview requests.
     pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
     pub(crate) benchmark_mode: bool,
@@ -379,35 +368,23 @@ impl SimulationNode {
         if let Some(rx) = self.cmd_rx.take() {
             let core = Arc::clone(&self.core);
             let snap = Arc::clone(&self.snapshot);
-            let road_preview = Arc::clone(&self.road_preview_context);
             let road_query = Arc::clone(&self.road_tool_query_snapshot);
-            let preview_result = Arc::clone(&self.road_preview_result);
-            let preview_checks = Arc::clone(&self.road_preview_checks);
             self.sim_thread = Some(std::thread::spawn(move || {
-                run_sim_thread(
-                    core,
-                    snap,
-                    road_preview,
-                    road_query,
-                    preview_result,
-                    preview_checks,
-                    rx,
-                );
+                run_sim_thread(core, snap, road_query, rx);
             }));
         }
     }
 
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
-        let (snapshot, road_tool_snapshots) = {
+        let (snapshot, road_tool_snapshot) = {
             let mut core = self.lock_core();
             let snapshot = core.build_snapshot();
-            let road_tool_snapshots = road_tool_snapshots_from_core(&core);
-            (snapshot, road_tool_snapshots)
+            let road_tool_snapshot = road_tool_snapshot_from_core(&core);
+            (snapshot, road_tool_snapshot)
         };
         *self.snapshot.write().unwrap() = snapshot;
-        if let Some((preview_context, road_query_snapshot)) = road_tool_snapshots {
-            *self.road_preview_context.write().unwrap() = preview_context;
+        if let Some(road_query_snapshot) = road_tool_snapshot {
             *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
         }
     }
@@ -418,27 +395,20 @@ impl SimulationNode {}
 
 impl Drop for SimulationNode {
     fn drop(&mut self) {
-        stop_workers(
-            &self.cmd_tx,
-            &mut self.road_preview_tx,
-            [self.sim_thread.take(), self.road_preview_worker.take()],
-            &self.async_jobs,
-        );
+        stop_workers(&self.cmd_tx, self.sim_thread.take(), &self.async_jobs);
     }
 }
 
-// Godot unloads the library soon after it frees its nodes. The node's threads and payload jobs
+// Godot unloads the library soon after it frees its nodes. The node's thread and payload jobs
 // run extension code and may own the last `SimCore` reference, so they must end before the node
 // is gone, leaving its own reference to free the core (CODE-17).
 fn stop_workers(
     commands: &std::sync::mpsc::Sender<SimCommand>,
-    road_preview: &mut RoadPreviewSender,
-    threads: [Option<std::thread::JoinHandle<()>>; 2],
+    sim_thread: Option<std::thread::JoinHandle<()>>,
     jobs: &async_jobs::AsyncJobs,
 ) {
     let _ = commands.send(SimCommand::Stop);
-    road_preview.disconnect();
-    for thread in threads.into_iter().flatten() {
+    if let Some(thread) = sim_thread {
         // A panicked thread already reported its panic; there is nothing left to stop.
         let _ = thread.join();
     }
@@ -489,24 +459,13 @@ impl INode3D for SimulationNode {
 
         core.precompute_road_mesh_data();
         let initial_snapshot = core.build_snapshot();
-        let (road_preview_context, road_tool_query_snapshot) = road_tool_snapshots_from_core(&core)
-            .expect("the initial road surface generation must be publishable");
-        let road_preview_context = Arc::new(RwLock::new(road_preview_context));
+        let road_tool_query_snapshot = road_tool_snapshot_from_core(&core)
+            .expect("the initial roadbed generation must be publishable");
         let road_tool_query_snapshot = Arc::new(RwLock::new(road_tool_query_snapshot));
-        let road_preview_result = Arc::new(RwLock::new(None));
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
         let terrain_patch_payload_jobs = Arc::new(Mutex::new(TerrainPatchPayloadAsyncState::new()));
         let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
-        let (road_preview_tx, road_preview_rx) = road_preview_channel();
         let core_arc = Arc::new(Mutex::new(core));
-        let road_preview_worker = {
-            let core = Arc::clone(&core_arc);
-            let context = Arc::clone(&road_preview_context);
-            let result = Arc::clone(&road_preview_result);
-            std::thread::spawn(move || {
-                run_road_preview_worker(core, context, result, road_preview_rx);
-            })
-        };
 
         let snapshot = Arc::new(RwLock::new(initial_snapshot));
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
@@ -526,11 +485,7 @@ impl INode3D for SimulationNode {
             cell_chunk_job: Default::default(),
             road_commit_request_id: 0,
             road_commit_result: None,
-            road_preview_tx,
-            road_preview_worker: Some(road_preview_worker),
-            road_preview_context,
-            road_preview_result,
-            road_preview_checks: Default::default(),
+            road_preview_result: RwLock::new(None),
             road_tool_query_snapshot,
             water_patch_mesh_jobs,
             building_lods: Default::default(),

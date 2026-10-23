@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadEditPlan;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 use godot::prelude::Vector2;
 use std::time::Instant;
 
@@ -138,7 +138,7 @@ fn measure_populated_road_plan_scaling(
     > = None;
     let mut initial_site_solves = None;
     let mut background_cells = 0;
-    let mut previous_move_surfaces: [Option<RoadSurfaceSystem>; 2] = [None, None];
+    let mut previous_move_surfaces: [Option<RoadbedSystem>; 2] = [None, None];
     let cell_grid = if cells {
         use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape, GridFrame};
         use glam::DVec2;
@@ -198,7 +198,7 @@ fn measure_populated_road_plan_scaling(
             edge.physical_length = 6144.0;
             let id = core.region_graph.add_edge(edge);
             core.transit_network
-                .road_surface
+                .roadbed
                 .mark_edge_dirty(&core.region_graph, id);
             background_roads += 1;
         }
@@ -249,8 +249,8 @@ fn measure_populated_road_plan_scaling(
         core.precompute_road_mesh_data();
         assert!(
             core.transit_network
-                .road_surface
-                .published_generation_matches_source()
+                .roadbed
+                .is_current()
         );
         if scenario == CellScenario::Memory {
             let products = memory::measure(&mut core, remote_buildings, &mut memory_phase);
@@ -280,7 +280,7 @@ fn measure_populated_road_plan_scaling(
                 let check = || {
                     let surface = core
                         .transit_network
-                        .road_surface
+                        .roadbed
                         .compile_node_move_surface(
                             &core.region_graph,
                             &core.heightmap,
@@ -344,7 +344,7 @@ fn measure_populated_road_plan_scaling(
                     &core.zoning,
                     &core.region_graph,
                     crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-                        road_surface: &core.transit_network.road_surface,
+                        road_surface: &core.transit_network.roadbed,
                         terrain: &core.heightmap,
                     },
                 )
@@ -387,7 +387,6 @@ fn measure_populated_road_plan_scaling(
         let mut frame_checks_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: generation,
@@ -549,13 +548,13 @@ fn measure_snapshot_components(core: &SimCore, background: usize) {
         let graph = black_box(core.region_graph.clone());
         let graph_us = start.elapsed().as_secs_f64() * 1_000_000.0;
         let start = Instant::now();
-        let surface = black_box(core.transit_network.road_surface.clone());
+        let surface = black_box(core.transit_network.roadbed.clone());
         let surface_us = start.elapsed().as_secs_f64() * 1_000_000.0;
         let start = Instant::now();
         let water = black_box(core.watermap.clone());
         let water_us = start.elapsed().as_secs_f64() * 1_000_000.0;
         assert_eq!(graph.edge_count(), core.region_graph.edge_count());
-        assert!(surface.published_generation_matches_source());
+        assert!(surface.is_current());
         drop((terrain, graph, surface, water));
         let start = Instant::now();
         let snapshot = black_box(road_tool_snapshots_from_core(core).unwrap());
@@ -591,10 +590,10 @@ fn measure_snapshot_components(core: &SimCore, background: usize) {
         result[name] = serde_json::json!({ "p50_us": values[10], "p95_us": values[19] });
     }
     println!("CELL_SNAPSHOT_COMPONENTS {result}");
-    measure_surface_snapshot_fields(&core.transit_network.road_surface, background);
+    measure_surface_snapshot_fields(&core.transit_network.roadbed, background);
 }
 
-fn measure_surface_snapshot_fields(surface: &RoadSurfaceSystem, background: usize) {
+fn measure_surface_snapshot_fields(surface: &RoadbedSystem, background: usize) {
     fn clone_us<T: Clone>(value: &T) -> f64 {
         let mut samples = [0.0_f64; 21];
         for iteration in 0..24 {

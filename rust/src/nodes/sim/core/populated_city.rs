@@ -37,7 +37,7 @@ use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
 use crate::simulation::economy::demand::DemandBuildingActionPlan;
-use crate::simulation::network::surface::RoadSurfaceCompileReason;
+
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::cells::CellSelectionShape;
 
@@ -376,18 +376,14 @@ fn fill_lots(core: &mut SimCore) {
         core.prepare_cell_lots_internal();
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
-        core.transit_network.road_surface.compile_dirty_with_reason(
-            &core.region_graph,
-            &core.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
+        core.transit_network.roadbed.compile_dirty(&core.region_graph);
         let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
             &core.zoning,
             &core.region_graph,
             core.demand.runtime_catalog(),
             &[],
             BuildingSiteEnvironment {
-                road_surface: &core.transit_network.road_surface,
+                road_surface: &core.transit_network.roadbed,
                 terrain: &core.heightmap,
             },
         );

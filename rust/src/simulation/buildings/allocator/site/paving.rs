@@ -4,7 +4,7 @@
 
 use super::model::{BuildingSiteClient, BuildingSiteSurfaceClient};
 use crate::assets::SiteSurfaceMaterial;
-use crate::simulation::network::surface::{RoadSurfaceSystem, RoadVec3};
+use crate::simulation::network::roadbed::{RoadVec3, triangulate_constrained_rings_xz};
 use godot::prelude::{Vector2, Vector3};
 use rstar::{AABB, RTree, RTreeObject};
 
@@ -38,7 +38,7 @@ impl SitePavingPartition {
                 .iter()
                 .map(|p| RoadVec3::new(f64::from(p.x), 0.0, f64::from(p.y)))
                 .collect();
-            let pieces = RoadSurfaceSystem::triangulate_constrained_rings_xz(&[ring])?;
+            let pieces = triangulate_constrained_rings_xz(&[ring])?;
             for mut triangle in pieces {
                 if cross(triangle[0], triangle[1], triangle[2]) < 0.0 {
                     triangle.swap(1, 2);
@@ -143,7 +143,7 @@ fn site_foundation_triangles(points: &[Vector2], height: f32) -> Option<Vec<[Vec
         .map(|p| RoadVec3::new(f64::from(p.x), f64::from(height), f64::from(p.y)))
         .collect();
     Some(
-        RoadSurfaceSystem::triangulate_constrained_rings_xz(&[ring])?
+        triangulate_constrained_rings_xz(&[ring])?
             .into_iter()
             .map(|triangle| triangle.map(to_vector3))
             .collect(),

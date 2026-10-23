@@ -108,8 +108,8 @@ impl SimulationNode {
             || !core.allocator.building_site_query_index_ready()
             || !core
                 .transit_network
-                .road_surface
-                .published_generation_matches_source()
+                .roadbed
+                .is_current()
         {
             let world_generation = core.terrain_payload_global_generation;
             // Release the core borrow before mutating bridge-only scheduling state. The worker

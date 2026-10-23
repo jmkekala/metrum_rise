@@ -3,7 +3,7 @@
 //! `SimCore` refined terrain patch cache builders and invalidation helpers.
 
 use super::super::*;
-use crate::simulation::network::surface::{RoadSurfaceTriangleQueryIndex, RoadVec3};
+use crate::simulation::network::roadbed::{RoadSurfaceTriangleQueryIndex, RoadVec3};
 use std::collections::BTreeSet;
 
 impl SimCore {
@@ -108,20 +108,6 @@ impl SimCore {
         let mut unique_keys = patch_keys.to_vec();
         unique_keys.sort_unstable();
         unique_keys.dedup();
-        let road_margins = self
-            .transit_network
-            .road_surface
-            .published_generation_matches_source()
-            .then(|| {
-                self.transit_network
-                    .road_surface
-                    .terrain_render_patch_grading_margins_for_patches(
-                        &self.region_graph,
-                        &self.heightmap,
-                        safe_render_step_m,
-                        &unique_keys,
-                    )
-            });
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
 
@@ -132,25 +118,9 @@ impl SimCore {
         let mut invalidated_cache_entries = 0usize;
         for key in unique_keys {
             let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
-            let road_margin = road_margins
-                .as_ref()
-                .and_then(|margins| margins.get(&key).copied())
-                .or_else(|| {
-                    road_margins
-                        .is_none()
-                        .then(|| self.road_locked_terrain_patch_margins.get(&key).copied())
-                        .flatten()
-                });
-            if let Some(margin_m) = road_margin {
-                self.road_locked_terrain_patch_margins.insert(key, margin_m);
-            } else {
-                self.road_locked_terrain_patch_margins.remove(&key);
-            }
-            Self::set_sorted_patch_membership(
-                &mut self.road_locked_terrain_patch_keys,
-                key,
-                road_margin.is_some(),
-            );
+            // Roads have no terrain grading envelope until `ROAD-68-D`: no patch is road-locked.
+            self.road_locked_terrain_patch_margins.remove(&key);
+            Self::set_sorted_patch_membership(&mut self.road_locked_terrain_patch_keys, key, false);
 
             let site_owned = self
                 .heightmap
@@ -169,12 +139,7 @@ impl SimCore {
                 self.building_site_owned_terrain_patch_keys.remove(&key);
             }
 
-            let engineered_margin = match (road_margin, site_owned) {
-                (Some(road_margin_m), true) => Some(road_margin_m.max(site_margin_m)),
-                (Some(road_margin_m), false) => Some(road_margin_m),
-                (None, true) => Some(site_margin_m),
-                (None, false) => None,
-            };
+            let engineered_margin = site_owned.then_some(site_margin_m);
             if let Some(margin_m) = engineered_margin {
                 self.engineered_terrain_patch_margins.insert(key, margin_m);
             } else {
@@ -233,15 +198,11 @@ impl SimCore {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::TerrainEarthwork,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         if !self
             .transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
         {
             return Vec::new();
         }
@@ -315,9 +276,9 @@ impl SimCore {
                 safe_render_step_m,
                 Some(TerrainCdtSiteGradingContext {
                     source: TerrainCdtSiteGradingSource::Snapshot(&sites),
-                    roads: crate::simulation::network::surface::RoadSurfaceView::new(
+                    roads: crate::simulation::buildings::allocator::SiteRoads::new(
                         &self.region_graph,
-                        &self.transit_network.road_surface,
+                        &self.transit_network.roadbed,
                     ),
                 }),
                 previous.as_deref(),
@@ -373,11 +334,7 @@ impl SimCore {
         &mut self,
         render_step_m: f32,
     ) -> usize {
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::TerrainEarthwork,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         let patch_cols = self.heightmap.render_patch_cols();
         let patch_rows = self.heightmap.render_patch_rows();
         let mut patch_keys = Vec::with_capacity(patch_cols.saturating_mul(patch_rows));
@@ -394,15 +351,11 @@ impl SimCore {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::TerrainEarthwork,
-        );
+        self.transit_network.roadbed.compile_dirty(&self.region_graph);
         if !self
             .transit_network
-            .road_surface
-            .published_generation_matches_source()
+            .roadbed
+            .is_current()
         {
             return 0;
         }

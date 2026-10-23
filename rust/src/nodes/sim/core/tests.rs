@@ -34,7 +34,7 @@ use crate::simulation::economy::demand::{
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::lanes::{Lane, LaneType};
-use crate::simulation::network::surface::CURB_STEP_HEIGHT_M;
+use crate::simulation::network::roadbed::CURB_STEP_HEIGHT_M;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -200,7 +200,7 @@ fn fiscal_policy_api_clamps_values_and_rejects_unknown_ids() {
 fn test_core_uses_terrain_render_span_for_road_surface_chunks() {
     let core = test_core();
     assert_eq!(
-        core.transit_network.road_surface.chunk_span_m(),
+        core.transit_network.roadbed.chunk_span_m(),
         core.heightmap.chunk_span_m()
     );
     assert_eq!(
@@ -213,7 +213,7 @@ fn test_core_uses_terrain_render_span_for_road_surface_chunks() {
         "advertised render span must equal the physical terrain-patch interval span"
     );
     assert_eq!(
-        core.transit_network.road_surface.chunk_origin_m(),
+        core.transit_network.roadbed.chunk_origin_m(),
         core.config.terrain_world_origin_m(),
         "road render chunks must start at the terrain world minimum"
     );
@@ -400,11 +400,11 @@ fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
         .lane_system
         .rebuild(&mut core.region_graph);
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, 0);
     for node_id in endpoints {
         core.transit_network
-            .road_surface
+            .roadbed
             .mark_node_dirty(&core.region_graph, node_id);
     }
     core.mark_local_network_render_dirty();
@@ -449,7 +449,7 @@ fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
 
     let distant_chunk = core
         .transit_network
-        .road_surface
+        .roadbed
         .surface_chunk_cache()
         .iter()
         .find_map(|(&chunk, entry)| {
@@ -463,7 +463,7 @@ fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
     );
 
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, 0);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
@@ -505,7 +505,7 @@ fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
     assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
 
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, 0);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
@@ -516,7 +516,7 @@ fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
     assert!(!first_payloads.is_empty());
 
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, 1);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
@@ -661,7 +661,6 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 11,
             surface_generation: query.surface_generation.wrapping_add(1),
@@ -752,11 +751,11 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     core.region_graph.rebuild_intersection_clips();
     for &edge_idx in &edge_ids {
         core.transit_network
-            .road_surface
+            .roadbed
             .mark_edge_dirty(&core.region_graph, edge_idx);
     }
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_node_dirty(&core.region_graph, center);
     core.mark_local_network_render_dirty();
     core.precompute_road_mesh_data();
@@ -764,8 +763,8 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     assert!(
         !core
             .transit_network
-            .road_surface
-            .published_generation_matches_source(),
+            .roadbed
+            .is_current(),
         "the contradictory JunctionN must exercise the failed-production path"
     );
     assert!(published_mesh.iter().all(|(chunk, mesh)| {
@@ -813,13 +812,13 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
     core.transit_network.bulk_dirty_edges.insert(new_edge);
     core.transit_network.mark_road_profile_authored(new_edge);
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, new_edge);
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_node_dirty(&core.region_graph, center);
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_node_dirty(&core.region_graph, north);
 
     let stable_before = core.region_graph.edge(stable_edge).geometry.clone();
@@ -843,7 +842,7 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
     );
     assert!(
         core.transit_network
-            .road_surface
+            .roadbed
             .dirty_edges()
             .contains(&new_edge),
         "changed profile edge must stay marked for the following road-surface compile"
@@ -903,7 +902,6 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
@@ -961,7 +959,6 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
-            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
@@ -2869,7 +2866,6 @@ fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click()
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
-                enqueued_at: None,
                 include_terrain,
                 request_id: 1,
                 surface_generation: query.surface_generation,
@@ -2918,7 +2914,6 @@ fn preview_terrain_revisions_keep_unchanged_plain_patches_across_poses() {
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
-                enqueued_at: None,
                 include_terrain: true,
                 request_id: 1,
                 surface_generation: query.surface_generation,
@@ -2970,7 +2965,6 @@ fn benchmark_road_preview_modes() {
             let preview = super::road_preview::compile_road_preview_with_sites(
                 &context,
                 RoadPreviewRequest {
-                    enqueued_at: None,
                     include_terrain,
                     request_id: i,
                     surface_generation: query.surface_generation,

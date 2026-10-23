@@ -6,12 +6,12 @@
 //! Agriculture owns the saved polygons and updates the cache on commit, load, removal and undo.
 
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{RoadSurfaceSystem, RoadVec3};
+use crate::simulation::network::roadbed::{RoadVec3, RoadbedSystem};
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::{fill_rule::FillRule, overlay_rule::OverlayRule};
 use i_overlay::float::single::SingleFloatOverlay;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Prepared polygon used for exact positive-area overlap, including concave shapes and containment.
 #[derive(Clone, Debug)]
@@ -44,6 +44,7 @@ impl PolygonFootprint<'static> {
         }
     }
 
+    #[cfg(test)]
     fn from_road(points: &[RoadVec3]) -> Self {
         Self::from_precise_points(points.iter().map(|p| [p.x, p.z]))
     }
@@ -133,61 +134,17 @@ impl<'a> PolygonFootprint<'a> {
         self.overlaps_points(&points, min, max)
     }
 
-    /// Tests compiled carriageway, sidewalk and junction surfaces through their existing query grid.
-    pub(crate) fn overlaps_roads(&self, roads: &RoadSurfaceSystem) -> bool {
-        let (_, cell_max) = RoadSurfaceSystem::query_chunk_world_bounds((0, 0));
-        let cell_m = cell_max.x as f32;
-        let min = (self.min / cell_m).floor();
-        let max = (self.max / cell_m).floor();
-        let multiple_chunks = min != max;
-        let mut tested_spans = HashSet::new();
-        let mut tested_nodes = HashSet::new();
-        for x in min.x as i32..=max.x as i32 {
-            for z in min.y as i32..=max.y as i32 {
-                if let Some(ids) = roads.query_chunk_spans.get(&(x, z)) {
-                    for id in ids.iter() {
-                        if multiple_chunks && !tested_spans.insert(*id) {
-                            continue;
-                        }
-                        if let Some(piece) = roads.compiled_visual_span_pieces.get(id)
-                            && piece.any_surface_polygon_in_bounds(
-                                [
-                                    f64::from(self.min.x) - 1.0,
-                                    f64::from(self.min.y) - 1.0,
-                                    f64::from(self.max.x) + 1.0,
-                                    f64::from(self.max.y) + 1.0,
-                                ],
-                                |corners| {
-                                    // Quad points are a subset of the original corners. Apply
-                                    // the same outward-rounded bounds before reconstructing it.
-                                    let (min, max) =
-                                        precise_bounds(corners.iter().map(|p| [p.x, p.z]));
-                                    self.bounds_overlap(min, max)
-                                },
-                                |quad| self.overlaps_road_polygon(quad.points()),
-                            )
-                        {
-                            return true;
-                        }
-                    }
-                }
-                if let Some(ids) = roads.query_chunk_nodes.get(&(x, z)) {
-                    for id in ids.iter() {
-                        if multiple_chunks && !tested_nodes.insert(*id) {
-                            continue;
-                        }
-                        if let Some(piece) = roads.compiled_visual_node_pieces.get(id)
-                            && piece
-                                .surface_polygons()
-                                .any(|polygon| self.overlaps_road_polygon(&polygon.points_world))
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
+    /// Tests visible carriageway, sidewalk and junction triangles through the roadbed query grid.
+    pub(crate) fn overlaps_roads(&self, roads: &RoadbedSystem) -> bool {
+        roads.any_top_triangle_in_bounds(
+            [
+                f64::from(self.min.x) - 1.0,
+                f64::from(self.min.y) - 1.0,
+                f64::from(self.max.x) + 1.0,
+                f64::from(self.max.y) + 1.0,
+            ],
+            |triangle, _| self.overlaps_road_polygon(&triangle),
+        )
     }
 }
 
@@ -320,11 +277,6 @@ impl FieldClearanceIndex {
             })
     }
 
-    /// Tests one compiled road polygon, given by its world points, using its actual carrier geometry.
-    pub(crate) fn overlaps_road_polygon(&self, points: &[RoadVec3]) -> bool {
-        !self.footprints.is_empty() && self.overlaps(&PolygonFootprint::from_road(points), None)
-    }
-
     /// Queries only field references in touched chunks; `ignore` permits replacing one's own field.
     /// Cost follows touched chunks and local polygon geometry, independent of remote field count.
     pub(crate) fn overlaps(&self, footprint: &PolygonFootprint, ignore: Option<usize>) -> bool {
@@ -380,8 +332,6 @@ impl FieldClearanceIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
 
     fn rectangle(x: f32, z: f32, width: f32, depth: f32) -> [Vector2; 4] {
         [
@@ -495,14 +445,11 @@ mod tests {
                 [10.0, 30.0],
                 [0.0, 30.0],
             ];
-            let polygon = RoadSurfaceVisualPolygon::from_parts(
-                points
-                    .into_iter()
-                    .map(|[x, z]| glam::DVec3::new(x + offset, 0.0, z + offset))
-                    .collect(),
-                &[],
-            );
-            let prepared = PolygonFootprint::from_road(&polygon.points_world);
+            let points_world: Vec<_> = points
+                .into_iter()
+                .map(|[x, z]| glam::DVec3::new(x + offset, 0.0, z + offset))
+                .collect();
+            let prepared = PolygonFootprint::from_road(&points_world);
             for (x, z, size, expected) in [
                 (1.0, 1.0, 2.0, true),
                 (-1.0, -1.0, 40.0, true),
@@ -519,7 +466,7 @@ mod tests {
                 );
                 assert_eq!(footprint.overlaps(&prepared), expected);
                 assert_eq!(
-                    footprint.overlaps_road_polygon(&polygon.points_world),
+                    footprint.overlaps_road_polygon(&points_world),
                     expected,
                     "offset={offset} x={x} z={z} size={size}"
                 );

@@ -3,18 +3,23 @@
 //! Bounded post-edit topology and profile products shared by preview and authoritative insertion.
 
 use super::graph::{Edge, RegionGraph};
-use super::surface::{PlannedRoadSurfaceQuery, RoadSurfaceSystem};
 use super::types::NodeType;
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::time::Instant;
 
+mod input;
 #[cfg(test)]
 mod tests;
+mod validation;
+
+pub(crate) use input::{PreparedRoadInput, RoadExtensionReprofile, prepare_road_input_for_tool};
+pub(crate) use validation::{
+    RoadPreviewValidation, validate_road_candidate_fast, validate_road_edit,
+};
 
 /// Local dependency scope and timings from the shared junction/profile finalizer.
 #[derive(Clone, Debug, Default)]
@@ -59,7 +64,7 @@ struct PlannedEdge {
 
 /// Final local graph delta in deterministic preview-local ID order, never a whole-city snapshot.
 ///
-/// Source/surface generations are checked by RoadEditPlan before adoption. Existing runtime
+/// Source/roadbed generations are checked by RoadEditPlan before adoption. Existing runtime
 /// metadata remains live; only topology, profiles and clip ownership are installed from this plan.
 pub(crate) struct RoadTopologyPlan {
     nodes: Vec<PlannedNode>,
@@ -67,7 +72,6 @@ pub(crate) struct RoadTopologyPlan {
     splits: Vec<PlannedRoadSplit>,
     dirty_edges: HashSet<usize>,
     affected_nodes: HashSet<u32>,
-    roads: Option<Arc<PlannedRoadSurfaceQuery>>,
 }
 
 impl std::fmt::Debug for RoadTopologyPlan {
@@ -81,11 +85,6 @@ impl std::fmt::Debug for RoadTopologyPlan {
 }
 
 impl RoadTopologyPlan {
-    /// Final local road query inputs; terrain stamps and cutout tiles are deferred until click.
-    pub(crate) fn roads(&self) -> Option<&Arc<PlannedRoadSurfaceQuery>> {
-        self.roads.as_ref()
-    }
-
     /// Captures the already solved validation excerpt in O(local records + profile points).
     /// Incomplete mutation frontiers cannot be adopted; interactive callers must rebuild the plan.
     pub(super) fn capture(
@@ -181,96 +180,7 @@ impl RoadTopologyPlan {
             splits,
             dirty_edges,
             affected_nodes: finalized.affected_nodes,
-            roads: None,
         })
-    }
-
-    /// Retains final local road geometry and prospective owner IDs without compiling terrain.
-    pub(super) fn capture_road_queries(
-        &mut self,
-        local: &RegionGraph,
-        surface: &RoadSurfaceSystem,
-        source: &RegionGraph,
-    ) {
-        // Predict exactly the append order used by adopt_road_topology_plan, not local IDs.
-        let mut next_edge = source.edge_count();
-        let edge_ids = self
-            .edges
-            .iter()
-            .map(|edge| {
-                edge.source.unwrap_or_else(|| {
-                    let id = next_edge;
-                    next_edge += 1;
-                    id
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut next_node = source.node_count() as u32;
-        let node_ids = self
-            .nodes
-            .iter()
-            .map(|node| {
-                node.source.unwrap_or_else(|| {
-                    let id = next_node;
-                    next_node += 1;
-                    id
-                })
-            })
-            .collect::<Vec<_>>();
-        let (replaced_edges, replaced_nodes) = self.commit_recompiled_sources(local, source);
-        self.roads = Some(Arc::new(PlannedRoadSurfaceQuery::capture(
-            local,
-            surface,
-            &edge_ids,
-            &node_ids,
-            &replaced_edges,
-            &replaced_nodes,
-        )));
-    }
-
-    // Source owners the commit recompiles, by the rule of `compile_dirty`: adoption marks
-    // `dirty_edges` and `affected_nodes`, the compile adds both endpoints of every dirty edge,
-    // then recompiles every span incident to those nodes and dirties all their chunks. Existing
-    // nodes use their live incidence, which the excerpt need not hold in full. Context the
-    // excerpt compiles only for validation is not replaced: the commit keeps its live pieces
-    // and chunks, and `PlannedRoadSurfaceQuery::matches_published` requires them equal.
-    // O(local nodes + their incident edges).
-    fn commit_recompiled_sources(
-        &self,
-        local: &RegionGraph,
-        source: &RegionGraph,
-    ) -> (HashSet<usize>, HashSet<u32>) {
-        let mut local_nodes = self.affected_nodes.clone();
-        local_nodes
-            .extend((0..self.nodes.len() as u32).filter(|&id| self.nodes[id as usize].changed));
-        for &edge in &self.dirty_edges {
-            let edge = local.edge(edge);
-            local_nodes.extend([edge.start_node, edge.end_node]);
-        }
-        let mut edges: HashSet<usize> = self
-            .dirty_edges
-            .iter()
-            .filter_map(|&id| self.edges[id].source)
-            .collect();
-        let mut nodes = HashSet::new();
-        for id in local_nodes
-            .iter()
-            .flat_map(|&id| [id, local.get_valid_node(id)])
-        {
-            match self.nodes[id as usize].source {
-                Some(source_id) => {
-                    nodes.insert(source_id);
-                    edges.extend(source.node_adjacency(source_id).iter().copied());
-                }
-                None => edges.extend(
-                    local
-                        .node_adjacency(id)
-                        .iter()
-                        .filter_map(|&edge| self.edges[edge].source),
-                ),
-            }
-        }
-        (edges, nodes)
     }
 
     /// Returns the bounded source records required by the existing undo journal.
@@ -317,7 +227,7 @@ impl TransitNetwork {
             &authored_edges,
         ));
         let profile_us = start.elapsed().as_micros();
-        self.mark_surface_dirty_from_sets(graph, &dirty_edges, &affected_nodes);
+        self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
         let start = Instant::now();
         graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
         FinalizedRoadGeometry {
@@ -351,7 +261,6 @@ impl TransitNetwork {
             if node.source.is_some() && node.changed {
                 let old_pos = graph.node(id).pos;
                 self.mark_point_dirty(old_pos);
-                self.mark_surface_point_dirty(old_pos);
                 graph.remove_node_from_spatial_index(id, old_pos);
                 graph.nodes[id as usize].pos = node.position;
                 graph.nodes[id as usize].node_type = node.kind;
@@ -366,7 +275,7 @@ impl TransitNetwork {
                     .insert(node_ids[local], node_ids[node.canonical as usize]);
                 // The final solve scope contains canonical IDs only. Explicitly evict the
                 // removed node's old ownership/coverage before publishing its survivor.
-                self.road_surface.mark_node_dirty(graph, node_ids[local]);
+                self.roadbed.mark_node_dirty(node_ids[local]);
             }
         }
         let mut edge_ids = Vec::with_capacity(plan.edges.len());
@@ -448,7 +357,7 @@ impl TransitNetwork {
             .iter()
             .map(|id| node_ids[*id as usize])
             .collect();
-        self.mark_surface_dirty_from_sets(graph, &dirty_edges, &affected_nodes);
+        self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
         self.bulk_dirty_edges.clear();
         self.profile_authored_edges.clear();
         Some(FinalizedRoadGeometry {

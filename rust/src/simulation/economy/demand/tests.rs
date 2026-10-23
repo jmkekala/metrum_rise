@@ -750,7 +750,7 @@ fn commercial_spawn_candidate_prefers_asset_for_unmet_consumer_resource() {
     let zoning = commercial_zoning_run(&graph);
 
     let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
-    let mut road_surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
+    let mut road_surface = crate::simulation::network::roadbed::RoadbedSystem::new(512.0);
     road_surface.compile_dirty(&graph, &terrain);
     let candidates = allocator.collect_demand_spawn_candidates_by_use(
         &zoning,

@@ -5,15 +5,11 @@
 //! The sim thread runs this for every `SimCommand::AddRoad`; headless scenarios call it to lay
 //! roads through the same path as the player.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use super::frame::record_crash_phase_for_core;
 use super::road_edit_plan::RoadEditPlan;
-use super::road_preview::{
-    RoadPreviewRequest, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
-    road_tool_snapshots_from_core,
-};
+use super::road_preview::{RoadPreviewRequest, RoadToolQuerySnapshot, road_tool_snapshot_from_core};
 use super::road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
@@ -32,8 +28,6 @@ pub(crate) struct RoadCommitRequest {
     pub(crate) bkw_lanes: i32,
     /// Whether authored endpoints may snap to nearby existing road nodes.
     pub(crate) snap_to_existing_roads: bool,
-    /// Successful exact preview; reused only while its inputs still match the core.
-    pub(crate) edit_plan: Option<Arc<RoadEditPlan>>,
 }
 
 /// What the road tool learns about one queued stroke.
@@ -54,8 +48,8 @@ pub(crate) struct RoadCommitOutcome {
     pub(crate) rejection_reason: String,
     /// Rejection diagnostic; empty when committed.
     pub(crate) rejection: String,
-    /// Road-tool snapshots to publish after releasing the core lock.
-    pub(crate) road_snapshots: Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)>,
+    /// Road-tool snapshot to publish after releasing the core lock.
+    pub(crate) road_snapshot: Option<RoadToolQuerySnapshot>,
     pub(crate) add_internal_ms: f64,
     pub(crate) finalize_ms: f64,
     pub(crate) surface_ms: f64,
@@ -97,56 +91,28 @@ impl SimCore {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            edit_plan,
         } = request;
         self.last_road_rejection = None;
         // The report of a refusal carries the stroke exactly as submitted.
         let submitted_points = points.clone();
         // Bulk-load defers per-edge rebuilds until finalization.
         let add_internal_start = Instant::now();
-        // Complete all geometry before opening the transaction. The worker and
-        // click rebuild use the same local compiler; neither clones the city here.
-        record_crash_phase_for_core(self, "add road preview plan validation");
-        let edit_plan = edit_plan.filter(|plan| {
-            plan.prepared_input_for(
-                self.road_tool_surface_generation,
-                self.heightmap.source_generation(),
-                &points,
+        // Complete the local road plan before opening the transaction; it never clones the city.
+        record_crash_phase_for_core(self, "add road plan compile");
+        let edit_plan = RoadEditPlan::compile(
+            self,
+            RoadPreviewRequest {
+                include_terrain: false,
+                request_id: 0,
+                surface_generation: self.road_tool_surface_generation,
+                points: points.clone(),
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-            )
-            .is_some()
-                && plan.road_status(self) == "ready"
-        });
-        record_crash_phase_for_core(self, "add road preview plan validated");
-        edit_metrics.preview_plan_reused = edit_plan.is_some();
-        let road_plan = if let Some(edit_plan) = edit_plan {
-            edit_plan
-        } else {
-            record_crash_phase_for_core(self, "add road cold plan compile");
-            let road_plan = Arc::new(RoadEditPlan::compile_road(
-                self,
-                RoadPreviewRequest {
-                    enqueued_at: None,
-                    include_terrain: false,
-                    request_id: 0,
-                    surface_generation: self.road_tool_surface_generation,
-                    points: points.clone(),
-                    fwd_lanes,
-                    bkw_lanes,
-                    snap_to_existing_roads,
-                },
-            ));
-            record_crash_phase_for_core(self, "add road cold plan compiled");
-            road_plan
-        };
+            },
+        );
+        record_crash_phase_for_core(self, "add road plan compiled");
         edit_metrics.road_plan_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
-        let terrain_start = Instant::now();
-        record_crash_phase_for_core(self, "add road terrain plan completion");
-        let edit_plan = road_plan.complete_for_commit(self);
-        record_crash_phase_for_core(self, "add road terrain plan completed");
-        edit_metrics.terrain_plan_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
         record_crash_phase_for_core(self, "add road transaction start");
         self.transit_network.bulk_load = true;
         self.transit_network.begin_road_edit();
@@ -166,12 +132,6 @@ impl SimCore {
             self.transit_network.bulk_load = false;
             record_crash_phase_for_core(self, "add road geometry finalize");
 
-            let terrain_plan = road_add
-                .finalized_geometry
-                .as_ref()
-                .map(|_| &edit_plan)
-                .and_then(|plan| plan.terrain());
-
             let FinalizedRoadGeometry {
                 dirty_edges: dirty,
                 affected_nodes: _affected_nodes,
@@ -183,24 +143,9 @@ impl SimCore {
                 .unwrap_or_else(|| self.finalize_bulk_road_geometry_for_dirty_edges());
             let dirty_count = dirty.len();
             edit_metrics.dirty_edges = dirty_count;
-            if crate::debug::Channel::Road.enabled()
-                && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
-                    .map(|value| !value.is_empty() && value != "0")
-                    .unwrap_or(false)
-            {
-                self.last_surface_debug_edges.extend(dirty.iter().copied());
-                self.last_surface_debug_edges.sort_unstable();
-                self.last_surface_debug_edges.dedup();
-            }
-
-            if let Some(topology_reuse) = road_add.preview_topology_reuse.take() {
-                self.transit_network
-                    .road_surface
-                    .enqueue_preview_topology_reuse(topology_reuse);
-            }
             let surface_start = Instant::now();
             record_crash_phase_for_core(self, "add road render validation");
-            road_add.committed = self.validate_staged_road_render_with_plan(terrain_plan);
+            road_add.committed = self.validate_staged_road_render();
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
             if road_add.committed {
                 let t_inv = Instant::now();
@@ -272,7 +217,7 @@ impl SimCore {
         let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
         let snapshot_start = Instant::now();
         record_crash_phase_for_core(self, "add road tool snapshot");
-        let road_snapshots = road_tool_snapshots_from_core(self);
+        let road_snapshot = road_tool_snapshot_from_core(self);
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
         let collect_refined_start = Instant::now();
         record_crash_phase_for_core(self, "add road terrain patch state");
@@ -289,16 +234,6 @@ impl SimCore {
         edit_metrics.mesh_ms = mesh_ms;
         edit_metrics.snapshot_ms = snapshot_ms;
         edit_metrics.refined_state_ms = collect_refined_ms;
-        edit_metrics.rebuilt_surface_chunks = self
-            .transit_network
-            .road_surface
-            .last_rebuilt_surface_chunks
-            .len();
-        edit_metrics.rebuilt_terrain_chunks = self
-            .transit_network
-            .road_surface
-            .last_rebuilt_terrain_chunks
-            .len();
         self.last_road_edit_metrics = edit_metrics;
         let rejection_reason = if road_add.committed {
             String::new()
@@ -327,7 +262,7 @@ impl SimCore {
             } else {
                 self.last_road_timing.clone()
             },
-            road_snapshots,
+            road_snapshot,
             add_internal_ms,
             finalize_ms,
             surface_ms,
@@ -360,7 +295,6 @@ mod tests {
                 fwd_lanes: 2,
                 bkw_lanes: 1,
                 snap_to_existing_roads: false,
-                edit_plan: None,
             },
             Instant::now(),
             Default::default(),

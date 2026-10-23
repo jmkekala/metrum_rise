@@ -82,7 +82,7 @@ fn fixture() -> SimCore {
         };
         assert_eq!(core.region_graph.add_edge(edge), e.id);
         core.transit_network
-            .road_surface
+            .roadbed
             .mark_edge_dirty(&core.region_graph, e.id);
     }
     core.region_graph.rebuild_adjacency_list();
@@ -138,7 +138,7 @@ fn flat_fixture() -> SimCore {
 
 fn environment(core: &SimCore) -> BuildingSiteEnvironment<'_> {
     BuildingSiteEnvironment {
-        road_surface: &core.transit_network.road_surface,
+        road_surface: &core.transit_network.roadbed,
         terrain: &core.heightmap,
     }
 }
@@ -316,7 +316,7 @@ fn hillside_residential_sites_select_constructible_houses() {
             action,
             &mut core.zoning,
             &core.region_graph,
-            &core.transit_network.road_surface,
+            &core.transit_network.roadbed,
             &core.heightmap,
             core.demand.runtime_catalog(),
             core.demand.runtime_tuning(),
@@ -412,7 +412,7 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
     );
     // A changed road generation must not reuse a cached success from retained old products.
     core.transit_network
-        .road_surface
+        .roadbed
         .mark_edge_dirty(&core.region_graph, geometry.edge_idx);
     assert!(check(&core).is_err());
     core.precompute_road_mesh_data();
@@ -454,7 +454,7 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
                 },
                 &mut core.zoning,
                 &core.region_graph,
-                &core.transit_network.road_surface,
+                &core.transit_network.roadbed,
                 &core.heightmap,
                 core.demand.runtime_catalog(),
                 core.demand.runtime_tuning()

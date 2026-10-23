@@ -21,7 +21,7 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::pathing::cch::CchCostsFrom;
 use crate::simulation::terrain::TerrainSystem;
@@ -631,7 +631,7 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
         level_changes: &mut impl DemandLevelChangeGuard,
     ) -> DemandBuildingActionExecution {
-        let road_surface = &network.road_surface;
+        let road_surface = &network.roadbed;
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution::default();
 
@@ -800,7 +800,7 @@ impl BuildingAllocator {
                     zoning.config.zone_cell_m,
                     graph,
                     super::BuildingSiteEnvironment {
-                        road_surface: &network.road_surface,
+                        road_surface: &network.roadbed,
                         terrain,
                     },
                 );
@@ -890,7 +890,7 @@ impl BuildingAllocator {
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
-        road_surface: &RoadSurfaceSystem,
+        road_surface: &RoadbedSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,

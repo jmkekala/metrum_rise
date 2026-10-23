@@ -4,9 +4,7 @@
 
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{
-    RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey,
-};
+use crate::simulation::network::roadbed::{RoadbedSystem, SurfaceChunkKey};
 use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,48 +14,44 @@ use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
 
 /// Intersection crosswalk markings.
 pub mod crosswalks;
-pub(crate) mod preview;
 /// Cosmetic Finnish crossing and speed-limit sign placement.
 pub(crate) mod road_signs;
-/// Compiled roadbed top-surface, structural concrete, and lane-marking rendering.
+/// Section-based roadbed rendering: bridge structures and lane markings.
 pub mod standard_surface;
 pub(crate) mod street_lights;
 
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
 
+// Discriminants index `NetworkMeshData`'s seven layers. `ROAD-68-B` emits the earthwork,
+// curb, raised-step and sidewalk layers (0 to 3) again from roadbed pieces.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
-    Earthwork,
-    Curb,
-    RaisedStep,
-    Sidewalk,
-    Road,
-    Marking,
-    Concrete,
+    Road = 4,
+    Marking = 5,
+    Concrete = 6,
 }
 
 /// Top-surface road renderer built entirely from compiled roadbed ownership.
 pub struct RoadRenderer;
 
 impl RoadRenderer {
-    /// Generates road mesh data using the provided compiled road-surface cache.
+    /// Generates road mesh data for every published roadbed piece.
     pub fn generate_mesh_data_with_surface(
         &self,
         graph: &RegionGraph,
         lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
-        road_surface: &RoadSurfaceSystem,
+        roadbed: &RoadbedSystem,
     ) -> NetworkMeshData {
-        let compiled_surface =
-            standard_surface::build_compiled_surface_coverage(graph, road_surface, terrain);
+        let compiled_surface = standard_surface::build_compiled_surface_coverage(graph, roadbed);
         let mut mesh = NetworkMeshData::new();
 
         crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, &compiled_surface);
-        standard_surface::emit_compiled_surface_mesh(
+        standard_surface::emit_bridge_structures(
             &mut mesh,
             graph,
-            road_surface,
+            roadbed,
             terrain,
             &compiled_surface,
         );
@@ -65,22 +59,15 @@ impl RoadRenderer {
             &mut mesh,
             graph,
             lane_system,
-            road_surface,
-            terrain,
+            roadbed,
             &compiled_surface,
         );
-        street_lights::emit_street_lights(
-            &mut mesh,
-            graph,
-            road_surface,
-            terrain,
-            &compiled_surface,
-        );
+        street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, &compiled_surface);
         road_signs::emit_road_signs(
             &mut mesh,
             graph,
             lane_system,
-            road_surface,
+            roadbed,
             terrain,
             &compiled_surface,
         );
@@ -94,7 +81,7 @@ impl RoadRenderer {
         graph: &RegionGraph,
         lane_system: &mut crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
-        road_surface: &RoadSurfaceSystem,
+        roadbed: &RoadbedSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
     ) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
         let road_debug = debug::Channel::Road.enabled();
@@ -102,8 +89,7 @@ impl RoadRenderer {
         let coverage_start = road_debug.then(Instant::now);
         let compiled_surface = standard_surface::build_compiled_surface_coverage_for_chunks(
             graph,
-            road_surface,
-            terrain,
+            roadbed,
             target_chunks,
         );
         let coverage_ms = coverage_start
@@ -112,8 +98,7 @@ impl RoadRenderer {
         let lane_sync_start = road_debug.then(Instant::now);
         lane_system.sync_heights_to_visible_surface_for_owners(
             graph,
-            terrain,
-            road_surface,
+            roadbed,
             &compiled_surface.edge_indices,
             &compiled_surface.node_ids,
         );
@@ -121,9 +106,9 @@ impl RoadRenderer {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
 
-        let (chunk_origin_x_m, chunk_origin_z_m) = road_surface.chunk_origin_m();
+        let (chunk_origin_x_m, chunk_origin_z_m) = roadbed.chunk_origin_m();
         let mut mesh = NetworkMeshData::new_chunk_partitioned(
-            road_surface.chunk_span_m(),
+            roadbed.chunk_span_m(),
             chunk_origin_x_m,
             chunk_origin_z_m,
             target_chunks.clone(),
@@ -134,10 +119,10 @@ impl RoadRenderer {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         let surface_start = road_debug.then(Instant::now);
-        standard_surface::emit_compiled_surface_mesh(
+        standard_surface::emit_bridge_structures(
             &mut mesh,
             graph,
-            road_surface,
+            roadbed,
             terrain,
             &compiled_surface,
         );
@@ -149,25 +134,18 @@ impl RoadRenderer {
             &mut mesh,
             graph,
             lane_system,
-            road_surface,
-            terrain,
+            roadbed,
             &compiled_surface,
         );
         let marking_ms = marking_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        street_lights::emit_street_lights(
-            &mut mesh,
-            graph,
-            road_surface,
-            terrain,
-            &compiled_surface,
-        );
+        street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, &compiled_surface);
         road_signs::emit_road_signs(
             &mut mesh,
             graph,
             lane_system,
-            road_surface,
+            roadbed,
             terrain,
             &compiled_surface,
         );
@@ -205,13 +183,9 @@ impl TransitRenderer for RoadRenderer {
         lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
-        let mut temporary_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
-        temporary_surface.compile_dirty_with_reason(
-            graph,
-            terrain,
-            RoadSurfaceCompileReason::MeshPrecompute,
-        );
-        self.generate_mesh_data_with_surface(graph, lane_system, terrain, &temporary_surface)
+        let mut temporary_roadbed = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
+        temporary_roadbed.compile_dirty(graph);
+        self.generate_mesh_data_with_surface(graph, lane_system, terrain, &temporary_roadbed)
     }
 }
 
@@ -256,24 +230,6 @@ pub(super) fn push_triangle(
     push_triangle_preserving_winding(mesh, layer, vertices, uvs, color);
 }
 
-pub(super) fn push_triangle_with_normal(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    mut vertices: [Vector3; 3],
-    mut uvs: [Vector2; 3],
-    color: Color,
-    normal: Vector3,
-) {
-    let projected_winding = (vertices[1].x - vertices[0].x) * (vertices[2].z - vertices[0].z)
-        - (vertices[1].z - vertices[0].z) * (vertices[2].x - vertices[0].x);
-    if projected_winding < 0.0 {
-        vertices.swap(1, 2);
-        uvs.swap(1, 2);
-    }
-
-    push_triangle_preserving_winding_with_normal(mesh, layer, vertices, uvs, color, normal);
-}
-
 pub(super) fn push_triangle_preserving_winding(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
@@ -282,26 +238,6 @@ pub(super) fn push_triangle_preserving_winding(
     color: Color,
 ) {
     let mut normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
-    if normal.length_squared() <= 1e-8 {
-        normal = Vector3::UP;
-    } else {
-        if normal.y < 0.0 {
-            normal = -normal;
-        }
-        normal = normal.normalized();
-    }
-
-    push_triangle_to_layer(mesh, layer, vertices, uvs, color, normal);
-}
-
-pub(super) fn push_triangle_preserving_winding_with_normal(
-    mesh: &mut NetworkMeshData,
-    layer: MeshLayer,
-    vertices: [Vector3; 3],
-    uvs: [Vector2; 3],
-    color: Color,
-    mut normal: Vector3,
-) {
     if normal.length_squared() <= 1e-8 {
         normal = Vector3::UP;
     } else {
@@ -477,30 +413,6 @@ fn push_triangle_to_layer_with_crossing(
         mesh.road_crossings.extend_from_slice(&crossing);
     }
     let target = match layer {
-        MeshLayer::Earthwork => (
-            &mut mesh.earthwork_vertices,
-            &mut mesh.earthwork_normals,
-            &mut mesh.earthwork_uvs,
-            &mut mesh.earthwork_colors,
-        ),
-        MeshLayer::Curb => (
-            &mut mesh.curb_vertices,
-            &mut mesh.curb_normals,
-            &mut mesh.curb_uvs,
-            &mut mesh.curb_colors,
-        ),
-        MeshLayer::RaisedStep => (
-            &mut mesh.raised_step_vertices,
-            &mut mesh.raised_step_normals,
-            &mut mesh.raised_step_uvs,
-            &mut mesh.raised_step_colors,
-        ),
-        MeshLayer::Sidewalk => (
-            &mut mesh.sidewalk_vertices,
-            &mut mesh.sidewalk_normals,
-            &mut mesh.sidewalk_uvs,
-            &mut mesh.sidewalk_colors,
-        ),
         MeshLayer::Road => (
             &mut mesh.road_vertices,
             &mut mesh.road_normals,
@@ -530,46 +442,6 @@ fn push_triangle_to_layer_with_crossing(
     mesh.record_owner_triangle(layer as usize, end);
 }
 
-pub(super) fn earthwork_color() -> Color {
-    Color::from_rgba(0.48, 0.41, 0.30, 1.0)
-}
-
-pub(super) fn road_color() -> Color {
-    Color::from_rgba(0.0, 0.0, 0.0, 0.0)
-}
-
-// Per-vertex road description for the asphalt shader (road_asphalt.gdshader), in 8-bit
-// channels: forward and backward lane counts, the speed limit in km/h, and a cosmetic age in
-// the upper half of alpha. Junction asphalt keeps `road_color`'s zero alpha: it has no road space.
-pub(super) fn road_space_color(edge: &crate::simulation::network::graph::Edge) -> Color {
-    let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
-    Color::from_rgba(
-        channel(f32::from(edge.fwd_lanes)),
-        channel(f32::from(edge.bkw_lanes)),
-        channel(edge.speed_limit * 3.6),
-        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
-    )
-}
-
-// Per-vertex footpath description for road_path.gdshader: half-width in decimetres, a full green
-// channel marking the vertex as footpath (roadside sidewalks keep `sidewalk_color`'s zero), the
-// surface kind (0 asphalt), and the cosmetic age as in `road_space_color`.
-pub(super) fn footpath_color(edge: &crate::simulation::network::graph::Edge) -> Color {
-    let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
-    Color::from_rgba(
-        channel(edge.width.max(2.0) * 0.5 * 10.0),
-        1.0,
-        0.0,
-        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
-    )
-}
-
-// Footpath junction and end pieces: the footpath marker with a zero half-width, which tells
-// road_path.gdshader there is no road space, and age 0 so no cracks align to world axes.
-pub(super) fn footpath_node_color() -> Color {
-    Color::from_rgba(0.0, 1.0, 0.0, 128.0 / 255.0)
-}
-
 // A stable 0..1 look age from where the edge lies, so a road keeps its wear across saves, splits
 // of other roads and edge-id compaction. Cosmetic only: nothing in the simulation reads it.
 fn cosmetic_road_age(edge: &crate::simulation::network::graph::Edge) -> f32 {
@@ -584,14 +456,6 @@ fn cosmetic_road_age(edge: &crate::simulation::network::graph::Edge) -> f32 {
         hash = (hash ^ value as u64).wrapping_mul(0x0000_0100_0000_01b3);
     }
     (hash >> 40) as f32 / (1u64 << 24) as f32
-}
-
-pub(super) fn curb_color() -> Color {
-    Color::from_rgba(0.56, 0.55, 0.53, 1.0)
-}
-
-pub(super) fn sidewalk_color() -> Color {
-    Color::from_rgba(0.0, 0.0, 0.0, 1.0)
 }
 
 pub(super) fn concrete_color() -> Color {
