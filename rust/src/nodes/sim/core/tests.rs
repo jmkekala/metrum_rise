@@ -326,7 +326,6 @@ fn stale_network_acknowledgement_preserves_newer_render_revision() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: road render chunk meshes"]
 fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
     let mut core = test_core();
     add_test_border_road(&mut core);
@@ -365,7 +364,6 @@ fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: road render chunk meshes"]
 fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
     let mut core = test_core();
     for (start, end) in [
@@ -413,7 +411,6 @@ fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: road render chunk meshes"]
 fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
     let mut core = test_core();
     for (start, end) in [
@@ -1275,7 +1272,6 @@ fn immediate_demand_plan_strips_spawns_only() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
     let mut core = test_core();
     add_test_border_road(&mut core);
@@ -1358,7 +1354,6 @@ fn rebuilt_building_tables_keep_spare_rows_for_the_next_building() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn hourly_planning_does_not_queue_the_same_parcel_twice() {
     let mut core = test_core();
     add_test_border_road(&mut core);
@@ -1483,7 +1478,6 @@ fn execute_test_construction(
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
     use crate::simulation::economy::agents::{AGE_ADULT, HouseholdAgeComposition};
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;
@@ -1533,7 +1527,6 @@ fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;
@@ -1579,7 +1572,6 @@ fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
 // homes' applicants as the planner does, and the second factory cannot reuse the first one's
 // workers; the next slot replays the placed factory as construction (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_customers_count_queued_homes_and_reserve_labour_once() {
     let (mut core, homes, factories) = construction_execution_fixture();
     let queue = |core: &mut SimCore, spawns: &[(u64, ZoneType, &DemandSpawnAction)]| {
@@ -1631,7 +1623,6 @@ fn queued_customers_count_queued_homes_and_reserve_labour_once() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_customer_permits_survive_a_load_before_their_start() {
     let mut outcomes = Vec::new();
     for reload in [false, true] {
@@ -1685,7 +1676,6 @@ fn queued_customer_permits_survive_a_load_before_their_start() {
 // Permits are proved at the planning slot, before any edit. A start places only with a
 // permit for its current door: an edit that moves a queued factory's door rejects it, a price
 // change alone does not, and a load keeps every permit and decision (`SIM-02-I`).
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_projects_start_only_at_their_permitted_doors_through_placement_and_reload() {
     for edit in [
         "unchanged",
@@ -1972,7 +1962,6 @@ fn queued_projects_start_only_at_their_permitted_doors_through_placement_and_rel
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn failed_supporting_housing_prevents_owner_funding_and_labor_is_not_reused() {
     let (mut core, homes, factories) = construction_execution_fixture();
     let mut failed_home = homes[1].clone();
@@ -2048,7 +2037,6 @@ fn queue_test_spawn(
 // without that home, instead of spending its equity on workers that will not come
 // (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_failed_home_voids_the_business_permits_its_applicants_backed() {
     use crate::simulation::economy::demand::SpawnPermit;
     let (mut core, homes, factories) = construction_execution_fixture();
@@ -2085,7 +2073,6 @@ fn a_failed_home_voids_the_business_permits_its_applicants_backed() {
 // the applicants it draws once placed, as the workforce calendar counts a placed home's. An
 // earlier spawn that fails to place shifts no other home's seed.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_homes_estimate_the_applicants_they_draw_once_placed() {
     use crate::simulation::economy::households::applicant_places_and_members;
     let (mut core, homes, factories) = construction_execution_fixture();
@@ -2148,7 +2135,6 @@ fn queued_homes_estimate_the_applicants_they_draw_once_placed() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
     let (mut core, homes, factories) = construction_execution_fixture();
     assert!(homes.len() >= 4);
@@ -2178,7 +2164,6 @@ fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn business_planning_prices_the_actual_freight_route() {
     for expensive in [false, true] {
         let (mut core, _, _) = construction_execution_fixture();
@@ -2408,7 +2393,6 @@ fn perf_contract_queued_locality() {
 // Planning slots price published frontage delays only: per-second congestion leaves a queued
 // factory's permit unchanged until the operational hour publishes it (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn live_frontage_delay_reaches_queued_checks_only_when_published() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -2442,7 +2426,6 @@ fn live_frontage_delay_reaches_queued_checks_only_when_published() {
 // money: no permit at a price the market cannot fund, and the permitted door's carrier quote
 // is the one live hiring and dispatch pay (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_business_reprices_freight_before_owner_funding() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -2526,7 +2509,6 @@ fn queued_business_reprices_freight_before_owner_funding() {
 // A queued factory's permit stands for its planning slot's hour; the next slot proves it again
 // on the city without the bulldozed home that backed it (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn construction_execution_revalidates_after_a_supporting_home_is_bulldozed() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -2769,7 +2751,6 @@ fn lane_change_snapshot_benchmark() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
     use crate::simulation::economy::agents::HouseholdAgeComposition;
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;

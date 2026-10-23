@@ -194,7 +194,6 @@ fn snapshot_uses_funded_recipe_activity_instead_of_rounded_jobs_or_owner_assets(
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn construction_shares_live_queued_and_placed_local_input_claims() {
     use crate::simulation::economy::logistics::ShipmentSystem;
     use crate::simulation::network::TransitNetwork;
@@ -521,7 +520,6 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proofs() {
     use super::super::spawn_need::replacement_market_covers_operation;
     use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
@@ -1263,7 +1261,6 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
     use super::super::spawn_need::replacement_market_covers_operation;
     use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
@@ -1695,7 +1692,6 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
     use super::super::supply::SiteSupply;
     use crate::simulation::economy::logistics::{
@@ -3280,7 +3276,6 @@ fn planning_snapshot(workers: u32, sales: &[(&str, f32)]) -> DailyDemandSnapshot
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn alternative_reservations_commit_the_winner_after_later_rejected_probes() {
     use super::super::supply::ProjectSupply;
     use crate::simulation::economy::operation::{InputRequirement, InputSupplyCosts};
@@ -3417,7 +3412,6 @@ fn project_supply_must_fit_opening_equity_without_counting_equity_as_sales() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn growth_records_distinguish_missing_land_assets_and_unusable_sites() {
     let mut allocator = BuildingAllocator::new();
     let graph = graph_with_connected_border();
@@ -3452,7 +3446,6 @@ fn growth_records_distinguish_missing_land_assets_and_unusable_sites() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn losing_priority_category_does_not_hide_viable_service() {
     let mut allocator = BuildingAllocator::new();
     register_test_asset(&mut allocator, "grocery", ZoneType::Commercial);
@@ -3488,7 +3481,6 @@ fn losing_priority_category_does_not_hide_viable_service() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn selected_category_releases_other_lots_to_remaining_categories() {
     let mut allocator = BuildingAllocator::new();
     let barber = register_family_asset_with_economy_profile(
@@ -3524,7 +3516,6 @@ fn selected_category_releases_other_lots_to_remaining_categories() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn scarce_workforce_can_select_smaller_factory_on_the_same_lot() {
     let mut allocator = BuildingAllocator::new();
     let a = register_test_asset(&mut allocator, "factory_a", ZoneType::Industrial);
@@ -3573,7 +3564,6 @@ fn scarce_workforce_can_select_smaller_factory_on_the_same_lot() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn export_openings_use_shared_labor_instead_of_one_project_quota() {
     let mut allocator = BuildingAllocator::new();
     register_family_asset_with_economy_profile(
@@ -4110,7 +4100,6 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
@@ -4535,7 +4524,6 @@ fn benchmark_active_level_change_planning() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn an_unreachable_factory_does_not_block_other_sites() {
     let mut allocator = BuildingAllocator::new();
     register_family_asset_with_economy_profile(
@@ -4943,7 +4931,6 @@ fn plan_slot(
 // and the workers they held go to the industrial slot's factories, which the held claims left
 // no room for while the market stood.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn failed_reproofs_leave_the_plan_and_free_their_workers_for_later_slots() {
     use crate::simulation::economy::demand::PlanningSlot;
     let catalog = load_runtime_economy_catalog().unwrap();

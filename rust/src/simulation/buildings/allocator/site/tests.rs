@@ -385,7 +385,6 @@ fn flat_site_from_bounds(
 }
 
 #[test]
-#[ignore = "ROAD-68-F: bridge surface heights"]
 fn site_support_validation_target_uses_visible_road_surface() {
     let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 1.0);
     let mut graph = RegionGraph::new();
@@ -725,7 +724,6 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: road span heights at the frontage"]
 fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::network::TransitNetwork;

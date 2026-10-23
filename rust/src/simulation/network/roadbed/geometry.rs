@@ -24,7 +24,7 @@ pub(crate) struct RoadSurfaceTriangleQueryIndex {
 
 // Bounded owner-local XZ grid listing caller-defined triangle ids per cell (`ROAD-44`, `ROAD-49`).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct SurfaceTriangleGrid {
+pub(super) struct SurfaceTriangleGrid {
     bounds_xz: [f64; 4],
     cell_size_m: f64,
     width: usize,
@@ -62,7 +62,7 @@ impl RoadSurfaceTriangleQueryIndex {
 impl SurfaceTriangleGrid {
     // Grids `triangles` in order; `item_id` names the triangle at each position in its cells.
     // Cells start at the base size and double until at most the maximum count remain.
-    fn from_triangles(
+    pub(super) fn from_triangles(
         triangles: impl Iterator<Item = [RoadVec3; 3]> + Clone,
         item_id: impl Fn(usize) -> u32,
     ) -> Self {
@@ -135,8 +135,87 @@ impl SurfaceTriangleGrid {
         }
     }
 
+    // Ids in cells touching an XZ rectangle, without allocating. An id may occur in several
+    // cells. Cost follows the touched cells and their entries.
+    pub(super) fn items_in_bounds(&self, bounds: [f64; 4]) -> impl Iterator<Item = u32> + '_ {
+        let intersects = self.width > 0
+            && self.height > 0
+            && bounds[0] <= bounds[2]
+            && bounds[1] <= bounds[3]
+            && bounds[0] <= self.bounds_xz[2]
+            && bounds[1] <= self.bounds_xz[3]
+            && bounds[2] >= self.bounds_xz[0]
+            && bounds[3] >= self.bounds_xz[1];
+        let (x0, z0) = self.clamped_cell(bounds[0], bounds[1]);
+        let (x1, z1) = self.clamped_cell(bounds[2], bounds[3]);
+        (z0..=z1)
+            .take(if intersects { z1 - z0 + 1 } else { 0 })
+            .flat_map(move |z| (x0..=x1).flat_map(move |x| self.items_at(x, z).iter().copied()))
+    }
+
+    // Ids in the cells the ray `origin + t * dir` crosses for `t` in `[t0, t1]`, in ray order.
+    pub(super) fn items_along_ray(
+        &self,
+        origin: RoadVec3,
+        dir: RoadVec3,
+        t0: f64,
+        t1: f64,
+        mut visit: impl FnMut(u32),
+    ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let [min_x, min_z, max_x, max_z] = self.bounds_xz;
+        let Some((entry_t, exit_t)) = ray_xz_interval_for_bounds(
+            origin,
+            dir,
+            min_x - GRID_EPSILON_M,
+            min_z - GRID_EPSILON_M,
+            max_x + GRID_EPSILON_M,
+            max_z + GRID_EPSILON_M,
+        ) else {
+            return;
+        };
+        let (t0, t1) = (t0.max(entry_t), t1.min(exit_t));
+        if t0 > t1 {
+            return;
+        }
+        walk_ray_cells(
+            RoadVec2::new(origin.x, origin.z),
+            RoadVec2::new(dir.x, dir.z),
+            (t0, t1),
+            RoadVec2::new(min_x, min_z),
+            self.cell_size_m,
+            |x, z, _, _| {
+                let x = x.clamp(0, self.width as i64 - 1) as usize;
+                let z = z.clamp(0, self.height as i64 - 1) as usize;
+                for &item in self.items_at(x, z) {
+                    visit(item);
+                }
+                true
+            },
+        );
+    }
+
+    fn clamped_cell(&self, x: f64, z: f64) -> (usize, usize) {
+        let cell = |value: f64, origin: f64, count: usize| {
+            (((value - origin) / self.cell_size_m).floor() as isize)
+                .clamp(0, count.saturating_sub(1) as isize) as usize
+        };
+        (
+            cell(x, self.bounds_xz[0], self.width),
+            cell(z, self.bounds_xz[1], self.height),
+        )
+    }
+
+    fn items_at(&self, x: usize, z: usize) -> &[u32] {
+        let cell_idx = z * self.width + x;
+        &self.cell_items
+            [self.cell_offsets[cell_idx] as usize..self.cell_offsets[cell_idx + 1] as usize]
+    }
+
     // Triangle ids listed in the cell containing `point`; empty outside the grid.
-    fn cell_items(&self, point: RoadVec2) -> &[u32] {
+    pub(super) fn cell_items(&self, point: RoadVec2) -> &[u32] {
         if self.width == 0
             || self.height == 0
             || point.x < self.bounds_xz[0] - GRID_EPSILON_M
@@ -207,7 +286,53 @@ fn query_grid_triangle_cell_bounds(
     )
 }
 
-fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
+/// Visits the cells of a uniform XZ grid that the ray `origin + t * dir` crosses for `t` in
+/// `[t0, t1]`, in ray order, with each cell's parameter interval, until `visit` returns false.
+/// Cell `(x, z)` spans `grid_origin + (x, z) * cell_m`. `O(cells crossed)`.
+pub(super) fn walk_ray_cells(
+    origin: RoadVec2,
+    dir: RoadVec2,
+    (t0, t1): (f64, f64),
+    grid_origin: RoadVec2,
+    cell_m: f64,
+    mut visit: impl FnMut(i64, i64, f64, f64) -> bool,
+) {
+    let start = origin + dir * t0;
+    let mut cell_x = ((start.x - grid_origin.x) / cell_m).floor() as i64;
+    let mut cell_z = ((start.y - grid_origin.y) / cell_m).floor() as i64;
+    let axis = |direction: f64, origin: f64, grid_origin: f64, cell: i64| {
+        if direction == 0.0 {
+            return (0, f64::INFINITY, f64::INFINITY);
+        }
+        let step = if direction > 0.0 { 1 } else { -1 };
+        let boundary = grid_origin + (cell + i64::from(direction > 0.0)) as f64 * cell_m;
+        (
+            step,
+            (boundary - origin) / direction,
+            cell_m / direction.abs(),
+        )
+    };
+    let (step_x, mut next_x, delta_x) = axis(dir.x, origin.x, grid_origin.x, cell_x);
+    let (step_z, mut next_z, delta_z) = axis(dir.y, origin.y, grid_origin.y, cell_z);
+    let mut t = t0;
+    loop {
+        let exit = next_x.min(next_z).min(t1);
+        if !visit(cell_x, cell_z, t, exit) || exit >= t1 {
+            return;
+        }
+        if next_x < next_z {
+            cell_x += step_x;
+            t = next_x;
+            next_x += delta_x;
+        } else {
+            cell_z += step_z;
+            t = next_z;
+            next_z += delta_z;
+        }
+    }
+}
+
+pub(super) fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
     let (wa, wb, wc) = road_triangle_barycentric_weights_xz(*triangle, point)?;
     Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
 }

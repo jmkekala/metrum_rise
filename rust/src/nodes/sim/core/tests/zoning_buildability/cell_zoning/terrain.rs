@@ -6,7 +6,6 @@ use super::*;
 use godot::prelude::Vector2;
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility() {
     for angle in [0.0, 0.35] {
         let mut core = painted_fixture(angle);

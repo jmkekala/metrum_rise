@@ -46,7 +46,6 @@ fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u
 }
 
 #[test]
-#[ignore = "ROAD-68-F: footpath and lamp clearance from road bands"]
 fn vegetation_footpath_clearance_catches_gaps_between_footprint_samples() {
     let mut core = core();
     // The 2.1 m path spans z 2.45..4.55.
@@ -93,7 +92,6 @@ fn vegetation_footpath_clearance_catches_gaps_between_footprint_samples() {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: footpath and lamp clearance from road bands"]
 fn vegetation_later_footpath_edit_clears_trees_by_the_same_rule() {
     let mut core = core();
     let p = first_candidate(&core, true);
@@ -113,7 +111,6 @@ fn vegetation_later_footpath_edit_clears_trees_by_the_same_rule() {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: footpath and lamp clearance from road bands"]
 fn vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries() {
     use crate::simulation::network::render::NetworkMeshData;
     use crate::simulation::network::render::road::street_lights::{StreetLight, StreetLightKind};

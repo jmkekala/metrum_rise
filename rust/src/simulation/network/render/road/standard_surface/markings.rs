@@ -83,7 +83,6 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         };
         let marking_s_range = edge_lane_marking_s_range(
-            edge,
             sections,
             crosswalk_endpoint_flags
                 .get(&edge_idx)
@@ -161,26 +160,28 @@ fn emit_lane_marking_sections(
     }
 }
 
+// Span sections run between the two mouths, which sit at the graph clips; a crosswalk at a mouth
+// keeps the markings its clearance gap inside the span.
 fn edge_lane_marking_s_range(
-    edge: &Edge,
     sections: &[RoadSection],
     crosswalk_endpoint_flags: (bool, bool),
 ) -> (f32, f32) {
-    let total_s = sections.last().map_or(0.0, |section| section.s_m);
-    let mut start_s: f32 = 0.0;
-    let mut end_s = total_s;
+    let first_s = sections.first().map_or(0.0, |section| section.s_m);
+    let last_s = sections.last().map_or(first_s, |section| section.s_m);
+    let mut start_s = first_s;
+    let mut end_s = last_s;
     let (has_start_crosswalk, has_end_crosswalk) = crosswalk_endpoint_flags;
     let crosswalk_gap_m =
         config::CROSSWALK_INSET + CROSSWALK_STRIPE_LEN * 0.5 + LANE_MARKING_CROSSWALK_CLEARANCE_M;
 
     if has_start_crosswalk {
-        start_s = start_s.max(edge.start_clip + crosswalk_gap_m);
+        start_s += crosswalk_gap_m;
     }
     if has_end_crosswalk {
-        end_s = end_s.min(total_s - edge.end_clip - crosswalk_gap_m);
+        end_s -= crosswalk_gap_m;
     }
 
-    (start_s.clamp(0.0, total_s), end_s.clamp(0.0, total_s))
+    (start_s.clamp(first_s, last_s), end_s.clamp(first_s, last_s))
 }
 
 fn lane_marking_crosswalk_endpoint_flags_by_edge(

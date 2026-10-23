@@ -39,7 +39,6 @@ fn next_hour_slot(core: &SimCore) -> u64 {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_census_on_the_input_copy_equals_the_live_census_over_an_unchanged_hour() {
     let mut scenario = busy_town();
     let core = &mut scenario.core;
@@ -104,7 +103,6 @@ fn the_census_on_the_input_copy_equals_the_live_census_over_an_unchanged_hour() 
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_census_in_work_unit_slices_equals_one_run_on_its_copy() {
     let mut scenario = busy_town();
     let core = &mut scenario.core;
@@ -162,7 +160,6 @@ fn the_census_in_work_unit_slices_equals_one_run_on_its_copy() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_input_copy_follows_building_and_household_removals() {
     let mut scenario = busy_town();
     let core = &mut scenario.core;
@@ -318,7 +315,6 @@ pub(super) fn assert_same_published_census(source: &SimCore, loaded: &SimCore) {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_census_stepped_over_the_window_equals_one_run_on_its_copy_and_restarts_on_network_changes() {
     let mut scenario = busy_town();
     let core = &mut scenario.core;
@@ -357,7 +353,6 @@ fn the_census_stepped_over_the_window_equals_one_run_on_its_copy_and_restarts_on
 // uninterrupted game's holds the previous published census, with the capacity of the arenas a
 // census refills (`SIM-02-K`): what the storage held never changes the census.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage() {
     let mut scenario = busy_town();
     let core = &mut scenario.core;
@@ -382,7 +377,6 @@ fn the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage() {
 // search's network-leg storage, which the first slots after it built (`SIM-02-K`). Scratch
 // only memoizes storage, so a loaded game runs the same on it as on cold scratch.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn route_scratch_prepared_at_load_runs_as_cold_scratch_does() {
     let source = busy_town();
     let saved = std::env::temp_dir().join(format!(
@@ -445,7 +439,6 @@ fn route_scratch_prepared_at_load_runs_as_cold_scratch_does() {
 // (`SIM-02-K`), so the residential slot finds its site rows laid out: a game whose window
 // prepares the refilled books plays as one whose planning slots prepare them.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn census_books_prepared_in_the_window_play_as_books_the_planning_slots_prepare() {
     let source = busy_town();
     let saved = std::env::temp_dir().join(format!(
@@ -503,7 +496,6 @@ fn census_books_prepared_in_the_window_play_as_books_the_planning_slots_prepare(
 // The window's preparation never rebuilds a stale zone index (`SIM-02-K`): the rebuild resets
 // the vacancy order admission reads, so it waits for the index's own reader.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_stale_zone_index_defers_the_census_books_preparation() {
     use crate::simulation::economy::hiring::{
         PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
@@ -528,7 +520,6 @@ fn a_stale_zone_index_defers_the_census_books_preparation() {
 // half in its own slot, refreshes those finance masks, so the hour's first masked planning
 // claim refreshes none of them (`SIM-02-K`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_census_books_preparation_refreshes_its_business_finance_masks() {
     use crate::simulation::economy::hiring::{
         PLANNING_PREPARATION_MASKS_SLOT, PLANNING_PREPARATION_REST_SLOT, PLANNING_PREPARATION_SLOT,
@@ -553,7 +544,6 @@ fn the_census_books_preparation_refreshes_its_business_finance_masks() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_before_publishing() {
     let mut source = busy_town();
     // Mid-fill: the hour's copy is part done.
@@ -582,7 +572,6 @@ fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_b
 // loaded game recomputes the same census, books and all, saves the same copy again and runs the
 // next censuses as the saved game does.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn the_published_census_continues_identically_after_save_load_in_the_planning_slots() {
     use crate::simulation::economy::demand::PlanningSlot;
     let mut source = busy_town();
@@ -600,7 +589,6 @@ fn the_published_census_continues_identically_after_save_load_in_the_planning_sl
 // the same setup, and both games plan the slot, and run the rest of its minute, to the same
 // hour plan, construction queue, demand queues and diagnostics.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_planning_setup_continues_identically_after_save_load_inside_its_span() {
     use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
     use crate::simulation::economy::demand::PlanningSlot;
@@ -641,7 +629,6 @@ fn a_planning_setup_continues_identically_after_save_load_inside_its_span() {
 // one on the held setup and one without, to the same hour plan, construction queue, demand
 // queues and diagnostics.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_plan_on_its_setup_equals_one_that_scans_an_unchanged_city_itself() {
     use crate::simulation::economy::demand::PlanningSlot;
     let mut source = busy_town();
@@ -734,7 +721,6 @@ fn planning_tables(core: &SimCore, label: &str) -> Vec<Vec<Vec<rusqlite::types::
 // an undo there, which drops both copies, a copy of the city taken then. Either way the
 // publication keeps the copy it read, so a save in the hour's planning slots restores it.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_census_run_whole_at_its_publication_keeps_its_copy_for_the_planning_slots() {
     let mut source = busy_town();
     for copied_now in [false, true] {
@@ -975,7 +961,6 @@ fn start_site_in_window(firm: bool) -> (GrowthScenario, usize) {
 // the hour after, the census funds its jobs and planning claims none. No hour claims its workers
 // twice.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_workplace_completed_after_the_copy_keeps_one_claim_until_a_census_sees_it() {
     let (mut scenario, site) = start_site_in_window(true);
     let core = &mut scenario.core;
@@ -1033,13 +1018,11 @@ fn assert_planning_lends_the_census_after_a_start_in_the_window(firm: bool) {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn planning_lends_the_published_census_after_a_home_starts_in_the_window() {
     assert_planning_lends_the_census_after_a_start_in_the_window(false);
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn planning_lends_the_published_census_after_a_firm_starts_in_the_window() {
     assert_planning_lends_the_census_after_a_start_in_the_window(true);
 }
@@ -1052,7 +1035,6 @@ fn planning_lends_the_published_census_after_a_firm_starts_in_the_window() {
 // queued at the hour's last slot, for the next hour's first slot that serves queues: its second,
 // since the first is queue-free (`QUEUE_FREE_SLOTS`, `SIM-02-K`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire() {
     let mut scenario = GrowthScenario::starter_town();
     let counts = |core: &SimCore| {
@@ -1108,7 +1090,6 @@ fn an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire() {
 // so the census the next hour publishes carries the new ceilings, and a game saved before it
 // publishes continues identically (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_policy_change_in_the_census_window_reaches_the_next_census_and_survives_save_load() {
     let mut source = GrowthScenario::producer_town();
     source.run_days(2);
@@ -1171,7 +1152,6 @@ fn a_policy_change_in_the_census_window_reaches_the_next_census_and_survives_sav
 // are still queued at the actions slot), and a skipped actions slot leaves every queued
 // business permit voided, to wait for the next hour's slot (`SIM-02-I`).
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_building_removed_between_the_planning_slots_skips_the_later_slots() {
     use crate::simulation::economy::demand::SpawnPermit;
     let mut scenario = GrowthScenario::starter_town();

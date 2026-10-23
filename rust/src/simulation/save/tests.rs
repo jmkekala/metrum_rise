@@ -119,7 +119,6 @@ fn register_test_asset(
 }
 
 #[test]
-#[ignore = "ROAD-68-B: span pieces from the loaded graph"]
 fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let config = WorldConfig::new(200.0, 200.0, 10.0, 10.0);
     let mut graph = RegionGraph::new();

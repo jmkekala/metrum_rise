@@ -203,7 +203,6 @@ fn painted_fixture(angle: f64) -> SimCore {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn occupied_cell_building_follows_a_road_commit_and_undo_without_moving() {
     use crate::simulation::zoning::parcels;
 
@@ -326,7 +325,6 @@ fn occupied_cell_building_follows_a_road_commit_and_undo_without_moving() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn painted_cells_use_asset_lots_and_the_existing_growth_path() {
     for angle in [0.0, 0.35, 0.8] {
         let mut core = painted_fixture(angle);
@@ -495,7 +493,6 @@ fn missing_assets_leave_paint_until_a_catalog_refresh_schedules_growth() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn catalog_refresh_replaces_empty_lots_but_preserves_occupied_coverage() {
     let mut core = painted_fixture(0.0);
     let first = core.prepare_cell_lots_internal();
@@ -652,7 +649,6 @@ fn loading_another_visible_cell_chunk_does_not_invalidate_a_retained_gesture() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn consecutive_cell_gesture_undo_preserves_buildings_created_after_paint() {
     let mut core = painted_fixture(0.0);
     let paint = core.zoning.cells.saved_cells();
@@ -730,7 +726,6 @@ fn consecutive_cell_gesture_undo_preserves_buildings_created_after_paint() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn erased_lot_invalidates_queued_growth_without_scanning_the_pending_queue() {
     let mut core = painted_fixture(0.0);
     core.prepare_cell_lots_internal();
@@ -779,7 +774,6 @@ fn erased_lot_invalidates_queued_growth_without_scanning_the_pending_queue() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_cell_growth_reloads_and_revalidates_erased_or_disabled_lots() {
     use crate::nodes::sim::core::PendingDemandSpawnAction;
 

@@ -1556,7 +1556,6 @@ mod tests {
     use crate::nodes::sim::core::tests::fields::{add_farm_household, farm_fixture};
 
     #[test]
-    #[ignore = "ROAD-68-B: building placement needs road frontage heights"]
     fn rolling_road_length_sums_the_network_over_one_day() {
         use crate::simulation::core::scheduler::SLOTS_PER_DAY;
         let (core, _, _) = farm_fixture();
@@ -1632,7 +1631,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-B: building placement needs road frontage heights"]
     fn the_daily_phase_closes_household_payments_without_a_logging_call() {
         use crate::simulation::core::phases::daily_phase;
         use crate::simulation::core::scheduler::SLOTS_PER_DAY;
@@ -1660,7 +1658,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-B: building placement needs road frontage heights"]
     fn farm_diagnostics_count_filled_jobs_and_household_independently() {
         let (mut core, farm, polygon) = farm_fixture();
         core.commit_field_polygon_internal(farm, polygon).unwrap();
@@ -1679,7 +1676,6 @@ mod tests {
         assert_eq!(diagnostics.commercial_filled_jobs, 0);
     }
     #[test]
-    #[ignore = "ROAD-68-B: building placement needs road frontage heights"]
     fn budget_counts_machinery_for_all_utilities_without_treating_it_as_coal() {
         let (mut core, farm, _) = farm_fixture();
         let catalog =

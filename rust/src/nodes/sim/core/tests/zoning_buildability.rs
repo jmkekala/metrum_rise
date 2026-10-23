@@ -142,7 +142,6 @@ fn environment(core: &SimCore) -> BuildingSiteEnvironment<'_> {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn missing_assets_allow_zoning_and_growth_waits_for_a_compatible_initial_asset() {
     let mut core = flat_fixture();
     let mut house = core
@@ -245,7 +244,6 @@ fn missing_assets_allow_zoning_and_growth_waits_for_a_compatible_initial_asset()
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn hillside_residential_sites_select_constructible_houses() {
     let mut core = fixture();
     let before = (
@@ -337,7 +335,6 @@ fn hillside_residential_sites_select_constructible_houses() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn feasibility_invalidates_changed_terrain_and_assets() {
     let mut core = flat_fixture();
     let p = core.zoning.parcel_by_raw_id(7).unwrap();

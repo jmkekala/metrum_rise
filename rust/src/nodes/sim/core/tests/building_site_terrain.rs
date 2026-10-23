@@ -252,7 +252,6 @@ fn triangle_height(triangle: [Vector3; 3], point: Vector2) -> Option<f32> {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn queued_asymmetric_houses_publish_graded_terrain() {
     use crate::nodes::sim::core::state::PendingDemandSpawnAction;
 
@@ -460,7 +459,7 @@ fn assert_no_terrain_over_site_pads(core: &SimCore) {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn zoned_yards_cover_uphill_and_downhill_frontages() {
     for grade in [-0.15, 0.15] {
         let mut core = test_core();
@@ -500,7 +499,7 @@ fn zoned_yards_cover_uphill_and_downhill_frontages() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn small_commercial_pads_leave_a_watertight_sloping_frontage() {
     for grade in [-0.04, 0.04] {
         let mut core = test_core();
@@ -582,7 +581,7 @@ fn small_commercial_pads_leave_a_watertight_sloping_frontage() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn kuopio_reference_supports_zoned_graded_yards_without_changing_fixture() {
     let _ = kuopio_yard_fixture();
 }
@@ -610,7 +609,7 @@ fn patch_ownership(
 // each touches. Their ownership equals what refreshing the box merged over both gives, and
 // every patch between them keeps its ownership, payload generation and render state.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
     use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
     let mut core = kuopio_yard_fixture();
@@ -715,7 +714,7 @@ fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn large_paved_yards_remain_flat_over_hills_and_depressions() {
     for (grade, max_relief, accepted) in [
         (-0.35_f32, 3.0, true),
@@ -827,7 +826,7 @@ fn kuopio_yard_fixture() -> SimCore {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn new_world_clears_populated_city_and_engineered_terrain() {
     let mut core = kuopio_yard_fixture();
     let registry_len = core.allocator.registry.len();
@@ -885,7 +884,7 @@ fn building_site_terrain_rebuild_benchmark() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn yard_material_changes_reuse_cdt_but_not_final_paving_buffers() {
     let mut core = kuopio_yard_fixture();
     let previous = core.refined_terrain_patch_cache.clone();
@@ -940,7 +939,7 @@ fn yard_material_changes_reuse_cdt_but_not_final_paving_buffers() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn engineered_queries_reject_render_rejected_ground() {
     let mut core = kuopio_yard_fixture();
     let point = core
@@ -1034,7 +1033,7 @@ fn spawn_yard_access_agent(
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
     let mut core = kuopio_yard_fixture();
     let mut points = Vec::new();
@@ -1075,7 +1074,7 @@ fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn access_snapshot_pad_ownership_overrides_pending_visual_terrain() {
     let mut core = kuopio_yard_fixture();
     let site = &core.allocator.building_sites[0];
@@ -1113,7 +1112,7 @@ fn access_snapshot_pad_ownership_overrides_pending_visual_terrain() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn cars_pitch_and_roll_on_compiled_yards_in_both_access_directions() {
     use crate::simulation::economy::agents::MODE_CAR;
 
@@ -1302,7 +1301,7 @@ fn graded_yard_access_snapshot_benchmark() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz() {
     use crate::simulation::economy::agents::MODE_CAR;
 
@@ -1391,7 +1390,6 @@ fn yard_hedge_count(core: &SimCore) -> usize {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns() {
     let mut core = test_core();
     core.load_game_internal(concat!(
@@ -1443,7 +1441,6 @@ fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns()
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_house_reaching_its_back_line_lays_every_planned_module() {
     let mut core = test_core();
     core.load_game_internal(concat!(
@@ -1533,7 +1530,6 @@ fn yard_planting(core: &SimCore) -> Vec<crate::simulation::vegetation::edits::Au
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo() {
     use crate::assets::asset::{YardPlantKind, YardPlanting};
     let mut core = test_core();
@@ -1630,7 +1626,6 @@ fn spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo() 
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn a_flower_bed_grows_drifts_of_flowers_that_keep_their_room() {
     use crate::assets::asset::{YardPlantKind, YardPlanting};
     let mut core = test_core();
@@ -1684,7 +1679,7 @@ fn a_flower_bed_grows_drifts_of_flowers_that_keep_their_room() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-D: frontage paving seam needs road outer chains in the CDT"]
 fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
     use crate::nodes::simulation_node::vegetation_api::{CANOPY_SALT, hedge_runs, scatter_layer};
     let mut core = test_core();

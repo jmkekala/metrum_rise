@@ -16,17 +16,20 @@ use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
 pub mod crosswalks;
 /// Cosmetic Finnish crossing and speed-limit sign placement.
 pub(crate) mod road_signs;
-/// Section-based roadbed rendering: bridge structures and lane markings.
+/// Roadbed rendering: piece surfaces, bridge structures and lane markings.
 pub mod standard_surface;
 pub(crate) mod street_lights;
 
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
 
-// Discriminants index `NetworkMeshData`'s seven layers. `ROAD-68-B` emits the earthwork,
-// curb, raised-step and sidewalk layers (0 to 3) again from roadbed pieces.
+// Discriminants index `NetworkMeshData`'s seven layers. The earthwork layer (0) returns with
+// road-owned terrain patches in `ROAD-68-D`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
+    Curb = 1,
+    RaisedStep = 2,
+    Sidewalk = 3,
     Road = 4,
     Marking = 5,
     Concrete = 6,
@@ -48,6 +51,7 @@ impl RoadRenderer {
         let mut mesh = NetworkMeshData::new();
 
         crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, &compiled_surface);
+        standard_surface::emit_piece_surfaces(&mut mesh, graph, roadbed, &compiled_surface);
         standard_surface::emit_bridge_structures(
             &mut mesh,
             graph,
@@ -119,6 +123,7 @@ impl RoadRenderer {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         let surface_start = road_debug.then(Instant::now);
+        standard_surface::emit_piece_surfaces(&mut mesh, graph, roadbed, &compiled_surface);
         standard_surface::emit_bridge_structures(
             &mut mesh,
             graph,
@@ -413,6 +418,24 @@ fn push_triangle_to_layer_with_crossing(
         mesh.road_crossings.extend_from_slice(&crossing);
     }
     let target = match layer {
+        MeshLayer::Curb => (
+            &mut mesh.curb_vertices,
+            &mut mesh.curb_normals,
+            &mut mesh.curb_uvs,
+            &mut mesh.curb_colors,
+        ),
+        MeshLayer::RaisedStep => (
+            &mut mesh.raised_step_vertices,
+            &mut mesh.raised_step_normals,
+            &mut mesh.raised_step_uvs,
+            &mut mesh.raised_step_colors,
+        ),
+        MeshLayer::Sidewalk => (
+            &mut mesh.sidewalk_vertices,
+            &mut mesh.sidewalk_normals,
+            &mut mesh.sidewalk_uvs,
+            &mut mesh.sidewalk_colors,
+        ),
         MeshLayer::Road => (
             &mut mesh.road_vertices,
             &mut mesh.road_normals,
@@ -440,6 +463,40 @@ fn push_triangle_to_layer_with_crossing(
     }
     let end = target.0.len();
     mesh.record_owner_triangle(layer as usize, end);
+}
+
+// Per-vertex road description for the asphalt shader (road_asphalt.gdshader), in 8-bit
+// channels: forward and backward lane counts, the speed limit in km/h, and a cosmetic age in
+// the upper half of alpha. Junction asphalt keeps a zero alpha: it has no road space.
+pub(super) fn road_space_color(edge: &crate::simulation::network::graph::Edge) -> Color {
+    let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+    Color::from_rgba(
+        channel(f32::from(edge.fwd_lanes)),
+        channel(f32::from(edge.bkw_lanes)),
+        channel(edge.speed_limit * 3.6),
+        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
+    )
+}
+
+// Per-vertex footpath description for road_path.gdshader: half-width in decimetres, a full green
+// channel marking the vertex as footpath (roadside sidewalks keep `sidewalk_color`'s zero), the
+// surface kind (0 asphalt), and the cosmetic age as in `road_space_color`.
+pub(super) fn footpath_color(edge: &crate::simulation::network::graph::Edge) -> Color {
+    let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+    Color::from_rgba(
+        channel(edge.width.max(2.0) * 0.5 * 10.0),
+        1.0,
+        0.0,
+        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
+    )
+}
+
+pub(super) fn curb_color() -> Color {
+    Color::from_rgba(0.56, 0.55, 0.53, 1.0)
+}
+
+pub(super) fn sidewalk_color() -> Color {
+    Color::from_rgba(0.0, 0.0, 0.0, 1.0)
 }
 
 // A stable 0..1 look age from where the edge lies, so a road keeps its wear across saves, splits

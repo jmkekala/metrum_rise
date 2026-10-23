@@ -71,7 +71,6 @@ fn test_lane_geometry_and_length() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: lane heights from span pieces"]
 fn lane_height_sync_matches_compiled_visible_surface() {
     let mut graph = RegionGraph::new();
     let n1 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
@@ -138,7 +137,6 @@ fn lane_height_sync_matches_compiled_visible_surface() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: lane heights from span pieces"]
 fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
     let mut graph = RegionGraph::new();
     let n1 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);

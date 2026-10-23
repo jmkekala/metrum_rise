@@ -33,7 +33,7 @@ const FARM: &str = "kenney:building.industrial.small_farm";
 const WAIT: Duration = Duration::from_secs(120);
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
+#[ignore = "ROAD-68-F: unchecked node moves leave a saved parcel over the road"]
 fn bridge_entry_points_never_use_the_global_pool() {
     let module = module_path!()
         .split_once("::")

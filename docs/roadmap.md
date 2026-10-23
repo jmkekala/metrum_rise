@@ -39,9 +39,11 @@ synchronous, commit adopts the preview's pieces, and undo swaps them back. Targe
 - `roadbed/` stays within 8,000 production lines
 
 The game may break between gates on branch `road`, and save compatibility is not kept. Gate
-`ROAD-68-A` (remove legacy, add the façade) is done: the legacy compiler is deleted, consumers use
-the empty façade and roads render nothing. Tests that need road geometry are disabled until their
-gate (198 Rust tests, 6 Godot scripts). `ROAD-68-B`–`ROAD-68-H` are open. Design,
+`ROAD-68-A` (remove legacy, add the façade) is done: the legacy compiler is deleted and consumers
+use the roadbed façade. `ROAD-68-B` (profiles and spans) is done: span pieces render between the
+graph clips, queries answer from their triangles, and buildings place again; a 100 m span builds in
+0.017 ms. Junction areas stay empty until `ROAD-68-C`. Tests that need later gates are disabled
+until then (36 Rust tests, 5 Godot scripts). `ROAD-68-C`–`ROAD-68-H` are open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

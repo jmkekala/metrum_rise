@@ -87,7 +87,6 @@ fn explicit_roadside_site_rejects_missing_surface_without_raw_terrain_fallback()
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn explicit_placement_survives_transform_rebuild_on_both_road_sides() {
     let config = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&config);
@@ -162,7 +161,6 @@ fn explicit_placement_survives_transform_rebuild_on_both_road_sides() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn explicit_service_preview_rejects_site_overlapping_nearby_road() {
     let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);

@@ -506,7 +506,7 @@ A test that cannot pass until a later gate is marked
 | Gate | Status | Scope |
 | --- | --- | --- |
 | `ROAD-68-A` | done | Remove the legacy compiler; add the roadbed façade; the crate compiles |
-| `ROAD-68-B` | open | Profiles, spans, meshes, queries and render chunks |
+| `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | open | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
@@ -574,42 +574,16 @@ writes. Every consumer uses the façade, the queries answer `None`, and roads re
 Each test below is marked `#[ignore = "ROAD-68-<gate>: <reason>"]` and is re-enabled by the gate
 that heads its table. Tests of deleted mechanisms were deleted, not listed.
 
-`ROAD-68-B` (154):
+`ROAD-68-B` (154): re-enabled by `ROAD-68-B`. 140 pass; the 13 frontage-seam tests in
+`nodes::sim::core::tests::building_site_terrain` moved to `ROAD-68-D` and
+`bridge_entry_points_never_use_the_global_pool` to `ROAD-68-F` (tables below, and the
+[`ROAD-68-B` result](#road-68-b--profiles-and-spans)).
+
+`ROAD-68-C` (7):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
-| `nodes::sim::core::budget::tests` | `budget_counts_machinery_for_all_utilities_without_treating_it_as_coal`, `farm_diagnostics_count_filled_jobs_and_household_independently`, `rolling_road_length_sums_the_network_over_one_day`, `the_daily_phase_closes_household_payments_without_a_logging_call` | building placement needs road frontage heights |
-| `nodes::sim::core::scenario::balance_cases` | `a_bulldoze_before_the_next_planning_slot_continues_identically_after_a_save_load`, `a_removal_requested_in_the_census_window_waits_for_the_removal_window_and_restarts_nothing`, `a_save_after_the_actions_slot_before_the_first_start_continues_identically`, `a_save_at_slot_1_after_a_fiscal_change_plans_on_the_published_census`, `a_save_in_the_planning_slots_on_invalid_books_skips_the_hour_identically`, `a_save_with_the_demand_queues_waiting_continues_identically`, `a_stale_level_change_permit_is_rejected`, `a_supplier_index_left_stale_by_a_road_edit_continues_identically_after_a_save_load`, `bankrupt_grocery_is_cleared_and_replaced_without_rezoning`, `busy_city_continues_identically_after_save_load`, `city_hour_totals_continue_identically_after_a_mid_hour_save_load`, `explicit_producers_are_observed_across_growth_and_building_remaps`, `growing_town_continues_identically_after_a_mid_hour_save_load`, `hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine`, `many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital`, `power_demolition_undo_restores_the_meter_and_refunds_only_its_bill`, `production_area_construction_charges_only_successful_added_area`, `queued_business_permits_continue_identically_after_a_mid_hour_save_load`, `queued_business_permits_survive_edge_and_lane_renumbering_across_a_save`, `queued_freight_requests_continue_identically_after_a_mid_hour_save_load`, `queued_growth_continues_identically_after_save_load`, `queued_household_requests_continue_identically_after_a_mid_hour_save_load`, `service_placement_and_undo_register_fiscal_capacity_before_the_hourly_census`, `stale_vacancy_index_continues_identically_after_a_save_load`, `starter_producers_restock_and_pay_workers_from_sales`, `the_flow_field_drain_rebuilds_a_stale_zone_index_first`, `the_hours_plan_continues_identically_after_a_save_between_its_slots` | building placement needs road frontage heights |
-| `nodes::sim::core::scenario::census_cases` | `a_building_removed_between_the_planning_slots_skips_the_later_slots`, `a_census_run_whole_at_its_publication_keeps_its_copy_for_the_planning_slots`, `a_plan_on_its_setup_equals_one_that_scans_an_unchanged_city_itself`, `a_planning_setup_continues_identically_after_save_load_inside_its_span`, `a_policy_change_in_the_census_window_reaches_the_next_census_and_survives_save_load`, `a_stale_zone_index_defers_the_census_books_preparation`, `a_workplace_completed_after_the_copy_keeps_one_claim_until_a_census_sees_it`, `an_arrival_hired_at_the_next_hour_joins_the_snapshot_as_before_its_hire`, `census_books_prepared_in_the_window_play_as_books_the_planning_slots_prepare`, `planning_lends_the_published_census_after_a_firm_starts_in_the_window`, `planning_lends_the_published_census_after_a_home_starts_in_the_window`, `route_scratch_prepared_at_load_runs_as_cold_scratch_does`, `the_census_books_preparation_refreshes_its_business_finance_masks`, `the_census_continues_identically_after_save_load_in_the_fill_the_window_and_before_publishing`, `the_census_in_work_unit_slices_equals_one_run_on_its_copy`, `the_census_on_a_copy_of_the_live_books_equals_one_on_fresh_storage`, `the_census_on_the_input_copy_equals_the_live_census_over_an_unchanged_hour`, `the_census_stepped_over_the_window_equals_one_run_on_its_copy_and_restarts_on_network_changes`, `the_input_copy_follows_building_and_household_removals`, `the_published_census_continues_identically_after_save_load_in_the_planning_slots` | building placement needs road frontage heights |
-| `nodes::sim::core::tests` | `a_failed_home_voids_the_business_permits_its_applicants_backed`, `business_planning_prices_the_actual_freight_route`, `completed_homes_rehouse_existing_residents_before_hourly_arrivals`, `construction_execution_revalidates_after_a_supporting_home_is_bulldozed`, `failed_supporting_housing_prevents_owner_funding_and_labor_is_not_reused`, `future_homes_rehouse_nonworkers_before_funding_factory_construction`, `hourly_planning_does_not_queue_the_same_parcel_twice`, `independent_factories_can_start_together_when_each_has_its_own_workforce`, `live_frontage_delay_reaches_queued_checks_only_when_published`, `max_demand_cheat_runtime_queues_and_executes_rci_spawns`, `queued_business_reprices_freight_before_owner_funding`, `queued_buyers_and_supplier_replacement_survive_reload_at_every_step`, `queued_customer_permits_survive_a_load_before_their_start`, `queued_customers_count_queued_homes_and_reserve_labour_once`, `queued_homes_estimate_the_applicants_they_draw_once_placed`, `queued_projects_start_only_at_their_permitted_doors_through_placement_and_reload` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::building_site_terrain` | `a_flower_bed_grows_drifts_of_flowers_that_keep_their_room`, `a_house_reaching_its_back_line_lays_every_planned_module`, `a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns`, `access_snapshot_pad_ownership_overrides_pending_visual_terrain`, `cars_and_walkers_enter_and_exit_on_compiled_yards`, `cars_pitch_and_roll_on_compiled_yards_in_both_access_directions`, `engineered_queries_reject_render_rejected_ground`, `interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz`, `kuopio_reference_supports_zoned_graded_yards_without_changing_fixture`, `large_paved_yards_remain_flat_over_hills_and_depressions`, `new_world_clears_populated_city_and_engineered_terrain`, `queued_asymmetric_houses_publish_graded_terrain`, `site_changes_far_apart_refresh_only_the_patches_they_touch`, `small_commercial_pads_leave_a_watertight_sloping_frontage`, `spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo`, `yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard`, `yard_material_changes_reuse_cdt_but_not_final_paving_buffers`, `zoned_yards_cover_uphill_and_downhill_frontages` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::commute_bounds` | `bounded_commute_estimates_match_exhaustive_estimates` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::fields` | `building_removal_keeps_a_clean_entrance_cache_equal_to_a_rebuild`, `buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview`, `demolition_undo_preserves_a_newer_resize_of_the_swap_moved_field`, `demolition_undo_rechecks_another_fields_later_expansion`, `demolition_undo_rechecks_authored_parcels_inside_the_removed_field`, `demolition_undo_restores_field_land_and_area`, `field_and_explicit_site_revalidate_cell_paint_without_a_derived_lot`, `field_attachment_uses_the_authored_rotated_farm_lot`, `field_removal_and_undo_refresh_cached_cells_beyond_the_farm_footprint`, `field_resize_invalidates_old_and_new_cells_and_rejects_new_paint_atomically`, `field_resize_is_atomic_and_recalculates_capacity_without_new_startup_money`, `fields_reject_roads_building_sites_parcels_and_other_fields`, `grain_field_minimum_rejects_preview_commit_and_shrink_without_spending`, `ordinary_building_removal_remaps_saved_field_owner_and_reservation`, `saved_fields_rebuild_clearance_after_sqlite_load` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::zoning_buildability` | `feasibility_invalidates_changed_terrain_and_assets`, `hillside_residential_sites_select_constructible_houses`, `missing_assets_allow_zoning_and_growth_waits_for_a_compatible_initial_asset` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::zoning_buildability::cell_zoning` | `catalog_refresh_replaces_empty_lots_but_preserves_occupied_coverage`, `consecutive_cell_gesture_undo_preserves_buildings_created_after_paint`, `erased_lot_invalidates_queued_growth_without_scanning_the_pending_queue`, `occupied_cell_building_follows_a_road_commit_and_undo_without_moving`, `painted_cells_use_asset_lots_and_the_existing_growth_path`, `queued_cell_growth_reloads_and_revalidates_erased_or_disabled_lots` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::zoning_buildability::cell_zoning::curves` | `occupied_curved_grid_survives_native_branch_commit_and_undo` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::zoning_buildability::cell_zoning::merges` | `occupied_cells_survive_native_node_merge_regeneration_and_undo` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::zoning_buildability::cell_zoning::movement` | `clear_node_extension_preserves_occupied_cells_and_undo` | building placement needs road frontage heights |
-| `nodes::sim::core::tests::zoning_buildability::cell_zoning::terrain` | `terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility` | building placement needs road frontage heights |
-| `nodes::simulation_node::tests::global_pool` | `bridge_entry_points_never_use_the_global_pool` | building placement needs road frontage heights |
-| `simulation::buildings::allocator::tests::demand_actions` | `test_commercial_demand_spawn_startup_budget_includes_first_import_cost`, `test_demand_building_spawn_plan_executes_from_hourly_budget`, `test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade` | building placement needs road frontage heights |
-| `simulation::buildings::allocator::tests::demand_selection` | `test_startup_demand_residential_family_selection_uses_parcel_hash_order`, `test_startup_demand_residential_variant_selection_uses_parcel_hash_order` | building placement needs road frontage heights |
-| `simulation::buildings::allocator::tests::placement` | `explicit_placement_survives_transform_rebuild_on_both_road_sides`, `explicit_service_preview_rejects_site_overlapping_nearby_road` | building placement needs road frontage heights |
-| `simulation::economy::demand::tests` | `commercial_spawn_candidate_prefers_asset_for_unmet_consumer_resource`, `constructing_workplace_plans_homes_without_admission_income`, `displaced_households_plan_replacement_homes_without_new_jobs_or_arrivals`, `industrial_opening_requires_enough_homes_ready_by_completion`, `queued_workplace_reserves_homes_without_admitting_households`, `residential_construction_bootstraps_before_vacant_homes_exist` | building placement needs road frontage heights |
-| `simulation::economy::demand::tests::alternatives` | `alternative_reservations_commit_the_winner_after_later_rejected_probes`, `an_unreachable_factory_does_not_block_other_sites`, `construction_shares_live_queued_and_placed_local_input_claims`, `cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection`, `export_openings_use_shared_labor_instead_of_one_project_quota`, `failed_reproofs_leave_the_plan_and_free_their_workers_for_later_slots`, `growth_records_distinguish_missing_land_assets_and_unusable_sites`, `live_local_inputs_can_fund_only_their_incumbents_upgrade`, `losing_priority_category_does_not_hide_viable_service`, `replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proofs`, `residential_downgrades_preserve_worker_housing_and_share_surplus`, `scarce_workforce_can_select_smaller_factory_on_the_same_lot`, `selected_category_releases_other_lots_to_remaining_categories` | building placement needs road frontage heights |
-| `tests/growth_scenario` | `concurrent_runs_record_identical_years`, `producer_town_grows_and_funds_its_firms_households_and_city_for_a_year`, `starter_town_funds_industry_services_households_and_city_for_two_years` | building placement needs road frontage heights |
-| `simulation::network::lanes::tests` | `incremental_lane_rebuild_is_lifted_without_the_renderer`, `lane_height_sync_matches_compiled_visible_surface` | lane heights from span pieces |
-| `simulation::save::tests::cell_zoning` | `load_checks_explicit_sites_and_compiled_roads_against_cell_reservations` | load checks road pieces against cell reservations |
-| `simulation::network::road_edit::tests` | `terminal_extension_adopts_existing_road_reprofile` | road heights pin stroke endpoints |
-| `nodes::sim::core::tests` | `local_road_precompute_reuses_distant_chunk_mesh_allocation`, `removed_road_publishes_chunk_tombstones_without_rebuilding_the_world`, `unacknowledged_local_road_generations_accumulate_chunk_payloads` | road render chunk meshes |
-| `nodes::sim::editing::tests` | `finished_terrain_edit_publishes_matching_road_mesh_generation` | road render chunk meshes |
-| `simulation::buildings::allocator::site::tests` | `site_grading_nearest_road_sample_uses_visible_surface_edge` | road span heights at the frontage |
-| `simulation::save::tests` | `loaded_runtime_preserves_saved_road_grade_and_frontage` | span pieces from the loaded graph |
-
-`ROAD-68-C` (6):
-
-| Module | Tests | Reason |
-| --- | --- | --- |
+| `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | terminal mouths move span ends in from the node (moved from `ROAD-68-F` in `ROAD-68-B`) |
 | `nodes::sim::core::tests` | `failed_junction_precompute_retains_matching_render_and_road_tool_generation` | failed junction piece path |
 | `nodes::sim::core::tests::road_terrain_plan` | `branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope` | four-way junction pieces on slopes |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_third_road_preserves_existing_junction_boundary_owners` | junction outer boundaries |
@@ -617,10 +591,11 @@ that heads its table. Tests of deleted mechanisms were deleted, not listed.
 | `simulation::save::tests` | `headlight_house_junction_full_load_compiles_with_terrain_earthwork` | junction pieces from the loaded graph |
 | `simulation::buildings::allocator::placement::feasibility::tests` | `road_dependencies_use_query_grid_and_invalidate_local_pieces` | needs span and node pieces in the chunk index |
 
-`ROAD-68-D` (12):
+`ROAD-68-D` (25):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
+| `nodes::sim::core::tests::building_site_terrain` | `access_snapshot_pad_ownership_overrides_pending_visual_terrain`, `cars_and_walkers_enter_and_exit_on_compiled_yards`, `cars_pitch_and_roll_on_compiled_yards_in_both_access_directions`, `engineered_queries_reject_render_rejected_ground`, `interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz`, `kuopio_reference_supports_zoned_graded_yards_without_changing_fixture`, `large_paved_yards_remain_flat_over_hills_and_depressions`, `new_world_clears_populated_city_and_engineered_terrain`, `site_changes_far_apart_refresh_only_the_patches_they_touch`, `small_commercial_pads_leave_a_watertight_sloping_frontage`, `yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard`, `yard_material_changes_reuse_cdt_but_not_final_paving_buffers`, `zoned_yards_cover_uphill_and_downhill_frontages` | the frontage paving seam takes road heights only where the road's outer chains enter the terrain CDT (moved from `ROAD-68-B`) |
 | `nodes::sim::core::tests` | `planned_topology_terrain_rejection_restores_split_dependents` | road terrain patches |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | road terrain patches |
 | `nodes::sim::editing::tests` | `accepted_road_has_current_terrain_payloads_before_publication`, `terrain_rejection_restores_split_dependents_and_preserves_undo_history`, `undoing_road_restore_invalidates_derived_render_cache`, `undoing_road_restore_invalidates_road_locked_terrain_state` | road terrain patches |
@@ -633,26 +608,28 @@ that heads its table. Tests of deleted mechanisms were deleted, not listed.
 | --- | --- | --- |
 | `nodes::sim::editing::tests` | `undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology` | undo restores the exact pre-edit junction pieces and mesh |
 
-`ROAD-68-F` (25):
+`ROAD-68-F` (3):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
-| `simulation::buildings::allocator::site::tests` | `site_support_validation_target_uses_visible_road_surface` | bridge surface heights |
-| `nodes::simulation_node::vegetation_api::tests` | `vegetation_footpath_clearance_catches_gaps_between_footprint_samples`, `vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries`, `vegetation_later_footpath_edit_clears_trees_by_the_same_rule` | footpath and lamp clearance from road bands |
 | `nodes::sim::core::tests::zoning_buildability::cell_zoning::movement` | `node_move_into_paint_or_erased_occupied_claim_is_atomic`, `node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor` | node-move reservation check against moved pieces |
-| `simulation::network::render::road::road_signs::tests` | `a_long_street_repeats_the_uniform_limit_after_its_junction`, `degree_two_nodes_share_steep_hazard_and_total_stretch_length`, `every_sign_pole_uses_the_kerb_face_and_interpolated_sidewalk_height`, `one_way_zebra_uses_the_left_variant_facing_the_same_approach`, `signs_keep_two_metres_from_every_light_and_shift_away_from_junction`, `steep_stretch_uses_signed_direction_and_peak_even_percentage`, `tight_curve_and_s_curve_use_driver_hand`, `two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb`, `uneven_and_steep_signs_obey_gap_and_pole_clearance`, `uniform_limits_have_no_speed_signs_and_changed_limit_follows_the_zebra`, `without_a_sidewalk_the_sign_uses_the_verge_and_terrain_height` | street furniture on road sections |
-| `simulation::network::render::road::street_lights::tests` | `a_footpath_gets_post_top_lights_on_its_verge`, `a_four_lane_road_gets_main_road_lights_on_both_sides`, `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb`, `a_street_drawn_as_short_edges_is_lit_as_one_street`, `exhausted_margins_keep_the_existing_single_middle_light`, `junction_clearance_and_coverage_follow_whole_chains`, `six_arm_junctions_keep_poles_apart_and_every_arm_lit`, `width_change_keeps_residential_poles_clear_of_both_main_poles` | street furniture on road sections |
+| `nodes::simulation_node::tests::global_pool` | `bridge_entry_points_never_use_the_global_pool` | unchecked node moves leave a saved parcel over the moved road, so the load entry fails; every other entry point keeps to the shared pool (moved from `ROAD-68-B`) |
+
+The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
+support target) pass on span sections and were re-enabled in `ROAD-68-B`.
 
 Godot scripts skipped by `run.sh --test`:
 
 | Gate | Script | Reason |
 | --- | --- | --- |
-| `ROAD-68-B` | `zoning_road_tool_test` | parcel lots need road frontage heights |
 | `ROAD-68-C` | `zoning_reference_test` | lots exclude the junction sidewalk footprint |
 | `ROAD-68-E` | `network_tool_chunk_renderer_test` | the moving preview uploads a road mesh |
 | `ROAD-68-E` | `road_junction_preview_test` | the preview exports the junction scene and a ready plan |
 | `ROAD-68-E` | `road_preview_stream_test` | junction previews update while the pointer moves |
 | `ROAD-68-F` | `zoning_cells_tool_test` | node moves check painted cells; parcels beside cells need frontage |
+
+`zoning_road_tool_test` (`ROAD-68-B`: parcel lots need road frontage heights) passes again and
+runs since `ROAD-68-B`.
 
 #### `ROAD-68` open questions
 
@@ -708,6 +685,84 @@ Acceptance:
 - output is bitwise deterministic across runs and worker counts
 - the chunk partition preserves the triangle multiset
 - a new `roadbed_span` Criterion benchmark is recorded
+
+Result (done 2026-10-23): every road, footpath, bridge and tunnel edge has a span piece between
+the mouth stations its graph clips give, and roads render again: carriageway, curbs or shoulders,
+sidewalks, footpaths and curb faces, with lane markings, street lights and signs on the span
+sections. Height, band, ray, overlap and lane queries answer from the rendered triangles, so lanes
+snap to the roadbed and buildings place on their frontage again. Junction, bend and terminal areas
+stay empty until `ROAD-68-C`. `roadbed/` holds 3,048 production lines.
+
+- New roadbed tests (`roadbed::span::tests`, `standard_surface::top_surface::tests`) check the
+  acceptance list on flat and 2.5% fixtures with every profile: watertight spans (each edge borders
+  two triangles except outer-chain and mouth edges; curb faces pair raised and ground vertices at
+  equal XZ), vertices bit-equal to the re-evaluated sections, query heights equal to the highest
+  rendered triangle at every top-triangle centroid, bitwise-identical pieces across runs and 1, 4
+  and 8 workers and after an incremental rebuild, the chunk payload holding exactly the pieces'
+  triangles in their centroid home chunks, and rebuilds and changed chunks limited to the closure.
+  The legacy width-taper, pass-through axis and folded-interval regressions are ported.
+- Debug library suite (`RAYON_NUM_THREADS=4`): 1,767 passed, 0 failed, 189 ignored, 36 of them
+  `ROAD-68` gate ignores (C 7, D 25, E 1, F 3). All 154 `ROAD-68-B` ignores were removed:
+  140 pass, 13 moved to `ROAD-68-D` and 1 to `ROAD-68-F`. 22 `ROAD-68-F` furniture, vegetation and
+  site tests pass on span sections and were re-enabled; 1 moved to `ROAD-68-C`. See the
+  [disabled tests](#road-68-a-disabled-tests).
+- Clippy (`--all-targets`) reports the same 59 warnings as the legacy tree. `cargo doc` reports no
+  missing docs.
+- `./run.sh --test` (isolated profile, no display) exits 0: the Kuopio replay checks,
+  `cargo check --benches`, `cargo test` (the library as above, and `tests/growth_scenario.rs` with
+  its 3 re-enabled tests: 4 passed) and the Godot bridge suites, including the re-enabled
+  `zoning_road_tool_test`, with no script errors. Five scripts stay skipped until their gates; the
+  two Forward+ vegetation tests need a display and did not run.
+
+Benchmark (`roadbed_benchmark`, group `roadbed_span`, 2026-10-23): release build, i9-12900K,
+pinned to the P-cores, `RAYON_NUM_THREADS=4`, no other build or benchmark running. `build/*` is
+one isolated `RoadbedSystem::build_span_piece` on an edge between two terminal nodes with 12 m
+knots on a 2.5% slope (sections, mesh, chains, grid and chunk footprint). `publish/span_100m_t_arm`
+marks one 100 m arm of a T junction dirty and runs `compile_dirty` (closure, shared-pool build,
+index and chunk update).
+
+```bash
+cargo bench --bench roadbed_benchmark --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot
+```
+
+| Case | Median |
+| --- | --- |
+| `build/span_25m` | 5.82 µs |
+| `build/span_100m` | 16.74 µs |
+| `build/span_400m` | 60.60 µs |
+| `build/span_100m_curved` | 16.77 µs |
+| `build/span_100m_four_lane` | 17.08 µs |
+| `build/span_100m_rural` | 12.21 µs |
+| `build/span_100m_footpath` | 4.44 µs |
+| `build/span_100m_bridge` | 8.97 µs |
+| `publish/span_100m_t_arm` | 37.56 µs |
+
+A 100 m span builds in 0.017 ms against the 0.05 ms target.
+
+Spec corrections in `ROAD-68-B`:
+
+- **Query cells.** Point, ray and overlap queries map XZ to pieces through a fixed 32 m query-cell
+  index (the legacy query-chunk span), kept beside the render-chunk index. Render chunks are 512 m
+  in the game, so a lookup through them alone would test every piece of a 512 m chunk. A piece is
+  listed in every render chunk and query cell that its section-pair bounds touch, padded 1 cm for
+  the renderer's f32 rounding: a superset of its triangles' centroid home chunks, so a chunk
+  rebuild always sees every triangle homed there.
+- **Mesh groups.** `PieceMesh` groups triangles by band kind (all eight kinds), then curb faces,
+  instead of five fixed layers. The renderer maps every kind other than carriageway and curb to the
+  sidewalk layer, as the legacy renderer did.
+- **Changed chunks.** Compiles accumulate their changed chunks until the mesh publisher takes them
+  (`changed_chunks`, `clear_changed_chunks`); two compiles before one mesh publish no longer lose
+  chunks. `compile_dirty` also returns the chunks it changed, for vegetation invalidation.
+- **Mouth stations.** Until `ROAD-68-C` they are the graph clips, which are metres along
+  `geometry` (the `Edge` doc comment said fractions and is corrected), used as stations along the
+  physical profile's 3-D length as the legacy section model did.
+- **Dirty closure.** Until node pieces exist it is the dirty edges plus the edges incident to dirty
+  nodes.
+- **Lane markings** start and end relative to the span's first and last sections, which now sit at
+  the mouths instead of the edge ends.
+- **Bridges and tunnels** get full span decks. The legacy tunnel visible-range clipping returns
+  with portals in `ROAD-68-F`.
 
 ### `ROAD-68-C` — junction layout and node pieces
 

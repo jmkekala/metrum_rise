@@ -33,7 +33,6 @@ fn curved_core(angle: f64) -> (SimCore, DVec2, DVec2) {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn occupied_curved_grid_survives_native_branch_commit_and_undo() {
     for (angle, erased) in [0.0, 0.35]
         .into_iter()

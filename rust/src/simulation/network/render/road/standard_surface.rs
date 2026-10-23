@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Section-based roadbed rendering: bridge structures and lane markings.
+//! Roadbed rendering: piece surfaces, bridge structures and lane markings.
 
 mod bridge;
 mod coverage;
 mod geometry;
 mod markings;
+mod top_surface;
 
 pub(super) use bridge::emit_bridge_structures;
 pub(super) use coverage::{
@@ -13,3 +14,4 @@ pub(super) use coverage::{
     build_compiled_surface_coverage_for_chunks,
 };
 pub(super) use markings::emit_compiled_lane_markings;
+pub(super) use top_surface::emit_piece_surfaces;

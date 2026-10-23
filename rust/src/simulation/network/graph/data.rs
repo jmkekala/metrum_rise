@@ -81,9 +81,11 @@ pub struct Edge {
     pub base_cost: f32,
     /// Arc length of `physical_geometry` in metres.
     pub physical_length: f32,
-    /// Fraction of `geometry` clipped from the start end at junctions (for junction mesh rendering).
+    /// Metres of `geometry` clipped from the start end at junctions; the roadbed's start mouth
+    /// station until `ROAD-68-C`.
     pub start_clip: f32,
-    /// Fraction of `geometry` clipped from the end at junctions (for junction mesh rendering).
+    /// Metres of `geometry` clipped from the end at junctions; the roadbed's end mouth station
+    /// until `ROAD-68-C`.
     pub end_clip: f32,
     /// Unclipped polyline control points (may extend into junction areas), used for zoning placement.
     pub geometry: Vec<Vector3>,

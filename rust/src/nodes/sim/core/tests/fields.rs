@@ -94,7 +94,6 @@ pub(in crate::nodes::sim::core) fn add_farm_household(core: &mut SimCore, farm: 
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn field_resize_is_atomic_and_recalculates_capacity_without_new_startup_money() {
     let (mut core, farm, polygon) = farm_fixture();
     let center = Vector2::new(
@@ -156,7 +155,6 @@ fn field_resize_is_atomic_and_recalculates_capacity_without_new_startup_money() 
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn grain_field_minimum_rejects_preview_commit_and_shrink_without_spending() {
     let (mut core, farm, reference) = farm_fixture();
     let minimum = rectangle(reference[0].x, reference[0].y, 200.0, 200.0);
@@ -216,7 +214,6 @@ fn grain_field_minimum_rejects_preview_commit_and_shrink_without_spending() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn field_attachment_uses_the_authored_rotated_farm_lot() {
     let (mut core, farm, _) = farm_fixture();
     let asset = core.allocator.buildings[farm].asset_id.clone();
@@ -253,7 +250,6 @@ fn field_attachment_uses_the_authored_rotated_farm_lot() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn fields_reject_roads_building_sites_parcels_and_other_fields() {
     let (mut core, farm, polygon) = farm_fixture();
     // A connected, concave field can extend alongside the farm, but cannot cross the street.
@@ -311,7 +307,6 @@ fn fields_reject_roads_building_sites_parcels_and_other_fields() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
     let (mut core, _, _) = farm_fixture();
     let asset = "test:field_test";
@@ -365,7 +360,6 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn field_and_explicit_site_revalidate_cell_paint_without_a_derived_lot() {
     use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
     use glam::DVec2;
@@ -418,7 +412,6 @@ fn field_and_explicit_site_revalidate_cell_paint_without_a_derived_lot() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn field_resize_invalidates_old_and_new_cells_and_rejects_new_paint_atomically() {
     use crate::simulation::zoning::cells::CellSelectionShape;
     use glam::DVec2;
@@ -477,7 +470,6 @@ fn field_resize_invalidates_old_and_new_cells_and_rejects_new_paint_atomically()
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn field_removal_and_undo_refresh_cached_cells_beyond_the_farm_footprint() {
     use glam::DVec2;
 
@@ -554,7 +546,6 @@ fn field_removal_and_undo_refresh_cached_cells_beyond_the_farm_footprint() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn demolition_undo_preserves_a_newer_resize_of_the_swap_moved_field() {
     use glam::DVec2;
 
@@ -604,7 +595,6 @@ fn demolition_undo_preserves_a_newer_resize_of_the_swap_moved_field() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn demolition_undo_rechecks_authored_parcels_inside_the_removed_field() {
     use crate::simulation::agriculture::PolygonFootprint;
 
@@ -666,7 +656,6 @@ fn demolition_undo_rechecks_authored_parcels_inside_the_removed_field() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn demolition_undo_rechecks_another_fields_later_expansion() {
     let (mut core, farm, polygon) = farm_fixture();
     let neighbor = core
@@ -822,7 +811,6 @@ fn field_cell_cache_edit_scaling() {
 // A removal keeps a clean entrance cache in step with its swap-remove, as a rebuild leaves it
 // (`SIM-02-K`), so the removal queue no longer derives every entrance again.
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn building_removal_keeps_a_clean_entrance_cache_equal_to_a_rebuild() {
     let (mut core, first, _) = farm_fixture();
     for x in [120.0, 240.0] {
@@ -851,7 +839,6 @@ fn building_removal_keeps_a_clean_entrance_cache_equal_to_a_rebuild() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn ordinary_building_removal_remaps_saved_field_owner_and_reservation() {
     let (mut core, first, polygon) = farm_fixture();
     let farm = core
@@ -917,7 +904,6 @@ fn ordinary_building_removal_remaps_saved_field_owner_and_reservation() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn saved_fields_rebuild_clearance_after_sqlite_load() {
     let (mut core, farm, polygon) = farm_fixture();
     core.commit_field_polygon_internal(farm, polygon.clone())
@@ -962,7 +948,6 @@ fn saved_fields_rebuild_clearance_after_sqlite_load() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn demolition_undo_restores_field_land_and_area() {
     let (mut core, farm, polygon) = farm_fixture();
     core.commit_field_polygon_internal(farm, polygon.clone())

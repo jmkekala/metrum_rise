@@ -33,13 +33,7 @@ impl SimCore {
             target_chunks.extend(self.transit_network.roadbed.occupied_chunks());
             target_chunks.extend(self.cached_road_mesh_chunks.keys().copied());
         } else {
-            target_chunks.extend(
-                self.transit_network
-                    .roadbed
-                    .last_changed_chunks()
-                    .iter()
-                    .copied(),
-            );
+            target_chunks.extend(self.transit_network.roadbed.changed_chunks());
         }
 
         let mut rebuilt_vertex_count = 0;
@@ -70,6 +64,7 @@ impl SimCore {
                 }
             }
             Arc::make_mut(&mut self.pending_road_mesh_chunks).extend(target_chunks.iter().copied());
+            self.transit_network.roadbed.clear_changed_chunks();
             self.cached_road_mesh_generation = self.road_tool_surface_generation;
         }
         if road_debug {

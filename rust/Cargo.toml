@@ -50,6 +50,10 @@ name = "road_chunk_benchmark"
 harness = false
 
 [[bench]]
+name = "roadbed_benchmark"
+harness = false
+
+[[bench]]
 name = "asset_lod_benchmark"
 harness = false
 

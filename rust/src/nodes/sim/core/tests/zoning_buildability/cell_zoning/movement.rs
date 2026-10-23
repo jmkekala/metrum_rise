@@ -18,7 +18,8 @@ fn unrelated_cell_paint_does_not_block_a_clear_bridge_terminal_move() {
     );
     assert!(added.committed);
     core.precompute_road_mesh_data();
-    let edge = core.region_graph.edge(core.region_graph.edge_count() - 1);
+    let edge_idx = core.region_graph.edge_count() - 1;
+    let edge = core.region_graph.edge(edge_idx);
     assert_eq!(
         edge.class,
         crate::simulation::network::types::EdgeClass::Bridge
@@ -34,6 +35,19 @@ fn unrelated_cell_paint_does_not_block_a_clear_bridge_terminal_move() {
             .pieces_in_bounds([f64::MIN, f64::MIN, f64::MAX, f64::MAX])
             .any(|(piece, _)| piece == PieceId::Node(node)),
         "the bridge span owns its terminal rather than requiring a separate cap"
+    );
+    let span_end = core
+        .transit_network
+        .roadbed
+        .sections(edge_idx)
+        .unwrap()
+        .last()
+        .unwrap();
+    assert!(
+        (span_end.center_xz - glam::DVec2::new(f64::from(original.x), f64::from(original.z)))
+            .length()
+            < 1e-3,
+        "the bridge span reaches its terminal node"
     );
     let target = Vector3::new(120.0, 12.0, 160.0);
     assert!(core.move_network_node_internal(node as i32, target));
@@ -167,7 +181,6 @@ fn node_move_into_paint_or_erased_occupied_claim_is_atomic() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: building placement needs road frontage heights"]
 fn clear_node_extension_preserves_occupied_cells_and_undo() {
     for angle in [0.0_f64, 0.35] {
         for erased in [false, true] {

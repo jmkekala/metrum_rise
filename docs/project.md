@@ -331,9 +331,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   directly from their arms (corners, round joins, mouth stations, heights `plane + level`) and feed
   the existing terrain CDT through oriented outer chains. Preview runs synchronously; commit adopts
   the preview's pieces. The targets are an exact road-and-terrain preview within 16.7 ms and a
-  commit within one frame. The game may break between gates `ROAD-68-A`–`H`. `ROAD-68-A` is done:
-  the legacy compiler is deleted, consumers use the empty roadbed façade, and roads render nothing
-  until `ROAD-68-B`. Tests that need road geometry are disabled until their gate.
+  commit within one frame. The game may break between gates `ROAD-68-A`–`H`. `ROAD-68-A` and
+  `ROAD-68-B` are done: roads render as span pieces between the graph clips, queries answer from
+  the rendered triangles and buildings place again, while junction areas stay empty until
+  `ROAD-68-C`. Tests that need later gates are disabled until then.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
@@ -1090,6 +1091,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-68-B` (branch `road`): roads render again as constructive span pieces (carriageway, curbs, sidewalks, footpaths and curb faces) between the graph clips, with lane markings, street lights and signs on their sections. Height, band, ray, overlap and lane queries answer from the rendered triangles through a 32 m query-cell index, so lanes snap and buildings place on their frontage again. Junction, bend and terminal areas stay empty until `ROAD-68-C`. A 100 m span builds in 0.017 ms. See [`roads.md`](roads.md#road-68-b--profiles-and-spans).
 - `ROAD-68-A` (branch `road`): the legacy road-surface compiler (`surface/`, 432 files) and the asynchronous road preview worker are removed. Consumers read the empty `roadbed/` façade, so roads render nothing and buildings cannot be placed until `ROAD-68-B`; the road preview validates synchronously. Tests that need road geometry are disabled until their gate. See [`roads.md`](roads.md#road-68-a--remove-legacy-stand-up-the-façade).
 - `VEG-25`: trees no longer turn darker as the camera comes within 60 m. The near trees' detailed shadow casters shaded their own crowns; they now stand back from the sun as the far casters do, and the ground shadows are unchanged. See [the shadows paragraph](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27).
 - `RENDER-16`: an overcast or stormy sky no longer shows a grey stripe on the horizon at night or a lilac one at dusk. The far cloud layer now fades into the sky's horizon haze. See [`terrain.md`](terrain.md#14-terrain-site-ground-water-and-lighting-materials-are-runtime-presentation).

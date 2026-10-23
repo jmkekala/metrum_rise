@@ -180,6 +180,11 @@ fn assert_cold_geometry_matches(actual: &Fixture, cold: &Fixture) {
             cold_bed.sections(id),
             "edge {id} sections"
         );
+        assert_eq!(
+            actual_bed.span_piece(id).map(|span| span.mesh()),
+            cold_bed.span_piece(id).map(|span| span.mesh()),
+            "edge {id} span mesh"
+        );
     }
     let pieces = |roadbed: &RoadbedSystem| {
         roadbed
@@ -250,7 +255,6 @@ fn hillside_crossing_keeps_existing_corridor_authority_after_splits() {
 }
 
 #[test]
-#[ignore = "ROAD-68-B: road heights pin stroke endpoints"]
 fn terminal_extension_adopts_existing_road_reprofile() {
     let mut planned = Fixture::new(false);
     let mut cold = Fixture::new(false);

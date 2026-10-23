@@ -3728,6 +3728,12 @@ mod tests {
         let edge_idx = add_test_road_edge(&mut core.region_graph, start, end);
         core.region_graph.rebuild_adjacency_list();
         finalize_network_render_for_test(&mut core);
+        let before = core
+            .transit_network
+            .roadbed
+            .sections(edge_idx)
+            .unwrap()
+            .to_vec();
 
         core.transit_network.roadbed.mark_edge_dirty(edge_idx);
         core.push_network_undo_for_local_topology(
@@ -3747,10 +3753,17 @@ mod tests {
                 && core.transit_network.roadbed.dirty_nodes().contains(&start),
             "undo must queue the bounded owner recompile"
         );
+        core.transit_network
+            .roadbed
+            .compile_dirty(&core.region_graph);
+        assert_eq!(
+            core.transit_network.roadbed.sections(edge_idx),
+            Some(before.as_slice()),
+            "the owner recompile restores the span"
+        );
     }
 
     #[test]
-    #[ignore = "ROAD-68-B: road render chunk meshes"]
     fn finished_terrain_edit_publishes_matching_road_mesh_generation() {
         let mut core = test_core();
         let outcome = core.add_road_internal(
