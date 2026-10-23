@@ -47,7 +47,7 @@ junctions and terminals render as node pieces built from their layouts, graph cl
 profile hard zone come from the layout mouths, and layout failures reject placements with
 reasons; a four-way node piece builds in 0.071 ms and a six-way in 0.127 ms. Tests that need
 later gates are disabled until then (34 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are
-open, and `roads.md` lists ten open questions. Design,
+open, and `roads.md` lists eleven open questions. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 
