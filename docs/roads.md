@@ -505,7 +505,7 @@ A test that cannot pass until a later gate is marked
 
 | Gate | Status | Scope |
 | --- | --- | --- |
-| `ROAD-68-A` | open | Remove the legacy compiler; add the roadbed façade; the crate compiles |
+| `ROAD-68-A` | in progress | Remove the legacy compiler; add the roadbed façade; the crate compiles |
 | `ROAD-68-B` | open | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | open | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
@@ -550,6 +550,34 @@ Acceptance:
 - the crate builds, and Clippy reports no new warnings
 - library tests pass, with the ignores listed under their gates
 - every public façade item is documented
+
+Progress (2026-10-23, WIP commit `d07073de`): `surface/` and the asynchronous preview worker are
+deleted and the library builds against the façade with no new warnings; the test targets do not
+compile yet. `roadbed/` holds 829 production lines.
+
+#### `ROAD-68` open questions
+
+These need a user decision; work that does not depend on them continues.
+
+1. **Planned overlap checks before commit.** The legacy commit tested the planned junction and
+   span footprints against painted cells and fields (`PlannedRoadSurfaceQuery`). `ROAD-68-A` keeps
+   only the corridor checks (`cells_overlap_road_corridor`, field corridor), so a junction corner
+   may overlap painted cells until `ROAD-68-E`/`ROAD-68-F` restore the check from preview pieces.
+   Options: accept on the branch (current), or block commits that touch reserved cells near nodes.
+2. **Node moves over painted cells.** The node-move reservation check compiled a local surface.
+   It is removed until `ROAD-68-F`; node moves are currently unchecked against cell reservations.
+3. **Site CDT margin.** Building-site loops used the legacy seam-vertex grading margin for their
+   sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
+   terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
+
+Spec corrections in `ROAD-68-A`:
+
+- The façade defines only what consumers use (`RoadbedSystem`, `BandKind`, `RoadSection`,
+  `RoadBand`, `PieceId`, `LaneSurfaceQuery`, `SurfaceChunkKey`, `CURB_STEP_HEIGHT_M`); `RoadProfile`,
+  `Level`, `JunctionLayout`, `SpanPiece`, `NodePiece`, `PieceMesh`, `OuterChain` and
+  `MouthSection` arrive with the gates that build them.
+- Placement profile validation measures grade and clearance over the prepared profile points; the
+  legacy check sampled compiled span sections of the same profile.
 
 ### `ROAD-68-B` — profiles and spans
 

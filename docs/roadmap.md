@@ -39,7 +39,8 @@ synchronous, commit adopts the preview's pieces, and undo swaps them back. Targe
 - `roadbed/` stays within 8,000 production lines
 
 The game may break between gates on branch `road`, and save compatibility is not kept. Gates
-`ROAD-68-A`–`ROAD-68-H` are all open; next is `ROAD-68-A` (remove legacy, add the façade). Design,
+`ROAD-68-A` (remove legacy, add the façade) is in progress: the legacy compiler is deleted and the
+library builds; test targets are being ported. `ROAD-68-B`–`ROAD-68-H` are open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

@@ -331,7 +331,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   directly from their arms (corners, round joins, mouth stations, heights `plane + level`) and feed
   the existing terrain CDT through oriented outer chains. Preview runs synchronously; commit adopts
   the preview's pieces. The targets are an exact road-and-terrain preview within 16.7 ms and a
-  commit within one frame. The game may break between gates `ROAD-68-A`–`H`, all of which are open.
+  commit within one frame. The game may break between gates `ROAD-68-A`–`H`. `ROAD-68-A` is in
+  progress: the legacy compiler is deleted and roads currently render nothing.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
