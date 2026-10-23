@@ -669,13 +669,17 @@ These need a user decision; work that does not depend on them continues.
 3. **Site CDT margin.** Building-site loops used the legacy seam-vertex grading margin for their
    sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
-4. **Pinned Kuopio fixture hash (`ROAD-69`).** `./run.sh --test` stops at its first step:
-   `tools/test_road_terrain_replay.py` (`test_pinned_fixture_integrity`) fails, on `road-legacy`
-   too. The merge `209d3c9c` (2026-10-22) replaced
-   `benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` (now SHA-256 `5ac4cb0f…`), but
-   `placements.json` still pins `reference_save_sha256` `6bda216e…`. `ROAD-68-A` ran the remaining
-   steps of the sequence directly. Options: re-pin the manifest to the committed save, or restore
-   the save the manifest names.
+4. **Pinned Kuopio fixture hash (`ROAD-69`) — resolved 2026-10-23, re-pinned.**
+   - **The fault.** `./run.sh --test` stopped at its first step: `tools/test_road_terrain_replay.py`
+     (`test_pinned_fixture_integrity`) failed, on `road-legacy` too.
+   - **The cause.** Each parent of the merge `209d3c9c` had a save matching its own manifest
+     (`6bda216e…` and `12d1f538…`). The merge committed a regenerated third save, `5ac4cb0f…`,
+     written in the merged save format, but kept one parent's manifest.
+   - **The fix.** `placements.json` now pins `5ac4cb0f…`. Restoring `6bda216e…` would have
+     brought back a save from before the merge's format changes.
+   - **Verification.** The manifest's other integrity checks (attempts 1–37, attempt 36
+     rejected, 70 live edges, source terrain) pass against the committed save, and all 8
+     `test_road_terrain_replay.py` tests pass.
 
 Spec corrections in `ROAD-68-A`:
 
