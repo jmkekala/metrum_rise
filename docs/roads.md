@@ -528,6 +528,14 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-G` | open | Commit consequences inside one frame (routing, flow fields) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
+**Plan changes (2026-10-24, user).** Pre-D work, before terrain:
+- open questions 14 (D5 footpath junctions) and 15 (drawing-order dependence)
+- question 13's bend fallback
+- question 9's D4 taper
+
+`ROAD-68-E` also takes open questions 1, 2, 7 and 8, and question 11's follow-up (c). `ROAD-68-F`
+keeps the rest of its families. The crossings, D4 and D5 are now pre-D work.
+
 ### `ROAD-68-A` — remove legacy, stand up the façade
 
 1. Commit the stopped `ROAD-67-B` prototype (its untracked `height/shared.rs`, `height/grade/graph*`
@@ -654,15 +662,16 @@ footprint) passes again and runs since `ROAD-68-C`.
 
 These need a user decision; work that does not depend on them continues.
 
-1. **Planned overlap checks before commit.** The legacy commit tested the planned junction and
+1. **Planned overlap checks before commit — decided 2026-10-24 (user): restore in `ROAD-68-E`** from the preview's
+   junction and span pieces. The legacy commit tested the planned junction and
    span footprints against painted cells and fields (`PlannedRoadSurfaceQuery`). `ROAD-68-A` keeps
    only the corridor checks (`cells_overlap_road_corridor`, field corridor), in both the commit and
    plan readiness, so a junction corner may overlap painted cells until `ROAD-68-E`/`ROAD-68-F`
    restore the check from preview pieces. Options: accept on the branch (current), or block commits
    that touch reserved cells near nodes.
-2. **Node moves over painted cells.** The node-move reservation check compiled a local surface.
+2. **Node moves over painted cells — decided 2026-10-24 (user): restore in `ROAD-68-E`**, with question 11's (c). The node-move reservation check compiled a local surface.
    It is removed until `ROAD-68-F`; node moves are currently unchecked against cell reservations.
-3. **Site CDT margin.** Building-site loops used the legacy seam-vertex grading margin for their
+3. **Site CDT margin — decided 2026-10-24 (user): resolved by `ROAD-68-D`'s shared grading envelope.** Building-site loops used the legacy seam-vertex grading margin for their
    sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
 4. **Pinned Kuopio fixture hash (`ROAD-69`) — resolved 2026-10-23, re-pinned.**
@@ -676,7 +685,7 @@ These need a user decision; work that does not depend on them continues.
    - **Verification.** The manifest's other integrity checks (attempts 1–37, attempt 36
      rejected, 70 live edges, source terrain) pass against the committed save, and all 8
      `test_road_terrain_replay.py` tests pass.
-5. **Straight sectors narrower than a half turn (`ROAD-68-C`).** The [round join](#junction-layout)
+5. **Straight sectors narrower than a half turn (`ROAD-68-C`) — decided 2026-10-24 (user): keep the miter.** The [round join](#junction-layout)
    from station zero makes the carriageway core cross itself whenever `phi < pi` and the two
    widths are equal: the arms overlap in a sliver of angle `pi - phi`, and their carriageway edges
    cross at station `la * tan((pi - phi) / 2)`. A straight road split by a side road lands on
@@ -688,8 +697,8 @@ These need a user decision; work that does not depend on them continues.
    widths share one miter point, and a width change steps radially along the bisector (D4). At
    `pi` and above, the round join is unchanged. Options: keep the miter, or join every straight
    sector at station zero and reject the overlapping half.
-6. **Obtuse corners between unequal widths (`ROAD-68-C`) — defaulted: backward extension
-   (2026-10-24); the user may override it.**
+6. **Obtuse corners between unequal widths (`ROAD-68-C`) — decided 2026-10-24 (user): keep the backward
+   extension.**
    - **The problem.** A concave corner needs `o_a(., la + R)` and `o_b(., -(lb + R))` to cross at
      positive stations. With a narrower arm `a`, that requires `la + R >= (lb + R) * cos(pi - phi)`,
      and shrinking `R` only makes it harder. A two-lane arm (3.5 m) next to a four-lane arm (7 m)
@@ -708,7 +717,8 @@ These need a user decision; work that does not depend on them continues.
    - **Evidence.** Layout tests `obtuse_corners_between_unequal_widths_extend_the_wider_arm_backwards`
      (120°–160°, both orders) and `a_two_lane_side_road_meets_a_four_lane_through_road` (40°, 60°,
      90°), and the node fixtures `mixed_40`, `mixed_60` and `mixed_90`, flat and sloped.
-7. **Stable arms pinned at both ends (`ROAD-68-C`).** The profile solve pins an arm to `P` up to its
+7. **Stable arms pinned at both ends (`ROAD-68-C`) — decided 2026-10-24 (user): in `ROAD-68-E`, keep pinned mouth
+   knots through the resample.** The profile solve pins an arm to `P` up to its
    mouth with a knot there. An adapted arm takes the knot in its control polyline, so it survives
    every later solve. A stable arm's control polyline must not change, so it takes the knot in its
    physical profile only, and keeps its physical knots on later solves unless that solve adds new
@@ -716,14 +726,16 @@ These need a user decision; work that does not depend on them continues.
    the control polyline and drops this end's knot; the node then fails with `MouthOffPlane`
    (`junction_profile_mismatch`). No fixture hits it. Options: accept the rejection (current); keep
    pinned physical knots through the resample; or let the solve add mouth knots to stable control.
-8. **Saves from before `ROAD-68-C` (`ROAD-68-C`).** Their clips come from the legacy setback rule
+8. **Saves from before `ROAD-68-C` (`ROAD-68-C`) — decided 2026-10-24 (user): accept the load repair; regenerate
+   the reference fixtures with `ROAD-68-E`'s load rebuild; no migration code.** Their clips come from the legacy setback rule
    (about 5.5 m at a right-angle T) and their profiles are pinned only that far, while layout mouths
    sat at 9.5–16 m at the gate, and closer with the follow-up's 3.5 m radius (2.5 m closer at a right
    angle). On load most of their junctions fail the 1 mm mouth check, and the existing
    load repair re-solves them after recomputing their clips: the Kuopio reference fixture loads,
    but about ten of its junction profiles change. Options: accept the load repair (current); re-pin the
    reference fixtures; or a save migration with `ROAD-68-E`'s load rebuild.
-9. **Width steps on straight sectors (`ROAD-68-C`).** D4's radial step has no face of its own. A
+9. **Width steps on straight sectors (`ROAD-68-C`) — decided 2026-10-24 (user): build D4's taper at the start of
+   `ROAD-68-D`.** D4's radial step has no face of its own. A
    straight sector between a narrower and a wider carriageway gets the generic strips, which are
    zero-area slivers along the step, and the carriageway-edge curb face runs the whole step, up to
    the wider carriageway edge. The piece is watertight (fixture `width_step`), but beyond the
@@ -773,8 +785,9 @@ These need a user decision; work that does not depend on them continues.
       ([follow-up 2](#one-crossing-per-degree-two-node-follow-up-2)).
     - **Later.** Placing crossings where walkers need them, rather than by this mechanical rule,
       remains `ROAD-58`.
-13. **Degree-two crossings that do not fit (`ROAD-68-C` follow-up 2).** Conservative choices,
-    for the user to confirm:
+13. **Degree-two crossings that do not fit (`ROAD-68-C` follow-up 2) — decided 2026-10-24 (user).** A bend
+    crossing that does not fit moves to the other arm, like the pass-through rule; reject only
+    when neither arm fits. The remaining choices below stand:
     - A bend's crossing arm takes the 3 m strip as a junction arm does. If its layout then does
       not fit, the edit is rejected with the existing reasons (`junction_arm_too_short`,
       `junction_corner_does_not_fit`). So a bend with a short arm that `16354d77` accepted can be
@@ -786,6 +799,29 @@ These need a user decision; work that does not depend on them continues.
     - An override of `false` on a degree-two node's first arm moves the default crossing to the
       other arm, as the legacy rule did; `false` on both arms leaves the node without one.
     - Nodes with a footpath arm have no layout until `ROAD-68-F` (D5), and so no crossing.
+
+14. **Road junctions with a footpath arm (D5) — decided 2026-10-24 (user): pull forward before
+    `ROAD-68-D`.**
+    - **The gap.** `NodeArms::collect` returns `None` for any node with a footpath arm, so such
+      a junction has no layout. Its road arms get no zebra and no corner walks, and the spans
+      simply end.
+    - **Effect on walking.** Walkers cannot cross the road there. `ConnectorTargets::complete`
+      becomes false network-wide, so walk forecasts degrade everywhere.
+    - **Effect on the perf contract.** This may explain the baseline-30k hour mean rising from
+      3.31–3.40 to 4.10–4.11 ms in the `9d0b187f` perf-contract run. That is unconfirmed: the
+      snapshots were regenerated and no control build ran.
+    - **Decision.** Give these junctions a normal layout. Road arms keep their crossings and
+      corners, and the footpath joins the sidewalk ring at sidewalk height (D5).
+    - **Verification.** Check the proof on the perf-contract cities, then re-run the economy
+      performance contract against a matched control.
+15. **Drawing-order dependence (`ROAD-68-C`) — decided 2026-10-24 (user): root-cause before
+    `ROAD-68-D`.**
+    - **The symptom.** The Y reference fixtures render about one colour level differently at
+      the junction core after follow-up 2.
+    - **Likely cause.** Each Y is drawn stem first, so its node is briefly a bend, and the bend
+      crossing's mouth knots may persist in the profile.
+    - **Rule.** Invariant 6 requires that an edit history producing the same graph produces the
+      same pieces. Fix the cause, and add an edit-order test.
 
 Spec corrections in `ROAD-68-A`:
 
