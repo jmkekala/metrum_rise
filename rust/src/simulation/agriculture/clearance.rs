@@ -78,12 +78,15 @@ impl<'a> PolygonFootprint<'a> {
     }
 
     fn overlaps_points(&self, points: &[[f64; 2]], min: Vector2, max: Vector2) -> bool {
-        self.bounds_overlap(min, max)
-            && !self
-                .points
-                .as_ref()
-                .overlay(&points, OverlayRule::Intersect, FillRule::EvenOdd)
-                .is_empty()
+        self.bounds_overlap(min, max) && self.overlay_overlaps(points)
+    }
+
+    fn overlay_overlaps(&self, points: &[[f64; 2]]) -> bool {
+        !self
+            .points
+            .as_ref()
+            .overlay(&points, OverlayRule::Intersect, FillRule::EvenOdd)
+            .is_empty()
     }
 
     /// Tests one world position against the polygon interior, under the same even-odd rule the
@@ -113,38 +116,43 @@ impl<'a> PolygonFootprint<'a> {
         inside
     }
 
+    // These bounds as f64 `[min_x, min_z, max_x, max_z]`.
+    fn bounds_f64(&self) -> [f64; 4] {
+        [self.min.x, self.min.y, self.max.x, self.max.y].map(f64::from)
+    }
+
     fn overlaps_road_polygon(&self, points: &[RoadVec3]) -> bool {
-        let points = points.iter().map(|p| [p.x, p.z]);
-        let (min, max) = precise_bounds(points.clone());
-        if !self.bounds_overlap(min, max) {
+        // The bounds test `overlaps_points` makes on the outward-rounded f32 bounds of `points`,
+        // without rounding: no f32 lies strictly between a value and its directed rounding, so
+        // `F < round_up(v)` exactly when `F < v`, and `F > round_down(v)` when `F > v`.
+        let [min_x, min_z, max_x, max_z] = self.bounds_f64();
+        if !(points.iter().any(|p| p.x > min_x)
+            && points.iter().any(|p| p.x < max_x)
+            && points.iter().any(|p| p.z > min_z)
+            && points.iter().any(|p| p.z < max_z))
+        {
             return false;
         }
         // Compiled span triangles/quads need no temporary heap contour.
         if points.len() <= 4 {
             let mut contour = [[0.0; 2]; 4];
-            let count = points.len();
             for (target, point) in contour.iter_mut().zip(points) {
-                *target = point;
+                *target = [point.x, point.z];
             }
-            return self.overlaps_points(&contour[..count], min, max);
+            return self.overlay_overlaps(&contour[..points.len()]);
         }
-        // Most nearby road pieces miss a cell. Copy a contour only when the existing
-        // outward-rounded bounds admit it; reuse those bounds for the exact overlay.
-        let points: Vec<_> = points.collect();
-        self.overlaps_points(&points, min, max)
+        // Most nearby road pieces miss a cell. Copy a contour only when the bounds admit it.
+        let points: Vec<_> = points.iter().map(|p| [p.x, p.z]).collect();
+        self.overlay_overlaps(&points)
     }
 
     /// Tests visible carriageway, sidewalk and junction triangles through the roadbed query grid.
+    /// By the bounds test above, only triangles whose XZ bounds touch these bounds can overlap,
+    /// so the query needs no margin.
     pub(crate) fn overlaps_roads(&self, roads: &RoadbedSystem) -> bool {
-        roads.any_top_triangle_in_bounds(
-            [
-                f64::from(self.min.x) - 1.0,
-                f64::from(self.min.y) - 1.0,
-                f64::from(self.max.x) + 1.0,
-                f64::from(self.max.y) + 1.0,
-            ],
-            |triangle, _| self.overlaps_road_polygon(&triangle),
-        )
+        roads.any_top_triangle_points_in_bounds(self.bounds_f64(), |triangle| {
+            self.overlaps_road_polygon(&triangle)
+        })
     }
 }
 

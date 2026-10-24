@@ -228,12 +228,36 @@ impl RoadbedSystem {
         bounds_xz: [f64; 4],
         mut visit: impl FnMut([RoadVec3; 3], BandKind) -> bool,
     ) -> bool {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, |mesh, triangle| {
+            mesh.triangle_band(triangle)
+                .is_some_and(|kind| visit(mesh.triangle_points(triangle), kind))
+        })
+    }
+
+    /// [`Self::any_top_triangle_in_bounds`] without the band kind, which costs a search per
+    /// triangle visited.
+    pub fn any_top_triangle_points_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut([RoadVec3; 3]) -> bool,
+    ) -> bool {
+        self.any_top_triangle_of_pieces_in_bounds(bounds_xz, |mesh, triangle| {
+            visit(mesh.triangle_points(triangle))
+        })
+    }
+
+    // Visits the top triangles of the pieces' grid cells touching `bounds_xz`, as in
+    // `any_top_triangle_in_bounds`.
+    fn any_top_triangle_of_pieces_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut(&PieceMesh, usize) -> bool,
+    ) -> bool {
         self.any_piece_in_bounds(bounds_xz, |_, mesh| {
-            mesh.grid().items_in_bounds(bounds_xz).any(|item| {
-                let triangle = item as usize;
-                mesh.triangle_band(triangle)
-                    .is_some_and(|kind| visit(mesh.triangle_points(triangle), kind))
-            })
+            let top = mesh.top_triangle_count();
+            mesh.grid()
+                .items_in_bounds(bounds_xz)
+                .any(|item| (item as usize) < top && visit(mesh, item as usize))
         })
     }
 
