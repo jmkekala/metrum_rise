@@ -2985,6 +2985,7 @@ Round 2 (part 1, 2026-10-24):
   (an edit's or a preview's) on the calling thread and larger ones (loads, terrain syncs) on the
   shared pool: same functions, same order, so the products are unchanged; waking the pool for a
   handful of pieces cost more than building them (timings below).
+- **Size.** `roadbed/` production lines: 7,902 (7,881 after round 1): +21 for the inline build.
 - **Open in part 1:** terrain tiles and payloads in the preview, the terrain halves of the
   fingerprint, the commit install and the undo record ([Preview](#preview-commit-undo-and-load));
   the Godot stage below; the context refresh and the commit's graph copy at 10k and 100k.
@@ -3017,9 +3018,11 @@ moving frames per fixture with a 1/60 s timer between them): every moved frame p
 showed its own pose on all nine fixtures; the tool's `_process` took 5.6–8.6 ms p50. Inside it
 the native stages took four to five times the harness's (plan 1.0–1.3, roadbed 1.1–1.8, road
 chunks 1.0–2.1 ms p50), and the rest of the frame (bridge call, chunk `ArrayMesh` upload and
-staging) 2.1–3.2 ms p50 against the 2.0 ms Godot budget. Headless frames idle between inputs,
-so cores clock down and caches go cold; the gap is not attributed yet. The Godot stage is an
-open miss; the 16.7 ms frame holds.
+staging) 2.1–3.2 ms p50 against the 2.0 ms Godot budget. B's library gives the same numbers
+(`_process` 5.5–8.7 ms p50, stage and install 2.1–3.0 ms), so pool dispatch is not the gap.
+Headless frames idle between inputs, so cores may clock down and caches go cold; the gap is not
+attributed yet. The Godot stage and the in-Godot native stages are open misses (profile with
+continuously rendered frames next); the 16.7 ms frame holds on every fixture (max 9.7 ms).
 
 ### `ROAD-68-F` — remaining families
 
