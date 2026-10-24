@@ -495,7 +495,7 @@ fn corners_that_cannot_shrink_enough_do_not_fit() {
     arms[2].max_station_m = CROSSWALK_DEPTH_M + 5.4;
     let result = build(node, &arms);
     assert!(
-        matches!(result, Err(LayoutError::CornerDoesNotFit(arm)) if arm == key(1) || arm == key(2)),
+        matches!(result, Err(LayoutError::CornerDoesNotFit { arm }) if arm == key(1) || arm == key(2)),
         "{result:?}"
     );
 }
@@ -812,7 +812,10 @@ fn a_width_change_taper_that_cannot_fit_is_rejected() {
     ];
     // Half the legacy minimum taper plus the crosswalk is 9 m.
     arms[1].max_station_m = 8.9;
-    assert_eq!(build(node, &arms), Err(LayoutError::ArmTooShort(key(1))));
+    assert_eq!(
+        build(node, &arms),
+        Err(LayoutError::ArmTooShort { arm: key(1) })
+    );
     arms[1].max_station_m = 9.0;
     build_checked(node, &arms);
 }
@@ -897,53 +900,59 @@ fn degenerate_input_returns_typed_errors() {
     let cases: [(ArmChange, LayoutError); 14] = [
         (
             &|a| a.knots[3].position.x = f64::NAN,
-            LayoutError::NonFinite(arm),
+            LayoutError::NonFinite { arm },
         ),
         (
             &|a| a.left[1].outer_m = f64::INFINITY,
-            LayoutError::NonFinite(arm),
+            LayoutError::NonFinite { arm },
         ),
-        (&|a| a.knots.truncate(1), LayoutError::DegenerateArm(arm)),
+        (&|a| a.knots.truncate(1), LayoutError::DegenerateArm { arm }),
         (
             &|a| a.knots[1].position = node,
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
         (
             &|a| a.knots[0].position.x += 0.01,
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
         (
             &|a| a.knots[2].station_m = 1.0,
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
         (
             &|a| a.knots[2].lateral *= 1.01,
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
         (
             &|a| a.knots[2].lateral = -a.knots[2].lateral,
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
         (
             &|a| a.max_station_m = LONG_ARM_M + 1.0,
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
         (
             &|a| {
                 a.knots = straight_knots(node, 0.0, 0.03);
                 a.max_station_m = 0.03;
             },
-            LayoutError::DegenerateArm(arm),
+            LayoutError::DegenerateArm { arm },
         ),
-        (&|a| a.left[2].outer_m = 3.6, LayoutError::InvalidBands(arm)),
-        (&|a| a.key = key(1), LayoutError::DuplicateArm(key(1))),
-        (&|a| a.max_station_m = 3.5, LayoutError::ArmTooShort(arm)),
+        (
+            &|a| a.left[2].outer_m = 3.6,
+            LayoutError::InvalidBands { arm },
+        ),
+        (
+            &|a| a.key = key(1),
+            LayoutError::DuplicateArm { arm: key(1) },
+        ),
+        (&|a| a.max_station_m = 3.5, LayoutError::ArmTooShort { arm }),
         (
             &|a| {
                 a.left = vec![band(BandKind::Footpath, Level::Ground, 1.0)];
                 a.right = a.left.clone();
             },
-            LayoutError::BandMismatch(arm),
+            LayoutError::BandMismatch { arm },
         ),
     ];
     for (change, expected) in cases {
@@ -953,7 +962,7 @@ fn degenerate_input_returns_typed_errors() {
     no_core.left.core_bands = 0;
     assert_eq!(
         JunctionLayout::build(node, &[no_core]),
-        Err(LayoutError::InvalidBands(arm))
+        Err(LayoutError::InvalidBands { arm })
     );
     let twin = OwnedArm {
         key: key(5),
@@ -961,6 +970,6 @@ fn degenerate_input_returns_typed_errors() {
     };
     assert_eq!(
         build(node, &[good.clone(), twin]),
-        Err(LayoutError::DuplicateDirection(key(5)))
+        Err(LayoutError::DuplicateDirection { arm: key(5) })
     );
 }

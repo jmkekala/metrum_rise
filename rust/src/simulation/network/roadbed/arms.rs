@@ -253,7 +253,7 @@ impl NodeArms {
             return Err(error);
         };
         let first = self.arms[from].key;
-        if !matches!(error, LayoutError::ArmTooShort(arm) | LayoutError::CornerDoesNotFit(arm)
+        if !matches!(error, LayoutError::ArmTooShort { arm } | LayoutError::CornerDoesNotFit { arm }
             if arm == first)
         {
             return Err(error);
@@ -340,8 +340,11 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
         return None;
     }
     let mut incidents: Vec<(ArmKey, RoadVec2)> = Vec::with_capacity(4);
-    for &index in graph.node_adjacency(node) {
-        let Some(edge) = graph.get_edge(index).filter(|edge| is_surface_edge(edge)) else {
+    for &edge_idx in graph.node_adjacency(node) {
+        let Some(edge) = graph
+            .get_edge(edge_idx)
+            .filter(|edge| is_surface_edge(edge))
+        else {
             continue;
         };
         let end = if graph.get_valid_node(edge.start_node) == node {
@@ -352,7 +355,13 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
             continue;
         };
         if let Some(direction) = incident_direction(edge, end) {
-            incidents.push((ArmKey { edge: index, end }, direction));
+            incidents.push((
+                ArmKey {
+                    edge: edge_idx,
+                    end,
+                },
+                direction,
+            ));
         }
     }
     incidents.sort_by_key(|(key, _)| *key);

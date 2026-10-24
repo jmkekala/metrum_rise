@@ -1,21 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Pedestrian walkways of one node from its junction layout (`ROAD-68-C`): where its sidewalks
-//! and footpaths end, its zebra crossings, the sidewalk corner routes between neighbouring arms
-//! and where attached footpaths join them.
+//! end, its zebra crossings and the sidewalk corner routes between neighbouring arms.
 //!
 //! The lane rebuild reads them through [`NodeWalkways::collect`], which lays the node out with the
 //! graph-to-layout function node pieces use ([`NodeArms::collect`], [`NodeArms::layout`]). Both
 //! read the same graph, so lanes and node pieces agree bitwise whichever of the lane rebuild and
-//! the roadbed compile runs first. Nothing here derives geometry of its own: a sidewalk runs on
-//! its walkway centre (`walk_offset`) and ends on a crossable arm's crossing line, else at the
-//! mouth; a crossing is the layout's [`Crosswalk`], its kerbs on the node plane
-//! ([`crossing_kerbs`], as node pieces publish them); a corner route follows the sector's walkway
-//! between two sidewalk ends (`push_sector_walk`) and wraps a terminal's cap; a footpath ends at
-//! its mouth on its centreline, an attached one (D5) also joining its sector's walk where its
-//! centreline meets it (`ROAD-68` open question 17), and footpaths meeting only footpaths meet at
-//! the node. A pass-through node has no layout, but its crossing (D8) is span-owned
-//! ([`pass_through_crossing`], `span_walk_arm`).
+//! the roadbed compile runs first. Nothing here derives geometry of its own:
+//!
+//! - A sidewalk runs on the centre of its raised walkway, midway between the carriageway edge
+//!   (the kerb) and the sidewalk's outer edge, where sidewalk lanes have always run. It ends on
+//!   the crossing line of a crossable arm and at the mouth of any other arm.
+//! - A crossing is the layout's [`Crosswalk`], with its kerb points on the node plane
+//!   ([`crossing_kerbs`], the function node pieces publish them with).
+//! - A corner route runs from one arm's sidewalk end back along its walkway to the sector, along
+//!   the centre of the sector's walkway (midpoints of its carriageway-edge and outermost boundary
+//!   samples) and out along the next arm's walkway to its sidewalk end, so it never leaves the
+//!   sidewalk. A terminal's route wraps its round cap.
+//!
+//! - A footpath ends at its mouth, on its centreline. One attached to a road node (D5) joins the
+//!   walk of the sector it lies in where its centreline meets it: the corner route, extended along
+//!   both arms' walkways out to their mouths, past a crossable arm's sidewalk end on the crossing
+//!   line (`ROAD-68` open question 17). It meets that walk by construction: its centreline runs
+//!   from beyond the sector's outer boundary, between the two mouths, into the core. Where only
+//!   footpaths meet, they meet at the node.
+//!
+//! A pass-through node has no layout, but its crossing (D8: one by default) is span-owned
+//! ([`pass_through_crossing`]): the crossing arm's sidewalks end on the crossing line, taken with
+//! the kerb points from the span's section there, and the node keeps the corner walks of a node
+//! without a layout (no corner routes here).
 //!
 //! `O(degree * arm knots + sector samples)` per node, plus a far-node plan per pass-through
 //! crossing; allocates only the returned buffers and the span model's.
@@ -208,8 +221,6 @@ impl NodeWalkways {
             let join = corner.and_then(|corner| {
                 let walk = &walkways.points[walkways.corners[corner].walk.clone()];
                 let input = arms.input(attached.input_index);
-                // Its centreline runs from beyond the sector's outer boundary, between the two
-                // mouths, into the core, so it meets the walk by construction.
                 let met = centreline_meets(&input, attached.mouth_station_m, walk);
                 debug_assert!(
                     met.is_some(),
@@ -388,13 +399,9 @@ fn push_sector_walk(
     sector: &SectorLayout,
     [start, end]: [SidewalkEnd; 2],
 ) -> (Range<usize>, Range<usize>) {
-    let [(a_index, a_mouth_m), (b_index, b_mouth_m)] =
-        [sector.from_arm, sector.to_arm].map(|arm| {
-            (
-                layout.arms[arm].input_index,
-                layout.arms[arm].mouth_station_m,
-            )
-        });
+    let [a_arm, b_arm] = [sector.from_arm, sector.to_arm].map(|arm| &layout.arms[arm]);
+    let (a_index, a_mouth_m) = (a_arm.input_index, a_arm.mouth_station_m);
+    let (b_index, b_mouth_m) = (b_arm.input_index, b_arm.mouth_station_m);
     let (a, b) = (arms.input(a_index), arms.input(b_index));
     let boundaries = &layout.boundaries[sector.boundaries.clone()];
     let (edge, outer) = (&boundaries[0], &boundaries[boundaries.len() - 1]);

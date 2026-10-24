@@ -195,8 +195,12 @@ impl RoadbedSystem {
             let nodes = plans
                 .into_par_iter()
                 .map_init(NodeScratch::default, |scratch, (node, plan)| {
-                    let build = |plan| build_node_piece(plan, grid, scratch);
-                    (node, plan.and_then(|plan| plan.map(build).transpose()))
+                    let built = match plan {
+                        Ok(Some(plan)) => build_node_piece(plan, grid, scratch).map(Some),
+                        Ok(None) => Ok(None),
+                        Err(error) => Err(error),
+                    };
+                    (node, built)
                 })
                 .collect();
             (spans, nodes)

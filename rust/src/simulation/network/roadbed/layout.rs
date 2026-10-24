@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Junction layout (`ROAD-68-C`): the arm order, sectors, curb-return corners, round joins,
-//! mouth stations, footpath attachments and carriageway core loop of one node, built from
-//! abstract arms.
+//! Junction layout (`ROAD-68-C`, part 1): the arm order, sectors, curb-return corners, round
+//! joins, mouth stations and carriageway core loop of one node, built from abstract arms.
 //!
 //! The layout is pure. It reads only the arms passed to [`JunctionLayout::build`], keeps no state
 //! between calls and does not know the graph or the span pieces. `docs/roads.md` ("Junction
-//! layout", and "Layout module" for the choices it leaves to code and the constants) owns the
-//! construction; each step's function here records how it applies it.
+//! layout") owns the contract; this header records the conventions and the choices it leaves to
+//! code.
 //!
 //! # Conventions
 //!
@@ -27,16 +26,47 @@
 //!
 //! # Construction
 //!
-//! [`JunctionLayout::build`] sorts the arms counter-clockwise by direction, then by [`ArmKey`]
-//! (`sort_arms`); classifies each sector from arm `i`'s left side to arm `i + 1`'s right side,
-//! fits its concave corner and sets its boundary stations and D4 tapers (`plan_sectors`); meets
-//! attached arms with the arm-side runs (`attach_to_runs`); sets mouths and crosswalks
-//! (`assign_mouths`); samples the boundaries in polar form, inserting attached edges that met no
-//! run (`sample_sectors`); closes and checks the core loop (`core_loop`); and sets the attached
-//! mouths and checks their ribbons (`JunctionLayout::finish_attachments`). Bands beyond the
-//! carriageway edge match across a sector by position outward; one present on one side only has
-//! zero width on the other, and matched bands agree in kind and level
-//! ([`LayoutError::BandMismatch`]).
+//! 1. Arms sort counter-clockwise by their direction over the first metre, then by [`ArmKey`].
+//! 2. Sector `i` runs from arm `i`'s left side to arm `i + 1`'s right side. With angle `phi`, it
+//!    is concave if `phi < pi - eps`, straight if `|phi - pi| <= eps` and convex beyond. A
+//!    terminal has one convex sector of `2 pi`.
+//! 3. A concave sector gets a curb-return corner. Its centre `C` is the first crossing, by
+//!    `max(sa, sb)` and then search order, of `o_a(., la + R)` and `o_b(., -(lb + R))`, over
+//!    stations up to each arm's `max_station_m`. Boundary `j` runs from `o_a(sa, la_j)` to
+//!    `o_b(sb, -lb_j)`; its angle and radius about `C` interpolate linearly between those exact
+//!    endpoints.
+//! 4. Straight and convex sectors get a round join about the node: boundary `j` runs from
+//!    `o_a(sa_j, la_j)` to `o_b(sb_j, -lb_j)`, with the radius interpolated linearly by angle. The
+//!    stations are zero except in a straight sector, where each boundary starts where its offset
+//!    curve crosses the sector bisector: ahead of the node when the sector is narrower than `pi`
+//!    and the arms overlap, on the first offset segment extended behind the node otherwise. The
+//!    arms meet in a miter on the bisector; a boundary with equal offsets on both arms is the one
+//!    miter point, taken from the `from_arm` curve. Joining at station zero would make the core
+//!    loop cross itself below `pi` whenever the widths are equal, and leave a rounding-sized arc
+//!    of sliver strips above it (`ROAD-68` open questions 5 and 9).
+//! 5. A straight sector between unequal boundary offsets tapers (D4): each such boundary meets
+//!    the sector at the mean of its two offsets, so the join is that of equal widths, and runs
+//!    linearly in station to its arm's own offset at the taper station on both approaches
+//!    ([`BoundaryTaper`]). The taper takes half the legacy span taper length on each arm,
+//!    shortened to fit both arms beside their crosswalks; shorter than the legacy minimum, the
+//!    layout fails with [`LayoutError::ArmTooShort`].
+//! 6. An arm's mouth station is the largest of `MIN_MOUTH_STATION_M` and the stations at which
+//!    its two sides reach their own offsets, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). That
+//!    depth is the arm's [`Crosswalk`] strip, on the straight approach right outside the corners;
+//!    its crossing line is the middle of the depth, and its kerb points are the two
+//!    carriageway-edge points there. An attached arm whose edge meets an arm side moves only that
+//!    arm's mouth, to `MIN_MOUTH_STATION_M` beyond the meeting point when that is farther; the
+//!    zebra stays at the corner (`ROAD-68` open question 17).
+//! 7. A corner that would push a mouth past `max_station_m` shrinks its radius by bisection
+//!    towards the corner's raised width plus `CURB_RETURN_CLEARANCE_M` (D1). If that minimum does
+//!    not fit either, layout fails with [`LayoutError::CornerDoesNotFit`].
+//! 8. The carriageway core loop runs counter-clockwise: out along each arm's right carriageway
+//!    edge, across its mouth, back along its left edge and through the next sector's core-edge
+//!    samples. A loop that touches or crosses itself fails with [`LayoutError::CoreNotSimple`].
+//!
+//! Bands beyond the carriageway edge match across a sector by their position outward. A band
+//! present on one side only has zero width on the other and tapers along the sector. Matched
+//! bands must agree in kind and level ([`LayoutError::BandMismatch`]).
 //!
 //! # Complexity
 //!
@@ -419,8 +449,7 @@ pub struct CoreVertex {
     pub source: CoreVertexSource,
 }
 
-/// Why a node has no layout. Every variant is a placement rejection; one that names an arm names
-/// the offending arm.
+/// Why a node has no layout. Every variant is a placement rejection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayoutError {
     /// No arms were given.
@@ -428,30 +457,55 @@ pub enum LayoutError {
     /// The node position is not finite.
     NonFiniteNode,
     /// An arm holds a non-finite value.
-    NonFinite(ArmKey),
-    /// Two arms share this key.
-    DuplicateArm(ArmKey),
+    NonFinite {
+        /// Offending arm.
+        arm: ArmKey,
+    },
+    /// Two arms share one key.
+    DuplicateArm {
+        /// Repeated key.
+        arm: ArmKey,
+    },
     /// An arm's centreline, stations, lateral axes or `max_station_m` are malformed, or it is
     /// too short to define a direction.
-    DegenerateArm(ArmKey),
+    DegenerateArm {
+        /// Offending arm.
+        arm: ArmKey,
+    },
     /// An arm side has no core band or its band offsets do not increase outward.
-    InvalidBands(ArmKey),
-    /// Two consecutive arms point in practically the same direction: the later one of the pair
-    /// in counter-clockwise order.
-    DuplicateDirection(ArmKey),
-    /// Matched bands across a sector differ in kind or level: the arm whose left side bounds the
-    /// sector.
-    BandMismatch(ArmKey),
+    InvalidBands {
+        /// Offending arm.
+        arm: ArmKey,
+    },
+    /// Two consecutive arms point in practically the same direction.
+    DuplicateDirection {
+        /// The later arm of the pair in counter-clockwise order.
+        arm: ArmKey,
+    },
+    /// Matched bands across a sector differ in kind or level.
+    BandMismatch {
+        /// Arm whose left side bounds the sector.
+        arm: ArmKey,
+    },
     /// The arm cannot hold its minimum node extent, its width-change taper (D4) and its crosswalk
     /// within `max_station_m`.
-    ArmTooShort(ArmKey),
-    /// A corner does not fit within this arm's `max_station_m` even at its minimum radius.
-    CornerDoesNotFit(ArmKey),
+    ArmTooShort {
+        /// Offending arm.
+        arm: ArmKey,
+    },
+    /// A corner does not fit within `max_station_m` even at its minimum radius.
+    CornerDoesNotFit {
+        /// Arm whose station limit the corner exceeds.
+        arm: ArmKey,
+    },
     /// The carriageway core loop touches or crosses itself.
     CoreNotSimple,
     /// An attached arm's edge does not meet its sector's outer boundary inside the node, or its
     /// ribbon outline is not simple.
-    FootpathDoesNotJoin(ArmKey),
+    FootpathDoesNotJoin {
+        /// Offending arm.
+        arm: ArmKey,
+    },
 }
 
 impl SectorBoundary {
@@ -628,13 +682,13 @@ impl ArmInput<'_> {
                 .iter()
                 .all(|side| side.bands.iter().all(|band| band.outer_m.is_finite()));
         if !finite {
-            return Err(LayoutError::NonFinite(arm));
+            return Err(LayoutError::NonFinite { arm });
         }
         if !self.centreline_is_valid(node) {
-            return Err(LayoutError::DegenerateArm(arm));
+            return Err(LayoutError::DegenerateArm { arm });
         }
         if !sides.iter().all(ArmSide::is_valid) {
-            return Err(LayoutError::InvalidBands(arm));
+            return Err(LayoutError::InvalidBands { arm });
         }
         Ok(())
     }
@@ -779,18 +833,13 @@ impl JunctionLayout {
         let index = layout.boundaries.len() - 1;
         let outer = &self.boundaries[layout.boundaries.end - 1];
         out.clear();
-        let from = (layout.from_arm, Side::Left);
-        self.side_run(
-            &arms[self.arms[from.0].input_index],
-            from,
-            (outer, index),
-            out,
-        );
+        let input = |arm: usize| &arms[self.arms[arm].input_index];
+        let (from, to) = (layout.from_arm, layout.to_arm);
+        self.side_run(input(from), (from, Side::Left), (outer, index), out);
         out.reverse();
         let samples = &self.samples[outer.samples.clone()];
         out.extend(samples.iter().map(|&xz| PathPoint::at(0.0, xz)));
-        let to = (layout.to_arm, Side::Right);
-        self.side_run(&arms[self.arms[to.0].input_index], to, (outer, index), out);
+        self.side_run(input(to), (to, Side::Right), (outer, index), out);
         out.dedup_by(|next, previous| next.xz == previous.xz);
     }
 
@@ -859,7 +908,7 @@ impl JunctionLayout {
                 .max(attachment.edges[1].station_m);
             attachment.mouth_station_m = reach_m + MIN_MOUTH_STATION_M;
             if attachment.mouth_station_m > input.max_station_m {
-                return Err(LayoutError::ArmTooShort(arm));
+                return Err(LayoutError::ArmTooShort { arm });
             }
             let sector = attachment.sector;
             if path_sector != Some(sector) {
@@ -868,12 +917,12 @@ impl JunctionLayout {
             }
             let (start, end) = self
                 .ribbon(input, index, &path, &mut ring)
-                .ok_or(LayoutError::FootpathDoesNotJoin(arm))?;
+                .ok_or(LayoutError::FootpathDoesNotJoin { arm })?;
             spans.push((sector, start, end));
             if !loop_is_simple(&ring, &[0], |point| point.xz)
                 || signed_area(&ring, |point| point.xz) == 0.0
             {
-                return Err(LayoutError::FootpathDoesNotJoin(arm));
+                return Err(LayoutError::FootpathDoesNotJoin { arm });
             }
         }
         // A terminal's sector, and any sector that wraps through angle zero, holds its arms out
@@ -886,7 +935,7 @@ impl JunctionLayout {
         for pair in ordered.windows(2) {
             let ((sector, _, end), (next_sector, start, _)) = (pair[0].0, pair[1].0);
             if sector == next_sector && start <= end {
-                return Err(LayoutError::FootpathDoesNotJoin(pair[1].1.key));
+                return Err(LayoutError::FootpathDoesNotJoin { arm: pair[1].1.key });
             }
         }
         self.attachments = ordered
@@ -904,9 +953,11 @@ fn sort_arms(node: RoadVec2, arms: &[ArmInput<'_>]) -> Result<Vec<ArmLayout>, La
         arm.validate(node)?;
         // Degree is a handful of arms; the pairwise key check is cheaper than any index.
         if arms[..input_index].iter().any(|other| other.key == arm.key) {
-            return Err(LayoutError::DuplicateArm(arm.key));
+            return Err(LayoutError::DuplicateArm { arm: arm.key });
         }
-        let direction = arm.direction().ok_or(LayoutError::DegenerateArm(arm.key))?;
+        let direction = arm
+            .direction()
+            .ok_or(LayoutError::DegenerateArm { arm: arm.key })?;
         sorted.push(ArmLayout {
             key: arm.key,
             input_index,
@@ -946,7 +997,7 @@ fn plan_sectors(
     for arm in sorted {
         let input = &arms[arm.input_index];
         if MIN_MOUTH_STATION_M + input.crosswalk_depth() > input.max_station_m {
-            return Err(LayoutError::ArmTooShort(arm.key));
+            return Err(LayoutError::ArmTooShort { arm: arm.key });
         }
     }
     let mut sectors = Vec::with_capacity(count);
@@ -959,12 +1010,14 @@ fn plan_sectors(
             _ => sorted[to_arm].angle_rad - sorted[from_arm].angle_rad,
         };
         if angle_rad < MIN_SECTOR_ANGLE_RAD {
-            return Err(LayoutError::DuplicateDirection(sorted[to_arm].key));
+            return Err(LayoutError::DuplicateDirection {
+                arm: sorted[to_arm].key,
+            });
         }
         let a = &arms[sorted[from_arm].input_index];
         let b = &arms[sorted[to_arm].input_index];
         if !bands_match(a.left, b.right) {
-            return Err(LayoutError::BandMismatch(a.key));
+            return Err(LayoutError::BandMismatch { arm: a.key });
         }
         let kind = if count > 1 && angle_rad < PI - STRAIGHT_SECTOR_EPS_RAD {
             SectorKind::Concave
@@ -1055,14 +1108,12 @@ fn straight_taper_m(a: &ArmInput<'_>, b: &ArmInput<'_>) -> Result<Option<f64>, L
         f64::from(WIDTH_CHANGE_TAPER_MIN_M),
         f64::from(WIDTH_CHANGE_TAPER_MAX_M),
     );
-    let (a_limit, b_limit) = (
-        a.max_station_m - a.crosswalk_depth(),
-        b.max_station_m - b.crosswalk_depth(),
-    );
+    let limit = |arm: &ArmInput<'_>| arm.max_station_m - arm.crosswalk_depth();
+    let (a_limit, b_limit) = (limit(a), limit(b));
     let station_m = (0.5 * length_m).min(a_limit).min(b_limit);
     if 2.0 * station_m < f64::from(WIDTH_CHANGE_TAPER_MIN_M) {
         let arm = if a_limit <= b_limit { a.key } else { b.key };
-        return Err(LayoutError::ArmTooShort(arm));
+        return Err(LayoutError::ArmTooShort { arm });
     }
     Ok(Some(station_m))
 }
@@ -1111,9 +1162,9 @@ fn push_boundaries(
             None => (own_from_m, own_to_m),
         };
         let (from_station_m, to_station_m) =
-            stations(from_offset_m, to_offset_m).ok_or(LayoutError::ArmTooShort(a.key))?;
+            stations(from_offset_m, to_offset_m).ok_or(LayoutError::ArmTooShort { arm: a.key })?;
         if taper.is_some_and(|taper| taper.station_m <= from_station_m.max(to_station_m)) {
-            return Err(LayoutError::ArmTooShort(a.key));
+            return Err(LayoutError::ArmTooShort { arm: a.key });
         }
         let outer = band_beyond(boundary);
         boundaries.push(SectorBoundary {
@@ -1154,7 +1205,7 @@ fn fit_corner(a: &ArmInput<'_>, b: &ArmInput<'_>) -> Result<(f64, Crossing), Lay
             Some(found) if found.a_station <= a_limit => b.key,
             _ => a.key,
         };
-        return Err(LayoutError::CornerDoesNotFit(arm));
+        return Err(LayoutError::CornerDoesNotFit { arm });
     };
     let (mut fits, mut fails) = (min_radius, max_radius);
     for _ in 0..RADIUS_BISECTION_STEPS {
@@ -1333,7 +1384,7 @@ fn attach_to_runs(
                 let into = (arm.angle_rad - sorted[sector.from_arm].angle_rad).rem_euclid(TAU);
                 into >= MIN_SECTOR_ANGLE_RAD && sector.angle_rad - into >= MIN_SECTOR_ANGLE_RAD
             })
-            .ok_or(LayoutError::DuplicateDirection(arm.key))?;
+            .ok_or(LayoutError::DuplicateDirection { arm: arm.key })?;
         let layout = &sectors[sector];
         let outer = &boundaries[layout.boundaries.end - 1];
         let runs = [(layout.from_arm, Side::Left), (layout.to_arm, Side::Right)];
@@ -1405,7 +1456,7 @@ fn assign_mouths(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(
             .fold(MIN_MOUTH_STATION_M, f64::max);
         arm.mouth_station_m = attached_m.fold(reach_m + input.crosswalk_depth(), f64::max);
         if arm.mouth_station_m > input.max_station_m {
-            return Err(LayoutError::ArmTooShort(arm.key));
+            return Err(LayoutError::ArmTooShort { arm: arm.key });
         }
         arm.crosswalk = input.crossable.then(|| {
             let station_m = reach_m + 0.5 * CROSSWALK_DEPTH_M;
@@ -1532,7 +1583,7 @@ fn sample_sectors(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<
             let curve = curve(boundary);
             // A curb return turns clockwise about its centre; anything else cannot be built.
             if sector.kind == SectorKind::Concave && curve.sweep >= 0.0 {
-                return Err(LayoutError::CornerDoesNotFit(a.key));
+                return Err(LayoutError::CornerDoesNotFit { arm: a.key });
             }
             segments = segments.max(curve.segment_count());
         }
@@ -1549,7 +1600,7 @@ fn sample_sectors(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<
                 }
                 let input = &arms[layout.input_index];
                 let (segment, u, station_m) = polyline_crossing(input, placed.offset_m, &outer)
-                    .ok_or(LayoutError::FootpathDoesNotJoin(layout.key))?;
+                    .ok_or(LayoutError::FootpathDoesNotJoin { arm: layout.key })?;
                 inserts.push((segment, u, attachment, edge, station_m));
             }
         }
@@ -1613,9 +1664,7 @@ fn polyline_crossing(
     best
 }
 
-// Builds the counter-clockwise carriageway core loop, out along each arm's right carriageway
-// edge, across its mouth, back along its left edge and through the next sector's core-edge
-// samples, and checks that it is simple.
+// Builds the counter-clockwise carriageway core loop and checks that it is simple.
 fn core_loop(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(), LayoutError> {
     let (sorted, sectors) = (&layout.arms, &layout.sectors);
     let (boundaries, samples) = (&layout.boundaries, &layout.samples);
@@ -1682,6 +1731,35 @@ fn core_loop(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(), L
     simple.then_some(()).ok_or(LayoutError::CoreNotSimple)
 }
 
+#[derive(Clone, Copy)]
+struct Bounds {
+    min: RoadVec2,
+    max: RoadVec2,
+}
+
+impl Bounds {
+    fn of(a: RoadVec2, b: RoadVec2) -> Self {
+        Self {
+            min: a.min(b),
+            max: a.max(b),
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        self.min.x <= other.max.x
+            && other.min.x <= self.max.x
+            && self.min.y <= other.max.y
+            && other.min.y <= self.max.y
+    }
+}
+
 // No two non-adjacent segments share a point and no consecutive pair folds back on itself.
 // Segment pairs are tested only between pieces whose bounds overlap.
 fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> RoadVec2) -> bool {
@@ -1690,14 +1768,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
         return false;
     }
     let point = |vertex: usize| position(&points[vertex % count]);
-    // XZ bounds as (min, max) corners.
-    let segment_bounds = |segment: usize| {
-        let (a, b) = (point(segment), point(segment + 1));
-        (a.min(b), a.max(b))
-    };
-    let overlaps = |(a_min, a_max): (RoadVec2, RoadVec2), (b_min, b_max): (RoadVec2, RoadVec2)| {
-        a_min.cmple(b_max).all() && b_min.cmple(a_max).all()
-    };
+    let segment_bounds = |segment: usize| Bounds::of(point(segment), point(segment + 1));
     let piece_segments = |piece: usize| {
         let start = pieces[piece].min(count);
         start..pieces.get(piece + 1).map_or(count, |&end| end.min(count))
@@ -1705,7 +1776,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
     let piece_bounds = |piece: usize| {
         piece_segments(piece)
             .map(segment_bounds)
-            .reduce(|(a_min, a_max), (b_min, b_max)| (a_min.min(b_min), a_max.max(b_max)))
+            .reduce(Bounds::union)
     };
     let folds_back = (0..count).any(|vertex| {
         let (a, b, c) = (point(vertex), point(vertex + 1), point(vertex + 2));
@@ -1719,7 +1790,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
             continue;
         };
         for other in piece..pieces.len() {
-            if !piece_bounds(other).is_some_and(|other_bounds| overlaps(bounds, other_bounds)) {
+            if !piece_bounds(other).is_some_and(|other_bounds| bounds.overlaps(&other_bounds)) {
                 continue;
             }
             for first in piece_segments(piece) {
@@ -1728,7 +1799,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
                     if second <= first || adjacent {
                         continue;
                     }
-                    if overlaps(segment_bounds(first), segment_bounds(second))
+                    if segment_bounds(first).overlaps(&segment_bounds(second))
                         && segments_touch(
                             point(first),
                             point(first + 1),
