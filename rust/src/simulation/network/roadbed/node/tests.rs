@@ -615,3 +615,4 @@ fn an_edit_rebuilds_only_its_closure() {
 }
 
 mod footpaths;
+mod probe;

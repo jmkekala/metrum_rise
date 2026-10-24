@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Minimal road graphs for roadbed tests: no lanes, zoning or terrain, only edges, nodes and the
-//! graph clips that place the span mouths.
+//! graph clips that place the span mouths. Also the product probe ([`ProductProbe`]): bitwise
+//! hashes of everything the roadbed publishes, which refactors must leave unchanged.
 
+use super::{
+    ArmKey, BandKind, EdgeEnd, NodeWalkways, PieceId, PieceMesh, RoadSurfaceTriangleQueryIndex,
+    RoadVec2, RoadVec3, RoadbedSystem, triangulate_constrained_rings_xz,
+};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -215,4 +221,293 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
     .into_iter()
     .map(|(name, arms)| (format!("{name}/{sloped}"), footpath_star(&arms, sloped)))
     .collect()
+}
+
+/// FNV-1a hashes of one network's roadbed products, by component: graph clips and physical
+/// profiles, node pieces (meshes, query grids, outer chains, mouth sections, crossings,
+/// approaches, errors), layouts (their `Debug` form; a refactor that drops a dead field may change
+/// it alone), span pieces, node walkways, lanes with their crossings, and surface queries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProductProbe {
+    pub(crate) graph: u64,
+    pub(crate) nodes: u64,
+    pub(crate) layouts: u64,
+    pub(crate) spans: u64,
+    pub(crate) walkways: u64,
+    pub(crate) lanes: u64,
+    pub(crate) queries: u64,
+}
+
+#[derive(Clone, Copy)]
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn word(&mut self, value: u64) {
+        for byte in value.to_le_bytes() {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn f32(&mut self, value: f32) {
+        self.word(u64::from(value.to_bits()));
+    }
+
+    fn f64(&mut self, value: f64) {
+        self.word(value.to_bits());
+    }
+
+    fn vec3(&mut self, point: Vector3) {
+        point
+            .to_array()
+            .into_iter()
+            .for_each(|value| self.f32(value));
+    }
+
+    fn road3(&mut self, point: RoadVec3) {
+        point
+            .to_array()
+            .into_iter()
+            .for_each(|value| self.f64(value));
+    }
+
+    fn debug(&mut self, value: &impl std::fmt::Debug) {
+        let text = format!("{value:?}");
+        self.word(text.len() as u64);
+        text.bytes().for_each(|byte| self.word(u64::from(byte)));
+    }
+
+    fn mesh(&mut self, mesh: &PieceMesh) {
+        self.word(mesh.positions().len() as u64);
+        mesh.positions().iter().for_each(|&point| self.road3(point));
+        for [station, lateral] in mesh.road_space() {
+            self.f32(*station);
+            self.f32(*lateral);
+        }
+        self.word(mesh.triangles().len() as u64);
+        mesh.triangles()
+            .iter()
+            .flatten()
+            .for_each(|&v| self.word(u64::from(v)));
+        self.word(mesh.top_triangle_count() as u64);
+        self.word(mesh.curb_face_triangles().len() as u64);
+        for chain in mesh.outer_chains() {
+            self.word(chain.vertices().len() as u64);
+            chain
+                .vertices()
+                .iter()
+                .for_each(|&v| self.word(u64::from(v)));
+        }
+        mesh.bounds_xz()
+            .into_iter()
+            .for_each(|value| self.f64(value));
+        self.debug(mesh.grid());
+    }
+}
+
+impl ProductProbe {
+    /// Hashes `roadbed`'s published pieces over `graph`, the walkways of every node and `lanes`.
+    pub(crate) fn of(graph: &RegionGraph, roadbed: &RoadbedSystem, lanes: &LaneSystem) -> Self {
+        let (mut edges, mut spans) = (Fnv::new(), Fnv::new());
+        for index in 0..graph.edge_count() {
+            let Some(edge) = graph.get_edge(index).filter(|edge| !edge.deleted) else {
+                continue;
+            };
+            edges.word(index as u64);
+            edges.word(u64::from(edge.start_node) << 32 | u64::from(edge.end_node));
+            edges.f32(edge.start_clip);
+            edges.f32(edge.end_clip);
+            edge.physical_geometry.iter().for_each(|&p| edges.vec3(p));
+            if let Some(span) = roadbed.span_piece(index) {
+                spans.word(index as u64);
+                spans.mesh(span.mesh());
+                spans.debug(&span.sections());
+                spans.debug(span.start_mouth());
+                spans.debug(span.end_mouth());
+                spans.debug(&[EdgeEnd::Start, EdgeEnd::End].map(|end| span.crossing_strip_m(end)));
+            }
+        }
+        let (mut nodes, mut layouts, mut walks) = (Fnv::new(), Fnv::new(), Fnv::new());
+        for node in 0..graph.node_count() as u32 {
+            nodes.word(u64::from(node));
+            nodes.debug(&roadbed.node_error(node));
+            if let Some(piece) = roadbed.node_piece(node) {
+                nodes.debug(&piece.kind());
+                nodes.mesh(piece.mesh());
+                nodes.debug(&piece.mouths());
+                for arm in &piece.layout().arms {
+                    nodes.debug(&piece.crosswalk_kerbs(arm.key));
+                    nodes.debug(&piece.crosswalk_approach(arm.key));
+                }
+                layouts.word(u64::from(node));
+                layouts.debug(piece.layout());
+            }
+            walks.word(u64::from(node));
+            let Some(walkways) = NodeWalkways::collect(graph, node) else {
+                continue;
+            };
+            walks.word(u64::from(walkways.has_layout()));
+            walkways
+                .crossings()
+                .for_each(|crossing| walks.debug(&crossing));
+            for corner in walkways.corners() {
+                walks.debug(&(corner.from, corner.to));
+                corner.points.iter().for_each(|&p| walks.road3(p));
+            }
+            let incident = if (node as usize) < graph.node_adjacency_count() {
+                graph.node_adjacency(node)
+            } else {
+                &[]
+            };
+            for &edge in incident {
+                for end in [EdgeEnd::Start, EdgeEnd::End] {
+                    let key = ArmKey { edge, end };
+                    walks.debug(&[true, false].map(|side| walkways.sidewalk_end(key, side)));
+                    walks.debug(&walkways.footpath_end(key));
+                    let Some(join) = walkways.footpath_join(key) else {
+                        continue;
+                    };
+                    walks.debug(&(join.corner.from, join.corner.to, &join.route, join.segment));
+                    join.corner.points.iter().for_each(|&p| walks.road3(p));
+                    join.walk.iter().for_each(|&p| walks.road3(p));
+                    walks.road3(join.point);
+                }
+            }
+        }
+        Self {
+            graph: edges.0,
+            nodes: nodes.0,
+            layouts: layouts.0,
+            spans: spans.0,
+            walkways: walks.0,
+            lanes: lane_hash(lanes),
+            queries: query_hash(roadbed),
+        }
+    }
+
+    /// Lanes rebuilt on a copy of `graph`, then the roadbed compiled on `graph`: neither reads
+    /// the other's products.
+    pub(crate) fn of_graph(graph: &RegionGraph) -> Self {
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph.clone());
+        let mut roadbed = RoadbedSystem::new(64.0);
+        roadbed.compile_dirty(graph);
+        Self::of(graph, &roadbed, &lanes)
+    }
+}
+
+// Queries at every fifth top triangle's centroid of every piece: heights, bands, rays, discs and
+// the lane surface; the generic grid and triangulation helpers over the same triangles and the
+// node cores; and the bounds walks.
+fn query_hash(roadbed: &RoadbedSystem) -> u64 {
+    let mut hash = Fnv::new();
+    let world = [-1.0e6, -1.0e6, 1.0e6, 1.0e6];
+    let pieces: Vec<_> = roadbed.pieces_in_bounds(world).collect();
+    for (id, generation) in pieces {
+        hash.debug(&(id, generation));
+        let (mesh, lane) = match id {
+            PieceId::Span(edge) => (roadbed.span_piece(edge).unwrap().mesh(), (edge, usize::MAX)),
+            PieceId::Node(node) => (
+                roadbed.node_piece(node).unwrap().mesh(),
+                (usize::MAX, node as usize),
+            ),
+        };
+        let tops: Vec<[RoadVec3; 3]> = (0..mesh.top_triangle_count())
+            .map(|triangle| mesh.triangle_points(triangle))
+            .collect();
+        let ground = RoadSurfaceTriangleQueryIndex::from_ground_triangles(tops.iter().copied());
+        for triangle in tops.iter().step_by(5) {
+            let centre = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+            let (x, z) = (centre.x as f32, centre.z as f32);
+            let xz = RoadVec2::new(centre.x, centre.z);
+            hash.debug(&(roadbed.height_at(x, z), roadbed.carriageway_height_at(x, z)));
+            hash.debug(&roadbed.band_at(x, z));
+            hash.debug(&roadbed.raycast(Vector3::new(x, 100.0, z), Vector3::new(0.0, -1.0, 0.0)));
+            let from = Vector3::new(x - 30.0, 50.0, z - 20.0);
+            hash.debug(&roadbed.raycast(from, Vector3::new(30.0, -50.0, 20.0)));
+            let carriageway = |kind| kind == BandKind::Carriageway;
+            hash.debug(&roadbed.any_band_near_disc(xz, 0.75, carriageway));
+            for carriageway_only in [false, true] {
+                let query = roadbed.lane_query(lane.0, lane.1, carriageway_only);
+                hash.debug(&query.height_at(x, z));
+            }
+            hash.debug(&ground.sample_ground_height(xz));
+        }
+        let mut visits = 0_u64;
+        roadbed.any_top_triangle_in_bounds(mesh.bounds_xz(), |points, kind| {
+            visits += 1;
+            hash.road3(points[0]);
+            hash.debug(&kind);
+            false
+        });
+        hash.word(visits);
+        if let PieceId::Node(node) = id {
+            let core = &roadbed.node_piece(node).unwrap().layout().core;
+            let ring: Vec<_> = core
+                .iter()
+                .map(|vertex| RoadVec3::new(vertex.position.x, 0.0, vertex.position.y))
+                .collect();
+            hash.debug(&triangulate_constrained_rings_xz(&[ring]));
+        }
+    }
+    hash.0
+}
+
+fn lane_hash(lanes: &LaneSystem) -> u64 {
+    let mut hash = Fnv::new();
+    for (id, lane) in lanes.lanes.iter().enumerate() {
+        hash.word(lane.edge_id as u64);
+        hash.word(u64::from(lane.is_fwd));
+        hash.word(lane.lane_idx as u64);
+        lane.geometry.iter().for_each(|&p| hash.vec3(p));
+        hash.f32(lane.length);
+        lane.cum_dist.iter().for_each(|&d| hash.f32(d));
+        hash.debug(&lane.lane_type);
+        lane.next_lanes
+            .iter()
+            .for_each(|&next| hash.word(next as u64));
+        hash.word(lane.node_id as u64);
+        hash.debug(&lanes.crosswalk(id));
+    }
+    for map in [&lanes.edge_lanes, &lanes.node_lanes] {
+        let mut keys: Vec<_> = map.keys().copied().collect();
+        keys.sort_unstable();
+        for key in keys {
+            hash.word(key as u64);
+            map[&key].iter().for_each(|&lane| hash.word(lane as u64));
+        }
+    }
+    hash.0
+}
+
+/// Asserts each named probe against its recorded value; on any difference, prints the whole
+/// table in this function's input format, so an intended change can be re-recorded.
+pub(crate) fn assert_probes(actual: &[(String, ProductProbe)], expected: &[(&str, [u64; 7])]) {
+    let table: Vec<String> = actual
+        .iter()
+        .map(|(name, p)| {
+            format!(
+                "(\"{name}\", [{:#018x}, {:#018x}, {:#018x}, {:#018x}, {:#018x}, {:#018x}, {:#018x}]),",
+                p.graph, p.nodes, p.layouts, p.spans, p.walkways, p.lanes, p.queries
+            )
+        })
+        .collect();
+    let matches = actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|((name, p), (want, hashes))| {
+                name == want
+                    && [
+                        p.graph, p.nodes, p.layouts, p.spans, p.walkways, p.lanes, p.queries,
+                    ] == *hashes
+            });
+    assert!(
+        matches,
+        "product probe changed; actual:\n{}",
+        table.join("\n")
+    );
 }

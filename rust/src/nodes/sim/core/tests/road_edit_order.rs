@@ -12,11 +12,11 @@ use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
 use godot::prelude::Vector2;
 use std::collections::BTreeMap;
 
-const ARM_M: f32 = 80.0;
+pub(super) const ARM_M: f32 = 80.0;
 
 type GraphBits = [u32; 3];
 // Stroke ends and lanes per direction.
-type Stroke = ([Vector2; 2], i32);
+pub(super) type Stroke = ([Vector2; 2], i32);
 type PieceBits = [u64; 3];
 
 // Authored and derived state of one live edge, keyed by its end positions.
@@ -103,7 +103,7 @@ fn build(strokes: &[Stroke], order: &[usize], sloped: bool) -> NetworkState {
     state(&committed(strokes, order, sloped))
 }
 
-fn committed(strokes: &[Stroke], order: &[usize], sloped: bool) -> SimCore {
+pub(super) fn committed(strokes: &[Stroke], order: &[usize], sloped: bool) -> SimCore {
     let mut core = test_core();
     core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
         .expect("blank world");
