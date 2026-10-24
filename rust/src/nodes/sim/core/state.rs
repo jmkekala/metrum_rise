@@ -308,6 +308,10 @@ pub struct SimCore {
     pub(crate) road_locked_terrain_patch_keys: Vec<(usize, usize)>,
     /// Required grading margin for each road-locked terrain render patch.
     pub(crate) road_locked_terrain_patch_margins: BTreeMap<(usize, usize), f32>,
+    /// Render patches whose road margin above waits for a refresh (`ROAD-68-D`): a compile
+    /// changed pieces within the grading envelope cap of them, or a terrain edit changed heights
+    /// their road loops probe. Refreshing a patch's road ownership removes it.
+    pub(crate) road_ownership_pending_patch_keys: BTreeSet<(usize, usize)>,
     /// Terrain patches owned by at least one indexed building site.
     pub(crate) building_site_owned_terrain_patch_keys: HashSet<(usize, usize)>,
     /// Site boxes whose render-patch ownership the building removal queue left for later slots
@@ -438,6 +442,7 @@ impl SimCore {
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             road_locked_terrain_patch_margins: BTreeMap::new(),
+            road_ownership_pending_patch_keys: BTreeSet::new(),
             building_site_owned_terrain_patch_keys: HashSet::new(),
             deferred_site_terrain_boxes: Default::default(),
             engineered_terrain_patch_keys: Vec::new(),
@@ -546,6 +551,7 @@ impl SimCore {
         }
         let generation = self.next_terrain_payload_generation();
         for (&key, patch_tiles) in &tiles {
+            self.road_ownership_pending_patch_keys.insert(key);
             self.heightmap.mark_render_patch_dirty(key.0, key.1);
             self.terrain_payload_patch_generations
                 .insert(key, generation);

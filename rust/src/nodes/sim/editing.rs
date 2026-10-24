@@ -198,6 +198,19 @@ impl SimCore {
             self.heightmap.mark_render_patch_dirty(patch_x, patch_z);
         }
         self.bump_terrain_payload_patch_generations(&patch_keys);
+        // Road grading rays probe up to the envelope cap beyond loops taken up to the cap
+        // (the tile halo) beyond their tile, so new heights move the road margins of patches
+        // within twice the cap; the stroke's end refreshes them (`ROAD-68-D`).
+        let reach_m =
+            radius + 2.0 * crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M;
+        self.road_ownership_pending_patch_keys.extend(
+            self.heightmap.render_patch_keys_for_world_bounds(
+                pos.x - reach_m,
+                pos.y - reach_m,
+                pos.x + reach_m,
+                pos.y + reach_m,
+            ),
+        );
         self.terrain_dirty = true;
     }
 
@@ -222,6 +235,9 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
+        self.refresh_road_locked_terrain_patch_state(
+            crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+        );
         // Terrain-authoring APIs publish their snapshot immediately rather than passing through the
         // simulation command finalizer. Build the matching road delta here so NetworkRenderer does
         // not repeatedly observe a newer source generation paired with the previous mesh.

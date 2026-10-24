@@ -149,7 +149,9 @@ impl SimCore {
             );
             unique_keys
                 .par_iter()
-                .map(|&key| Self::road_terrain_patch_margin_m(terrain, roads, key, safe_render_step_m))
+                .map(|&key| {
+                    Self::road_terrain_patch_margin_m(terrain, roads, key, safe_render_step_m)
+                })
                 .collect()
         } else {
             Vec::new()
@@ -157,6 +159,7 @@ impl SimCore {
         for (index, key) in unique_keys.into_iter().enumerate() {
             let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
             let road_margin = if refresh_roads {
+                self.road_ownership_pending_patch_keys.remove(&key);
                 road_margins[index]
             } else {
                 self.road_locked_terrain_patch_margins.get(&key).copied()
@@ -449,7 +452,10 @@ impl SimCore {
         self.refresh_engineered_terrain_patch_ownership_for_keys(render_step_m, &patch_keys)
     }
 
-    /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache.
+    /// Refreshes the ownership of the patches whose road margin waits for a refresh (a compile
+    /// changed pieces near them or a terrain edit changed their heights) and invalidates stale
+    /// refined terrain cache. A patch the edit's validation already refreshed is not pending, and
+    /// patches dirty for other reasons keep their road ownership (`ROAD-68-D`).
     pub(crate) fn refresh_road_locked_terrain_patch_state(&mut self, render_step_m: f32) -> usize {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
@@ -460,24 +466,22 @@ impl SimCore {
         if !self.transit_network.roadbed.is_current() {
             return 0;
         }
-        let mut dirty_patches: Vec<(usize, usize)> = self
-            .heightmap
-            .dirty_render_patches()
+        let pending_patches = self
+            .road_ownership_pending_patch_keys
             .iter()
             .copied()
-            .collect();
-        dirty_patches.sort_unstable();
+            .collect::<Vec<_>>();
         let invalidated_refined_cache_entries = self
             .refresh_engineered_terrain_patch_ownership_for_keys(
                 safe_render_step_m,
-                &dirty_patches,
+                &pending_patches,
             );
 
         if road_debug {
             debug_log!(
                 "road",
-                "refined_patch_state_refresh dirty_patches={} road_owned_patches={} engineered_patches={} invalidated_cache_entries={} total_ms={:.3}",
-                dirty_patches.len(),
+                "refined_patch_state_refresh pending_patches={} road_owned_patches={} engineered_patches={} invalidated_cache_entries={} total_ms={:.3}",
+                pending_patches.len(),
                 self.road_locked_terrain_patch_keys.len(),
                 self.engineered_terrain_patch_keys.len(),
                 invalidated_refined_cache_entries,
