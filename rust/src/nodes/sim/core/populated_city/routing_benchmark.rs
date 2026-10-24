@@ -1003,6 +1003,10 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     // `METRUM_COMMIT_PHASES` logs the commit's cell-lot regions (`economy_phases`).
     let phases = std::env::var_os("METRUM_COMMIT_PHASES").is_some();
     for (sample, start) in starts.into_iter().enumerate() {
+        // Godot also uploads and acknowledges every terrain patch dirtied before the click
+        // (`acknowledge_uploads`), so the commit's road-locked terrain state walks its own.
+        let terrain = core.terrain_dirty_patch_states();
+        core.acknowledge_terrain_render_patches(&terrain);
         crate::debug::Channel::EconomyPhases.set_enabled(phases);
         profile_control("enable");
         let road_total = Instant::now();
