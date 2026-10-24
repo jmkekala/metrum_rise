@@ -1070,6 +1070,12 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         };
         let terrain_clone_ms = time(&mut || drop(black_box(core.heightmap.clone())));
         let graph_clone_ms = time(&mut || drop(black_box(core.region_graph.clone())));
+        // What dropping the previous snapshot's graph, which the live core no longer shares,
+        // costs the publication.
+        let graph = black_box(core.region_graph.clone());
+        let begin = Instant::now();
+        drop(black_box(graph));
+        let graph_drop_ms = begin.elapsed().as_secs_f64() * 1e3;
         let roadbed_clone_ms =
             time(&mut || drop(black_box(core.transit_network.roadbed.clone())));
         let water_clone_ms = time(&mut || drop(black_box(core.watermap.clone())));
@@ -1098,6 +1104,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "following_frame_pathing_ms": after.pathing_ms,
             "following_frame_agent_ms": after.agent_ms,
             "terrain_clone_ms": terrain_clone_ms, "graph_clone_ms": graph_clone_ms,
+            "graph_drop_ms": graph_drop_ms,
             "roadbed_clone_ms": roadbed_clone_ms, "water_clone_ms": water_clone_ms,
             "zoning_snap_ms": zoning_snap_ms, "cch_build_ms": cch_build_ms,
             "lanes_off_surface": lanes_off_surface,
