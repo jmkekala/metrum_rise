@@ -79,7 +79,8 @@ which leaves its regions to the `cell lots` queue, queued fewer of them; every e
 commit marks the whole ring again, checked by a digest test over every edit kind), then lifted
 each new lane once, spliced the publication into reserved buffers, invalidated cells without
 the lots' frontage reach and made the agent passes' set probes cheap, products and determinism
-digests bit for bit unchanged: median 20.1 ms at 100k (16.2–23.9 per sample). It still misses
+digests bit for bit unchanged: median 21.8 ms at 100k (18.3–28.3 per sample; same-session
+control 41.8). It still misses
 a frame (open question 21: snapshot publish and copy, which `ROAD-68-E`'s road-tool context
 owns, then the lots, publication and agent passes), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`

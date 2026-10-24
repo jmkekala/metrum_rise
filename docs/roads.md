@@ -1177,10 +1177,10 @@ These need a user decision; work that does not depend on them continues.
     ([commit stages](#commit-stages-part-4-road-68-g-2026-10-24)) first fixed a difference in
     part 3's marks (undo queued fewer regions), then lifted each new lane once, spliced into
     reserved buffers, invalidated cells without the lots' frontage reach and made the agent
-    passes' set probes cheap, bit for bit: per sample at 100k the commit takes 23.9 / 20.1 /
-    16.2 ms (median 20.1), at 2k 20.0 / 8.9 / 3.2 ms. The acceptance (under 16.7 ms at 100k
-    buildings) is still not met. At 100k, second sample:
-    - **Snapshot publish, 4.2 ms**, and the **tool snapshot, 2.8 ms** (`ROAD-68-E`'s road-tool
+    passes' set probes cheap, bit for bit: per sample at 100k the commit takes 28.3 / 21.8 /
+    18.3 ms (median 21.8; same-session control 41.8), at 2k 24.8 / 11.9 / 4.0 ms. The
+    acceptance (under 16.7 ms at 100k buildings) is still not met. At 100k, second sample:
+    - **Snapshot publish, 4.2 ms**, and the **tool snapshot, 2.5 ms** (`ROAD-68-E`'s road-tool
       context). The publish drops the previous snapshot inside the view's write lock on the sim
       thread; dropping a warm, unshared copy of the live graph costs only 0.66 ms, so most of it
       is freeing what the old snapshot alone still holds (not split further). The tool snapshot
@@ -1188,8 +1188,9 @@ These need a user decision; work that does not depend on them continues.
       cloning every node's lane-connection map).
     - **Cell lots, 3.5–8.9 ms.** 43 % of generation is the per-footprint legality test against
       the roadbed (`cell_site_blocked`, parallel); the candidate index and sort stay serial.
-    - **Render publication, 3.2–5.0 ms**: street lights and signs for every covered edge (13 %),
-      piece surfaces (12 %), the remaining lane lifts.
+    - **Render publication, 4.7–9.8 ms**: street lights and signs for every covered edge (13 %),
+      piece surfaces (12 %), the new lanes' lift, serial again because a parallel lift exposed
+      a pure-job deadlock (2 ms at 100k; part 4 record).
     - **Agent passes, 1.8–3.7 ms + 0.2 ms**, still `O(A / P)`.
     - **Options.** (a) Ruled out (`SIM-02-H`). (b) Derive the commit's lots from the preview's
       plan in `ROAD-68-E`, so the commit installs them (the user's fallback): removes 3.5–8.9 ms.
@@ -1200,9 +1201,10 @@ These need a user decision; work that does not depend on them continues.
       where their street is unchanged.
       Recommendation: (c) in `ROAD-68-E` round 2 (it owns the publication), then (b) if the
       first, grid-adjacent sample still misses; (d) and (e) only if needed after both.
-      Estimate from this breakdown: with (c) the median commit takes about 13 ms and the first
-      sample about 20 ms; with (b) as well, about 8 and 11 ms. `ROAD-68-G` stays open until the
-      commit fits a frame.
+      Estimate from this breakdown: with (c) the median commit takes about 15 ms and the first
+      sample about 25 ms; with (b) as well, about 10 and 16 ms, and about 2 ms less each once
+      the pure-job deadlock is fixed and the new lanes are lifted on the pool again. `ROAD-68-G`
+      stays open until the commit fits a frame.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -3326,6 +3328,48 @@ agent on the network: 28 % of their samples were SipHash. The sets use the fixed
 nodes sit behind a fixed 4096-bit filter of their ids, so almost every path node misses without
 hashing (a set bit is confirmed in the set). The passes stay `O(A / P)`; visiting only the
 edit's agents needs per-edge agent lists and an index of planned routes (open question 21).
+
+**Commit breakdown** (fresh, 2026-10-25, 01:32–01:42). Release library tests of the control
+(`27797b92` with part 3's two test-only harness commits, binary `aa06a2a0…`, part 3's control)
+and of this part (`d607753a`, binary `2c174f71…`), in one session, pinned to the P-cores with
+eight workers, under the exclusive timing lock with no build or backup running; command as
+above. Medians of three samples, in ms; control / change where they differ:
+
+| Stage | 0 | 2k | 10k | 30k | 100k |
+| --- | --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 | 76,109 / 2,220 / 4,283 |
+| click → ack | 8.45 / 6.45 | 29.2 / 11.9 | 35.2 / 15.4 | 34.6 / 15.1 | 41.8 / 21.8 |
+| entrances (`buildings`) | 0.00 | 19.3 / 3.85 | 21.1 / 4.79 | 20.6 / 4.23 | 20.7 / 5.37 |
+| render publication (`mesh`) | 7.24 / 5.53 | 8.45 / 6.34 | 11.7 / 8.15 | 9.36 / 7.05 | 7.51 / 5.49 |
+| agents and lanes | 0.29 / 0.26 | 0.43 / 0.33 | 0.66 | 1.25 / 0.69 | 3.88 / 2.17 |
+| agent invalidation | 0.00 | 0.01 | 0.06 | 0.27 / 0.09 | 1.21 / 0.21 |
+| tool snapshot | 0.01 | 0.04 | 0.24 / 0.21 | 0.63 / 0.64 | 2.55 / 2.56 |
+| snapshot publish | 0.05 / 0.04 | 0.17 / 0.13 | 0.40 / 0.46 | 1.16 | 3.58 / 3.93 |
+| plan, undo, topology, zoning, surface | 0.80 / 0.59 | 0.73 / 0.80 | 0.86 / 0.81 | 1.01 / 0.81 | 1.48 / 1.36 |
+| republished chunks | 4 | 4 | 5 | 5 | 3 |
+| held frames | 1 | 1 | 1 | 1 | 1 |
+| CCH build alone | 0.89 / 0.92 | 2.28 / 2.32 | 14.1 / 14.8 | 49.9 / 52.1 | 301 / 294 |
+| live lanes off the surface | 0 | 0 | 0 | 0 | 0 |
+
+Per sample, click → ack at 100k is 56.1 / 28.3, 41.8 / 21.8 and 30.2 / 18.3 ms; at 2k 41.6 /
+24.8, 29.2 / 11.9 and 11.0 / 4.0 ms. Both product digests (paint, claims, parcels and queued
+regions; the generated cell cache) equal the control's in all 15 samples. Before the parallel
+lift was reverted, the same code with it measured 23.9 / 20.1 / 16.2 ms at 100k (render
+publication 5.0 / 3.4 / 3.2 ms).
+
+- **The commit halves:** 41.8 → 21.8 ms at 100k, 29.2 → 11.9 ms at 2k; cell lots 20.7 → 5.4 ms
+  at 100k, agent passes 5.1 → 2.4 ms. It still misses 16.7 ms
+  ([open question 21](#road-68-open-questions)): at 100k the snapshot publish and the tool
+  snapshot take 6.5 ms of the 21.8 and grow with the city; the lots, the publication and the
+  agent passes take the rest.
+- **The first sample** (the split nearest the painted grid) is the slowest in both builds:
+  28.3 ms at 100k, lots 8.8 and publication 9.8 ms of it.
+
+**Determinism** (fresh, same session, `road68g_commit_determinism`, release): against the
+eight-worker reference, one and three workers, a rebuild delayed 400 ms at one and eight
+workers, and a save inside the hold give identical hourly fingerprints (6) and saved tables
+(72), in the control and in this part, and both reference runs print digest
+`6252b7ba71c5a6f1`, parts 2 and 3's.
 
 
 ### `ROAD-68-H` — acceptance and cleanup
