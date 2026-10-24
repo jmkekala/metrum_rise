@@ -335,20 +335,40 @@ impl LaneSystem {
         // Rebuild connections in stable node order.
         for &node_id in &affected_nodes {
             if node_id < graph.node_count() {
-                // Tombstone old connection lanes at this node so the renderer skips them, and
-                // free their buffers: ids are never reused, so tombstones stay in `lanes`.
-                if let Some(old_ids) = self.node_lanes.remove(&node_id) {
-                    for lid in old_ids {
-                        if let Some(lane) = self.lanes.get_mut(lid) {
-                            self.crosswalks.remove(&lid);
-                            lane.geometry = Vec::new();
-                            lane.cum_dist = Vec::new();
-                            lane.next_lanes.clear();
-                        }
-                    }
-                }
+                self.tombstone_node_lanes(node_id);
                 self.append_node_connections(&lane_map, graph, &walkways, node_id);
             }
         }
+    }
+
+    /// Tombstones the connection lanes of nodes that no longer exist, such as the nodes an undo
+    /// drops past the restored node count (`ROAD-68-E`). Their incident edges are rebuilt by
+    /// [`Self::rebuild_edges_incremental`]; this only retires what no surviving owner rebuilds.
+    /// O(the nodes' connection lanes).
+    pub fn retire_node_lanes(&mut self, nodes: impl IntoIterator<Item = usize>) {
+        let mut retired = false;
+        for node_id in nodes {
+            retired |= self.tombstone_node_lanes(node_id);
+        }
+        if retired {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    // Tombstones old connection lanes at a node so the renderer skips them, and frees their
+    // buffers: ids are never reused, so tombstones stay in `lanes`. False if it had none.
+    fn tombstone_node_lanes(&mut self, node_id: usize) -> bool {
+        let Some(old_ids) = self.node_lanes.remove(&node_id) else {
+            return false;
+        };
+        for lid in old_ids {
+            if let Some(lane) = self.lanes.get_mut(lid) {
+                self.crosswalks.remove(&lid);
+                lane.geometry = Vec::new();
+                lane.cum_dist = Vec::new();
+                lane.next_lanes.clear();
+            }
+        }
+        true
     }
 }

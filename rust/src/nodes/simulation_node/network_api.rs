@@ -123,6 +123,7 @@ impl SimulationNode {
                 "committed": ack.committed,
                 "reason": ack.reason,
                 "detail": ack.detail,
+                "generation": i64::try_from(ack.generation).unwrap_or(i64::MAX),
             },
             Err(std::sync::mpsc::TryRecvError::Empty) => return Variant::nil(),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {

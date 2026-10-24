@@ -321,43 +321,9 @@ impl RegionGraph {
         )
     }
 
-    /// Restores a local graph checkpoint and rebuilds all derived spatial and adjacency indices.
-    pub(crate) fn restore_undo_delta(&mut self, delta: RegionGraphUndoDelta) {
-        self.nodes.truncate(delta.original_node_count);
-        self.edges.truncate(delta.original_edge_count);
-        for (node_id, node) in delta.nodes {
-            if let Some(target) = self.nodes.get_mut(node_id as usize) {
-                *target = node;
-            }
-        }
-        for (edge_idx, edge) in delta.edges {
-            if let Some(target) = self.edges.get_mut(edge_idx) {
-                *target = edge;
-            }
-        }
-        self.node_aliases
-            .retain(|&node_id, _| (node_id as usize) < delta.original_node_count);
-        for (node_id, previous) in delta.aliases {
-            if let Some(canonical) = previous {
-                self.node_aliases.insert(node_id, canonical);
-            } else {
-                self.node_aliases.remove(&node_id);
-            }
-        }
-        self.rebuild_adjacency_list();
-        self.spatial_edge_rt = RTree::new();
-        for edge_idx in 0..self.edges.len() {
-            self.add_to_spatial_index(edge_idx);
-        }
-        self.spatial_node_grid.clear();
-        for node_id in 0..self.nodes.len() {
-            self.add_node_to_spatial_index(node_id as u32);
-        }
-    }
-
     /// Installs a checkpoint's records and record counts and repairs adjacency and both spatial
-    /// indices for the records it touches only (`ROAD-68-E`): the same records as
-    /// [`Self::restore_undo_delta`], in `O(delta records * log edges)`. A checkpoint captured
+    /// indices for the records it touches only (`ROAD-68-E`): the records the
+    /// checkpoint captured, in `O(delta records * log edges)`. A checkpoint captured
     /// from another graph replicates that graph's records here; it must then cover every record
     /// past this graph's counts.
     pub(crate) fn restore_undo_delta_local(&mut self, delta: &RegionGraphUndoDelta) {

@@ -47,8 +47,6 @@ fn prepare_with_lanes(
     RoadEditPlan::compile(
         core,
         RoadPreviewRequest {
-            include_terrain: false,
-            request_id: 1,
             surface_generation,
             points,
             fwd_lanes,
@@ -196,8 +194,6 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     let rebuilt = RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
-            include_terrain: false,
-            request_id: 2,
             surface_generation: core.road_tool_surface_generation,
             points,
             fwd_lanes: 1,
@@ -738,9 +734,7 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
         for step in 0..16 {
             let angle = std::f32::consts::TAU * step as f32 / 16.0;
             let (x, z) = (-60.0 + 15.0 * angle.cos(), -55.0 + 15.0 * angle.sin());
-            let preview = snapshot.preview(&RoadPreviewRequest {
-                include_terrain: false,
-                request_id: step + 1,
+            let (_, validation) = snapshot.validate(&RoadPreviewRequest {
                 surface_generation: snapshot.surface_generation,
                 points: vec![surface(&core, -65.0, 0.0), surface(&core, x, z)],
                 fwd_lanes: 1,
@@ -748,9 +742,8 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
                 snap_to_existing_roads: true,
             });
             assert!(
-                preview.validation.is_valid,
-                "slope {slope_end_m} leg end ({x}, {z}): {:?}",
-                preview.validation
+                validation.is_valid,
+                "slope {slope_end_m} leg end ({x}, {z}): {validation:?}"
             );
         }
     }

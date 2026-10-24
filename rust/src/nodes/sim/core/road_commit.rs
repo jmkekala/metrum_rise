@@ -46,6 +46,9 @@ pub(crate) struct RoadCommitAck {
     pub(crate) reason: String,
     /// Rejection diagnostic; empty when committed.
     pub(crate) detail: String,
+    /// The road-tool surface generation after the command: the render generation whose road
+    /// chunks replace the preview's (`ROAD-68-E`).
+    pub(crate) generation: u64,
 }
 
 /// Result and phase timings of [`SimCore::commit_road`].
@@ -65,6 +68,8 @@ pub(crate) struct RoadCommitOutcome {
     pub(crate) snapshot_ms: f64,
     pub(crate) collect_refined_ms: f64,
     pub(crate) invalidated_refined_cache_entries: usize,
+    /// The road-tool surface generation after the command.
+    pub(crate) generation: u64,
 }
 
 impl SimCore {
@@ -123,8 +128,6 @@ impl SimCore {
                 fresh_plan = RoadEditPlan::compile(
                     self,
                     RoadPreviewRequest {
-                        include_terrain: false,
-                        request_id: 0,
                         surface_generation: self.road_tool_surface_generation,
                         points: points.clone(),
                         fwd_lanes,
@@ -308,6 +311,7 @@ impl SimCore {
             snapshot_ms,
             collect_refined_ms,
             invalidated_refined_cache_entries,
+            generation: self.road_tool_surface_generation,
         }
     }
 }

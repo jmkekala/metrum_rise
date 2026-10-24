@@ -154,12 +154,17 @@ impl SimCore {
 
     /// Rebuilds the routing hierarchy off the edit's critical path from an immutable copy of
     /// the live graph and adopts it after [`CCH_ADOPTION_FRAMES`] frames (`docs/roads.md` D7).
-    /// For editor paths without a road-tool snapshot to share; O(graph) for the copy.
+    /// For editor paths without a road-tool snapshot to share; O(graph) for the copy, which it
+    /// returns so the road tool's view can share it (`ROAD-68-E`).
     ///
     /// [`CCH_ADOPTION_FRAMES`]: crate::simulation::network::cch_adoption::CCH_ADOPTION_FRAMES
-    pub(crate) fn schedule_cch_rebuild_of_live_graph(&mut self) {
+    pub(crate) fn schedule_cch_rebuild_of_live_graph(
+        &mut self,
+    ) -> std::sync::Arc<crate::simulation::network::graph::RegionGraph> {
         let graph = std::sync::Arc::new(self.region_graph.clone());
-        self.transit_network.schedule_cch_rebuild(graph);
+        self.transit_network
+            .schedule_cch_rebuild(std::sync::Arc::clone(&graph));
+        graph
     }
 
     /// Builds at load what the first frame would otherwise build (`SIM-02-K`): the routing

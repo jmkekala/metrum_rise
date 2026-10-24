@@ -21,6 +21,18 @@ use crate::simulation::network::graph::{RegionGraph, RegionGraphUndoDelta};
 pub(crate) struct RoadToolPublisher {
     sequence: u64,
     published: Option<PublishedView>,
+    // An immutable copy of the live graph an editor already made for its routing rebuild,
+    // offered to the next publication of the same command.
+    offered_graph: Option<Arc<RegionGraph>>,
+}
+
+impl RoadToolPublisher {
+    /// Offers the routing rebuild's graph copy to the publication that ends the same command
+    /// (undo, bulldoze), so the view shares it instead of copying the graph again. The command
+    /// must not change the graph after the copy; debug builds check the copy at publication.
+    pub(crate) fn offer_graph(&mut self, graph: Arc<RegionGraph>) {
+        self.offered_graph = Some(graph);
+    }
 }
 
 struct PublishedView {
@@ -60,8 +72,14 @@ impl SimCore {
         &mut self,
         graph: Option<Arc<RegionGraph>>,
     ) -> Option<RoadToolPublication> {
+        let graph = graph.or_else(|| self.road_tool_publisher.offered_graph.take());
+        self.road_tool_publisher.offered_graph = None;
         if !self.transit_network.roadbed.is_current() {
             return None;
+        }
+        #[cfg(debug_assertions)]
+        if let Some(graph) = &graph {
+            assert_replica_matches(graph, &self.region_graph);
         }
         let rebuilt = self.transit_network.roadbed.take_rebuilt_owners();
         let terrain_generations = (
@@ -112,6 +130,8 @@ impl SimCore {
                     region_graph,
                     roadbed: Arc::new(self.transit_network.roadbed.snapshot()),
                     water,
+                    road_mesh_chunks: Arc::clone(&self.published_road_mesh_chunks),
+                    road_mesh_generation: self.road_mesh_lane_generation,
                     surface_generation: self.road_tool_surface_generation,
                 };
                 (view, replica)
@@ -154,6 +174,17 @@ impl RoadToolShared {
         Self {
             context: Mutex::new(RoadPreviewContext::capture(view.clone())),
             view: RwLock::new(view),
+        }
+    }
+
+    /// Captures the shared state from a publication, keeping its sequence so the next
+    /// publication follows by records instead of replacing the replica.
+    pub(crate) fn from_publication(publication: RoadToolPublication) -> Self {
+        let mut context = RoadPreviewContext::capture(publication.view.clone());
+        context.sequence = publication.sequence;
+        Self {
+            context: Mutex::new(context),
+            view: RwLock::new(publication.view),
         }
     }
 

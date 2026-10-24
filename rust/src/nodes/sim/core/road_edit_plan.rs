@@ -278,8 +278,6 @@ mod tests {
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
-                include_terrain: false,
-                request_id: 7,
                 surface_generation: 11,
                 points: raw.clone(),
                 fwd_lanes: 1,
@@ -328,8 +326,6 @@ mod tests {
         });
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
-                include_terrain: false,
-                request_id: 7,
                 surface_generation: 11,
                 points: points.clone(),
                 fwd_lanes: 1,

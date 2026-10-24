@@ -706,8 +706,10 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
-        // Deferred like a commit's (D7, `ROAD-68-G`).
-        self.schedule_cch_rebuild_of_live_graph();
+        // Deferred like a commit's (D7, `ROAD-68-G`); the road tool's view shares its graph
+        // copy (`ROAD-68-E`).
+        let routing_graph = self.schedule_cch_rebuild_of_live_graph();
+        self.road_tool_publisher.offer_graph(routing_graph);
         self.transit_network.flow_fields.mark_all_dirty();
         self.mark_local_network_render_dirty();
         self.terrain_dirty = true;
@@ -1037,8 +1039,6 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
-                    include_terrain: false,
-                    request_id: 0,
                     surface_generation: self.road_tool_surface_generation,
                     points: points.clone(),
                     fwd_lanes,

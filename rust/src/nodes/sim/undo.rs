@@ -194,7 +194,7 @@ impl SimCore {
         );
         self.transit_network
             .rollback_road_edit_dependents(&mut self.allocator);
-        self.region_graph.restore_undo_delta(graph);
+        self.region_graph.restore_undo_delta_local(&graph);
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
@@ -446,7 +446,8 @@ impl SimCore {
                     self.zoning
                         .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
                 }
-                self.region_graph.restore_undo_delta(tr_graph);
+                // `O(delta records * log edges)`; the same records as the full restore.
+                self.region_graph.restore_undo_delta_local(&tr_graph);
                 if let Some((edge_ids, _)) = &restored_topology_scope {
                     self.zoning
                         .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
@@ -484,26 +485,16 @@ impl SimCore {
             }
 
             if sync_trans_graph {
-                // Rebuild lane topology from the restored graph so crosswalk geometry
-                // and junction connections match the reverted road network. The rebuild
-                // renumbers every lane, so agents' lane ids are carried over by identity.
-                let lane_identities = self
-                    .agents
-                    .capture_lane_identities(&self.transit_network.lane_system);
-                self.transit_network
-                    .lane_system
-                    .rebuild(&mut self.region_graph);
-                self.agents
-                    .restore_lane_identities(&lane_identities, &self.transit_network.lane_system);
-                if let Some((edge_ids, _)) = &restored_topology_scope {
-                    self.agents.reattach_invalidated_lanes_for_edges(
-                        edge_ids,
-                        &self.transit_network.lane_system,
-                        &self.region_graph,
-                    );
+                match &restored_topology_scope {
+                    Some((edge_ids, node_ids)) if !restored_dense_terrain => {
+                        self.restore_lanes_locally(edge_ids, node_ids);
+                    }
+                    _ => self.rebuild_all_lanes_keeping_agents(restored_topology_scope.as_ref()),
                 }
-                // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
-                self.schedule_cch_rebuild_of_live_graph();
+                // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one. The
+                // road tool's view shares its graph copy (`ROAD-68-E`).
+                let routing_graph = self.schedule_cch_rebuild_of_live_graph();
+                self.road_tool_publisher.offer_graph(routing_graph);
                 self.transit_network.flow_fields.mark_all_dirty();
                 if restored_dense_terrain {
                     self.zoning.invalidate_cell_lot_assets();
@@ -515,6 +506,49 @@ impl SimCore {
             return true;
         }
         false
+    }
+
+    // Lanes after a topology undo, as a commit rebuilds them (`ROAD-68-E`): the agents on the
+    // restored edges' lanes are detached, those edges' lane closure is rebuilt on the restored
+    // graph, the connection lanes of nodes the undo dropped are retired, and the agents
+    // reattach. `O(restored records + their lane closure)`, independent of the city.
+    fn restore_lanes_locally(&mut self, edge_ids: &HashSet<usize>, node_ids: &HashSet<u32>) {
+        let lanes = &mut self.transit_network.lane_system;
+        self.agents
+            .invalidate_lane_ids_for_edges(edge_ids, lanes, &self.region_graph);
+        let node_count = self.region_graph.node_count();
+        lanes.retire_node_lanes(
+            node_ids
+                .iter()
+                .map(|&node| node as usize)
+                .filter(|&node| node >= node_count),
+        );
+        lanes.rebuild_edges_incremental(&mut self.region_graph, edge_ids);
+        self.agents
+            .reattach_invalidated_lanes_for_edges(edge_ids, lanes, &self.region_graph);
+    }
+
+    // A dense terrain restore resets every road product, so its lanes rebuild whole. The rebuild
+    // renumbers every lane, so agents' lane ids are carried over by identity.
+    fn rebuild_all_lanes_keeping_agents(
+        &mut self,
+        topology_scope: Option<&(HashSet<usize>, HashSet<u32>)>,
+    ) {
+        let lane_identities = self
+            .agents
+            .capture_lane_identities(&self.transit_network.lane_system);
+        self.transit_network
+            .lane_system
+            .rebuild(&mut self.region_graph);
+        self.agents
+            .restore_lane_identities(&lane_identities, &self.transit_network.lane_system);
+        if let Some((edge_ids, _)) = topology_scope {
+            self.agents.reattach_invalidated_lanes_for_edges(
+                edge_ids,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
+        }
     }
 
     fn reset_network_render_state(&mut self, old_engineered_patch_keys: Vec<(usize, usize)>) {

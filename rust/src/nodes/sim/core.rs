@@ -48,7 +48,7 @@ pub(crate) use budget::{
     SERVICE_BUILD_COST_PER_LOT_CELL, SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadCorridorClearance, RoadPreviewRequest, RoadPreviewSnapshot, RoadToolQuerySnapshot,
+    RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot,
 };
 pub(crate) use road_tool_context::{RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{

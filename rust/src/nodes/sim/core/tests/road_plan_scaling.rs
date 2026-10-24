@@ -293,8 +293,6 @@ fn measure_populated_road_plan_scaling(
         let mut preview_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
-            include_terrain: false,
-            request_id: 1,
             surface_generation: generation,
             points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
             fwd_lanes: 1,
@@ -309,16 +307,16 @@ fn measure_populated_road_plan_scaling(
             assert_eq!(plan.status(&core), "ready");
             let status_ms = status_start.elapsed().as_secs_f64() * 1000.0;
             let preview_start = Instant::now();
-            let preview = snapshot.preview(&request());
+            let (prepared_points, validation) = snapshot.validate(&request());
             let preview_ms = preview_start.elapsed().as_secs_f64() * 1000.0;
-            assert!(preview.validation.is_valid);
+            assert!(validation.is_valid);
             if let Some(previous) = &previous_preview {
                 assert_eq!(
-                    &preview.prepared_points, previous,
+                    &prepared_points, previous,
                     "remote state changed local products"
                 );
             } else {
-                previous_preview = Some(preview.prepared_points);
+                previous_preview = Some(prepared_points);
             }
             if iteration >= 3 {
                 samples.push(compile_ms);

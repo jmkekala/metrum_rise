@@ -165,6 +165,44 @@ impl RoadRenderer {
     }
 }
 
+impl RoadRenderer {
+    /// The road-tool preview's replacement chunks (`ROAD-68-E`): the commit's local publication
+    /// of the pieces a roadbed built after generation `built_after`, spliced into the
+    /// `published` chunks of that generation, by the same emission and splice. A preview has no
+    /// lanes, so the rebuilt pieces carry no crosswalk paint and the covered edges no signs
+    /// (`docs/roads.md` gate E; `ROAD-68-F` builds both from the layout). `None` if a published
+    /// chunk holds a run without an owner. `O(rebuilt pieces + target chunks' vertices)`.
+    pub(crate) fn generate_preview_chunks(
+        &self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+        roadbed: &RoadbedSystem,
+        target_chunks: &BTreeSet<SurfaceChunkKey>,
+        built_after: u64,
+        published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+    ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
+        let coverage = standard_surface::build_compiled_surface_coverage_for_chunks(
+            graph,
+            roadbed,
+            target_chunks,
+            Some(built_after),
+        );
+        let no_lanes = crate::simulation::network::lanes::LaneSystem::new();
+        let mut fresh = emit_chunks(
+            graph,
+            &no_lanes,
+            terrain,
+            roadbed,
+            target_chunks,
+            &coverage.rebuilt(),
+            &coverage,
+        );
+        splice_chunks(target_chunks, published, &mut fresh, |owner| {
+            coverage.keeps(owner)
+        })
+    }
+}
+
 // Emits `pieces` (surfaces, bridges, markings and the zebras they carry) and the street lights
 // and signs of every `covered` edge into the target chunks.
 fn emit_chunks(

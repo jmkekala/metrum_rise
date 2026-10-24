@@ -117,7 +117,7 @@ use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
     CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
+    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
     RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
     run_sim_thread,
 };
@@ -147,7 +147,6 @@ use crate::simulation::water::WaterPatchSnapshot;
 use crate::debug_log;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
@@ -256,8 +255,6 @@ pub struct SimulationNode {
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
     pub(crate) road_commit_result:
         Option<std::sync::mpsc::Receiver<crate::nodes::sim::core::RoadCommitAck>>,
-    /// Latest road-tool preview, validated synchronously when it was requested.
-    pub(crate) road_preview_result: RwLock<Option<RoadPreviewSnapshot>>,
     /// The road tool's published view (cursor picking, hover, terrain jobs) and its preview
     /// context, both read without locking SimCore (`ROAD-68-E`).
     pub(crate) road_tool: Arc<RoadToolShared>,
@@ -274,8 +271,6 @@ pub struct SimulationNode {
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Payload and mesh jobs in flight on Rayon's pool, waited for when the node is freed.
     async_jobs: Arc<async_jobs::AsyncJobs>,
-    /// Monotonic ids of road preview requests.
-    pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
     pub(crate) benchmark_mode: bool,
     /// True when launched with `--asset-editor`. Sim thread is not started;
@@ -465,7 +460,7 @@ impl INode3D for SimulationNode {
         let road_tool = core
             .publish_road_tool_view(None)
             .expect("the initial roadbed generation must be publishable");
-        let road_tool = Arc::new(RoadToolShared::new(road_tool.view));
+        let road_tool = Arc::new(RoadToolShared::from_publication(road_tool));
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
         let terrain_patch_payload_jobs = Arc::new(Mutex::new(TerrainPatchPayloadAsyncState::new()));
         let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
@@ -489,7 +484,6 @@ impl INode3D for SimulationNode {
             cell_chunk_job: Default::default(),
             road_commit_request_id: 0,
             road_commit_result: None,
-            road_preview_result: RwLock::new(None),
             road_tool,
             water_patch_mesh_jobs,
             building_lods: Default::default(),
@@ -498,7 +492,6 @@ impl INode3D for SimulationNode {
             terrain_patch_payload_jobs,
             water_patch_payload_jobs,
             async_jobs: Default::default(),
-            road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,
             world_editor_mode,

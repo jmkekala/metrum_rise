@@ -4,6 +4,7 @@
 //! preview (`ROAD-68-E`): the commit's own plan, compiled pieces and their dependency
 //! fingerprint, built on the road tool's context without the core lock.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,6 +15,8 @@ use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::render::NetworkMeshData;
+use crate::simulation::network::render::road::RoadRenderer;
 use crate::simulation::network::road_edit::{
     RoadPreviewValidation, prepare_road_input_for_tool, validate_road_candidate_fast,
 };
@@ -24,25 +27,11 @@ use crate::simulation::water::WaterSystem;
 /// One road-tool stroke submitted for preview or commit planning.
 #[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
-    pub(crate) include_terrain: bool,
-    pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
     pub(crate) points: Vec<Vector3>,
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
     pub(crate) snap_to_existing_roads: bool,
-}
-
-/// The validated result of one preview request; `ROAD-68-E` adds its road and terrain pieces.
-#[derive(Clone, Debug)]
-pub(crate) struct RoadPreviewSnapshot {
-    pub(crate) include_terrain: bool,
-    pub(crate) request_id: u64,
-    pub(crate) surface_generation: u64,
-    pub(crate) fwd_lanes: i32,
-    pub(crate) bkw_lanes: i32,
-    pub(crate) prepared_points: Vec<Vector3>,
-    pub(crate) validation: RoadPreviewValidation,
 }
 
 /// Corridor clearance of a stroke against live parcels and field reservations.
@@ -98,13 +87,23 @@ pub(crate) struct RoadToolQuerySnapshot {
     pub(crate) roadbed: Arc<RoadbedSystem>,
     /// Immutable authored-water state used by road placement validation.
     pub(crate) water: Arc<WaterSystem>,
+    /// The published road render chunks of `roadbed`'s generation, which a preview splices
+    /// its pieces into (`ROAD-68-E`); shared in `O(1)`.
+    pub(crate) road_mesh_chunks: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
+    /// The roadbed generation `road_mesh_chunks` were published at; the preview splices only
+    /// into chunks of its own roadbed generation.
+    pub(crate) road_mesh_generation: Option<u64>,
     pub(crate) surface_generation: u64,
 }
 
 impl RoadToolQuerySnapshot {
     /// Prepares and validates one stroke against this snapshot: the profile, endpoint and water
-    /// checks of the hover path. O(stroke points + endpoint snap lookups).
-    pub(crate) fn preview(&self, request: &RoadPreviewRequest) -> RoadPreviewSnapshot {
+    /// checks of the hover path. Returns the prepared points and the validation.
+    /// O(stroke points + endpoint snap lookups).
+    pub(crate) fn validate(
+        &self,
+        request: &RoadPreviewRequest,
+    ) -> (Vec<Vector3>, RoadPreviewValidation) {
         let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let prepared = prepare_road_input_for_tool(
@@ -126,15 +125,7 @@ impl RoadToolQuerySnapshot {
         if request.surface_generation != self.surface_generation {
             validation = validation.with_invalid_reason("stale_surface_generation");
         }
-        RoadPreviewSnapshot {
-            include_terrain: request.include_terrain,
-            request_id: request.request_id,
-            surface_generation: self.surface_generation,
-            fwd_lanes: request.fwd_lanes,
-            bkw_lanes: request.bkw_lanes,
-            prepared_points: prepared.points,
-            validation,
-        }
+        (prepared.points, validation)
     }
 }
 
@@ -153,6 +144,8 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         region_graph: Arc::new(core.region_graph.clone()),
         roadbed: Arc::new(core.transit_network.roadbed.clone()),
         water: Arc::new(core.watermap.clone()),
+        road_mesh_chunks: Arc::clone(&core.published_road_mesh_chunks),
+        road_mesh_generation: core.road_mesh_lane_generation,
         surface_generation: core.road_tool_surface_generation,
     })
 }
@@ -200,6 +193,8 @@ pub(crate) struct RoadPreviewTimes {
     pub(crate) plan_ms: f64,
     /// Layout and pieces of the dirty closure, with the replica's apply and restore.
     pub(crate) roadbed_ms: f64,
+    /// The changed render chunks: the pieces emitted and spliced into the published chunks.
+    pub(crate) payload_ms: f64,
 }
 
 /// The pieces a preview compiled for its dirty closure.
@@ -211,6 +206,11 @@ pub(crate) struct RoadPreviewPieces {
     /// Render chunks the delta changed, in ascending order. The XZ bounds of the replaced and
     /// new pieces wait in `roadbed` for terrain patch selection.
     pub(crate) changed_chunks: Vec<SurfaceChunkKey>,
+    /// The changed chunks' meshes as the commit publishes them, without the lane-derived layers
+    /// (crosswalk paint, road signs) of the rebuilt pieces; a changed chunk missing here is
+    /// empty. Sealed (render-validated) as the commit publishes them. `None` if the published
+    /// chunks could not be spliced.
+    pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
 }
 
 /// One synchronous road preview: the plan the click submits, the pieces the commit installs and
@@ -273,40 +273,74 @@ impl RoadPreviewContext {
             )
         };
         let plan_ms = plan_start.elapsed().as_secs_f64() * 1000.0;
-        let roadbed_start = Instant::now();
+        let mut times = RoadPreviewTimes {
+            plan_ms,
+            ..Default::default()
+        };
         let pieces = validation
             .is_valid
-            .then(|| self.compile_plan_pieces(&plan))
+            .then(|| self.compile_plan_pieces(&plan, &mut times))
             .flatten();
-        let roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         RoadPreview {
             plan,
             validation,
             fingerprint,
             pieces,
-            times: RoadPreviewTimes {
-                plan_ms,
-                roadbed_ms,
-            },
+            times,
         }
     }
 
-    // Applies the plan's topology to the replica, compiles what it dirtied and restores the
-    // replica from the same local checkpoint the commit's undo record captures.
-    fn compile_plan_pieces(&mut self, plan: &RoadEditPlan) -> Option<RoadPreviewPieces> {
+    // Applies the plan's topology to the replica, compiles what it dirtied, emits the changed
+    // chunks on the edited replica and restores it from the same local checkpoint the commit's
+    // undo record captures.
+    fn compile_plan_pieces(
+        &mut self,
+        plan: &RoadEditPlan,
+        times: &mut RoadPreviewTimes,
+    ) -> Option<RoadPreviewPieces> {
+        let roadbed_start = Instant::now();
         let topology = plan.topology_for(&self.replica)?;
         let (edges, nodes) = topology.source_topology_ids();
         let checkpoint = self.replica.capture_undo_for_local_topology(edges, nodes);
-        let applied = topology.apply_to_graph(&mut self.replica)?;
+        let Some(applied) = topology.apply_to_graph(&mut self.replica) else {
+            self.replica.restore_undo_delta_local(&checkpoint);
+            return None;
+        };
         let mut roadbed = self.view.roadbed.snapshot();
         applied.mark_pieces(&mut roadbed);
         let delta = roadbed.compile_delta(&self.replica);
-        self.replica.restore_undo_delta_local(&checkpoint);
         let (changed_chunks, _) = roadbed.install(&delta);
+        times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
+        let payload_start = Instant::now();
+        let target_chunks: BTreeSet<_> = changed_chunks.iter().copied().collect();
+        let built_after = self.view.roadbed.generation();
+        let chunks = (self.view.road_mesh_generation == Some(built_after))
+            .then(|| {
+                RoadRenderer.generate_preview_chunks(
+                    &self.replica,
+                    &self.view.terrain,
+                    &roadbed,
+                    &target_chunks,
+                    built_after,
+                    &self.view.road_mesh_chunks,
+                )
+            })
+            .flatten()
+            .map(|chunks| {
+                chunks
+                    .into_iter()
+                    .map(|(chunk, mesh)| (chunk, mesh.seal()))
+                    .collect()
+            });
+        times.payload_ms = payload_start.elapsed().as_secs_f64() * 1000.0;
+        let restore_start = Instant::now();
+        self.replica.restore_undo_delta_local(&checkpoint);
+        times.roadbed_ms += restore_start.elapsed().as_secs_f64() * 1000.0;
         Some(RoadPreviewPieces {
             delta,
             roadbed,
             changed_chunks,
+            chunks,
         })
     }
 }

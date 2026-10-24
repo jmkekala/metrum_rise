@@ -70,8 +70,6 @@ fn context(core: &SimCore) -> RoadPreviewContext {
 fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview {
     let surface_generation = context.view.surface_generation;
     context.preview_road(RoadPreviewRequest {
-        include_terrain: true,
-        request_id: 0,
         surface_generation,
         points: points.to_vec(),
         fwd_lanes: 1,
@@ -234,4 +232,104 @@ fn the_replica_follows_commits_and_undo() {
     // The followed context previews the same stroke again, as it did before the commit.
     let again = preview(&mut context, &points);
     assert!(again.validation.is_valid && again.pieces.is_some());
+}
+
+// A lane's planar shape: its XZ bits. Heights differ by design between lanes the renderer
+// already lifted onto the surface and freshly built ones.
+fn planar_bits(geometry: &[Vector3]) -> Vec<[u32; 2]> {
+    geometry
+        .iter()
+        .map(|p| [p.x.to_bits(), p.z.to_bits()])
+        .collect()
+}
+
+// The lane network independent of lane ids: every live edge's lanes by (edge, direction,
+// index), and every live node's connection lanes, each with its successors named by their
+// shapes.
+fn lane_network(
+    lanes: &crate::simulation::network::lanes::LaneSystem,
+    graph: &crate::simulation::network::graph::RegionGraph,
+) -> BTreeMap<String, Vec<String>> {
+    let shape = |id: usize| format!("{:?}", planar_bits(&lanes.lanes[id].geometry));
+    let describe = |id: usize| {
+        let lane = &lanes.lanes[id];
+        let mut next: Vec<_> = lane.next_lanes.iter().map(|&next| shape(next)).collect();
+        next.sort();
+        format!("{:?} {} -> {next:?}", lane.lane_type, shape(id))
+    };
+    let mut network = BTreeMap::new();
+    for (&edge, ids) in &lanes.edge_lanes {
+        if edge >= graph.edge_count() || graph.edge(edge).deleted {
+            continue;
+        }
+        for &id in ids {
+            let lane = &lanes.lanes[id];
+            network.insert(
+                format!("edge {edge} {} {}", lane.is_fwd, lane.lane_idx),
+                vec![describe(id)],
+            );
+        }
+    }
+    for (&node, ids) in &lanes.node_lanes {
+        let mut connections: Vec<_> = ids.iter().map(|&id| describe(id)).collect();
+        connections.sort();
+        if !connections.is_empty() {
+            network.insert(format!("node {node}"), connections);
+        }
+    }
+    network
+}
+
+#[test]
+fn undo_rebuilds_lanes_locally_as_a_full_rebuild_would() {
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH], &[0], sloped);
+        core.benchmark_mode = false;
+        let points = stroke(&core, side);
+        commit(&mut core, &points, None);
+        let lanes_before_undo = core.transit_network.lane_system.lanes.len();
+
+        assert!(core.undo_action_internal());
+        let lanes = &core.transit_network.lane_system;
+        assert!(
+            lanes.lanes.len() > lanes_before_undo,
+            "sloped {sloped}: undo appends the closure's lanes instead of renumbering all"
+        );
+        let mut graph = core.region_graph.clone();
+        let mut full = crate::simulation::network::lanes::LaneSystem::new();
+        full.rebuild(&mut graph);
+        assert_eq!(
+            lane_network(lanes, &core.region_graph),
+            lane_network(&full, &graph),
+            "sloped {sloped}: the local undo's lanes equal a full rebuild's"
+        );
+    }
+}
+
+#[test]
+fn preview_chunks_are_the_committed_chunks_without_lane_layers() {
+    // A road apart from the through road: its closure has no crossing and no sign, so the
+    // lane-free preview chunks equal the commit's publication; the through road's published
+    // triangles (with their crossings) are spliced in unchanged.
+    let apart = [Vector2::new(-ARM_M, 120.0), Vector2::new(ARM_M, 120.0)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH], &[0], sloped);
+        let points = stroke(&core, apart);
+        let mut context = context(&core);
+        let preview = Arc::new(preview(&mut context, &points));
+        let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+        let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
+        assert!(!pieces.changed_chunks.is_empty());
+        commit(&mut core, &points, Some(Arc::clone(&preview)));
+        for chunk in &pieces.changed_chunks {
+            assert_eq!(
+                chunks.get(chunk).map(|mesh| format!("{mesh:?}")),
+                core.published_road_mesh_chunks
+                    .get(chunk)
+                    .map(|mesh| format!("{mesh:?}")),
+                "sloped {sloped}: chunk {chunk:?} is published as previewed"
+            );
+        }
+    }
 }

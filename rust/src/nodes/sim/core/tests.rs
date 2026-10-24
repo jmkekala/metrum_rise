@@ -592,9 +592,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
     core.precompute_road_mesh_data();
     let snapshot =
         road_tool_snapshot_from_core(&core).expect("the initial surface must be publishable");
-    let preview = snapshot.preview(&RoadPreviewRequest {
-        include_terrain: false,
-        request_id: 11,
+    let (_, validation) = snapshot.validate(&RoadPreviewRequest {
         surface_generation: snapshot.surface_generation.wrapping_add(1),
         points: vec![Vector3::new(-5.0, 0.0, 0.0), Vector3::new(5.0, 0.0, 0.0)],
         fwd_lanes: 1,
@@ -602,11 +600,8 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         snap_to_existing_roads: true,
     });
 
-    assert!(!preview.validation.is_valid);
-    assert_eq!(
-        preview.validation.invalid_reason,
-        "stale_surface_generation"
-    );
+    assert!(!validation.is_valid);
+    assert_eq!(validation.invalid_reason, "stale_surface_generation");
 }
 
 #[test]
@@ -823,8 +818,6 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     let plan = super::RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
-            include_terrain: false,
-            request_id: 1,
             surface_generation: core.road_tool_surface_generation,
             points: points.clone(),
             fwd_lanes: 1,
@@ -871,8 +864,6 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let plan = super::RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
-            include_terrain: false,
-            request_id: 1,
             surface_generation: core.road_tool_surface_generation,
             points: points.clone(),
             fwd_lanes: 1,

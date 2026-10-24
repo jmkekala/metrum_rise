@@ -277,6 +277,7 @@ pub(crate) fn run_sim_thread(
                         committed: outcome.committed,
                         reason: outcome.rejection_reason,
                         detail: outcome.rejection,
+                        generation: outcome.generation,
                     });
                 }
                 Ok(SimCommand::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
