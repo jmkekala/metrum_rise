@@ -204,7 +204,7 @@ fn flat_junctions_do_not_depend_on_drawing_order() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: open question 16, strokes pin to carriageways the edit rebuilds"]
+#[ignore = "ROAD-68-E: open question 16, strokes pin to carriageways the edit rebuilds"]
 fn sloped_junctions_do_not_depend_on_drawing_order() {
     y_junctions(true);
     t_junctions(true);

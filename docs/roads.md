@@ -515,7 +515,9 @@ Budgets are revised openly from measurements; the end-to-end target is not.
 ### Guardrails
 
 - **Size.** `roadbed/` production code stays within 8,000 lines, tests excluded, through
-  `ROAD-68-H`. Each gate records the count. Going over requires a written reason here.
+  `ROAD-68-E`; `ROAD-68-F` and later may grow it to 10,000, recording each family's lines (user,
+  2026-10-24, after pre-D reached 7,388). Each gate records the count. Going over requires a
+  written reason here.
 - **No stage caches.** Only final immutable pieces are kept. A new cache needs a measurement that
   shows the need.
 - **No hot-path allocation.** Per-pose scratch buffers live in the preview context and are reused.
@@ -899,7 +901,15 @@ These need a user decision; work that does not depend on them continues.
       bitwise-identical graph profiles, clips, node pieces and spans in every tested order
       (`road_edit_order::flat_junctions_do_not_depend_on_drawing_order`). On the 2.5% slope
       they still differ, by question 16.
-16. **Strokes pinned to the pieces their edit rebuilds (pre-D, from question 15) — open.**
+16. **Strokes pinned to the pieces their edit rebuilds (pre-D, from question 15) — decided
+    2026-10-24 (user): option (a) with a crossing exception, in `ROAD-68-E`.** A stroke never
+    reads heights from the pieces its own edit rebuilds: the node pieces at the nodes it joins and
+    their incident spans. At a mid-span crossing it still meets the crossed road at that road's
+    height, read from the crossed edge's graph profile, not from its pieces, so a road crossing a
+    raised road keeps meeting it on top. Which road was drawn first still sets a crossing's
+    height; that is the authored-state rule, not a history channel. The preview's topology plan
+    (`ROAD-68-E`) runs before stroke preparation, which (a) needs; the sloped edit-order test
+    re-enables there.
     - **The problem.** A stroke's prepared profile pins to the visible carriageway it crosses,
       so a road meets a road it crosses or joins at that road's height. Near the node it joins,
       that carriageway belongs to the node piece and spans the edit itself rebuilds: a terminal
@@ -919,7 +929,9 @@ These need a user decision; work that does not depend on them continues.
       (c) Pin strokes to the terrain within the node extent of nodes they join.
     - **Current default.** Carriageway-only pins (pre-D); nothing else changed.
 
-17. **Footpath attachment choices (pre-D, D5) — open; conservative defaults in place.**
+17. **Footpath attachment choices (pre-D, D5) — zebra placement decided 2026-10-24 (user): the
+    zebra stays at the corner and only the mouth moves; to implement after pre-D. The other
+    items below keep their defaults.**
     - **Mouths move for footpaths beside an arm.** A footpath whose edge meets a road arm's side
       run (roughly within 35° of a two-lane arm, and every footpath across a straight road) makes
       that side reach 1 m beyond the meeting point, so the arm's mouth, and on a crossable arm its
@@ -1770,7 +1782,8 @@ off the carriageway); `walking_proof_holds_at_footpath_junctions` (planner);
 expects the load repair to re-solve its legacy profiles (question 17). Updated for D5: the three
 legacy footpath lane tests (lanes end at the layout mouth; cars cross a straight road with a
 footpath on one junction connector) and `test_dedicated_footpath_centering` (dead-end turn-back
-connectors). `ROAD-68` ignores: D 26, E 2, F 4.
+connectors). `ROAD-68` ignores: D 26, E 2, F 4. After the question 16 decision the sloped
+edit-order test moved to `ROAD-68-E`: D 25, E 3, F 4.
 
 **Checks** (fresh, on the final sources, rebased onto the [edit-order independent
 solve](#edit-order-independence-pre-d) at `03b9f4ed`):
