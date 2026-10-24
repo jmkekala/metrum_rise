@@ -302,8 +302,8 @@ straight on attaches to its cap.
 **Fitting.** Each end may use at most half of its edge's length.
 
 - If a corner does not fit, `R` is reduced towards `R_min`. If it still does not fit, layout
-  returns `LayoutError::CornerDoesNotFit { node, arm }`.
-- A self-intersecting carriageway core returns `LayoutError::CoreNotSimple { node }`.
+  returns `LayoutError::CornerDoesNotFit { arm }`.
+- A self-intersecting carriageway core returns `LayoutError::CoreNotSimple`.
 
 Both are placement rejections with player-facing reasons, alongside the existing
 [`ROAD-54`](#road-geometry-validation-road-54) limits: illegal arm angles below 25° and degree
@@ -2071,6 +2071,130 @@ pre-D binary of `8593e166`, whose production code `c59955e6` keeps; rounds A B B
 Node builds are within 2%; the T's 0.5 µs is unprofiled. `t_closure`, the noisiest case (earlier
 sessions: 91.9–96.0 µs on unchanged code), reads 2.5–5% higher. The validation-only solve check
 and the sector walks of the lane rebuild are not in these cases.
+
+```bash
+cargo bench --bench roadbed_benchmark --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot roadbed_junction
+```
+
+#### Roadbed compaction (before E)
+
+**Status:** done 2026-10-24 (user decision: compact before `ROAD-68-E`; the line limit was
+dropped the same day, so cuts were kept only where they improve the code). Branch
+`road68-compact`, on `road`. No behaviour change: every published product is bitwise equal to
+`79e7a476`'s.
+
+**Product probe.** `roadbed::fixtures::ProductProbe` hashes (FNV-1a over exact bits) what the
+roadbed publishes, per fixture and component:
+
+- graph clips and physical profiles
+- node pieces: positions, road-space coordinates, grouped triangles, outer chains, bounds, query
+  grids, mouth sections, crosswalk kerbs and approaches, and node errors (by variant and values)
+- layouts, field by field
+- span pieces: meshes, sections, mouths and crossing strips
+- node walkways: sidewalk and footpath ends, crossings, corner routes and footpath joins
+- lanes, with their crosswalks and successors
+- surface queries at every fifth top triangle: heights, bands, vertical and oblique rays, discs,
+  lane queries, the generic ground grid and the core triangulation
+
+Two tests compare these with values recorded at `79e7a476`, flat and sloped.
+`roadbed_fixture_products_match_the_probe` covers every node, footpath, span, pass-through and
+short-link fixture of the roadbed tests (93 fixtures). `reference_junction_products_match_the_probe`
+covers the rendered reference junctions committed stroke by stroke through
+`SimCore::commit_road` (20). Both run in under a second. A failure prints the actual table, so a
+gate that changes products on purpose re-records it.
+
+**Line count** (production lines: every line of each non-test file, `#[cfg(test)]` items,
+`tests/` and `fixtures.rs` excluded; this counter reads 7,545 for `79e7a476`, where the pre-D fix
+count read 7,505 and gate D's 7,542):
+
+| File | `79e7a476` | Compacted |
+| --- | --- | --- |
+| `layout.rs` | 1,950 | 1,885 |
+| `geometry.rs` | 560 | 460 |
+| `arms.rs` | 532 | 492 |
+| `walkways.rs` | 531 | 517 |
+| `system.rs` | 476 | 467 |
+| `mesh.rs` | 457 | 420 |
+| `query.rs` | 328 | 299 |
+| `profile.rs` | 224 | 202 |
+| Untouched (`node.rs`, `span*`, `index.rs`, `section.rs`, `roadbed.rs`) | 2,487 | 2,487 |
+| `roadbed/` | 7,545 | 7,229 (−316) |
+
+That is −321 code lines, −9 blank lines and +14 comment lines; no comment that explains geometry,
+orientation or a rule was dropped, and comments were rewritten only where the code they
+described was merged or removed.
+
+**Cuts by kind** (code lines, about):
+
+- **Duplication (about −225).** `geometry.rs`: one clamped-cell function for building grids,
+  point lookups and bounds walks; one XZ bounds function, which mesh bounds use too; the ray slab
+  test as one loop over two axes. `mesh.rs`: span and node meshes share one assembly
+  (`PieceMesh::new`, group starts, grid and bounds); left-facing curb faces are the right-facing
+  pair mirrored. `layout.rs`: glam's `lerp` (the same `a * (1 - t) + b * t`); `PathPoint::at`;
+  `run_meetings`, the one scan of the attached edges that meet an arm side, for mouths and runs;
+  attached runs through `for_each_run_station`; one arm-input lookup in `outer_path`; one crosswalk
+  limit in `straight_taper_m`. `arms.rs`: one band constructor for both sides, each arm's two
+  sides as one array, one centreline position. `system.rs`: one accessor for a published piece's
+  mesh and footprint; `shared_mouth`, the one test for an edge whose two mouths coincide.
+  `query.rs`: discs go through `any_top_triangle_in_bounds`; rays walk their cells without a
+  vertical special case (`walk_ray_cells` handles a zero XZ direction). `profile.rs`: band
+  offsets computed once and mirrored; one sidewalk-or-shoulder choice. `walkways.rs`: one
+  end-point function for sidewalk and footpath ends; one step length in the route heights.
+- **Needless parameters and indirection (about −60).** The layout's build steps fill the layout
+  under construction instead of taking five to seven of its fields each; single-caller helpers
+  inlined: the constrained-region triangulation with its two closure parameters, the barycentric
+  weights, `is_shared_miter`, `push_road_space_row`, `accepts`.
+- **Dead code (about −20).** The unread `Attachment::angle_rad`; the derivable
+  `SectorLayout::samples_per_boundary`; the row layout's unread slot index; a ring-length check
+  no caller can fail; a failure-count comparison the failure flag already covers; a per-piece
+  bounds test in point queries that the piece grid's own padded test repeats; `band_at`, used
+  only by tests, is test-only; an alias in the degree-two crossing rule.
+- **Cosmetic (about −15).** Ray conversions through `from_array`, the degree-two order as one
+  comparison, `CurbStep` by `Default`, the sector walk's two arms by name.
+
+Rewrites made for the count and reverted as no clearer: `LayoutError` as tuple variants, the
+`Bounds` type as closures, and a few loop-to-iterator and formatting-driven rewrites.
+
+**Follow-ups at the boundary** (not done here; `node.rs` and `span/` belong to gate D part 2):
+
+- `node.rs` converts to `robust::Coord` in `top` and `fan_core` where `layout.rs` has `orient`.
+- `node.rs`: `mouth_section` and `section_at` both build the arm's lateral sign and offset-point
+  closure.
+- `mesh.rs` keeps `push_section_row` only for `span/model.rs`, which could call
+  `push_section_row_at` directly.
+
+**Checks** (fresh, final sources rebased on `road` `4718ac12`):
+
+- Probe: both tests pass; all seven components of all 113 entries equal the values recorded at
+  `79e7a476` (built in a worktree at the probe commit, whose production code is `79e7a476`'s).
+  The probe was green after every intermediate step as well.
+- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`, inside `./run.sh --test`): 1,839
+  passed, 0 failed, 188 ignored; the two probes are the only new tests, none was disabled or
+  re-enabled. `tests/growth_scenario.rs`: 4 passed.
+- `./run.sh --test` (isolated profile, no display, every Godot run under a 600 s timeout) exits 0
+  with no script errors; it still skips `network_tool_chunk_renderer_test`,
+  `road_junction_preview_test`, `road_preview_stream_test` (until `ROAD-68-E`) and
+  `zoning_cells_tool_test` (until `ROAD-68-F`). `vehicle_ground_support_test` reports the pre-D
+  metrics (2,471 tilted poses, largest centre lift 0.4144 m).
+- Clippy (`--all-targets`): the 59 legacy warnings only, the same set as before; no missing docs.
+
+**Benchmarks** (2026-10-24, `roadbed_benchmark`, release, i9-12900K pinned to the P-cores,
+`RAYON_NUM_THREADS=4`, Criterion defaults, exclusive timing lock, no build running; control: the
+benchmark binary of `79e7a476`'s production code, built this session; rounds A B B A, medians):
+
+| Case | Control | Compacted |
+| --- | --- | --- |
+| `roadbed_junction/build/t` | 29.05 / 29.04 µs | 24.41 / 24.34 µs |
+| `roadbed_junction/build/four_way` | 47.43 / 47.66 µs | 40.41 / 39.35 µs |
+| `roadbed_junction/build/six_way` | 81.07 / 82.85 µs | 67.67 / 66.37 µs |
+| `roadbed_junction/build/t_footpath` | 40.62 / 40.76 µs | 36.51 / 35.93 µs |
+| `roadbed_junction/publish/t_closure` | 98.36 / 95.29 µs | 71.90 / 72.02 µs |
+
+Every case is faster, by 10–27%, well beyond the run-to-run spread; the control matches the
+pre-D record. The probe shows the products are unchanged and the benchmark source is the same;
+the gain is not attributed yet (the grid build and mesh assembly paths changed most). The
+candidate also carries gate G, which does not touch `roadbed/`.
 
 ```bash
 cargo bench --bench roadbed_benchmark --no-run

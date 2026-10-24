@@ -62,6 +62,9 @@ The pre-D review fixes (2026-10-24) keep a crossable arm's zebra at the corner w
 beside it moves its mouth (open question 17, user decision), order footpaths at road ends along
 their sector, rank profile corridors by a documented geometric rule, re-solve profiles after node
 moves and road removals, and turn the remaining silent skips into placement rejections.
+Before `ROAD-68-E` the roadbed was compacted for quality (2026-10-24, user decision): duplication,
+dead code and needless parameters removed, `roadbed/` at 7,229 production lines (7,545 before),
+with every product bitwise unchanged under a product-hash probe that later gates keep.
 Tests that need later gates are disabled until then (32 Rust tests, 4 Godot scripts).
 `ROAD-68-G` (2026-10-24, D7) is implemented: a commit, undo or road bulldoze rebuilds the CCH as a
 pure job on the road-tool snapshot's graph and adopts it six frames later, the simulation frame

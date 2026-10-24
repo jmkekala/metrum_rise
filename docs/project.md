@@ -340,8 +340,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   zebras kept at the corner beside footpaths (open question 17). `ROAD-68-G` rebuilds routing
   off the commit (D7): a pure job adopted six frames later while the frame holds; the commit
   still misses a frame on its render publication
-  ([open question 21](roads.md#road-68-open-questions)). Tests that need
-  later gates are disabled until then.
+  ([open question 21](roads.md#road-68-open-questions)). Before `ROAD-68-E`, `roadbed/` was
+  compacted for quality to 7,229 production lines with every product bitwise unchanged. Tests
+  that need later gates are disabled until then.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
@@ -1098,6 +1099,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-68` compaction before E (branch `road68-compact`): `roadbed/` drops from 7,545 to 7,229 production lines with no behaviour change. Shared grid, bounds, mesh-assembly and layout helpers replace near-duplicates, dead code and needless parameters go, and a product-hash probe over every roadbed fixture and the rendered reference junctions guards later gates. See [`roads.md`](roads.md#roadbed-compaction-before-e).
 - `ROAD-68-G` (branch `road68-G`): a road commit, undo or road bulldoze no longer builds the CCH. It runs as a pure job on the road-tool snapshot's graph copy and is adopted six frames later; until then `step_frame` holds, so no route query pairs the new graph with the old hierarchy, and a late job blocks only the adoption frame. Paused frames count; a second edit restarts the hold; a save installs the result and ends the hold. Results are bitwise identical across worker counts, a 400 ms late rebuild and a save in the hold. The commit loses 312 ms at 100k residents but still takes 2.4 s, mostly render publication ([open question 21](roads.md#road-68-open-questions)). See [`roads.md`](roads.md#implementation-road-68-g-2026-10-24) and [`simulation.md`](simulation.md#pure-jobs).
 - `ROAD-68` pre-D review fixes (branch `road68-fix`): a footpath beside a crossable arm moves only its mouth, and its zebra stays right outside the corner (user decision, [open question 17](roads.md#road-68-open-questions)); footpaths join the sidewalk where their centreline meets it, also between the crossing and the mouth. Footpaths on both sides of a road end lay out, junction profiles rank their corridors by a documented geometric rule in `f64` with the layout's arm directions, node moves and road removals re-solve the profiles they reach, and the remaining silent skips reject placements. See [`roads.md`](roads.md#pre-d-review-fixes).
 - `ROAD-68` pre-D (branch `road68-pre1`): footpaths join road junctions (D5, [open question 14](roads.md#road-68-open-questions)). A footpath at a road node is attached to the sector it lies in: its ribbon meets the sidewalk's outer boundary on shared vertices at sidewalk height, and the profile solve pins its end there. Footpath-only nodes lay out as ordinary arms, footpath lanes end at their layout mouths and join the corner walks, dead ends keep a turn-back connector, and road arms keep their crossings. A bend whose crossing does not fit on its first arm crosses on the other ([open question 13](roads.md#road-68-open-questions)). See [`roads.md`](roads.md#footpath-junctions-and-the-bend-crossing-fallback-pre-d).
