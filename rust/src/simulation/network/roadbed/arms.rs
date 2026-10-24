@@ -44,10 +44,8 @@ struct ArmRecord {
     key: ArmKey,
     knots: Range<usize>,
     centreline: Range<usize>,
-    left: Range<usize>,
-    left_core: usize,
-    right: Range<usize>,
-    right_core: usize,
+    // Left, then right: the side's bands and its core band count.
+    sides: [(Range<usize>, usize); 2],
     max_station_m: f64,
     crossable: bool,
     attached: bool,
@@ -154,15 +152,12 @@ impl NodeArms {
         }
         let knots = knots_start..self.knots.len();
         set_span_frame_laterals(&mut self.knots[knots.clone()]);
-        let (left, left_core, right, right_core) = self.push_bands(edge, key.end);
+        let sides = self.push_bands(edge, key.end);
         self.arms.push(ArmRecord {
             key,
             knots,
             centreline: centreline_start..self.centreline.len(),
-            left,
-            left_core,
-            right,
-            right_core,
+            sides,
             max_station_m: 0.5 * station_m,
             crossable,
             attached,
@@ -171,11 +166,7 @@ impl NodeArms {
 
     // The profile split at the centreline into two sides listed outward. A band across the
     // centreline (a footpath) belongs to both.
-    fn push_bands(
-        &mut self,
-        edge: &Edge,
-        end: EdgeEnd,
-    ) -> (Range<usize>, usize, Range<usize>, usize) {
+    fn push_bands(&mut self, edge: &Edge, end: EdgeEnd) -> [(Range<usize>, usize); 2] {
         let profile = RoadProfile::for_edge(edge);
         let bands = profile.bands();
         let arm_band = |band: &ProfileBand, outer_m: f32| ArmBand {
@@ -191,18 +182,15 @@ impl NodeArms {
         let outward = bands.iter().rev().filter(|band| band.start_m < 0.0);
         self.bands
             .extend(outward.map(|band| arm_band(band, -band.start_m)));
-        let (positive, negative) = (positive..negative, negative..self.bands.len());
-        let core = |range: &Range<usize>| {
-            self.bands[range.clone()]
-                .iter()
-                .take_while(|band| band.kind == BandKind::Carriageway)
-                .count()
-                .max(1)
+        let side = |range: Range<usize>| {
+            let listed = self.bands[range.clone()].iter();
+            let core = listed.take_while(|band| band.kind == BandKind::Carriageway);
+            (range, core.count().max(1))
         };
-        let (positive_core, negative_core) = (core(&positive), core(&negative));
+        let (positive, negative) = (side(positive..negative), side(negative..self.bands.len()));
         match end {
-            EdgeEnd::Start => (positive, positive_core, negative, negative_core),
-            EdgeEnd::End => (negative, negative_core, positive, positive_core),
+            EdgeEnd::Start => [positive, negative],
+            EdgeEnd::End => [negative, positive],
         }
     }
 
@@ -219,17 +207,15 @@ impl NodeArms {
     /// Layout input of arm `index`.
     pub(super) fn input(&self, index: usize) -> ArmInput<'_> {
         let arm = &self.arms[index];
+        let [left, right] = arm.sides.clone().map(|(bands, core_bands)| ArmSide {
+            bands: &self.bands[bands],
+            core_bands,
+        });
         ArmInput {
             key: arm.key,
             knots: &self.knots[arm.knots.clone()],
-            left: ArmSide {
-                bands: &self.bands[arm.left.clone()],
-                core_bands: arm.left_core,
-            },
-            right: ArmSide {
-                bands: &self.bands[arm.right.clone()],
-                core_bands: arm.right_core,
-            },
+            left,
+            right,
             max_station_m: arm.max_station_m,
             crossable: arm.crossable,
             attached: arm.attached,
@@ -354,11 +340,8 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
         return None;
     }
     let mut incidents: Vec<(ArmKey, RoadVec2)> = Vec::with_capacity(4);
-    for &edge_idx in graph.node_adjacency(node) {
-        let Some(edge) = graph
-            .get_edge(edge_idx)
-            .filter(|edge| is_surface_edge(edge))
-        else {
+    for &index in graph.node_adjacency(node) {
+        let Some(edge) = graph.get_edge(index).filter(|edge| is_surface_edge(edge)) else {
             continue;
         };
         let end = if graph.get_valid_node(edge.start_node) == node {
@@ -369,13 +352,7 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
             continue;
         };
         if let Some(direction) = incident_direction(edge, end) {
-            incidents.push((
-                ArmKey {
-                    edge: edge_idx,
-                    end,
-                },
-                direction,
-            ));
+            incidents.push((ArmKey { edge: index, end }, direction));
         }
     }
     incidents.sort_by_key(|(key, _)| *key);
@@ -459,13 +436,8 @@ fn degree_two_crossings(
             || 0.5 * horizontal_length_m(&graph.edge(key.edge).geometry) >= CROSSWALK_DEPTH_M
     };
     let angle = |(_, direction): (ArmKey, RoadVec2)| direction.y.atan2(direction.x);
-    let first = match angle(arms[0])
-        .total_cmp(&angle(arms[1]))
-        .then(arms[0].0.cmp(&arms[1].0))
-    {
-        std::cmp::Ordering::Greater => 1,
-        _ => 0,
-    };
+    let order = angle(arms[0]).total_cmp(&angle(arms[1]));
+    let first = usize::from(order.then(arms[0].0.cmp(&arms[1].0)).is_gt());
     let eligible = |index: usize| has_sidewalks(graph, arms[index].0) && fits(arms[index].0);
     let free = |index: usize| !overrides.contains_key(&arms[index].0.edge);
     let mut crosses = [false; 2];

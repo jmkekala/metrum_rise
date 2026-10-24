@@ -16,7 +16,7 @@ use super::mesh::PieceMesh;
 use super::{BandKind, RoadVec2, RoadVec3, RoadbedSystem};
 use godot::prelude::Vector3;
 
-// Point-in-bounds tolerance, matching the piece grids' padding.
+// Ray-in-extent tolerance, matching the piece grids' padding.
 const BOUNDS_EPSILON_M: f64 = 0.001;
 
 /// Identity of one roadbed piece.
@@ -107,19 +107,13 @@ impl RoadbedSystem {
     }
 
     // Highest accepted triangle over the pieces of the point's query cell; ties keep the first
-    // in piece order, so the answer does not depend on publication history.
+    // in piece order, so the answer does not depend on publication history. A piece grid holds
+    // only points within its padded top-triangle bounds, so pieces away from the point cost one
+    // bounds test.
     fn top_at(&self, x: f32, z: f32, accept: impl Fn(BandKind) -> bool) -> Option<(f32, BandKind)> {
         let point = RoadVec2::new(f64::from(x), f64::from(z));
         let mut best: Option<(f32, BandKind)> = None;
         for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
-            let bounds = indexed.mesh.bounds_xz();
-            if point.x < bounds[0] - BOUNDS_EPSILON_M
-                || point.y < bounds[1] - BOUNDS_EPSILON_M
-                || point.x > bounds[2] + BOUNDS_EPSILON_M
-                || point.y > bounds[3] + BOUNDS_EPSILON_M
-            {
-                continue;
-            }
             if let Some(top) = top_at(&indexed.mesh, point, &accept)
                 && best.is_none_or(|(best_m, _)| top.0 > best_m)
             {

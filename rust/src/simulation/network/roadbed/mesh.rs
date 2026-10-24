@@ -122,7 +122,7 @@ const BAND_KINDS: [BandKind; BAND_GROUPS] = [
 ];
 
 // A ground / raised boundary inside a section row.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct CurbStep {
     raised_slot: u8,
     ground_slot: u8,
@@ -137,8 +137,8 @@ pub(super) struct RowLayout {
     kinds: [BandKind; MAX_PROFILE_BANDS],
     // Start and end vertex slot of each band.
     band_slots: [(u8, u8); MAX_PROFILE_BANDS],
-    // Per boundary: first slot and whether it holds two vertices.
-    boundary_slots: [(u8, bool); MAX_PROFILE_BANDS + 1],
+    // Per boundary: whether it holds two vertices, one per level.
+    doubled: [bool; MAX_PROFILE_BANDS + 1],
     steps: [CurbStep; MAX_PROFILE_BANDS],
     step_count: u8,
     stride: u8,
@@ -151,12 +151,8 @@ impl RowLayout {
             band_count: bands.len() as u8,
             kinds: [BandKind::Carriageway; MAX_PROFILE_BANDS],
             band_slots: [(0, 0); MAX_PROFILE_BANDS],
-            boundary_slots: [(0, false); MAX_PROFILE_BANDS + 1],
-            steps: [CurbStep {
-                raised_slot: 0,
-                ground_slot: 0,
-                raised_on_left: false,
-            }; MAX_PROFILE_BANDS],
+            doubled: [false; MAX_PROFILE_BANDS + 1],
+            steps: [CurbStep::default(); MAX_PROFILE_BANDS],
             step_count: 0,
             stride: 0,
         };
@@ -165,7 +161,7 @@ impl RowLayout {
             let doubled = boundary > 0
                 && boundary < bands.len()
                 && bands[boundary - 1].level != bands[boundary].level;
-            layout.boundary_slots[boundary] = (slot, doubled);
+            layout.doubled[boundary] = doubled;
             if boundary > 0 {
                 layout.band_slots[boundary - 1].1 = slot;
             }
@@ -226,7 +222,7 @@ fn for_each_boundary(section: &RoadSection, layout: &RowLayout, mut emit: impl F
             continue;
         }
         let band = &bands[boundary];
-        if layout.boundary_slots[boundary].1 {
+        if layout.doubled[boundary] {
             emit(band.lateral_start_m, bands[boundary - 1].height_end_m);
         }
         emit(band.lateral_start_m, band.height_start_m);

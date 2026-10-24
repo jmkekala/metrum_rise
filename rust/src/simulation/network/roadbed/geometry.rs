@@ -49,13 +49,10 @@ impl RoadSurfaceTriangleQueryIndex {
 
     /// Samples the highest ground triangle in the grid cell containing `point`.
     pub(crate) fn sample_ground_height(&self, point: RoadVec2) -> Option<f32> {
-        let mut height: Option<f32> = None;
-        for &item in self.grid.cell_items(point) {
-            if let Some(height_m) = triangle_height_at_xz(&self.triangles[item as usize], point) {
-                height = Some(height.map_or(height_m, |best| best.max(height_m)));
-            }
-        }
-        height
+        let heights = self.grid.cell_items(point).iter();
+        heights
+            .filter_map(|&item| triangle_height_at_xz(&self.triangles[item as usize], point))
+            .reduce(f32::max)
     }
 }
 

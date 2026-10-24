@@ -1739,35 +1739,6 @@ fn core_loop(
     }
 }
 
-#[derive(Clone, Copy)]
-struct Bounds {
-    min: RoadVec2,
-    max: RoadVec2,
-}
-
-impl Bounds {
-    fn of(a: RoadVec2, b: RoadVec2) -> Self {
-        Self {
-            min: a.min(b),
-            max: a.max(b),
-        }
-    }
-
-    fn union(self, other: Self) -> Self {
-        Self {
-            min: self.min.min(other.min),
-            max: self.max.max(other.max),
-        }
-    }
-
-    fn overlaps(&self, other: &Self) -> bool {
-        self.min.x <= other.max.x
-            && other.min.x <= self.max.x
-            && self.min.y <= other.max.y
-            && other.min.y <= self.max.y
-    }
-}
-
 // No two non-adjacent segments share a point and no consecutive pair folds back on itself.
 // Segment pairs are tested only between pieces whose bounds overlap.
 fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> RoadVec2) -> bool {
@@ -1776,7 +1747,14 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
         return false;
     }
     let point = |vertex: usize| position(&points[vertex % count]);
-    let segment_bounds = |segment: usize| Bounds::of(point(segment), point(segment + 1));
+    // XZ bounds as (min, max) corners.
+    let segment_bounds = |segment: usize| {
+        let (a, b) = (point(segment), point(segment + 1));
+        (a.min(b), a.max(b))
+    };
+    let overlaps = |(a_min, a_max): (RoadVec2, RoadVec2), (b_min, b_max): (RoadVec2, RoadVec2)| {
+        a_min.cmple(b_max).all() && b_min.cmple(a_max).all()
+    };
     let piece_segments = |piece: usize| {
         let start = pieces[piece].min(count);
         start..pieces.get(piece + 1).map_or(count, |&end| end.min(count))
@@ -1784,7 +1762,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
     let piece_bounds = |piece: usize| {
         piece_segments(piece)
             .map(segment_bounds)
-            .reduce(Bounds::union)
+            .reduce(|(a_min, a_max), (b_min, b_max)| (a_min.min(b_min), a_max.max(b_max)))
     };
     let folds_back = (0..count).any(|vertex| {
         let (a, b, c) = (point(vertex), point(vertex + 1), point(vertex + 2));
@@ -1798,7 +1776,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
             continue;
         };
         for other in piece..pieces.len() {
-            if !piece_bounds(other).is_some_and(|other_bounds| bounds.overlaps(&other_bounds)) {
+            if !piece_bounds(other).is_some_and(|other_bounds| overlaps(bounds, other_bounds)) {
                 continue;
             }
             for first in piece_segments(piece) {
@@ -1807,7 +1785,7 @@ fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> Ro
                     if second <= first || adjacent {
                         continue;
                     }
-                    if segment_bounds(first).overlaps(&segment_bounds(second))
+                    if overlaps(segment_bounds(first), segment_bounds(second))
                         && segments_touch(
                             point(first),
                             point(first + 1),
