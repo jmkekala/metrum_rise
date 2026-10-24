@@ -41,6 +41,13 @@ impl NetworkMeshData {
         for layer in 0..LAYERS {
             let old_runs = old.owner_runs(layer)?;
             let fresh_runs = fresh.owner_runs(layer)?;
+            // Sized once: growing the layer run by run copied its buffers again and again.
+            let kept: usize = old_runs
+                .iter()
+                .filter(|(owner, _)| keep(*owner))
+                .map(|(_, range)| range.len())
+                .sum();
+            spliced.reserve_layer(layer, kept + fresh.layer(layer).0.len());
             let mut old_runs = old_runs.into_iter().filter(|(owner, _)| keep(*owner)).peekable();
             let mut fresh_runs = fresh_runs.into_iter().peekable();
             loop {
@@ -86,6 +93,18 @@ impl NetworkMeshData {
                 Some(run)
             })
             .collect()
+    }
+
+    // Reserves exactly `vertices` more vertices in every attribute buffer of `layer`.
+    fn reserve_layer(&mut self, layer: usize, vertices: usize) {
+        if layer == ROAD_LAYER {
+            self.road_crossings.reserve_exact(vertices);
+        }
+        let target = self.layer_mut(layer);
+        target.0.reserve_exact(vertices);
+        target.1.reserve_exact(vertices);
+        target.2.reserve_exact(vertices);
+        target.3.reserve_exact(vertices);
     }
 
     // Appends `source`'s vertices `range` of `layer` as one run of `owner`.

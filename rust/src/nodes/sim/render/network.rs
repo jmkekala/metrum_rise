@@ -9,6 +9,7 @@ use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::{debug, debug_log};
 use godot::prelude::*;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -55,29 +56,34 @@ impl SimCore {
             .road_mesh_lane_generation
             .filter(|&generation| generation <= roadbed_generation);
         let mut rebuilt_vertex_count = 0;
-        if let Some(mut generated_chunks) = self.transit_network.try_generate_mesh_chunks(
+        if let Some(generated_chunks) = self.transit_network.try_generate_mesh_chunks(
             &self.region_graph,
             &self.heightmap,
             &target_chunks,
             lanes_built_after,
             &self.cached_road_mesh_chunks,
         ) {
+            // Each chunk's certificate scans only its own buffers, so the pool seals them; an
+            // empty chunk is unpublished.
+            let mut sealed: BTreeMap<_, _> = crate::thread_pools::install(|| {
+                generated_chunks
+                    .into_par_iter()
+                    .map(|(chunk, mesh)| {
+                        let vertices = mesh.vertex_count();
+                        (chunk, (!mesh.is_empty()).then(|| (vertices, mesh.seal())))
+                    })
+                    .collect()
+            });
             let published_chunks = Arc::make_mut(&mut self.published_road_mesh_chunks);
             if self.road_mesh_full_replace {
                 published_chunks.clear();
             }
             for chunk in &target_chunks {
-                if let Some(mesh) = generated_chunks.remove(chunk) {
-                    if mesh.is_empty() {
-                        self.cached_road_mesh_chunks.remove(chunk);
-                        published_chunks.remove(chunk);
-                    } else {
-                        rebuilt_vertex_count += mesh.vertex_count();
-                        let mesh = mesh.seal();
-                        self.cached_road_mesh_chunks
-                            .insert(*chunk, Arc::clone(&mesh));
-                        published_chunks.insert(*chunk, mesh);
-                    }
+                if let Some((vertices, mesh)) = sealed.remove(chunk).flatten() {
+                    rebuilt_vertex_count += vertices;
+                    self.cached_road_mesh_chunks
+                        .insert(*chunk, Arc::clone(&mesh));
+                    published_chunks.insert(*chunk, mesh);
                 } else {
                     self.cached_road_mesh_chunks.remove(chunk);
                     published_chunks.remove(chunk);
