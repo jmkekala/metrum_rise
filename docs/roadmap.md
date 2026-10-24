@@ -72,8 +72,11 @@ That takes the CCH build (312 ms at 100k residents) off the commit. Part 2 found
 2.4 s was the breakdown harness never acknowledging an upload; with acknowledgements, the render
 publication now re-emits only the rebuilt pieces, the entrance rebuild derives only the changed
 entrances and the agent pass runs in parallel, bit for bit as before: 41 ms at 100k (78 ms
-before). The commit's synchronous cell-lot regeneration (about 20 ms) still misses a frame (open
-question 21), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
+before). Part 3 made the commit's cell lots follow the roads whose geometry or curb frames
+changed and made cell generation cheaper, products bit for bit unchanged: 28.6 ms at 100k
+(41.7 ms in the same session's control). It still misses a frame (open question 21: agent
+passes, snapshot copy and drop, render publication and the remaining lot generation), so its
+acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20).
 `ROAD-68-D` (terrain from the roadbed's outer chains) is done on branch `road68-D` (part 5,

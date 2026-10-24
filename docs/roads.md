@@ -618,7 +618,9 @@ Since `ROAD-68-G` part 2 the commit's other consequences follow the edit
 publication re-lifts only the rebuilt pieces' lanes and re-emits only their triangles, keeping
 the rest of each changed chunk from its published mesh, and the entrance rebuild derives only
 the entrances whose inputs the edit changed. The commit still regenerates the edit's dirty
-cell-lot regions synchronously ([open question 21](#road-68-open-questions)).
+cell-lot regions synchronously ([open question 21](#road-68-open-questions)); since part 3 those
+are the corridors of the roads whose geometry or curb frames changed, not of every road the
+edit touched ([commit cell lots](#commit-cell-lots-road-68-g-part-3-2026-10-24)).
 
 ### Complexity bounds
 
@@ -705,7 +707,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
-| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit (41 ms at 100k); the commit's lot regeneration still misses a frame ([open question 21](#road-68-open-questions)) |
+| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -1167,33 +1169,38 @@ These need a user decision; work that does not depend on them continues.
     other stages stay open until the commit fits a frame.** With the CCH
     off the commit (D7), part 1 measured click → acknowledgement at 2.4 s at 100k residents.
     Part 2 ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24))
-    found that the harness never acknowledged an upload, so it republished the whole network
-    every commit. With Godot's acknowledgements modelled, publication, entrances and the agent
-    pass now follow the edit. The commit takes 8.5 / 28.8 / 33.3 / 34.7 / 41.0 ms at 0 / 2k /
-    10k / 30k / 100k residents (control 16.1 / 42.0 / 64.2 / 70.6 / 78.2), so the gate's
-    acceptance (under 16.7 ms at 100k buildings) is still not met:
-    - **Cell lots, about 19–20 ms from 1,413 buildings up.** The commit regenerates the
-      cell-lot regions its road dirtied, synchronously (`prepare_cell_lots_internal`, three
-      quarters of the entrance stage): local, but a frame on its own. `SIM-02-H` decided that
-      editing paths drain every pending region at once "because their own previews and commits
-      read the lots" ([`simulation.md`](simulation.md#request-queues)).
-    - **Render publication, 7.4–9.9 ms**, flat: the new lanes' lift (most of them lifted twice),
+    found that the harness never acknowledged an upload; with Godot's acknowledgements modelled,
+    publication, entrances and the agent pass follow the edit. Part 3
+    ([commit cell lots](#commit-cell-lots-road-68-g-part-3-2026-10-24)) made the lot
+    regeneration follow the changed roads and generation cheaper, bit for bit: the commit takes
+    8.7 / 16.1 / 19.3 / 20.3 / 28.6 ms at 0 / 2k / 10k / 30k / 100k residents (same-session
+    control 8.6 / 29.0 / 34.8 / 34.6 / 41.7). The acceptance (under 16.7 ms at 100k buildings)
+    is still not met. At 100k:
+    - **Cell lots, 6.4–7.8 ms, flat from 1,413 buildings.** Generating the cells along the
+      changed roads' envelopes (bounding box plus 216 m) dominates; the commit thread is held by
+      generation's serial candidate sort, indexing loop and footprint corners.
+    - **Render publication, 7.5–10.4 ms**, flat: the new lanes' lift (most of them lifted twice),
       the rebuilt pieces' emission, every covered edge's lights and signs, copying the changed
-      chunks' kept runs (`O(chunk vertices)`, 3–5 chunks of 512 m) and the payload certificate.
-    - **Growing with the city, about 11 ms at 100k:** the agent passes (4.0 + 1.2 ms, `O(A / P)`
-      and `O(A)`), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`), the road-locked
-      terrain state (2.6 ms; it walked unacknowledged dirty terrain patches and re-graded the
-      edit's own, which its validation had graded: real duplicate work, not only the harness.
-      `ROAD-68-D` part 3 refreshes only pending patches, so the commit's refresh finds none;
-      not re-measured at 100k) and the snapshot publish (1.1 ms).
-    - **Options.** (a) Let the `cell lots` queue serve the commit's regions from the next slot,
-      as it serves painted regions, instead of draining them on the commit; the next preview
-      and commit would plan against lots up to a slot old, which `SIM-02-H` ruled out (user
-      decision). (b) Derive the commit's lots from the preview's plan in `ROAD-68-E`, so the
-      commit installs them as it installs pieces. (c) Make the graph persistent (`imbl`, as the
-      roadbed index is) so the snapshot copies `O(1)`, and keep per-lane or per-edge agent
-      lists so the agent passes visit only the edit's agents. (d) Accept a commit of about
-      41 ms at 100k (two to three frames). `ROAD-68-G` stays open until the commit fits a frame.
+      chunks' kept runs and the payload certificate.
+    - **Growing with the city, about 10 ms at 100k:** the agent passes (3.8 + 1.2 ms, `O(A / P)`
+      and `O(A)`), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`, `ROAD-68-E`'s
+      context replacement) and the snapshot publish (3.6 ms: dropping the previous snapshot,
+      which no longer shares structure with the core once terrain acknowledgements are
+      modelled; not yet attributed). The road-locked terrain state (2.6 ms) was a harness
+      artifact and is gone.
+    - **Options.** (a) Let the `cell lots` queue serve the commit's regions from the next slot
+      (ruled out by the user's decision, `SIM-02-H`). (b) Derive the commit's lots from the
+      preview's plan in `ROAD-68-E`, so the commit installs them as it installs pieces (the
+      user's fallback). (c) Keep per-edge or per-lane agent lists (and an index of planned routes
+      by edge) so the agent passes visit only the edit's agents, and make the graph persistent so
+      the snapshot copies and drops `O(1)`. (d) Lift each new lane once, and attribute the
+      publication's remaining 7.5 ms. (e) Make generation's serial part cheaper (an exact
+      priority sort over compact keys, fewer corner evaluations) or prove a narrower cell
+      invalidation radius (the 80 m lot reach is not an input of cell generation).
+      Recommendation: (c), (d) and (e) in `ROAD-68-G`, then (b) if the lots still do not fit.
+      Estimate from this breakdown: with (c) and (d) the commit would take about 15 ms at 100k
+      with the lots as they are (too close to the frame), about 7 ms with (b). `ROAD-68-G` stays
+      open until the commit fits a frame.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -3125,6 +3132,103 @@ workers, and a save inside the hold give identical hourly fingerprints (6) and s
 in the control and in this part. The reference runs of control and change share one digest
 (`6252b7ba71c5a6f1`, printed by the test), so the local publication, entrance rebuild, agent pass
 and one-frame offset leave the game bit for bit as it was.
+
+#### Commit cell lots (`ROAD-68-G` part 3, 2026-10-24)
+
+[Open question 21](#road-68-open-questions) (user decision): speed up the commit's own cell-lot
+regeneration first, keeping `SIM-02-H`'s rule that a commit's lots are current.
+
+**Why one road cost about 20 ms.** Profiled with perf (LBR call stacks, the commit only, through
+the breakdown's perf control FIFO) and the `economy_phases` lot and generation details, at 2k and
+10k residents. Lot derivation was 1–2 % of the stage; the rest was generating cells over the
+dirty envelopes, about 2 µs per candidate footprint, 4,500–17,000 footprints per commit. The
+envelopes were large because the commit marked the bounding box of every dirty road plus 216 m
+(146 m of lot reach, 70 m of conflict halo) and of its whole adjacency ring: for the T branch
+off the trunk, the far-end arms of the split trunk (two 50 m and one 400 m grid street, dirty
+because their junction was re-solved although their geometry did not change) and their ring
+(another seven grid streets), mostly painted grid. Marking only the changed roads generates
+10,100 / 5,300 / 2,600 footprints for the three commits at 2k instead of 13,000 / 10,200 /
+4,500 (10k: 10,900 / 4,700 / 4,200 instead of 16,800 / 10,900 / 5,800). On the commit thread,
+generation spent 13 % in a binary search per candidate, 20 % in SipHash and 6 % in `libm`
+`round` calls.
+
+**Changes.**
+
+- *Marks follow the changed roads.* An adopted road plan names the dirty edges whose geometry,
+  clips, endpoints or deletion changed (`FinalizedRoadGeometry::changed_edges`). Every dirty edge
+  still refreshes its curb frames exactly as before; only the changed edges and the roads whose
+  frames the refresh changed or that have none queue lot regions and invalidate cells
+  (`ZoningSystem::mark_cell_lots_for_road_edit`). A road the edit only touched keeps its
+  geometry and frames, so its cells change only near the changed roads, whose own corridors
+  cover them; a road without frames takes its phase from its junctions and is still
+  invalidated whole. Unplanned edits treat every dirty edge as changed
+  ([`zoning.md`](zoning.md)).
+- *Exact constant factors in generation.* `f64::round` lowers to a `libm` call on x86-64-v2;
+  the cell geometry rounds through a bit-identical half-away helper on `trunc` (a test compares
+  100,000 values and the edge cases bit for bit). The cell store and generation maps use the
+  fixed fast hasher already used elsewhere (`foldhash`); no caller depends on their iteration
+  order. Each candidate's footprint legality is read back by index instead of a binary search.
+
+**Products unchanged.** The breakdown now prints, after each commit, a digest of the cell paint
+and lot claims, the parcels in store order and the queued lot regions, and a second digest of
+the generated cell cache (valid cells and frontages). Both equal the control's for every sample
+at every tier, so the narrower invalidation regenerates nothing the whole-ring one would have
+changed, and the commit's lots, parcels and cells are bit for bit the control's.
+
+**Road-locked terrain state** was a harness artifact, as part 2 suspected: the city build leaves
+every terrain patch it dirtied unacknowledged, and the commit walked them all (2.6 ms at 100k).
+The breakdown now acknowledges terrain patches before each click as `acknowledge_uploads` does;
+the stage then costs 0.00 ms in control and change.
+
+**Commit breakdown** (fresh, 2026-10-24, 22:08–22:18). Release library tests of the control
+(`27797b92` with this part's two test-only harness commits, `ba4bcea9` and `69936b6f`, binary
+`aa06a2a0…`) and of this part (`80defe1e`, binary `f27b2cef…`), in one session, pinned to the
+P-cores with eight workers, under the exclusive timing lock with no build or backup running;
+command as above. Medians of three samples, in ms; control / change where they differ:
+
+| Stage | 0 | 2k | 10k | 30k | 100k |
+| --- | --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 | 76,109 / 2,220 / 4,283 |
+| click → ack | 8.60 / 8.73 | 29.0 / 16.1 | 34.8 / 19.3 | 34.6 / 20.3 | 41.7 / 28.6 |
+| entrances (`buildings`) | 0.00 | 19.4 / 6.40 | 21.6 / 6.39 | 20.6 / 6.55 | 20.3 / 7.84 |
+| render publication (`mesh`) | 7.34 / 7.48 | 8.12 / 8.19 | 10.4 | 9.37 / 9.30 | 7.49 / 7.65 |
+| agents and lanes | 0.33 / 0.26 | 0.51 / 0.35 | 0.65 / 0.66 | 1.03 / 1.01 | 4.15 / 3.82 |
+| agent invalidation | 0.00 | 0.01 | 0.09 / 0.06 | 0.27 / 0.24 | 1.24 / 1.20 |
+| tool snapshot | 0.01 | 0.04 / 0.03 | 0.23 / 0.22 | 0.69 / 0.65 | 2.57 / 2.55 |
+| road-locked terrain state | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| snapshot publish | 0.09 / 0.22 | 0.15 / 0.26 | 0.45 | 1.23 / 1.08 | 3.77 / 3.56 |
+| plan, undo, topology, zoning, surface | 0.72 / 0.74 | 0.57 / 0.75 | 0.96 / 0.80 | 0.96 / 1.03 | 1.33 / 1.37 |
+| republished chunks | 4 | 4 | 5 | 5 | 3 |
+| held frames | 1 | 1 | 1 | 1 | 1 |
+| CCH build alone | 0.92 / 1.00 | 2.24 / 2.32 | 14.9 | 51.7 / 49.4 | 300 / 298 |
+| live lanes off the surface | 0 | 0 | 0 | 0 | 0 |
+
+Per sample, click → ack at 100k is 57.0 / 41.0, 41.7 / 28.6 and 29.5 / 23.4 ms. The first
+sample of each tier is the slowest in both builds; it invalidates a wider area (2k: 10,100 against
+5,300 candidate footprints in the second, 2,600 in the third), not yet attributed (possibly neighbours whose curb
+frames are refreshed for the first time).
+
+- **Entrances fall from about 20 ms to 6.4–7.8 ms**, flat from 1,413 buildings up. What remains
+  is generating the cells along the changed roads (the new road, both halves of the split
+  trunk, each bounding box plus 216 m; 2,600–5,300 candidate footprints at 2k) and deriving their
+  regions' lots. On the commit thread the generation is now dominated by its serial parts: the
+  candidate priority sort (17 %), the indexing loop and footprint corners.
+- **The commit still misses 16.7 ms**: 28.6 ms at 100k
+  ([open question 21](#road-68-open-questions)). Besides the lots: the render publication
+  (7.5–10.4 ms, flat), the agent passes at 100k (3.8 + 1.2 ms, `O(A / P)` and `O(A)`), the tool
+  snapshot's graph clone (2.6 ms, `O(graph)`), and the snapshot publish, 3.6 ms at 100k.
+- **Snapshot publish** grew from about 1.1 ms (part 2) to 3.6–3.8 ms at 100k in both builds,
+  from the second sample on (the first is 1.2 ms). It is the harness's terrain
+  acknowledgement: dropping the previous commit's snapshot now frees structure the live core no
+  longer shares with it. Godot acknowledges every frame, so this is the game's cost, hidden
+  before; what the drop frees is not yet attributed.
+
+**Determinism** (fresh, same session, `road68g_commit_determinism`, release): against the
+eight-worker reference, one and three workers, a rebuild delayed 400 ms at one and eight
+workers, and a save inside the hold give identical hourly fingerprints (6) and saved tables
+(72), in the control and in this part, and both reference runs print digest
+`6252b7ba71c5a6f1`, part 2's.
+
 
 ### `ROAD-68-H` — acceptance and cleanup
 

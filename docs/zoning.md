@@ -1161,6 +1161,14 @@ road's corridor too, including a regression for a 1 mm encroachment after road w
 
 The runtime queues affected 512 m neighborhoods after paint, road edits/no-build/class changes,
 terrain/site changes and local road undo. Load and catalog refresh schedule painted blocks.
+A road edit queues, and invalidates the generated cells of, the corridors of its changed roads
+and of the roads whose curb frames the refresh changed or which have none (`ROAD-68-G`). A road
+the edit only touched (an arm at a re-solved junction whose geometry, clips and frames stayed;
+the adjacency ring) queues nothing of its own: its cells change only near the changed roads,
+whose corridors cover them. An adopted road plan names its changed roads; other edit paths
+treat every dirty road as changed. The commit breakdown checks that the products are those of
+the whole-ring invalidation, generated cache included
+([`roads.md`](roads.md#commit-cell-lots-road-68-g-part-3-2026-10-24)).
 Before hourly demand selection and committed-road entrance rebuilds, queued neighborhoods
 regenerate transient frontage links, repair supported occupied attachments, retire unsupported
 empty lots and derive replacements. Pending spawns revalidate their current parcel,
