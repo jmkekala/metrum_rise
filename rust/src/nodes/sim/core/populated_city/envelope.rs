@@ -771,10 +771,17 @@ fn road68g_commit_determinism() {
         let other = run(threads, delay_ms, save_in_hold, name);
         results.insert(name.into(), first_difference(&reference, &other).into());
     }
+    // One digest of the reference run, to compare builds that must not change the outcome.
+    let digest = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", reference).hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
     eprintln!(
         "ROAD68G_DETERMINISM {}",
         serde_json::json!({"residents":residents,"hours":hours,"hour_fingerprints":reference.0.len(),
-            "saved_tables":reference.1.len(),"differences":results})
+            "saved_tables":reference.1.len(),"reference_digest":digest,"differences":results})
     );
     assert!(
         results.values().all(serde_json::Value::is_null),

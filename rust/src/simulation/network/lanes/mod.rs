@@ -181,6 +181,24 @@ impl LaneSystem {
         self.surface_synced_len = self.lanes.len();
     }
 
+    /// Live lanes (an edge's or a node's) whose points a full surface sync would still move:
+    /// zero when every lane follows the published roadbed (`ROAD-68-G`). Retired lanes keep
+    /// their last geometry and are not counted. O(lane points).
+    #[cfg(test)]
+    pub(crate) fn lanes_off_surface(&self, graph: &RegionGraph, roadbed: &RoadbedSystem) -> usize {
+        self.edge_lanes
+            .values()
+            .chain(self.node_lanes.values())
+            .flatten()
+            .filter(|&&lane_id| {
+                let lane = &self.lanes[lane_id];
+                let mut synced = lane.clone();
+                sync_lane_height_to_visible_surface(&mut synced, graph, roadbed);
+                synced.geometry != lane.geometry
+            })
+            .count()
+    }
+
     /// True when a rebuild appended lanes that still carry flat build heights.
     pub(crate) fn has_unsynced_lanes(&self) -> bool {
         self.surface_synced_len < self.lanes.len()

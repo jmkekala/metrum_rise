@@ -995,6 +995,10 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         "reference_agent_ms": reference.agent_ms,
     });
     eprintln!("COMMIT_CITY {header}");
+    // Godot uploaded and acknowledged the city's road chunks long before the click, so a commit
+    // republishes only the chunks it changes (`acknowledge_network_render`).
+    core.precompute_road_mesh_data();
+    assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
     let published = RwLock::new(road_tool_snapshot_from_core(core));
     for (sample, start) in starts.into_iter().enumerate() {
         let road_total = Instant::now();
@@ -1009,6 +1013,9 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         let publish = Instant::now();
         *published.write().unwrap() = outcome.road_snapshot;
         let publish_ms = publish.elapsed().as_secs_f64() * 1e3;
+        // Godot uploads the republished chunks (not timed here) and acknowledges them.
+        let published_chunks = core.pending_road_mesh_chunks.len();
+        assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
         let click_to_ack_ms = road_total.elapsed().as_secs_f64() * 1e3;
         let m = &core.last_road_edit_metrics;
         let stages = serde_json::json!({
@@ -1052,9 +1059,15 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             ))
         });
         let cch_build_ms = time(&mut || drop(black_box(CchGraph::build(&core.region_graph))));
+        // The local publication left no lane off its surface: a full sync would move none.
+        let lanes_off_surface = core
+            .transit_network
+            .lane_system
+            .lanes_off_surface(&core.region_graph, &core.transit_network.roadbed);
         let record = serde_json::json!({
             "residents": residents, "sample": sample, "commit_ms": commit_ms,
-            "publish_ms": publish_ms, "click_to_ack_ms": click_to_ack_ms, "stages": stages,
+            "publish_ms": publish_ms, "click_to_ack_ms": click_to_ack_ms,
+            "published_chunks": published_chunks, "stages": stages,
             "held_frames": held_frames, "adoption_wait_ms": next.adoption_ms,
             "adoption_latency_ms": adoption_latency_ms,
             "adoption_frame_pathing_ms": next.pathing_ms,
@@ -1065,6 +1078,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "terrain_clone_ms": terrain_clone_ms, "graph_clone_ms": graph_clone_ms,
             "roadbed_clone_ms": roadbed_clone_ms, "water_clone_ms": water_clone_ms,
             "zoning_snap_ms": zoning_snap_ms, "cch_build_ms": cch_build_ms,
+            "lanes_off_surface": lanes_off_surface,
         });
         eprintln!("COMMIT_BREAKDOWN {record}");
     }
