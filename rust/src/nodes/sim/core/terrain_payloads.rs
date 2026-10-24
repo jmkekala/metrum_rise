@@ -315,3 +315,14 @@ pub(crate) struct RoadPreviewTerrainPatch {
 pub(crate) struct RoadPreviewTerrain {
     pub(crate) patches: Vec<RoadPreviewTerrainPatch>,
 }
+
+/// The refined entries a road edit's terrain validation replaced (`ROAD-68-E`): per patch the
+/// edit's stamps touched, the entry before the edit (`None` when it had none) and the patch's
+/// generation after the edit. Undo puts them back when the patches' generations have not moved
+/// since and its roadbed swap held, so the restored terrain is the pre-edit terrain itself.
+#[derive(Clone, Debug)]
+pub(crate) struct RefinedTerrainRestore {
+    pub(crate) patches: Vec<((usize, usize), Option<Arc<CachedRefinedTerrainPatch>>, u64)>,
+    /// The global terrain payload generation after the edit.
+    pub(crate) global_generation: u64,
+}

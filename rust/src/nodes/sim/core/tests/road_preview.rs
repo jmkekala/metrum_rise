@@ -282,6 +282,53 @@ fn undo_swaps_the_pre_edit_pieces_back() {
 }
 
 #[test]
+fn undo_puts_the_pre_edit_terrain_back() {
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH], &[0], sloped);
+        core.benchmark_mode = false;
+        let before = terrain_buffers(&core);
+        let entries_before: BTreeMap<_, _> = core
+            .refined_terrain_patch_cache
+            .iter()
+            .map(|(key, entry)| ((key.patch_x, key.patch_z), entry.mesh_buffers.clone()))
+            .collect();
+        let points = stroke(&core, side);
+        let mut context = context(&mut core);
+        let preview = Arc::new(preview(&mut context, &points));
+        commit(&mut core, &points, Some(preview));
+        assert_ne!(
+            terrain_buffers(&core),
+            before,
+            "sloped {sloped}: the T changes terrain"
+        );
+
+        assert!(core.undo_action_internal());
+        assert_eq!(
+            terrain_buffers(&core),
+            before,
+            "sloped {sloped}: undo restores the pre-edit terrain bit for bit"
+        );
+        for (key, entry) in &core.refined_terrain_patch_cache {
+            assert_eq!(
+                entry.surface_generation,
+                core.terrain_payload_generation_for_patch(key.patch_x, key.patch_z),
+                "a restored entry is current"
+            );
+            if let (Some(Some(old)), Some(restored)) = (
+                entries_before.get(&(key.patch_x, key.patch_z)),
+                &entry.mesh_buffers,
+            ) {
+                assert!(
+                    Arc::ptr_eq(old, restored),
+                    "the pre-edit buffers themselves"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn the_replica_follows_commits_and_undo() {
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
     let mut core = committed(&[THROUGH], &[0], true);

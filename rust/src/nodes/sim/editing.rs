@@ -99,6 +99,26 @@ impl SimCore {
         terrain: Option<&RoadPreviewTerrain>,
     ) -> Option<bool> {
         let (patches, restore, installed) = self.publish_network_surface(false, delta);
+        // What undo puts back: the entries before the edit, at the edit's generations.
+        let step_m = crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+        let replaced = crate::nodes::sim::core::RefinedTerrainRestore {
+            patches: patches
+                .iter()
+                .map(|&key| {
+                    let cache_key =
+                        crate::nodes::simulation_node::SimulationNode::refined_patch_cache_key(
+                            key.0, key.1, step_m,
+                        );
+                    let entry = self.refined_terrain_patch_cache.get(&cache_key).cloned();
+                    (
+                        key,
+                        entry,
+                        self.terrain_payload_generation_for_patch(key.0, key.1),
+                    )
+                })
+                .collect(),
+            global_generation: self.terrain_payload_global_generation,
+        };
         let validation = match self.transit_network.roadbed.failed_nodes().first() {
             None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
                 self,
@@ -114,6 +134,7 @@ impl SimCore {
                     && let Some(record) = self.undo_stack.back_mut()
                 {
                     record.roadbed = Some(restore);
+                    record.refined_terrain = Some(replaced);
                 }
                 self.accept_staged_road_edit();
                 Some(adopted)

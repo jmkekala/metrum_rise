@@ -359,11 +359,11 @@ func _stage_preview_terrain() -> Variant:
 	return staged if not staged.is_empty() else null
 
 # A resident patch under a terrain preview is about to change. The commit's own patch replaces a
-# held preview, released in the same call; a live preview is staged again next frame.
+# held preview, which restores the originals in the same call; a live preview is staged again
+# next frame. The emitting helper stays referenced: the next hold or reset releases it.
 func _terrain_preview_invalidated(preview) -> void:
 	if _swap_terrain != null and is_same(preview, _swap_terrain):
-		_swap_terrain.reset()
-		_swap_terrain = null
+		_swap_terrain.clear()
 	elif is_same(preview, _terrain_preview):
 		_terrain_preview.clear()
 		_preview_drawn_sequence = 0

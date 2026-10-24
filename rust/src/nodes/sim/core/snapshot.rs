@@ -242,6 +242,8 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) trans_graph: Option<RegionGraphUndoDelta>,
     /// The roadbed pieces the edit's install replaced; undo swaps them back (`ROAD-68-E`).
     pub(crate) roadbed: Option<crate::simulation::network::roadbed::RoadbedRestore>,
+    /// The refined terrain entries the edit replaced; undo puts them back (`ROAD-68-E`).
+    pub(crate) refined_terrain: Option<super::RefinedTerrainRestore>,
     /// Parcels removed by one road bulldoze.
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
     /// Building/economy runtime state.
