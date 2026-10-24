@@ -20,7 +20,8 @@ mod model;
 use model::SpanModel;
 pub(crate) use model::SpanScratch;
 pub(super) use model::{
-    PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge,
+    PASS_THROUGH_DOT_THRESHOLD, WIDTH_CHANGE_TAPER_MAX_M, WIDTH_CHANGE_TAPER_MIN_M,
+    WIDTH_CHANGE_TAPER_WIDTH_FACTOR, edge_points, incident_direction, is_surface_edge,
 };
 
 use super::index::{PieceFootprint, RenderGrid};

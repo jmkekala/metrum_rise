@@ -620,7 +620,10 @@ impl RegionGraph {
                 // (`ROAD-68` invariant 6, open question 16). A corridor whose plane every other
                 // arm already meets within the support tolerance comes first, so a fall-line
                 // road crossed by a contour road keeps its grade. Then the straightest and
-                // flattest pair wins, with ties by incident order (angle, then edge).
+                // flattest pair wins, with ties by incident order: the angle of each arm's first
+                // control segment from world +x. Edge ids would follow creation order, so they
+                // break only exactly equal angles, which layouts (`DuplicateDirection`) and
+                // placement (25 degree arms) reject before a node has a piece.
                 let fits = samples.iter().enumerate().all(|(index, sample)| {
                     index == a
                         || index == b

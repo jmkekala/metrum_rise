@@ -29,6 +29,7 @@
 use super::arms::{NodeArms, pass_through_crossings};
 use super::layout::{
     ArmInput, ArmKey, ArmSide, EdgeEnd, JunctionLayout, NodeKind, SectorBoundary, SectorLayout,
+    Side, for_each_run_station,
 };
 use super::node::crossing_kerbs;
 use super::span::{SpanCrossing, pass_through_crossing};
@@ -294,22 +295,31 @@ fn push_corner_route(
         }
     };
     push(RoadVec2::new(start.point.x, start.point.z));
+    // The walkway centre between the two boundary runs, tapered with them (D4).
+    let taper_m = edge.taper.or(outer.taper).map(|taper| taper.station_m);
+    let walkway = |arm: &ArmInput<'_>, side: Side, station_m: f64| {
+        let offset_m =
+            0.5 * (edge.run_offset_m(side, station_m) + outer.run_offset_m(side, station_m));
+        arm.offset_point(station_m, offset_m)
+    };
     // Back along the from-arm's walkway to where the sector's boundaries leave it.
-    let a_offset = 0.5 * (edge.from_offset_m + outer.from_offset_m);
     let a_corner_m = edge.from_station_m.max(outer.from_station_m);
-    for knot in knots_between(&a, a_corner_m, start.station_m).rev() {
-        push(a.offset_point(a.knots[knot].station_m, a_offset));
+    let mut back = Vec::new();
+    for_each_run_station(&a, a_corner_m, start.station_m, taper_m, |station_m, _| {
+        back.push(walkway(&a, Side::Left, station_m));
+    });
+    for &xz in back.iter().rev() {
+        push(xz);
     }
     let samples = |boundary: &SectorBoundary| &layout.samples[boundary.samples.clone()];
     for (inner, outer) in samples(edge).iter().zip(samples(outer)) {
         push((*inner + *outer) * 0.5);
     }
     // Out along the to-arm's walkway to its sidewalk end.
-    let b_offset = 0.5 * (edge.to_offset_m + outer.to_offset_m);
     let b_corner_m = edge.to_station_m.max(outer.to_station_m);
-    for knot in knots_between(&b, b_corner_m, end.station_m) {
-        push(b.offset_point(b.knots[knot].station_m, b_offset));
-    }
+    for_each_run_station(&b, b_corner_m, end.station_m, taper_m, |station_m, _| {
+        push(walkway(&b, Side::Right, station_m));
+    });
     push(RoadVec2::new(end.point.x, end.point.z));
     // The two ends are the arms' sidewalk ends exactly, heights included.
     let route = &mut points[first..];
@@ -335,11 +345,4 @@ fn push_corner_route(
     if last > 0 {
         route[last] = end.point;
     }
-}
-
-// Knot indices of `arm` strictly between two stations, ascending.
-fn knots_between(arm: &ArmInput<'_>, from_m: f64, to_m: f64) -> Range<usize> {
-    let start = arm.knots.partition_point(|knot| knot.station_m <= from_m);
-    let end = arm.knots.partition_point(|knot| knot.station_m < to_m);
-    start..end.max(start)
 }

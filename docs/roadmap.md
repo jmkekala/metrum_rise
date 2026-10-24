@@ -52,12 +52,12 @@ layout's sidewalk. A second follow-up (2026-10-24, user decision "keep the old b
 open question 12) restores one crossing at every degree-two node: on a bend's node piece right
 outside the curve, and on a pass-through node's span beside the node, so walkers can change sides
 at every node again and the walking planner's whole-network proof holds. Pre-D work (2026-10-24,
-open question 15, in progress): physical profiles, clips and pieces derive from the final graph
-only, so flat reference junctions no longer depend on drawing order; slopes remain open question
-16, and the D4 taper (open question 9) is next. Tests that need later
+open questions 15 and 9): physical profiles, clips and pieces derive from the final graph only,
+so flat reference junctions no longer depend on drawing order (slopes remain open question 16),
+and straight width changes taper along both approaches (D4). Tests that need later
 gates are disabled until then (33 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are open,
-and `roads.md` lists thirteen open questions; open question 13 (degree-two crossings that do not
-fit) records conservative choices for the user to confirm. Design,
+and `roads.md` lists sixteen open questions; open question 16 (strokes pinned to the pieces their
+edit rebuilds, on slopes) needs a decision. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

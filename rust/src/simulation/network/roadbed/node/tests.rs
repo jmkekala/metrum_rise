@@ -85,9 +85,23 @@ fn fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
         ];
         set.push((format!("mixed_{side_deg}"), star(centre, &arms, sloped)));
     }
-    // A through road that widens at a side road: the straight sector's radial step (D4).
+    // A through road that widens at a side road: the straight sector's taper (D4). Then a
+    // widening through a four-way, at a bend, and past a slightly bent side road.
     let step = [(0.0, FOUR_LANE_M), (180.0, TWO_LANE_M), (270.0, TWO_LANE_M)];
     set.push(("width_step".to_owned(), star(centre, &step, sloped)));
+    let four_way = [
+        (0.0, FOUR_LANE_M),
+        (90.0, TWO_LANE_M),
+        (180.0, TWO_LANE_M),
+        (270.0, TWO_LANE_M),
+    ];
+    set.push(("width_four_way".to_owned(), star(centre, &four_way, sloped)));
+    let bend = [(15.0, FOUR_LANE_M), (135.0, TWO_LANE_M)];
+    set.push(("width_bend".to_owned(), star(centre, &bend, sloped)));
+    for (name, west) in [("width_step_convex", 180.5), ("width_step_miter", 179.5)] {
+        let skew = [(0.0, TWO_LANE_M), (west, FOUR_LANE_M), (300.0, TWO_LANE_M)];
+        set.push((name.to_owned(), star(centre, &skew, sloped)));
+    }
     set
 }
 
@@ -250,6 +264,95 @@ fn node_pieces_are_watertight_and_meet_spans_on_shared_mouth_edges() {
                         "{name} node {}: curb face looks at {height} not ground {ground}",
                         piece.node()
                     );
+                }
+            }
+        }
+    }
+}
+
+// D4 and open question 9: no sliver top triangle, a curb face only where a raised band
+// meets the carriageway (its raised edge borders a raised top triangle, its ground edge a ground
+// one), and outer chains along their outermost band, never along a step.
+#[test]
+fn width_changes_leave_no_slivers_stray_curb_faces_or_chain_steps() {
+    for sloped in [false, true] {
+        for (name, graph) in fixtures(sloped) {
+            let roadbed = compiled(&graph);
+            for piece in node_pieces(&roadbed, &graph) {
+                let mesh = piece.mesh();
+                let position = |vertex: u32| mesh.positions()[vertex as usize];
+                let key = |a: u32, b: u32| {
+                    let (a, b) = (bits(position(a)), bits(position(b)));
+                    (a.min(b), a.max(b))
+                };
+                // Undirected top-triangle edges, by whether the band is raised.
+                let mut top_edges: BTreeMap<_, Vec<BandKind>> = BTreeMap::new();
+                for kind in [
+                    BandKind::Carriageway,
+                    BandKind::CurbOrShoulder,
+                    BandKind::Sidewalk,
+                    BandKind::Footpath,
+                ] {
+                    for &[a, b, c] in mesh.band_triangles(kind) {
+                        // A sliver: thinner than a millimetre across its longest side.
+                        let xz = |vertex: u32| {
+                            let point = position(vertex);
+                            RoadVec2::new(point.x, point.z)
+                        };
+                        let (pa, pb, pc) = (xz(a), xz(b), xz(c));
+                        let longest_m = pa.distance(pb).max(pb.distance(pc)).max(pc.distance(pa));
+                        let width_m = (pb - pa).perp_dot(pc - pa) / longest_m;
+                        assert!(
+                            width_m >= 1.0e-3,
+                            "{name} node {}: a {kind:?} sliver {width_m:e} m wide at {pa}",
+                            piece.node()
+                        );
+                        for (p, q) in [(a, b), (b, c), (c, a)] {
+                            top_edges.entry(key(p, q)).or_default().push(kind);
+                        }
+                    }
+                }
+                let raised =
+                    |kind: BandKind| matches!(kind, BandKind::CurbOrShoulder | BandKind::Sidewalk);
+                for &[a, b, c] in mesh.curb_face_triangles() {
+                    let [pa, pb, pc] = [a, b, c].map(position);
+                    assert!(
+                        (pb - pa).cross(pc - pa).length() > 0.0,
+                        "{name}: curb face without area"
+                    );
+                    // Every node vertex is `P(x, z) + level`, so the level is exact.
+                    let is_raised = |vertex: u32| {
+                        let point = position(vertex);
+                        let xz = RoadVec2::new(point.x, point.z);
+                        point.y == f64::from(piece.surface_height_m(xz, Level::Raised))
+                    };
+                    let (high, low): (Vec<u32>, Vec<u32>) =
+                        [a, b, c].into_iter().partition(|&vertex| is_raised(vertex));
+                    let (pair, wants_raised) = if high.len() == 2 {
+                        ((high[0], high[1]), true)
+                    } else {
+                        ((low[0], low[1]), false)
+                    };
+                    let bands = top_edges.get(&key(pair.0, pair.1));
+                    assert!(
+                        bands.is_some_and(|bands| bands
+                            .iter()
+                            .any(|&kind| raised(kind) == wants_raised)),
+                        "{name} node {}: a curb face edge borders no {} band",
+                        piece.node(),
+                        if wants_raised { "raised" } else { "ground" }
+                    );
+                }
+                for chain in mesh.outer_chains() {
+                    for pair in chain.vertices().windows(2) {
+                        let bands = top_edges.get(&key(pair[0], pair[1]));
+                        assert_eq!(
+                            bands.map(Vec::len),
+                            Some(1),
+                            "{name} node {}: a chain edge borders one top triangle",
+                            piece.node()
+                        );
+                    }
                 }
             }
         }

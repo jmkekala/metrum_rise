@@ -245,12 +245,22 @@ A `Terminal` has one sector of `2 pi`, which is convex.
 Unequal profiles on the two sides interpolate per boundary. A band missing on one side has zero
 width there and tapers along the corner.
 
-**Round join.** On straight and convex sectors, band boundary `j` is an arc about the node from
-`o_a(0, la_j)` to `o_b(0, lb_j)`, with the radius interpolated linearly by angle. A straight
-sector between unequal widths gives a radial step at the node; its taper is
-[D4](#product-decisions). In a straight sector narrower than `pi`, the arms overlap, so each
-boundary starts where its offset curve crosses the sector bisector instead of at station zero
-([open question 5](#road-68-open-questions)).
+**Round join.** On convex sectors, band boundary `j` is an arc about the node from
+`o_a(0, la_j)` to `o_b(0, lb_j)`, with the radius interpolated linearly by angle. In a straight
+sector each boundary starts where its offset curve crosses the sector bisector instead: ahead of
+the node when the sector is narrower than `pi` and the arms overlap
+([open question 5](#road-68-open-questions)), on the first offset segment extended behind the
+node otherwise, so the arms meet in a miter point rather than a rounding-sized arc.
+
+**Width-change taper ([D4](#product-decisions)).** A straight sector between unequal boundary
+offsets tapers. Each such boundary meets the sector at the mean of its two arms' offsets, so the
+join is that of equal widths, and runs linearly in station to each arm's own offset at the taper
+station on both approaches. The taper takes half the legacy span taper on each arm
+(`clamp(3 * width change, 12 m, 28 m)`, the span model's `WIDTH_CHANGE_TAPER_*` rule), shortened
+to what both arms hold beside their crosswalks; shorter than the 12 m minimum, layout fails with
+`ArmTooShort`. Mouths lie at or beyond the taper station, so spans start at full width and copy
+their mouth sections as before. `SectorBoundary::run_offset_m` is the one function node pieces,
+the core loop and walkways place a run with.
 
 **Mouth stations.** For each arm, the mouth station is the larger of `s_min` and the tangent
 stations of its concave corners, plus the crosswalk depth on crossable arms
@@ -500,7 +510,7 @@ These defaults apply unless the user overrides them:
 | D1 | Curb-return radius | 3.5 m at the carriageway edge (user-confirmed 2026-10-24; was 6 m). The minimum is the raised width plus 0.5 m. The radius is reduced to fit; if the minimum does not fit, the edit is rejected. |
 | D2 | Terminal shape | Round cap; the curb and sidewalk wrap around the end. |
 | D3 | Preview modes | One mode, road and terrain together. The `ROAD-29` "Road only" mode is removed in `ROAD-68-E`. |
-| D4 | Width change on a straight side | A radial step at the node in `ROAD-68-C`; a linear taper along both approaches in `ROAD-68-F`. |
+| D4 | Width change on a straight side | A linear taper along both approaches, implemented pre-D ([open question 9](#road-68-open-questions)); `ROAD-68-C` built a radial step at the node. |
 | D5 | Footpath meeting a road junction | It joins the sidewalk ring at sidewalk height, with its end pinned there by the profile solve. Its ribbon ends at the sidewalk outer edge on shared vertices. |
 | D6 | Roads without sidewalks | Keep the current raised 0.75 m shoulder. |
 | D7 | Routing at commit | Confirmed by the user, 2026-10-23. Rebuild the CCH on an immutable graph snapshot as a scheduled job and adopt it at a fixed tick offset. Route queries issued meanwhile wait for adoption. If the job is late, the simulation blocks at the adoption tick, so results do not depend on machine speed. Revisit if the query backlog at adoption is too large at 100k buildings. |
@@ -699,6 +709,9 @@ These need a user decision; work that does not depend on them continues.
    widths share one miter point, and a width change steps radially along the bisector (D4). At
    `pi` and above, the round join is unchanged. Options: keep the miter, or join every straight
    sector at station zero and reject the overlapping half.
+   **Pre-D:** at `pi` and above the boundaries now miter on the bisector too, on the first offset
+   segment extended behind the node, which removes a rounding-sized arc of sliver strips; a width
+   change tapers instead of stepping (D4, question 9).
 6. **Obtuse corners between unequal widths (`ROAD-68-C`) — decided 2026-10-24 (user): keep the backward
    extension.**
    - **The problem.** A concave corner needs `o_a(., la + R)` and `o_b(., -(lb + R))` to cross at
@@ -748,6 +761,11 @@ These need a user decision; work that does not depend on them continues.
    narrower arm's sidewalk a 12 cm face stands at the wider carriageway's edge and the outer chain
    runs along the step at raised level, which `ROAD-68-D` will see. Options: accept until
    `ROAD-68-F`'s taper (current); build explicit step faces and chain segments now.
+   **Resolved pre-D: the taper is built** ([junction layout](#junction-layout),
+   [pre-D](#edit-order-independence-pre-d)). The fixture `width_step` and new width changes at a
+   four-way, a bend and nearly straight sectors either side of `pi` have no sliver triangles,
+   curb faces only where a raised band meets the carriageway, and outer chains along their
+   sidewalk; with the step restored the test fails on `width_step`.
 10. **Crossings before `ROAD-68-F` — resolved 2026-10-24: keep the layout rule and move the
     lanes, including the bend rule (user decision).** The layout's crossable rule (car-road arms
     with sidewalks at junctions of three or more arms; bend arms only when the node forces a
@@ -1029,7 +1047,7 @@ Layout constants:
 | `CURB_RETURN_CLEARANCE_M` | 0.5 m | D1: `R_min` is the corner's raised width plus 0.5 m |
 | `CROSSWALK_DEPTH_M` | 3 m | D8; the zebra strip, whose crossing line is the middle of the depth |
 | `MIN_MOUTH_STATION_M` (`s_min`) | 1 m | keeps every mouth off the node's lateral line, where round joins start |
-| `STRAIGHT_SECTOR_EPS_RAD` (`eps`) | 1° | covers the direction noise of a split straight road (f32 knots, below about 1e-3 rad anywhere in a 20 km world); a visually straight width change is a radial step (D4) |
+| `STRAIGHT_SECTOR_EPS_RAD` (`eps`) | 1° | covers the direction noise of a split straight road (f32 knots, below about 1e-3 rad anywhere in a 20 km world); a visually straight width change tapers (D4; a radial step until pre-D) |
 | `MIN_SECTOR_ANGLE_RAD` | 1° | consecutive arms closer than this fail with `DuplicateDirection` |
 | `MAX_SAMPLE_SEGMENT_M` | 0.5 m | longest sampled boundary segment |
 | `MAX_SAMPLE_ANGLE_RAD` | 10° | largest turn per boundary sample |
@@ -1542,8 +1560,8 @@ arrive.
 
 #### Edit-order independence (pre-D)
 
-**Status:** in progress 2026-10-24 ([open question 15](#road-68-open-questions)); the D4 taper
-([open question 9](#road-68-open-questions)) is not started.
+**Status:** done 2026-10-24 for [open question 15](#road-68-open-questions) on flat ground
+(slopes: open question 16) and for the D4 taper ([open question 9](#road-68-open-questions)).
 
 **The rule.** Physical profiles, clips and pieces derive from the final topology and authored
 state only (invariant 6):
@@ -1576,21 +1594,64 @@ and physical profiles, clips, node-piece and span triangles must be bitwise equa
 `graph/rebuild/tests.rs` now assert unchanged control polylines and supports in the physical
 profile. `ROAD-68` ignores: D 26 (the sloped order test), E 2, F 5.
 
+**D4 taper** (`roadbed/layout.rs`, `node.rs`, `walkways.rs`; [junction layout](#junction-layout)).
+- `SectorBoundary::taper` (`BoundaryTaper`) records where a straight sector's boundary reaches
+  its arms' own offsets; `run_offset_m`, `run_point` and `for_each_run_station` (the arm's knots
+  plus the taper station) place every run, so the core loop (`CoreVertexSource::TaperEnd`), node
+  strips, curb faces, outer chains and walkway corner routes share its vertices.
+- Mouths reach at least the taper station; the span's own taper stays for pass-through nodes.
+- Straight sectors wider than `pi` now miter on the bisector too (first offset segment extended
+  behind the node), which removes the rounding-sized arc of sliver strips the plain T had.
+- Tests: `a_straight_width_change_tapers_along_both_approaches`,
+  `a_width_change_taper_that_cannot_fit_is_rejected` (layout) and
+  `width_changes_leave_no_slivers_stray_curb_faces_or_chain_steps` (every node fixture, flat and
+  sloped: no top triangle thinner than 1 mm, curb-face edges bordering raised and ground bands,
+  chain edges bordering one top triangle). Mutation check: without the taper the node test fails
+  on `width_step`.
+
 **Consequences.** Every edge at an affected node re-derives its profile, so an existing arm takes
 its mouth knot the first time its node is solved, and removing a branch returns the remaining arms
 to their authored grade. The crossing toggle now re-pins its node (it passed no adaptable edges
 before, so the solve did nothing). Open question 7's failure cannot occur: both ends' mouth knots
 are re-derived on every solve.
 
-**Checks** (fresh, WIP sources):
+**Checks** (fresh, final pre-D sources):
 
-- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`): 1,813 passed, 0 failed, 186 ignored
-  (follow-up 2: 1,812, 0, 185).
+- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`): 1,815 passed, 0 failed, 186 ignored
+  (follow-up 2: 1,812, 0, 185). `ROAD-68` ignores: D 26, E 2, F 5.
 - Clippy (`--all-targets`) reports only the 59 legacy-tree warnings, and `cargo doc` reports no
   missing docs.
-- `roadbed/` holds about 6,504 production lines (follow-up 2: 6,479).
-- Not yet run: `./run.sh --test`, the `roadbed_benchmark` junction cases and the economy
-  performance contract.
+- `roadbed/` holds about 6,690 production lines (follow-up 2: 6,479), under the 8,000 cap.
+- `./run.sh --test` (isolated profile, no display) exits 0: the library suite as above,
+  `tests/growth_scenario.rs` with 4 passed, and the Godot bridge suites with the same PASS lines
+  as follow-up 2.
+- Screenshots ([reference harness](#rendered-reference-screenshots), debug build, 54 images, no
+  fixture failures; new fixture `y_25_branches_first`, the 25° Y drawn branch, branch, stem): on
+  flat ground all three views are byte-identical to `y_25`'s; on the slope they differ (plan: at
+  most 4 colour levels; oblique: the unclipped-terrain pattern), by open question 16. Against
+  follow-up 2 the T, four-way, bend and mixed T change by at most one colour level in under 70
+  pixels; the sloped Y cores shade differently, from the geometric corridor choice.
+
+**Benchmarks** (2026-10-24): release, i9-12900K pinned to the P-cores, `RAYON_NUM_THREADS=4`,
+Criterion defaults with 200 samples, under the exclusive timing lock with no build running. The
+control is the `8712b69f` binary in the same session; rounds alternate control and new.
+
+| Case | Control, two rounds | Pre-D, two rounds | Target |
+| --- | --- | --- | --- |
+| `roadbed_junction/build/t` | 28.10 / 28.10 µs | 27.81 / 27.72 µs | — |
+| `roadbed_junction/build/four_way` | 46.28 / 46.37 µs | 46.56 / 47.52 µs | 100 µs |
+| `roadbed_junction/build/six_way` | 80.40 / 79.85 µs | 81.27 / 82.17 µs | 300 µs |
+| `roadbed_junction/publish/t_closure` | 91.94 / 94.63 µs | 94.44 / 97.20 µs | — |
+
+The fixtures have no width change, so the taper adds no work there. Unprofiled, the 1–3% growth
+on the four- and six-way is most likely the arms' second walk (control knots, then the physical
+profile for heights and span stations); the T gains from its straight side's single miter point.
+The profile solve is not in these cases.
+
+```bash
+cargo bench --bench roadbed_benchmark --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot roadbed_junction
+```
 
 ### `ROAD-68-D` — footprint and terrain
 

@@ -31,7 +31,7 @@ use super::arms::{CentrelinePosition, NodeArms};
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{
     ArmInput, ArmKey, BoundaryBand, CoreVertexSource, Crosswalk, EdgeEnd, JunctionLayout,
-    LayoutError, NodeKind, SectorBoundary, Side,
+    LayoutError, NodeKind, SectorBoundary, Side, for_each_run_station,
 };
 use super::mesh::{CURB_FACE_GROUP, GROUPS, PieceMesh, RowLayout, push_section_row_at, row_slots};
 use super::profile::{Level, RoadProfile};
@@ -532,7 +532,7 @@ impl MeshBuilder<'_> {
 }
 
 // The run of `boundary` along one side of arm `arm` (sorted index): its sector endpoint sample,
-// the knots strictly between, and the mouth.
+// the knots and taper station strictly between, and the mouth, at the run's offsets (D4).
 fn push_side_run(
     lines: &mut Vec<LinePoint>,
     layout: &JunctionLayout,
@@ -542,13 +542,9 @@ fn push_side_run(
     boundary: &SectorBoundary,
 ) {
     let samples = &layout.samples[boundary.samples.clone()];
-    let (station_m, offset_m, start) = match side {
-        Side::Left => (boundary.from_station_m, boundary.from_offset_m, samples[0]),
-        Side::Right => (
-            boundary.to_station_m,
-            boundary.to_offset_m,
-            samples[samples.len() - 1],
-        ),
+    let (station_m, start) = match side {
+        Side::Left => (boundary.from_station_m, samples[0]),
+        Side::Right => (boundary.to_station_m, samples[samples.len() - 1]),
     };
     let mouth_m = layout.arms[arm].mouth_station_m;
     lines.push(LinePoint {
@@ -556,17 +552,15 @@ fn push_side_run(
         xz: start,
         mouth: None,
     });
-    let first = input
-        .knots
-        .partition_point(|knot| knot.station_m <= station_m);
-    let last = input.knots.partition_point(|knot| knot.station_m < mouth_m);
-    for knot in &input.knots[first..last.max(first)] {
+    let taper_m = boundary.taper.map(|taper| taper.station_m);
+    for_each_run_station(input, station_m, mouth_m, taper_m, |station_m, _| {
         lines.push(LinePoint {
-            station_m: knot.station_m,
-            xz: input.offset_point(knot.station_m, offset_m),
+            station_m,
+            xz: boundary.run_point(input, side, station_m),
             mouth: None,
         });
-    }
+    });
+    let offset_m = boundary.run_offset_m(side, mouth_m);
     lines.push(LinePoint {
         station_m: mouth_m,
         xz: input.offset_point(mouth_m, offset_m),

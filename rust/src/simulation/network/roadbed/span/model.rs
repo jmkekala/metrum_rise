@@ -27,9 +27,11 @@ const BRIDGE_SECTION_STEP_M: f32 = 12.0;
 const TUNNEL_SECTION_STEP_M: f32 = 10.0;
 const PROFILE_TRANSITION_SECTION_STEP_M: f32 = 2.0;
 const PROTECTED_SECTION_SAMPLE_CLEARANCE_M: f32 = 0.125;
-const WIDTH_CHANGE_TAPER_MIN_M: f32 = 12.0;
-const WIDTH_CHANGE_TAPER_MAX_M: f32 = 28.0;
-const WIDTH_CHANGE_TAPER_WIDTH_FACTOR: f32 = 3.0;
+// The legacy width-change taper, which straight junction sectors share (D4): its length is
+// `clamp(width change * factor, min, max)`.
+pub(in crate::simulation::network::roadbed) const WIDTH_CHANGE_TAPER_MIN_M: f32 = 12.0;
+pub(in crate::simulation::network::roadbed) const WIDTH_CHANGE_TAPER_MAX_M: f32 = 28.0;
+pub(in crate::simulation::network::roadbed) const WIDTH_CHANGE_TAPER_WIDTH_FACTOR: f32 = 3.0;
 const WIDTH_CHANGE_TAPER_SECTION_STEP_M: f32 = 2.0;
 const WIDTH_CHANGE_TAPER_MAX_EDGE_FRACTION: f32 = 0.8;
 // Endpoint directions are measured away from the shared node. Straight width changes are near -1,

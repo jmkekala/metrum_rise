@@ -28,7 +28,7 @@ pub(crate) use geometry::{
     triangulate_constrained_rings_xz,
 };
 pub use layout::{
-    ArmBand, ArmInput, ArmKey, ArmKnot, ArmLayout, ArmSide, BoundaryBand, CoreVertex,
+    ArmBand, ArmInput, ArmKey, ArmKnot, ArmLayout, ArmSide, BoundaryBand, BoundaryTaper, CoreVertex,
     CoreVertexSource, Corner, CornerTangent, Crosswalk, EdgeEnd, JunctionLayout, LayoutError,
     NodeKind, SectorBoundary, SectorKind, SectorLayout, Side,
 };

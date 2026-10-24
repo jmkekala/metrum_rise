@@ -186,13 +186,28 @@ fn assert_invariants(layout: &JunctionLayout, arms: &[OwnedArm]) {
     }
     let core = &layout.core;
     assert!(signed_area(core) > 0.0, "core loop runs counter-clockwise");
+    // An arm side's carriageway edge runs on its sector's first boundary.
+    let edge_of = |arm: usize, side: Side| {
+        let count = layout.arms.len();
+        let sector = match side {
+            Side::Left => &layout.sectors[arm],
+            Side::Right => &layout.sectors[(arm + count - 1) % count],
+        };
+        &layout.boundaries[sector.boundaries.start]
+    };
     for (index, vertex) in core.iter().enumerate() {
         assert_ne!(vertex.position, core[(index + 1) % core.len()].position);
         let expected = match vertex.source {
             CoreVertexSource::Sample(sample) => layout.samples[sample],
             CoreVertexSource::Knot { arm, side, knot } => {
                 let input = input_of(layout, arms, arm);
-                input.knots[knot].offset(core_offset(&input, side))
+                edge_of(arm, side).run_point(&input, side, input.knots[knot].station_m)
+            }
+            CoreVertexSource::TaperEnd { arm, side } => {
+                let input = input_of(layout, arms, arm);
+                let edge = edge_of(arm, side);
+                let taper = edge.taper.expect("a taper end lies on a tapered edge");
+                edge.run_point(&input, side, taper.station_m)
             }
             CoreVertexSource::Mouth { arm, side } => {
                 let input = input_of(layout, arms, arm);
@@ -725,7 +740,7 @@ fn a_two_lane_side_road_meets_a_four_lane_through_road() {
 }
 
 #[test]
-fn a_straight_width_change_steps_radially_at_the_node() {
+fn a_straight_width_change_tapers_along_both_approaches() {
     // A two-lane road continues west as a four-lane road, with a side road to the south.
     let node = RoadVec2::new(12.0, 34.0);
     let arms = vec![
@@ -734,19 +749,65 @@ fn a_straight_width_change_steps_radially_at_the_node() {
         road_arm(2, node, 270.0, TWO_LANE_HALF_M),
     ];
     let layout = build_checked(node, &arms);
-    let step = sector_from(&layout, 0);
-    assert_eq!(step.kind, SectorKind::Straight);
-    let edge = &layout.boundaries[step.boundaries.start];
-    let samples = boundary_samples(&layout, edge);
-    assert_near_point(samples[0], node + RoadVec2::Y * TWO_LANE_HALF_M, 1e-12);
-    assert_near_point(
-        samples[samples.len() - 1],
-        node + RoadVec2::Y * FOUR_LANE_HALF_M,
-        1e-12,
-    );
-    for sample in samples {
-        assert_near(sample.x, node.x, 1e-9);
+    let sector = sector_from(&layout, 0);
+    assert_eq!(sector.kind, SectorKind::Straight);
+    // The legacy taper for a 7 m width change: 21 m, half on each approach.
+    let taper_m = 10.5;
+    let (east, west) = (&arms[0].input(), &arms[1].input());
+    for boundary in &layout.boundaries[sector.boundaries.clone()] {
+        let taper = boundary.taper.expect("every boundary changes offset");
+        assert_eq!(taper.station_m, taper_m);
+        // The join is that of equal widths: one point on the node's lateral line.
+        assert_eq!(boundary.from_offset_m, -boundary.to_offset_m);
+        let samples = boundary_samples(&layout, boundary);
+        assert!(samples.iter().all(|&sample| sample == samples[0]));
+        let mean_m = 0.5 * (taper.from_offset_m - taper.to_offset_m);
+        assert_near_point(samples[0], node + RoadVec2::Y * mean_m, 1e-12);
+        // Linear in station on both approaches, to the arms' own offsets.
+        for (arm, side, own_m) in [
+            (east, Side::Left, taper.from_offset_m),
+            (west, Side::Right, taper.to_offset_m),
+        ] {
+            assert_eq!(boundary.run_offset_m(side, taper_m), own_m);
+            assert_eq!(boundary.run_offset_m(side, 40.0), own_m);
+            let half = boundary.run_offset_m(side, 0.5 * taper_m);
+            let start = boundary.run_offset_m(side, 0.0);
+            assert_near(half, 0.5 * (start + own_m), 1e-12);
+            assert_eq!(
+                boundary.run_point(arm, side, taper_m),
+                arm.offset_point(taper_m, own_m)
+            );
+        }
     }
+    // Both mouths lie beyond the taper, so the spans start at full width.
+    for edge in [0, 1] {
+        assert!(arm_by_key(&layout, edge).mouth_station_m >= taper_m + CROSSWALK_DEPTH_M);
+    }
+    assert!(
+        layout
+            .core
+            .iter()
+            .any(|vertex| matches!(vertex.source, CoreVertexSource::TaperEnd { .. })),
+        "the core loop follows the tapered carriageway edges"
+    );
+}
+
+#[test]
+fn a_width_change_taper_that_cannot_fit_is_rejected() {
+    let node = RoadVec2::new(-3.0, 8.0);
+    let mut arms = vec![
+        road_arm(0, node, 0.0, TWO_LANE_HALF_M),
+        road_arm(1, node, 180.0, FOUR_LANE_HALF_M),
+        road_arm(2, node, 270.0, TWO_LANE_HALF_M),
+    ];
+    // Half the legacy minimum taper plus the crosswalk is 9 m.
+    arms[1].max_station_m = 8.9;
+    assert_eq!(
+        build(node, &arms),
+        Err(LayoutError::ArmTooShort { arm: key(1) })
+    );
+    arms[1].max_station_m = 9.0;
+    build_checked(node, &arms);
 }
 
 #[test]

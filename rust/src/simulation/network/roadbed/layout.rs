@@ -37,21 +37,28 @@
 //!    endpoints.
 //! 4. Straight and convex sectors get a round join about the node: boundary `j` runs from
 //!    `o_a(sa_j, la_j)` to `o_b(sb_j, -lb_j)`, with the radius interpolated linearly by angle. The
-//!    stations are zero except in a straight sector narrower than `pi`, where the two arms
-//!    overlap near the node. There each boundary starts where its offset curve crosses the
-//!    sector bisector, so the arms meet in a miter on the bisector and unequal widths step
-//!    radially along it (D4); a boundary with equal offsets on both arms is the one miter point,
-//!    taken from the `from_arm` curve. Joining at station zero there would make the core loop
-//!    cross itself whenever the widths are equal (`ROAD-68` open questions).
-//! 5. An arm's mouth station is the largest of `MIN_MOUTH_STATION_M` and the stations at which
-//!    its two sides leave their sectors, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). That
+//!    stations are zero except in a straight sector, where each boundary starts where its offset
+//!    curve crosses the sector bisector: ahead of the node when the sector is narrower than `pi`
+//!    and the arms overlap, on the first offset segment extended behind the node otherwise. The
+//!    arms meet in a miter on the bisector; a boundary with equal offsets on both arms is the one
+//!    miter point, taken from the `from_arm` curve. Joining at station zero would make the core
+//!    loop cross itself below `pi` whenever the widths are equal, and leave a rounding-sized arc
+//!    of sliver strips above it (`ROAD-68` open questions 5 and 9).
+//! 5. A straight sector between unequal boundary offsets tapers (D4): each such boundary meets
+//!    the sector at the mean of its two offsets, so the join is that of equal widths, and runs
+//!    linearly in station to its arm's own offset at the taper station on both approaches
+//!    ([`BoundaryTaper`]). The taper takes half the legacy span taper length on each arm,
+//!    shortened to fit both arms beside their crosswalks; shorter than the legacy minimum, the
+//!    layout fails with [`LayoutError::ArmTooShort`].
+//! 6. An arm's mouth station is the largest of `MIN_MOUTH_STATION_M` and the stations at which
+//!    its two sides reach their own offsets, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). That
 //!    depth is the arm's [`Crosswalk`] strip, on the straight approach right outside the corners;
 //!    its crossing line is the middle of the depth, and its kerb points are the two
 //!    carriageway-edge points there.
-//! 6. A corner that would push a mouth past `max_station_m` shrinks its radius by bisection
+//! 7. A corner that would push a mouth past `max_station_m` shrinks its radius by bisection
 //!    towards the corner's raised width plus `CURB_RETURN_CLEARANCE_M` (D1). If that minimum does
 //!    not fit either, layout fails with [`LayoutError::CornerDoesNotFit`].
-//! 7. The carriageway core loop runs counter-clockwise: out along each arm's right carriageway
+//! 8. The carriageway core loop runs counter-clockwise: out along each arm's right carriageway
 //!    edge, across its mouth, back along its left edge and through the next sector's core-edge
 //!    samples. A loop that touches or crosses itself fails with [`LayoutError::CoreNotSimple`].
 //!
@@ -71,6 +78,9 @@
 //!
 //! The layout allocates only its output vectors and one per-call list of core-loop pieces.
 
+use super::span::{
+    WIDTH_CHANGE_TAPER_MAX_M, WIDTH_CHANGE_TAPER_MIN_M, WIDTH_CHANGE_TAPER_WIDTH_FACTOR,
+};
 use super::{BandKind, Level, RoadVec2};
 use std::f64::consts::{PI, TAU};
 use std::ops::Range;
@@ -89,7 +99,7 @@ const MIN_MOUTH_STATION_M: f64 = 1.0;
 // eps: sectors within one degree of a half turn are straight. That covers the direction noise of
 // a straight road split at a junction anywhere in a 20 km world (f32 knots, below about 1e-3 rad
 // over the first metre) and treats visually straight continuations as straight, so a width change
-// there is a radial step (D4) rather than a corner that cannot exist.
+// there tapers (D4) rather than needing a corner that cannot exist.
 const STRAIGHT_SECTOR_EPS_RAD: f64 = PI / 180.0;
 // Consecutive arms closer than this are duplicates. ROAD-54 rejects junction arms below 25 degrees
 // and bends below 10 degrees long before this.
@@ -306,8 +316,23 @@ pub struct SectorBoundary {
     pub to_station_m: f64,
     /// Signed lateral offset of the boundary on the `to_arm` (right, negative).
     pub to_offset_m: f64,
+    /// Width-change taper of a straight sector (D4): the offsets above are then the mean of the
+    /// two arms' own offsets, and the boundary reaches each arm's own offset at the taper station.
+    pub taper: Option<BoundaryTaper>,
     /// Range into [`JunctionLayout::samples`], from the `from_arm` endpoint to the `to_arm` one.
     pub samples: Range<usize>,
+}
+
+/// Where a tapered sector boundary (D4) reaches the two arms' own offsets. Between the sector and
+/// this station its offset on each arm is linear in station.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoundaryTaper {
+    /// Station on both arms at which the taper ends.
+    pub station_m: f64,
+    /// The `from_arm`'s own signed offset of the boundary (left, positive).
+    pub from_offset_m: f64,
+    /// The `to_arm`'s own signed offset of the boundary (right, negative).
+    pub to_offset_m: f64,
 }
 
 /// Origin of one carriageway core-loop vertex.
@@ -315,7 +340,8 @@ pub struct SectorBoundary {
 pub enum CoreVertexSource {
     /// A carriageway-edge sample of a sector, by index into [`JunctionLayout::samples`].
     Sample(usize),
-    /// A carriageway-edge point at an arm knot between its sector station and its mouth.
+    /// A carriageway-edge point at an arm knot between its sector station and its mouth, on the
+    /// boundary's run (`SectorBoundary::run_point`).
     Knot {
         /// Sorted arm index.
         arm: usize,
@@ -323,6 +349,14 @@ pub enum CoreVertexSource {
         side: Side,
         /// Knot index on the arm.
         knot: usize,
+    },
+    /// A carriageway-edge point at the end of an arm's width-change taper (D4), between its
+    /// sector station and its mouth.
+    TaperEnd {
+        /// Sorted arm index.
+        arm: usize,
+        /// Arm side.
+        side: Side,
     },
     /// A carriageway-edge point of an arm's mouth section.
     Mouth {
@@ -380,7 +414,8 @@ pub enum LayoutError {
         /// Arm whose left side bounds the sector.
         arm: ArmKey,
     },
-    /// The arm cannot hold its minimum node extent and crosswalk within `max_station_m`.
+    /// The arm cannot hold its minimum node extent, its width-change taper (D4) and its crosswalk
+    /// within `max_station_m`.
     ArmTooShort {
         /// Offending arm.
         arm: ArmKey,
@@ -392,6 +427,72 @@ pub enum LayoutError {
     },
     /// The carriageway core loop touches or crosses itself.
     CoreNotSimple,
+}
+
+impl SectorBoundary {
+    /// Signed offset of this boundary's run along its `from_arm` (`Side::Left`) or `to_arm`
+    /// (`Side::Right`) at `station_m`: the sector's offset where the run leaves the sector, linear
+    /// to the arm's own offset at the taper station, and that own offset from there out. Node
+    /// pieces, the core loop and walkways all place the run with this one function.
+    pub fn run_offset_m(&self, side: Side, station_m: f64) -> f64 {
+        let (start_m, start_offset_m) = match side {
+            Side::Left => (self.from_station_m, self.from_offset_m),
+            Side::Right => (self.to_station_m, self.to_offset_m),
+        };
+        let Some(taper) = self.taper else {
+            return start_offset_m;
+        };
+        let own_offset_m = match side {
+            Side::Left => taper.from_offset_m,
+            Side::Right => taper.to_offset_m,
+        };
+        if station_m >= taper.station_m {
+            return own_offset_m;
+        }
+        let t = ((station_m - start_m) / (taper.station_m - start_m)).max(0.0);
+        lerp_scalar(start_offset_m, own_offset_m, t)
+    }
+
+    /// Station at which the run on `side` reaches its arm's own offset: the taper station, else
+    /// where it leaves the sector.
+    pub fn reach_m(&self, side: Side) -> f64 {
+        match (self.taper, side) {
+            (Some(taper), _) => taper.station_m,
+            (None, Side::Left) => self.from_station_m,
+            (None, Side::Right) => self.to_station_m,
+        }
+    }
+
+    /// The run's point at `station_m` on `arm`, the boundary's `from_arm` or `to_arm`.
+    pub fn run_point(&self, arm: &ArmInput<'_>, side: Side, station_m: f64) -> RoadVec2 {
+        arm.offset_point(station_m, self.run_offset_m(side, station_m))
+    }
+}
+
+/// Calls `visit` with each station strictly between `from_m` and `to_m` at which a boundary run
+/// on `arm` has a vertex: the arm's knots and the taper station, ascending, each knot with its
+/// index. Straight arms make tapered runs exact lines between these stations.
+pub(super) fn for_each_run_station(
+    arm: &ArmInput<'_>,
+    from_m: f64,
+    to_m: f64,
+    taper_m: Option<f64>,
+    mut visit: impl FnMut(f64, Option<usize>),
+) {
+    let mut taper_m = taper_m.filter(|&station_m| station_m > from_m && station_m < to_m);
+    for knot in arm.knots_between(from_m, to_m) {
+        let station_m = arm.knots[knot].station_m;
+        if let Some(taper) = taper_m.filter(|&taper| taper <= station_m) {
+            if taper < station_m {
+                visit(taper, None);
+            }
+            taper_m = None;
+        }
+        visit(station_m, Some(knot));
+    }
+    if let Some(taper) = taper_m {
+        visit(taper, None);
+    }
 }
 
 /// The layout of one node: sorted arms, sectors with sampled boundaries, and the carriageway
@@ -465,9 +566,13 @@ impl ArmInput<'_> {
             .min(self.knots.len() - 1)
     }
 
-    // Knots strictly between two stations.
+    // Knots strictly between two stations. Never the node's own knot: a run that leaves a
+    // backward miter (station < 0) passes it on the same straight first segment.
     fn knots_between(&self, from_m: f64, to_m: f64) -> Range<usize> {
-        let start = self.knots.partition_point(|knot| knot.station_m <= from_m);
+        let start = self
+            .knots
+            .partition_point(|knot| knot.station_m <= from_m)
+            .max(1);
         let end = self.knots.partition_point(|knot| knot.station_m < to_m);
         start..end.max(start)
     }
@@ -666,7 +771,7 @@ fn plan_sectors(
         let corner = match kind {
             SectorKind::Concave => {
                 let (radius_m, crossing) = fit_corner(a, b)?;
-                push_boundaries(&mut boundaries, a, b, |_, _| {
+                push_boundaries(&mut boundaries, a, b, None, |_, _| {
                     Some((crossing.a_station, crossing.b_station))
                 })?;
                 Some(Corner {
@@ -677,7 +782,8 @@ fn plan_sectors(
             SectorKind::Straight => {
                 // Bisects the two station-zero lateral lines; it points into the sector.
                 let bisector = (a.knots[0].lateral - b.knots[0].lateral).normalize();
-                push_boundaries(&mut boundaries, a, b, |from_offset, to_offset| {
+                let taper_m = straight_taper_m(a, b)?;
+                push_boundaries(&mut boundaries, a, b, taper_m, |from_offset, to_offset| {
                     Some((
                         bisector_station(a, from_offset, node, bisector, 1.0)?,
                         bisector_station(b, to_offset, node, bisector, -1.0)?,
@@ -686,7 +792,7 @@ fn plan_sectors(
                 None
             }
             SectorKind::Convex => {
-                push_boundaries(&mut boundaries, a, b, |_, _| Some((0.0, 0.0)))?;
+                push_boundaries(&mut boundaries, a, b, None, |_, _| Some((0.0, 0.0)))?;
                 None
             }
         };
@@ -713,12 +819,58 @@ fn bands_match(a: ArmSide<'_>, b: ArmSide<'_>) -> bool {
             .all(|(x, y)| same(x, y))
 }
 
+// Signed offsets of boundary `boundary` (from the carriageway edge outward) on `a`'s left and
+// `b`'s right side. A band missing on one side keeps that side's last offset: zero width there.
+fn boundary_offsets(a: &ArmInput<'_>, b: &ArmInput<'_>, boundary: usize) -> (f64, f64) {
+    let offset = |side: ArmSide<'_>| {
+        side.bands[(side.core_bands - 1 + boundary).min(side.bands.len() - 1)].outer_m
+    };
+    (offset(a.left), -offset(b.right))
+}
+
+fn boundary_count(a: &ArmInput<'_>, b: &ArmInput<'_>) -> usize {
+    1 + a.left.beyond_core().len().max(b.right.beyond_core().len())
+}
+
+// D4: the taper station of a straight sector whose boundaries change offset, `None` when every
+// boundary keeps its offset. The legacy span taper (`clamp(3 * width change, 12 m, 28 m)`, for a
+// width change of twice this side's carriageway-edge step) is split evenly between the two
+// approaches and shortened to what both arms hold beside their crosswalks. A taper shorter than
+// the legacy minimum does not fit: `ArmTooShort` on the arm with the shorter budget.
+fn straight_taper_m(a: &ArmInput<'_>, b: &ArmInput<'_>) -> Result<Option<f64>, LayoutError> {
+    let steps = (0..boundary_count(a, b)).any(|boundary| {
+        let (from_offset_m, to_offset_m) = boundary_offsets(a, b, boundary);
+        from_offset_m != -to_offset_m
+    });
+    if !steps {
+        return Ok(None);
+    }
+    let width_change_m = 2.0 * (a.left.core_offset() - b.right.core_offset()).abs();
+    let length_m = (width_change_m * f64::from(WIDTH_CHANGE_TAPER_WIDTH_FACTOR)).clamp(
+        f64::from(WIDTH_CHANGE_TAPER_MIN_M),
+        f64::from(WIDTH_CHANGE_TAPER_MAX_M),
+    );
+    let (a_limit, b_limit) = (
+        a.max_station_m - a.crosswalk_depth(),
+        b.max_station_m - b.crosswalk_depth(),
+    );
+    let station_m = (0.5 * length_m).min(a_limit).min(b_limit);
+    if 2.0 * station_m < f64::from(WIDTH_CHANGE_TAPER_MIN_M) {
+        let arm = if a_limit <= b_limit { a.key } else { b.key };
+        return Err(LayoutError::ArmTooShort { arm });
+    }
+    Ok(Some(station_m))
+}
+
 // Appends one boundary per matched band edge, from the carriageway edge outward. `stations`
-// maps the boundary's signed offsets on `a` and `b` to the stations where it leaves them.
+// maps the boundary's signed offsets on `a` and `b` to the stations where it leaves them. With a
+// straight sector's taper station, a boundary whose offsets differ leaves both arms at their mean
+// and reaches their own offsets at that station (D4).
 fn push_boundaries(
     boundaries: &mut Vec<SectorBoundary>,
     a: &ArmInput<'_>,
     b: &ArmInput<'_>,
+    taper_m: Option<f64>,
     stations: impl Fn(f64, f64) -> Option<(f64, f64)>,
 ) -> Result<(), LayoutError> {
     let (a_side, b_side) = (a.left, b.right);
@@ -732,20 +884,32 @@ fn push_boundaries(
                 level: band.level,
             })
     };
-    // A band missing on one side keeps that side's last offset: zero width there.
-    let offset = |side: ArmSide<'_>, boundary: usize| {
-        side.bands[(side.core_bands - 1 + boundary).min(side.bands.len() - 1)].outer_m
-    };
     let core = a_side.bands[a_side.core_bands - 1];
     let mut inner = BoundaryBand {
         kind: core.kind,
         level: core.level,
     };
-    for boundary in 0..=a_beyond.len().max(b_beyond.len()) {
-        let from_offset_m = offset(a_side, boundary);
-        let to_offset_m = -offset(b_side, boundary);
+    for boundary in 0..boundary_count(a, b) {
+        let (own_from_m, own_to_m) = boundary_offsets(a, b, boundary);
+        let taper = taper_m
+            .filter(|_| own_from_m != -own_to_m)
+            .map(|station_m| BoundaryTaper {
+                station_m,
+                from_offset_m: own_from_m,
+                to_offset_m: own_to_m,
+            });
+        let (from_offset_m, to_offset_m) = match taper {
+            Some(_) => {
+                let mean_m = 0.5 * (own_from_m - own_to_m);
+                (mean_m, -mean_m)
+            }
+            None => (own_from_m, own_to_m),
+        };
         let (from_station_m, to_station_m) =
             stations(from_offset_m, to_offset_m).ok_or(LayoutError::ArmTooShort { arm: a.key })?;
+        if taper.is_some_and(|taper| taper.station_m <= from_station_m.max(to_station_m)) {
+            return Err(LayoutError::ArmTooShort { arm: a.key });
+        }
         let outer = band_beyond(boundary);
         boundaries.push(SectorBoundary {
             inner,
@@ -754,6 +918,7 @@ fn push_boundaries(
             from_offset_m,
             to_station_m,
             to_offset_m,
+            taper,
             samples: 0..0,
         });
         if let Some(outer) = outer {
@@ -904,7 +1069,10 @@ fn backward_crossing(
 
 // Station at which `o(., lateral_m)` stops lying past the sector bisector. `past_sign` is +1 for
 // the sector's `from_arm` (past means counter-clockwise of the bisector) and -1 for its `to_arm`.
-// Zero when the station-zero point is not past it; `None` if the curve never clears it.
+// When the station-zero point is not past it (a sector at least a half turn wide), the first
+// offset segment extended behind the node reaches the bisector at a station `<= 0`, so both arms
+// still meet in one miter point rather than a rounding-sized arc. `None` if the curve never
+// clears the bisector.
 fn bisector_station(
     arm: &ArmInput<'_>,
     lateral_m: f64,
@@ -915,7 +1083,12 @@ fn bisector_station(
     let past = |knot: &ArmKnot| past_sign * bisector.perp_dot(knot.offset(lateral_m) - node);
     let mut previous = past(&arm.knots[0]);
     if previous <= 0.0 {
-        return Some(0.0);
+        let next = past(&arm.knots[1]);
+        return Some(if next < previous {
+            arm.knots[1].station_m * previous / (previous - next)
+        } else {
+            0.0
+        });
     }
     for pair in arm.knots[..=arm.segments_below(arm.max_station_m)].windows(2) {
         let next = past(&pair[1]);
@@ -946,11 +1119,11 @@ fn assign_mouths(
         let right = &sectors[(index + count - 1) % count];
         let reach_m = boundaries[left.boundaries.clone()]
             .iter()
-            .map(|boundary| boundary.from_station_m)
+            .map(|boundary| boundary.reach_m(Side::Left))
             .chain(
                 boundaries[right.boundaries.clone()]
                     .iter()
-                    .map(|boundary| boundary.to_station_m),
+                    .map(|boundary| boundary.reach_m(Side::Right)),
             )
             .fold(MIN_MOUTH_STATION_M, f64::max);
         arm.mouth_station_m = reach_m + input.crosswalk_depth();
@@ -1087,7 +1260,7 @@ fn sample_sectors(
 fn is_shared_miter(kind: SectorKind, boundary: &SectorBoundary) -> bool {
     kind == SectorKind::Straight
         && boundary.from_offset_m == -boundary.to_offset_m
-        && (boundary.from_station_m > 0.0 || boundary.to_station_m > 0.0)
+        && (boundary.from_station_m != 0.0 || boundary.to_station_m != 0.0)
 }
 
 // Builds the counter-clockwise carriageway core loop and checks that it is simple.
@@ -1100,6 +1273,7 @@ fn core_loop(
 ) -> Result<Vec<CoreVertex>, LayoutError> {
     let count = sorted.len();
     let mut core: Vec<CoreVertex> = Vec::with_capacity(samples.len() + 8 * count);
+    let mut run_scratch: Vec<CoreVertex> = Vec::new();
     // Loop pieces (each arm's edges and mouth, each sector's curve), by first vertex.
     let mut pieces = Vec::with_capacity(2 * count);
     let push = |core: &mut Vec<CoreVertex>, position: RoadVec2, source: CoreVertexSource| {
@@ -1111,32 +1285,43 @@ fn core_loop(
         let input = &arms[arm.input_index];
         let left_sector = &sectors[index];
         let right_sector = &sectors[(index + count - 1) % count];
-        let right_start = boundaries[right_sector.boundaries.start].to_station_m;
-        let left_start = boundaries[left_sector.boundaries.start].from_station_m;
+        let right_edge = &boundaries[right_sector.boundaries.start];
+        let left_edge = &boundaries[left_sector.boundaries.start];
         let (right, left) = (-input.right.core_offset(), input.left.core_offset());
         let mouth = arm.mouth_station_m;
-        pieces.push(core.len());
-        for knot in input.knots_between(right_start, mouth) {
-            let side = Side::Right;
-            let source = CoreVertexSource::Knot {
-                arm: index,
-                side,
-                knot,
+        // The carriageway-edge runs between the sectors and the mouth, as node pieces build them.
+        let run = |edge: &SectorBoundary, side: Side, out: &mut Vec<CoreVertex>| {
+            let start_m = match side {
+                Side::Left => edge.from_station_m,
+                Side::Right => edge.to_station_m,
             };
-            push(&mut core, input.knots[knot].offset(right), source);
+            let taper_m = edge.taper.map(|taper| taper.station_m);
+            for_each_run_station(input, start_m, mouth, taper_m, |station_m, knot| {
+                let source = match knot {
+                    Some(knot) => CoreVertexSource::Knot {
+                        arm: index,
+                        side,
+                        knot,
+                    },
+                    None => CoreVertexSource::TaperEnd { arm: index, side },
+                };
+                let position = edge.run_point(input, side, station_m);
+                out.push(CoreVertex { position, source });
+            });
+        };
+        pieces.push(core.len());
+        run_scratch.clear();
+        run(right_edge, Side::Right, &mut run_scratch);
+        for vertex in run_scratch.drain(..) {
+            push(&mut core, vertex.position, vertex.source);
         }
         for (side, offset) in [(Side::Right, right), (Side::Left, left)] {
             let source = CoreVertexSource::Mouth { arm: index, side };
             push(&mut core, input.offset_point(mouth, offset), source);
         }
-        for knot in input.knots_between(left_start, mouth).rev() {
-            let side = Side::Left;
-            let source = CoreVertexSource::Knot {
-                arm: index,
-                side,
-                knot,
-            };
-            push(&mut core, input.knots[knot].offset(left), source);
+        run(left_edge, Side::Left, &mut run_scratch);
+        for vertex in run_scratch.drain(..).rev() {
+            push(&mut core, vertex.position, vertex.source);
         }
         pieces.push(core.len());
         for sample in boundaries[left_sector.boundaries.start].samples.clone() {
