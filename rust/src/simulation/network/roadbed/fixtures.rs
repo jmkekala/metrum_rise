@@ -180,8 +180,9 @@ pub(crate) fn finalize(graph: &mut RegionGraph) {
 }
 
 /// Footpath junction fixtures at node 0 (D5), each with its name: a footpath in a T's corner and
-/// beside one of its arms, at a road end straight on and to the side, across a straight road,
-/// on both sides of a bend, and footpaths meeting only footpaths at degree one, two and three.
+/// beside one of its arms (at 30 and 20 degrees), at a road end straight on, to the side and on both sides (around angle
+/// 60 degrees, so the cap's sector holds them out of angle order), across a straight road, on
+/// both sides of a bend, and footpaths meeting only footpaths at degree one, two and three.
 pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
     let road = |angle: f32| (angle, false);
     let path = |angle: f32| (angle, true);
@@ -194,8 +195,17 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
             "t_beside_arm",
             vec![road(0.0), road(180.0), road(270.0), path(300.0)],
         ),
+        // 20 degrees off the arm: its centreline meets the walkway beyond the crossing line.
+        (
+            "t_beside_arm_shallow",
+            vec![road(0.0), road(180.0), road(270.0), path(290.0)],
+        ),
         ("road_end", vec![road(0.0), path(180.0)]),
         ("road_end_side", vec![road(0.0), path(90.0)]),
+        (
+            "road_end_both_sides",
+            vec![road(60.0), path(30.0), path(90.0)],
+        ),
         ("through_road", vec![road(0.0), road(180.0), path(270.0)]),
         ("bend", vec![road(0.0), road(90.0), path(45.0), path(225.0)]),
         ("path_end", vec![path(0.0)]),

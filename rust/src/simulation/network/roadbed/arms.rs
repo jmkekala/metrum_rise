@@ -262,23 +262,44 @@ impl NodeArms {
         }
     }
 
-    /// Lays the node out; arm `i` of the input is arm `i` here. A bend whose default crossing
-    /// does not fit on its legacy-ordered arm takes it on the other arm instead, as the
-    /// pass-through rule does; it fails, with the first arm's error, only when neither fits
-    /// (D8, `ROAD-68` open question 13). Node pieces, clips and lanes all lay out through here.
-    pub(crate) fn layout(&self) -> Result<JunctionLayout, LayoutError> {
-        let mut inputs: Vec<_> = (0..self.len()).map(|index| self.input(index)).collect();
-        match (
-            JunctionLayout::build(self.position, &inputs),
-            self.crossing_fallback,
-        ) {
-            (Err(error), Some([from, to])) => {
-                inputs[from].crossable = false;
-                inputs[to].crossable = true;
-                JunctionLayout::build(self.position, &inputs).map_err(|_| error)
-            }
-            (layout, _) => layout,
+    /// Lays the node out; arm `i` of the input is arm `i` here. A bend's default crossing that
+    /// does not fit on its legacy-ordered arm, so that arm is too short or its corner does not
+    /// fit (the two errors whose budgets the crossing's depth enters), moves to the other arm,
+    /// as the pass-through rule does; the arms then say so too ([`Self::input`]). Any other
+    /// error, or the same on the other arm, fails the node with the first arm's error (D8,
+    /// `ROAD-68` open question 13). Node pieces, clips and lanes all lay out through here.
+    pub(crate) fn layout(&mut self) -> Result<JunctionLayout, LayoutError> {
+        let error = match self.build_layout() {
+            Ok(layout) => return Ok(layout),
+            Err(error) => error,
+        };
+        let Some([from, to]) = self.crossing_fallback else {
+            return Err(error);
+        };
+        let first = self.arms[from].key;
+        if !matches!(error, LayoutError::ArmTooShort { arm } | LayoutError::CornerDoesNotFit { arm }
+            if arm == first)
+        {
+            return Err(error);
         }
+        self.cross_on([from, to], to);
+        let layout = self.build_layout();
+        if layout.is_err() {
+            self.cross_on([from, to], from);
+        }
+        layout.map_err(|_| error)
+    }
+
+    // Puts a bend's default crossing on `onto` of `[from, to]`; the fallback is the other arm.
+    fn cross_on(&mut self, [from, to]: [usize; 2], onto: usize) {
+        self.arms[from].crossable = onto == from;
+        self.arms[to].crossable = onto == to;
+        self.crossing_fallback = (onto == from).then_some([from, to]);
+    }
+
+    fn build_layout(&self) -> Result<JunctionLayout, LayoutError> {
+        let inputs: Vec<_> = (0..self.len()).map(|index| self.input(index)).collect();
+        JunctionLayout::build(self.position, &inputs)
     }
 
     /// Where horizontal station `station_m` of arm `index` lies on its edge's centreline points
@@ -380,13 +401,18 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
     Some(incidents)
 }
 
-// A pass-through pair: two arms of one kind, road or footpath, close enough to opposite that
-// their spans share one bisected section and the node has no layout. A footpath continuing a
-// road end attaches to its cap instead (D5).
+/// Whether two arm directions away from one node ([`incident_direction`]) are close enough to
+/// opposite that their spans share one bisected section: the pass-through rule of node layouts,
+/// span ends and the profile solve.
+pub(crate) fn directions_pass_through(a: RoadVec2, b: RoadVec2) -> bool {
+    a.dot(b) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD)
+}
+
+// A pass-through pair: two arms of one kind, road or footpath, whose directions pass through, so
+// the node has no layout. A footpath continuing a road end attaches to its cap instead (D5).
 fn passes_through(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
     matches!(incidents, [(a, da), (b, db)]
-        if da.dot(*db) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD)
-            && is_road(graph, *a) == is_road(graph, *b))
+        if directions_pass_through(*da, *db) && is_road(graph, *a) == is_road(graph, *b))
 }
 
 /// The two road arms of a pass-through node, each with whether it carries the node's

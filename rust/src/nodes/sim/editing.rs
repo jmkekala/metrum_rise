@@ -627,6 +627,11 @@ impl SimCore {
         self.region_graph.rebuild_adjacency_list();
         self.region_graph
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
+        // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
+        // edge the solve derives touches one of them, so it is in the undo record and rebuilt.
+        let ends = HashSet::from([start_node, end_node]);
+        let changed = self.region_graph.finalize_junction_endpoint_profiles(&ends);
+        debug_assert!(changed.is_subset(&affected_edges));
         for chunk in old_chunks {
             self.transit_network.cch_dirty_chunks.insert(chunk);
         }
@@ -1773,6 +1778,13 @@ impl SimCore {
             self.region_graph.move_node(node_id, pos);
             self.region_graph
                 .rebuild_intersection_clips_for_nodes(&affected_nodes);
+            // Every edge the move deformed has both ends here, so the solve re-derives each
+            // profile whose pins the move can reach, from its control polyline (`ROAD-68`
+            // invariant 6); all of them are in the undo record and rebuilt below.
+            let changed = self
+                .region_graph
+                .finalize_junction_endpoint_profiles(&affected_nodes);
+            debug_assert!(changed.is_subset(&affected_edges));
             self.zoning
                 .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
             self.agents.invalidate_lane_ids_for_edges(
@@ -1973,8 +1985,8 @@ impl SimCore {
         // The layout reads the overrides of the node's surviving id.
         self.region_graph
             .set_crosswalk_override(node, edge_id, enabled);
-        let lays_out =
-            NodeArms::collect(&self.region_graph, node).is_none_or(|arms| arms.layout().is_ok());
+        let lays_out = NodeArms::collect(&self.region_graph, node)
+            .is_none_or(|mut arms| arms.layout().is_ok());
         self.region_graph
             .restore_crosswalk_override(node, edge_id, previous);
         if !lays_out {

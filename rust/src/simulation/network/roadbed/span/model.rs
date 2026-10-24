@@ -3,7 +3,7 @@
 //! The legacy section model of one edge: stations, frame, plane blend, width taper and section
 //! evaluation, ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules.
 
-use super::super::arms::pass_through_crossings;
+use super::super::arms::{directions_pass_through, pass_through_crossings};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
 use super::super::profile::RoadProfile;
@@ -537,12 +537,10 @@ fn node_at(graph: &RegionGraph, edge: &Edge, end: EdgeEnd) -> u32 {
     })
 }
 
-// Direction away from the node, from the endpoint to the first distinct point of the control
-// polyline: node kinds come from authored geometry, as the graph's profile solve takes them.
-pub(in crate::simulation::network::roadbed) fn incident_direction(
-    edge: &Edge,
-    end: EdgeEnd,
-) -> Option<RoadVec2> {
+/// Direction away from the node at `end`, in `f64`, from the endpoint to the first control
+/// point more than 1 mm away; `None` when there is none. Node kinds, layout arms and the graph's
+/// profile solve all take an edge end's direction from here.
+pub(crate) fn incident_direction(edge: &Edge, end: EdgeEnd) -> Option<RoadVec2> {
     let points = &edge.geometry;
     if points.len() < 2 {
         return None;
@@ -616,7 +614,7 @@ fn endpoint_kind_and_tangent(
         0 => return (None, None),
         1 => NodeKind::Terminal,
         // A road end continued by a footpath is a layout node (D5, `arms::passes_through`).
-        2 if first_two[0].dot(first_two[1]) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD)
+        2 if directions_pass_through(first_two[0], first_two[1])
             && first_types[0] == first_types[1] =>
         {
             NodeKind::PassThrough

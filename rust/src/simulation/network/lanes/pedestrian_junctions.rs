@@ -5,9 +5,9 @@
 //! At a node with a junction layout, crossings and sidewalk corner routes come from the layout
 //! (`roadbed::NodeWalkways`): a crossing on each crossable arm, square to the road on its crossing line,
 //! and a corner route along the sidewalk around every sector between two arms with sidewalks. A
-//! footpath ends at its layout mouth and joins the corner route of the sector it lies in at its
-//! nearest point (D5); footpaths meeting only footpaths, or roads without sidewalks, meet at the
-//! node.
+//! footpath ends at its layout mouth and joins the walk of the sector it lies in where its
+//! centreline meets it (D5); footpaths meeting only footpaths, or roads without sidewalks, meet
+//! at the node.
 //! A pass-through node's crossing (one by default, D8) lies on its arm's span and comes from the
 //! span's section there, through the same walkways. At nodes without a layout (pass-through
 //! pairs, footpath nodes, structure ends and failed layouts) neighbouring sidewalks join by a
@@ -420,9 +420,35 @@ fn append_footpath_steps(
     }
 }
 
+// A footpath's two routes from its end `from` in to `joint`, on segment `segment` of a walk
+// (`point(i)` for `i < len`), then along the walk to walk points `ends` (the two sidewalk mouths),
+// which the lanes end on exactly: their own positions `targets`.
+fn join_routes(
+    from: Vector3,
+    (segment, joint): (usize, Vector3),
+    point: impl Fn(usize) -> Vector3,
+    ends: [usize; 2],
+    targets: [Vector3; 2],
+) -> [Vec<Vector3>; 2] {
+    [0, 1].map(|side| {
+        let (end, target) = (ends[side], targets[side]);
+        let mut route = Vec::with_capacity(segment.abs_diff(end) + 3);
+        push_distinct_point(&mut route, from);
+        push_distinct_point(&mut route, joint);
+        // Walk points from the joint's segment to `end`, which the lane's own point replaces.
+        let mut walk = |index: usize| push_distinct_point(&mut route, point(index));
+        if end <= segment {
+            (end + 1..=segment).rev().for_each(&mut walk);
+        } else {
+            (segment + 1..end).for_each(&mut walk);
+        }
+        push_end_point(&mut route, target);
+        route
+    })
+}
+
 // An attached footpath's two routes from its end `from` (D5): in along its centreline to where it
-// meets its sector's corner route (`join`), then along the route to each of its two sidewalk
-// mouths, which the lanes end on exactly.
+// meets its sector's walk (`join`), then along the walk to each of its two sidewalk mouths.
 fn layout_join_routes(
     mouths: &[SidewalkMouth],
     from: Vector3,
@@ -430,23 +456,13 @@ fn layout_join_routes(
     join: &FootpathJoin<'_>,
 ) -> [Vec<Vector3>; 2] {
     let point = |p: RoadVec3| Vector3::new(p.x as f32, p.y as f32, p.z as f32);
-    let points = join.corner.points;
-    // The route's interior points are the corner's own; its two ends the lanes'.
-    let mut to_start = Vec::with_capacity(join.segment + 3);
-    let mut to_end = Vec::with_capacity(points.len() - join.segment + 2);
-    for route in [&mut to_start, &mut to_end] {
-        push_distinct_point(route, from);
-        push_distinct_point(route, point(join.point));
-    }
-    for &p in points[1..=join.segment].iter().rev() {
-        push_distinct_point(&mut to_start, point(p));
-    }
-    push_end_point(&mut to_start, mouths[start].mouth_world_pos);
-    for &p in &points[join.segment + 1..points.len() - 1] {
-        push_distinct_point(&mut to_end, point(p));
-    }
-    push_end_point(&mut to_end, mouths[end].mouth_world_pos);
-    [to_start, to_end]
+    join_routes(
+        from,
+        (join.segment, point(join.point)),
+        |index| point(join.walk[index]),
+        [join.route.start, join.route.end - 1],
+        [start, end].map(|mouth| mouths[mouth].mouth_world_pos),
+    )
 }
 
 // Joins a footpath end `from` to a corner route at its nearest point, and follows the route both
@@ -458,21 +474,17 @@ fn join_corner(
     (start, end): (usize, usize),
     corner: &[Vector3],
 ) {
-    let Some((segment, joint)) = nearest_point_on_polyline_xz(corner, from) else {
+    let Some(joint) = nearest_point_on_polyline_xz(corner, from) else {
         return;
     };
-    let mut to_start = Vec::with_capacity(segment + 3);
-    let mut to_end = Vec::with_capacity(corner.len() - segment + 2);
-    for point in [from, joint] {
-        push_distinct_point(&mut to_start, point);
-        push_distinct_point(&mut to_end, point);
-    }
-    for &point in corner[..=segment].iter().rev() {
-        push_distinct_point(&mut to_start, point);
-    }
-    for &point in &corner[segment + 1..] {
-        push_distinct_point(&mut to_end, point);
-    }
+    let last = corner.len() - 1;
+    let [to_start, to_end] = join_routes(
+        from,
+        joint,
+        |index| corner[index],
+        [0, last],
+        [corner[0], corner[last]],
+    );
     both_ways(steps, start, to_start);
     both_ways(steps, end, to_end);
 }

@@ -22,7 +22,7 @@ mod span;
 mod system;
 mod walkways;
 
-pub(crate) use arms::NodeArms;
+pub(crate) use arms::{NodeArms, directions_pass_through};
 pub(crate) use geometry::{
     RoadSurfaceTriangleQueryIndex, ray_xz_interval_for_bounds, road_ray_triangle_intersection_t,
     triangulate_constrained_rings_xz,
@@ -39,6 +39,7 @@ pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile}
 pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
 pub use query::{LaneSurfaceQuery, PieceId};
 pub use section::{RoadBand, RoadSection};
+pub(crate) use span::incident_direction;
 pub use span::{MouthSection, SpanPiece};
 pub use system::RoadbedSystem;
 pub(crate) use walkways::{FootpathJoin, NodeWalkways, SidewalkEnd};

@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::simulation::network::roadbed::fixtures::footpath_fixtures;
+use crate::simulation::network::roadbed::layout::BoundaryPoint;
 use crate::simulation::network::types::TransitType;
 
 fn fixtures() -> Vec<(String, RegionGraph)> {
@@ -37,7 +38,7 @@ fn footpath_junctions_build_watertight_pieces() {
         let hub = hub.unwrap_or_else(|| {
             panic!(
                 "{name}: no hub piece, {:?}",
-                NodeArms::collect(&graph, 0).map(|arms| arms.layout())
+                NodeArms::collect(&graph, 0).map(|mut arms| arms.layout())
             )
         });
         let degree = graph.node_adjacency(0).len();
@@ -168,5 +169,55 @@ fn a_footpath_edit_rebuilds_only_its_closure() {
             };
             assert_eq!(generation != &before[id], rebuilt, "{name}: {id:?}");
         }
+    }
+}
+
+// `ROAD-68` open question 17: a footpath beside a crossable arm moves only that arm's mouth, to
+// 1 m beyond the footpath; the zebra stays right outside the corner, where it is without the
+// footpath.
+#[test]
+fn a_footpath_beside_an_arm_moves_its_mouth_but_not_its_zebra() {
+    for sloped in [false, true] {
+        let with = footpath_fixtures(sloped)
+            .into_iter()
+            .find(|(name, _)| *name == format!("t_beside_arm/{sloped}"))
+            .unwrap()
+            .1;
+        let mut without = with.clone();
+        let footpath = (0..with.edge_count())
+            .find(|&edge| with.edge(edge).primary_type == TransitType::Foot)
+            .unwrap();
+        without.edge_mut(footpath).deleted = true;
+        crate::simulation::network::roadbed::fixtures::finalize(&mut without);
+        let layout = |graph: &RegionGraph| NodeArms::collect(graph, 0).unwrap().layout().unwrap();
+        let (with, without) = (layout(&with), layout(&without));
+        let mut moved = 0;
+        for arm in &with.arms {
+            let alone = without
+                .arms
+                .iter()
+                .find(|other| other.key == arm.key)
+                .unwrap();
+            assert_eq!(arm.crosswalk, alone.crosswalk, "{sloped}: {:?}", arm.key);
+            let met = with.attachments[0]
+                .edges
+                .iter()
+                .filter_map(|edge| match edge.on {
+                    BoundaryPoint::Run {
+                        arm: on, station_m, ..
+                    } if with.arms[on].key == arm.key => Some(station_m),
+                    _ => None,
+                });
+            match met.reduce(f64::max) {
+                Some(station_m) => {
+                    moved += 1;
+                    assert_eq!(arm.mouth_station_m, station_m + 1.0, "{sloped}");
+                    let zebra = arm.crosswalk.unwrap();
+                    assert!(zebra.station_m + 1.5 < arm.mouth_station_m, "{sloped}");
+                }
+                None => assert_eq!(arm.mouth_station_m, alone.mouth_station_m, "{sloped}"),
+            }
+        }
+        assert_eq!(moved, 1, "{sloped}: the footpath meets one arm side");
     }
 }

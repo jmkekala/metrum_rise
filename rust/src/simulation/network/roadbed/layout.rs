@@ -54,7 +54,9 @@
 //!    its two sides reach their own offsets, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). That
 //!    depth is the arm's [`Crosswalk`] strip, on the straight approach right outside the corners;
 //!    its crossing line is the middle of the depth, and its kerb points are the two
-//!    carriageway-edge points there.
+//!    carriageway-edge points there. An attached arm whose edge meets an arm side moves only that
+//!    arm's mouth, to `MIN_MOUTH_STATION_M` beyond the meeting point when that is farther; the
+//!    zebra stays at the corner (`ROAD-68` open question 17).
 //! 7. A corner that would push a mouth past `max_station_m` shrinks its radius by bisection
 //!    towards the corner's raised width plus `CURB_RETURN_CLEARANCE_M` (D1). If that minimum does
 //!    not fit either, layout fails with [`LayoutError::CornerDoesNotFit`].
@@ -243,7 +245,8 @@ pub struct ArmLayout {
     pub angle_rad: f64,
     /// Station of the mouth section, where the node piece ends and the span begins.
     pub mouth_station_m: f64,
-    /// Zebra strip of a crossable arm (D8); its outer edge is the mouth.
+    /// Zebra strip of a crossable arm (D8); its outer edge is the mouth unless an attached arm
+    /// moved the mouth farther out.
     pub crosswalk: Option<Crosswalk>,
     /// Concave corner on the left side, toward the next arm.
     pub left_corner: Option<CornerTangent>,
@@ -252,8 +255,8 @@ pub struct ArmLayout {
 }
 
 /// The zebra strip of a crossable arm (D8): `CROSSWALK_DEPTH_M` deep across the arm's straight
-/// approach, from where both sides have left their sectors (the curbs stop curving) out to the
-/// mouth. Pedestrian lanes, zebra markings and node pieces all read it from here.
+/// approach, from where both sides have left their sectors (the curbs stop curving) outward.
+/// Pedestrian lanes, zebra markings and node pieces all read it from here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Crosswalk {
     /// Station of the strip's inner edge: the larger of `s_min` and the stations at which the
@@ -499,15 +502,23 @@ pub enum LayoutError {
 }
 
 impl SectorBoundary {
-    /// Signed offset of this boundary's run along its `from_arm` (`Side::Left`) or `to_arm`
-    /// (`Side::Right`) at `station_m`: the sector's offset where the run leaves the sector, linear
-    /// to the arm's own offset at the taper station, and that own offset from there out. Node
-    /// pieces, the core loop and walkways all place the run with this one function.
-    pub fn run_offset_m(&self, side: Side, station_m: f64) -> f64 {
-        let (start_m, start_offset_m) = match side {
+    /// Where this boundary's run along its `from_arm` (`Side::Left`) or `to_arm` (`Side::Right`)
+    /// leaves the sector: its station and signed offset there. The one side-to-arm mapping of
+    /// every run.
+    pub fn run_start(&self, side: Side) -> (f64, f64) {
+        match side {
             Side::Left => (self.from_station_m, self.from_offset_m),
             Side::Right => (self.to_station_m, self.to_offset_m),
-        };
+        }
+    }
+
+    /// Signed offset of the run on `side` at `station_m`, at or beyond [`Self::run_start`]: the
+    /// sector's offset where the run leaves the sector, linear to the arm's own offset at the
+    /// taper station, and that own offset from there out. Node pieces, the core loop and
+    /// walkways all place the run with this one function.
+    pub fn run_offset_m(&self, side: Side, station_m: f64) -> f64 {
+        let (start_m, start_offset_m) = self.run_start(side);
+        debug_assert!(station_m >= start_m, "a run starts at its sector");
         let Some(taper) = self.taper else {
             return start_offset_m;
         };
@@ -518,18 +529,15 @@ impl SectorBoundary {
         if station_m >= taper.station_m {
             return own_offset_m;
         }
-        let t = ((station_m - start_m) / (taper.station_m - start_m)).max(0.0);
+        let t = (station_m - start_m) / (taper.station_m - start_m);
         lerp_scalar(start_offset_m, own_offset_m, t)
     }
 
     /// Station at which the run on `side` reaches its arm's own offset: the taper station, else
     /// where it leaves the sector.
     pub fn reach_m(&self, side: Side) -> f64 {
-        match (self.taper, side) {
-            (Some(taper), _) => taper.station_m,
-            (None, Side::Left) => self.from_station_m,
-            (None, Side::Right) => self.to_station_m,
-        }
+        self.taper
+            .map_or(self.run_start(side).0, |taper| taper.station_m)
     }
 
     /// The run's point at `station_m` on `arm`, the boundary's `from_arm` or `to_arm`.
@@ -582,7 +590,7 @@ pub struct JunctionLayout {
     pub samples: Vec<RoadVec2>,
     /// Counter-clockwise carriageway core loop, without repeated consecutive vertices.
     pub core: Vec<CoreVertex>,
-    /// Attached arms in counter-clockwise order.
+    /// Attached arms by sector and, within one, along its outer path from its from-arm.
     pub attachments: Vec<Attachment>,
 }
 
@@ -785,10 +793,11 @@ impl JunctionLayout {
         out: &mut Vec<PathPoint>,
     ) {
         let samples = &self.samples[boundary.samples.clone()];
-        let (station_m, start) = match side {
-            Side::Left => (boundary.from_station_m, samples[0]),
-            Side::Right => (boundary.to_station_m, samples[samples.len() - 1]),
+        let start = match side {
+            Side::Left => samples[0],
+            Side::Right => samples[samples.len() - 1],
         };
+        let station_m = boundary.run_start(side).0;
         let mouth_m = self.arms[arm].mouth_station_m;
         let first = out.len();
         out.push(PathPoint {
@@ -925,10 +934,13 @@ impl JunctionLayout {
     }
 
     // Mouths of the attached arms, beyond their farther edge point; their ribbon outlines must
-    // be simple, and the ribbons of one sector must follow each other along its outer path.
+    // be simple. The arms are then ordered by sector and along its outer path, where the ribbons
+    // of one sector must follow each other without touching.
     fn finish_attachments(&mut self, arms: &[ArmInput<'_>]) -> Result<(), LayoutError> {
         let (mut path, mut ring) = (Vec::new(), Vec::new());
-        let mut previous: Option<(usize, usize)> = None;
+        // Per attached arm: its sector and the path positions of its two edge points.
+        let mut spans = Vec::with_capacity(self.attachments.len());
+        let mut path_sector = None;
         for index in 0..self.attachments.len() {
             let attachment = &mut self.attachments[index];
             let input = &arms[attachment.input_index];
@@ -941,21 +953,37 @@ impl JunctionLayout {
                 return Err(LayoutError::ArmTooShort { arm });
             }
             let sector = attachment.sector;
-            self.outer_path(arms, sector, &mut path);
+            if path_sector != Some(sector) {
+                self.outer_path(arms, sector, &mut path);
+                path_sector = Some(sector);
+            }
             let (start, end) = self
                 .ribbon(input, index, &path, &mut ring)
                 .ok_or(LayoutError::FootpathDoesNotJoin { arm })?;
-            if previous.is_some_and(|(at, left)| at == sector && start <= left) {
-                return Err(LayoutError::FootpathDoesNotJoin { arm });
-            }
-            previous = Some((sector, end));
-            let points: Vec<RoadVec2> = ring.iter().map(|point| point.xz).collect();
-            if !loop_is_simple(&points, &[0], |point| *point)
-                || signed_area(&points, |point| *point) == 0.0
+            spans.push((sector, start, end));
+            if !loop_is_simple(&ring, &[0], |point| point.xz)
+                || signed_area(&ring, |point| point.xz) == 0.0
             {
                 return Err(LayoutError::FootpathDoesNotJoin { arm });
             }
         }
+        // A terminal's sector, and any sector that wraps through angle zero, holds its arms out
+        // of angle order, so the path order is taken from the path itself.
+        let mut ordered: Vec<_> = spans
+            .into_iter()
+            .zip(std::mem::take(&mut self.attachments))
+            .collect();
+        ordered.sort_by_key(|&((sector, start, _), _)| (sector, start));
+        for pair in ordered.windows(2) {
+            let ((sector, _, end), (next_sector, start, _)) = (pair[0].0, pair[1].0);
+            if sector == next_sector && start <= end {
+                return Err(LayoutError::FootpathDoesNotJoin { arm: pair[1].1.key });
+            }
+        }
+        self.attachments = ordered
+            .into_iter()
+            .map(|(_, attachment)| attachment)
+            .collect();
         Ok(())
     }
 }
@@ -1246,18 +1274,20 @@ fn corner_crossing(
     b: &ArmInput<'_>,
     b_offset: f64,
 ) -> Option<Crossing> {
-    forward_crossing(a, a_offset, b, b_offset)
+    forward_crossing(a, a_offset, b, b_offset, 0.0)
         .or_else(|| backward_crossing(a, a_offset, b, b_offset))
 }
 
 // First crossing, by `max(sa, sb)` then search order, of `o_a(., a_offset)` and
-// `o_b(., b_offset)` over stations up to each arm's `max_station_m`. Segment pairs are tested in
-// station order and the search stops once no untested pair can start before the best crossing.
+// `o_b(., b_offset)` over stations from `a_from_m` on `a` and up to each arm's `max_station_m`.
+// Segment pairs are tested in station order and the search stops once no untested pair can start
+// before the best crossing.
 fn forward_crossing(
     a: &ArmInput<'_>,
     a_offset: f64,
     b: &ArmInput<'_>,
     b_offset: f64,
+    a_from_m: f64,
 ) -> Option<Crossing> {
     let mut best: Option<Crossing> = None;
     let b_segments = b.segments_below(b.max_station_m);
@@ -1281,7 +1311,7 @@ fn forward_crossing(
                 b_station: lerp_scalar(b0.station_m, b1.station_m, u),
                 point: lerp(p0, p1, t),
             };
-            if found.a_station <= a.max_station_m
+            if (a_from_m..=a.max_station_m).contains(&found.a_station)
                 && found.b_station <= b.max_station_m
                 && best.is_none_or(|current| found.key() < current.key())
             {
@@ -1356,12 +1386,11 @@ fn bisector_station(
     let past = |knot: &ArmKnot| past_sign * bisector.perp_dot(knot.offset(lateral_m) - node);
     let mut previous = past(&arm.knots[0]);
     if previous <= 0.0 {
+        // A straight sector's bisector lies within half a degree of the station-zero lateral
+        // line, so the first segment always moves away from it; `None` would mean a sector that
+        // is not straight.
         let next = past(&arm.knots[1]);
-        return Some(if next < previous {
-            arm.knots[1].station_m * previous / (previous - next)
-        } else {
-            0.0
-        });
+        return (next < previous).then(|| arm.knots[1].station_m * previous / (previous - next));
     }
     for pair in arm.knots[..=arm.segments_below(arm.max_station_m)].windows(2) {
         let next = past(&pair[1]);
@@ -1383,8 +1412,8 @@ const UNPLACED: BoundaryPoint = BoundaryPoint::Sample(usize::MAX);
 
 // Places each attached arm in the sector it lies in and finds where its edges meet the
 // outermost runs of that sector's two arm sides (the right edge tries the from-arm first, the
-// left edge the to-arm). A run point lies at or beyond the run's sector station; edges that meet
-// neither run are left `UNPLACED` for the sector's samples.
+// left edge the to-arm). A run point lies at or beyond the run's reach, where it holds its arm's
+// own offset (D4); edges that meet neither run are left `UNPLACED` for the sector's samples.
 fn attach_to_runs(
     arms: &[ArmInput<'_>],
     sorted: &[ArmLayout],
@@ -1403,18 +1432,18 @@ fn attach_to_runs(
             .ok_or(LayoutError::DuplicateDirection { arm: arm.key })?;
         let layout = &sectors[sector];
         let outer = &boundaries[layout.boundaries.end - 1];
-        let runs = [
-            (layout.from_arm, Side::Left, outer.from_station_m),
-            (layout.to_arm, Side::Right, outer.to_station_m),
-        ];
+        let runs = [(layout.from_arm, Side::Left), (layout.to_arm, Side::Right)];
         // The run is searched at its arm's own offset; its point is the run's own, tapered or not.
         let edge = |offset_m: f64, order: [usize; 2]| {
             let on_run = order.into_iter().find_map(|run| {
-                let (road_arm, side, from_m) = runs[run];
+                let (road_arm, side) = runs[run];
                 let road = &arms[sorted[road_arm].input_index];
-                let road_offset_m = outer.run_offset_m(side, outer.reach_m(side));
-                let found = forward_crossing(road, road_offset_m, input, offset_m)?;
-                (found.a_station >= from_m).then(|| AttachedEdge {
+                // Beyond the taper the run lies on its arm's offset curve at its own offset, so
+                // the crossing found there is a point of the run itself.
+                let reach_m = outer.reach_m(side);
+                let road_offset_m = outer.run_offset_m(side, reach_m);
+                let found = forward_crossing(road, road_offset_m, input, offset_m, reach_m)?;
+                Some(AttachedEdge {
                     offset_m,
                     station_m: found.b_station,
                     point: outer.run_point(road, side, found.a_station),
@@ -1449,8 +1478,9 @@ fn attach_to_runs(
     attached.into_iter().map(attach).collect()
 }
 
-// Sets each arm's mouth and crosswalk stations and copies its corner tangents. An arm side that
-// an attached edge meets reaches `MIN_MOUTH_STATION_M` beyond that point.
+// Sets each arm's mouth and crosswalk stations and copies its corner tangents. The zebra stays
+// right outside the corners; an attached edge that meets an arm side moves only the mouth, to
+// `MIN_MOUTH_STATION_M` beyond that point (`ROAD-68` open question 17).
 fn assign_mouths(
     arms: &[ArmInput<'_>],
     sorted: &mut [ArmLayout],
@@ -1480,9 +1510,8 @@ fn assign_mouths(
                     .iter()
                     .map(|boundary| boundary.reach_m(Side::Right)),
             )
-            .chain(attached_m)
             .fold(MIN_MOUTH_STATION_M, f64::max);
-        arm.mouth_station_m = reach_m + input.crosswalk_depth();
+        arm.mouth_station_m = attached_m.fold(reach_m + input.crosswalk_depth(), f64::max);
         if arm.mouth_station_m > input.max_station_m {
             return Err(LayoutError::ArmTooShort { arm: arm.key });
         }
@@ -1586,7 +1615,7 @@ fn sample_sectors(
         let centre = sector.corner.map_or(node, |corner| corner.centre);
         let curve = |boundary: &SectorBoundary| {
             let start = a.offset_point(boundary.from_station_m, boundary.from_offset_m);
-            let end = if is_shared_miter(sector.kind, boundary) {
+            let end = if is_shared_miter(sector.kind) {
                 start
             } else {
                 b.offset_point(boundary.to_station_m, boundary.to_offset_m)
@@ -1681,13 +1710,12 @@ fn polyline_crossing(
     best
 }
 
-// In a straight sector's miter, a boundary with equal offsets on both arms meets in one point.
-// Its two bisector crossings are the same point, so the `from_arm` one stands for both instead of
-// leaving a rounding-sized step between two computations of it.
-fn is_shared_miter(kind: SectorKind, boundary: &SectorBoundary) -> bool {
+// In a straight sector's miter every boundary has equal offsets on both arms: the arms' own
+// where no boundary steps, the mean of the two where one does (D4's taper). Its two bisector
+// crossings are then the same point, so the `from_arm` one stands for both instead of leaving a
+// rounding-sized step between two computations of it.
+fn is_shared_miter(kind: SectorKind) -> bool {
     kind == SectorKind::Straight
-        && boundary.from_offset_m == -boundary.to_offset_m
-        && (boundary.from_station_m != 0.0 || boundary.to_station_m != 0.0)
 }
 
 // Builds the counter-clockwise carriageway core loop and checks that it is simple.
@@ -1718,10 +1746,7 @@ fn core_loop(
         let mouth = arm.mouth_station_m;
         // The carriageway-edge runs between the sectors and the mouth, as node pieces build them.
         let run = |edge: &SectorBoundary, side: Side, out: &mut Vec<CoreVertex>| {
-            let start_m = match side {
-                Side::Left => edge.from_station_m,
-                Side::Right => edge.to_station_m,
-            };
+            let start_m = edge.run_start(side).0;
             let taper_m = edge.taper.map(|taper| taper.station_m);
             for_each_run_station(input, start_m, mouth, taper_m, |station_m, knot| {
                 let source = match knot {
@@ -1880,7 +1905,12 @@ fn segments_touch(p0: RoadVec2, p1: RoadVec2, q0: RoadVec2, q1: RoadVec2) -> boo
 }
 
 // Parameters `(t, u)` in `[0, 1]` at which two segments cross; parallel segments never do.
-fn segment_crossing(p0: RoadVec2, p1: RoadVec2, q0: RoadVec2, q1: RoadVec2) -> Option<(f64, f64)> {
+pub(super) fn segment_crossing(
+    p0: RoadVec2,
+    p1: RoadVec2,
+    q0: RoadVec2,
+    q1: RoadVec2,
+) -> Option<(f64, f64)> {
     line_crossing(p0, p1, q0, q1)
         .filter(|(t, u)| (0.0..=1.0).contains(t) && (0.0..=1.0).contains(u))
 }

@@ -20,7 +20,7 @@ const CONVENTIONS := {
 	"camera": "fixed: 30 m above the surface point under the junction, pitched 50 degrees down, looking toward -z, offset +z",
 	"y_junction": "stem runs along +x ending at the origin; branches leave the origin at +/-(angle/2) from +x; drawn stem first, except y_25_branches_first",
 	"bend": "first road ends at the origin heading +x; second leaves at +45 degrees (toward +z)",
-	"lanes": "default 1 forward + 1 backward lane per road unless the fixture says otherwise",
+	"lanes": "default 1 forward + 1 backward lane per road unless the fixture says otherwise; 0 lanes is a 2 m footpath",
 }
 var _failures := 0
 var _records: Array[Dictionary] = []
@@ -89,6 +89,8 @@ func _fixtures() -> Array[Dictionary]:
 	result.append({"name": "bend_45", "roads": [_road(Vector2(-arm, 0), Vector2.ZERO), _road(Vector2.ZERO, Vector2.from_angle(deg_to_rad(45.0)) * arm)]})
 	result.append({"name": "terminal", "roads": [_road(Vector2(-arm, 0), Vector2.ZERO)]})
 	result.append({"name": "t_mixed_4lane_through", "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0), 2), _road(Vector2(0, 0), Vector2(0, arm))]})
+	# A footpath (no lanes) 30 degrees off the T's side road: it meets that arm's sidewalk, so the arm's mouth moves out and its zebra stays at the corner (D5, ROAD-68 open question 17).
+	result.append({"name": "t_footpath_beside_arm", "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm)), _road(Vector2.ZERO, Vector2.from_angle(deg_to_rad(120.0)) * 60.0, 0)]})
 	return result
 
 func _surface(point: Vector2) -> Vector3:

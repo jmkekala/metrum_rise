@@ -11,11 +11,9 @@
 use super::super::data::{Edge, RegionGraph};
 use crate::simulation::network::roadbed::{EdgeEnd, NodeArms, NodeKind};
 use crate::simulation::network::types::TransitType;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
-
-const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 
 impl RegionGraph {
     /// Recalculates the start/end clipping distances for all edges from their nodes' junction
@@ -94,7 +92,7 @@ impl RegionGraph {
             nodes
                 .par_iter()
                 .map(|&node| {
-                    let Some(arms) = NodeArms::collect(self, node) else {
+                    let Some(mut arms) = NodeArms::collect(self, node) else {
                         return Vec::new();
                     };
                     // Terminals keep a zero clip on their own arm, so lanes run onto the cap;
@@ -154,36 +152,6 @@ impl RegionGraph {
         let mut edge_ids = edge_ids.into_iter().collect::<Vec<_>>();
         edge_ids.sort_unstable();
         edge_ids
-    }
-
-    pub(super) fn directions_are_pass_through(a: Vector2, b: Vector2) -> bool {
-        a.dot(b) <= -CLIP_PASS_THROUGH_DOT_THRESHOLD
-    }
-
-    pub(super) fn edge_endpoint_direction_xz(edge: &Edge, at_start: bool) -> Option<Vector2> {
-        if edge.geometry.len() < 2 {
-            return None;
-        }
-
-        if at_start {
-            for window in edge.geometry.windows(2) {
-                let delta = window[1] - window[0];
-                let direction = Vector2::new(delta.x, delta.z);
-                if direction.length_squared() > 1e-8 {
-                    return Some(direction.normalized());
-                }
-            }
-        } else {
-            for window in edge.geometry.windows(2).rev() {
-                let delta = window[0] - window[1];
-                let direction = Vector2::new(delta.x, delta.z);
-                if direction.length_squared() > 1e-8 {
-                    return Some(direction.normalized());
-                }
-            }
-        }
-
-        None
     }
 
     pub(super) fn edge_profile_length_m(edge: &Edge) -> f32 {

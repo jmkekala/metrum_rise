@@ -163,7 +163,7 @@ fn assert_invariants(layout: &JunctionLayout, arms: &[OwnedArm]) {
             let samples = &layout.samples[boundary.samples.clone()];
             assert_eq!(samples.len(), sector.samples_per_boundary);
             let start = a.offset_point(boundary.from_station_m, boundary.from_offset_m);
-            let end = if is_shared_miter(sector.kind, boundary) {
+            let end = if is_shared_miter(sector.kind) {
                 start
             } else {
                 b.offset_point(boundary.to_station_m, boundary.to_offset_m)
@@ -774,8 +774,9 @@ fn a_straight_width_change_tapers_along_both_approaches() {
         ] {
             assert_eq!(boundary.run_offset_m(side, taper_m), own_m);
             assert_eq!(boundary.run_offset_m(side, 40.0), own_m);
-            let half = boundary.run_offset_m(side, 0.5 * taper_m);
-            let start = boundary.run_offset_m(side, 0.0);
+            let (start_m, start) = boundary.run_start(side);
+            assert_eq!(boundary.run_offset_m(side, start_m), start);
+            let half = boundary.run_offset_m(side, 0.5 * (start_m + taper_m));
             assert_near(half, 0.5 * (start + own_m), 1e-12);
             assert_eq!(
                 boundary.run_point(arm, side, taper_m),

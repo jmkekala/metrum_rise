@@ -19,7 +19,11 @@
 //!   sidewalk. A terminal's route wraps its round cap.
 //!
 //! - A footpath ends at its mouth, on its centreline. One attached to a road node (D5) joins the
-//!   corner route of the sector it lies in; where only footpaths meet, they meet at the node.
+//!   walk of the sector it lies in where its centreline meets it: the corner route, extended along
+//!   both arms' walkways out to their mouths, past a crossable arm's sidewalk end on the crossing
+//!   line (`ROAD-68` open question 17). It meets that walk by construction: its centreline runs
+//!   from beyond the sector's outer boundary, between the two mouths, into the core. Where only
+//!   footpaths meet, they meet at the node.
 //!
 //! A pass-through node has no layout, but its crossing (D8: one by default) is span-owned
 //! ([`pass_through_crossing`]): the crossing arm's sidewalks end on the crossing line, taken with
@@ -32,7 +36,7 @@
 use super::arms::{NodeArms, pass_through_crossings};
 use super::layout::{
     ArmInput, ArmKey, ArmSide, EdgeEnd, JunctionLayout, NodeKind, SectorBoundary, SectorLayout,
-    Side, for_each_run_station,
+    Side, for_each_run_station, segment_crossing,
 };
 use super::node::crossing_kerbs;
 use super::span::{SpanCrossing, pass_through_crossing};
@@ -79,15 +83,26 @@ pub(crate) struct NodeWalkways {
     arms: Vec<WalkArm>,
     // False at a pass-through node, which has no layout and no corner routes.
     layout: bool,
-    // Corner routes: sector, from-arm and to-arm (layout order) and their points.
-    corners: Vec<(usize, usize, usize, Range<usize>)>,
+    // Sector walks, each holding its corner route.
+    corners: Vec<SectorWalk>,
     points: Vec<RoadVec3>,
-    // Footpath ends at their mouths, and an attached one's join with its sector's corner route.
+    // Footpath ends at their mouths, and an attached one's join with its sector's walk.
     paths: Vec<(ArmKey, SidewalkEnd, Option<Join>)>,
 }
 
+// The walk of one sector with sidewalks on both sides: from its from-arm's mouth along the
+// walkway centre to its to-arm's mouth (`walk`, into `points`), and the corner route within it
+// between the two sidewalk ends (`route`).
+struct SectorWalk {
+    sector: usize,
+    from: usize,
+    to: usize,
+    walk: Range<usize>,
+    route: Range<usize>,
+}
+
 // Where an attached footpath's centreline, walked in from its mouth, first meets its sector's
-// corner route: the route (index into `corners`), its segment there and the meeting point.
+// walk: the walk (index into `corners`), its segment there and the meeting point.
 #[derive(Clone, Copy, Debug)]
 struct Join {
     corner: usize,
@@ -95,11 +110,16 @@ struct Join {
     point: RoadVec3,
 }
 
-/// An attached footpath's join with its sector's corner route (D5).
+/// An attached footpath's join with its sector's walk (D5).
 pub(crate) struct FootpathJoin<'a> {
-    /// The corner route.
+    /// The sector's corner route.
     pub(crate) corner: CornerRoute<'a>,
-    /// Segment of `corner.points` the footpath meets.
+    /// The sector's walk, from its from-arm's mouth to its to-arm's; the corner route is
+    /// `walk[route]`.
+    pub(crate) walk: &'a [RoadVec3],
+    /// Where the corner route lies in `walk`.
+    pub(crate) route: Range<usize>,
+    /// Segment of `walk` the footpath meets.
     pub(crate) segment: usize,
     /// The meeting point on that segment, where the footpath's centreline crosses it.
     pub(crate) point: RoadVec3,
@@ -111,7 +131,7 @@ impl NodeWalkways {
     /// cases of [`NodeArms::collect`], a layout that fails (a placement rejection) or a bend or
     /// junction without a solved plane, which leaves it without a node piece too.
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
-        let Some(arms) = NodeArms::collect(graph, node) else {
+        let Some(mut arms) = NodeArms::collect(graph, node) else {
             return Self::pass_through(graph, node);
         };
         let layout = arms.layout().ok()?;
@@ -187,23 +207,31 @@ impl NodeWalkways {
             ) else {
                 continue;
             };
-            let first = walkways.points.len();
-            push_corner_route(&mut walkways.points, &layout, &arms, sector, [start, end]);
-            let range = first..walkways.points.len();
-            walkways
-                .corners
-                .push((index, sector.from_arm, sector.to_arm, range));
+            let (walk, route) =
+                push_sector_walk(&mut walkways.points, &layout, &arms, sector, [start, end]);
+            walkways.corners.push(SectorWalk {
+                sector: index,
+                from: sector.from_arm,
+                to: sector.to_arm,
+                walk,
+                route,
+            });
         }
         for attached in &layout.attachments {
             let end = path_end(attached.input_index, attached.mouth_station_m);
             let corner = walkways
                 .corners
                 .iter()
-                .position(|corner| corner.0 == attached.sector);
+                .position(|corner| corner.sector == attached.sector);
             let join = corner.and_then(|corner| {
-                let route = &walkways.points[walkways.corners[corner].3.clone()];
+                let walk = &walkways.points[walkways.corners[corner].walk.clone()];
                 let input = arms.input(attached.input_index);
-                let (segment, point) = centreline_meets(&input, attached.mouth_station_m, route)?;
+                let met = centreline_meets(&input, attached.mouth_station_m, walk);
+                debug_assert!(
+                    met.is_some(),
+                    "an attached centreline meets its sector's walk"
+                );
+                let (segment, point) = met?;
                 Some(Join {
                     corner,
                     segment,
@@ -264,14 +292,11 @@ impl NodeWalkways {
         self.corners.iter().map(|corner| self.corner(corner))
     }
 
-    fn corner(
-        &self,
-        (_, from, to, range): &(usize, usize, usize, Range<usize>),
-    ) -> CornerRoute<'_> {
+    fn corner(&self, corner: &SectorWalk) -> CornerRoute<'_> {
         CornerRoute {
-            from: self.arms[*from].key,
-            to: self.arms[*to].key,
-            points: &self.points[range.clone()],
+            from: self.arms[corner.from].key,
+            to: self.arms[corner.to].key,
+            points: &self.points[corner.route.clone()],
         }
     }
 
@@ -281,13 +306,17 @@ impl NodeWalkways {
         Some(*end)
     }
 
-    /// Where attached footpath `key` joins its sector's corner route (D5): `None` where that
-    /// sector has no sidewalk round it or the footpath is not attached.
+    /// Where attached footpath `key` joins its sector's walk (D5): `None` where that sector has
+    /// no sidewalk round it (`ROAD-68` open question 17) or the footpath is not attached.
     pub(crate) fn footpath_join(&self, key: ArmKey) -> Option<FootpathJoin<'_>> {
         let (.., join) = self.paths.iter().find(|(arm, ..)| *arm == key)?;
         let join = (*join)?;
+        let corner = &self.corners[join.corner];
+        let start = corner.walk.start;
         Some(FootpathJoin {
-            corner: self.corner(&self.corners[join.corner]),
+            corner: self.corner(corner),
+            walk: &self.points[corner.walk.clone()],
+            route: corner.route.start - start..corner.route.end - start,
             segment: join.segment,
             point: join.point,
         })
@@ -363,57 +392,78 @@ fn walk_offset(side: ArmSide<'_>) -> Option<f64> {
         .then(|| 0.5 * (side.core_offset() + outer.outer_m))
 }
 
-// Appends the corner route of `sector` from its from-arm's left sidewalk end to its to-arm's
-// right one. Heights run linearly by horizontal length between the two ends.
-fn push_corner_route(
+// Appends the walk of `sector` along its walkway centre (midway between its carriageway edge and
+// outermost boundary, tapered with them, D4), from its from-arm's mouth back to the sector, across
+// it and out to its to-arm's mouth. Returns its range and that of its corner route inside it, from
+// the from-arm's left sidewalk end to the to-arm's right one: route heights run linearly by
+// horizontal length between the two ends, the rest of the walk takes its arm's centreline height.
+fn push_sector_walk(
     points: &mut Vec<RoadVec3>,
     layout: &JunctionLayout,
     arms: &NodeArms,
     sector: &SectorLayout,
     [start, end]: [SidewalkEnd; 2],
-) {
-    let a = arms.input(layout.arms[sector.from_arm].input_index);
-    let b = arms.input(layout.arms[sector.to_arm].input_index);
+) -> (Range<usize>, Range<usize>) {
+    let [(a_index, a_mouth_m), (b_index, b_mouth_m)] =
+        [sector.from_arm, sector.to_arm].map(|arm| {
+            (
+                layout.arms[arm].input_index,
+                layout.arms[arm].mouth_station_m,
+            )
+        });
+    let (a, b) = (arms.input(a_index), arms.input(b_index));
     let boundaries = &layout.boundaries[sector.boundaries.clone()];
     let (edge, outer) = (&boundaries[0], &boundaries[boundaries.len() - 1]);
-    let first = points.len();
-    let mut push = |xz: RoadVec2| {
-        if points[first..]
-            .last()
-            .is_none_or(|last| RoadVec2::new(last.x, last.z) != xz)
-        {
-            points.push(RoadVec3::new(xz.x, 0.0, xz.y));
-        }
-    };
-    push(RoadVec2::new(start.point.x, start.point.z));
-    // The walkway centre between the two boundary runs, tapered with them (D4).
     let taper_m = edge.taper.or(outer.taper).map(|taper| taper.station_m);
     let walkway = |arm: &ArmInput<'_>, side: Side, station_m: f64| {
         let offset_m =
             0.5 * (edge.run_offset_m(side, station_m) + outer.run_offset_m(side, station_m));
         arm.offset_point(station_m, offset_m)
     };
+    let beyond = |index: usize, arm: &ArmInput<'_>, side: Side, station_m: f64| {
+        let xz = walkway(arm, side, station_m);
+        RoadVec3::new(xz.x, arms.centreline_at(index, station_m).1, xz.y)
+    };
+    let first = points.len();
+    // In along the from-arm's walkway from its mouth to the sidewalk end, if that lies inside.
+    if a_mouth_m > start.station_m {
+        points.push(beyond(a_index, &a, Side::Left, a_mouth_m));
+        let inward = points.len();
+        for_each_run_station(&a, start.station_m, a_mouth_m, taper_m, |station_m, _| {
+            points.push(beyond(a_index, &a, Side::Left, station_m));
+        });
+        points[inward..].reverse();
+    }
+    let route_start = points.len();
+    let push = |points: &mut Vec<RoadVec3>, xz: RoadVec2| {
+        if points[route_start..]
+            .last()
+            .is_none_or(|last| RoadVec2::new(last.x, last.z) != xz)
+        {
+            points.push(RoadVec3::new(xz.x, 0.0, xz.y));
+        }
+    };
+    push(points, RoadVec2::new(start.point.x, start.point.z));
     // Back along the from-arm's walkway to where the sector's boundaries leave it.
     let a_corner_m = edge.from_station_m.max(outer.from_station_m);
-    let mut back = Vec::new();
+    let back = points.len();
     for_each_run_station(&a, a_corner_m, start.station_m, taper_m, |station_m, _| {
-        back.push(walkway(&a, Side::Left, station_m));
+        let xz = walkway(&a, Side::Left, station_m);
+        points.push(RoadVec3::new(xz.x, 0.0, xz.y));
     });
-    for &xz in back.iter().rev() {
-        push(xz);
-    }
+    points[back..].reverse();
     let samples = |boundary: &SectorBoundary| &layout.samples[boundary.samples.clone()];
     for (inner, outer) in samples(edge).iter().zip(samples(outer)) {
-        push((*inner + *outer) * 0.5);
+        push(points, (*inner + *outer) * 0.5);
     }
     // Out along the to-arm's walkway to its sidewalk end.
     let b_corner_m = edge.to_station_m.max(outer.to_station_m);
     for_each_run_station(&b, b_corner_m, end.station_m, taper_m, |station_m, _| {
-        push(walkway(&b, Side::Right, station_m));
+        push(points, walkway(&b, Side::Right, station_m));
     });
-    push(RoadVec2::new(end.point.x, end.point.z));
+    push(points, RoadVec2::new(end.point.x, end.point.z));
     // The two ends are the arms' sidewalk ends exactly, heights included.
-    let route = &mut points[first..];
+    let route = &mut points[route_start..];
     let total_m: f64 = route
         .windows(2)
         .map(|pair| RoadVec2::new(pair[0].x - pair[1].x, pair[0].z - pair[1].z).length())
@@ -436,11 +486,20 @@ fn push_corner_route(
     if last > 0 {
         route[last] = end.point;
     }
+    let route_end = points.len();
+    // Out along the to-arm's walkway from the sidewalk end to its mouth, if that lies beyond.
+    if b_mouth_m > end.station_m {
+        for_each_run_station(&b, end.station_m, b_mouth_m, taper_m, |station_m, _| {
+            points.push(beyond(b_index, &b, Side::Right, station_m));
+        });
+        points.push(beyond(b_index, &b, Side::Right, b_mouth_m));
+    }
+    (first..points.len(), route_start..route_end)
 }
 
 // The first point at which `arm`'s centreline, walked in from station `from_m`, meets the polyline
-// `route`: the route segment there and the point on it, with the route's height interpolated.
-// `O(centreline knots * route points)`, both short near a node.
+// `route`, by the layout's segment crossing: the route segment there and the point on it, with
+// the route's height interpolated. `O(centreline knots * route points)`, both short near a node.
 fn centreline_meets(
     arm: &ArmInput<'_>,
     from_m: f64,
@@ -459,17 +518,9 @@ fn centreline_meets(
     let mut previous = inward.next()?;
     for next in inward {
         // The crossing nearest the mouth along this centreline segment.
-        let along = next - previous;
         let crossings = route.windows(2).enumerate().filter_map(|(segment, pair)| {
-            let (a, across) = (xz(&pair[0]), xz(&pair[1]) - xz(&pair[0]));
-            let denominator = along.perp_dot(across);
-            if denominator == 0.0 {
-                return None;
-            }
-            let t = (a - previous).perp_dot(across) / denominator;
-            let u = (a - previous).perp_dot(along) / denominator;
-            ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u))
-                .then(|| (t, segment, pair[0].lerp(pair[1], u)))
+            let (t, u) = segment_crossing(previous, next, xz(&pair[0]), xz(&pair[1]))?;
+            Some((t, segment, pair[0].lerp(pair[1], u)))
         });
         if let Some((_, segment, point)) = crossings.min_by(|a, b| a.0.total_cmp(&b.0)) {
             return Some((segment, point));

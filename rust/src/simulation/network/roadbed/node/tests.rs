@@ -102,7 +102,37 @@ fn fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
         let skew = [(0.0, TWO_LANE_M), (west, FOUR_LANE_M), (300.0, TWO_LANE_M)];
         set.push((name.to_owned(), star(centre, &skew, sloped)));
     }
+    // Equal widths across a straight sector just over a half turn: the miter behind the node.
+    let convex = equal(&[0.0, 180.5, 300.0]);
+    set.push(("straight_convex".to_owned(), star(centre, &convex, sloped)));
+    // The width step with its wide arm curving away from the node, knotted every 2 m, so the
+    // taper ends between two knots of a curve (D4).
+    let mut curved = star(centre, &step, sloped);
+    curve_arm(&mut curved, 0, 120.0, sloped);
+    set.push(("width_step_curved".to_owned(), curved));
     set
+}
+
+// Bends edge `edge`, which leaves node 0 from its start, into a left-turning arc of `radius_m`
+// with a knot every 2 m over its length, moving its far node to the arc's end.
+fn curve_arm(graph: &mut RegionGraph, edge: usize, radius_m: f32, sloped: bool) {
+    let (hub, far) = (graph.edge(edge).start_node, graph.edge(edge).end_node);
+    let (from, to) = (graph.node(hub).pos, graph.node(far).pos);
+    let along = Vector3::new(to.x - from.x, 0.0, to.z - from.z).normalized();
+    let left = Vector3::new(-along.z, 0.0, along.x);
+    let count = (ARM_M / 2.0) as usize;
+    let points: Vec<Vector3> = (0..=count)
+        .map(|index| {
+            let turn = index as f32 * 2.0 / radius_m;
+            let xz =
+                from + along * (radius_m * turn.sin()) + left * (radius_m * (1.0 - turn.cos()));
+            point(xz.x, xz.z, sloped)
+        })
+        .collect();
+    graph.nodes[far as usize].pos = *points.last().unwrap();
+    let width = graph.edge(edge).width;
+    *graph.edge_mut(edge) = road_edge(hub, far, points, width);
+    graph.rebuild_intersection_clips();
 }
 
 fn compiled(graph: &RegionGraph) -> RoadbedSystem {
@@ -155,6 +185,34 @@ fn chain_edges(mesh: &PieceMesh) -> BTreeSet<(PointBits, PointBits)> {
             })
         })
         .collect()
+}
+
+// `ROAD-68` open question 13: a bend's crossing that moves to its second arm is that arm's in the
+// arms too, so nothing that reads the arms sees the default crossing.
+#[test]
+fn a_moved_bend_crossing_is_the_arms_crossing() {
+    let graph = crate::simulation::network::roadbed::fixtures::bend(15.0, 120.0, false);
+    let mut arms = NodeArms::collect(&graph, 0).unwrap();
+    let layout = arms.layout().unwrap();
+    let crossing: Vec<_> = layout
+        .arms
+        .iter()
+        .map(|arm| arm.crosswalk.is_some())
+        .collect();
+    assert_eq!(crossing.iter().filter(|&&crosses| crosses).count(), 1);
+    for (arm, crosses) in layout.arms.iter().zip(crossing) {
+        assert_eq!(
+            arms.input(arm.input_index).crossable,
+            crosses,
+            "{:?}",
+            arm.key
+        );
+    }
+    assert_eq!(
+        arms.layout(),
+        Ok(layout),
+        "laying out again keeps the crossing"
+    );
 }
 
 #[test]
@@ -392,7 +450,7 @@ fn mouth_rows_are_the_arm_offset_curve_points_bitwise() {
     for (name, graph) in fixtures(true) {
         let roadbed = compiled(&graph);
         for piece in node_pieces(&roadbed, &graph) {
-            let arms = NodeArms::collect(&graph, piece.node()).unwrap();
+            let mut arms = NodeArms::collect(&graph, piece.node()).unwrap();
             let layout = arms.layout().unwrap();
             assert_eq!(&layout, piece.layout());
             for arm in &layout.arms {

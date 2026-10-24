@@ -336,8 +336,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   each junction's layout, queries answer from the rendered triangles and buildings place again.
   Terrain is not yet clipped to the roads (`ROAD-68-D`). Pre-D work makes profiles, clips and
   pieces independent of drawing order on flat ground (open questions 15 and 16), tapers
-  straight width changes (D4) and joins footpaths to road junctions at sidewalk height (D5).
-  Tests that need
+  straight width changes (D4) and joins footpaths to road junctions at sidewalk height (D5), with
+  zebras kept at the corner beside footpaths (open question 17). Tests that need
   later gates are disabled until then.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
@@ -1095,6 +1095,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-68` pre-D review fixes (branch `road68-fix`): a footpath beside a crossable arm moves only its mouth, and its zebra stays right outside the corner (user decision, [open question 17](roads.md#road-68-open-questions)); footpaths join the sidewalk where their centreline meets it, also between the crossing and the mouth. Footpaths on both sides of a road end lay out, junction profiles rank their corridors by a documented geometric rule in `f64` with the layout's arm directions, node moves and road removals re-solve the profiles they reach, and the remaining silent skips reject placements. See [`roads.md`](roads.md#pre-d-review-fixes).
 - `ROAD-68` pre-D (branch `road68-pre1`): footpaths join road junctions (D5, [open question 14](roads.md#road-68-open-questions)). A footpath at a road node is attached to the sector it lies in: its ribbon meets the sidewalk's outer boundary on shared vertices at sidewalk height, and the profile solve pins its end there. Footpath-only nodes lay out as ordinary arms, footpath lanes end at their layout mouths and join the corner walks, dead ends keep a turn-back connector, and road arms keep their crossings. A bend whose crossing does not fit on its first arm crosses on the other ([open question 13](roads.md#road-68-open-questions)). See [`roads.md`](roads.md#footpath-junctions-and-the-bend-crossing-fallback-pre-d).
 - `ROAD-68` pre-D (branch `road68-pre2`): the junction profile solve derives every physical profile from its control polyline and the final topology, never rewriting control or ranking roads by build order; junction layouts read control geometry; strokes pin only to carriageways. Flat reference junctions are bitwise independent of drawing order; slopes remain [open question 16](roads.md#road-68-open-questions). A straight width change now tapers linearly along both approaches (D4) instead of stepping at the node, and nearly straight joins miter without sliver strips. See [`roads.md`](roads.md#edit-order-independence-pre-d).
 - `ROAD-68-C` follow-up 2 (branch `road`): every degree-two node crosses once again, as the legacy rule did (user decision 2026-10-24, [open question 12](roads.md#road-68-open-questions)): a bend on its node piece right outside the curve, a pass-through node on its arm's span beside the node, with kerb points from the span's section row there. Walkers can change sides at every node, so the walking planner's whole-network proof holds again, on the street-grid benchmark city too. See [`roads.md`](roads.md#one-crossing-per-degree-two-node-follow-up-2).

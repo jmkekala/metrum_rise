@@ -26,6 +26,37 @@ fn profile_test_edge(points: Vec<Vector3>) -> Edge {
     }
 }
 
+// `ROAD-68` invariant 6: corridors rank by each arm's direction towards its first distinct
+// control point, as the node layout takes it. A mirrored Y on a slope ties its two corridors; with
+// every arm starting on a repeated node point, the raw first segment put each arm at angle zero
+// and edge ids, which follow creation order, chose the corridor that keeps its grade.
+#[test]
+fn corridor_ranking_does_not_depend_on_edge_creation_order() {
+    let grade = 0.05;
+    let ends =
+        [(-96.0, 0.0), (90.0, 32.0), (90.0, -32.0)].map(|(x, z)| Vector3::new(x, grade * x, z));
+    let physical = |order: [usize; 3]| {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let mut ids = [0; 3];
+        for index in order {
+            let end_node = graph.add_node(ends[index], NodeType::Junction);
+            let mut edge = profile_test_edge(vec![Vector3::ZERO, Vector3::ZERO, ends[index]]);
+            edge.start_node = center;
+            edge.end_node = end_node;
+            ids[index] = graph.add_edge(edge);
+        }
+        graph.rebuild_intersection_clips();
+        assert!(
+            ids.iter().all(|&id| graph.edge(id).start_clip > 0.0),
+            "the Y lays out"
+        );
+        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
+        ids.map(|id| graph.edge(id).physical_geometry.clone())
+    };
+    assert_eq!(physical([0, 1, 2]), physical([2, 1, 0]));
+}
+
 #[test]
 fn final_junction_profile_preserves_a_supported_hillside_corridor() {
     for grade in [0.32, 0.6] {

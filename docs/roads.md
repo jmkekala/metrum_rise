@@ -269,7 +269,9 @@ boundaries follow its offset curves. On a crossable arm that depth is the zebra 
 outside the curb returns: its inner edge is the larger tangent station, where the curbs stop
 curving, its outer edge is the mouth, and its crossing line is the middle, with kerb points at
 the two carriageway edges. The mouth is the arm's full cross-section at that station:
-the node piece ends and the span begins there. When both ends of an edge reach the same station,
+the node piece ends and the span begins there. An attached footpath that meets an arm side moves
+only that arm's mouth, to `s_min` beyond the meeting point where that is farther; the zebra stays
+right outside the curb returns ([open question 17](#road-68-open-questions)). When both ends of an edge reach the same station,
 the span is empty and the two node pieces share that mouth section.
 
 **Footpath arms (D5).** At a node with a road arm, footpath arms are *attached*: they bound no
@@ -277,9 +279,10 @@ sector, and the road arms keep their sectors, corners and crossings as if the fo
 absent (the crossing rule counts road arms only). Each attached arm lies in one sector. Its two
 edge curves (`o_f(., ±w)`) meet that sector's outermost boundary:
 
-- on an arm side's run between the sector and the mouth, at the run's offset-curve point
-  `o_a(s, l_outer)`; that side's reach then extends `s_min` beyond `s`, so the mouth (and a
-  crossable arm's zebra) moves out past the footpath
+- on an arm side's run at or beyond its reach (the taper station of a tapered run, else where it
+  leaves the sector), at the run's offset-curve point `o_a(s, l_outer)`; the arm's mouth then
+  lies at least `s_min` beyond `s`, while a crossable arm's zebra stays at the corner and the node
+  piece covers the run between them (open question 17)
 - otherwise on the sector's sampled curve; the point is inserted into the outermost samples, and
   the same fraction of the same segment into every other boundary of the sector, so its strips
   stay quads
@@ -288,9 +291,10 @@ The attached arm's mouth is `s_min` beyond its farther edge point. Its ribbon, o
 `P + raised`, runs from the boundary (on the boundary's own vertices) out to the mouth, so it
 meets the sidewalk without a step; the profile solve pins the footpath to `P + raised` up to its
 mouth. The outer chain is cut at each attached arm: one chain ends along its right edge at its
-mouth corner, the next starts along its left edge. An edge that meets no boundary inside the
-node, a ribbon outline that is not simple, or two ribbons that overlap fail with
-`LayoutError::FootpathDoesNotJoin { arm }`. Where only footpaths meet, they are ordinary arms
+mouth corner, the next starts along its left edge. Attached arms are ordered by sector and along
+its outer path, which in a sector through angle zero (a road end's cap) is not angle order. An
+edge that meets no boundary inside the node, a ribbon outline that is not simple, or two ribbons
+that touch or overlap fail with `LayoutError::FootpathDoesNotJoin { arm }`. Where only footpaths meet, they are ordinary arms
 with one ground-level band per side, laid out by the corner and round-join rules above; a
 straight pair of footpaths is a pass-through pair, but a footpath continuing a road end
 straight on attaches to its cap.
@@ -324,9 +328,33 @@ compute no crossing or corner geometry of their own
   it. A knot at the mouth station makes the pin exact there. Every physical profile is derived
   afresh from its edge's control polyline and the pins at both of its ends; the finalizer never
   rewrites control polylines, and its plane solve has no edit roles, so profiles depend only on
-  the final graph ([pre-D edit-order independence](#edit-order-independence-pre-d)). A `Terminal` gets a plane
-  through its road end and its mouth centreline point, with the arm's end grade along that run and
-  no crossfall; it is read from the solved profile, so the finalizer leaves terminals alone.
+  the final graph ([pre-D edit-order independence](#edit-order-independence-pre-d)).
+- **Plane solve.** A node's plane incidents (its roads, or its footpaths where only footpaths
+  meet) are taken in incident order: the `f64` angle from world +x of each arm's direction
+  towards its first control point beyond 1 mm (`roadbed::incident_direction`, the function node
+  layouts and span ends classify with), with edge ids only for exactly equal directions, which
+  layouts reject. Every incident gives the sample `min(12 m, half its edge)` along its control
+  profile; an arm too short for a sample at least 1 m from the node leaves the node without a
+  plane (`NodeError::NoPlane`, `junction_profile_mismatch`), never a plane fitted without it. A
+  bend takes the plane through its two samples. A junction, or a pass-through pair with attached
+  footpaths, takes an authority corridor, a pair of arms at least as opposite as `dot <= -0.86`,
+  else the least-squares plane of every sample. Corridors rank lexicographically in `f64`, with
+  no blended score: (1) a corridor whose plane every other arm's sample meets within the 5 cm
+  support tolerance first; (2) the straighter pair, by the lower dot of the two arm directions;
+  (3) the flatter, by grade; (4) incident order. The arms outside the corridor take
+  vertical-curve supports, attached footpaths included; a road end has no corridor, so its
+  footpaths take supports only where their grade leaves its plane.
+- **Scope and cost.** The solve derives every edge touching the affected nodes and pins its far
+  end from the far node's own solve, so it reads the 2-ring of the affected nodes:
+  `O(sum over touched edges of (points * inserted knots) + sum over their far nodes of degree * points)`,
+  local but larger beside a high-degree hub. Every caller passes both ends of every edge whose
+  control polyline it changed: road edits (both ends of each dirty edge), the crossing toggle, the
+  load repair, and, since the pre-D review, node moves (the moved node and its arms' far nodes)
+  and road removals (the removed edge's two ends), which rebuilt clips without re-solving
+  before.
+- A `Terminal` gets a plane through its road end and its mouth centreline point, with the arm's
+  end grade along that run and no crossfall; it is read from the solved profile, so the finalizer
+  leaves terminals alone.
 - Every node-piece vertex is at `P(x, z) + level`. A curb face is a vertical quad between the
   ground and raised vertices at the same XZ.
 - Mouth sections are evaluated directly as `P(x, z) + level`. Span sections at full blend weight
@@ -536,10 +564,10 @@ These defaults apply unless the user overrides them:
 | D2 | Terminal shape | Round cap; the curb and sidewalk wrap around the end. |
 | D3 | Preview modes | One mode, road and terrain together. The `ROAD-29` "Road only" mode is removed in `ROAD-68-E`. |
 | D4 | Width change on a straight side | A linear taper along both approaches, implemented pre-D ([open question 9](#road-68-open-questions)); `ROAD-68-C` built a radial step at the node. |
-| D5 | Footpath meeting a road junction | It joins the sidewalk ring at sidewalk height, with its end pinned there by the profile solve. Its ribbon ends at the sidewalk outer edge on shared vertices. Built pre-D (2026-10-24, [footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d)): the ribbon stands at `P + raised` from the outer boundary to a mouth 1 m beyond its farther edge point, so there is no ramp or step at the sidewalk; an arm side the footpath meets reaches 1 m beyond it. |
+| D5 | Footpath meeting a road junction | It joins the sidewalk ring at sidewalk height, with its end pinned there by the profile solve. Its ribbon ends at the sidewalk outer edge on shared vertices. Built pre-D (2026-10-24, [footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d)): the ribbon stands at `P + raised` from the outer boundary to a mouth 1 m beyond its farther edge point, so there is no ramp or step at the sidewalk; the mouth of an arm the footpath meets lies at least 1 m beyond it (its zebra stays at the corner, D8). |
 | D6 | Roads without sidewalks | Keep the current raised 0.75 m shoulder. |
 | D7 | Routing at commit | Confirmed by the user, 2026-10-23. Rebuild the CCH on an immutable graph snapshot as a scheduled job and adopt it at a fixed tick offset. Route queries issued meanwhile wait for adoption. If the job is late, the simulation blocks at the adoption tick, so results do not depend on machine speed. Revisit if the query backlog at adoption is too large at 100k buildings. |
-| D8 | Crosswalks | Right outside the curve (user-confirmed 2026-10-24). On crossable arms the mouth moves 3 m beyond the corner tangent station, and the 3 m zebra fills that straight approach: its inner edge is where the curb stops curving. The crossing is square to the road at the strip's middle, its kerb points at the two carriageway edges; sidewalk lanes end on that line, as `ROAD-64` requires. Which arms cross (user-confirmed 2026-10-24, "keep the old behaviour"): every arm of a junction of three or more; exactly one arm of every degree-two node, bend or pass-through, as the legacy `ROAD-64` rule did; none at a road end, whose sidewalk wraps the cap. Only car roads with sidewalks cross, and node overrides adjust the rule. A pass-through node has no node piece, so its crossing is span-owned: it lies on the arm's span from the node out to 3 m, where the span keeps a section row on the crossing line; that row's carriageway-edge vertices are the kerb points. No other zebra sits on a span. |
+| D8 | Crosswalks | Right outside the curve (user-confirmed 2026-10-24). On crossable arms the mouth moves 3 m beyond the corner tangent station, and the 3 m zebra fills that straight approach: its inner edge is where the curb stops curving. The crossing is square to the road at the strip's middle, its kerb points at the two carriageway edges; sidewalk lanes end on that line, as `ROAD-64` requires. A footpath beside a crossable arm moves only its mouth; the zebra stays right outside the curve, and the node piece covers the run between them (user, 2026-10-24, [open question 17](#road-68-open-questions)). Which arms cross (user-confirmed 2026-10-24, "keep the old behaviour"): every arm of a junction of three or more; exactly one arm of every degree-two node, bend or pass-through, as the legacy `ROAD-64` rule did; none at a road end, whose sidewalk wraps the cap. Only car roads with sidewalks cross, and node overrides adjust the rule. A pass-through node has no node piece, so its crossing is span-owned: it lies on the arm's span from the node out to 3 m, where the span keeps a section row on the crossing line; that row's carriageway-edge vertices are the kerb points. No other zebra sits on a span. |
 
 ## Implementation plan (`ROAD-68`)
 
@@ -840,8 +868,12 @@ These need a user decision; work that does not depend on them continues.
 13. **Degree-two crossings that do not fit (`ROAD-68-C` follow-up 2) — decided 2026-10-24 (user);
     done pre-D.** A bend crossing that does not fit moves to the other arm, like the pass-through
     rule; reject only when neither arm fits ([done](#footpath-junctions-and-the-bend-crossing-fallback-pre-d):
-    `NodeArms::layout` retries with the default crossing on the other arm and reports the first
-    arm's error when both fail; a forced crossing never moves). The remaining choices below stand:
+    `NodeArms::layout` moves the default crossing to the other arm only when the first arm does
+    not fit it, that is when the layout fails with `ArmTooShort` or `CornerDoesNotFit` on that
+    arm, the two errors whose budgets the crossing's depth enters; any other error rejects the
+    node at once, and when the other arm fails too the node fails with the first arm's error. The
+    arms then record the moved crossing, so nothing reads the default one; a forced crossing never
+    moves ([pre-D review fixes](#pre-d-review-fixes)). The remaining choices below stand:
     - A bend's crossing arm takes the 3 m strip as a junction arm does. If its layout then does
       not fit, the edit is rejected with the existing reasons (`junction_arm_too_short`,
       `junction_corner_does_not_fit`). So a bend with a short arm that `16354d77` accepted can be
@@ -930,14 +962,15 @@ These need a user decision; work that does not depend on them continues.
     - **Current default.** Carriageway-only pins (pre-D); nothing else changed.
 
 17. **Footpath attachment choices (pre-D, D5) — zebra placement decided 2026-10-24 (user): the
-    zebra stays at the corner and only the mouth moves; to implement after pre-D. The other
-    items below keep their defaults.**
+    zebra stays at the corner and only the mouth moves; done in the
+    [pre-D review fixes](#pre-d-review-fixes). The other items below keep their defaults.**
     - **Mouths move for footpaths beside an arm.** A footpath whose edge meets a road arm's side
-      run (roughly within 35° of a two-lane arm, and every footpath across a straight road) makes
-      that side reach 1 m beyond the meeting point, so the arm's mouth, and on a crossable arm its
-      zebra, moves outward past the footpath. Without it the footpath's edge would end on or beyond
-      the mouth (fixture `through_road`: at `s_min` exactly). Options: keep (current); keep the
-      zebra at the corner and let the mouth alone move; attach footpaths to spans.
+      run (roughly within 35° of a two-lane arm, and every footpath across a straight road) puts
+      the arm's mouth 1 m beyond the meeting point. A crossable arm's zebra stays right outside the
+      corner (D8's strip from the tangent station out 3 m) and the node piece covers the run
+      between the zebra and the mouth. Without the mouth move the footpath's edge would end on or
+      beyond the mouth (fixture `through_road`: at `s_min` exactly). Before the decision the zebra
+      moved out with the mouth; attaching footpaths to spans was the third option.
     - **Rejections.** A footpath shorter than about twice its mouth station (8–12 m) now fails
       `junction_arm_too_short`, and an edge that meets no boundary inside the node fails
       `junction_layout_invalid` (`FootpathDoesNotJoin`). Saves holding such a footpath fail to
@@ -945,8 +978,13 @@ These need a user decision; work that does not depend on them continues.
     - **Old saves.** A save from before this change holds unpinned footpaths and legacy clips at
       footpath nodes; the load repair re-solves them (question 8), as
       `headlight_house_junction_full_load_compiles_with_terrain_earthwork` now expects.
-    - **Join route.** An attached footpath joins its corner route where its centreline meets it,
-      not at the point nearest its end, which at shallow angles cut across unpaved ground.
+    - **Join route.** An attached footpath joins its sector's walk where its centreline meets it,
+      not at the point nearest its end, which at shallow angles cut across unpaved ground. The walk
+      is the corner route extended along both arms' walkways out to their mouths, since a footpath
+      beside a crossable arm can meet the sidewalk between the crossing line, where the sidewalk
+      lanes end, and the mouth (fixture `t_beside_arm_shallow`, 20° off the arm); the join then
+      walks in along the sidewalk to that lane end. The centreline runs from beyond the sector's
+      outer boundary into the core between the two mouths, so it always meets the walk.
     - **Sectors without a sidewalk.** A footpath in a sector bounded by a road side without a
       sidewalk (a car-only road or shoulder) has no corner route to join, so it reaches only the
       other footpaths there, and the walking proof is withdrawn on such a network. The legacy rule
@@ -1802,8 +1840,9 @@ solve](#edit-order-independence-pre-d) at `03b9f4ed`):
 - Screenshots ([reference harness](#rendered-reference-screenshots), 54 images, no fixture
   failures; none has a footpath): 32 byte-identical to `03b9f4ed`'s, and 22, mostly plan views,
   differ by one colour level in at most 67 pixels. The roadbed fixtures' node pieces, spans and
-  lanes are bitwise unchanged (checked on the T before the rebase), so the source of the
-  rounding-level difference is not identified.
+  lanes are bitwise unchanged (checked on the T before the rebase). The difference is the asset
+  import, not the code ([pre-D review fixes](#pre-d-review-fixes)): the two runs used different
+  worktrees, each importing afresh.
 
 **Benchmarks** (2026-10-24, `roadbed_benchmark`, release, i9-12900K pinned to the P-cores,
 `RAYON_NUM_THREADS=4`, Criterion defaults with 200 samples, exclusive timing lock, no build
@@ -1858,6 +1897,140 @@ work-count limits fail in control and change alike: baseline `buyer_sites_built`
 `staffing_trials`, `supplier_searches`, `supplier_routes` and `job_search_keys`, and fiscal-stress
 `buyer_sites_built` and `cch_searches`. All isolated phases, both locality checks and the agent
 checks pass. The walking proof holds on both tiers, with no footpath in either city.
+
+#### Pre-D review fixes
+
+**Status:** done 2026-10-24, on the static reviews of the two pre-D branches. Branch
+`road68-fix`. Each fix has a test that fails on `c59955e6`, the pre-D head, unless noted.
+
+**Fixes:**
+
+- **Wrap-sector footpaths** (`layout.rs`). Attached arms were kept in angle order, but a sector
+  through angle zero (a road end's cap, the last sector of any node) holds them out of that
+  order along its outer path, so two valid footpaths there failed `FootpathDoesNotJoin` and the
+  outer chains were not cut. They are now ordered by sector and their position on its outer path,
+  and ribbons that touch fail. Fixture `road_end_both_sides`: a road end at 60° with footpaths at
+  30° and 90°.
+- **Zebra at the corner** ([open question 17](#road-68-open-questions), user decision). An
+  attached footpath moves only its arm's mouth; the crosswalk comes from the boundaries alone.
+  Test `a_footpath_beside_an_arm_moves_its_mouth_but_not_its_zebra`: every arm's crosswalk equals
+  the one without the footpath, bitwise, and the met arm's mouth lies 1 m past the meeting point.
+  Footpath edges attach to a run only at or beyond its reach, where it lies on its arm's own
+  offset curve (it searched at the final offset but took the tapered point before).
+- **Footpath joins** (`walkways.rs`, `pedestrian_junctions.rs`). With the zebra at the corner a
+  footpath beside a crossable arm can meet the sidewalk between the crossing line and the mouth,
+  where no corner route ran, and its lanes were left unconnected without an error. A footpath now
+  joins the sector's walk, the corner route extended to both mouths, which its centreline meets by
+  construction, and walks in to the sidewalk end. One crossing primitive (the layout's
+  `segment_crossing`) and one join-route builder serve layout and legacy nodes. Fixture
+  `t_beside_arm_shallow` (20° off the arm): with the route alone it fails the lane and walking-proof
+  tests.
+- **Bend crossing fallback** ([open question 13](#road-68-open-questions)): only `ArmTooShort` or
+  `CornerDoesNotFit` on the first arm moves the default crossing, and `NodeArms` records the move
+  (`layout` takes `&mut self`), so `input(i).crossable` agrees with the layout. Test
+  `a_moved_bend_crossing_is_the_arms_crossing`.
+- **Profile solve** (`junction_profiles.rs`; [Heights](#heights)). Arm directions come from
+  `roadbed::incident_direction` in `f64`, the function node layouts and span ends use, and the
+  pass-through rule is the layout's `directions_pass_through`; the `f32` first-segment angle,
+  which put arms starting on a repeated point at angle zero, and `edge_endpoint_direction_xz` are
+  gone. Corridors rank by the lexicographic rule in Heights instead of `-dot - 2 grade`. An arm too
+  short for its sample fails the node (`NodeError::NoPlane`, through `check_node`) instead of
+  dropping out of the plane; the bend, authority and least-squares solves share one sample pass.
+  Test `corridor_ranking_does_not_depend_on_edge_creation_order` (a mirrored Y on a slope whose
+  arms start on a repeated point, built in two edge orders).
+- **Freshness.** Node moves and road removals rebuilt clips but never re-ran the profile solve,
+  so the arms they reach kept pins from the old plane. Both now solve their nodes; test
+  `node_moves_and_removals_leave_freshly_solved_profiles` compares every profile with a solve from
+  scratch, flat and sloped.
+- **No silent fallbacks** (`layout.rs`, `node.rs`). `bisector_station` returns `None`, a typed
+  `ArmTooShort`, instead of station zero where an arm's first segment would not move away from the
+  bisector; a straight sector rules that out, since its bisector lies within half a degree of the
+  station-zero lateral line. `run_offset_m` no longer clamps a station before its run (a debug
+  assertion; no caller passes one). A mouth vertex the mouth section does not hold is
+  `NodeError::MouthVertex` (`junction_layout_invalid`) instead of a fresh vertex.
+  `SectorBoundary::run_start` is the one side-to-station mapping. In a straight sector every boundary has equal offsets by construction,
+  so `is_shared_miter` no longer compares floats.
+
+**Rejected or kept, with reasons:**
+
+- The taper trigger compares the arms' band offsets exactly. They are the profile's own `f32` band
+  edges widened to `f64` without arithmetic, and the band rule computes each from the edge's width
+  and band kinds alone, so equal nominal widths give equal offsets bitwise and a different band
+  composition is a `BandMismatch`. A tolerance would leave a step where widths differ by less.
+  A band-only difference (equal carriageways) tapers over the 12 m minimum, as documented.
+- A debug assertion that every edge whose control changed has both ends in the solve's nodes would
+  be true by construction in `finalize_road_geometry` (both ends of each dirty edge go in); the
+  node-move and removal callers assert instead that every edge the solve changes is in their undo
+  record.
+- The road-end plane still lays its node out once more for the solve (a fourth layout of that
+  node); bounded by the affected set. Small per-node allocations (`roads`, the attached partition,
+  the arm inputs per piece), the `UNPLACED` sentinel and samples inserted at a segment end are
+  unchanged.
+- `NoPlane` from the solve is a placement rejection (`check_node` runs in validation only, so the
+  compile path pays no second solve). A load does not run it: a save holding such a node, which
+  placement cannot produce, loads with that node's arms unpinned, as before. The load contract
+  ([Preview, commit, undo and load](#preview-commit-undo-and-load)) wants it to fail; that belongs
+  with the load path of `ROAD-68-E`.
+- The sloped edit-order test stays ignored on [open question 16](#road-68-open-questions)
+  (`ROAD-68-E`). The flat test now commits the Y in all six orders, a cross whose second stroke
+  splits the first between its knots, and a through road with two side roads 50 m apart, whose
+  link edge is pinned at both ends. These, and the node fixtures `width_step_curved` (the width
+  step with its wide arm curving away, knotted every 2 m, flat and sloped) and `straight_convex`
+  (equal widths over a straight sector just wider than a half turn), pass on `c59955e6` too: they
+  close the coverage gaps the review named.
+
+**Screenshot differences explained.** Same-build renders in different worktrees differed by one
+colour level in tens of pixels, which the [reference harness](#rendered-reference-screenshots)
+records as fixture changes. A probe that commits the reference T (flat and sloped) and Y through
+`SimCore::commit_road` and dumps graph profiles, clips, costs, node and span triangles, outer
+chains and lanes found `03b9f4ed` and `c59955e6` bitwise identical. The cause is the asset import:
+`screenshots-C.sh` imports into a throwaway profile whenever a worktree has no `.godot` cache, and
+two fresh imports of the same tree and build differ in 44 of 54 images (at most 23 pixels, one
+level each). Renders compare only within one import; this gate's base and fix share one.
+
+**Checks** (fresh, final sources):
+
+- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`, inside `./run.sh --test`): 1,830
+  passed, 0 failed, 186 ignored (`c59955e6`: 1,826, 0, 186): four new tests; the new fixtures run
+  inside existing tests. No test was disabled or re-enabled. `tests/growth_scenario.rs`: 4 passed.
+- `./run.sh --test` (isolated profile, no display, every Godot run under a 600 s timeout) exits 0
+  with the Godot PASS lines of the pre-D run, no script errors and the same four scripts skipped
+  (`network_tool_chunk_renderer_test`, `road_junction_preview_test`, `road_preview_stream_test`
+  until `ROAD-68-E`, `zoning_cells_tool_test` until `ROAD-68-F`). `vehicle_ground_support_test`
+  passes with moved road-height metrics (tilted poses 2,472 → 2,471, largest centre lift 0.4236 →
+  0.4144 m), not analysed further. A worktree needs its LFS content (`git lfs checkout`): with
+  pointer files that test fails on its vehicle models and headless Godot does not exit.
+- Clippy (`--all-targets`): the 59 legacy warnings only (one in `nodes/asset_document.rs`, 58 in
+  `economy/agents/data.rs`, all `redundant_field_names`), no missing docs.
+- `roadbed/` production lines: 7,505 by the counting used here, which reads 7,377 for
+  `c59955e6` (+128: the sector walk 51, layout 30, arms 26, typed mouth vertices 22). Outside
+  `roadbed/`, the profile solve lost 60 lines and `clips.rs` 32.
+- Screenshots ([reference harness](#rendered-reference-screenshots), new fixture
+  `t_footpath_beside_arm`: a footpath 30° off the T's side road; 60 images, no failures), base and
+  fix rendered in one worktree with one import: the 54 images of the earlier fixtures are
+  byte-identical, and the footpath fixture's six show the side road's zebra back at the corner
+  with the node piece running on to the mouth.
+
+**Benchmarks** (2026-10-24, `roadbed_benchmark`, release, i9-12900K pinned to the P-cores,
+`RAYON_NUM_THREADS=4`, Criterion defaults, exclusive timing lock, no build running; control: the
+pre-D binary of `8593e166`, whose production code `c59955e6` keeps; rounds A B B A, medians):
+
+| Case | Control | Review fixes |
+| --- | --- | --- |
+| `roadbed_junction/build/t` | 28.41 / 28.55 µs | 28.91 / 29.01 µs |
+| `roadbed_junction/build/four_way` | 47.06 / 47.12 µs | 47.19 / 47.47 µs |
+| `roadbed_junction/build/six_way` | 80.92 / 81.35 µs | 80.99 / 80.76 µs |
+| `roadbed_junction/build/t_footpath` | 39.94 / 40.26 µs | 40.39 / 40.08 µs |
+| `roadbed_junction/publish/t_closure` | 93.35 / 94.34 µs | 99.40 / 96.75 µs |
+
+Node builds are within 2%; the T's 0.5 µs is unprofiled. `t_closure`, the noisiest case (earlier
+sessions: 91.9–96.0 µs on unchanged code), reads 2.5–5% higher. The validation-only solve check
+and the sector walks of the lane rebuild are not in these cases.
+
+```bash
+cargo bench --bench roadbed_benchmark --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot roadbed_junction
+```
 
 ### `ROAD-68-D` — footprint and terrain
 

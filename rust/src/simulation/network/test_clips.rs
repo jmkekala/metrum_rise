@@ -11,7 +11,7 @@ mod tests {
 
     // Each arm's mouth station in the node's junction layout (`ROAD-68-C`), by edge and end.
     fn layout_mouths(g: &RegionGraph, node: u32) -> Vec<(usize, bool, f32)> {
-        let arms = NodeArms::collect(g, node).expect("node has a layout");
+        let mut arms = NodeArms::collect(g, node).expect("node has a layout");
         let layout = arms.layout().expect("node lays out");
         layout
             .arms
@@ -339,7 +339,7 @@ mod tests {
         g.rebuild_intersection_clips();
 
         // Arms a degree apart have no layout (a placement rejection), so the node keeps no clip.
-        let arms = NodeArms::collect(&g, center).unwrap();
+        let mut arms = NodeArms::collect(&g, center).unwrap();
         assert!(arms.layout().is_err());
         assert_eq!(g.edges[0].start_clip, 0.0);
         assert_eq!(g.edges[1].start_clip, 0.0);

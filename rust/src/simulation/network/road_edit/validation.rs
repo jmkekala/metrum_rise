@@ -901,7 +901,7 @@ fn junction_rejection(graph: &RegionGraph, affected_nodes: &HashSet<u32>) -> Opt
         }
         NodeError::Layout(LayoutError::BandMismatch { .. }) => PREVIEW_JUNCTION_BANDS_REASON,
         NodeError::Layout(LayoutError::ArmTooShort { .. }) => PREVIEW_JUNCTION_ARM_REASON,
-        NodeError::Layout(_) => PREVIEW_JUNCTION_LAYOUT_REASON,
+        NodeError::Layout(_) | NodeError::MouthVertex { .. } => PREVIEW_JUNCTION_LAYOUT_REASON,
         NodeError::NoPlane | NodeError::MouthOffPlane { .. } => PREVIEW_JUNCTION_PROFILE_REASON,
     })
 }

@@ -3,7 +3,10 @@
 //! Deterministic Bend and JunctionN endpoint-profile solving and support materialization.
 
 use super::super::data::{Edge, RegionGraph};
-use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, terminal_plane};
+use crate::simulation::network::roadbed::{
+    CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, directions_pass_through, incident_direction,
+    terminal_plane,
+};
 use crate::simulation::network::types::{NodeType, TransitType};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
@@ -18,13 +21,15 @@ const JUNCTION_PROFILE_PLANE_DET_EPS: f32 = 1.0e-5;
 const JUNCTION_PROFILE_SUPPORT_EPS_M: f32 = 0.01;
 const JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M: f32 = 0.05;
 pub(super) const JUNCTION_PROFILE_SUPPORT_STEP_M: f32 = 2.0;
-const JUNCTION_PROFILE_AUTHORITY_CORRIDOR_DOT: f32 = -0.86;
-const JUNCTION_PROFILE_AUTHORITY_GRADE_SCORE_SCALE: f32 = 2.0;
+const JUNCTION_PROFILE_AUTHORITY_CORRIDOR_DOT: f64 = -0.86;
 
+// One edge end at a node, with its direction away from the node: the node layout's own
+// (`roadbed::incident_direction`, towards the first control point beyond 1 mm), in `f64`.
 #[derive(Clone, Copy)]
 struct JunctionProfileIncident {
     edge_idx: usize,
     at_start: bool,
+    direction: RoadVec2,
 }
 
 // The incidents of one node: those whose plane it solves (its roads, or its footpaths where only
@@ -39,18 +44,29 @@ struct NodeProfileIncidents {
 #[derive(Clone, Copy)]
 struct JunctionProfileIncidentSample {
     incident: JunctionProfileIncident,
-    direction_xz: Vector2,
     dx: f32,
     dz: f32,
     dy: f32,
 }
 
+// A corridor's ranking keys, compared lexicographically (`ROAD-68` "Heights").
 struct JunctionProfileCorridorCandidate {
     a: usize,
     b: usize,
     fits: bool,
-    score: f32,
-    grade: f32,
+    dot: f64,
+    grade: f64,
+}
+
+// The outcome of one node's plane solve.
+enum NodeSolve {
+    // Nothing to pin: fewer than two plane incidents, or a pass-through pair without attached
+    // footpaths, whose spans share one section.
+    Unpinned,
+    Solved(JunctionProfileSolve),
+    // An arm too short to sample, or samples that fix no plane: `check_node` rejects the node
+    // (`NodeError::NoPlane`) before an edit commits.
+    NoPlane,
 }
 
 // One pinned edge end: its node's plane, the mouth station the plane holds up to, and how the
@@ -233,26 +249,22 @@ impl RegionGraph {
         // Road ends with attached footpaths: pinned once their roads' profiles are derived.
         let mut road_ends = Vec::new();
         for node_id in node_ids {
+            let node = &incidents_by_node[&node_id];
             let NodeProfileIncidents {
                 plane: incidents,
                 attached,
-            } = &incidents_by_node[&node_id];
+            } = node;
             if incidents.len() == 1 && !attached.is_empty() {
                 road_ends.push(node_id);
             }
-            if incidents.len() < 2
-                || (attached.is_empty()
-                    && self.junction_profile_incidents_form_pass_through(incidents))
-            {
-                continue;
-            }
-            let Some(solve) = self
-                .solve_bend_profile_solve(node_id, incidents, limit_mode)
-                .or_else(|| self.solve_junction_profile_solve(node_id, incidents, limit_mode))
+            // A node without a plane keeps no pins; `check_node` rejects it before any edit
+            // that produces it commits.
+            let NodeSolve::Solved(solve) = self.node_profile_solve(node_id, node, limit_mode)
             else {
                 continue;
             };
-            // A junction with an authority corridor eases every other arm onto its plane.
+            // A junction with an authority corridor eases every other arm onto its plane, attached
+            // footpaths included: they never belong to the corridor.
             let preserve_authority = solve.authority_incidents.len() >= 2
                 && solve.authority_incidents.len() < incidents.len();
             for incident in incidents {
@@ -283,9 +295,12 @@ impl RegionGraph {
         for (phase, edges) in [early, late].iter().enumerate() {
             if phase == 1 {
                 for node_id in &road_ends {
+                    // `None` only where the road end's layout fails, which `check_node` rejects.
                     let Some(plane) = terminal_plane(self, *node_id) else {
                         continue;
                     };
+                    // A road end has no authority corridor, so its footpaths take supports only
+                    // where their grade leaves the plane, as every arm without one does.
                     for incident in &incidents_by_node[node_id].attached {
                         pins.insert(
                             (incident.edge_idx, incident.at_start),
@@ -332,8 +347,9 @@ impl RegionGraph {
         }
     }
 
-    // Whether the node at one end of an edge joins another road or footpath profile there, so a
-    // pin at the other end may use only half the edge and never overwrites that end's supports.
+    // Whether the node at one end of an edge has a second live road or footpath edge, pass-through
+    // nodes included, so a pin at the other end may use only half the edge and never overwrites
+    // that end's supports.
     fn edge_end_is_shared(&self, edge_idx: usize, at_start: bool) -> bool {
         let edge = &self.edges[edge_idx];
         let node = self.get_valid_node(if at_start {
@@ -352,12 +368,44 @@ impl RegionGraph {
             == 2
     }
 
-    // Whether `node_id` has a live road edge: its plane is then its roads', and its footpaths
-    // are attached to them (D5).
+    // The direction of `edge` away from its start or end node, as the node layout takes it; an
+    // edge end without one (every control point within 1 mm) is no arm of its node there.
+    fn profile_incident(
+        edge_idx: usize,
+        edge: &Edge,
+        at_start: bool,
+    ) -> Option<JunctionProfileIncident> {
+        let end = if at_start {
+            EdgeEnd::Start
+        } else {
+            EdgeEnd::End
+        };
+        let is_profile_edge = !edge.deleted
+            && matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
+            && edge.geometry.len() >= 2;
+        is_profile_edge
+            .then(|| incident_direction(edge, end))
+            .flatten()
+            .map(|direction| JunctionProfileIncident {
+                edge_idx,
+                at_start,
+                direction,
+            })
+    }
+
+    // Whether `node_id` has a road arm: its plane is then its roads', and its footpaths are
+    // attached to them (D5). The incident rule of `build_junction_profile_incidents`.
     fn has_road_arm(&self, node_id: u32) -> bool {
         self.node_adjacency(node_id).iter().any(|&id| {
             let edge = &self.edges[id];
-            !edge.deleted && edge.primary_type == TransitType::Road
+            edge.primary_type == TransitType::Road
+                && [edge.start_node, edge.end_node]
+                    .into_iter()
+                    .zip([true, false])
+                    .any(|(node, at_start)| {
+                        self.get_valid_node(node) == node_id
+                            && Self::profile_incident(id, edge, at_start).is_some()
+                    })
         })
     }
 
@@ -372,10 +420,7 @@ impl RegionGraph {
             let Some(edge) = self.edges.get(edge_idx) else {
                 continue;
             };
-            if edge.deleted
-                || !matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
-                || edge.geometry.len() < 2
-                || edge.start_node as usize >= self.nodes.len()
+            if edge.start_node as usize >= self.nodes.len()
                 || edge.end_node as usize >= self.nodes.len()
             {
                 continue;
@@ -384,14 +429,15 @@ impl RegionGraph {
             let start_node = self.get_valid_node(edge.start_node);
             let end_node = self.get_valid_node(edge.end_node);
             for (node_id, at_start) in [(start_node, true), (end_node, false)] {
-                if !affected_nodes.contains(&node_id) {
+                if !affected_nodes.contains(&node_id)
+                    || self.nodes[node_id as usize].node_type != NodeType::Junction
+                {
                     continue;
                 }
-                if self.nodes[node_id as usize].node_type != NodeType::Junction {
+                let Some(incident) = Self::profile_incident(edge_idx, edge, at_start) else {
                     continue;
-                }
+                };
                 let incidents = incidents_by_node.entry(node_id).or_default();
-                let incident = JunctionProfileIncident { edge_idx, at_start };
                 if edge.primary_type == TransitType::Foot && self.has_road_arm(node_id) {
                     incidents.attached.push(incident);
                 } else {
@@ -400,42 +446,21 @@ impl RegionGraph {
             }
         }
 
-        for (&node_id, incidents) in incidents_by_node.iter_mut() {
+        // Incident order is the direction angle from world +x; edge ids, which follow creation
+        // order, break only exactly equal directions, which layouts reject (`DuplicateDirection`).
+        let angle =
+            |incident: &JunctionProfileIncident| incident.direction.y.atan2(incident.direction.x);
+        for incidents in incidents_by_node.values_mut() {
             for list in [&mut incidents.plane, &mut incidents.attached] {
                 list.sort_by(|a, b| {
-                    self.junction_profile_incident_angle(node_id, *a)
-                        .total_cmp(&self.junction_profile_incident_angle(node_id, *b))
+                    angle(a)
+                        .total_cmp(&angle(b))
                         .then(a.edge_idx.cmp(&b.edge_idx))
                         .then(a.at_start.cmp(&b.at_start))
                 });
             }
         }
         incidents_by_node
-    }
-
-    fn junction_profile_incident_angle(
-        &self,
-        node_id: u32,
-        incident: JunctionProfileIncident,
-    ) -> f32 {
-        let Some(edge) = self.edges.get(incident.edge_idx) else {
-            return 0.0;
-        };
-        let Some(origin) = self.nodes.get(node_id as usize).map(|node| node.pos) else {
-            return 0.0;
-        };
-        let away = if incident.at_start {
-            edge.geometry.get(1).copied()
-        } else {
-            edge.geometry
-                .len()
-                .checked_sub(2)
-                .and_then(|index| edge.geometry.get(index).copied())
-        };
-        let Some(away) = away else {
-            return 0.0;
-        };
-        (away.z - origin.z).atan2(away.x - origin.x)
     }
 
     /// Reconstructs crossfall from the final physical profiles at the shared crossing core.
@@ -512,177 +537,149 @@ impl RegionGraph {
         &self,
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
+        self.junction_profile_node_solve(node_id, JunctionProfileLimitMode::ConservativeSourceFit)
+    }
+
+    /// Whether the finalizer finds no plane at bend or junction `node_id`, which then keeps no
+    /// pins: an arm too short to sample, or samples that fix no plane. `check_node` rejects such
+    /// a node, so no edit that produces one commits.
+    pub(crate) fn junction_profile_solve_fails(&self, node_id: u32) -> bool {
+        self.nodes
+            .get(node_id as usize)
+            .is_some_and(|node| node.node_type == NodeType::Junction)
+            && self
+                .build_junction_profile_incidents(&HashSet::from([node_id]))
+                .get(&node_id)
+                .is_some_and(|node| {
+                    let mode = JunctionProfileLimitMode::FinalProfile;
+                    matches!(
+                        self.node_profile_solve(node_id, node, mode),
+                        NodeSolve::NoPlane
+                    )
+                })
+    }
+
+    fn junction_profile_node_solve(
+        &self,
+        node_id: u32,
+        limit_mode: JunctionProfileLimitMode,
+    ) -> Option<JunctionEndpointProfilePlane> {
         if self.nodes.get(node_id as usize)?.node_type != NodeType::Junction {
             return None;
         }
-        let affected_nodes = HashSet::from([node_id]);
-        let incidents_by_node = self.build_junction_profile_incidents(&affected_nodes);
-        let NodeProfileIncidents {
-            plane: incidents,
-            attached,
-        } = incidents_by_node.get(&node_id)?;
-        if attached.is_empty() && self.junction_profile_incidents_form_pass_through(incidents) {
-            return None;
+        let incidents_by_node = self.build_junction_profile_incidents(&HashSet::from([node_id]));
+        match self.node_profile_solve(node_id, incidents_by_node.get(&node_id)?, limit_mode) {
+            NodeSolve::Solved(solve) => Some(solve.plane),
+            NodeSolve::Unpinned | NodeSolve::NoPlane => None,
         }
-        self.solve_bend_profile_solve(
-            node_id,
-            incidents,
-            JunctionProfileLimitMode::ConservativeSourceFit,
-        )
-        .or_else(|| {
-            self.solve_junction_profile_solve(
-                node_id,
-                incidents,
-                JunctionProfileLimitMode::ConservativeSourceFit,
-            )
-        })
-        .map(|solve| solve.plane)
     }
 
-    fn solve_bend_profile_solve(
+    // The plane solve of one node, its plane incidents in incident order. Every incident takes
+    // its sample, so an arm too short to sample fails the node rather than dropping out of its
+    // plane. A bend fits the plane through its two samples; a junction, or a pass-through pair
+    // with attached footpaths, takes its authority corridor and else the least-squares plane of
+    // every sample.
+    fn node_profile_solve(
         &self,
         node_id: u32,
-        incidents: &[JunctionProfileIncident],
+        node: &NodeProfileIncidents,
         limit_mode: JunctionProfileLimitMode,
-    ) -> Option<JunctionProfileSolve> {
-        if !self.junction_profile_incidents_form_bend(incidents) {
-            return None;
+    ) -> NodeSolve {
+        let incidents = &node.plane;
+        let pass_through = match incidents[..] {
+            [a, b] => directions_pass_through(a.direction, b.direction),
+            _ => false,
+        };
+        if incidents.len() < 2 || (pass_through && node.attached.is_empty()) {
+            return NodeSolve::Unpinned;
         }
-        Some(JunctionProfileSolve {
-            plane: self.solve_junction_profile_plane(node_id, incidents, limit_mode)?,
-            authority_incidents: HashSet::new(),
-        })
-    }
-
-    fn junction_profile_incidents_form_bend(&self, incidents: &[JunctionProfileIncident]) -> bool {
-        let [_, _] = incidents else {
-            return false;
+        let Some(origin) = self.nodes.get(node_id as usize).map(|node| node.pos) else {
+            return NodeSolve::NoPlane;
         };
-        !self.junction_profile_incidents_form_pass_through(incidents)
-    }
-
-    fn junction_profile_incidents_form_pass_through(
-        &self,
-        incidents: &[JunctionProfileIncident],
-    ) -> bool {
-        let [a, b] = incidents else {
-            return false;
+        let Some(samples) = self.junction_profile_incident_samples(origin, incidents) else {
+            return NodeSolve::NoPlane;
         };
-        let Some(a_direction) = self
-            .edges
-            .get(a.edge_idx)
-            .and_then(|edge| Self::edge_endpoint_direction_xz(edge, a.at_start))
-        else {
-            return false;
+        let bend = incidents.len() == 2 && !pass_through;
+        let authority = if bend {
+            None
+        } else {
+            Self::junction_profile_authority_solve(origin, &samples, limit_mode)
         };
-        let Some(b_direction) = self
-            .edges
-            .get(b.edge_idx)
-            .and_then(|edge| Self::edge_endpoint_direction_xz(edge, b.at_start))
-        else {
-            return false;
-        };
-
-        Self::directions_are_pass_through(a_direction, b_direction)
-    }
-
-    fn solve_junction_profile_solve(
-        &self,
-        node_id: u32,
-        incidents: &[JunctionProfileIncident],
-        limit_mode: JunctionProfileLimitMode,
-    ) -> Option<JunctionProfileSolve> {
-        self.solve_junction_profile_authority_solve(node_id, incidents, limit_mode)
+        authority
             .or_else(|| {
-                self.solve_junction_profile_plane(node_id, incidents, limit_mode)
-                    .map(|plane| JunctionProfileSolve {
+                Self::junction_profile_plane(origin, &samples, limit_mode).map(|plane| {
+                    JunctionProfileSolve {
                         plane,
                         authority_incidents: HashSet::new(),
-                    })
+                    }
+                })
             })
+            .map_or(NodeSolve::NoPlane, NodeSolve::Solved)
     }
 
-    fn solve_junction_profile_authority_solve(
-        &self,
-        node_id: u32,
-        incidents: &[JunctionProfileIncident],
+    fn junction_profile_authority_solve(
+        origin: Vector3,
+        samples: &[JunctionProfileIncidentSample],
         limit_mode: JunctionProfileLimitMode,
     ) -> Option<JunctionProfileSolve> {
-        let samples = self.junction_profile_incident_samples(node_id, incidents);
-        if samples.len() < 2 {
-            return None;
-        }
-        let corridors = Self::junction_profile_authority_corridors(&samples, limit_mode);
-        let best_corridor = corridors.first()?;
-        let authority_incidents = [best_corridor.a, best_corridor.b]
-            .into_iter()
-            .map(|index| {
-                (
-                    samples[index].incident.edge_idx,
-                    samples[index].incident.at_start,
-                )
-            })
-            .collect::<HashSet<_>>();
-        let plane = self.solve_junction_profile_corridor_plane(
-            node_id,
-            samples[best_corridor.a],
-            samples[best_corridor.b],
+        let corridors = Self::junction_profile_authority_corridors(samples, limit_mode);
+        let best = corridors.first()?;
+        let (a, b) = (samples[best.a], samples[best.b]);
+        let gradient = Self::junction_profile_corridor_gradient(a, b)?;
+        let plane = JunctionEndpointProfilePlane::grade_limited(
+            origin,
+            gradient.x,
+            gradient.y,
+            &[(a.dx, a.dz), (b.dx, b.dz)],
             limit_mode,
         )?;
         Some(JunctionProfileSolve {
             plane,
-            authority_incidents,
+            authority_incidents: [a, b]
+                .map(|sample| (sample.incident.edge_idx, sample.incident.at_start))
+                .into(),
         })
     }
 
+    // Each incident's control-profile point `min(12 m, half its edge)` along it; `None` when an
+    // incident's edge is too short for a sample at least 1 m from the node.
     fn junction_profile_incident_samples(
         &self,
-        node_id: u32,
+        origin: Vector3,
         incidents: &[JunctionProfileIncident],
-    ) -> Vec<JunctionProfileIncidentSample> {
-        let Some(origin) = self.nodes.get(node_id as usize).map(|node| node.pos) else {
-            return Vec::new();
-        };
-        let mut samples = Vec::with_capacity(incidents.len());
-        for incident in incidents {
-            let Some(edge) = self.edges.get(incident.edge_idx) else {
-                continue;
-            };
-            let Some(direction_xz) = Self::edge_endpoint_direction_xz(edge, incident.at_start)
-            else {
-                continue;
-            };
-            let total_length_m = Self::edge_profile_length_m(edge);
-            if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
-                continue;
-            }
-            let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(total_length_m * 0.5);
-            if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
-                continue;
-            }
-            let Some(sample) = Self::sample_edge_geometry_from_endpoint(
-                edge,
-                incident.at_start,
-                sample_distance_m,
-            ) else {
-                continue;
-            };
-            let dx = sample.x - origin.x;
-            let dz = sample.z - origin.z;
-            if dx * dx + dz * dz <= JUNCTION_PROFILE_MIN_SAMPLE_M * JUNCTION_PROFILE_MIN_SAMPLE_M {
-                continue;
-            }
-            samples.push(JunctionProfileIncidentSample {
-                incident: *incident,
-                direction_xz,
-                dx,
-                dz,
-                dy: sample.y - origin.y,
-            });
-        }
-        samples
+    ) -> Option<Vec<JunctionProfileIncidentSample>> {
+        incidents
+            .iter()
+            .map(|incident| {
+                let edge = self.edges.get(incident.edge_idx)?;
+                let total_length_m = Self::edge_profile_length_m(edge);
+                let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(total_length_m * 0.5);
+                if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
+                    return None;
+                }
+                let sample = Self::sample_edge_geometry_from_endpoint(
+                    edge,
+                    incident.at_start,
+                    sample_distance_m,
+                )?;
+                let (dx, dz) = (sample.x - origin.x, sample.z - origin.z);
+                (dx * dx + dz * dz > JUNCTION_PROFILE_MIN_SAMPLE_M * JUNCTION_PROFILE_MIN_SAMPLE_M)
+                    .then_some(JunctionProfileIncidentSample {
+                        incident: *incident,
+                        dx,
+                        dz,
+                        dy: sample.y - origin.y,
+                    })
+            })
+            .collect()
     }
 
+    // Corridors (opposite enough arm pairs) best first, in `f64` by one lexicographic rule
+    // (`ROAD-68` "Heights"): a corridor whose plane every other arm's sample meets within the
+    // support tolerance first, so a fall-line road crossed by a contour road keeps its grade;
+    // then the straighter pair (lower dot of the arm directions); then the flatter; then incident
+    // order (direction angle from world +x). Geometry alone ranks them: which road was built first
+    // must not matter (`ROAD-68` invariant 6).
     fn junction_profile_authority_corridors(
         samples: &[JunctionProfileIncidentSample],
         limit_mode: JunctionProfileLimitMode,
@@ -691,8 +688,9 @@ impl RegionGraph {
         for a in 0..samples.len() {
             for b in a + 1..samples.len() {
                 let dot = samples[a]
-                    .direction_xz
-                    .dot(samples[b].direction_xz)
+                    .incident
+                    .direction
+                    .dot(samples[b].incident.direction)
                     .clamp(-1.0, 1.0);
                 if dot > JUNCTION_PROFILE_AUTHORITY_CORRIDOR_DOT {
                     continue;
@@ -702,35 +700,29 @@ impl RegionGraph {
                 else {
                     continue;
                 };
-                let grade = gradient.length();
+                let (grade_x, grade_z) = (f64::from(gradient.x), f64::from(gradient.y));
+                let grade = grade_x.hypot(grade_z);
                 // Finalization uses prepared road profiles. Discarding a supported
                 // steep through-road here lets a later, flatter branch steal authority.
                 if !grade.is_finite()
                     || (!matches!(limit_mode, JunctionProfileLimitMode::FinalProfile)
-                        && grade > JUNCTION_PROFILE_REJECT_MAX_GRADE)
+                        && grade > f64::from(JUNCTION_PROFILE_REJECT_MAX_GRADE))
                 {
                     continue;
                 }
-                // Geometry alone ranks corridors; which road was built first must not matter
-                // (`ROAD-68` invariant 6, open question 16). A corridor whose plane every other
-                // arm already meets within the support tolerance comes first, so a fall-line
-                // road crossed by a contour road keeps its grade. Then the straightest and
-                // flattest pair wins, with ties by incident order: the angle of each arm's first
-                // control segment from world +x. Edge ids would follow creation order, so they
-                // break only exactly equal angles, which layouts (`DuplicateDirection`) and
-                // placement (25 degree arms) reject before a node has a piece.
                 let fits = samples.iter().enumerate().all(|(index, sample)| {
+                    let residual_m = f64::from(sample.dy)
+                        - grade_x * f64::from(sample.dx)
+                        - grade_z * f64::from(sample.dz);
                     index == a
                         || index == b
-                        || (sample.dy - gradient.x * sample.dx - gradient.y * sample.dz).abs()
-                            <= JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M
+                        || residual_m.abs() <= f64::from(JUNCTION_PROFILE_SUPPORT_HEIGHT_EPS_M)
                 });
-                let score = -dot - grade * JUNCTION_PROFILE_AUTHORITY_GRADE_SCORE_SCALE;
                 candidates.push(JunctionProfileCorridorCandidate {
                     a,
                     b,
                     fits,
-                    score,
+                    dot,
                     grade,
                 });
             }
@@ -738,7 +730,7 @@ impl RegionGraph {
         candidates.sort_by(|a, b| {
             b.fits
                 .cmp(&a.fits)
-                .then(b.score.total_cmp(&a.score))
+                .then(a.dot.total_cmp(&b.dot))
                 .then(a.grade.total_cmp(&b.grade))
                 .then(a.a.cmp(&b.a))
                 .then(a.b.cmp(&b.b))
@@ -766,79 +758,27 @@ impl RegionGraph {
         Some(axis * ((at * a.dy + bt * b.dy) / denom))
     }
 
-    fn solve_junction_profile_corridor_plane(
-        &self,
-        node_id: u32,
-        a: JunctionProfileIncidentSample,
-        b: JunctionProfileIncidentSample,
+    // The least-squares plane through the node and every sample.
+    fn junction_profile_plane(
+        origin: Vector3,
+        samples: &[JunctionProfileIncidentSample],
         limit_mode: JunctionProfileLimitMode,
     ) -> Option<JunctionEndpointProfilePlane> {
-        let origin = self.nodes.get(node_id as usize)?.pos;
-        let gradient = Self::junction_profile_corridor_gradient(a, b)?;
-        JunctionEndpointProfilePlane::grade_limited(
-            origin,
-            gradient.x,
-            gradient.y,
-            &[(a.dx, a.dz), (b.dx, b.dz)],
-            limit_mode,
-        )
-    }
-
-    fn solve_junction_profile_plane(
-        &self,
-        node_id: u32,
-        incidents: &[JunctionProfileIncident],
-        limit_mode: JunctionProfileLimitMode,
-    ) -> Option<JunctionEndpointProfilePlane> {
-        let origin = self.nodes.get(node_id as usize)?.pos;
-        let mut xx = 0.0;
-        let mut xz = 0.0;
-        let mut zz = 0.0;
-        let mut xy = 0.0;
-        let mut zy = 0.0;
-        let mut sample_count = 0;
-        let mut sample_offsets = Vec::with_capacity(incidents.len());
-
-        for incident in incidents {
-            let edge = self.edges.get(incident.edge_idx)?;
-            let total_length_m = Self::edge_profile_length_m(edge);
-            if total_length_m <= JUNCTION_PROFILE_MIN_SAMPLE_M {
-                continue;
-            }
-            let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(total_length_m * 0.5);
-            if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
-                continue;
-            }
-            let Some(sample) = Self::sample_edge_geometry_from_endpoint(
-                edge,
-                incident.at_start,
-                sample_distance_m,
-            ) else {
-                continue;
-            };
-            let dx = sample.x - origin.x;
-            let dz = sample.z - origin.z;
-            let dy = sample.y - origin.y;
-            if dx * dx + dz * dz <= JUNCTION_PROFILE_MIN_SAMPLE_M * JUNCTION_PROFILE_MIN_SAMPLE_M {
-                continue;
-            }
+        let (mut xx, mut xz, mut zz, mut xy, mut zy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        let mut sample_offsets = Vec::with_capacity(samples.len());
+        for sample in samples {
+            let (dx, dz, dy) = (sample.dx, sample.dz, sample.dy);
             xx += dx * dx;
             xz += dx * dz;
             zz += dz * dz;
             xy += dx * dy;
             zy += dz * dy;
-            sample_count += 1;
             sample_offsets.push((dx, dz));
-        }
-
-        if sample_count < 2 {
-            return None;
         }
         let det = xx * zz - xz * xz;
         if det.abs() <= JUNCTION_PROFILE_PLANE_DET_EPS {
             return None;
         }
-
         let grade_x = (xy * zz - zy * xz) / det;
         let grade_z = (xx * zy - xz * xy) / det;
         JunctionEndpointProfilePlane::grade_limited(
