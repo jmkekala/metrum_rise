@@ -2,8 +2,10 @@
 
 //! A road commit marks the cell lots of the roads whose geometry or curb frames changed
 //! (`ROAD-68-G` part 3); edits that leave their regions to the `cell lots` queue mark every road
-//! the curb-frame refresh touched (part 4). Every kind of edit must leave the zoning products
-//! bit for bit as marking that whole ring did.
+//! the curb-frame refresh touched (part 4). Every road edit invalidates generated cells over its
+//! roads' candidate rows, without the lot regions' parcel frontage reach (part 4). Every kind of
+//! edit must leave the zoning products bit for bit as marking that whole ring with the wider
+//! invalidation did.
 
 use super::*;
 use crate::nodes::sim::core::populated_city::zoned_city;

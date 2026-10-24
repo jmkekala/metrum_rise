@@ -124,12 +124,18 @@ impl ZoningSystem {
 
     /// Marks an externally edited area without scanning background roads, cells or parcels.
     pub(crate) fn mark_cell_lots_dirty(&mut self, bounds: CellBounds) {
+        self.mark_road_cells_dirty(bounds, bounds);
+    }
+
+    // Invalidates the generated cells an edit inside `cells` can change and queues the lot
+    // regions of `lots`, which must contain it.
+    fn mark_road_cells_dirty(&mut self, cells: CellBounds, lots: CellBounds) {
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
         // A lost column cell affects up to five rear rows beyond its direct conflict halo.
         self.cells.invalidate_generated_cells(
-            bounds.expanded((CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
+            cells.expanded((CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
         );
-        self.cell_lot_queue.mark(bounds);
+        self.cell_lot_queue.mark(lots);
     }
 
     /// Queues an area for lot derivation alone, keeping its generated cells: for a change that
@@ -193,17 +199,23 @@ impl ZoningSystem {
             if edge.physical_geometry.is_empty() {
                 continue;
             }
-            let margin = f64::from(edge.width) * 0.5
-                + f64::from(crate::config::SIDEWALK_WIDTH)
-                + f64::from(self.config.zone_cell_m) * CELL_DEPTH as f64
-                + f64::from(MAX_PARCEL_FRONTAGE_M);
-            let bounds = CellBounds::from_points(
+            // The road's candidate rows. Its lots reach a parcel frontage further along their
+            // cells, but cell generation reads a road only through its own candidates and
+            // corridor, so only the lot regions take that reach (`ROAD-68-G` part 4).
+            let rows = CellBounds::from_points(
                 edge.physical_geometry
                     .iter()
                     .map(|p| DVec2::new(f64::from(p.x), f64::from(p.z))),
             )
-            .expanded(margin);
-            self.mark_cell_lots_dirty(bounds);
+            .expanded(
+                f64::from(edge.width) * 0.5
+                    + f64::from(crate::config::SIDEWALK_WIDTH)
+                    + f64::from(self.config.zone_cell_m) * CELL_DEPTH as f64,
+            );
+            let lots = rows.expanded(f64::from(MAX_PARCEL_FRONTAGE_M));
+            #[cfg(test)]
+            let rows = if self.full_road_marks { lots } else { rows };
+            self.mark_road_cells_dirty(rows, lots);
         }
     }
 

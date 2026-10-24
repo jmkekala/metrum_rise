@@ -43,8 +43,9 @@ pub struct ZoningSystem {
     overlay_occupancy_revision: u64,
     // Parcel storage indices changed at each occupancy revision, for incremental tables.
     occupancy_changes: crate::simulation::core::change_log::IndexChangeLog,
-    // Test builds can mark every road a road edit refreshes, as before `ROAD-68-G` part 3, to
-    // compare the narrower marks against (`mark_cell_lots_for_road_edit`).
+    // Test builds can mark every road a road edit refreshes and invalidate their cells as far
+    // as their lot regions, as before `ROAD-68-G` parts 3 and 4, to compare the narrower marks
+    // against (`mark_cell_lots_for_road_edit`).
     #[cfg(test)]
     pub(crate) full_road_marks: bool,
 }
