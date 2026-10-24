@@ -638,6 +638,21 @@ fn a_terminal_has_a_round_cap() {
 }
 
 #[test]
+fn an_axis_aligned_terminal_cap_apex_lies_on_its_axis() {
+    // The apex is the cap's start turned a quarter exactly (`ROAD-68-D`); the polar form put it
+    // 6e-16 m off the axis, a sliver against a tile side on that line.
+    let node = RoadVec2::new(42.0, -17.0);
+    let arm = road_arm(3, node, 0.0, TWO_LANE_HALF_M);
+    let layout = build_checked(node, std::slice::from_ref(&arm));
+    let cap = &layout.sectors[0];
+    for boundary in &layout.boundaries[cap.boundaries.clone()] {
+        let samples = boundary_samples(&layout, boundary);
+        assert_eq!(samples.len() % 2, 1, "an even segment count has an apex sample");
+        assert_eq!(samples[samples.len() / 2].y.to_bits(), node.y.to_bits());
+    }
+}
+
+#[test]
 fn two_lane_meets_four_lane_with_tapered_bands() {
     // Two-lane arms with sidewalks east and west, four-lane arms with shoulders north and south.
     let node = RoadVec2::new(900.0, 900.0);

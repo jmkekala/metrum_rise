@@ -1544,8 +1544,16 @@ impl PolarCurve {
         }
         for step in 1..segments {
             let t = step as f64 / segments as f64;
-            let (sin, cos) = (self.start_angle + self.sweep * t).sin_cos();
             let radius = lerp_scalar(self.start_radius, self.end_radius, t);
+            // A half turn's middle sample, the terminal cap's apex, is its start turned a quarter
+            // counter-clockwise: exact, so an axis-aligned arm's apex lies on its axis, where the
+            // polar form (`cos(pi / 2)` is not zero) put it 6e-16 m off.
+            if self.sweep == PI && step * 2 == segments {
+                let from = self.start - self.centre;
+                samples.push(self.centre + from.perp() * (radius / self.start_radius));
+                continue;
+            }
+            let (sin, cos) = (self.start_angle + self.sweep * t).sin_cos();
             samples.push(self.centre + RoadVec2::new(cos, sin) * radius);
         }
         samples.push(self.end);
