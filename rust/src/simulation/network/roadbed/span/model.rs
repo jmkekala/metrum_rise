@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The legacy section model of one edge: stations, frame, plane blend, width taper and section
-//! evaluation, ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules.
+//! evaluation, ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules
+//! except the station rule, which `ROAD-68-D` makes one constructive subdivision.
 
 use super::super::arms::{directions_pass_through, pass_through_crossings};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
@@ -420,10 +421,15 @@ impl<'a> SpanModel<'a> {
             .collect()
     }
 
+    // Stations by one constructive rule: fixed stations are the protected ones (span ends,
+    // mouths, crossings, the profile range, its fades and the width tapers) and the polyline
+    // knots outside their clearance; each interval between consecutive fixed stations is then
+    // divided evenly at its step, the cadence step inside a fade or taper and the class step
+    // elsewhere. No two rule families start from different origins, so rows never fall a few
+    // millimetres apart before a knot. `O(F log F)` for `F` fixed stations plus the rows.
     fn section_sample_distances(&self, samples: &mut Vec<f32>, protected: &mut Vec<f32>) {
         samples.clear();
         protected.clear();
-        let edge = self.edge;
         let total_length = self.total_length_m;
         let (start_mouth_m, end_mouth_m) = self.mouths_m;
         for distance_m in [0.0, total_length, start_mouth_m, end_mouth_m] {
@@ -432,84 +438,75 @@ impl<'a> SpanModel<'a> {
         for distance_m in self.crossings_m.into_iter().flatten() {
             push_protected_section_sample(samples, protected, distance_m, total_length);
         }
-
+        // Cadence ranges `(start, end)`: the profile fades at each planed end and the tapers.
+        let mut cadence = [None; 4];
         if let Some((start_profile_s_m, end_profile_s_m)) = self.profile_range {
-            push_protected_section_sample(samples, protected, start_profile_s_m, total_length);
-            push_protected_section_sample(samples, protected, end_profile_s_m, total_length);
             let profile_fade_m = JUNCTION_PROFILE_BLEND_ZONE_M
                 .min((end_profile_s_m - start_profile_s_m).max(0.0) * 0.5);
             if profile_fade_m > SAMPLE_EPSILON_M {
-                if self.start_plane.is_some() {
-                    push_cadence_samples(
-                        samples,
-                        protected,
-                        start_profile_s_m,
-                        start_profile_s_m + profile_fade_m,
-                        total_length,
-                        PROFILE_TRANSITION_SECTION_STEP_M,
-                    );
-                }
-                if self.end_plane.is_some() {
-                    push_cadence_samples(
-                        samples,
-                        protected,
-                        end_profile_s_m - profile_fade_m,
-                        end_profile_s_m,
-                        total_length,
-                        PROFILE_TRANSITION_SECTION_STEP_M,
-                    );
-                }
+                cadence[0] = self
+                    .start_plane
+                    .map(|_| (start_profile_s_m, start_profile_s_m + profile_fade_m));
+                cadence[1] = self
+                    .end_plane
+                    .map(|_| (end_profile_s_m - profile_fade_m, end_profile_s_m));
+            }
+            for distance_m in [start_profile_s_m, end_profile_s_m] {
+                push_protected_section_sample(samples, protected, distance_m, total_length);
             }
         }
-        if let Some(taper) = self.tapers.start {
-            push_protected_section_sample(samples, protected, taper.length_m, total_length);
-            push_cadence_samples(
-                samples,
-                protected,
-                0.0,
-                taper.length_m,
-                total_length,
-                WIDTH_CHANGE_TAPER_SECTION_STEP_M,
-            );
+        cadence[2] = self.tapers.start.map(|taper| (0.0, taper.length_m));
+        cadence[3] = self
+            .tapers
+            .end
+            .map(|taper| (total_length - taper.length_m, total_length));
+        let cadence = cadence.map(|range| {
+            range.map(|(start_m, end_m)| {
+                (start_m.clamp(0.0, total_length), end_m.clamp(0.0, total_length))
+            })
+        });
+        for (start_m, end_m) in cadence.into_iter().flatten() {
+            push_protected_section_sample(samples, protected, start_m, total_length);
+            push_protected_section_sample(samples, protected, end_m, total_length);
         }
-        if let Some(taper) = self.tapers.end {
-            let taper_start_m = total_length - taper.length_m;
-            push_protected_section_sample(samples, protected, taper_start_m, total_length);
-            push_cadence_samples(
-                samples,
-                protected,
-                taper_start_m,
-                total_length,
-                total_length,
-                WIDTH_CHANGE_TAPER_SECTION_STEP_M,
-            );
-        }
-
         for &distance in self.cumulative {
             if !is_near_protected_section_sample(distance, protected) {
                 samples.push(distance);
             }
         }
+        samples.sort_by(f32::total_cmp);
+        samples.dedup_by(|a, b| (*a - *b).abs() <= SAMPLE_EPSILON_M);
 
-        let step_m = match edge.class {
+        let class_step_m = match self.edge.class {
             EdgeClass::Standard => STANDARD_SECTION_STEP_M,
             EdgeClass::Bridge => BRIDGE_SECTION_STEP_M,
             EdgeClass::Tunnel => TUNNEL_SECTION_STEP_M,
         };
-        for segment in self.cumulative.windows(2) {
-            let start_s = segment[0];
-            let end_s = segment[1];
-            let mut sample_s = start_s + step_m;
-            while sample_s < end_s - SAMPLE_EPSILON_M {
-                if !is_near_protected_section_sample(sample_s, protected) {
-                    samples.push(sample_s);
-                }
-                sample_s += step_m;
+        // A range's ends are fixed stations, so each interval lies wholly inside or outside it.
+        let cadence_steps = [
+            PROFILE_TRANSITION_SECTION_STEP_M,
+            PROFILE_TRANSITION_SECTION_STEP_M,
+            WIDTH_CHANGE_TAPER_SECTION_STEP_M,
+            WIDTH_CHANGE_TAPER_SECTION_STEP_M,
+        ];
+        let fixed = samples.len();
+        for index in 1..fixed {
+            let (start_m, end_m) = (samples[index - 1], samples[index]);
+            let middle_m = (start_m + end_m) * 0.5;
+            let step_m = cadence
+                .iter()
+                .zip(cadence_steps)
+                .filter(|(range, _)| {
+                    range.is_some_and(|(from_m, to_m)| from_m <= middle_m && middle_m <= to_m)
+                })
+                .map(|(_, step_m)| step_m)
+                .fold(class_step_m, f32::min);
+            let count = ((end_m - start_m) / step_m).ceil().max(1.0) as u32;
+            for row in 1..count {
+                samples.push(start_m + (end_m - start_m) * row as f32 / count as f32);
             }
         }
-
         samples.sort_by(f32::total_cmp);
-        samples.dedup_by(|a, b| (*a - *b).abs() <= SAMPLE_EPSILON_M);
     }
 }
 
@@ -884,29 +881,6 @@ fn tapered_carriageway_half_width(
 
 fn base_carriageway_half_width(edge: &Edge) -> f32 {
     edge.width.max(config::LANE_WIDTH) * 0.5
-}
-
-// Samples every `step_m` strictly inside `(start_m, end_m)`, skipping the protected clearance.
-fn push_cadence_samples(
-    samples: &mut Vec<f32>,
-    protected: &[f32],
-    start_m: f32,
-    end_m: f32,
-    total_length_m: f32,
-    step_m: f32,
-) {
-    let start_m = start_m.clamp(0.0, total_length_m);
-    let end_m = end_m.clamp(0.0, total_length_m);
-    if end_m <= start_m + step_m {
-        return;
-    }
-    let mut sample_m = start_m + step_m;
-    while sample_m < end_m - SAMPLE_EPSILON_M {
-        if !is_near_protected_section_sample(sample_m, protected) {
-            samples.push(sample_m);
-        }
-        sample_m += step_m;
-    }
 }
 
 fn push_protected_section_sample(

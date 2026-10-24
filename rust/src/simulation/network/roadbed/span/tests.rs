@@ -219,6 +219,26 @@ fn span_sections_run_between_the_node_mouths() {
 }
 
 #[test]
+fn sloped_span_rows_never_fall_millimetres_apart() {
+    // Each interval between fixed stations is divided evenly at one step (`ROAD-68-D`): profile
+    // cadence rows and class rows no longer start from different origins, which put the sloped
+    // T's rows 3-6 mm apart before its knots.
+    let graph = t_junction(true);
+    let roadbed = compiled(&graph, 64.0);
+    for edge_idx in 0..graph.edge_count() {
+        let sections = roadbed.span_piece(edge_idx).unwrap().sections();
+        for pair in sections.windows(2) {
+            assert!(
+                pair[1].s_m - pair[0].s_m >= 0.1,
+                "edge {edge_idx}: rows at {} and {} m",
+                pair[0].s_m,
+                pair[1].s_m
+            );
+        }
+    }
+}
+
+#[test]
 fn query_heights_and_bands_equal_the_rendered_triangles() {
     let graph = mixed_profiles(true);
     let roadbed = compiled(&graph, 64.0);
