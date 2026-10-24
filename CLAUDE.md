@@ -109,6 +109,8 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 - Match the existing style: no unnecessary `pub`, no redundant type annotations, no defensive `unwrap`/`expect` chains for unreachable states.
 - Avoid monolithic "god functions" and excessive nesting. Extract validation routines and domain checks into isolated helper methods when that improves readability and ownership.
 - Abstract repetitive, structurally-symmetrical code. Use concise declarative macros or helper closures instead of copy-pasting loops of identical logic (especially around the Godot FFI proxy boundary).
+- **Refactor for quality, not for line counts.** When cutting code, remove duplication, dead code, needless parameters and over-general abstractions. Do not golf lines, rewrite clear loops only for brevity, or delete comments that explain geometry, rules or invariants.
+- **Prove behaviour-preserving refactors.** Before a cleanup that must not change output, record the affected products (hashes or bitwise snapshots) and assert them afterwards; on hot paths, benchmark against a same-session control.
 - Parallelism must use Rayon. Do not introduce `std::thread::spawn` for simulation work.
 - Avoid allocating inside hot loops. Prefer pre-allocated buffers and SoA patterns consistent with `AgentSystem`.
 - All new spatial lookups must use the existing spatial system that fits the query. Linear scans over full collections are not acceptable at simulation scale.
