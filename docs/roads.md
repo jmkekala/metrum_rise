@@ -1028,7 +1028,10 @@ These need a user decision; work that does not depend on them continues.
     find which supplier candidates the new lanes add or remove at each tier and fix the cause if
     it is a defect; or accept the new counts and re-baseline these two limits (user decision).
 
-21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement, open).** With the CCH
+21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement) — cell lots decided
+    2026-10-24 (user): profile and speed up lot regeneration first; if it still does not fit,
+    `ROAD-68-E` builds the lots in the preview and the commit installs them (option (b)). The
+    other stages stay open until the commit fits a frame.** With the CCH
     off the commit (D7), part 1 measured click → acknowledgement at 2.4 s at 100k residents.
     Part 2 ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24))
     found that the harness never acknowledged an upload, so it republished the whole network
