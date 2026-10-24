@@ -19,6 +19,12 @@ use std::sync::Arc;
 // model's station tolerance).
 const SHARED_MOUTH_M: f32 = 0.001;
 
+// A closure of at most this many pieces (an edit's, a preview's) builds on the calling thread:
+// waking pool workers costs more than a handful of pieces (`ROAD-68-E` stage timings). Larger
+// closures (loads, terrain syncs) build on the shared pool. Same functions, same order, so the
+// products do not depend on it.
+const INLINE_CLOSURE_PIECES: usize = 16;
+
 // A published piece.
 #[derive(Clone)]
 pub(super) enum Piece {
@@ -312,34 +318,49 @@ impl RoadbedSystem {
             })
             .collect();
         let grid = self.grid;
-        // The shared pool, never Rayon's global one (`CODE-17`); inline on a pool worker.
-        let (built_spans, built_nodes): (Vec<_>, Vec<_>) = crate::thread_pools::install(|| {
-            let spans = edges
-                .par_iter()
-                .zip(&span_mouths)
-                .map_init(SpanScratch::default, |scratch, (&edge_idx, mouths)| {
-                    build_span_piece(
-                        graph,
-                        edge_idx,
-                        [&mouths[0], &mouths[1]].map(Option::as_ref),
-                        grid,
-                        scratch,
-                    )
+        let span = |scratch: &mut SpanScratch, (&edge_idx, mouths): (&usize, &[Option<_>; 2])| {
+            build_span_piece(
+                graph,
+                edge_idx,
+                [&mouths[0], &mouths[1]].map(Option::as_ref),
+                grid,
+                scratch,
+            )
+        };
+        let node = |scratch: &mut NodeScratch, (node, plan): (u32, Result<Option<NodePlan>, _>)| {
+            let built = match plan {
+                Ok(Some(plan)) => build_node_piece(plan, grid, scratch).map(Some),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            };
+            (node, built)
+        };
+        let (built_spans, built_nodes): (Vec<_>, Vec<_>) =
+            if edges.len() + plans.len() <= INLINE_CLOSURE_PIECES {
+                let (mut span_scratch, mut node_scratch) = Default::default();
+                (
+                    edges
+                        .iter()
+                        .zip(&span_mouths)
+                        .map(|item| span(&mut span_scratch, item))
+                        .collect(),
+                    plans
+                        .into_iter()
+                        .map(|item| node(&mut node_scratch, item))
+                        .collect(),
+                )
+            } else {
+                // The shared pool, never Rayon's global one (`CODE-17`); inline on a pool worker.
+                crate::thread_pools::install(|| {
+                    let spans = edges
+                        .par_iter()
+                        .zip(&span_mouths)
+                        .map_init(SpanScratch::default, span)
+                        .collect();
+                    let nodes = plans.into_par_iter().map_init(NodeScratch::default, node).collect();
+                    (spans, nodes)
                 })
-                .collect();
-            let nodes = plans
-                .into_par_iter()
-                .map_init(NodeScratch::default, |scratch, (node, plan)| {
-                    let built = match plan {
-                        Ok(Some(plan)) => build_node_piece(plan, grid, scratch).map(Some),
-                        Ok(None) => Ok(None),
-                        Err(error) => Err(error),
-                    };
-                    (node, built)
-                })
-                .collect();
-            (spans, nodes)
-        });
+            };
         delta.spans = edges
             .into_iter()
             .zip(built_spans)
