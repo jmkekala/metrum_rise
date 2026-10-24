@@ -217,7 +217,16 @@ impl CellStore {
         // Current road candidates establish ownership first. A retained copy of the same
         // square must not promote its whole strip just because a cell was painted. Only
         // historical geometry absent from the current roads needs retained priority.
-        candidates.sort_unstable_by_key(|candidate| (candidate.pinned, candidate.priority()));
+        // The order of `(pinned, priority())` field by field, without building both keys per
+        // comparison: the same outcomes give the same unstable-sort permutation.
+        candidates.sort_unstable_by(|a, b| {
+            a.pinned
+                .cmp(&b.pinned)
+                .then_with(|| a.row.cmp(&b.row))
+                .then_with(|| a.frame.cmp(&b.frame))
+                .then_with(|| a.x.cmp(&b.x))
+                .then_with(|| a.y.cmp(&b.y))
+        });
         for candidate in candidates {
             let grid = raw.register_frame(candidate.frame);
             let key = CellKey {
@@ -225,7 +234,7 @@ impl CellStore {
                 x: candidate.x,
                 y: candidate.y,
             };
-            raw.insert(key);
+            raw.insert_unstamped(key);
             let entry = priorities
                 .entry(key)
                 .or_insert((candidate.priority(), false, [0_u8; 4]));

@@ -262,6 +262,17 @@ impl CellStore {
 
     /// Publishes a cell after generation and reservation validation. Existing paint is retained.
     pub(super) fn insert(&mut self, key: CellKey) -> bool {
+        let inserted = self.insert_unstamped(key);
+        if inserted {
+            self.revision = self.revision.wrapping_add(1);
+            self.mark_cell_chunk_changed(key);
+        }
+        inserted
+    }
+
+    // [`Self::insert`] without advancing the store's revision or stamping the cell's rendering
+    // chunk: for a generation's temporary candidate index, whose revisions nothing reads.
+    pub(super) fn insert_unstamped(&mut self, key: CellKey) -> bool {
         let Some(frame) = self.frame(key.grid) else {
             return false;
         };
@@ -281,8 +292,6 @@ impl CellStore {
             return false;
         }
         block.valid |= bit;
-        self.revision = self.revision.wrapping_add(1);
-        self.mark_cell_chunk_changed(key);
         true
     }
 
