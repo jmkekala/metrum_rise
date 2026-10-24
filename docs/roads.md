@@ -1235,13 +1235,17 @@ These need a user decision; work that does not depend on them continues.
       meshes and give coverage a seam tolerance (rejected: tolerance). (c) Move the samples off
       the seam (rejected by the coordinator's decision). **Recommendation: (a)**, with the road
       seam (question 24) following the same rule.
+    - **Scope (coordinator, same delegation):** (a) in `ROAD-68-D`, with one frame per shared
+      seam for road chunks and terrain as well, and one shared height function for filler and
+      tile sides; the yard test is re-enabled with it.
     - **Not yet done.** Part 4 does not implement (a); the yard test stays a `ROAD-68-D` ignore
       (seam samples of buildings 0 and 1).
       Also open under this question: filler and tile side heights come from two bilinear
       evaluations (patch snapshot and terrain system) that agree on sample points but can differ
       in the last bit between them ([watertight patches](#footprint-and-terrain)); one shared
       height function (the snapshot carrying the terrain grid frame) closes it.
-24. **Road surface pinholes on slopes (`ROAD-68-D` part 4, open).** With the terrain watertight,
+24. **Road surface pinholes on slopes (`ROAD-68-D` part 4) — decided by the coordinator under
+    the user's delegation, 2026-10-24, for review: (a), in `ROAD-68-D`.** With the terrain watertight,
     the reference screenshots keep 9 single sky pixels, all on the sloped fixtures and none on
     the flat ones (`pinholes.py`): 8 inside the carriageway (`t`, `four_way` and
     `t_footpath_beside_arm` at one screen point near the side arm's curb, three in a row on the
@@ -1264,9 +1268,13 @@ These need a user decision; work that does not depend on them continues.
     the patch centre) round a shared vertex in two frames (the frame split of question 23).
     The two Y drawing orders also differ in height on the slope (junction centre 3.2651 m drawn
     branches first, 3.1992 m drawn stem first), so invariant 6 fails for those images; that
-    belongs to question 16. Options: (a) find where the render path splits one side of a shared
-    edge only (zebra cut-outs and band splits in `standard_surface` and `crosswalks` are the
-    first suspects, since piece meshes are watertight across mouths), make both sides take the
+    belongs to question 16. The pieces themselves are closed: edge-matching every band and curb
+    face triangle of the sloped `t` and `y_25_branches_first` pieces in f64 finds no open edge
+    with road on both sides, and no piece triangle collapses in f32; crosswalks add only
+    per-vertex shader data, no cut-outs. So the open edges arise in the render emission
+    (`emit_curb_faces` drops faces under `MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2`, and each
+    triangle is moved into its centroid's chunk frame). Options: (a) find where the render
+    emission leaves one side of a shared edge only, make both sides take the
     same vertices, add the road-chunk edge-matching test beside
     `reference_junction_terrain_is_watertight`, then give road chunks and terrain one frame per
     shared seam (question 23's rule); (b) hide the cracks under terrain again (rejected:
