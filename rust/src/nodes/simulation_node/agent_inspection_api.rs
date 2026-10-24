@@ -121,6 +121,8 @@ impl SimulationNode {
     #[func]
     pub fn spawn_debug_car(&self, from: Vector3, to: Vector3) -> i64 {
         let mut core = self.lock_core();
+        // A route query during a routing hold waits for the rebuilt hierarchy (D7).
+        core.transit_network.install_pending_cch();
         let graph = &core.region_graph;
         let (Some(start), Some(end)) =
             (nearest_road_node(graph, from), nearest_road_node(graph, to))

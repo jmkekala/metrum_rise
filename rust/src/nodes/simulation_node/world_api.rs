@@ -48,7 +48,7 @@ impl SimulationNode {
             .map(|camera| camera.bind().saved_state());
         match self
             .lock_core()
-            .save_game_internal(&path.to_string(), camera)
+            .save_game_settled(&path.to_string(), camera)
         {
             Ok(()) => true,
             Err(err) => {

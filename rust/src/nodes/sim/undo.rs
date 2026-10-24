@@ -491,9 +491,8 @@ impl SimCore {
                         &self.region_graph,
                     );
                 }
-                self.transit_network
-                    .rebuild_cch_and_check(&self.region_graph);
-                self.transit_network.cch_dirty_chunks.clear();
+                // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
+                self.schedule_cch_rebuild_of_live_graph();
                 self.transit_network.flow_fields.mark_all_dirty();
                 if restored_dense_terrain {
                     self.zoning.invalidate_cell_lot_assets();

@@ -7,6 +7,7 @@ pub(crate) mod change_log;
 pub mod config;
 pub(crate) mod handles;
 pub(crate) mod phases;
+pub(crate) mod pure_job;
 pub(crate) mod request_queue;
 pub(crate) mod scheduler;
 pub(crate) mod sparse_chunk_grid;

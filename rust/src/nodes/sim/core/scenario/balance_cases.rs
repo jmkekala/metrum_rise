@@ -879,7 +879,7 @@ fn assert_continues_identically_after_prepared_reload(
     ));
     source
         .core
-        .save_game_internal(path.to_str().unwrap(), None)
+        .save_game_settled(path.to_str().unwrap(), None)
         .unwrap();
     let mut loaded = GrowthScenario::starter_town();
     prepare(&mut loaded.core);

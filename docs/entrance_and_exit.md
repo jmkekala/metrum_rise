@@ -2323,6 +2323,34 @@ The final executable hashes are `be6be668c03ade4dae20adb401ba06f30ce2e25b2475c35
 before and `c0095bb8ab4f07de42d4b45587c21c2d90225db7eb2da48f2fd96194f78d264d` after. Commands use
 Rust 1.98.1, `METRUM_DEBUG=0`, offline release lib-test builds and no concurrent builds/tests.
 
+##### Routing after a topology edit (`ROAD-68-G`, D7)
+
+Every query reads costs and turns from the live graph through the hierarchy's state and arc
+indices, so the two must describe one topology: a split keeps the first half's edge id and
+appends the second, and an old hierarchy indexes the new graph wrongly. A road commit, an undo
+and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between them:
+
+- The edit rebuilds the hierarchy as a [pure job](simulation.md#pure-jobs) on an immutable copy of
+  the edited graph. A commit uses its road-tool snapshot's copy, so it copies the graph once.
+- For `CCH_ADOPTION_FRAMES` (6) frames the simulation frame holds: no flow-field refresh, agent
+  tick, timed event or slot runs, and the clock stays. Those are all the route readers inside
+  the simulation, so queries wait by not being issued. The next frame adopts the result,
+  waiting if it is late, and runs normally.
+- Adoption gives the hierarchy a fresh build generation. Everything keyed on it refreshes as
+  after any rebuild: the flow fields at that frame through `flow_graph_revision`, the census
+  key, the destination and supplier rolls, workplace quotes, border arrival costs and query
+  scratch at their first reader.
+- Outside the frame, a reader that routes during the hold installs the result first, waiting for
+  it: the debug car spawn, whose hold then still runs to its frame, and the save, which also ends
+  the hold. The clock is held, so installing early or ending the hold changes no outcome.
+- `TransitNetwork::cch_current()` is false while a result waits to be installed or an edited
+  chunk waits for a rebuild. Saved rolls, saved workplace quotes and border arrival costs treat
+  that state as stale, as they treated dirty chunks.
+- Node moves, lane connection edits, edge class changes and border connections still rebuild
+  synchronously on Godot's main thread. Such a rebuild replaces a pending job's result with a
+  build of the live graph; the hold still runs out. Load builds synchronously and drops a
+  pending job with the replaced network.
+
 ##### Pedestrian direction audit measurements
 
 `AUDIT-01-P4` shares `Edge::traversal_flags` between CCH and flow fields. Every allowed

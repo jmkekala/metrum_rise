@@ -138,7 +138,7 @@ impl BorderArrivalCosts {
     // every topology edit marks chunks and rebuilds the CCH, moving its build generation.
     fn revision(transit_network: &TransitNetwork, graph: &RegionGraph) -> Option<(u32, u64, u64)> {
         let cch = &transit_network.cch_graph;
-        transit_network.cch_dirty_chunks.is_empty().then_some((
+        transit_network.cch_current().then_some((
             cch.build_generation,
             cch.metric_revision,
             graph.node_role_revision(),

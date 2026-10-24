@@ -19,6 +19,7 @@ pub use render::NetworkMeshData;
 pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
+pub(crate) mod cch_adoption;
 pub(crate) mod road_edit;
 pub mod topology;
 use crate::config;
@@ -145,6 +146,10 @@ pub struct TransitNetwork {
     pub(crate) frontage_delay_revision: u64,
     /// Roadbed pieces derived from the graph, with their chunk index and generation gate.
     pub roadbed: RoadbedSystem,
+    // Routing rebuild waiting for its adoption frame (`ROAD-68-G`, `cch_adoption`).
+    pending_cch: Option<cch_adoption::PendingCch>,
+    #[cfg(test)]
+    cch_job_delay: std::time::Duration,
 }
 
 impl Default for TransitNetwork {
@@ -197,6 +202,9 @@ impl TransitNetwork {
                 chunk_origin_x_m,
                 chunk_origin_z_m,
             ),
+            pending_cch: None,
+            #[cfg(test)]
+            cch_job_delay: std::time::Duration::ZERO,
         }
     }
 
@@ -233,6 +241,7 @@ impl TransitNetwork {
         self.cch_graph = CchGraph::new(0);
         self.cch_dirty_chunks.clear();
         self.metric_dirty = false;
+        self.pending_cch = None;
         self.lane_system.clear();
         self.frontage_delay_elapsed_s = 0.0;
         self.frontage_delay_revision = self.frontage_delay_revision.wrapping_add(1);
@@ -520,6 +529,7 @@ impl TransitNetwork {
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
         // Topology changes (Phase 1)
         if !self.cch_dirty_chunks.is_empty() {
+            self.supersede_pending_cch();
             self.cch_graph = CchGraph::build(graph);
             self.cch_dirty_chunks.clear();
             self.metric_dirty = false; // Phase 1 includes customize
@@ -557,6 +567,7 @@ impl TransitNetwork {
     /// through `rebuild_pathing`. This ensures the `[ROAD_NET]` disconnection warning
     /// fires on every structural road edit, not only during simulation ticks.
     pub fn rebuild_cch_and_check(&mut self, graph: &RegionGraph) {
+        self.supersede_pending_cch();
         self.cch_graph = CchGraph::build(graph);
         log_road_connectivity(graph);
     }

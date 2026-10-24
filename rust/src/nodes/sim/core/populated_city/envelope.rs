@@ -188,8 +188,8 @@ pub(super) fn semantic_fingerprint(city: &PopulatedCity) -> Vec<(&'static str, u
 /// Order-insensitive hash of every saved table, so a reload or repeat run can be compared
 /// against everything the save format persists. The save header is excluded: it holds the
 /// wall-clock save time.
-pub(super) fn save_fingerprint(core: &SimCore, path: &Path) -> BTreeMap<String, u64> {
-    core.save_game_internal(path.to_str().expect("UTF-8 save path"), None)
+pub(super) fn save_fingerprint(core: &mut SimCore, path: &Path) -> BTreeMap<String, u64> {
+    core.save_game_settled(path.to_str().expect("UTF-8 save path"), None)
         .unwrap_or_else(|error| panic!("could not save fingerprint city: {error}"));
     let connection = rusqlite::Connection::open(path).unwrap();
     let mut tables: Vec<String> = connection
@@ -699,8 +699,87 @@ fn fingerprinted_run(residents: u32, days: u32, label: &str) -> Run {
             hourly.push(semantic_fingerprint(&city));
         }
     }
-    let saved = save_fingerprint(&city.core, &scratch_save_path(label));
+    let saved = save_fingerprint(&mut city.core, &scratch_save_path(label));
     (hourly, saved)
+}
+
+// `ROAD-68-G` (D7): one player road commit on the populated city, then `hours` of frames. A
+// save inside the routing hold is taken and discarded when `save_in_hold`.
+fn road_commit_run(
+    residents: u32,
+    hours: u32,
+    delay: std::time::Duration,
+    save_in_hold: bool,
+    label: &str,
+) -> Run {
+    use super::routing_benchmark::{commit_trunk_branch, trunk_branch_starts};
+    let mut city = PopulatedCity::build(residents);
+    city.core.transit_network.delay_cch_jobs_for_test(delay);
+    let start = trunk_branch_starts(&city.core)[0];
+    let outcome = commit_trunk_branch(&mut city.core, start, std::time::Instant::now());
+    assert!(outcome.committed, "{}", outcome.rejection_reason);
+    assert!(city.core.transit_network.cch_adoption_pending());
+    if save_in_hold {
+        save_fingerprint(&mut city.core, &scratch_save_path(&format!("{label}_hold")));
+    }
+    let mut hourly = Vec::new();
+    let end = absolute_minute(&city.core) + u64::from(hours) * MINUTES_PER_HOUR;
+    let mut hour = absolute_minute(&city.core) / MINUTES_PER_HOUR;
+    while absolute_minute(&city.core) < end {
+        city.core.step_frame(FRAME_DT_S);
+        let now = absolute_minute(&city.core) / MINUTES_PER_HOUR;
+        if now != hour {
+            hour = now;
+            hourly.push(semantic_fingerprint(&city));
+        }
+    }
+    let saved = save_fingerprint(&mut city.core, &scratch_save_path(label));
+    (hourly, saved)
+}
+
+#[test]
+#[ignore = "release D7 determinism: a road commit's deferred routing across worker counts, a late \
+            rebuild and a save inside the hold"]
+fn road68g_commit_determinism() {
+    release_only();
+    let residents = env_u32("METRUM_ROAD68G_RESIDENTS", 2_000);
+    let hours = env_u32("METRUM_ROAD68G_HOURS", 6);
+    let run = |threads: usize, delay_ms: u64, save_in_hold: bool, label: &str| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            road_commit_run(
+                residents,
+                hours,
+                std::time::Duration::from_millis(delay_ms),
+                save_in_hold,
+                label,
+            )
+        })
+    };
+    let reference = run(8, 0, false, "reference");
+    let mut results = serde_json::Map::new();
+    for (name, threads, delay_ms, save_in_hold) in [
+        ("threads_1", 1, 0, false),
+        ("threads_3", 3, 0, false),
+        ("late_rebuild_8", 8, 400, false),
+        ("late_rebuild_1", 1, 400, false),
+        ("save_in_hold", 8, 0, true),
+    ] {
+        let other = run(threads, delay_ms, save_in_hold, name);
+        results.insert(name.into(), first_difference(&reference, &other).into());
+    }
+    eprintln!(
+        "ROAD68G_DETERMINISM {}",
+        serde_json::json!({"residents":residents,"hours":hours,"hour_fingerprints":reference.0.len(),
+            "saved_tables":reference.1.len(),"differences":results})
+    );
+    assert!(
+        results.values().all(serde_json::Value::is_null),
+        "determinism differences: {results:?}"
+    );
 }
 
 fn first_difference(reference: &Run, other: &Run) -> Option<String> {
@@ -812,8 +891,8 @@ fn reload_continuation(residents: u32, days: u32) -> Option<String> {
             return Some(format!("hour {}: {name}", now - target / MINUTES_PER_HOUR));
         }
     }
-    let a = save_fingerprint(&straight.core, &scratch_save_path("straight"));
-    let b = save_fingerprint(&loaded.core, &scratch_save_path("loaded"));
+    let a = save_fingerprint(&mut straight.core, &scratch_save_path("straight"));
+    let b = save_fingerprint(&mut loaded.core, &scratch_save_path("loaded"));
     let tables: Vec<&String> = a
         .iter()
         .filter(|(table, hash)| b.get(*table) != Some(hash))

@@ -13,11 +13,23 @@ impl CchGraph {
         crate::thread_pools::install(|| Self::build_in_pool(graph))
     }
 
-    fn build_in_pool(graph: &RegionGraph) -> Self {
+    /// Gives this hierarchy a fresh build generation. A rebuild adopted after its commit
+    /// (`docs/roads.md` D7) takes one at adoption, so a superseded rebuild never takes one.
+    ///
+    /// Generations are unique within the process, not per network: worker-local route scratch
+    /// (`CchQueryScratch` and the trip and path scratch built on it) serves every network a
+    /// pool thread runs and keys its retained labels on the generation, so a per-network
+    /// counter would let a loaded or second network reuse another's labels. No save, result or
+    /// fingerprint reads the value, only whether two generations are equal.
+    pub(crate) fn stamp_generation(&mut self) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static BUILD_GEN: AtomicU32 = AtomicU32::new(0);
+        self.build_generation = BUILD_GEN.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn build_in_pool(graph: &RegionGraph) -> Self {
         let mut result = Self::new(graph.node_count());
-        result.build_generation = BUILD_GEN.fetch_add(1, Ordering::Relaxed);
+        result.stamp_generation();
         result.turns = VehicleTurns::build(graph);
         // States are created in node order, then relabelled by their own contraction order.
         let mut states = vec![Vec::new(); graph.node_count()];

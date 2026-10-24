@@ -948,8 +948,8 @@ fn benchmark_populated_work_counts() {
 
 // ROAD-68-G: one player road commit on a populated city, stage by stage. Tiers are residents
 // (`METRUM_COMMIT_TIERS`, default 0,1300,13000); 0 is the 1,300-resident street grid without
-// lots. Each sample extends a different row street 120 m east from the grid's east edge, which
-// changes a junction's degree and so the routing topology. City setup is never timed.
+// lots. Each sample branches a 120 m road off a border trunk west of the grid, splitting the
+// trunk into a T junction, which changes the routing topology. City setup is never timed.
 #[test]
 #[ignore = "release ROAD-68-G commit breakdown; builds the requested cities outside timing"]
 fn benchmark_populated_commit_breakdown() {
@@ -968,9 +968,7 @@ fn benchmark_populated_commit_breakdown() {
 
 fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
     use crate::nodes::sim::core::frame::FRAME_DT_S;
-    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
     use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
-    use godot::prelude::Vector3;
     use std::sync::RwLock;
 
     core.transit_network
@@ -983,34 +981,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     let reference = core.step_frame(FRAME_DT_S);
     // The player's commit records undo and charges the treasury.
     core.benchmark_mode = false;
-    let graph = &core.region_graph;
-    let (half_world, _) = core.heightmap.half_world_extents();
-    let live = |node: u32| {
-        (node as usize) < graph.node_adjacency_count()
-            && graph
-                .node_adjacency(node)
-                .iter()
-                .any(|&edge| !graph.edge(edge).deleted)
-    };
-    let east_x = (0..graph.node_count() as u32)
-        .filter(|&node| live(node) && graph.node(node).pos.x < half_world - 50.0)
-        .map(|node| graph.node(node).pos.x)
-        .fold(f32::MIN, f32::max);
-    // Row ends on the east edge without an edge continuing east (trunks run on to the border).
-    let mut ends: Vec<Vector3> = (0..graph.node_count() as u32)
-        .filter(|&node| live(node) && (graph.node(node).pos.x - east_x).abs() < 0.5)
-        .filter(|&node| {
-            graph.node_adjacency(node).iter().all(|&edge| {
-                let edge = graph.edge(edge);
-                edge.deleted
-                    || [edge.start_node, edge.end_node]
-                        .iter()
-                        .all(|&end| graph.node(end).pos.x < east_x + 1.0)
-            })
-        })
-        .map(|node| graph.node(node).pos)
-        .collect();
-    ends.sort_by(|a, b| a.z.abs().total_cmp(&b.z.abs()));
+    let starts = trunk_branch_starts(core);
     let header = serde_json::json!({
         "residents": residents,
         "buildings": core.allocator.buildings.len(),
@@ -1021,23 +992,13 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         "lanes": core.transit_network.lane_system.lanes.len(),
         "reference_frame_ms": reference.pathing_ms + reference.agent_ms + reference.minute_ms,
         "reference_pathing_ms": reference.pathing_ms,
+        "reference_agent_ms": reference.agent_ms,
     });
     eprintln!("COMMIT_CITY {header}");
     let published = RwLock::new(road_tool_snapshot_from_core(core));
-    for (sample, start) in ends.into_iter().step_by(2).take(3).enumerate() {
-        let mut end = start + Vector3::new(120.0, 0.0, 0.0);
-        end.y = core.heightmap.sample_height_world(end.x, end.z);
+    for (sample, start) in starts.into_iter().enumerate() {
         let road_total = Instant::now();
-        let outcome = core.commit_road(
-            RoadCommitRequest {
-                points: vec![start, end],
-                fwd_lanes: 1,
-                bkw_lanes: 1,
-                snap_to_existing_roads: true,
-            },
-            road_total,
-            Default::default(),
-        );
+        let outcome = commit_trunk_branch(core, start, road_total);
         let commit_ms = road_total.elapsed().as_secs_f64() * 1e3;
         assert!(
             outcome.committed,
@@ -1059,8 +1020,19 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "snapshot_ms": m.snapshot_ms, "refined_state_ms": m.refined_state_ms,
             "core_work_ms": m.core_work_ms, "dirty_edges": m.dirty_edges,
         });
-        // The frame after the commit refreshes the flow fields on the new hierarchy.
-        let next = core.step_frame(FRAME_DT_S);
+        // Frames until the rebuilt hierarchy is adopted (D7), then the adoption frame, which
+        // refreshes the flow fields on it and serves the routes that waited.
+        let adopt = Instant::now();
+        let mut held_frames = 0;
+        let next = loop {
+            let frame = core.step_frame(FRAME_DT_S);
+            if !frame.routing_held {
+                break frame;
+            }
+            held_frames += 1;
+        };
+        let adoption_latency_ms = adopt.elapsed().as_secs_f64() * 1e3;
+        let after = core.step_frame(FRAME_DT_S);
         // Isolated costs, after the measured path: the snapshot's clones and the hierarchy.
         let time = |run: &mut dyn FnMut()| {
             let begin = Instant::now();
@@ -1083,11 +1055,80 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         let record = serde_json::json!({
             "residents": residents, "sample": sample, "commit_ms": commit_ms,
             "publish_ms": publish_ms, "click_to_ack_ms": click_to_ack_ms, "stages": stages,
-            "next_frame_pathing_ms": next.pathing_ms, "next_frame_agent_ms": next.agent_ms,
+            "held_frames": held_frames, "adoption_wait_ms": next.adoption_ms,
+            "adoption_latency_ms": adoption_latency_ms,
+            "adoption_frame_pathing_ms": next.pathing_ms,
+            "adoption_frame_agent_ms": next.agent_ms,
+            "adoption_frame_minute_ms": next.minute_ms,
+            "following_frame_pathing_ms": after.pathing_ms,
+            "following_frame_agent_ms": after.agent_ms,
             "terrain_clone_ms": terrain_clone_ms, "graph_clone_ms": graph_clone_ms,
             "roadbed_clone_ms": roadbed_clone_ms, "water_clone_ms": water_clone_ms,
             "zoning_snap_ms": zoning_snap_ms, "cch_build_ms": cch_build_ms,
         });
         eprintln!("COMMIT_BREAKDOWN {record}");
     }
+}
+
+/// Points on a west border trunk outside the painted grid, 100, 250 and 400 m west of it,
+/// trunk nearest the middle first. A branch there splits the trunk into a T junction and
+/// crosses no zoned cell.
+pub(super) fn trunk_branch_starts(
+    core: &crate::nodes::sim::core::state::SimCore,
+) -> Vec<godot::prelude::Vector3> {
+    use godot::prelude::Vector3;
+    let graph = &core.region_graph;
+    let (half_world, _) = core.heightmap.half_world_extents();
+    let live = |node: u32| {
+        (node as usize) < graph.node_adjacency_count()
+            && graph
+                .node_adjacency(node)
+                .iter()
+                .any(|&edge| !graph.edge(edge).deleted)
+    };
+    let nodes: Vec<Vector3> = (0..graph.node_count() as u32)
+        .filter(|&node| live(node))
+        .map(|node| graph.node(node).pos)
+        .collect();
+    let west_x = nodes
+        .iter()
+        .filter(|pos| pos.x > 50.0 - half_world)
+        .map(|pos| pos.x)
+        .fold(f32::MAX, f32::min);
+    // West trunks end at border nodes on the world's west edge.
+    let mut trunk_z: Vec<f32> = nodes
+        .iter()
+        .filter(|pos| pos.x <= 50.0 - half_world)
+        .map(|pos| pos.z)
+        .collect();
+    trunk_z.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
+    let z = trunk_z[0];
+    [100.0, 250.0, 400.0]
+        .iter()
+        .map(|offset| {
+            let x = west_x - offset;
+            Vector3::new(x, core.heightmap.sample_height_world(x, z), z)
+        })
+        .collect()
+}
+
+/// Commits a 120 m two-lane road north from `start` on a trunk through the player's path.
+pub(super) fn commit_trunk_branch(
+    core: &mut crate::nodes::sim::core::state::SimCore,
+    start: godot::prelude::Vector3,
+    road_total: Instant,
+) -> crate::nodes::sim::core::road_commit::RoadCommitOutcome {
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    let mut end = start + godot::prelude::Vector3::new(0.0, 0.0, 120.0);
+    end.y = core.heightmap.sample_height_world(end.x, end.z);
+    core.commit_road(
+        RoadCommitRequest {
+            points: vec![start, end],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        },
+        road_total,
+        Default::default(),
+    )
 }

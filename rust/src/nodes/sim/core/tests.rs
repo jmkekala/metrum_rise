@@ -10,6 +10,7 @@ pub(super) mod fields;
 mod road_edit_order;
 mod road_plan_scaling;
 mod road_terrain_plan;
+mod routing_adoption;
 mod zoning_buildability;
 
 use super::{

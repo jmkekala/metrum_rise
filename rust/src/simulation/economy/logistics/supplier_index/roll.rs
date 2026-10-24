@@ -324,8 +324,7 @@ impl ShipmentSystem {
     /// network's CCH build and no road change waits for the next rebuild.
     pub(crate) fn saved_supplier_roll(&self, network: &TransitNetwork) -> SavedSupplierRoll {
         let layout = network
-            .cch_dirty_chunks
-            .is_empty()
+            .cch_current()
             .then_some(network.cch_graph.build_generation);
         self.supplier_roll.saved_for(layout)
     }

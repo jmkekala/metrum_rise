@@ -30,7 +30,8 @@ pub(super) fn save(
         households.workplace_route_cache_revisions();
     let topology_matches = saved_building_revision == allocator.building_ref_revision()
         && saved_entrance_revision == allocator.entrance_ref_revision()
-        && saved_cch_generation == network.cch_graph.build_generation;
+        && saved_cch_generation == network.cch_graph.build_generation
+        && network.cch_current();
     let mut entries: Vec<_> = if topology_matches {
         households.workplace_route_cache_entries().collect()
     } else {

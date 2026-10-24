@@ -181,15 +181,8 @@ impl SimCore {
                 self.rebuild_building_entrances_internal();
                 edit_metrics.buildings_ms = buildings_start.elapsed().as_secs_f64() * 1000.0;
 
-                // Rebuild CCH and run the connectivity check. This is the only
-                // place the CCH is actually rebuilt for road placements — the
-                // sim-tick path is gated on speed > 0.0 and would miss paused edits.
-                record_crash_phase_for_core(self, "add road cch rebuild");
-                let routing_start = Instant::now();
-                self.transit_network
-                    .rebuild_cch_and_check(&self.region_graph);
-                self.transit_network.cch_dirty_chunks.clear();
-                edit_metrics.routing_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
+                // The routing hierarchy is rebuilt off the commit once the road-tool snapshot
+                // exists, from its graph copy (D7, below).
 
                 // Cell-lot preparation consumes queued painted neighborhoods at
                 // the next hourly demand pass; road placement does not scan cells.
@@ -224,6 +217,20 @@ impl SimCore {
         record_crash_phase_for_core(self, "add road tool snapshot");
         let road_snapshot = road_tool_snapshot_from_core(self);
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+        if road_add.committed {
+            // D7 (`ROAD-68-G`): the hierarchy is rebuilt as a pure job on the snapshot's
+            // immutable graph copy, so the commit clones the graph once, and adopted a fixed
+            // number of frames later; route readers wait for it. A paused game adopts too.
+            record_crash_phase_for_core(self, "add road cch rebuild scheduled");
+            let routing_start = Instant::now();
+            match &road_snapshot {
+                Some(snapshot) => self
+                    .transit_network
+                    .schedule_cch_rebuild(std::sync::Arc::clone(&snapshot.region_graph)),
+                None => self.schedule_cch_rebuild_of_live_graph(),
+            }
+            edit_metrics.routing_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
+        }
         let collect_refined_start = Instant::now();
         record_crash_phase_for_core(self, "add road terrain patch state");
         let invalidated_refined_cache_entries =

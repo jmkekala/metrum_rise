@@ -502,10 +502,20 @@ the profile solve fails the load with its typed error.
 
 ### Commit consequences
 
-Any topology change currently rebuilds the CCH from scratch and marks every flow field dirty
-(`TransitNetwork::rebuild_pathing`). At city scale that alone exceeds a frame.
-[`ROAD-68-G`](#road-68-g--commit-consequences-inside-one-frame) takes it off the commit's critical
-path ([D7](#product-decisions)). Lane invalidation and agent reattachment remain local, as today.
+Before [`ROAD-68-G`](#road-68-g--commit-consequences-inside-one-frame) the commit rebuilt the CCH
+from scratch on the sim thread (`rebuild_cch_and_check`, with an O(edges) connectivity log). It
+did not mark the flow fields: they rebuilt in the next running frame, when the hierarchy's build
+generation no longer matched theirs (`flow_graph_revision`), and a paused game never ran that
+frame. An earlier version of this section said the commit went through
+`TransitNetwork::rebuild_pathing`, which marks every field; that is the frame-start path.
+
+Since `ROAD-68-G` ([D7](#product-decisions)) the commit, undo and road bulldoze rebuild the CCH
+as a [pure job](simulation.md#pure-jobs) on the road-tool snapshot's graph copy and adopt it six
+frames later. The simulation frame holds until then, so no route query sees the new graph with
+the old hierarchy, and a late job blocks only the adoption frame
+([routing contract](entrance_and_exit.md#routing-after-a-topology-edit-road-68-g-d7)). Flow
+fields refresh at the adoption frame. Lane invalidation and agent reattachment remain local, as
+before.
 
 ### Complexity bounds
 
@@ -592,7 +602,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
-| `ROAD-68-G` | open | Commit consequences inside one frame (routing, flow fields) |
+| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; the commit still misses a frame on other stages ([open question 19](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -992,6 +1002,39 @@ These need a user decision; work that does not depend on them continues.
       other footpaths there, and the walking proof is withdrawn on such a network. The legacy rule
       joined it to the corner between the nearest sidewalk arms, across the car-only road. No
       fixture or perf city has one.
+18. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution, open).** In one
+    session the last pre-`ROAD-68` code (`d6c80f91`) and the `ROAD-68-G` base (`c59955e6` plus
+    the gate's test-only harness) ran the economy performance contract A B B A, each on its own
+    generated cities ([attribution](#attribution-of-the-perf-contract-rise-road-68-g)). Five of the
+    seven failing work-count limits already fail before `ROAD-68`: baseline `buyer_sites_built`,
+    `staffing_trials` and `job_search_keys`, fiscal `buyer_sites_built` and `cch_searches`. Two
+    fail only on `ROAD-68` cities: baseline `supplier_searches` (15,394 → 63,981, 4.16× against a
+    3.43× limit; before: 22,712 → 62,900, 2.77×) and `supplier_routes` (261,289 → 1,346,656,
+    5.15×; before: 393,202 → 1,232,340, 3.13×). The 10k city does a third fewer supplier searches
+    and routes, and the 30k city 2% more searches and 9% more routes, so the ratio crosses the
+    limit from both ends. Both cities have the same street grid; what differs is the roadbed,
+    lanes and walking connectors `ROAD-68` builds on it. The limits are unchanged here. Options:
+    find which supplier candidates the new lanes add or remove at each tier and fix the cause if
+    it is a defect; or accept the new counts and re-baseline these two limits (user decision).
+
+19. **The commit's other stages exceed a frame (`ROAD-68-G` measurement, open).** With the CCH
+    off the commit, click → acknowledgement is still 2.4 s at 100k residents (76,109
+    buildings) and 19 ms on a 44-edge street grid ([commit
+    breakdown](#implementation-road-68-g-2026-10-24)), so the gate's acceptance (under 16.7 ms
+    at 100k) is not met.
+    - **Render publication.** `precompute_road_mesh_data` costs 18.7 / 40.9 / 219 / 610 /
+      2,261 ms at 44 / 93 / 446 / 1,201 / 4,283 edges: about 0.4–0.55 ms per edge, so it
+      rebuilds by network size, not by the edit's dirty closure. That contradicts the
+      [chunk rebuild bound](#complexity-bounds), `O(pieces in the changed chunks)`.
+    - **Entrance rebuild.** `rebuild_building_entrances_internal` costs about 20–30 ms whenever
+      buildings exist (19.8 ms at 1,413, 29.6 ms at 76,109).
+    - **Agents and lanes.** 19 ms at 100k.
+    - **Adoption.** Six frames are shorter than the 311 ms build at 100k, so the adoption frame
+      waits about 210 ms.
+    - **Options.** Make the render publication local (rebuild only the edit's chunks) and the
+      entrance rebuild follow the dirty edges, in `ROAD-68-E` (commit adoption) or a dedicated
+      fix; and choose the adoption offset from the graph's size (deterministic) instead of a
+      constant, or accept the wait. `ROAD-68-G` stays open until the commit fits a frame.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -2112,6 +2155,151 @@ Acceptance:
 - click → committed generation installed and acknowledged in under 16.7 ms at 100k buildings
 - routing-adoption latency reported separately
 - agent records bitwise equal across worker counts and with an injected rebuild delay
+
+#### Implementation (`ROAD-68-G`, 2026-10-24)
+
+D7 as built ([pure jobs](simulation.md#pure-jobs),
+[routing contract](entrance_and_exit.md#routing-after-a-topology-edit-road-68-g-d7)):
+
+- `SimCore::commit_road` no longer builds the CCH. Once the road-tool snapshot exists it starts
+  `TransitNetwork::schedule_cch_rebuild` on the snapshot's `Arc<RegionGraph>`, so the commit
+  copies the graph once. The job builds the CCH and runs the connectivity log on the shared pool.
+- `step_frame` holds for `CCH_ADOPTION_FRAMES` (6) frames, paused frames included: it returns
+  before the flow fields, the agent tick and the clock. The seventh frame adopts the result,
+  waiting for it if late, stamps a fresh build generation, and runs normally. The flow fields
+  refresh there because the generation moved.
+- Undo and road bulldoze schedule the same job on a copy of the live graph. Node moves, lane
+  connection edits, edge class changes and border connections still build synchronously on
+  Godot's main thread; such a build supersedes a pending job. Converting them is the same call.
+- A second edit inside the hold supersedes the job (an unstarted one never runs) and restarts
+  the hold. A save installs the result and ends the hold (`save_game_settled`); load drops it.
+- `RoadEditMetrics` gained `undo_ms`, `topology_ms` and `zoning_ms`, the parts of `add_ms`;
+  `routing_ms` now times only the scheduling.
+
+**Commit breakdown** (fresh, 2026-10-24). Release library tests of the control (`c59955e6`
+with the harness, binary `abc892d7…`, synchronous CCH) and of this gate (`13d4ec6f…`), in one
+session, pinned to the P-cores with eight workers, under the exclusive timing lock with no build
+or backup running:
+
+```bash
+METRUM_COMMIT_TIERS=0,2000,10000,30000,100000 RAYON_NUM_THREADS=8 METRUM_DEBUG=0 \
+  taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
+  nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_breakdown \
+  --exact --ignored --nocapture
+```
+
+Each tier is the populated city at that many residents (0: the street grid alone); each of three
+samples commits a 120 m road branching off a border trunk west of the grid, a T junction that
+splits the trunk. Medians of the three samples, in ms; control / gate where they differ:
+
+| Stage | 0 | 2k | 10k | 30k | 100k |
+| --- | --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 | 76,109 / 2,220 / 4,283 |
+| click → ack | 20.6 / 19.1 | 64.8 / 61.3 | 256.4 / 246.0 | 689.4 / 650.6 | 2,613 / 2,391 |
+| plan | 0.19 | 0.21 | 0.19 | 0.23 | 0.26 |
+| undo, topology, zoning | 0.06 | 0.07 | 0.09 | 0.17 | 0.40 |
+| roadbed and terrain (`surface`) | 0.33 | 0.58 | 0.51 | 0.58 | 0.63 |
+| agents and lanes | 0.35 | 0.34 | 0.86 | 3.64 | 19.0 |
+| entrances (`buildings`) | 0.00 | 19.8 | 21.4 | 22.8 | 29.6 |
+| routing | 0.90 / 0.002 | 2.38 / 0.003 | 13.96 / 0.004 | 49.4 / 0.005 | 312.2 / 0.005 |
+| render publication (`mesh`) | 18.7 | 40.9 | 218.9 | 609.6 | 2,261 / 2,335 |
+| tool snapshot | 0.03 | 0.04 | 0.25 | 0.74 | 2.73 |
+| road-locked terrain state | 0.00 | 0.08 | 0.83 | 0.66 | 2.55 |
+| snapshot publish | 0.07 | 0.08 | 0.21 | 0.39 | 1.27 |
+| CCH build alone | 0.95 | 2.50 | 15.1 | 50.0 | 311.5 |
+| graph clone alone | 0.02 | 0.06 | 0.35 | 0.93 | 3.49 |
+
+- **Routing.** The gate removes the CCH build from the commit: 312 ms at 100k becomes the
+  scheduling, 5 µs. The snapshot's clones cost 2.7 ms at 100k (the terrain and water clones are
+  O(1); the graph clone is 3.5 ms on its own), so reusing the snapshot's graph saved a copy.
+- **The commit still misses 16.7 ms at every tier**, on stages outside this gate
+  ([open question 19](#road-68-open-questions)). The render publication
+  (`precompute_road_mesh_data`) grows with the network, about 0.4–0.55 ms per edge, to 2.3 s
+  at 100k; the entrance rebuild costs about 20–30 ms from 1,413 buildings up; agents and lanes
+  reach 19 ms at 100k.
+- **Adoption latency.** Adoption comes six frames after the commit, 100 ms at 60 Hz. The
+  build itself takes 0.95 / 2.5 / 15 / 50 / 311 ms, so at 100k the adoption frame waits about
+  210 ms in the game. In the harness, whose frames take no wall time, it waited 0.5 / 2.0 / 13 /
+  50 / 300 ms.
+- **Backlog at adoption.** None accumulates: held frames issue no query. The adoption frame
+  replans the agents whose routes the edit invalidated, as the frame after a synchronous
+  rebuild did: agent tick 25–128 ms at 100k (control's next frame: 31–124 ms) against 14 ms for
+  an ordinary frame, plus 57–94 ms of slot work as caches keyed on the new generation refill.
+  The flow fields rebuild in 1.1 ms. The next frame is ordinary again (agent tick 9.4 ms).
+
+**Determinism** (fresh, 2026-10-24, release binary `13d4ec6f…`):
+
+```bash
+METRUM_DEBUG=0 "$TEST_BINARY" road68g_commit_determinism --ignored --nocapture
+```
+
+The 2,000-resident populated city takes one player commit (a T branch off a border trunk), then
+runs six game hours. Against the eight-worker reference, runs with one and three workers, a
+rebuild delayed 400 ms at one and at eight workers, and a save taken inside the hold all give
+identical hourly fingerprints (six) and identical saved tables (72). The focused tests
+(`core/tests/routing_adoption.rs`) check that held frames advance nothing, a late job blocks only
+the adoption frame, a paused game adopts on time, a second commit restarts the hold, a save
+ends it, and the adopted CCH matches a fresh build of the live graph.
+
+**Economy performance contract** ([`PERF-01`](economy.md#performance-contract-perf-01perf-05),
+fresh, 2026-10-24). Control C is the base `c59955e6` with the gate's test-only harness
+(binary `23865fac…`); G is this gate (binary `13d4ec6f…`). Both ran on the control's generated
+cities (5,311 and 15,180 households): every run reported no generation, and the snapshot files'
+SHA-256 sums were unchanged after each. A B B A, pinned to the P-cores with eight workers, under
+the exclusive timing lock, no build or backup running; command as in the attribution below.
+
+| Hour mean | C1 | G1 | G2 | C2 |
+| --- | --- | --- | --- | --- |
+| baseline 10k | 0.89 ms | 0.83 ms | 0.90 ms | 0.84 ms |
+| baseline 30k | 4.14 ms | 4.27 ms | 4.12 ms | 4.26 ms |
+| fiscal 10k | 6.62 ms | 6.63 ms | 6.77 ms | 6.52 ms |
+| fiscal 30k | 28.30 ms | 29.42 ms | 28.52 ms | 29.39 ms |
+| runner time | 110.1 s | 109.4 s | 109.6 s | 109.9 s |
+
+Work counts are identical in all four runs. The differences lie inside the control's own spread,
+so the contract is unchanged: no time limit fails, and the same seven work-count limits fail in
+control and change ([open question 18](#road-68-open-questions) and the attribution below). The
+contract's cities build no roads during the measured day, so no hold occurs in it.
+
+#### Attribution of the perf-contract rise (`ROAD-68-G`)
+
+[Open question 14](#road-68-open-questions) left the baseline-30k hour mean's rise from
+3.31–3.40 ms (`SIM-02-K` part 7) to 4.09–4.44 ms on `ROAD-68` cities unattributed. On
+2026-10-24 the release library tests of `d6c80f91` (A, the last code commit before `ROAD-68`,
+binary `504c773d…`) and of the `ROAD-68-G` base (B, `c59955e6` with the gate's test-only commit
+breakdown harness, `8f9d7f1a`, binary `23865fac…`) ran A B B A in one session, each build on
+cities it generated itself, pinned to the P-cores with eight workers, under the exclusive timing
+lock with no build or restic backup running:
+
+```bash
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 \
+  python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/<run>"   # <run>/snapshots -> that build's directory
+```
+
+| Hour mean | A1 (pre-`ROAD-68`) | B1 (base) | B2 (base) | A2 (pre-`ROAD-68`) |
+| --- | --- | --- | --- | --- |
+| baseline 10k | 0.88 ms | 0.81 ms | 0.87 ms | 0.88 ms |
+| baseline 30k | 4.49 ms | 4.22 ms | 4.17 ms | 4.45 ms |
+| fiscal 10k | 8.32 ms | 6.58 ms | 6.72 ms | 8.27 ms |
+| fiscal 30k | 36.56 ms | 28.19 ms | 28.51 ms | 33.98 ms |
+| runner time | 77.2 s | 109.5 s | 109.7 s | 76.5 s |
+
+- **The rise predates `ROAD-68`.** The pre-`ROAD-68` build measures 4.45–4.49 ms at baseline
+  30k in this session, more than the base's 4.17–4.22 ms. The 3.31–3.40 ms of `SIM-02-K` part 7
+  came from an earlier build (`93bfaf61` and before) and boot; the change lies between that
+  build and `d6c80f91` or in the session, not in `ROAD-68`.
+- **Cities.** A's cities end with 5,313 and 15,179 households, B's with 5,311 and 15,180. Each
+  build generated its snapshots in its first run; its second run reported no generation and
+  every snapshot file's SHA-256 was unchanged after each run.
+- **Work counts.** A fails five work-count limits: baseline `buyer_sites_built` (10 → 369),
+  `staffing_trials` (49,289 → 231,170) and `job_search_keys` (64 → 15,448), and fiscal
+  `buyer_sites_built` (716 → 2,764) and `cch_searches` (6,771 → 26,851). B fails the same five
+  (20 → 396, 40,983 → 231,810, 69 → 21,371, 708 → 2,808, 5,817 → 26,657) and two more, baseline
+  `supplier_searches` and `supplier_routes` ([open question 18](#road-68-open-questions)). No
+  time limit fails in either.
+- **Time does not follow the counts.** At baseline 30k, B does 9% more supplier routes than A
+  and runs 6% faster. In the fiscal workload the counts match within 1% and B is 17–23% faster;
+  that difference is code between `d6c80f91` and `c59955e6`, not work.
 
 ### `ROAD-68-H` — acceptance and cleanup
 

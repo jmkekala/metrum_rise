@@ -63,7 +63,15 @@ beside it moves its mouth (open question 17, user decision), order footpaths at 
 their sector, rank profile corridors by a documented geometric rule, re-solve profiles after node
 moves and road removals, and turn the remaining silent skips into placement rejections.
 Tests that need later gates are disabled until then (32 Rust tests, 4 Godot scripts).
-`ROAD-68-D`–`ROAD-68-H` are open, and `roads.md` lists seventeen open questions; open question 16
+`ROAD-68-G` (2026-10-24, D7) is implemented: a commit, undo or road bulldoze rebuilds the CCH as a
+pure job on the road-tool snapshot's graph and adopts it six frames later, the simulation frame
+holding meanwhile, deterministically across worker counts, a late rebuild and a save in the hold.
+That takes the CCH build (312 ms at 100k residents) off the commit, but the commit still takes
+2.4 s there, mostly a render publication that grows with the network (open question 19), so its
+acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
+code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
+cities (open question 18). `ROAD-68-D`, `-E`, `-F` and `-H` are open, and `roads.md` lists
+nineteen open questions; open question 16
 (strokes pinned to the pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, and open
 question 17 records the remaining footpath attachment defaults. Design,
 bounds, budgets, product defaults and gates are in

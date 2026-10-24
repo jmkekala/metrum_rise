@@ -15,12 +15,31 @@ use crate::simulation::vegetation::VegetationGenerator;
 use std::path::PathBuf;
 
 impl SimCore {
-    /// Saves the current simulation state into a single-file SQLite snapshot.
+    /// Saves the game: during a routing hold (`docs/roads.md` D7) it first installs the
+    /// pending hierarchy, waiting for it, and ends the hold, so the saved caches and their
+    /// current flags are those of the adopted network and the saved game continues frame for
+    /// frame like the game loaded from it. Held frames advance nothing, so ending them early
+    /// changes no outcome, and nothing about the hold is saved.
+    pub(crate) fn save_game_settled(
+        &mut self,
+        path: &str,
+        camera: Option<SavedCameraState>,
+    ) -> Result<(), String> {
+        self.transit_network.settle_cch();
+        self.save_game_internal(path, camera)
+    }
+
+    /// Saves the current simulation state into a single-file SQLite snapshot. No routing
+    /// rebuild may wait to be installed; [`Self::save_game_settled`] installs it first.
     pub(crate) fn save_game_internal(
         &self,
         path: &str,
         camera: Option<SavedCameraState>,
     ) -> Result<(), String> {
+        debug_assert!(
+            !self.transit_network.cch_result_pending(),
+            "a save during a routing hold installs the rebuild first (save_game_settled)"
+        );
         let path = PathBuf::from(path);
         let events = self.aligned_events();
         save_to_sqlite(

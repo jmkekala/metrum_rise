@@ -477,8 +477,7 @@ fn write_snapshot(
     // Rolling buffers count as current while the CCH matches the saved road graph.
     let layout = view
         .network
-        .cch_dirty_chunks
-        .is_empty()
+        .cch_current()
         .then_some(view.network.cch_graph.build_generation);
     world::save_household_queue_state(tx, view.households, layout)?;
     demand_queues::save(

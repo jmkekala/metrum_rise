@@ -114,6 +114,11 @@ pub(crate) struct FrameStepReport {
     pub(crate) hourly_ticks: usize,
     /// Daily settlements simulated.
     pub(crate) daily_ticks: usize,
+    /// Whether the frame held for a pending routing rebuild and ran nothing (`ROAD-68-G`).
+    pub(crate) routing_held: bool,
+    /// Wall-clock milliseconds the adoption frame spent installing the rebuilt hierarchy,
+    /// waiting for it when late; zero in every other frame.
+    pub(crate) adoption_ms: f64,
 }
 
 impl SimCore {
@@ -145,6 +150,16 @@ impl SimCore {
         if allocator.entrances_dirty || allocator.entrances.len() != allocator.buildings.len() {
             allocator.rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
         }
+    }
+
+    /// Rebuilds the routing hierarchy off the edit's critical path from an immutable copy of
+    /// the live graph and adopts it after [`CCH_ADOPTION_FRAMES`] frames (`docs/roads.md` D7).
+    /// For editor paths without a road-tool snapshot to share; O(graph) for the copy.
+    ///
+    /// [`CCH_ADOPTION_FRAMES`]: crate::simulation::network::cch_adoption::CCH_ADOPTION_FRAMES
+    pub(crate) fn schedule_cch_rebuild_of_live_graph(&mut self) {
+        let graph = std::sync::Arc::new(self.region_graph.clone());
+        self.transit_network.schedule_cch_rebuild(graph);
     }
 
     /// Builds at load what the first frame would otherwise build (`SIM-02-K`): the routing
@@ -210,6 +225,19 @@ impl SimCore {
         let mut report = FrameStepReport::default();
         // Sites placed by tools since the last frame; demand places its own during slots.
         self.schedule_construction_completions();
+        // D7 (`ROAD-68-G`): until a routing rebuild is adopted every phase of the frame would
+        // read routing (flow fields, agent planning, timed trips and the slots), so none runs
+        // and the clock holds. Paused frames count, so a paused game adopts on time; a late
+        // rebuild blocks the adoption frame.
+        let adopting = self.transit_network.cch_adoption_pending();
+        let adoption_start = Instant::now();
+        if self.transit_network.hold_frame_for_cch() {
+            report.routing_held = true;
+            return report;
+        }
+        if adopting {
+            report.adoption_ms = adoption_start.elapsed().as_secs_f64() * 1000.0;
+        }
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {
             return report;

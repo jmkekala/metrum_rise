@@ -201,7 +201,9 @@ A declaration names:
   - `Events` — consumes this slot's [timed events](#deadlines-and-timed-events).
   - `Queue { quota }` — serves up to `quota` [requests](#request-queues) per slot.
   - `Rolling { period, chunks }` — advances one chunk of a [rolling snapshot](#snapshots).
-  - `PureJob { latency }` — see [pure jobs](#pure-jobs).
+  - `PureJob { latency }` — see [pure jobs](#pure-jobs). The one pure job so far, the routing
+    rebuild after a road edit (`ROAD-68-G`), is not a declared kind: an edit starts it between
+    frames and the frame adopts it, as [pure jobs](#pure-jobs) records.
 - **Reads and writes**: the state it touches, so ordering conflicts are visible and independent
   systems can later run together.
 - **Cost bound** per slot, in entities or cells.
@@ -215,7 +217,8 @@ Per-slot order:
 4. `Queue` matchers. In the hour's seven queue-free slots (below) no queue but the building
    removals serves; the slot after one serves the skipped slot's share first, then its own.
 5. `Rolling` chunks, then swaps for periods that ended.
-6. `PureJob` launches and due results.
+6. `PureJob` launches and due results. The routing rebuild (`ROAD-68-G`) launches from the edit
+   command and is adopted at the start of a frame, before any slot.
 7. On a day boundary only: the calendar close (budget report window), O(zones).
 
 Slices above a size threshold use Rayon with fixed chunks and ordered merges; smaller slices run
@@ -737,6 +740,55 @@ starve per-frame movement (the `ROAD-38` lesson), and it never touches `SimCore`
 lesson). If the job has not finished by its apply slot, the sim thread waits: results never
 depend on completion time. Mutating passes are never pure jobs. Candidates: distance tables,
 field diffusion and other read-only precomputation.
+
+**Implemented in `ROAD-68-G` (2026-10-24): the routing rebuild after a road edit**
+([`roads.md`](roads.md) D7, routing contract in
+[`entrance_and_exit.md`](entrance_and_exit.md#routing-after-a-topology-edit-road-68-g-d7)).
+
+- **Job** (`simulation/core/pure_job.rs`, `PureJob<T>`): the work is queued on the shared
+  `CODE-17` pool (`crate::thread_pools`). Whoever reaches it first runs it: a pool worker, or the
+  thread that takes the result and finds it unstarted. A taker waits only for work already
+  running on another thread, so a one-worker pool cannot deadlock. Dropping an unstarted job
+  drops its work and its snapshot; a running one finishes and is discarded.
+- **Pool.** The shared pool, not a dedicated one: while the rebuild runs the frame holds (below),
+  so it competes only with render-snapshot building, cell-chunk preparation and Godot's terrain
+  jobs. The dedicated-pool reason above (a long job must not starve per-frame movement) does not
+  arise, because movement waits for the adoption.
+- **Not a declared kind.** A road commit, an undo or a road bulldoze starts it between frames, not
+  a slot, and its adoption counts frames, because the clock does not move while it waits.
+- **The wait gate is the frame.** Every phase of a frame reads routing: the flow-field refresh,
+  the agent tick's planning, timed trips and, among the slots' systems, the planning, queue and
+  census systems that read `NETWORK` or `ALL`. Holding only those would reorder a slot's fixed
+  order (events, then phases, queues and rolling chunks), so `step_frame` holds whole: for
+  `CCH_ADOPTION_FRAMES` (6) frames after the edit it returns before the flow fields, the agent
+  tick and the clock, and the next frame adopts and runs normally. No slot is crossed while
+  held, so no entity-phase visit or queue share is lost or moved, and nothing is left to catch
+  up at adoption.
+- **Late job.** The adoption frame waits for it (or runs it there). Held frames advance nothing,
+  so the game over its running frames does not depend on the job's speed, the worker count or
+  the frame count chosen.
+- **Paused.** Every `step_frame` call counts, paused or not, so a paused game adopts on time;
+  the flow fields follow the new build generation at the first running frame, as they did after
+  a synchronous rebuild.
+- **A second edit inside the hold** (commit, undo or road bulldoze) supersedes the pending job
+  and restarts the hold. A synchronous rebuild of the live graph (node moves, lane connection
+  edits, edge class changes, border connections, the allocator's cache repair, a frame's dirty
+  chunks) supersedes it too; the hold still runs out.
+- **Save inside the hold.** The save installs the rebuilt hierarchy first, waiting for it, and
+  ends the hold (`SimCore::save_game_settled`), so the saved current flags are those of the
+  adopted network and the saved game continues frame for frame like the game loaded from it.
+  Held frames advance nothing, so ending them early changes no outcome, and nothing about the
+  hold is saved; the save format is unchanged.
+- **Load** replaces the network, dropping a pending job; loading builds its hierarchy itself.
+- **Generation.** The hierarchy takes a fresh build generation at adoption
+  (`CchGraph::stamp_generation`), so a superseded rebuild never takes one. Generations stay
+  unique within the process rather than per network: worker-local route scratch serves every
+  network a pool thread runs and keys its retained labels on the generation, so a per-network
+  counter would let a loaded or second network reuse another's labels. No save, fingerprint or
+  result reads the value, only equality; the determinism test compares saved tables of runs
+  whose counters differ.
+- **Cost.** An edit holds the clock for six frames, about 100 ms of wall time; game time is
+  delayed, not lost. Edits repeated inside the hold extend it.
 
 **Implemented in `SIM-02-I` (part 2): the funding census spread over slots** (decided
 2026-10-17; see [Decided while unattended](#decided-while-unattended)). The census only reads
