@@ -163,7 +163,7 @@ fn assert_invariants(layout: &JunctionLayout, arms: &[OwnedArm]) {
             let samples = &layout.samples[boundary.samples.clone()];
             assert_eq!(samples.len(), sector.samples_per_boundary);
             let start = a.offset_point(boundary.from_station_m, boundary.from_offset_m);
-            let end = if is_shared_miter(sector.kind) {
+            let end = if sector.kind == SectorKind::Straight {
                 start
             } else {
                 b.offset_point(boundary.to_station_m, boundary.to_offset_m)

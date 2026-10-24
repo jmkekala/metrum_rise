@@ -35,23 +35,13 @@ pub(super) struct PublishedPiece {
 
 impl PublishedPiece {
     pub(super) fn mesh(&self) -> &PieceMesh {
-        match &self.piece {
-            Piece::Span(span) => span.mesh(),
-            Piece::Node(node) => node.mesh(),
-        }
+        self.parts().0
     }
 
-    fn shared_mesh(&self) -> &Arc<PieceMesh> {
+    fn parts(&self) -> (&Arc<PieceMesh>, &PieceFootprint) {
         match &self.piece {
-            Piece::Span(span) => span.shared_mesh(),
-            Piece::Node(node) => node.shared_mesh(),
-        }
-    }
-
-    fn footprint(&self) -> &PieceFootprint {
-        match &self.piece {
-            Piece::Span(span) => span.footprint(),
-            Piece::Node(node) => node.footprint(),
+            Piece::Span(span) => (span.shared_mesh(), span.footprint()),
+            Piece::Node(node) => (node.shared_mesh(), node.footprint()),
         }
     }
 }
@@ -165,30 +155,18 @@ impl RoadbedSystem {
         // the start node's.
         let far: BTreeSet<u32> = edges
             .iter()
-            .filter_map(|&edge_idx| {
-                let [start, end] = self.edge_mouths(graph, edge_idx, &plans)?;
-                let (start, end) = (start?, end?);
-                let end_node = graph.get_valid_node(graph.edge(edge_idx).end_node);
-                (end.section.s_m - start.section.s_m <= SHARED_MOUTH_M
-                    && !plans.contains_key(&end_node))
-                .then_some(end_node)
-            })
+            .filter_map(|&edge_idx| self.shared_mouth(graph, edge_idx, &plans))
+            .map(|(end_node, _)| end_node)
+            .filter(|end_node| !plans.contains_key(end_node))
             .collect();
         plans.extend(plan_nodes(graph, &far));
         for &edge_idx in &edges {
-            let Some([Some(start), Some(end)]) = self.edge_mouths(graph, edge_idx, &plans) else {
+            let Some((end_node, start)) = self.shared_mouth(graph, edge_idx, &plans) else {
                 continue;
             };
-            if end.section.s_m - start.section.s_m > SHARED_MOUTH_M {
-                continue;
-            }
-            let end_node = graph.get_valid_node(graph.edge(edge_idx).end_node);
             if let Some(Ok(Some(plan))) = plans.get_mut(&end_node) {
-                let key = ArmKey {
-                    edge: edge_idx,
-                    end: EdgeEnd::End,
-                };
-                plan.share_mouth(key, start);
+                let (edge, end) = (edge_idx, EdgeEnd::End);
+                plan.share_mouth(ArmKey { edge, end }, start);
             }
         }
         let span_mouths: Vec<_> = edges
@@ -217,12 +195,8 @@ impl RoadbedSystem {
             let nodes = plans
                 .into_par_iter()
                 .map_init(NodeScratch::default, |scratch, (node, plan)| {
-                    let built = match plan {
-                        Ok(Some(plan)) => build_node_piece(plan, grid, scratch).map(Some),
-                        Ok(None) => Ok(None),
-                        Err(error) => Err(error),
-                    };
-                    (node, built)
+                    let build = |plan| build_node_piece(plan, grid, scratch);
+                    (node, plan.and_then(|plan| plan.map(build).transpose()))
                 })
                 .collect();
             (spans, nodes)
@@ -233,7 +207,6 @@ impl RoadbedSystem {
             let piece = span.map(|span| Piece::Span(Arc::new(span)));
             self.replace_piece(PieceId::Span(edge_idx), piece, &mut changed);
         }
-        let failures_before = self.failed.len();
         let mut failures_changed = false;
         for (node, built) in built_nodes {
             failures_changed |= self.failed.remove(&node).is_some();
@@ -247,7 +220,7 @@ impl RoadbedSystem {
             };
             self.replace_piece(PieceId::Node(node), piece, &mut changed);
         }
-        if failures_changed || failures_before != self.failed.len() {
+        if failures_changed {
             self.failed_ids = Arc::new(self.failed.keys().copied().collect());
         }
         self.changed_chunks.extend(changed.iter().copied());
@@ -285,6 +258,19 @@ impl RoadbedSystem {
             mouth(edge.start_node, EdgeEnd::Start),
             mouth(edge.end_node, EdgeEnd::End),
         ])
+    }
+
+    // The end node and start mouth of an edge whose two mouths lie within `SHARED_MOUTH_M`.
+    fn shared_mouth(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        plans: &Plans,
+    ) -> Option<(u32, Arc<MouthSection>)> {
+        let [start, end] = self.edge_mouths(graph, edge_idx, plans)?;
+        let (start, end) = (start?, end?);
+        let end_node = graph.get_valid_node(graph.edge(edge_idx).end_node);
+        (end.section.s_m - start.section.s_m <= SHARED_MOUTH_M).then_some((end_node, start))
     }
 
     /// Builds one edge's span piece between the published node pieces' mouths without
@@ -367,8 +353,9 @@ impl RoadbedSystem {
         changed: &mut BTreeSet<SurfaceChunkKey>,
     ) {
         if let Some(old) = self.pieces.remove(&id) {
-            self.index.remove(id, old.footprint());
-            changed.extend(old.footprint().render_chunks().iter().copied());
+            let footprint = old.parts().1;
+            self.index.remove(id, footprint);
+            changed.extend(footprint.render_chunks().iter().copied());
         }
         let Some(piece) = piece else {
             return;
@@ -377,9 +364,9 @@ impl RoadbedSystem {
             build_generation: self.generation,
             piece,
         };
-        self.index
-            .insert(id, published.shared_mesh(), published.footprint());
-        changed.extend(published.footprint().render_chunks().iter().copied());
+        let (mesh, footprint) = published.parts();
+        self.index.insert(id, mesh, footprint);
+        changed.extend(footprint.render_chunks().iter().copied());
         self.pieces.insert(id, published);
     }
 

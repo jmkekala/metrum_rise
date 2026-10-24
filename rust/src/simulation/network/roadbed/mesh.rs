@@ -6,7 +6,7 @@
 //! Every triangle is wound so that `-(b - a) x (c - a)` is its visible normal, the renderer's
 //! convention: top triangles face up and curb faces face the carriageway.
 
-use super::geometry::SurfaceTriangleGrid;
+use super::geometry::{SurfaceTriangleGrid, bounds_xz};
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
 use super::span::MouthSection;
 use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
@@ -281,12 +281,6 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
     })
 }
 
-fn push_road_space_row(section: &RoadSection, layout: &RowLayout, road_space: &mut Vec<[f32; 2]>) {
-    for_each_boundary(section, layout, |lateral_m, _| {
-        road_space.push([section.s_m, lateral_m]);
-    });
-}
-
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
 /// mouth sections. `O(sections * bands)`; allocates only the mesh.
 pub(super) fn build_span_mesh(
@@ -307,7 +301,9 @@ pub(super) fn build_span_mesh(
         } else {
             push_section_row(section, layout, &mut positions);
         }
-        push_road_space_row(section, layout, &mut road_space);
+        for_each_boundary(section, layout, |lateral_m, _| {
+            road_space.push([section.s_m, lateral_m]);
+        });
     }
     debug_assert_eq!(positions.len(), rows * stride);
 
@@ -317,10 +313,7 @@ pub(super) fn build_span_mesh(
         counts[kind as usize] += 2 * pairs as u32;
     }
     counts[CURB_FACE_GROUP] = 2 * pairs as u32 * u32::from(layout.step_count);
-    let mut group_starts = [0u32; GROUPS + 1];
-    for group in 0..GROUPS {
-        group_starts[group + 1] = group_starts[group] + counts[group];
-    }
+    let group_starts = group_starts(counts);
     let mut triangles = vec![[0u32; 3]; group_starts[GROUPS] as usize];
     let mut cursors = [0u32; GROUPS];
     cursors.copy_from_slice(&group_starts[..GROUPS]);
@@ -345,24 +338,15 @@ pub(super) fn build_span_mesh(
         for step in layout.steps() {
             let top = |row: u32| row + u32::from(step.raised_slot);
             let bottom = |row: u32| row + u32::from(step.ground_slot);
-            if step.raised_on_left {
-                push(
-                    CURB_FACE_GROUP,
-                    [top(start_row), top(end_row), bottom(end_row)],
-                );
-                push(
-                    CURB_FACE_GROUP,
-                    [top(start_row), bottom(end_row), bottom(start_row)],
-                );
-            } else {
-                push(
-                    CURB_FACE_GROUP,
-                    [top(start_row), bottom(end_row), top(end_row)],
-                );
-                push(
-                    CURB_FACE_GROUP,
-                    [top(start_row), bottom(start_row), bottom(end_row)],
-                );
+            // Listed facing right (raised band on the left); a face looking left is mirrored.
+            for mut face in [
+                [top(start_row), top(end_row), bottom(end_row)],
+                [top(start_row), bottom(end_row), bottom(start_row)],
+            ] {
+                if !step.raised_on_left {
+                    face.swap(1, 2);
+                }
+                push(CURB_FACE_GROUP, face);
             }
         }
     }
@@ -382,39 +366,35 @@ pub(super) fn build_span_mesh(
                 .collect(),
         },
     ];
-    let mesh_bounds = bounds_xz(&positions);
-    let top_count = group_starts[CURB_FACE_GROUP] as usize;
-    let grid = SurfaceTriangleGrid::from_triangles(
-        triangles[..top_count]
-            .iter()
-            .map(|triangle| triangle.map(|vertex| positions[vertex as usize])),
-        |triangle| triangle as u32,
-    );
-    PieceMesh {
-        positions,
-        road_space,
-        triangles,
-        group_starts,
-        outer_chains,
-        bounds_xz: mesh_bounds,
-        grid,
-    }
+    PieceMesh::new(positions, road_space, triangles, group_starts, outer_chains)
 }
 
 impl PieceMesh {
     /// Assembles a mesh from its triangle groups (band kinds in declaration order, then curb
-    /// faces) and builds its bounds and top-triangle grid.
+    /// faces).
     pub(super) fn from_groups(
         positions: Vec<RoadVec3>,
         road_space: Vec<[f32; 2]>,
         groups: &[Vec<[u32; 3]>; GROUPS],
         outer_chains: Vec<Box<[u32]>>,
     ) -> Self {
-        let mut group_starts = [0u32; GROUPS + 1];
-        for (group, triangles) in groups.iter().enumerate() {
-            group_starts[group + 1] = group_starts[group] + triangles.len() as u32;
-        }
-        let triangles: Vec<[u32; 3]> = groups.iter().flatten().copied().collect();
+        let group_starts = group_starts(groups.each_ref().map(|group| group.len() as u32));
+        let triangles = groups.iter().flatten().copied().collect();
+        let outer_chains = outer_chains
+            .into_iter()
+            .map(|vertices| OuterChain { vertices })
+            .collect();
+        Self::new(positions, road_space, triangles, group_starts, outer_chains)
+    }
+
+    // Builds the bounds and top-triangle grid of grouped triangles.
+    fn new(
+        positions: Vec<RoadVec3>,
+        road_space: Vec<[f32; 2]>,
+        triangles: Vec<[u32; 3]>,
+        group_starts: [u32; GROUPS + 1],
+        outer_chains: Vec<OuterChain>,
+    ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
         let grid = SurfaceTriangleGrid::from_triangles(
             triangles[..top_count]
@@ -423,35 +403,22 @@ impl PieceMesh {
             |triangle| triangle as u32,
         );
         Self {
-            bounds_xz: bounds_xz(&positions),
+            bounds_xz: bounds_xz(positions.iter().copied()),
             positions,
             road_space,
             triangles,
             group_starts,
-            outer_chains: outer_chains
-                .into_iter()
-                .map(|vertices| OuterChain { vertices })
-                .collect(),
+            outer_chains,
             grid,
         }
     }
 }
 
-fn bounds_xz(positions: &[RoadVec3]) -> [f64; 4] {
-    positions.iter().fold(
-        [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ],
-        |bounds, point| {
-            [
-                bounds[0].min(point.x),
-                bounds[1].min(point.z),
-                bounds[2].max(point.x),
-                bounds[3].max(point.z),
-            ]
-        },
-    )
+// Start of each triangle group, and the end of the last, from the groups' triangle counts.
+fn group_starts(counts: [u32; GROUPS]) -> [u32; GROUPS + 1] {
+    let mut starts = [0u32; GROUPS + 1];
+    for (group, count) in counts.into_iter().enumerate() {
+        starts[group + 1] = starts[group] + count;
+    }
+    starts
 }

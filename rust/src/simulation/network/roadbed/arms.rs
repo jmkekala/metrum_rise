@@ -21,7 +21,7 @@ use super::layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, CROSSWALK_DEPTH_M, EdgeEnd, JunctionLayout,
     LayoutError,
 };
-use super::profile::{Level, RoadProfile};
+use super::profile::{Level, ProfileBand, RoadProfile};
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -178,29 +178,19 @@ impl NodeArms {
     ) -> (Range<usize>, usize, Range<usize>, usize) {
         let profile = RoadProfile::for_edge(edge);
         let bands = profile.bands();
+        let arm_band = |band: &ProfileBand, outer_m: f32| ArmBand {
+            kind: band.kind,
+            level: band.level,
+            outer_m: f64::from(outer_m),
+        };
         let positive = self.bands.len();
-        self.bands.extend(
-            bands
-                .iter()
-                .filter(|band| band.end_m > 0.0)
-                .map(|band| ArmBand {
-                    kind: band.kind,
-                    level: band.level,
-                    outer_m: f64::from(band.end_m),
-                }),
-        );
+        let outward = bands.iter().filter(|band| band.end_m > 0.0);
+        self.bands
+            .extend(outward.map(|band| arm_band(band, band.end_m)));
         let negative = self.bands.len();
-        self.bands.extend(
-            bands
-                .iter()
-                .rev()
-                .filter(|band| band.start_m < 0.0)
-                .map(|band| ArmBand {
-                    kind: band.kind,
-                    level: band.level,
-                    outer_m: f64::from(-band.start_m),
-                }),
-        );
+        let outward = bands.iter().rev().filter(|band| band.start_m < 0.0);
+        self.bands
+            .extend(outward.map(|band| arm_band(band, -band.start_m)));
         let (positive, negative) = (positive..negative, negative..self.bands.len());
         let core = |range: &Range<usize>| {
             self.bands[range.clone()]
@@ -317,20 +307,12 @@ impl NodeArms {
             0.0
         };
         let height_m = from_y * (1.0 - t) + to_y * t;
-        let position = if from < to {
-            CentrelinePosition {
-                lo: from,
-                hi: to,
-                t,
-            }
+        let (lo, hi, t) = if from < to {
+            (from, to, t)
         } else {
-            CentrelinePosition {
-                lo: to,
-                hi: from,
-                t: 1.0 - t,
-            }
+            (to, from, 1.0 - t)
         };
-        (position, height_m)
+        (CentrelinePosition { lo, hi, t }, height_m)
     }
 
     /// Height of the node's own centreline point.
@@ -472,9 +454,8 @@ fn degree_two_crossings(
     span_owned: bool,
 ) -> DegreeTwoCrossings {
     let overrides = &graph.node(node).crosswalk_overrides;
-    let pass_through = span_owned;
     let fits = |key: ArmKey| {
-        !pass_through
+        !span_owned
             || 0.5 * horizontal_length_m(&graph.edge(key.edge).geometry) >= CROSSWALK_DEPTH_M
     };
     let angle = |(_, direction): (ArmKey, RoadVec2)| direction.y.atan2(direction.x);
@@ -504,7 +485,7 @@ fn degree_two_crossings(
         .find(|&index| crosses[index] && free(index));
     let fallback = by_default
         .map(|from| [from, 1 - from])
-        .filter(|&[_, to]| !pass_through && !crosses[to] && eligible(to) && free(to));
+        .filter(|&[_, to]| !span_owned && !crosses[to] && eligible(to) && free(to));
     DegreeTwoCrossings { crosses, fallback }
 }
 

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Junction layout (`ROAD-68-C`, part 1): the arm order, sectors, curb-return corners, round
-//! joins, mouth stations and carriageway core loop of one node, built from abstract arms.
+//! Junction layout (`ROAD-68-C`): the arm order, sectors, curb-return corners, round joins,
+//! mouth stations, footpath attachments and carriageway core loop of one node, built from
+//! abstract arms.
 //!
 //! The layout is pure. It reads only the arms passed to [`JunctionLayout::build`], keeps no state
 //! between calls and does not know the graph or the span pieces. `docs/roads.md` ("Junction
-//! layout") owns the contract; this header records the conventions and the choices it leaves to
-//! code.
+//! layout", and "Layout module" for the choices it leaves to code and the constants) owns the
+//! construction; each step's function here records how it applies it.
 //!
 //! # Conventions
 //!
@@ -26,47 +27,16 @@
 //!
 //! # Construction
 //!
-//! 1. Arms sort counter-clockwise by their direction over the first metre, then by [`ArmKey`].
-//! 2. Sector `i` runs from arm `i`'s left side to arm `i + 1`'s right side. With angle `phi`, it
-//!    is concave if `phi < pi - eps`, straight if `|phi - pi| <= eps` and convex beyond. A
-//!    terminal has one convex sector of `2 pi`.
-//! 3. A concave sector gets a curb-return corner. Its centre `C` is the first crossing, by
-//!    `max(sa, sb)` and then search order, of `o_a(., la + R)` and `o_b(., -(lb + R))`, over
-//!    stations up to each arm's `max_station_m`. Boundary `j` runs from `o_a(sa, la_j)` to
-//!    `o_b(sb, -lb_j)`; its angle and radius about `C` interpolate linearly between those exact
-//!    endpoints.
-//! 4. Straight and convex sectors get a round join about the node: boundary `j` runs from
-//!    `o_a(sa_j, la_j)` to `o_b(sb_j, -lb_j)`, with the radius interpolated linearly by angle. The
-//!    stations are zero except in a straight sector, where each boundary starts where its offset
-//!    curve crosses the sector bisector: ahead of the node when the sector is narrower than `pi`
-//!    and the arms overlap, on the first offset segment extended behind the node otherwise. The
-//!    arms meet in a miter on the bisector; a boundary with equal offsets on both arms is the one
-//!    miter point, taken from the `from_arm` curve. Joining at station zero would make the core
-//!    loop cross itself below `pi` whenever the widths are equal, and leave a rounding-sized arc
-//!    of sliver strips above it (`ROAD-68` open questions 5 and 9).
-//! 5. A straight sector between unequal boundary offsets tapers (D4): each such boundary meets
-//!    the sector at the mean of its two offsets, so the join is that of equal widths, and runs
-//!    linearly in station to its arm's own offset at the taper station on both approaches
-//!    ([`BoundaryTaper`]). The taper takes half the legacy span taper length on each arm,
-//!    shortened to fit both arms beside their crosswalks; shorter than the legacy minimum, the
-//!    layout fails with [`LayoutError::ArmTooShort`].
-//! 6. An arm's mouth station is the largest of `MIN_MOUTH_STATION_M` and the stations at which
-//!    its two sides reach their own offsets, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). That
-//!    depth is the arm's [`Crosswalk`] strip, on the straight approach right outside the corners;
-//!    its crossing line is the middle of the depth, and its kerb points are the two
-//!    carriageway-edge points there. An attached arm whose edge meets an arm side moves only that
-//!    arm's mouth, to `MIN_MOUTH_STATION_M` beyond the meeting point when that is farther; the
-//!    zebra stays at the corner (`ROAD-68` open question 17).
-//! 7. A corner that would push a mouth past `max_station_m` shrinks its radius by bisection
-//!    towards the corner's raised width plus `CURB_RETURN_CLEARANCE_M` (D1). If that minimum does
-//!    not fit either, layout fails with [`LayoutError::CornerDoesNotFit`].
-//! 8. The carriageway core loop runs counter-clockwise: out along each arm's right carriageway
-//!    edge, across its mouth, back along its left edge and through the next sector's core-edge
-//!    samples. A loop that touches or crosses itself fails with [`LayoutError::CoreNotSimple`].
-//!
-//! Bands beyond the carriageway edge match across a sector by their position outward. A band
-//! present on one side only has zero width on the other and tapers along the sector. Matched
-//! bands must agree in kind and level ([`LayoutError::BandMismatch`]).
+//! [`JunctionLayout::build`] sorts the arms counter-clockwise by direction, then by [`ArmKey`]
+//! (`sort_arms`); classifies each sector from arm `i`'s left side to arm `i + 1`'s right side,
+//! fits its concave corner and sets its boundary stations and D4 tapers (`plan_sectors`); meets
+//! attached arms with the arm-side runs (`attach_to_runs`); sets mouths and crosswalks
+//! (`assign_mouths`); samples the boundaries in polar form, inserting attached edges that met no
+//! run (`sample_sectors`); closes and checks the core loop (`core_loop`); and sets the attached
+//! mouths and checks their ribbons (`JunctionLayout::finish_attachments`). Bands beyond the
+//! carriageway edge match across a sector by position outward; one present on one side only has
+//! zero width on the other, and matched bands agree in kind and level
+//! ([`LayoutError::BandMismatch`]).
 //!
 //! # Complexity
 //!
@@ -328,6 +298,16 @@ pub(super) struct PathPoint {
     pub(super) station_m: f64,
     pub(super) xz: RoadVec2,
     pub(super) mouth: Option<(usize, f64)>,
+}
+
+impl PathPoint {
+    fn at(station_m: f64, xz: RoadVec2) -> Self {
+        Self {
+            station_m,
+            xz,
+            mouth: None,
+        }
+    }
 }
 
 /// A fitted curb-return corner.
@@ -635,7 +615,7 @@ impl ArmInput<'_> {
             .min(last_segment);
         let (start, end) = (&self.knots[segment], &self.knots[segment + 1]);
         let t = (station_m - start.station_m) / (end.station_m - start.station_m);
-        lerp(start.offset(lateral_m), end.offset(lateral_m), t)
+        start.offset(lateral_m).lerp(end.offset(lateral_m), t)
     }
 
     // Segments whose start station lies below `station_m`.
@@ -800,22 +780,16 @@ impl JunctionLayout {
         let station_m = boundary.run_start(side).0;
         let mouth_m = self.arms[arm].mouth_station_m;
         let first = out.len();
-        out.push(PathPoint {
-            station_m,
-            xz: start,
-            mouth: None,
-        });
-        let point = |station_m: f64| PathPoint {
-            station_m,
-            xz: boundary.run_point(input, side, station_m),
-            mouth: None,
-        };
+        out.push(PathPoint::at(station_m, start));
+        let point =
+            |station_m: f64| PathPoint::at(station_m, boundary.run_point(input, side, station_m));
         let taper_m = boundary.taper.map(|taper| taper.station_m);
         for_each_run_station(input, station_m, mouth_m, taper_m, |station_m, _| {
             out.push(point(station_m));
         });
         if index > 0 {
-            out.extend(self.run_points(arm, side).map(point));
+            let meetings = run_meetings(&self.attachments, arm).filter(|&(on, _)| on == side);
+            out.extend(meetings.map(|(_, station_m)| point(station_m)));
             out[first + 1..].sort_by(|a, b| a.station_m.total_cmp(&b.station_m));
         }
         let offset_m = boundary.run_offset_m(side, mouth_m);
@@ -824,21 +798,6 @@ impl JunctionLayout {
             xz: input.offset_point(mouth_m, offset_m),
             mouth: Some((self.arms[arm].input_index, offset_m)),
         });
-    }
-
-    // Stations of the attached edges that meet the outermost run of `side` of arm `arm`.
-    fn run_points(&self, arm: usize, side: Side) -> impl Iterator<Item = f64> + '_ {
-        self.attachments
-            .iter()
-            .flat_map(|attachment| attachment.edges)
-            .filter_map(move |edge| match edge.on {
-                BoundaryPoint::Run {
-                    arm: on_arm,
-                    side: on_side,
-                    station_m,
-                } if on_arm == arm && on_side == side => Some(station_m),
-                _ => None,
-            })
     }
 
     /// Sector `sector`'s outermost boundary from its from-arm's left mouth corner back along that
@@ -862,15 +821,8 @@ impl JunctionLayout {
             out,
         );
         out.reverse();
-        out.extend(
-            self.samples[outer.samples.clone()]
-                .iter()
-                .map(|&xz| PathPoint {
-                    station_m: 0.0,
-                    xz,
-                    mouth: None,
-                }),
-        );
+        let samples = &self.samples[outer.samples.clone()];
+        out.extend(samples.iter().map(|&xz| PathPoint::at(0.0, xz)));
         let to = (layout.to_arm, Side::Right);
         self.side_run(&arms[self.arms[to.0].input_index], to, (outer, index), out);
         out.dedup_by(|next, previous| next.xz == previous.xz);
@@ -887,21 +839,12 @@ impl JunctionLayout {
         let attachment = &self.attachments[index];
         let edge = attachment.edges[usize::from(side == Side::Left)];
         let mouth_m = attachment.mouth_station_m;
-        let point = |station_m: f64| PathPoint {
-            station_m,
-            xz: input.offset_point(station_m, edge.offset_m),
-            mouth: None,
-        };
-        out.push(PathPoint {
-            station_m: edge.station_m,
-            xz: edge.point,
-            mouth: None,
+        let point =
+            |station_m: f64| PathPoint::at(station_m, input.offset_point(station_m, edge.offset_m));
+        out.push(PathPoint::at(edge.station_m, edge.point));
+        for_each_run_station(input, edge.station_m, mouth_m, None, |station_m, _| {
+            out.push(point(station_m));
         });
-        out.extend(
-            input.knots[input.knots_between(edge.station_m, mouth_m)]
-                .iter()
-                .map(|knot| point(knot.station_m)),
-        );
         out.push(PathPoint {
             mouth: Some((attachment.input_index, edge.offset_m)),
             ..point(mouth_m)
@@ -1309,7 +1252,7 @@ fn forward_crossing(
             let found = Crossing {
                 a_station: lerp_scalar(a0.station_m, a1.station_m, t),
                 b_station: lerp_scalar(b0.station_m, b1.station_m, u),
-                point: lerp(p0, p1, t),
+                point: p0.lerp(p1, t),
             };
             if (a_from_m..=a.max_station_m).contains(&found.a_station)
                 && found.b_station <= b.max_station_m
@@ -1357,7 +1300,7 @@ fn backward_crossing(
         let found = Crossing {
             a_station: lerp_scalar(a0.station_m, a1.station_m, t),
             b_station: lerp_scalar(b0.station_m, b1.station_m, u),
-            point: lerp(p0, p1, t),
+            point: p0.lerp(p1, t),
         };
         let within = |station: f64, arm: &ArmInput<'_>| station.abs() <= arm.max_station_m;
         if within(found.a_station, a)
@@ -1493,15 +1436,8 @@ fn assign_mouths(
         let input = &arms[arm.input_index];
         let left = &sectors[index];
         let right = &sectors[(index + count - 1) % count];
-        let attached_m = attachments
-            .iter()
-            .flat_map(|attachment| attachment.edges)
-            .filter_map(|edge| match edge.on {
-                BoundaryPoint::Run { arm, station_m, .. } if arm == index => {
-                    Some(station_m + MIN_MOUTH_STATION_M)
-                }
-                _ => None,
-            });
+        let attached_m =
+            run_meetings(attachments, index).map(|(_, station_m)| station_m + MIN_MOUTH_STATION_M);
         let reach_m = boundaries[left.boundaries.clone()]
             .iter()
             .map(|boundary| boundary.reach_m(Side::Left))
@@ -1536,6 +1472,19 @@ fn assign_mouths(
         });
     }
     Ok(())
+}
+
+// The side and station of each attached edge that meets the outermost run of arm `arm`.
+fn run_meetings(attachments: &[Attachment], arm: usize) -> impl Iterator<Item = (Side, f64)> + '_ {
+    let edges = attachments.iter().flat_map(|attachment| attachment.edges);
+    edges.filter_map(move |edge| match edge.on {
+        BoundaryPoint::Run {
+            arm: on,
+            side,
+            station_m,
+        } if on == arm => Some((side, station_m)),
+        _ => None,
+    })
 }
 
 // One boundary curve in polar form about its centre, between two exact endpoints.
@@ -1615,7 +1564,11 @@ fn sample_sectors(
         let centre = sector.corner.map_or(node, |corner| corner.centre);
         let curve = |boundary: &SectorBoundary| {
             let start = a.offset_point(boundary.from_station_m, boundary.from_offset_m);
-            let end = if is_shared_miter(sector.kind) {
+            // In a straight sector's miter every boundary has equal offsets on both arms: the
+            // arms' own where no boundary steps, the mean of the two where one does (D4's taper).
+            // Its two bisector crossings are then the same point, so the `from_arm` one stands
+            // for both instead of leaving a rounding-sized step between two computations of it.
+            let end = if sector.kind == SectorKind::Straight {
                 start
             } else {
                 b.offset_point(boundary.to_station_m, boundary.to_offset_m)
@@ -1666,7 +1619,7 @@ fn sample_sectors(
                 while let Some(&(_, u, attachment, edge, station_m)) =
                     next.next_if(|insert| insert.0 == i)
                 {
-                    let point = lerp(sample, emitted[i + 1], u);
+                    let point = sample.lerp(emitted[i + 1], u);
                     if range.start + index == outermost {
                         let placed = &mut attachments[attachment].edges[edge];
                         placed.station_m = station_m;
@@ -1710,15 +1663,9 @@ fn polyline_crossing(
     best
 }
 
-// In a straight sector's miter every boundary has equal offsets on both arms: the arms' own
-// where no boundary steps, the mean of the two where one does (D4's taper). Its two bisector
-// crossings are then the same point, so the `from_arm` one stands for both instead of leaving a
-// rounding-sized step between two computations of it.
-fn is_shared_miter(kind: SectorKind) -> bool {
-    kind == SectorKind::Straight
-}
-
-// Builds the counter-clockwise carriageway core loop and checks that it is simple.
+// Builds the counter-clockwise carriageway core loop, out along each arm's right carriageway
+// edge, across its mouth, back along its left edge and through the next sector's core-edge
+// samples, and checks that it is simple.
 fn core_loop(
     arms: &[ArmInput<'_>],
     sorted: &[ArmLayout],
@@ -1939,11 +1886,7 @@ fn signed_area<T>(points: &[T], position: impl Fn(&T) -> RoadVec2) -> f64 {
         * 0.5
 }
 
-// Exact at both ends: `t == 0` returns `a` and `t == 1` returns `b`.
-fn lerp(a: RoadVec2, b: RoadVec2, t: f64) -> RoadVec2 {
-    a * (1.0 - t) + b * t
-}
-
+// Exact at both ends, as glam's `lerp` for points: `t == 0` returns `a` and `t == 1` returns `b`.
 fn lerp_scalar(a: f64, b: f64, t: f64) -> f64 {
     a * (1.0 - t) + b * t
 }

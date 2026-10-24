@@ -40,15 +40,11 @@ impl LaneSurfaceQuery<'_> {
     /// vehicle lanes. `None` off the owner's pieces.
     pub fn height_at(&self, x: f32, z: f32) -> Option<f32> {
         let point = RoadVec2::new(f64::from(x), f64::from(z));
-        let carriageway_only = self.carriageway_only;
+        let accepts = |kind| !self.carriageway_only || kind == BandKind::Carriageway;
         self.owner
-            .and_then(|mesh| top_at(mesh, point, |kind| accepts(carriageway_only, kind)))
+            .and_then(|mesh| top_at(mesh, point, accepts))
             .map(|(height_m, _)| height_m)
     }
-}
-
-fn accepts(carriageway_only: bool, kind: BandKind) -> bool {
-    !carriageway_only || kind == BandKind::Carriageway
 }
 
 // Highest accepted top triangle of one piece at `point`, with its band kind.
@@ -146,11 +142,8 @@ impl RoadbedSystem {
             center.x + radius_m,
             center.y + radius_m,
         ];
-        self.any_piece_in_bounds(bounds, |_, mesh| {
-            mesh.grid().items_in_bounds(bounds).any(|item| {
-                mesh.triangle_band(item as usize).is_some_and(&kinds)
-                    && triangle_near_disc(mesh.triangle_points(item as usize), center, radius_m)
-            })
+        self.any_top_triangle_in_bounds(bounds, |triangle, kind| {
+            kinds(kind) && triangle_near_disc(triangle, center, radius_m)
         })
     }
 
@@ -160,16 +153,8 @@ impl RoadbedSystem {
             return None;
         }
         let extent = self.index.extent_xz()?;
-        let origin = RoadVec3::new(
-            f64::from(origin.x),
-            f64::from(origin.y),
-            f64::from(origin.z),
-        );
-        let direction = RoadVec3::new(
-            f64::from(direction.x),
-            f64::from(direction.y),
-            f64::from(direction.z),
-        );
+        let origin = RoadVec3::from_array(origin.to_array().map(f64::from));
+        let direction = RoadVec3::from_array(direction.to_array().map(f64::from));
         let (entry_t, exit_t) = ray_xz_interval_for_bounds(
             origin,
             direction,
@@ -179,24 +164,19 @@ impl RoadbedSystem {
             extent[3] + BOUNDS_EPSILON_M,
         )?;
         let mut best: Option<(f64, RoadVec3)> = None;
-        if direction.x == 0.0 && direction.z == 0.0 {
-            // A vertical ray stays in one cell; its parameter is unbounded there.
-            let cell = query_cell_at(origin.x, origin.z);
-            self.raycast_cell(cell, origin, direction, (0.0, f64::INFINITY), &mut best);
-        } else {
-            walk_ray_cells(
-                RoadVec2::new(origin.x, origin.z),
-                RoadVec2::new(direction.x, direction.z),
-                (entry_t.max(0.0), exit_t),
-                RoadVec2::ZERO,
-                QUERY_CELL_M,
-                |x, z, t0, t1| {
-                    self.raycast_cell((x as i32, z as i32), origin, direction, (t0, t1), &mut best);
-                    // A hit before the next cell cannot be beaten by any later cell.
-                    best.is_none_or(|(best_t, _)| best_t > t1)
-                },
-            );
-        }
+        // A vertical ray visits its one cell over an unbounded parameter.
+        walk_ray_cells(
+            RoadVec2::new(origin.x, origin.z),
+            RoadVec2::new(direction.x, direction.z),
+            (entry_t.max(0.0), exit_t),
+            RoadVec2::ZERO,
+            QUERY_CELL_M,
+            |x, z, t0, t1| {
+                self.raycast_cell((x as i32, z as i32), origin, direction, (t0, t1), &mut best);
+                // A hit before the next cell cannot be beaten by any later cell.
+                best.is_none_or(|(best_t, _)| best_t > t1)
+            },
+        );
         best.map(|(_, hit)| Vector3::new(hit.x as f32, hit.y as f32, hit.z as f32))
     }
 

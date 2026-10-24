@@ -127,16 +127,11 @@ impl RoadProfile {
         let half_carriageway = carriageway_half_width_override_m
             .unwrap_or_else(|| edge.width.max(config::LANE_WIDTH) * 0.5)
             .max(config::LANE_WIDTH * 0.5);
-        let has_sidewalk = edge.allowed_types & TransitFlags::FOOT != 0;
-        let sidewalk_total = if has_sidewalk {
-            config::SIDEWALK_WIDTH
+        let (sidewalk_total, curb_width) = if edge.allowed_types & TransitFlags::FOOT != 0 {
+            let total = config::SIDEWALK_WIDTH;
+            (total, CURB_BAND_WIDTH_M.min(total))
         } else {
-            0.0
-        };
-        let curb_width = if has_sidewalk {
-            CURB_BAND_WIDTH_M.min(sidewalk_total)
-        } else {
-            SHOULDER_BAND_WIDTH_M
+            (0.0, SHOULDER_BAND_WIDTH_M)
         };
         let sidewalk_width = (sidewalk_total - curb_width).max(0.0);
         // A zero-width curb would leave the raised bands at ground level (legacy rule).
@@ -145,35 +140,18 @@ impl RoadProfile {
         } else {
             Level::Ground
         };
+        // Outer offsets of the curb or shoulder and of the sidewalk, mirrored on the left.
+        let curb_m = half_carriageway + curb_width;
+        let sidewalk_m = half_carriageway + curb_width + sidewalk_width;
         if sidewalk_width > 0.0 {
-            push(
-                BandKind::Sidewalk,
-                -(half_carriageway + curb_width + sidewalk_width),
-                -(half_carriageway + curb_width),
-                raised,
-            );
+            push(BandKind::Sidewalk, -sidewalk_m, -curb_m, raised);
         }
-        push(
-            BandKind::CurbOrShoulder,
-            -(half_carriageway + curb_width),
-            -half_carriageway,
-            raised,
-        );
+        push(BandKind::CurbOrShoulder, -curb_m, -half_carriageway, raised);
         push(BandKind::Carriageway, -half_carriageway, 0.0, Level::Ground);
         push(BandKind::Carriageway, 0.0, half_carriageway, Level::Ground);
-        push(
-            BandKind::CurbOrShoulder,
-            half_carriageway,
-            half_carriageway + curb_width,
-            raised,
-        );
+        push(BandKind::CurbOrShoulder, half_carriageway, curb_m, raised);
         if sidewalk_width > 0.0 {
-            push(
-                BandKind::Sidewalk,
-                half_carriageway + curb_width,
-                half_carriageway + curb_width + sidewalk_width,
-                raised,
-            );
+            push(BandKind::Sidewalk, curb_m, sidewalk_m, raised);
         }
         profile
     }

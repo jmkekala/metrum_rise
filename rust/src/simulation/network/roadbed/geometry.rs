@@ -66,73 +66,57 @@ impl SurfaceTriangleGrid {
         triangles: impl Iterator<Item = [RoadVec3; 3]> + Clone,
         item_id: impl Fn(usize) -> u32,
     ) -> Self {
-        let mut bounds_xz = [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ];
-        let mut empty = true;
-        for triangle in triangles.clone() {
-            empty = false;
-            for point in triangle {
-                bounds_xz[0] = bounds_xz[0].min(point.x);
-                bounds_xz[1] = bounds_xz[1].min(point.z);
-                bounds_xz[2] = bounds_xz[2].max(point.x);
-                bounds_xz[3] = bounds_xz[3].max(point.z);
-            }
-        }
-        if empty {
+        if triangles.clone().next().is_none() {
             return Self::default();
         }
-
+        let bounds_xz = bounds_xz(triangles.clone().flatten());
         let mut cell_size_m = QUERY_GRID_BASE_CELL_M;
         let (mut width, mut height) = query_grid_dimensions(bounds_xz, cell_size_m);
         while width.saturating_mul(height) > QUERY_GRID_MAX_CELLS {
             cell_size_m *= 2.0;
             (width, height) = query_grid_dimensions(bounds_xz, cell_size_m);
         }
-        let cell_count = width.saturating_mul(height);
-        let mut counts = vec![0_u32; cell_count];
-        for triangle in triangles.clone() {
-            let (min_x, min_z, max_x, max_z) =
-                query_grid_triangle_cell_bounds(triangle, bounds_xz, cell_size_m, width, height);
-            for z in min_z..=max_z {
-                for x in min_x..=max_x {
-                    counts[z * width + x] += 1;
-                }
-            }
-        }
-
-        let mut cell_offsets = Vec::with_capacity(cell_count + 1);
-        cell_offsets.push(0);
-        for count in counts {
-            cell_offsets.push(cell_offsets.last().copied().unwrap_or(0) + count);
-        }
-        let mut cell_items = vec![0_u32; cell_offsets.last().copied().unwrap_or(0) as usize];
-        let mut cursors = cell_offsets[..cell_count].to_vec();
-        for (triangle_idx, triangle) in triangles.enumerate() {
-            let (min_x, min_z, max_x, max_z) =
-                query_grid_triangle_cell_bounds(triangle, bounds_xz, cell_size_m, width, height);
-            let item = item_id(triangle_idx);
-            for z in min_z..=max_z {
-                for x in min_x..=max_x {
-                    let cell_idx = z * width + x;
-                    let cursor = &mut cursors[cell_idx];
-                    cell_items[*cursor as usize] = item;
-                    *cursor += 1;
-                }
-            }
-        }
-
-        Self {
+        let mut grid = Self {
             bounds_xz,
             cell_size_m,
             width,
             height,
-            cell_offsets,
-            cell_items,
+            ..Self::default()
+        };
+        let cell_count = width.saturating_mul(height);
+        let mut counts = vec![0_u32; cell_count];
+        for triangle in triangles.clone() {
+            for cell_idx in grid.triangle_cells(triangle) {
+                counts[cell_idx] += 1;
+            }
         }
+
+        grid.cell_offsets = Vec::with_capacity(cell_count + 1);
+        grid.cell_offsets.push(0);
+        for count in counts {
+            let end = grid.cell_offsets.last().copied().unwrap_or(0) + count;
+            grid.cell_offsets.push(end);
+        }
+        grid.cell_items = vec![0_u32; grid.cell_offsets.last().copied().unwrap_or(0) as usize];
+        let mut cursors = grid.cell_offsets[..cell_count].to_vec();
+        for (triangle_idx, triangle) in triangles.enumerate() {
+            let item = item_id(triangle_idx);
+            for cell_idx in grid.triangle_cells(triangle) {
+                let cursor = &mut cursors[cell_idx];
+                grid.cell_items[*cursor as usize] = item;
+                *cursor += 1;
+            }
+        }
+        grid
+    }
+
+    // Cells, row by row, that a triangle's XZ bounds padded by the grid epsilon touch.
+    fn triangle_cells(&self, triangle: [RoadVec3; 3]) -> impl Iterator<Item = usize> + use<> {
+        let [min_x, min_z, max_x, max_z] = bounds_xz(triangle);
+        let (x0, z0) = self.clamped_cell(min_x - GRID_EPSILON_M, min_z - GRID_EPSILON_M);
+        let (x1, z1) = self.clamped_cell(max_x + GRID_EPSILON_M, max_z + GRID_EPSILON_M);
+        let width = self.width;
+        (z0..=z1).flat_map(move |z| (x0..=x1).map(move |x| z * width + x))
     }
 
     // Ids in cells touching an XZ rectangle, without allocating. An id may occur in several
@@ -225,14 +209,8 @@ impl SurfaceTriangleGrid {
         {
             return &[];
         }
-        let x = (((point.x - self.bounds_xz[0]) / self.cell_size_m).floor() as isize)
-            .clamp(0, self.width as isize - 1) as usize;
-        let z = (((point.y - self.bounds_xz[1]) / self.cell_size_m).floor() as isize)
-            .clamp(0, self.height as isize - 1) as usize;
-        let cell_idx = z * self.width + x;
-        let start = self.cell_offsets[cell_idx] as usize;
-        let end = self.cell_offsets[cell_idx + 1] as usize;
-        &self.cell_items[start..end]
+        let (x, z) = self.clamped_cell(point.x, point.y);
+        self.items_at(x, z)
     }
 }
 
@@ -242,48 +220,15 @@ fn query_grid_dimensions(bounds_xz: [f64; 4], cell_size_m: f64) -> (usize, usize
     (width, height)
 }
 
-fn query_grid_triangle_cell_bounds(
-    triangle: [RoadVec3; 3],
-    bounds_xz: [f64; 4],
-    cell_size_m: f64,
-    width: usize,
-    height: usize,
-) -> (usize, usize, usize, usize) {
-    let epsilon = GRID_EPSILON_M;
-    let min_world_x = triangle
-        .iter()
-        .map(|point| point.x)
-        .fold(f64::INFINITY, f64::min)
-        - epsilon;
-    let min_world_z = triangle
-        .iter()
-        .map(|point| point.z)
-        .fold(f64::INFINITY, f64::min)
-        - epsilon;
-    let max_world_x = triangle
-        .iter()
-        .map(|point| point.x)
-        .fold(f64::NEG_INFINITY, f64::max)
-        + epsilon;
-    let max_world_z = triangle
-        .iter()
-        .map(|point| point.z)
-        .fold(f64::NEG_INFINITY, f64::max)
-        + epsilon;
-    let cell_x = |world_x: f64| {
-        (((world_x - bounds_xz[0]) / cell_size_m).floor() as isize).clamp(0, width as isize - 1)
-            as usize
-    };
-    let cell_z = |world_z: f64| {
-        (((world_z - bounds_xz[1]) / cell_size_m).floor() as isize).clamp(0, height as isize - 1)
-            as usize
-    };
-    (
-        cell_x(min_world_x),
-        cell_z(min_world_z),
-        cell_x(max_world_x),
-        cell_z(max_world_z),
-    )
+/// XZ bounds `[min_x, min_z, max_x, max_z]` of `points` by `f64::min` and `f64::max`; inverted
+/// infinities when there are none.
+pub(super) fn bounds_xz(points: impl IntoIterator<Item = RoadVec3>) -> [f64; 4] {
+    let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for point in points {
+        min = [min[0].min(point.x), min[1].min(point.z)];
+        max = [max[0].max(point.x), max[1].max(point.z)];
+    }
+    [min[0], min[1], max[0], max[1]]
 }
 
 /// Visits the cells of a uniform XZ grid that the ray `origin + t * dir` crosses for `t` in
@@ -332,15 +277,8 @@ pub(super) fn walk_ray_cells(
     }
 }
 
+// Height of `triangle` at `point` by barycentric weights in XZ, within the sampling tolerance.
 pub(super) fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
-    let (wa, wb, wc) = road_triangle_barycentric_weights_xz(*triangle, point)?;
-    Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
-}
-
-fn road_triangle_barycentric_weights_xz(
-    triangle: [RoadVec3; 3],
-    point: RoadVec2,
-) -> Option<(f64, f64, f64)> {
     let min_x = triangle[0].x.min(triangle[1].x).min(triangle[2].x) - SAMPLE_EPSILON_M;
     let max_x = triangle[0].x.max(triangle[1].x).max(triangle[2].x) + SAMPLE_EPSILON_M;
     let min_z = triangle[0].z.min(triangle[1].z).min(triangle[2].z) - SAMPLE_EPSILON_M;
@@ -370,11 +308,12 @@ fn road_triangle_barycentric_weights_xz(
         return None;
     }
     let inverse_area = area.recip();
-    Some((
+    let (wa, wb, wc) = (
         numerator_w0 * inverse_area,
         numerator_w1 * inverse_area,
         numerator_w2 * inverse_area,
-    ))
+    );
+    Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
 }
 
 /// Intersects a forward ray with an XZ rectangle; shared by road and engineered-ground queries.
@@ -388,42 +327,24 @@ pub(crate) fn ray_xz_interval_for_bounds(
 ) -> Option<(f64, f64)> {
     let mut entry_t = f64::NEG_INFINITY;
     let mut exit_t = f64::INFINITY;
-    clip_ray_axis_interval(
-        ray_origin.x,
-        ray_dir.x,
-        min_x,
-        max_x,
-        &mut entry_t,
-        &mut exit_t,
-    )?;
-    clip_ray_axis_interval(
-        ray_origin.z,
-        ray_dir.z,
-        min_z,
-        max_z,
-        &mut entry_t,
-        &mut exit_t,
-    )?;
-    (exit_t >= entry_t && exit_t >= 0.0).then_some((entry_t, exit_t))
-}
-
-fn clip_ray_axis_interval(
-    origin: f64,
-    direction: f64,
-    min: f64,
-    max: f64,
-    entry_t: &mut f64,
-    exit_t: &mut f64,
-) -> Option<()> {
-    if direction.abs() <= f64::EPSILON {
-        return (origin >= min && origin <= max).then_some(());
+    let axes = [
+        (ray_origin.x, ray_dir.x, min_x..=max_x),
+        (ray_origin.z, ray_dir.z, min_z..=max_z),
+    ];
+    for (origin, direction, range) in axes {
+        // A parallel axis keeps the interval if the ray runs inside its slab.
+        if direction.abs() <= f64::EPSILON {
+            if !range.contains(&origin) {
+                return None;
+            }
+            continue;
+        }
+        let t0 = (range.start() - origin) / direction;
+        let t1 = (range.end() - origin) / direction;
+        entry_t = entry_t.max(t0.min(t1));
+        exit_t = exit_t.min(t0.max(t1));
     }
-
-    let t0 = (min - origin) / direction;
-    let t1 = (max - origin) / direction;
-    *entry_t = entry_t.max(t0.min(t1));
-    *exit_t = exit_t.min(t0.max(t1));
-    Some(())
+    (exit_t >= entry_t && exit_t >= 0.0).then_some((entry_t, exit_t))
 }
 
 /// Two-sided triangle hit parameter, shared by the visible road and terrain carriers.
@@ -476,34 +397,6 @@ pub(crate) fn triangulate_constrained_rings_xz(
         constraints.extend((0..len).map(|i| [offset + i, offset + (i + 1) % len]));
         offset += len;
     }
-    // Ground must close even sub-centimetre residuals: the road renderer's skinny-triangle
-    // rejection is inappropriate for a terrain cutout. CDT constraints make the interior
-    // centroid test exact; no boundary-distance halo is used for hole inclusion.
-    let triangles = triangulate_constrained_region_xz(
-        &points_world,
-        constraints,
-        |triangle| triangle_double_area_xz_m2(triangle) > 0.0,
-        |point| {
-            polygon_contains_point_xz(rings[0].as_ref(), point)
-                && !rings[1..]
-                    .iter()
-                    .any(|ring| polygon_contains_point_xz(ring.as_ref(), point))
-        },
-    )?;
-    Some(
-        triangles
-            .into_iter()
-            .map(|triangle| triangle.map(|point| points_world[point]))
-            .collect(),
-    )
-}
-
-fn triangulate_constrained_region_xz(
-    points_world: &[RoadVec3],
-    constraints: Vec<[usize; 2]>,
-    accepts: impl Fn([RoadVec3; 3]) -> bool,
-    contains: impl Fn(RoadVec2) -> bool,
-) -> Option<Vec<[usize; 3]>> {
     let vertices = points_world
         .iter()
         .map(|point| Point2::new(point.x, point.z))
@@ -516,28 +409,35 @@ fn triangulate_constrained_region_xz(
     if invalid_constraints > 0 {
         return None;
     }
-
-    let mut triangles = Vec::new();
-    for face in cdt.inner_faces() {
-        let indices = face.vertices().map(|vertex| vertex.fix().index());
-        let triangle = indices.map(|point| points_world[point]);
-        let centroid = RoadVec2::new(
-            (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
-            (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
-        );
-        if accepts(triangle) && contains(centroid) {
-            triangles.push(indices);
-        }
-    }
-
+    // Ground must close even sub-centimetre residuals: the road renderer's skinny-triangle
+    // rejection is inappropriate for a terrain cutout. CDT constraints make the interior
+    // centroid test exact; no boundary-distance halo is used for hole inclusion.
+    let contains = |point: RoadVec2| {
+        polygon_contains_point_xz(rings[0].as_ref(), point)
+            && !rings[1..]
+                .iter()
+                .any(|ring| polygon_contains_point_xz(ring.as_ref(), point))
+    };
+    let triangles: Vec<_> = cdt
+        .inner_faces()
+        .map(|face| {
+            face.vertices()
+                .map(|vertex| points_world[vertex.fix().index()])
+        })
+        .filter(|triangle| {
+            let centroid = RoadVec2::new(
+                (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+                (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+            );
+            triangle_double_area_xz_m2(*triangle) > 0.0 && contains(centroid)
+        })
+        .collect();
     (!triangles.is_empty()).then_some(triangles)
 }
 
-// Even-odd crossing test in XZ; points on the boundary are not specially included.
+// Even-odd crossing test in XZ over a ring of at least three points; points on the boundary are
+// not specially included.
 fn polygon_contains_point_xz(points_world: &[RoadVec3], point: RoadVec2) -> bool {
-    if points_world.len() < 3 {
-        return false;
-    }
     let mut inside = false;
     for index in 0..points_world.len() {
         let start = points_world[index];

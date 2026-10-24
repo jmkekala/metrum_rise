@@ -141,6 +141,15 @@ impl NodeWalkways {
                 Some(graph.solved_junction_endpoint_profile_plane(node)?)
             }
         };
+        // Arm `index`'s point at `station_m` and signed offset, at its centreline height there.
+        let end_at = |index: usize, station_m: f64, offset_m: f64| {
+            let xz = arms.input(index).offset_point(station_m, offset_m);
+            let height_m = arms.centreline_at(index, station_m).1;
+            SidewalkEnd {
+                station_m,
+                point: RoadVec3::new(xz.x, height_m, xz.y),
+            }
+        };
         let walk_arms: Vec<WalkArm> = layout
             .arms
             .iter()
@@ -149,15 +158,8 @@ impl NodeWalkways {
                 let station_m = arm
                     .crosswalk
                     .map_or(arm.mouth_station_m, |crosswalk| crosswalk.station_m);
-                let height_m = arms.centreline_at(arm.input_index, station_m).1;
                 let end = |offset_m: Option<f64>| {
-                    offset_m.map(|offset_m| {
-                        let xz = input.offset_point(station_m, offset_m);
-                        SidewalkEnd {
-                            station_m,
-                            point: RoadVec3::new(xz.x, height_m, xz.y),
-                        }
-                    })
+                    offset_m.map(|offset_m| end_at(arm.input_index, station_m, offset_m))
                 };
                 WalkArm {
                     key: arm.key,
@@ -172,14 +174,7 @@ impl NodeWalkways {
                 }
             })
             .collect();
-        let path_end = |index: usize, station_m: f64| {
-            let xz = arms.input(index).offset_point(station_m, 0.0);
-            let height_m = arms.centreline_at(index, station_m).1;
-            SidewalkEnd {
-                station_m,
-                point: RoadVec3::new(xz.x, height_m, xz.y),
-            }
-        };
+        let path_end = |index: usize, station_m: f64| end_at(index, station_m, 0.0);
         let footpaths = layout.arms.iter().filter(|arm| {
             let input = arms.input(arm.input_index);
             input.left.bands[0].kind == BandKind::Footpath
@@ -464,16 +459,12 @@ fn push_sector_walk(
     push(points, RoadVec2::new(end.point.x, end.point.z));
     // The two ends are the arms' sidewalk ends exactly, heights included.
     let route = &mut points[route_start..];
-    let total_m: f64 = route
-        .windows(2)
-        .map(|pair| RoadVec2::new(pair[0].x - pair[1].x, pair[0].z - pair[1].z).length())
-        .sum();
+    let flat = |point: RoadVec3| RoadVec2::new(point.x, point.z);
+    let step_m = |pair: &[RoadVec3]| flat(pair[0]).distance(flat(pair[1]));
+    let total_m: f64 = route.windows(2).map(step_m).sum();
     let mut walked_m = 0.0;
-    for index in 0..route.len() {
-        if index > 0 {
-            let (p, q) = (route[index - 1], route[index]);
-            walked_m += RoadVec2::new(p.x - q.x, p.z - q.z).length();
-        }
+    for index in 1..route.len() {
+        walked_m += step_m(&route[index - 1..=index]);
         let t = if total_m > 0.0 {
             walked_m / total_m
         } else {
@@ -482,9 +473,8 @@ fn push_sector_walk(
         route[index].y = start.point.y * (1.0 - t) + end.point.y * t;
     }
     route[0] = start.point;
-    let last = route.len() - 1;
-    if last > 0 {
-        route[last] = end.point;
+    if let [_, .., last] = route {
+        *last = end.point;
     }
     let route_end = points.len();
     // Out along the to-arm's walkway from the sidewalk end to its mouth, if that lies beyond.
