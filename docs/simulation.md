@@ -747,9 +747,20 @@ field diffusion and other read-only precomputation.
 
 - **Job** (`simulation/core/pure_job.rs`, `PureJob<T>`): the work is queued on the shared
   `CODE-17` pool (`crate::thread_pools`). Whoever reaches it first runs it: a pool worker, or the
-  thread that takes the result and finds it unstarted. A taker waits only for work already
-  running on another thread, so a one-worker pool cannot deadlock. Dropping an unstarted job
-  drops its work and its snapshot; a running one finishes and is discarded.
+  thread that takes the result and finds it unstarted (in the shared pool when that thread is
+  outside it). Dropping an unstarted job drops its work and its snapshot; a running one finishes
+  and is discarded.
+- **No pool worker waits** (`ROAD-68-G` part 5). Only a thread outside the shared pool waits
+  for work another thread runs: the frame's caller finishes the job before the frame enters the
+  pool (`step_frame`, the sim thread before it takes the core lock), so the adoption inside the
+  pool finds the result ready. A worker waiting in a join runs whatever it steals, an injected
+  frame among it, so the job that frame would wait for, or a part of the job's own joins, can
+  lie lower on that worker's stack or on another waiting worker's: the adoption frame used to
+  wait inside the pool, and with the new-lane lift and chunk seal on the pool 18 frame-stepping
+  tests deadlocked. A wait on a shared-pool worker now panics instead of blocking
+  (`thread_pools::on_shared_worker`). Regression test
+  `the_adoption_wait_leaves_every_pool_worker_to_the_rebuild`: the rebuild needs every worker
+  (a broadcast) after the adoption frame began; the old adoption deadlocks there.
 - **Pool.** The shared pool, not a dedicated one: while the rebuild runs the frame holds (below),
   so it competes only with render-snapshot building, cell-chunk preparation and Godot's terrain
   jobs. The dedicated-pool reason above (a long job must not starve per-frame movement) does not
@@ -764,7 +775,8 @@ field diffusion and other read-only precomputation.
   tick and the clock, and the next frame adopts and runs normally. No slot is crossed while
   held, so no entity-phase visit or queue share is lost or moved, and nothing is left to catch
   up at adoption.
-- **Late job.** The adoption frame waits for it (or runs it there). Held frames advance nothing,
+- **Late job.** The adoption frame waits for it (or runs it there), before it enters the pool.
+  Held frames advance nothing,
   so the game over its running frames does not depend on the job's speed, the worker count or
   the frame count chosen. On the sim thread the wait comes before the frame takes the core lock
   (`PureJob::completion`, `TransitNetwork::cch_adoption_completion`), so Godot's

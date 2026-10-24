@@ -149,7 +149,7 @@ pub struct TransitNetwork {
     // Routing rebuild waiting for its adoption frame (`ROAD-68-G`, `cch_adoption`).
     pending_cch: Option<cch_adoption::PendingCch>,
     #[cfg(test)]
-    cch_job_delay: std::time::Duration,
+    cch_job_prelude: Option<cch_adoption::CchJobPrelude>,
 }
 
 impl Default for TransitNetwork {
@@ -204,7 +204,7 @@ impl TransitNetwork {
             ),
             pending_cch: None,
             #[cfg(test)]
-            cch_job_delay: std::time::Duration::ZERO,
+            cch_job_prelude: None,
         }
     }
 

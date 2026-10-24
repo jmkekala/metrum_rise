@@ -101,6 +101,32 @@ fn a_late_rebuild_blocks_the_adoption_frame_only() {
     assert_current(&core);
 }
 
+// The rebuild needs every shared-pool worker (a broadcast) once the adoption frame has begun.
+// An adoption frame that waited for it on a pool worker would hold one of them, so the
+// rebuild and the frame would wait for each other: the hold's caller waits outside the pool.
+#[test]
+fn the_adoption_wait_leaves_every_pool_worker_to_the_rebuild() {
+    let mut core = world();
+    core.transit_network
+        .prelude_cch_jobs_for_test(std::sync::Arc::new(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            rayon::broadcast(|_| ());
+        }));
+    commit(&mut core, (-150.0, 0.0), (150.0, 0.0));
+    let (done, adopted) = std::sync::mpsc::channel();
+    let stepping = std::thread::spawn(move || {
+        step_through_hold(&mut core);
+        assert_current(&core);
+        let _ = done.send(());
+    });
+    // Other tests share the pool, so the broadcast may wait for their work; a deadlock never
+    // ends.
+    adopted
+        .recv_timeout(Duration::from_secs(120))
+        .expect("the adoption frame and its rebuild waited for each other");
+    stepping.join().unwrap();
+}
+
 #[test]
 fn a_paused_game_counts_its_frames_and_adopts_on_time() {
     let mut core = world();

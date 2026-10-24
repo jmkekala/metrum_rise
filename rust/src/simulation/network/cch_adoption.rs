@@ -19,6 +19,10 @@ use super::{TransitNetwork, log_road_connectivity};
 use crate::simulation::core::pure_job::{JobCompletion, PureJob};
 use crate::simulation::pathing::cch::CchGraph;
 
+/// Test-only work a routing rebuild job runs before it builds (`ROAD-68-G`).
+#[cfg(test)]
+pub(crate) type CchJobPrelude = Arc<dyn Fn() + Send + Sync>;
+
 /// Frames a routing rebuild has before its adoption frame: the frames after the commit that
 /// hold. The simulated game does not depend on it, since held frames advance nothing, and the
 /// simulation is frozen for whichever is longer, these frames or the build; so the smallest
@@ -40,10 +44,12 @@ impl TransitNetwork {
     /// installed but unread until adoption. O(1) here; the build runs on the shared pool.
     pub(crate) fn schedule_cch_rebuild(&mut self, graph: Arc<RegionGraph>) {
         #[cfg(test)]
-        let delay = self.cch_job_delay;
+        let prelude = self.cch_job_prelude.clone();
         let job = PureJob::spawn(move || {
             #[cfg(test)]
-            std::thread::sleep(delay);
+            if let Some(prelude) = prelude {
+                prelude();
+            }
             let cch = CchGraph::build(&graph);
             log_road_connectivity(&graph);
             cch
@@ -58,8 +64,9 @@ impl TransitNetwork {
     }
 
     /// Installs a pending rebuild now, waiting for it (or running it here) if it is not done,
-    /// with a fresh build generation. The hold continues to its adoption frame. O(1) without a
-    /// pending result.
+    /// with a fresh build generation. The hold continues to its adoption frame. Call it outside
+    /// the shared pool, or after [`Self::cch_adoption_completion`] finished the job (`pure_job`).
+    /// O(1) without a pending result.
     pub(crate) fn install_pending_cch(&mut self) {
         if let Some(job) = self
             .pending_cch
@@ -98,7 +105,8 @@ impl TransitNetwork {
     }
 
     /// The pending rebuild's completion when the next frame adopts it and it may not have
-    /// finished, so the sim thread can wait for it without the core lock. O(1).
+    /// finished, so the frame's caller can wait for it outside the shared pool (and the sim
+    /// thread without the core lock). O(1).
     pub(crate) fn cch_adoption_completion(&self) -> Option<JobCompletion> {
         let pending = self.pending_cch.as_ref()?;
         if pending.frames_left > 0 {
@@ -136,6 +144,12 @@ impl TransitNetwork {
     /// changes nothing but the wait (`ROAD-68-G`).
     #[cfg(test)]
     pub(crate) fn delay_cch_jobs_for_test(&mut self, delay: Duration) {
-        self.cch_job_delay = delay;
+        self.cch_job_prelude = Some(Arc::new(move || std::thread::sleep(delay)));
+    }
+
+    /// Runs `prelude` in every later rebuild job before it builds (`ROAD-68-G`).
+    #[cfg(test)]
+    pub(crate) fn prelude_cch_jobs_for_test(&mut self, prelude: CchJobPrelude) {
+        self.cch_job_prelude = Some(prelude);
     }
 }

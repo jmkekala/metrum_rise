@@ -147,10 +147,26 @@ impl SharedPool {
     }
 }
 
+thread_local! {
+    // Set on each shared-pool worker when it starts; read by `on_shared_worker`.
+    static SHARED_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 // Sized like the global pool it replaces: Rayon's builder reads RAYON_NUM_THREADS, else one
 // thread per logical CPU.
-static SHARED: SharedPool =
-    SharedPool::new(|| ThreadPoolBuilder::new().thread_name(|index| format!("metrum-{index}")));
+static SHARED: SharedPool = SharedPool::new(|| {
+    ThreadPoolBuilder::new()
+        .thread_name(|index| format!("metrum-{index}"))
+        .start_handler(|_| SHARED_WORKER.set(true))
+});
+
+/// Whether the calling thread is a worker of the shared pool. Such a thread must never block on
+/// work it did not start: a worker waiting in a join runs whatever it steals, so the work it
+/// would wait for, or a part of it, may lie lower on its own stack or on another blocked
+/// worker's ([`crate::simulation::core::pure_job`]). O(1).
+pub(crate) fn on_shared_worker() -> bool {
+    SHARED_WORKER.get()
+}
 
 /// Runs `op` in the shared pool and returns its result, as Rayon runs work that a thread
 /// outside every pool submits to the global pool: the caller blocks and does not steal other

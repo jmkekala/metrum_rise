@@ -314,10 +314,11 @@ pub(crate) fn run_sim_thread(
         }
 
         // D7 (`ROAD-68-G`): a routing rebuild still running at its adoption frame is waited
-        // for here, outside the core lock, so Godot's acknowledgements and editor calls never
-        // queue behind it; the adoption frame then installs the finished result at once.
+        // for here, outside the core lock and the pool, so Godot's acknowledgements and editor
+        // calls never queue behind it; the adoption frame then installs the finished result at
+        // once.
         if tick_due && let Some(completion) = adoption_completion.take() {
-            crate::thread_pools::install(|| completion.wait());
+            completion.wait();
         }
 
         let perf_enabled = crate::debug::Channel::Perf.enabled();

@@ -4,12 +4,18 @@
 //! started on the shared pool and taken by the simulation at a fixed frame.
 //!
 //! The work runs on whichever thread reaches it first: a shared-pool worker, or the thread that
-//! takes the result and finds it not yet started, which then runs it itself. A taker never
-//! blocks a pool worker on work queued behind it, so a one-worker pool cannot deadlock, and the
-//! result is the same function of the snapshot either way. Dropping an unstarted job drops its
-//! work and the snapshot it holds.
+//! takes the result and finds it not yet started, which then runs it itself (in the shared pool
+//! when it is outside every pool). The result is the same function of the snapshot either way,
+//! and dropping an unstarted job drops its work and the snapshot it holds.
+//!
+//! Only a thread outside the shared pool waits for work another thread runs. A shared-pool
+//! worker waiting in a join runs whatever it steals, an injected frame among it, so the job that
+//! frame would wait for, or a part of the job's own joins, may lie lower on that worker's stack
+//! or on another waiting worker's: a blocking wait there deadlocks the pool (`ROAD-68-G` part
+//! 4). The owner therefore finishes the job before it enters the pool ([`PureJob::completion`]),
+//! and a wait on a shared-pool worker panics instead of blocking.
 
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 type Work<T> = Box<dyn FnOnce() -> T + Send>;
 
@@ -26,11 +32,16 @@ struct Shared<T> {
     done: Condvar,
 }
 
-impl<T> Shared<T> {
-    // Runs the work if nobody has started it; O(1) otherwise.
+impl<T: Send> Shared<T> {
+    fn lock(&self) -> MutexGuard<'_, State<T>> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    // Runs the work if nobody has started it; O(1) otherwise. A thread outside every pool runs
+    // it in the shared pool, as a worker would.
     fn run(&self) {
         let work = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = self.lock();
             match std::mem::replace(&mut *state, State::Running) {
                 State::Queued(work) => work,
                 other => {
@@ -39,9 +50,27 @@ impl<T> Shared<T> {
                 }
             }
         };
-        let result = work();
-        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = State::Done(result);
+        let result = crate::thread_pools::install(work);
+        *self.lock() = State::Done(result);
         self.done.notify_all();
+    }
+
+    // Runs the work if nobody has started it, otherwise waits for the thread that has. Panics
+    // where a shared-pool worker would wait (module documentation).
+    fn finish(&self) -> MutexGuard<'_, State<T>> {
+        self.run();
+        let state = self.lock();
+        if !matches!(*state, State::Running) {
+            return state;
+        }
+        assert!(
+            !crate::thread_pools::on_shared_worker(),
+            "a shared-pool worker must not wait for a pure job: its owner finishes it before \
+             entering the pool (PureJob::completion)"
+        );
+        self.done
+            .wait_while(state, |state| matches!(state, State::Running))
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -52,14 +81,7 @@ trait Complete: Send + Sync {
 
 impl<T: Send> Complete for Shared<T> {
     fn complete(&self) {
-        self.run();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while matches!(*state, State::Running) {
-            state = self
-                .done
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
+        drop(self.finish());
     }
 }
 
@@ -67,8 +89,9 @@ impl<T: Send> Complete for Shared<T> {
 pub(crate) struct JobCompletion(Arc<dyn Complete>);
 
 impl JobCompletion {
-    /// Runs the job here if nobody has started it, otherwise waits for the thread that has;
-    /// returns at once for a finished or dropped job. Call it inside the shared pool.
+    /// Runs the job in the shared pool if nobody has started it, otherwise waits for the thread
+    /// that has; returns at once for a finished or dropped job. Call it outside the shared pool,
+    /// before entering it: on a shared-pool worker that would have to wait, it panics.
     pub(crate) fn wait(&self) {
         self.0.complete();
     }
@@ -93,33 +116,21 @@ impl<T: Send + 'static> PureJob<T> {
     }
 
     /// A handle that finishes the work from another thread, so the owner can wait for it
-    /// without holding what owns the job; [`Self::take`] then returns at once. O(1).
+    /// outside the shared pool and without holding what owns the job; [`Self::take`] then
+    /// returns at once, also on a pool worker. O(1).
     pub(crate) fn completion(&self) -> JobCompletion {
         JobCompletion(Arc::clone(&self.shared) as Arc<dyn Complete>)
     }
 
     /// The result, running the work here if no worker has started it, otherwise waiting for
-    /// the worker that has.
+    /// the worker that has: outside the shared pool, or after [`Self::completion`] finished it.
     pub(crate) fn take(self) -> T {
-        self.shared.run();
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        loop {
-            match std::mem::replace(&mut *state, State::Gone) {
-                State::Done(result) => return result,
-                State::Running => {
-                    *state = State::Running;
-                    state = self
-                        .shared
-                        .done
-                        .wait(state)
-                        .unwrap_or_else(PoisonError::into_inner);
-                }
-                // `take` consumes the job and only the owner removes a result.
-                State::Queued(_) | State::Gone => unreachable!("a pure job's result is taken once"),
+        let mut state = self.shared.finish();
+        match std::mem::replace(&mut *state, State::Gone) {
+            State::Done(result) => result,
+            // `take` consumes the job and only the owner removes a result.
+            State::Queued(_) | State::Running | State::Gone => {
+                unreachable!("a pure job's result is taken once")
             }
         }
     }
@@ -129,11 +140,7 @@ impl<T: Send + 'static> Drop for PureJob<T> {
     fn drop(&mut self) {
         // A superseded job that has not started never runs; a running one finishes and its
         // result is dropped with the last reference.
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.lock();
         if matches!(*state, State::Queued(_)) {
             *state = State::Gone;
         }
@@ -195,5 +202,39 @@ mod tests {
         pool.install(|| ());
         drop(pool);
         assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    // The work runs on a private pool's worker until released. A frame on a shared-pool worker
+    // that asked for it would block that worker, so it panics instead; the owner's thread,
+    // outside the pool, waits.
+    #[test]
+    fn a_shared_worker_never_waits_for_a_running_job() {
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let held = Arc::clone(&gate);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let job = pool.install(|| {
+            PureJob::spawn(move || {
+                let (state, wake) = &*held;
+                let mut state = state.lock().unwrap();
+                state.0 = true;
+                wake.notify_all();
+                drop(wake.wait_while(state, |state| !state.1).unwrap());
+                7
+            })
+        });
+        let (state, wake) = &*gate;
+        drop(wake.wait_while(state.lock().unwrap(), |state| !state.0).unwrap());
+        let completion = job.completion();
+        let refused = crate::thread_pools::install(|| {
+            assert!(crate::thread_pools::on_shared_worker());
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| completion.wait())).is_err()
+        });
+        state.lock().unwrap().1 = true;
+        wake.notify_all();
+        assert!(refused);
+        assert_eq!(job.take(), 7);
     }
 }

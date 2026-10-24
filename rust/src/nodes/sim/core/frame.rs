@@ -213,24 +213,32 @@ impl SimCore {
         frame_dt_s: f64,
         observer: &mut (impl EconomyObserver + Send),
     ) -> FrameStepReport {
+        // D7 (`ROAD-68-G`): a late routing rebuild blocks the adoption frame here, before the
+        // frame enters the pool, so no pool worker waits for it (`pure_job`).
+        let adoption_start = Instant::now();
+        if let Some(completion) = self.transit_network.cch_adoption_completion() {
+            completion.wait();
+        }
         // The sim thread, tests and benchmarks all step in the shared pool (CODE-17).
-        crate::thread_pools::install(|| self.step_frame_in_pool(frame_dt_s, observer))
+        crate::thread_pools::install(|| {
+            self.step_frame_in_pool(frame_dt_s, observer, adoption_start)
+        })
     }
 
     fn step_frame_in_pool(
         &mut self,
         frame_dt_s: f64,
         observer: &mut impl EconomyObserver,
+        adoption_start: Instant,
     ) -> FrameStepReport {
         let mut report = FrameStepReport::default();
         // Sites placed by tools since the last frame; demand places its own during slots.
         self.schedule_construction_completions();
         // D7 (`ROAD-68-G`): until a routing rebuild is adopted every phase of the frame would
         // read routing (flow fields, agent planning, timed trips and the slots), so none runs
-        // and the clock holds. Paused frames count, so a paused game adopts on time; a late
-        // rebuild blocks the adoption frame.
+        // and the clock holds. Paused frames count, so a paused game adopts on time; the
+        // adoption frame installs the rebuild its caller finished.
         let adopting = self.transit_network.cch_adoption_pending();
-        let adoption_start = Instant::now();
         if self.transit_network.hold_frame_for_cch() {
             report.routing_held = true;
             return report;
