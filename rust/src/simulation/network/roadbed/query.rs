@@ -102,7 +102,8 @@ impl RoadbedSystem {
     }
 
     /// Band kind of the highest visible road triangle at a world XZ point.
-    pub fn band_at(&self, x: f32, z: f32) -> Option<BandKind> {
+    #[cfg(test)]
+    pub(crate) fn band_at(&self, x: f32, z: f32) -> Option<BandKind> {
         self.top_at(x, z, |_| true).map(|(_, kind)| kind)
     }
 

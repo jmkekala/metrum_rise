@@ -253,7 +253,7 @@ impl NodeArms {
             return Err(error);
         };
         let first = self.arms[from].key;
-        if !matches!(error, LayoutError::ArmTooShort { arm } | LayoutError::CornerDoesNotFit { arm }
+        if !matches!(error, LayoutError::ArmTooShort(arm) | LayoutError::CornerDoesNotFit(arm)
             if arm == first)
         {
             return Err(error);
@@ -475,11 +475,9 @@ fn has_sidewalks(graph: &RegionGraph, key: ArmKey) -> bool {
 // Horizontal length of a control polyline: the station measure of `NodeArms` (exact duplicates
 // add nothing).
 fn horizontal_length_m(points: &[Vector3]) -> f64 {
-    points
+    let xz = |point: Vector3| RoadVec2::new(f64::from(point.x), f64::from(point.z));
+    let steps = points
         .windows(2)
-        .map(|pair| {
-            RoadVec2::new(f64::from(pair[0].x), f64::from(pair[0].z))
-                .distance(RoadVec2::new(f64::from(pair[1].x), f64::from(pair[1].z)))
-        })
-        .sum()
+        .map(|pair| xz(pair[0]).distance(xz(pair[1])));
+    steps.sum()
 }

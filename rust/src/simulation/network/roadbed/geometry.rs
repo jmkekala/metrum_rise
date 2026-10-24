@@ -39,12 +39,8 @@ impl RoadSurfaceTriangleQueryIndex {
         triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
     ) -> Self {
         let triangles: Vec<_> = triangles.into_iter().collect();
-        Self {
-            grid: SurfaceTriangleGrid::from_triangles(triangles.iter().copied(), |triangle_idx| {
-                triangle_idx as u32
-            }),
-            triangles,
-        }
+        let grid = SurfaceTriangleGrid::from_triangles(triangles.iter().copied(), |id| id as u32);
+        Self { grid, triangles }
     }
 
     /// Samples the highest ground triangle in the grid cell containing `point`.

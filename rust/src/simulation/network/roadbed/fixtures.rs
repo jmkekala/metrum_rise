@@ -5,8 +5,9 @@
 //! hashes of everything the roadbed publishes, which refactors must leave unchanged.
 
 use super::{
-    ArmKey, BandKind, EdgeEnd, NodeWalkways, PieceId, PieceMesh, RoadSurfaceTriangleQueryIndex,
-    RoadVec2, RoadVec3, RoadbedSystem, triangulate_constrained_rings_xz,
+    ArmKey, BandKind, EdgeEnd, JunctionLayout, NodeError, NodeWalkways, PieceId, PieceMesh,
+    RoadSurfaceTriangleQueryIndex, RoadVec2, RoadVec3, RoadbedSystem,
+    triangulate_constrained_rings_xz,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -225,8 +226,9 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
 
 /// FNV-1a hashes of one network's roadbed products, by component: graph clips and physical
 /// profiles, node pieces (meshes, query grids, outer chains, mouth sections, crossings,
-/// approaches, errors), layouts (their `Debug` form; a refactor that drops a dead field may change
-/// it alone), span pieces, node walkways, lanes with their crossings, and surface queries.
+/// approaches, and errors by their `Debug` text without punctuation or field names), layouts
+/// (every product field, see [`Fnv::layout`]), span pieces, node walkways, lanes with their
+/// crossings, and surface queries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductProbe {
     pub(crate) graph: u64,
@@ -278,6 +280,45 @@ impl Fnv {
         let text = format!("{value:?}");
         self.word(text.len() as u64);
         text.bytes().for_each(|byte| self.word(u64::from(byte)));
+    }
+
+    // A node error by its `Debug` text with field names and punctuation dropped, so the hash
+    // follows the variant and its values, not whether they are named.
+    fn error(&mut self, error: Option<NodeError>) {
+        let text = format!("{error:?}").replace("arm: ", "");
+        let kept: String = text.chars().filter(|c| !" {}(),".contains(*c)).collect();
+        self.debug(&kept);
+    }
+
+    // A layout's product fields: everything node pieces, clips, the profile solve, walkways and
+    // lanes read (and the tests check), field by field.
+    fn layout(&mut self, layout: &JunctionLayout) {
+        self.debug(&(layout.node, layout.kind));
+        for arm in &layout.arms {
+            self.debug(&(arm.key, arm.input_index, arm.direction, arm.angle_rad));
+            self.debug(&(arm.mouth_station_m, arm.crosswalk));
+            self.debug(&(arm.left_corner, arm.right_corner));
+        }
+        for sector in &layout.sectors {
+            self.debug(&(
+                sector.kind,
+                sector.from_arm,
+                sector.to_arm,
+                sector.angle_rad,
+            ));
+            self.debug(&(sector.corner, &sector.boundaries));
+        }
+        self.debug(&layout.boundaries);
+        layout.samples.iter().for_each(|&xz| self.debug(&xz));
+        self.debug(&layout.core);
+        for attachment in &layout.attachments {
+            self.debug(&(attachment.key, attachment.input_index, attachment.direction));
+            self.debug(&(
+                attachment.sector,
+                attachment.mouth_station_m,
+                attachment.edges,
+            ));
+        }
     }
 
     fn mesh(&mut self, mesh: &PieceMesh) {
@@ -333,7 +374,7 @@ impl ProductProbe {
         let (mut nodes, mut layouts, mut walks) = (Fnv::new(), Fnv::new(), Fnv::new());
         for node in 0..graph.node_count() as u32 {
             nodes.word(u64::from(node));
-            nodes.debug(&roadbed.node_error(node));
+            nodes.error(roadbed.node_error(node));
             if let Some(piece) = roadbed.node_piece(node) {
                 nodes.debug(&piece.kind());
                 nodes.mesh(piece.mesh());
@@ -343,7 +384,7 @@ impl ProductProbe {
                     nodes.debug(&piece.crosswalk_approach(arm.key));
                 }
                 layouts.word(u64::from(node));
-                layouts.debug(piece.layout());
+                layouts.layout(piece.layout());
             }
             walks.word(u64::from(node));
             let Some(walkways) = NodeWalkways::collect(graph, node) else {
