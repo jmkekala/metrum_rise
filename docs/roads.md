@@ -458,7 +458,10 @@ Node pieces are rebuilt for those nodes and spans for those edges. The far end o
 is unaffected unless the edge itself changed, because a layout reads only its own arms.
 
 Render chunks keep the existing terrain-aligned grid. A changed piece rebuilds the sorted union of
-its old and new chunks, and every triangle has one deterministic centroid home chunk. The Rust to
+its old and new chunks, and every triangle has one deterministic centroid home chunk. Since
+`ROAD-68-G` part 2 a rebuilt chunk keeps its unchanged owners' triangles from the published chunk
+and emits only the pieces built since the last publication, whose lanes alone are lifted onto the
+new surface ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)). The Rust to
 Godot chunk payload stays byte-compatible, so Godot's committed-chunk renderer is unchanged:
 `NetworkMeshData` layers, owner ranges, the generation and acknowledgement protocol, and removal
 tombstones.
@@ -509,13 +512,21 @@ generation no longer matched theirs (`flow_graph_revision`), and a paused game n
 frame. An earlier version of this section said the commit went through
 `TransitNetwork::rebuild_pathing`, which marks every field; that is the frame-start path.
 
-Since `ROAD-68-G` ([D7](#product-decisions)) the commit, undo and road bulldoze rebuild the CCH
-as a [pure job](simulation.md#pure-jobs) on the road-tool snapshot's graph copy and adopt it six
-frames later. The simulation frame holds until then, so no route query sees the new graph with
-the old hierarchy, and a late job blocks only the adoption frame
+Since `ROAD-68-G` ([D7](#product-decisions)) the commit, undo, road bulldoze and the other
+topology editors rebuild the CCH as a [pure job](simulation.md#pure-jobs) on a graph copy (the
+commit's is the road-tool snapshot's) and adopt it one frame later. The simulation frame holds
+until then, so no route query sees the new graph with the old hierarchy, and a late job blocks
+only the adoption frame, waited for outside the core lock
 ([routing contract](entrance_and_exit.md#routing-after-a-topology-edit-road-68-g-d7)). Flow
-fields refresh at the adoption frame. Lane invalidation and agent reattachment remain local, as
-before.
+fields refresh at the adoption frame. Lane invalidation is local; the agents' route-state test
+is one parallel pass over the agents.
+
+Since `ROAD-68-G` part 2 the commit's other consequences follow the edit
+([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)): the render
+publication re-lifts only the rebuilt pieces' lanes and re-emits only their triangles, keeping
+the rest of each changed chunk from its published mesh, and the entrance rebuild derives only
+the entrances whose inputs the edit changed. The commit still regenerates the edit's dirty
+cell-lot regions synchronously ([open question 21](#road-68-open-questions)).
 
 ### Complexity bounds
 
@@ -528,7 +539,7 @@ before.
 | Dirty closure | `O(changed edges + their incident node degrees)` |
 | Terrain patch | `O((S + G) log (S + G))` for `S` local chain segments and `G` patch samples plus guides |
 | Height, band or ray query | `O(1)` chunk lookup plus `O(triangles in one grid cell)`, or the cells the ray crosses |
-| Chunk rebuild | `O(pieces in the changed chunks)` |
+| Chunk rebuild | `O(rebuilt pieces + changed chunks' vertices)`: the rebuilt pieces are emitted and the rest of each changed chunk is copied from its published mesh; lights and signs `O(covered edges)` |
 
 No stage scans the city.
 
@@ -602,7 +613,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
-| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; the commit still misses a frame on other stages ([open question 21](#road-68-open-questions)) |
+| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit (41 ms at 100k); the commit's lot regeneration still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -1018,23 +1029,33 @@ These need a user decision; work that does not depend on them continues.
     it is a defect; or accept the new counts and re-baseline these two limits (user decision).
 
 21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement, open).** With the CCH
-    off the commit, click → acknowledgement is still 2.4 s at 100k residents (76,109
-    buildings) and 19 ms on a 44-edge street grid ([commit
-    breakdown](#implementation-road-68-g-2026-10-24)), so the gate's acceptance (under 16.7 ms
-    at 100k) is not met.
-    - **Render publication.** `precompute_road_mesh_data` costs 18.7 / 40.9 / 219 / 610 /
-      2,261 ms at 44 / 93 / 446 / 1,201 / 4,283 edges: about 0.4–0.55 ms per edge, so it
-      rebuilds by network size, not by the edit's dirty closure. That contradicts the
-      [chunk rebuild bound](#complexity-bounds), `O(pieces in the changed chunks)`.
-    - **Entrance rebuild.** `rebuild_building_entrances_internal` costs about 20–30 ms whenever
-      buildings exist (19.8 ms at 1,413, 29.6 ms at 76,109).
-    - **Agents and lanes.** 19 ms at 100k.
-    - **Adoption.** Six frames are shorter than the 311 ms build at 100k, so the adoption frame
-      waits about 210 ms.
-    - **Options.** Make the render publication local (rebuild only the edit's chunks) and the
-      entrance rebuild follow the dirty edges, in `ROAD-68-E` (commit adoption) or a dedicated
-      fix; and choose the adoption offset from the graph's size (deterministic) instead of a
-      constant, or accept the wait. `ROAD-68-G` stays open until the commit fits a frame.
+    off the commit (D7), part 1 measured click → acknowledgement at 2.4 s at 100k residents.
+    Part 2 ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24))
+    found that the harness never acknowledged an upload, so it republished the whole network
+    every commit. With Godot's acknowledgements modelled, publication, entrances and the agent
+    pass now follow the edit. The commit takes 8.5 / 28.8 / 33.3 / 34.7 / 41.0 ms at 0 / 2k /
+    10k / 30k / 100k residents (control 16.1 / 42.0 / 64.2 / 70.6 / 78.2), so the gate's
+    acceptance (under 16.7 ms at 100k buildings) is still not met:
+    - **Cell lots, about 19–20 ms from 1,413 buildings up.** The commit regenerates the
+      cell-lot regions its road dirtied, synchronously (`prepare_cell_lots_internal`, three
+      quarters of the entrance stage): local, but a frame on its own. `SIM-02-H` decided that
+      editing paths drain every pending region at once "because their own previews and commits
+      read the lots" ([`simulation.md`](simulation.md#request-queues)).
+    - **Render publication, 7.4–9.9 ms**, flat: the new lanes' lift (most of them lifted twice),
+      the rebuilt pieces' emission, every covered edge's lights and signs, copying the changed
+      chunks' kept runs (`O(chunk vertices)`, 3–5 chunks of 512 m) and the payload certificate.
+    - **Growing with the city, about 11 ms at 100k:** the agent passes (4.0 + 1.2 ms, `O(A / P)`
+      and `O(A)`), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`), the road-locked
+      terrain state (2.6 ms; it walks unacknowledged dirty terrain patches, possibly a harness
+      artifact, `ROAD-68-D` part 2's to confirm) and the snapshot publish (1.1 ms).
+    - **Options.** (a) Let the `cell lots` queue serve the commit's regions from the next slot,
+      as it serves painted regions, instead of draining them on the commit; the next preview
+      and commit would plan against lots up to a slot old, which `SIM-02-H` ruled out (user
+      decision). (b) Derive the commit's lots from the preview's plan in `ROAD-68-E`, so the
+      commit installs them as it installs pieces. (c) Make the graph persistent (`imbl`, as the
+      roadbed index is) so the snapshot copies `O(1)`, and keep per-lane or per-edge agent
+      lists so the agent passes visit only the edit's agents. (d) Accept a commit of about
+      41 ms at 100k (two to three frames). `ROAD-68-G` stays open until the commit fits a frame.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -2288,13 +2309,14 @@ D7 as built ([pure jobs](simulation.md#pure-jobs),
 - `SimCore::commit_road` no longer builds the CCH. Once the road-tool snapshot exists it starts
   `TransitNetwork::schedule_cch_rebuild` on the snapshot's `Arc<RegionGraph>`, so the commit
   copies the graph once. The job builds the CCH and runs the connectivity log on the shared pool.
-- `step_frame` holds for `CCH_ADOPTION_FRAMES` (6) frames, paused frames included: it returns
-  before the flow fields, the agent tick and the clock. The seventh frame adopts the result,
-  waiting for it if late, stamps a fresh build generation, and runs normally. The flow fields
-  refresh there because the generation moved.
+- `step_frame` holds for `CCH_ADOPTION_FRAMES` (6 here; 1 since
+  [part 2](#local-commit-publication-road-68-g-part-2-2026-10-24)) frames, paused frames
+  included: it returns before the flow fields, the agent tick and the clock. The seventh frame
+  adopts the result, waiting for it if late, stamps a fresh build generation, and runs normally.
+  The flow fields refresh there because the generation moved.
 - Undo and road bulldoze schedule the same job on a copy of the live graph. Node moves, lane
-  connection edits, edge class changes and border connections still build synchronously on
-  Godot's main thread; such a build supersedes a pending job. Converting them is the same call.
+  connection edits, edge class changes and border connections still built synchronously on
+  Godot's main thread; part 2 converted them with the same call.
 - A second edit inside the hold supersedes the job (an unstarted one never runs) and restarts
   the hold. A save installs the result and ends the hold (`save_game_settled`); load drops it.
 - `RoadEditMetrics` gained `undo_ms`, `topology_ms` and `zoning_ms`, the parts of `add_ms`;
@@ -2340,7 +2362,9 @@ splits the trunk. Medians of the three samples, in ms; control / gate where they
   ([open question 21](#road-68-open-questions)). The render publication
   (`precompute_road_mesh_data`) grows with the network, about 0.4–0.55 ms per edge, to 2.3 s
   at 100k; the entrance rebuild costs about 20–30 ms from 1,413 buildings up; agents and lanes
-  reach 19 ms at 100k.
+  reach 19 ms at 100k. Part 2 found that this harness never acknowledged an upload, so every
+  commit here republished the whole network
+  ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)).
 - **Adoption latency.** Adoption comes six frames after the commit, 100 ms at 60 Hz. The
   build itself takes 0.95 / 2.5 / 15 / 50 / 311 ms, so at 100k the adoption frame waits about
   210 ms in the game. In the harness, whose frames take no wall time, it waited 0.5 / 2.0 / 13 /
@@ -2424,6 +2448,110 @@ RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 \
 - **Time does not follow the counts.** At baseline 30k, B does 9% more supplier routes than A
   and runs 6% faster. In the fiscal workload the counts match within 1% and B is 17–23% faster;
   that difference is code between `d6c80f91` and `c59955e6`, not work.
+
+#### Local commit publication (`ROAD-68-G` part 2, 2026-10-24)
+
+**Why the publication grew with the network.** The commit breakdown never acknowledged a
+road-chunk upload. `road_mesh_full_replace` starts on and stays on until Godot acknowledges a
+published generation (`NetworkRenderer` → `acknowledge_network_render`), so every measured
+commit republished every occupied chunk: 2.3 s at 100k residents. In the game only the first
+publication after a load is whole. The harness now acknowledges the city's publication before
+the first click and each commit's afterwards, as Godot does (it also records the republished
+chunks, 3–6 per commit). The control then took 72–104 ms at 100k (profiled run): local, but
+not inside a frame. A profile of those local commits:
+
+- **Render publication** (22–36 ms): 67% lifting the lanes of every piece in the changed
+  chunks onto the surface, although only the rebuilt pieces' lanes can move; 27% emitting every
+  piece in those chunks again, although each is an immutable piece whose triangles are already
+  in the published chunk.
+- **Entrances** (23–38 ms): 76% regenerating the edit's dirty 512 m cell-lot regions, 16% deriving
+  every building's entrance, 8% the serial `O(B)` attachment repair.
+- **Agents and lanes** (17–19 ms): 80% the serial `O(A)` route-state test after reattachment.
+
+**Changes.**
+
+- *Lane lift.* `SimCore::road_mesh_lane_generation` records the roadbed generation of the last
+  chunk publication; the next one lifts only the lanes of covered pieces built after it (the
+  build generations `pieces_in_bounds` already returns). A world reset clears it, and then
+  every covered piece's lanes are lifted as before. The breakdown counts live lanes a full
+  surface sync would still move after every commit: none at any tier, control or change.
+- *Splice.* With that generation, a changed chunk keeps the published triangles of its unchanged
+  owners and emits only the rebuilt pieces (`NetworkMeshData::splice_owners`). Each mesh layer
+  is written by one emission pass that visits spans, then nodes, by id, so merging the kept
+  runs with the fresh ones in owner order gives the chunk a full emission builds. Street lights
+  and signs, placed along whole streets, are still placed for every covered edge. Test builds
+  emit every covered piece again on each spliced publication and assert the payloads equal
+  (the whole debug suite passes with it).
+- *Entrances.* The commit repairs attachments only for the buildings whose visit can act (a
+  parallel read-only test skips buildings already on a plausible frontage of their own or of
+  their parcel; the visits run in building order, as before) and derives again only the
+  entrances of the buildings it visited, those the lot refresh reattached and those fronting the
+  edit's lane rebuild closure. An entrance reads only its building, its edge and that edge's
+  lanes, and the rebuild leaves every other edge's lanes in place. A cache already stale before
+  the commit rebuilds whole; test builds assert the result equals a full derivation.
+- *Agents.* The route-state test runs on the shared pool and the routes clear in agent order.
+- *Adoption offset: one frame* ([pure jobs](simulation.md#pure-jobs)). The sim thread waits for a
+  late build before it takes the core lock, so Godot's acknowledgements never queue behind it.
+- *Editor rebuilds.* Node moves, lane connection edits, crosswalk toggles, edge class changes and
+  border connections schedule the deferred rebuild (`schedule_cch_rebuild_of_live_graph`). The
+  lane edits used to mark a chunk after their synchronous build, which rebuilt the CCH a second
+  time at the next frame; the scheduled job's graph copy holds the edit, so that mark is gone.
+  The populated-city fixture installs its border connections' rebuild before admitting
+  households outside frames (`settle_cch`).
+
+**Commit breakdown** (fresh, 2026-10-24, 19:37–19:48). Release library tests of the control
+(`e92359c8` with this part's test-only harness commit `a2131e31`, binary `1e4c420d…`) and of
+this part (`462dfdeb`, binary `1c799f85…`), in one session, pinned to the P-cores with eight
+workers, under the exclusive timing lock with no build or backup running; command as above.
+Medians of three samples, in ms; control / change where they differ:
+
+| Stage | 0 | 2k | 10k | 30k | 100k |
+| --- | --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 | 76,109 / 2,220 / 4,283 |
+| click → ack | 16.1 / 8.50 | 42.0 / 28.8 | 64.2 / 33.3 | 70.6 / 34.7 | 78.2 / 41.0 |
+| render publication (`mesh`) | 14.9 / 7.36 | 21.5 / 8.37 | 38.3 / 9.92 | 39.1 / 9.23 | 22.2 / 7.40 |
+| entrances (`buildings`) | 0.00 | 19.2 | 22.7 / 20.4 | 24.9 / 21.0 | 29.7 / 19.9 |
+| agents and lanes | 0.25 / 0.27 | 0.33 / 0.34 | 0.88 / 0.65 | 3.20 / 1.04 | 16.4 / 4.00 |
+| agent invalidation | 0.00 | 0.01 | 0.07 / 0.06 | 0.26 / 0.25 | 1.19 / 1.15 |
+| tool snapshot | 0.01 | 0.04 | 0.22 | 0.64 | 2.46 / 2.56 |
+| road-locked terrain state | 0.00 | 0.08 / 0.09 | 0.82 / 0.83 | 0.67 / 0.66 | 2.51 / 2.62 |
+| snapshot publish | 0.08 / 0.06 | 0.07 / 0.11 | 0.27 / 0.21 | 0.39 / 0.42 | 1.17 / 1.11 |
+| plan, undo, topology, zoning, surface | 0.62 / 0.65 | 0.62 / 0.62 | 0.83 / 0.76 | 0.84 / 1.02 | 1.53 / 1.45 |
+| republished chunks | 4 | 4 | 5 | 5 | 3 |
+| held frames | 6 / 1 | 6 / 1 | 6 / 1 | 6 / 1 | 6 / 1 |
+| adoption wait (harness) | 0.61 / 0.76 | 2.23 / 2.13 | 13.2 | 48.7 / 49.3 | 299 / 298 |
+| CCH build alone | 0.91 / 0.93 | 2.31 / 2.35 | 14.7 / 14.1 | 51.0 / 51.7 | 298 / 296 |
+| live lanes off the surface | 0 | 0 | 0 | 0 | 0 |
+
+The first sample of each tier is the slowest (2k: 68.5 / 42.2 ms, 100k: 101.7 / 56.5 ms),
+the third the fastest (100k: 67.1 / 29.6 ms); the medians above lie between.
+
+- **Render publication now follows the edit:** 7.4–9.9 ms from the bare grid to 100k, against
+  14.9–39.1 ms. What is left is lifting the commit's new lanes (twice for most of them: once as
+  new lanes, again as the rebuilt pieces' lanes), emitting the rebuilt pieces, placing the
+  covered edges' lights and signs, copying the changed chunks' kept runs and certifying the
+  payloads, all `O(changed chunks)`.
+- **Entrances** stay at about 20 ms from 1,413 buildings up, and are now flat: what remains is
+  the commit's synchronous regeneration of its dirty cell-lot regions ([open question
+  21](#road-68-open-questions)); the derivation and repair are a few ms of `O(B / P)` tests.
+- **Agents and lanes** fall from 16.4 to 4.0 ms at 100k; the route-state test is still a pass over
+  every agent, now in parallel, and the invalidation pass (1.2 ms) is serial.
+- **Still growing with the city:** the tool snapshot's graph clone (2.6 ms), the road-locked
+  terrain state (2.6 ms; it walks the heightmap's unacknowledged dirty render patches, and this
+  harness acknowledges only road chunks, so this may be the same kind of harness artifact; terrain
+  is `ROAD-68-D` part 2's), the snapshot publish (1.1 ms, dropping the previous snapshot) and the
+  agent passes.
+- **Adoption** comes one frame after the commit. The simulation holds for the held frame or the
+  build, whichever is longer, so the hold is unchanged where the build is slower than a frame:
+  about 0.3 s at 100k ([`NET-09`](roadmap.md)). The adoption frame's agent tick is as before
+  (48.7 / 53.0 ms at 100k).
+
+**Determinism** (fresh, same session, `road68g_commit_determinism`, release): against the
+eight-worker reference, one and three workers, a rebuild delayed 400 ms at one and eight
+workers, and a save inside the hold give identical hourly fingerprints (6) and saved tables (72),
+in the control and in this part. The reference runs of control and change share one digest
+(`6252b7ba71c5a6f1`, printed by the test), so the local publication, entrance rebuild, agent pass
+and one-frame offset leave the game bit for bit as it was.
 
 ### `ROAD-68-H` — acceptance and cleanup
 

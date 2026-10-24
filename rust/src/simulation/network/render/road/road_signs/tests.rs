@@ -6,7 +6,7 @@ use super::*;
 use crate::simulation::network::graph::Node;
 use crate::simulation::network::render::road::RoadRenderer;
 use crate::simulation::network::types::{NodeType, TransitFlags};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn fixture(
     points: &[Vector3],
@@ -381,8 +381,15 @@ fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadbedSystem, TerrainS
     let chunks: BTreeSet<_> = (-3..=3)
         .flat_map(|x| (-3..=3).map(move |z| (x, z)))
         .collect();
-    let partitioned =
-        RoadRenderer.generate_mesh_chunks_with_surface(&f.0, &mut f.1, &f.3, &f.2, &chunks);
+    let partitioned = RoadRenderer.generate_mesh_chunks_with_surface(
+        &f.0,
+        &mut f.1,
+        &f.3,
+        &f.2,
+        &chunks,
+        None,
+        &BTreeMap::new(),
+    );
     let (ox, oz) = f.2.chunk_origin_m();
     let mut restored = Vec::new();
     for (&(x, z), mesh) in &partitioned {
@@ -408,6 +415,8 @@ fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadbedSystem, TerrainS
             &f.3,
             &f.2,
             &BTreeSet::from([chunk]),
+            None,
+            &BTreeMap::new(),
         );
         let actual = rebuilt
             .get(&chunk)

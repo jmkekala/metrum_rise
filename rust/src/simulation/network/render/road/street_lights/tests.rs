@@ -221,6 +221,8 @@ fn emit(
     let coverage = super::CompiledSurfaceCoverage {
         edge_indices: edges,
         node_ids: Vec::new(),
+        rebuilt_edges: Vec::new(),
+        rebuilt_nodes: Vec::new(),
     };
     super::emit_street_lights(&mut mesh, &f.0, &f.1, &f.2, &coverage);
     mesh.street_lights

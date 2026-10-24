@@ -115,6 +115,7 @@ pub(crate) fn run_sim_thread(
     let mut pending_cell_overlay_visible = None;
     let mut pending_weather = None;
     let mut pending_weather_automatic = None;
+    let mut adoption_completion: Option<crate::simulation::core::pure_job::JobCompletion> = None;
 
     loop {
         let frame_start = Instant::now();
@@ -312,6 +313,13 @@ pub(crate) fn run_sim_thread(
             continue;
         }
 
+        // D7 (`ROAD-68-G`): a routing rebuild still running at its adoption frame is waited
+        // for here, outside the core lock, so Godot's acknowledgements and editor calls never
+        // queue behind it; the adoption frame then installs the finished result at once.
+        if tick_due && let Some(completion) = adoption_completion.take() {
+            crate::thread_pools::install(|| completion.wait());
+        }
+
         let perf_enabled = crate::debug::Channel::Perf.enabled();
         let lock_wait_ms: f64;
         let mut step = FrameStepReport::default();
@@ -359,6 +367,7 @@ pub(crate) fn run_sim_thread(
             // network/terrain dirty flags would put the removed queue delay back on the renderer.
             if tick_due {
                 step = core.step_frame(FRAME_DT_S);
+                adoption_completion = core.transit_network.cch_adoption_completion();
             }
 
             // Edits and ticks publish with their shown cell chunks already regenerated.

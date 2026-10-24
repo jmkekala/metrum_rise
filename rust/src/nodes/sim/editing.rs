@@ -955,8 +955,8 @@ impl SimCore {
             .mark_surface_dirty_for_nodes(&self.region_graph, &affected_nodes);
 
         self.rebuild_building_entrances_internal();
-        self.transit_network
-            .rebuild_cch_and_check(&self.region_graph);
+        // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
+        self.schedule_cch_rebuild_of_live_graph();
     }
 
     /// Adds a new road segment to the transit network.
@@ -1820,8 +1820,8 @@ impl SimCore {
                 &self.region_graph,
             );
             self.rebuild_building_entrances_internal();
-            self.transit_network
-                .rebuild_cch_and_check(&self.region_graph);
+            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
+            self.schedule_cch_rebuild_of_live_graph();
             self.transit_network.flow_fields.mark_all_dirty();
             self.transit_network
                 .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
@@ -1892,13 +1892,10 @@ impl SimCore {
                 eprintln!("{s}");
             }
         }
-        self.transit_network
-            .rebuild_cch_and_check(&self.region_graph);
+        // Deferred like a commit's (D7, `ROAD-68-G`): the job's graph copy holds this edit, so
+        // no chunk is left marked for a second, synchronous rebuild.
+        self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
-        if (node_id as usize) < self.region_graph.node_count() {
-            let pos = self.region_graph.node(node_id).pos;
-            self.transit_network.mark_point_dirty(pos);
-        }
     }
 
     /// Clears all lane connections at a junction node.
@@ -1936,13 +1933,9 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
-        self.transit_network
-            .rebuild_cch_and_check(&self.region_graph);
+        // Deferred like a commit's (D7, `ROAD-68-G`); its graph copy holds this edit.
+        self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
-        if (node_id as usize) < self.region_graph.node_count() {
-            let pos = self.region_graph.node(node_id).pos;
-            self.transit_network.mark_point_dirty(pos);
-        }
     }
 
     /// Clears lane connections for a specific source edge/lane at a junction.
@@ -1975,13 +1968,9 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
-        self.transit_network
-            .rebuild_cch_and_check(&self.region_graph);
+        // Deferred like a commit's (D7, `ROAD-68-G`); its graph copy holds this edit.
+        self.schedule_cch_rebuild_of_live_graph();
         self.transit_network.flow_fields.mark_all_dirty();
-        if (node_id as usize) < self.region_graph.node_count() {
-            let pos = self.region_graph.node(node_id).pos;
-            self.transit_network.mark_point_dirty(pos);
-        }
     }
 
     /// Toggles a user override for a crosswalk at a specific road mouth.
@@ -2050,10 +2039,9 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
-        if (node_id as usize) < self.region_graph.node_count() {
-            let pos = self.region_graph.node(node_id).pos;
-            self.transit_network.mark_point_dirty(pos);
-        }
+        // Deferred like a commit's (D7, `ROAD-68-G`), not left to the next frame's synchronous
+        // rebuild of marked chunks.
+        self.schedule_cch_rebuild_of_live_graph();
     }
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
@@ -2252,8 +2240,8 @@ impl SimCore {
             self.transit_network
                 .lane_system
                 .rebuild(&mut self.region_graph);
-            self.transit_network
-                .rebuild_cch_and_check(&self.region_graph);
+            // Deferred like a commit's (D7, `ROAD-68-G`); it supersedes a pending one.
+            self.schedule_cch_rebuild_of_live_graph();
             let mut affected_nodes = HashSet::from([node_id as u32]);
             let mut affected_edges = HashSet::new();
             for &edge_idx in &adj {
@@ -3322,7 +3310,8 @@ mod tests {
             "metrum_border_alignment_{}.sqlite",
             std::process::id()
         ));
-        core.save_game_internal(path.to_str().unwrap(), None)
+        // The extension's routing rebuild is pending (D7); the save installs it first.
+        core.save_game_settled(path.to_str().unwrap(), None)
             .unwrap();
         let mut loaded = test_core();
         let result = loaded.load_game_internal(path.to_str().unwrap());

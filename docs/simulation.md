@@ -760,20 +760,29 @@ field diffusion and other read-only precomputation.
   the agent tick's planning, timed trips and, among the slots' systems, the planning, queue and
   census systems that read `NETWORK` or `ALL`. Holding only those would reorder a slot's fixed
   order (events, then phases, queues and rolling chunks), so `step_frame` holds whole: for
-  `CCH_ADOPTION_FRAMES` (6) frames after the edit it returns before the flow fields, the agent
+  `CCH_ADOPTION_FRAMES` (1) frame after the edit it returns before the flow fields, the agent
   tick and the clock, and the next frame adopts and runs normally. No slot is crossed while
   held, so no entity-phase visit or queue share is lost or moved, and nothing is left to catch
   up at adoption.
 - **Late job.** The adoption frame waits for it (or runs it there). Held frames advance nothing,
   so the game over its running frames does not depend on the job's speed, the worker count or
-  the frame count chosen.
+  the frame count chosen. On the sim thread the wait comes before the frame takes the core lock
+  (`PureJob::completion`, `TransitNetwork::cch_adoption_completion`), so Godot's
+  acknowledgements and editor calls, which take the lock, never queue behind it.
+- **Offset (`ROAD-68-G` part 2): one frame.** The simulation is frozen for whichever is longer,
+  the offset or the build, and the outcome depends on neither, so a longer offset only adds
+  frozen frames when the build is quick (0.95 ms on a 44-edge grid, 15 ms at 10k residents) and
+  changes nothing when it is slow (311 ms at 100k). Six frames had one advantage: the adoption
+  wait, then taken under the core lock, began after Godot had usually acknowledged the commit's
+  upload. Waiting outside the lock removes that, so the offset is the smallest, one frame. An
+  offset derived from the graph's size would be deterministic too, but would only add frames.
 - **Paused.** Every `step_frame` call counts, paused or not, so a paused game adopts on time;
   the flow fields follow the new build generation at the first running frame, as they did after
   a synchronous rebuild.
-- **A second edit inside the hold** (commit, undo or road bulldoze) supersedes the pending job
-  and restarts the hold. A synchronous rebuild of the live graph (node moves, lane connection
-  edits, edge class changes, border connections, the allocator's cache repair, a frame's dirty
-  chunks) supersedes it too; the hold still runs out.
+- **A second edit inside the hold** (commit, undo, road bulldoze, node move, lane connection
+  edit, crosswalk toggle, edge class change or border connection) supersedes the pending job
+  and restarts the hold. A synchronous rebuild of the live graph (the allocator's cache repair,
+  a frame's dirty chunks) supersedes it too; the hold still runs out.
 - **Save inside the hold.** The save installs the rebuilt hierarchy first, waiting for it, and
   ends the hold (`SimCore::save_game_settled`), so the saved current flags are those of the
   adopted network and the saved game continues frame for frame like the game loaded from it.
@@ -787,7 +796,8 @@ field diffusion and other read-only precomputation.
   counter would let a loaded or second network reuse another's labels. No save, fingerprint or
   result reads the value, only equality; the determinism test compares saved tables of runs
   whose counters differ.
-- **Cost.** An edit holds the clock for six frames, about 100 ms of wall time; game time is
+- **Cost.** An edit holds the clock for one frame or the build, whichever is longer: 17 ms of
+  wall time up to about 10k residents, 311 ms at 100k ([`NET-09`](roadmap.md)); game time is
   delayed, not lost. Edits repeated inside the hold extend it.
 
 **Implemented in `SIM-02-I` (part 2): the funding census spread over slots** (decided

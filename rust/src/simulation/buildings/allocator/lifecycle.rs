@@ -1088,50 +1088,134 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         zoning: &mut ZoningSystem,
     ) -> usize {
-        let zone_cell_m = zoning.config.zone_cell_m;
-        let mut repaired = 0usize;
-        for building_idx in 0..self.buildings.len() {
-            if self.buildings[building_idx].parcel_id != 0 {
-                if self.align_building_attachment_to_parcel(building_idx, graph, zoning) {
-                    repaired += 1;
-                }
-                continue;
-            }
+        let repaired = (0..self.buildings.len())
+            .filter(|&building_idx| self.repair_road_attachment(building_idx, graph, zoning))
+            .count();
+        self.finish_attachment_repair(repaired);
+        repaired
+    }
 
-            let frontage_center =
-                building_frontage_center(&self.buildings[building_idx], zone_cell_m);
-            if self.frontage_attachment_is_plausible(
-                &self.buildings[building_idx],
+    /// [`Self::repair_road_attachments_after_topology_edit`] with the same visits, in the same
+    /// order and with the same results, but only for the buildings whose visit can act: a
+    /// parallel read-only pass skips those already on a plausible frontage of their own or of
+    /// their parcel. Returns the visited buildings, ascending. `O(B / P)` tests plus the visits.
+    pub(crate) fn repair_road_attachments_that_may_act(
+        &mut self,
+        graph: &RegionGraph,
+        zoning: &mut ZoningSystem,
+    ) -> Vec<usize> {
+        let allocator = &*self;
+        let zoning_view = &*zoning;
+        let visits: Vec<usize> = crate::thread_pools::install(|| {
+            (0..allocator.buildings.len())
+                .into_par_iter()
+                .filter(|&building_idx| {
+                    allocator.attachment_repair_may_act(building_idx, graph, zoning_view)
+                })
+                .collect()
+        });
+        let repaired = visits
+            .iter()
+            .filter(|&&building_idx| self.repair_road_attachment(building_idx, graph, zoning))
+            .count();
+        self.finish_attachment_repair(repaired);
+        visits
+    }
+
+    // One building's repair visit; true when it counts as a repair.
+    fn repair_road_attachment(
+        &mut self,
+        building_idx: usize,
+        graph: &RegionGraph,
+        zoning: &mut ZoningSystem,
+    ) -> bool {
+        let zone_cell_m = zoning.config.zone_cell_m;
+        if self.buildings[building_idx].parcel_id != 0 {
+            return self.align_building_attachment_to_parcel(building_idx, graph, zoning);
+        }
+
+        let frontage_center = building_frontage_center(&self.buildings[building_idx], zone_cell_m);
+        if self.frontage_attachment_is_plausible(
+            &self.buildings[building_idx],
+            graph,
+            frontage_center,
+            zone_cell_m,
+        ) {
+            return false;
+        }
+
+        let width_m = self.buildings[building_idx].width_cells as f32 * zone_cell_m;
+        let depth_m = self.buildings[building_idx].depth_cells as f32 * zone_cell_m;
+        let Some(projection) =
+            self.closest_repair_frontage(frontage_center, width_m, depth_m, graph)
+        else {
+            return false;
+        };
+
+        let edge_width = graph.edge(projection.edge_idx).width;
+        let building = &mut self.buildings[building_idx];
+        let changed = building.edge_idx != projection.edge_idx
+            || building.side != projection.side
+            || (building.frontage_t - projection.t).abs() > 0.001;
+        if !changed {
+            return false;
+        }
+        building.edge_idx = projection.edge_idx;
+        building.side = projection.side;
+        building.frontage_t = projection.t;
+        building.side_offset = edge_width * 0.5 + SIDEWALK_WIDTH;
+        true
+    }
+
+    // False only when `repair_road_attachment` would change and count nothing: a plausible
+    // non-parcel attachment, or a parcel building already on its parcel's frontage that the
+    // alignment keeps (a missing parcel or edge leaves the building as it is).
+    fn attachment_repair_may_act(
+        &self,
+        building_idx: usize,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+    ) -> bool {
+        let building = &self.buildings[building_idx];
+        let zone_cell_m = zoning.config.zone_cell_m;
+        let frontage_center = building_frontage_center(building, zone_cell_m);
+        if building.parcel_id == 0 {
+            return !self.frontage_attachment_is_plausible(
+                building,
                 graph,
                 frontage_center,
                 zone_cell_m,
-            ) {
-                continue;
-            }
-
-            let width_m = self.buildings[building_idx].width_cells as f32 * zone_cell_m;
-            let depth_m = self.buildings[building_idx].depth_cells as f32 * zone_cell_m;
-            let Some(projection) =
-                self.closest_repair_frontage(frontage_center, width_m, depth_m, graph)
-            else {
-                continue;
-            };
-
-            let edge_width = graph.edge(projection.edge_idx).width;
-            let building = &mut self.buildings[building_idx];
-            let changed = building.edge_idx != projection.edge_idx
-                || building.side != projection.side
-                || (building.frontage_t - projection.t).abs() > 0.001;
-            if !changed {
-                continue;
-            }
-            building.edge_idx = projection.edge_idx;
-            building.side = projection.side;
-            building.frontage_t = projection.t;
-            building.side_offset = edge_width * 0.5 + SIDEWALK_WIDTH;
-            repaired += 1;
+            );
         }
+        let Some(parcel) = zoning.parcel_by_raw_id(building.parcel_id) else {
+            return false;
+        };
+        let cell_lot = parcel.cell_lot().is_some();
+        if !cell_lot
+            && !self.parcel_attachment_is_plausible(
+                graph,
+                parcel.edge_idx(),
+                parcel.side(),
+                parcel.frontage_center_t(),
+                frontage_center,
+                zone_cell_m,
+            )
+        {
+            return true;
+        }
+        graph.get_edge(parcel.edge_idx()).is_some_and(|edge| {
+            parcel_attachment_differs(
+                building,
+                parcel.edge_idx(),
+                parcel.side(),
+                parcel.frontage_center_t(),
+                cell_lot,
+                edge.width,
+            )
+        })
+    }
 
+    fn finish_attachment_repair(&mut self, repaired: usize) {
         if repaired > 0 {
             self.dirty = true;
             self.entrances_dirty = true;
@@ -1142,7 +1226,6 @@ impl BuildingAllocator {
                 repaired
             );
         }
-        repaired
     }
 
     /// Updates only occupants of locally reattached cell lots; their transforms stay unchanged.
@@ -1246,18 +1329,17 @@ impl BuildingAllocator {
             return false;
         };
 
-        let building = &mut self.buildings[building_idx];
-        let changed = building.edge_idx != target_edge_idx
-            || building.side != target_side
-            || if cell_lot {
-                building.frontage_t != target_frontage_t
-                    || building.side_offset != edge.width * 0.5 + SIDEWALK_WIDTH
-            } else {
-                (building.frontage_t - target_frontage_t).abs() > 0.001
-            };
-        if !changed {
+        if !parcel_attachment_differs(
+            &self.buildings[building_idx],
+            target_edge_idx,
+            target_side,
+            target_frontage_t,
+            cell_lot,
+            edge.width,
+        ) {
             return repaired_parcel;
         }
+        let building = &mut self.buildings[building_idx];
         building.edge_idx = target_edge_idx;
         building.side = target_side;
         building.frontage_t = target_frontage_t;
@@ -1802,6 +1884,27 @@ impl BuildingAllocator {
             None,
         )
     }
+}
+
+// Whether aligning `building` to a parcel frontage on `edge_idx` would move it: a cell lot
+// takes the frontage exactly, with the side offset of the edge's `edge_width`; another parcel
+// tolerates a millimetre of `t`.
+fn parcel_attachment_differs(
+    building: &crate::simulation::buildings::allocator::Building,
+    edge_idx: usize,
+    side: i8,
+    frontage_t: f32,
+    cell_lot: bool,
+    edge_width: f32,
+) -> bool {
+    building.edge_idx != edge_idx
+        || building.side != side
+        || if cell_lot {
+            building.frontage_t != frontage_t
+                || building.side_offset != edge_width * 0.5 + SIDEWALK_WIDTH
+        } else {
+            (building.frontage_t - frontage_t).abs() > 0.001
+        }
 }
 
 #[cfg(test)]

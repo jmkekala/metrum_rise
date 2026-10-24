@@ -16,14 +16,16 @@ use std::time::Duration;
 
 use super::graph::RegionGraph;
 use super::{TransitNetwork, log_road_connectivity};
-use crate::simulation::core::pure_job::PureJob;
+use crate::simulation::core::pure_job::{JobCompletion, PureJob};
 use crate::simulation::pathing::cch::CchGraph;
 
 /// Frames a routing rebuild has before its adoption frame: the frames after the commit that
-/// hold, about 100 ms at 60 Hz. The simulated game does not depend on it, since held frames
-/// advance nothing; it trades the adoption latency against how often the adoption frame
-/// waits for a late build.
-pub(crate) const CCH_ADOPTION_FRAMES: u32 = 6;
+/// hold. The simulated game does not depend on it, since held frames advance nothing, and the
+/// simulation is frozen for whichever is longer, these frames or the build; so the smallest
+/// offset, one frame, adds no idle frames to a quick build. The sim thread waits for a late
+/// build outside the core lock ([`TransitNetwork::cch_adoption_completion`]), so a short
+/// offset never queues Godot's acknowledgements behind it (`ROAD-68-G`).
+pub(crate) const CCH_ADOPTION_FRAMES: u32 = 1;
 
 /// A routing hierarchy rebuild waiting for its adoption frame.
 pub(super) struct PendingCch {
@@ -93,6 +95,16 @@ impl TransitNetwork {
     pub(crate) fn settle_cch(&mut self) {
         self.install_pending_cch();
         self.pending_cch = None;
+    }
+
+    /// The pending rebuild's completion when the next frame adopts it and it may not have
+    /// finished, so the sim thread can wait for it without the core lock. O(1).
+    pub(crate) fn cch_adoption_completion(&self) -> Option<JobCompletion> {
+        let pending = self.pending_cch.as_ref()?;
+        if pending.frames_left > 0 {
+            return None;
+        }
+        pending.job.as_ref().map(PureJob::completion)
     }
 
     /// Whether a routing rebuild is waiting for its adoption frame.

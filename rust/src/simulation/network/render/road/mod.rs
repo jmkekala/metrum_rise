@@ -8,9 +8,11 @@ use crate::simulation::network::roadbed::{RoadbedSystem, SurfaceChunkKey};
 use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
+use standard_surface::CompiledSurfaceCoverage;
 
 /// Intersection crosswalk markings.
 pub mod crosswalks;
@@ -74,6 +76,18 @@ impl RoadRenderer {
     }
 
     /// Generates complete replacement meshes for a bounded set of render chunks.
+    ///
+    /// First lifts the lanes of the covered pieces a compile built after roadbed generation
+    /// `lanes_built_after` onto their surface, or of every covered piece when `None`: a piece
+    /// that did not change since the last publication left its lanes where they were, so a
+    /// local publication re-lifts only the edit's owners, `O(their lane points)`.
+    ///
+    /// With `lanes_built_after`, `published` holds every chunk of that publication: a target
+    /// chunk keeps its unchanged owners' published triangles and only the rebuilt pieces are
+    /// emitted again; street lights and signs, placed along whole streets, are placed again for
+    /// every covered edge. That is `O(rebuilt pieces + chunk vertices)` instead of
+    /// `O(pieces in the chunks)`, and test builds check it equals emitting every piece.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn generate_mesh_chunks_with_surface(
         &self,
         graph: &RegionGraph,
@@ -81,91 +95,143 @@ impl RoadRenderer {
         terrain: &crate::simulation::terrain::TerrainSystem,
         roadbed: &RoadbedSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
+        lanes_built_after: Option<u64>,
+        published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     ) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
         let road_debug = debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
-        let coverage_start = road_debug.then(Instant::now);
         let compiled_surface = standard_surface::build_compiled_surface_coverage_for_chunks(
             graph,
             roadbed,
             target_chunks,
+            lanes_built_after,
         );
-        let coverage_ms = coverage_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let lane_sync_start = road_debug.then(Instant::now);
         lane_system.sync_heights_to_visible_surface_for_owners(
             graph,
             roadbed,
-            &compiled_surface.edge_indices,
-            &compiled_surface.node_ids,
+            &compiled_surface.rebuilt_edges,
+            &compiled_surface.rebuilt_nodes,
         );
-        let lane_sync_ms = lane_sync_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-
-        let (chunk_origin_x_m, chunk_origin_z_m) = roadbed.chunk_origin_m();
-        let mut mesh = NetworkMeshData::new_chunk_partitioned(
-            roadbed.chunk_span_m(),
-            chunk_origin_x_m,
-            chunk_origin_z_m,
-            target_chunks.clone(),
-        );
-        let crosswalk_start = road_debug.then(Instant::now);
-        crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, &compiled_surface);
-        let crosswalk_ms = crosswalk_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let surface_start = road_debug.then(Instant::now);
-        standard_surface::emit_piece_surfaces(&mut mesh, graph, roadbed, &compiled_surface);
-        standard_surface::emit_bridge_structures(
-            &mut mesh,
-            graph,
-            roadbed,
-            terrain,
-            &compiled_surface,
-        );
-        let surface_ms = surface_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let marking_start = road_debug.then(Instant::now);
-        standard_surface::emit_compiled_lane_markings(&mut mesh, graph, roadbed, &compiled_surface);
-        let marking_ms = marking_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, &compiled_surface);
-        road_signs::emit_road_signs(
-            &mut mesh,
-            graph,
-            lane_system,
-            roadbed,
-            terrain,
-            &compiled_surface,
-        );
-        let chunks = mesh.into_partitioned_chunks();
+        let lane_system = &*lane_system;
+        let emit = |pieces: &CompiledSurfaceCoverage| {
+            emit_chunks(
+                graph,
+                lane_system,
+                terrain,
+                roadbed,
+                target_chunks,
+                pieces,
+                &compiled_surface,
+            )
+        };
+        let spliced = lanes_built_after.and_then(|_| {
+            let mut fresh = emit(&compiled_surface.rebuilt());
+            splice_chunks(target_chunks, published, &mut fresh, |owner| {
+                compiled_surface.keeps(owner)
+            })
+        });
+        let was_spliced = spliced.is_some();
+        let chunks = match spliced {
+            Some(chunks) => {
+                #[cfg(debug_assertions)]
+                assert_same_chunks(&chunks, &emit(&compiled_surface));
+                chunks
+            }
+            None => emit(&compiled_surface),
+        };
         if road_debug {
             debug_log!(
                 "road",
-                "road_mesh_generate target_chunks={} covered_edges={} covered_nodes={} output_chunks={} vertices={} coverage_ms={:.3} lane_sync_ms={:.3} crosswalk_ms={:.3} surface_ms={:.3} marking_ms={:.3} total_ms={:.3}",
+                "road_mesh_generate target_chunks={} covered_edges={} covered_nodes={} rebuilt_edges={} rebuilt_nodes={} spliced={} output_chunks={} vertices={} total_ms={:.3}",
                 target_chunks.len(),
                 compiled_surface.edge_indices.len(),
                 compiled_surface.node_ids.len(),
+                compiled_surface.rebuilt_edges.len(),
+                compiled_surface.rebuilt_nodes.len(),
+                was_spliced,
                 chunks.len(),
                 chunks
                     .values()
                     .map(NetworkMeshData::vertex_count)
                     .sum::<usize>(),
-                coverage_ms,
-                lane_sync_ms,
-                crosswalk_ms,
-                surface_ms,
-                marking_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
             );
         }
         chunks
+    }
+}
+
+// Emits `pieces` (surfaces, bridges, markings and the zebras they carry) and the street lights
+// and signs of every `covered` edge into the target chunks.
+fn emit_chunks(
+    graph: &RegionGraph,
+    lane_system: &crate::simulation::network::lanes::LaneSystem,
+    terrain: &crate::simulation::terrain::TerrainSystem,
+    roadbed: &RoadbedSystem,
+    target_chunks: &BTreeSet<SurfaceChunkKey>,
+    pieces: &CompiledSurfaceCoverage,
+    covered: &CompiledSurfaceCoverage,
+) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
+    let (chunk_origin_x_m, chunk_origin_z_m) = roadbed.chunk_origin_m();
+    let mut mesh = NetworkMeshData::new_chunk_partitioned(
+        roadbed.chunk_span_m(),
+        chunk_origin_x_m,
+        chunk_origin_z_m,
+        target_chunks.clone(),
+    );
+    crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, pieces);
+    standard_surface::emit_piece_surfaces(&mut mesh, graph, roadbed, pieces);
+    standard_surface::emit_bridge_structures(&mut mesh, graph, roadbed, terrain, pieces);
+    standard_surface::emit_compiled_lane_markings(&mut mesh, graph, roadbed, pieces);
+    street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, covered);
+    road_signs::emit_road_signs(&mut mesh, graph, lane_system, roadbed, terrain, covered);
+    mesh.into_partitioned_chunks()
+}
+
+// The target chunks assembled from the `published` meshes and `fresh` (the rebuilt pieces'
+// triangles with every covered edge's lights and signs), keeping the published triangles of
+// the owners `keep` admits; `None` if a published chunk holds a run without an owner.
+fn splice_chunks(
+    target_chunks: &BTreeSet<SurfaceChunkKey>,
+    published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+    fresh: &mut BTreeMap<SurfaceChunkKey, NetworkMeshData>,
+    keep: impl Fn(NetworkMeshOwner) -> bool,
+) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
+    let mut chunks = BTreeMap::new();
+    for chunk in target_chunks {
+        let fresh_chunk = fresh.remove(chunk).unwrap_or_default();
+        let mesh = match published.get(chunk) {
+            Some(old) => NetworkMeshData::splice_owners(old, &fresh_chunk, &keep)?,
+            None => fresh_chunk,
+        };
+        if !mesh.is_empty() {
+            chunks.insert(*chunk, mesh);
+        }
+    }
+    Some(chunks)
+}
+
+// Test builds: a spliced publication equals emitting every covered piece, chunk for chunk.
+#[cfg(debug_assertions)]
+fn assert_same_chunks(
+    spliced: &BTreeMap<SurfaceChunkKey, NetworkMeshData>,
+    full: &BTreeMap<SurfaceChunkKey, NetworkMeshData>,
+) {
+    let filled = |chunks: &BTreeMap<SurfaceChunkKey, NetworkMeshData>| {
+        chunks
+            .iter()
+            .filter(|(_, mesh)| !mesh.is_empty())
+            .map(|(&chunk, _)| chunk)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(filled(spliced), filled(full), "spliced road chunks differ");
+    for (chunk, mesh) in spliced {
+        assert!(
+            mesh.same_payload(&full[chunk]),
+            "spliced road chunk {chunk:?} differs from emitting every piece"
+        );
     }
 }
 

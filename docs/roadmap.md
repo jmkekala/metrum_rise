@@ -66,12 +66,15 @@ Before `ROAD-68-E` the roadbed was compacted for quality (2026-10-24, user decis
 dead code and needless parameters removed, `roadbed/` at 7,229 production lines (7,545 before),
 with every product bitwise unchanged under a product-hash probe that later gates keep.
 Tests that need later gates are disabled until then (32 Rust tests, 4 Godot scripts).
-`ROAD-68-G` (2026-10-24, D7) is implemented: a commit, undo or road bulldoze rebuilds the CCH as a
-pure job on the road-tool snapshot's graph and adopts it six frames later, the simulation frame
+`ROAD-68-G` (2026-10-24, D7) is implemented: a commit, undo, road bulldoze or other topology edit
+rebuilds the CCH as a pure job on a graph copy and adopts it one frame later, the simulation frame
 holding meanwhile, deterministically across worker counts, a late rebuild and a save in the hold.
-That takes the CCH build (312 ms at 100k residents) off the commit, but the commit still takes
-2.4 s there, mostly a render publication that grows with the network (open question 21), so its
-acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
+That takes the CCH build (312 ms at 100k residents) off the commit. Part 2 found the measured
+2.4 s was the breakdown harness never acknowledging an upload; with acknowledgements, the render
+publication now re-emits only the rebuilt pieces, the entrance rebuild derives only the changed
+entrances and the agent pass runs in parallel, bit for bit as before: 41 ms at 100k (78 ms
+before). The commit's synchronous cell-lot regeneration (about 20 ms) still misses a frame (open
+question 21), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). `ROAD-68-D`, `-E`, `-F` and `-H` are open, and `roads.md` lists
 nineteen open questions; open question 16

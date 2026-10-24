@@ -355,6 +355,9 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
+    // The fixture admits households outside frames, so it installs the border connections'
+    // routing rebuild (D7) now instead of holding its first frames.
+    core.transit_network.settle_cch();
     core.fit_lanes_to_road_surface();
     (core, row_z, half_x)
 }

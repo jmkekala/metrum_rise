@@ -247,6 +247,61 @@ impl BuildingAllocator {
         }
     }
 
+    /// [`Self::rebuild_entrance_cache`] for a cache that was current before an edit changed the
+    /// entrance inputs of only `changed` (ascending building indices): their attachment, or the
+    /// geometry or lanes of the edge they front. Re-derives those in parallel and keeps the
+    /// rest, with the full rebuild's revision bump and flow-field source check. A cache that is
+    /// not current rebuilds whole. `O(changed / P)`.
+    pub(crate) fn rebuild_entrances_of(
+        &mut self,
+        changed: &[usize],
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) {
+        if self.entrances.len() != self.buildings.len() {
+            self.rebuild_entrance_cache(graph, lanes);
+            return;
+        }
+        let traffic_debug = crate::debug::Channel::Traffic.enabled();
+        let old_entrances = traffic_debug.then(|| self.entrances.clone());
+        let derived: Vec<BuildingEntrance> = crate::thread_pools::install(|| {
+            changed
+                .par_iter()
+                .map(|&building_idx| {
+                    Self::derive_building_entrance(
+                        &self.buildings[building_idx],
+                        graph,
+                        lanes,
+                        &self.registry,
+                    )
+                })
+                .collect()
+        });
+        for (&building_idx, entrance) in changed.iter().zip(derived) {
+            self.entrances[building_idx] = entrance;
+        }
+        self.entrances_dirty = false;
+        self.bump_entrance_ref_revision();
+        self.dirty_zones = [true; 3];
+        if let Some(old_entrances) = old_entrances.as_deref() {
+            log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
+        }
+        // Test builds prove the local update equals a full derivation.
+        #[cfg(debug_assertions)]
+        {
+            let mut full = Vec::new();
+            crate::thread_pools::install(|| {
+                Self::derive_entrances_of(&self.buildings, graph, lanes, &self.registry, &mut full)
+            });
+            if let Some(missed) = (0..full.len()).find(|&i| full[i] != self.entrances[i]) {
+                panic!(
+                    "local entrance update missed building {missed}: {:?} != {:?}",
+                    self.entrances[missed], full[missed]
+                );
+            }
+        }
+    }
+
     /// Rebuilds saved entrances using the live catalogue before its ownership is transferred.
     pub(crate) fn rebuild_loaded_entrance_cache(
         &mut self,

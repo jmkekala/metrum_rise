@@ -2332,10 +2332,11 @@ and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between th
 
 - The edit rebuilds the hierarchy as a [pure job](simulation.md#pure-jobs) on an immutable copy of
   the edited graph. A commit uses its road-tool snapshot's copy, so it copies the graph once.
-- For `CCH_ADOPTION_FRAMES` (6) frames the simulation frame holds: no flow-field refresh, agent
+- For `CCH_ADOPTION_FRAMES` (1) frame the simulation frame holds: no flow-field refresh, agent
   tick, timed event or slot runs, and the clock stays. Those are all the route readers inside
-  the simulation, so queries wait by not being issued. The next frame adopts the result,
-  waiting if it is late, and runs normally.
+  the simulation, so queries wait by not being issued. The next frame adopts the result and
+  runs normally. A result still building then is waited for by the sim thread before it takes
+  the core lock, so Godot's acknowledgements and editor calls never queue behind the wait.
 - Adoption gives the hierarchy a fresh build generation. Everything keyed on it refreshes as
   after any rebuild: the flow fields at that frame through `flow_graph_revision`, the census
   key, the destination and supplier rolls, workplace quotes, border arrival costs and query
@@ -2346,12 +2347,13 @@ and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between th
 - `TransitNetwork::cch_current()` is false while a result waits to be installed or an edited
   chunk waits for a rebuild. Saved rolls, saved workplace quotes and border arrival costs treat
   that state as stale, as they treated dirty chunks.
-- Node moves, lane connection edits, edge class changes and border connections still rebuild
-  synchronously on Godot's main thread. Such a rebuild replaces a pending job's result with a
-  build of the live graph; the hold still runs out. Load builds synchronously and drops a
-  pending job with the replaced network.
-- The hold lasts at least the full rebuild: 311 ms at 100k residents, so agents pause about
-  0.3 s per road edit there. [`NET-09`](roadmap.md) replaces the full rebuild with an incremental
+- Node moves, lane connection edits, crosswalk toggles, edge class changes and border
+  connections schedule the same job on a copy of the live graph (since `ROAD-68-G` part 2).
+  The allocator's cache repair and a frame's marked chunks still rebuild synchronously; such a
+  rebuild replaces a pending job's result with a build of the live graph, and the hold still
+  runs out. Load builds synchronously and drops a pending job with the replaced network.
+- The hold lasts at least the full rebuild, whatever the offset: 311 ms at 100k residents, so
+  agents pause about 0.3 s per road edit there. [`NET-09`](roadmap.md) replaces the full rebuild with an incremental
   update whose latency follows the edit.
 
 ##### Pedestrian direction audit measurements

@@ -45,6 +45,35 @@ impl<T> Shared<T> {
     }
 }
 
+// A job's completion without its result type, for a thread that only waits for it.
+trait Complete: Send + Sync {
+    fn complete(&self);
+}
+
+impl<T: Send> Complete for Shared<T> {
+    fn complete(&self) {
+        self.run();
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while matches!(*state, State::Running) {
+            state = self
+                .done
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// Finishes a [`PureJob`] without taking its result: see [`PureJob::completion`].
+pub(crate) struct JobCompletion(Arc<dyn Complete>);
+
+impl JobCompletion {
+    /// Runs the job here if nobody has started it, otherwise waits for the thread that has;
+    /// returns at once for a finished or dropped job. Call it inside the shared pool.
+    pub(crate) fn wait(&self) {
+        self.0.complete();
+    }
+}
+
 /// One pure computation in flight. See the module documentation.
 pub(crate) struct PureJob<T: Send + 'static> {
     shared: Arc<Shared<T>>,
@@ -61,6 +90,12 @@ impl<T: Send + 'static> PureJob<T> {
         let worker = Arc::clone(&shared);
         crate::thread_pools::spawn(move || worker.run());
         Self { shared }
+    }
+
+    /// A handle that finishes the work from another thread, so the owner can wait for it
+    /// without holding what owns the job; [`Self::take`] then returns at once. O(1).
+    pub(crate) fn completion(&self) -> JobCompletion {
+        JobCompletion(Arc::clone(&self.shared) as Arc<dyn Complete>)
     }
 
     /// The result, running the work here if no worker has started it, otherwise waiting for
@@ -109,6 +144,25 @@ impl<T: Send + 'static> Drop for PureJob<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_completion_finishes_the_work_before_the_take() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&runs);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        // The only worker is busy, so the completion runs the work itself; the take finds it done.
+        let value = pool.install(|| {
+            let job = PureJob::spawn(move || counted.fetch_add(1, Ordering::SeqCst) + 42);
+            job.completion().wait();
+            assert_eq!(runs.load(Ordering::SeqCst), 1);
+            job.take()
+        });
+        assert_eq!(value, 42);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn a_one_worker_pool_runs_the_work_on_the_taker() {

@@ -339,6 +339,10 @@ pub struct SimCore {
     pub(crate) road_mesh_full_replace: bool,
     /// Road-tool surface generation represented by the cached road mesh.
     pub(crate) cached_road_mesh_generation: u64,
+    /// Roadbed generation of the last road-chunk publication, whose pieces the lanes follow:
+    /// the next publication lifts only the lanes of pieces built after it. `None` before the
+    /// first publication and after a world reset, when every covered piece's lanes are lifted.
+    pub(crate) road_mesh_lane_generation: Option<u64>,
     /// Cached world-space positions of live canonical network nodes for render snapshots.
     pub(crate) cached_network_node_positions: Arc<Vec<Vector3>>,
     /// True when network topology changed and the cached node-position snapshot must rebuild.
@@ -447,6 +451,7 @@ impl SimCore {
             pending_road_mesh_chunks: Arc::new(BTreeSet::new()),
             road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
+            road_mesh_lane_generation: None,
             cached_network_node_positions: Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
@@ -576,6 +581,7 @@ impl SimCore {
         self.pending_road_mesh_chunks = Arc::new(BTreeSet::new());
         self.road_mesh_full_replace = true;
         self.cached_road_mesh_generation = 0;
+        self.road_mesh_lane_generation = None;
         self.mark_network_visuals_dirty();
     }
 

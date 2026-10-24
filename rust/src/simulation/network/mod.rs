@@ -466,12 +466,18 @@ impl TransitNetwork {
         ))
     }
 
-    /// Generates complete replacement meshes for the requested road render chunks.
+    /// Generates complete replacement meshes for the requested road render chunks, first
+    /// lifting the lanes of the covered pieces built after roadbed generation
+    /// `lanes_built_after` (every covered piece's when `None`) onto the surface. With a
+    /// generation, `published` holds every chunk published at it, and only the pieces built
+    /// since are emitted again.
     pub fn try_generate_mesh_chunks(
         &mut self,
         graph: &RegionGraph,
         terrain: &crate::simulation::terrain::TerrainSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
+        lanes_built_after: Option<u64>,
+        published: &BTreeMap<SurfaceChunkKey, std::sync::Arc<NetworkMeshData>>,
     ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
         self.roadbed.compile_dirty(graph);
         if !self.roadbed.is_current() {
@@ -484,6 +490,8 @@ impl TransitNetwork {
             terrain,
             &self.roadbed,
             target_chunks,
+            lanes_built_after,
+            published,
         ))
     }
 

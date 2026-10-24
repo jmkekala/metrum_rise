@@ -5,7 +5,10 @@
 //! The sim thread runs this for every `SimCommand::AddRoad`; headless scenarios call it to lay
 //! roads through the same path as the player.
 
+use std::collections::HashSet;
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 use super::frame::record_crash_phase_for_core;
 use super::road_edit_plan::RoadEditPlan;
@@ -17,6 +20,7 @@ use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use godot::prelude::Vector3;
 
@@ -178,7 +182,7 @@ impl SimCore {
                 edit_metrics.lanes_and_reattach_ms = dt_lanes_us as f64 / 1000.0;
                 let buildings_start = Instant::now();
                 record_crash_phase_for_core(self, "add road entrance rebuild");
-                self.rebuild_building_entrances_internal();
+                self.rebuild_building_entrances_for_commit(&dirty);
                 edit_metrics.buildings_ms = buildings_start.elapsed().as_secs_f64() * 1000.0;
 
                 // The routing hierarchy is rebuilt off the commit once the road-tool snapshot
@@ -283,6 +287,47 @@ impl SimCore {
             collect_refined_ms,
             invalidated_refined_cache_entries,
         }
+    }
+}
+
+impl SimCore {
+    // `rebuild_building_entrances_internal` for a commit (`ROAD-68-G`): the same lot refresh
+    // and attachment repair, but only the entrances whose inputs the edit may have changed are
+    // derived again: of the buildings the repair visits, the lots the refresh reattached and
+    // the buildings fronting the lane rebuild closure of `dirty`, whose geometry and lanes
+    // changed. A cache already stale before the commit rebuilds whole. Two parallel
+    // `O(B / P)` tests plus the local work.
+    fn rebuild_building_entrances_for_commit(&mut self, dirty: &HashSet<usize>) {
+        crate::thread_pools::install(|| {
+            let allocator = &self.allocator;
+            let cache_current = !allocator.entrances_dirty
+                && allocator.entrances.len() == allocator.buildings.len();
+            let lots = self.prepare_cell_lots_internal();
+            let mut changed = self
+                .allocator
+                .repair_road_attachments_that_may_act(&self.region_graph, &mut self.zoning);
+            let lanes = &self.transit_network.lane_system;
+            if !cache_current {
+                self.allocator
+                    .rebuild_entrance_cache(&self.region_graph, lanes);
+                return;
+            }
+            let closure = LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, dirty);
+            let buildings = &self.allocator.buildings;
+            changed.extend(lots.reattached.iter().filter_map(|&parcel| {
+                let index = self.zoning.parcels.get(parcel)?.occupied_building()?;
+                (index < buildings.len()).then_some(index)
+            }));
+            changed.par_extend(
+                (0..buildings.len())
+                    .into_par_iter()
+                    .filter(|&index| closure.contains(&buildings[index].edge_idx)),
+            );
+            changed.sort_unstable();
+            changed.dedup();
+            self.allocator
+                .rebuild_entrances_of(&changed, &self.region_graph, lanes);
+        });
     }
 }
 

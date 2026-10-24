@@ -298,23 +298,31 @@ impl AgentSystem {
             self.agents.overtake_cooldown_s[i] = 0.0;
         }
 
-        for i in 0..self.agents.len() {
-            if self.agents.transit[i] == TRANSIT_IN_BUILDING {
-                continue;
+        // The test reads only agent `i` and clearing writes only agent `i`, so the shared pool
+        // tests every agent first (editor paths arrive outside it, CODE-17) and the routes clear
+        // in agent order. O(A + path nodes / P).
+        let agents = &*self;
+        let touched: Vec<usize> = crate::thread_pools::install(|| {
+            (0..agents.agents.len())
+                .into_par_iter()
+                .filter(|&i| {
+                    agents.agents.transit[i] != TRANSIT_IN_BUILDING
+                        && agent_route_state_touches_road_edit(
+                            agents,
+                            i,
+                            &affected_edges,
+                            &affected_nodes,
+                            &affected_lane_ids,
+                            lane_system,
+                        )
+                })
+                .collect()
+        });
+        for i in touched {
+            if traffic_debug {
+                log_agent_route_clear_after_road_edit(self, i);
             }
-            if agent_route_state_touches_road_edit(
-                self,
-                i,
-                &affected_edges,
-                &affected_nodes,
-                &affected_lane_ids,
-                lane_system,
-            ) {
-                if traffic_debug {
-                    log_agent_route_clear_after_road_edit(self, i);
-                }
-                self.clear_route_plan_after_road_edit(i, lane_system);
-            }
+            self.clear_route_plan_after_road_edit(i, lane_system);
         }
         self.invalidate_lane_bucket_snapshot();
     }

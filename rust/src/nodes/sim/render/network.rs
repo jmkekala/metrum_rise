@@ -48,11 +48,19 @@ impl SimCore {
             target_chunks.extend(self.transit_network.roadbed.changed_chunks());
         }
 
+        // Pieces unchanged since the last publication keep their lanes' heights; a generation
+        // ahead of the roadbed's belongs to a replaced roadbed, whose lanes all follow it anew.
+        let roadbed_generation = self.transit_network.roadbed.generation();
+        let lanes_built_after = self
+            .road_mesh_lane_generation
+            .filter(|&generation| generation <= roadbed_generation);
         let mut rebuilt_vertex_count = 0;
         if let Some(mut generated_chunks) = self.transit_network.try_generate_mesh_chunks(
             &self.region_graph,
             &self.heightmap,
             &target_chunks,
+            lanes_built_after,
+            &self.cached_road_mesh_chunks,
         ) {
             let published_chunks = Arc::make_mut(&mut self.published_road_mesh_chunks);
             if self.road_mesh_full_replace {
@@ -78,6 +86,7 @@ impl SimCore {
             Arc::make_mut(&mut self.pending_road_mesh_chunks).extend(target_chunks.iter().copied());
             self.transit_network.roadbed.clear_changed_chunks();
             self.cached_road_mesh_generation = self.road_tool_surface_generation;
+            self.road_mesh_lane_generation = Some(self.transit_network.roadbed.generation());
         }
         if road_debug {
             debug_log!(
