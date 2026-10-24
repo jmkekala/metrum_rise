@@ -83,7 +83,9 @@ share one grading envelope, and edits stamp only the tiles their old and new pie
 seams on tile sides are exact in both tiles. 24 of its 25 disabled tests are re-enabled and 23
 pass; the recorded Kuopio replay and the hillside fixture predate `ROAD-68-C` and wait for
 `ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled. The sloped T's terrain
-stage takes 2.3 ms against the 2 ms target (open question 22). Tests that need later gates are
+stage takes 2.3 ms against the 2 ms target (open question 22), and the economy perf contract
+shows slower loads, city generation and building churn from refined rebuilds planning whole
+patches' road tiles (blocking; see `roads.md`). Tests that need later gates are
 disabled until then (11 Rust tests, 4 Godot scripts). `ROAD-68-D`, `-E`, `-F` and `-H` are
 open, and `roads.md` lists twenty-two open questions; open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, 17 records footpath defaults to

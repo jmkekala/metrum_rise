@@ -523,7 +523,6 @@ impl SimCore {
         self.refined_terrain_assembly_ledgers.clear();
         self.road_locked_terrain_patch_keys.clear();
         self.road_locked_terrain_patch_margins.clear();
-        self.road_ownership_current_keys.clear();
         self.building_site_owned_terrain_patch_keys.clear();
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();

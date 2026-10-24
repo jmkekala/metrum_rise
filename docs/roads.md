@@ -472,10 +472,7 @@ The road side is rewritten:
   (`road_tile_dirty_at`, keyed by tile), so a later request rebuilds only those tiles and their
   neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
   it, from the same per-tile loops; while the roadbed is dirty it keeps its last road ownership.
-  A patch's road margin stays current until a compile changes a piece within the envelope cap of
-  it (taken changed bounds clear it; bounds not yet taken are checked at the refresh) or the
-  visual terrain changes, so site-only and unrelated ownership refreshes reuse it instead of
-  rebuilding every tile's loops. Undo and rollback go through the same compile, so they follow.
+  Undo and rollback go through the same compile, so they follow.
 - **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts keep the
   existing rules ([`ROAD-68-F`](#road-68-f--remaining-families)).
 - **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
@@ -2391,17 +2388,34 @@ Part 2 (2026-10-24, same branch):
 - **Grading in one pass.** `grading::road_loop_grading` probes each ray's reach once for the
   margin and the guides, and a tile emits only the rings of rays whose reach meets it. The
   generic rectangle clip and join moved from `roadbed/terrain.rs` to `terrain/rect_loops.rs`.
-- **Ownership refresh.** The economy perf contract against `79e7a476` showed D's road ownership
-  refresh dominating city generation, snapshot loads and building churn: it rebuilt every
-  refreshed patch's tile loops and ray probes, on site-only refreshes too and, after each road
-  commit, for every dirty patch. A patch's road margin is now reused until roads near it or the
-  visual terrain change ([footprint and terrain](#footprint-and-terrain), patch selection).
-- **Size.** `roadbed/` holds 7,923 lines (every line of `roadbed.rs` and `roadbed/**/*.rs`
-  except tests and fixtures; 7,733 at `79e7a476` by the same count): `ROAD-68-D` adds 190, the
+- **Economy perf contract: regression, cause open.** The economy work is unchanged (every work
+  count equal, hourly cost equal or lower), but snapshot loads, city generation and building churn
+  are slower: against `79e7a476` (A) and the D tree before `ROAD-68-G` (B), and again against
+  `road` at `98c2f8cb` (A) and D rebased on it (B), the 10k load takes 3.85 s instead of 2.85 s
+  and the 30k load 10.5 s instead of 7.6 s, generation 29 s instead of 27 s (10k) and 174 s
+  instead of 95 s (30k), fiscal generation 40 s instead of 15 s (10k) and 158 s instead of 43 s
+  (30k), and the fiscal-stress day 13.4 s instead of 4.0 s (10k) and 42 s instead of 11 s (30k).
+  Reusing each patch's road margin until roads near it change did not move these numbers, so it
+  was reverted. A flat profile of the fiscal-stress day puts half its time in
+  `grading::road_loop_grading` (47%, with terrain sampling 4%): refined rebuilds plan every tile's
+  road loops and rays of a whole patch, even when one tile is dirty. This blocks the gate.
+- **Product probe.** Both product-hash probes (`ProductProbe`, recorded at `79e7a476`) are
+  re-recorded, every change attributed by rebuilding without the lateral change: with it
+  reverted, all 93 roadbed fixtures and 20 reference junctions differ only in the span hash (the
+  span outer chains now keep the road on their left); the lateral change alone changes nodes,
+  layouts, spans, walkways and queries of 38 fixtures (`six_way`, `y_25`, `y_40`, `y_60`,
+  `five_way`, `bend_10`/`30`/`150`/`160`, `mixed_40`, `width_bend`, `width_step_convex`,
+  `width_step_curved`, `t_corner`, `t_beside_arm`, `t_beside_arm_shallow`, `through_road`,
+  `path_t`, `road_end`, flat and sloped) and of the `y_25`, `y_25_branches_first` and `y_60`
+  reference junctions, and never their graph or lanes.
+- **Size.** `roadbed/` holds 7,611 lines (every line of `roadbed.rs` and `roadbed/**/*.rs`
+  except tests and fixtures; 7,421 after the compaction, `e92359c8`, by the same count, which the
+  compaction's own counter reads as 7,229): `ROAD-68-D` adds 190, the
   terrain loop entry point (`terrain.rs`, 162: chain gathering, joins at mouth corners, open-end
   errors and the provenance types) and the changed-bounds record (`system.rs`, 19). The generic
   rectangle clip and join live in `terrain/rect_loops.rs`, the owner of terrain geometry.
-- **Open.** The 2 ms terrain stage (open question 22). The yard test
+- **Open.** The perf contract regression above; `./run.sh --test` and the rendered screenshots,
+  not yet run on this tree. The 2 ms terrain stage (open question 22). The yard test
   `cars_and_walkers_enter_and_exit_on_compiled_yards`: building 1's samples lie in no road or
   site loop of their tile, yet the tile's CDT emits no face over them (a face dropped for crossing
   an unpreserved constraint is the next suspect); building 3's sample lies inside its own 6-vertex

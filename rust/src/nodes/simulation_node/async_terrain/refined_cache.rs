@@ -116,26 +116,12 @@ impl SimCore {
         };
         let mut changed_keys = Vec::new();
         let mut invalidated_cache_entries = 0usize;
-        // A dirty roadbed keeps the last published road ownership until it compiles. A patch's
-        // road margin is recomputed only when a compile changed pieces within the envelope cap
-        // of it (taken bounds remove it from the current keys, pending ones are checked here) or
-        // the visual terrain changed: site-only and unrelated refreshes reuse it.
+        // A dirty roadbed keeps the last published road ownership until it compiles.
         let roads_current = self.transit_network.roadbed.is_current();
-        if self.road_ownership_visual_generation != self.heightmap.visual_generation() {
-            self.road_ownership_visual_generation = self.heightmap.visual_generation();
-            self.road_ownership_current_keys.clear();
-        }
         for key in unique_keys {
             let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
-            let road_margin = if roads_current
-                && (!self.road_ownership_current_keys.contains(&key)
-                    || self.road_changes_pending_near(key))
-            {
-                let margin = self.road_terrain_patch_margin_m(key, safe_render_step_m);
-                if !self.road_changes_pending_near(key) {
-                    self.road_ownership_current_keys.insert(key);
-                }
-                margin
+            let road_margin = if roads_current {
+                self.road_terrain_patch_margin_m(key, safe_render_step_m)
             } else {
                 self.road_locked_terrain_patch_margins.get(&key).copied()
             };
@@ -221,28 +207,6 @@ impl SimCore {
         self.bump_terrain_payload_patch_generations(&full_dirty_keys);
         self.terrain_dirty |= !changed_keys.is_empty();
         invalidated_cache_entries
-    }
-
-    // Whether compiled but not yet taken piece changes lie within the envelope cap of a patch.
-    // `O(pending changes)`.
-    fn road_changes_pending_near(&self, key: (usize, usize)) -> bool {
-        use crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M;
-        let Some((min_x, min_z, max_x, max_z)) =
-            self.heightmap.render_patch_world_bounds(key.0, key.1)
-        else {
-            return false;
-        };
-        let cap = f64::from(GRADING_ENVELOPE_MAX_MARGIN_M);
-        self.transit_network
-            .roadbed
-            .changed_bounds()
-            .iter()
-            .any(|bounds| {
-                bounds[0] - cap <= f64::from(max_x)
-                    && bounds[2] + cap >= f64::from(min_x)
-                    && bounds[1] - cap <= f64::from(max_z)
-                    && bounds[3] + cap >= f64::from(min_z)
-            })
     }
 
     // Grading margin of the roads whose envelope reaches a render patch: the largest margin of
@@ -432,7 +396,6 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
-        self.road_ownership_current_keys.clear();
         let patch_cols = self.heightmap.render_patch_cols();
         let patch_rows = self.heightmap.render_patch_rows();
         let mut patch_keys = Vec::with_capacity(patch_cols.saturating_mul(patch_rows));

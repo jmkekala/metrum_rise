@@ -388,11 +388,6 @@ impl RoadbedSystem {
         std::mem::take(&mut self.changed_bounds)
     }
 
-    /// The bounds [`Self::take_changed_bounds`] would return, left in place.
-    pub fn changed_bounds(&self) -> &[[f64; 4]] {
-        &self.changed_bounds
-    }
-
     /// Sorted render chunks changed by compiles since the mesh publisher last took them.
     pub fn changed_chunks(&self) -> impl Iterator<Item = SurfaceChunkKey> + '_ {
         self.changed_chunks.iter().copied()
