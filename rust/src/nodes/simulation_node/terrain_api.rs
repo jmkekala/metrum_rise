@@ -338,7 +338,7 @@ impl SimulationNode {
                 })
                 .collect::<Vec<_>>()
         };
-        let road_query_snapshot = self.road_tool_query_snapshot.read().unwrap().clone();
+        let road_query_snapshot = self.road_tool.view.read().unwrap().clone();
 
         let mut accepted_count = 0_usize;
         let mut duplicate_count = 0_usize;

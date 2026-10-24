@@ -108,11 +108,6 @@ impl SimCore {
         self.resource_extraction.visual_revision()
     }
 
-    /// Returns the current agriculture visual revision for cheap renderer polling.
-    pub fn get_agriculture_field_overlay_revision_internal(&self) -> u64 {
-        self.agriculture.visual_revision()
-    }
-
     fn coal_pit_mask_sites_and_bounds(
         &self,
     ) -> Option<(Vec<PolygonMaskSite<'_>>, PolygonOverlayBounds)> {

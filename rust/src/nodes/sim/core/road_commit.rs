@@ -12,10 +12,9 @@ use rayon::prelude::*;
 
 use super::frame::record_crash_phase_for_core;
 use super::road_edit_plan::RoadEditPlan;
-use super::road_preview::{
-    RoadPreviewRequest, RoadToolQuerySnapshot, road_tool_snapshot_from_core,
-};
+use super::road_preview::{RoadPreview, RoadPreviewFingerprint, RoadPreviewRequest};
 use super::road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
+use super::road_tool_context::RoadToolPublication;
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug_log;
@@ -34,6 +33,9 @@ pub(crate) struct RoadCommitRequest {
     pub(crate) bkw_lanes: i32,
     /// Whether authored endpoints may snap to nearby existing road nodes.
     pub(crate) snap_to_existing_roads: bool,
+    /// The road tool's preview of this stroke (`ROAD-68-E`): its plan and pieces are installed
+    /// when its fingerprint is still current, else the commit recompiles locally.
+    pub(crate) preview: Option<std::sync::Arc<RoadPreview>>,
 }
 
 /// What the road tool learns about one queued stroke.
@@ -54,8 +56,8 @@ pub(crate) struct RoadCommitOutcome {
     pub(crate) rejection_reason: String,
     /// Rejection diagnostic; empty when committed.
     pub(crate) rejection: String,
-    /// Road-tool snapshot to publish after releasing the core lock.
-    pub(crate) road_snapshot: Option<RoadToolQuerySnapshot>,
+    /// Road-tool context publication for the committed generation.
+    pub(crate) road_snapshot: Option<RoadToolPublication>,
     pub(crate) add_internal_ms: f64,
     pub(crate) finalize_ms: f64,
     pub(crate) surface_ms: f64,
@@ -97,6 +99,7 @@ impl SimCore {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
+            preview,
         } = request;
         self.last_road_rejection = None;
         // The report of a refusal carries the stroke exactly as submitted.
@@ -104,19 +107,34 @@ impl SimCore {
         // Bulk-load defers per-edge rebuilds until finalization.
         let add_internal_start = Instant::now();
         // Complete the local road plan before opening the transaction; it never clones the city.
+        // A preview of exactly this stroke on the live generation is the commit's plan, and its
+        // pieces are what the commit installs (`ROAD-68-E`); otherwise plan here.
+        let live_fingerprint = RoadPreviewFingerprint::live(self);
+        let preview = preview.filter(|preview| {
+            preview.fingerprint == live_fingerprint
+                && preview.is_for(&points, fwd_lanes, bkw_lanes, snap_to_existing_roads)
+        });
+        edit_metrics.preview_plan_reused = preview.is_some();
         record_crash_phase_for_core(self, "add road plan compile");
-        let edit_plan = RoadEditPlan::compile(
-            self,
-            RoadPreviewRequest {
-                include_terrain: false,
-                request_id: 0,
-                surface_generation: self.road_tool_surface_generation,
-                points: points.clone(),
-                fwd_lanes,
-                bkw_lanes,
-                snap_to_existing_roads,
-            },
-        );
+        let fresh_plan;
+        let edit_plan = match &preview {
+            Some(preview) => &preview.plan,
+            None => {
+                fresh_plan = RoadEditPlan::compile(
+                    self,
+                    RoadPreviewRequest {
+                        include_terrain: false,
+                        request_id: 0,
+                        surface_generation: self.road_tool_surface_generation,
+                        points: points.clone(),
+                        fwd_lanes,
+                        bkw_lanes,
+                        snap_to_existing_roads,
+                    },
+                );
+                &fresh_plan
+            }
+        };
         record_crash_phase_for_core(self, "add road plan compiled");
         edit_metrics.road_plan_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
         record_crash_phase_for_core(self, "add road transaction start");
@@ -129,7 +147,7 @@ impl SimCore {
             fwd_lanes,
             bkw_lanes,
             snap_to_existing_roads,
-            Some(&edit_plan),
+            Some(edit_plan),
         );
         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
         edit_metrics.undo_ms = road_add.stage_ms.undo_ms;
@@ -155,7 +173,11 @@ impl SimCore {
             edit_metrics.dirty_edges = dirty_count;
             let surface_start = Instant::now();
             record_crash_phase_for_core(self, "add road render validation");
-            road_add.committed = self.validate_staged_road_render();
+            let preview_pieces = preview
+                .as_ref()
+                .and_then(|preview| preview.pieces.as_ref())
+                .map(|pieces| &pieces.delta);
+            road_add.committed = self.validate_staged_road_render_installing(preview_pieces);
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
             if road_add.committed {
                 let t_inv = Instant::now();
@@ -220,20 +242,19 @@ impl SimCore {
         let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
         let snapshot_start = Instant::now();
         record_crash_phase_for_core(self, "add road tool snapshot");
-        let road_snapshot = road_tool_snapshot_from_core(self);
+        // D7 (`ROAD-68-G`): the hierarchy is rebuilt as a pure job on an immutable copy of the
+        // graph and adopted a fixed number of frames later; route readers wait for it. That
+        // copy is the commit's one `O(city)` copy; the road tool's view shares it and its
+        // replica copies only the rebuilt owners' records (`ROAD-68-E`).
+        let routing_graph = road_add
+            .committed
+            .then(|| std::sync::Arc::new(self.region_graph.clone()));
+        let road_snapshot = self.publish_road_tool_view(routing_graph.clone());
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
-        if road_add.committed {
-            // D7 (`ROAD-68-G`): the hierarchy is rebuilt as a pure job on the snapshot's
-            // immutable graph copy, so the commit clones the graph once, and adopted a fixed
-            // number of frames later; route readers wait for it. A paused game adopts too.
+        if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");
             let routing_start = Instant::now();
-            match &road_snapshot {
-                Some(snapshot) => self
-                    .transit_network
-                    .schedule_cch_rebuild(std::sync::Arc::clone(&snapshot.region_graph)),
-                None => self.schedule_cch_rebuild_of_live_graph(),
-            }
+            self.transit_network.schedule_cch_rebuild(graph);
             edit_metrics.routing_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
         }
         let collect_refined_start = Instant::now();
@@ -353,6 +374,7 @@ mod tests {
                 fwd_lanes: 2,
                 bkw_lanes: 1,
                 snap_to_existing_roads: false,
+                preview: None,
             },
             Instant::now(),
             Default::default(),

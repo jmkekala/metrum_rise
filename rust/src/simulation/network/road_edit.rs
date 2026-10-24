@@ -3,6 +3,7 @@
 //! Bounded post-edit topology and profile products shared by preview and authoritative insertion.
 
 use super::graph::{Edge, RegionGraph};
+use super::roadbed::RoadbedSystem;
 use super::types::NodeType;
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -245,18 +246,87 @@ impl TransitNetwork {
         zoning: &ZoningSystem,
         allocator: &mut BuildingAllocator,
     ) -> Option<FinalizedRoadGeometry> {
-        if !plan.source_identities_match(graph) {
+        let applied = plan.apply_to_graph(graph)?;
+        self.cch_dirty_chunks
+            .extend(applied.cch_chunks.iter().copied());
+        let edge_ids = &applied.edge_ids;
+        for split in &plan.splits {
+            topology::migrate_split_dependents(
+                edge_ids[split.edge_id],
+                edge_ids[split.new_edge_id],
+                (split.first_length_m / zoning.config.zone_cell_m).floor() as usize,
+                split.first_length_m,
+                split.second_length_m,
+                zoning,
+                allocator,
+                &mut self.road_edit_split_undo,
+            );
+        }
+        let changed_edges = plan
+            .edges
+            .iter()
+            .zip(edge_ids)
+            .filter(|(planned, _)| planned.geometry.is_some())
+            .map(|(_, &id)| id)
+            .collect();
+        applied.mark_pieces(&mut self.roadbed);
+        self.bulk_dirty_edges.clear();
+        Some(FinalizedRoadGeometry {
+            dirty_edges: applied.dirty_edges,
+            affected_nodes: applied.affected_nodes,
+            changed_edges: Some(changed_edges),
+            ..Default::default()
+        })
+    }
+}
+
+/// Where a plan's records went in a graph, and what the edit dirtied there.
+pub(crate) struct AppliedRoadTopology {
+    // Live id of each local edge.
+    edge_ids: Vec<usize>,
+    /// Edges whose geometry changed, in live ids.
+    pub(crate) dirty_edges: HashSet<usize>,
+    /// Nodes the junction solve used, in live ids.
+    pub(crate) affected_nodes: HashSet<u32>,
+    // Nodes merged into another; their pieces drop.
+    merged_nodes: Vec<u32>,
+    /// Routing chunks under the moved nodes and the replaced edges, before and after.
+    pub(crate) cch_chunks: Vec<(i32, i32)>,
+}
+
+impl AppliedRoadTopology {
+    /// Marks the pieces the edit rebuilds: its changed edges, the solved nodes and the merged
+    /// nodes, whose pieces drop. The commit and the preview mark through this one function.
+    pub(crate) fn mark_pieces(&self, roadbed: &mut RoadbedSystem) {
+        for &edge_idx in &self.dirty_edges {
+            roadbed.mark_edge_dirty(edge_idx);
+        }
+        for &node in self.affected_nodes.iter().chain(&self.merged_nodes) {
+            roadbed.mark_node_dirty(node);
+        }
+    }
+}
+
+impl RoadTopologyPlan {
+    /// Installs the plan's topology, profiles and clips into `graph`: the one implementation the
+    /// commit's live graph and the preview's scratch replica share (`ROAD-68-E`), so both end
+    /// with the same records and dirty the same pieces. Runtime fields of replaced edges stay the
+    /// graph's own. `None`, with nothing changed, when a source record no longer exists.
+    /// O(local profile points + sum(local degree * log(degree)) + changed edges * log(edges)).
+    pub(crate) fn apply_to_graph(&self, graph: &mut RegionGraph) -> Option<AppliedRoadTopology> {
+        if !self.source_identities_match(graph) {
             return None;
         }
-        let mut node_ids = Vec::with_capacity(plan.nodes.len());
-        for node in &plan.nodes {
+        let mut cch_chunks = Vec::new();
+        let mut node_ids = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
             let id = node
                 .source
                 .unwrap_or_else(|| graph.add_node(node.position, node.kind));
             node_ids.push(id);
             if node.source.is_some() && node.changed {
                 let old_pos = graph.node(id).pos;
-                self.mark_point_dirty(old_pos);
+                cch_chunks.push(RegionGraph::get_chunk_coords(old_pos));
                 graph.remove_node_from_spatial_index(id, old_pos);
                 graph.nodes[id as usize].pos = node.position;
                 graph.nodes[id as usize].node_type = node.kind;
@@ -264,19 +334,20 @@ impl TransitNetwork {
                 graph.add_node_to_spatial_index(id);
             }
         }
-        for (local, node) in plan.nodes.iter().enumerate() {
+        let mut merged_nodes = Vec::new();
+        for (local, node) in self.nodes.iter().enumerate() {
             if node.canonical != local as u32 {
                 graph
                     .node_aliases
                     .insert(node_ids[local], node_ids[node.canonical as usize]);
                 // The final solve scope contains canonical IDs only. Explicitly evict the
                 // removed node's old ownership/coverage before publishing its survivor.
-                self.roadbed.mark_node_dirty(node_ids[local]);
+                merged_nodes.push(node_ids[local]);
             }
         }
-        let mut edge_ids = Vec::with_capacity(plan.edges.len());
+        let mut edge_ids = Vec::with_capacity(self.edges.len());
         // Allocate exact local-to-live mappings before applying endpoint incidence.
-        for edge in &plan.edges {
+        for edge in &self.edges {
             let id = edge.source.unwrap_or_else(|| {
                 let id = graph.edges.len();
                 graph.edges.push(Edge::default());
@@ -284,7 +355,7 @@ impl TransitNetwork {
             });
             edge_ids.push(id);
         }
-        let replaced_edges = plan
+        let replaced_edges = self
             .edges
             .iter()
             .filter(|edge| edge.geometry.is_some())
@@ -295,13 +366,13 @@ impl TransitNetwork {
         for id in &node_ids {
             graph.adjacency[*id as usize].retain(|edge| !replaced_edges.contains(edge));
         }
-        for (local_id, planned) in plan.edges.iter().enumerate() {
+        for (local_id, planned) in self.edges.iter().enumerate() {
             let Some(geometry) = &planned.geometry else {
                 continue;
             };
             let id = edge_ids[local_id];
             if planned.source.is_some() {
-                self.cch_dirty_chunks.extend(graph.get_edge_chunks(id));
+                cch_chunks.extend(graph.get_edge_chunks(id));
                 graph.remove_from_spatial_index(id);
             }
             let runtime_source = planned
@@ -327,7 +398,7 @@ impl TransitNetwork {
                 graph.adjacency[edge.start_node as usize].push(id);
                 graph.adjacency[edge.end_node as usize].push(id);
                 graph.add_to_spatial_index(id);
-                self.cch_dirty_chunks.extend(graph.get_edge_chunks(id));
+                cch_chunks.extend(graph.get_edge_chunks(id));
             }
         }
         // Keep incidence order deterministic, including unmoved edges beyond the excerpt.
@@ -335,38 +406,18 @@ impl TransitNetwork {
             graph.adjacency[*id as usize].sort_unstable();
             graph.adjacency[*id as usize].dedup();
         }
-        for split in &plan.splits {
-            topology::migrate_split_dependents(
-                edge_ids[split.edge_id],
-                edge_ids[split.new_edge_id],
-                (split.first_length_m / zoning.config.zone_cell_m).floor() as usize,
-                split.first_length_m,
-                split.second_length_m,
-                zoning,
-                allocator,
-                &mut self.road_edit_split_undo,
-            );
-        }
-        let dirty_edges = plan.dirty_edges.iter().map(|id| edge_ids[*id]).collect();
-        let changed_edges = plan
-            .edges
-            .iter()
-            .zip(&edge_ids)
-            .filter(|(planned, _)| planned.geometry.is_some())
-            .map(|(_, &id)| id)
-            .collect();
-        let affected_nodes = plan
+        let dirty_edges = self.dirty_edges.iter().map(|id| edge_ids[*id]).collect();
+        let affected_nodes = self
             .affected_nodes
             .iter()
             .map(|id| node_ids[*id as usize])
             .collect();
-        self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
-        self.bulk_dirty_edges.clear();
-        Some(FinalizedRoadGeometry {
+        Some(AppliedRoadTopology {
+            edge_ids,
             dirty_edges,
             affected_nodes,
-            changed_edges: Some(changed_edges),
-            ..Default::default()
+            merged_nodes,
+            cch_chunks,
         })
     }
 }

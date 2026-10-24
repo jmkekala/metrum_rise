@@ -969,7 +969,6 @@ fn benchmark_populated_commit_breakdown() {
 fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
     use crate::nodes::sim::core::frame::FRAME_DT_S;
     use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
-    use std::sync::RwLock;
 
     core.transit_network
         .rebuild_pathing_if_dirty(&mut core.region_graph);
@@ -999,7 +998,9 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     // republishes only the chunks it changes (`acknowledge_network_render`).
     core.precompute_road_mesh_data();
     assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
-    let published = RwLock::new(road_tool_snapshot_from_core(core));
+    let published = crate::nodes::sim::core::RoadToolShared::new(
+        road_tool_snapshot_from_core(core).expect("the fixture roadbed is current"),
+    );
     // `METRUM_COMMIT_PHASES` logs the commit's cell-lot regions (`economy_phases`).
     let phases = std::env::var_os("METRUM_COMMIT_PHASES").is_some();
     for (sample, start) in starts.into_iter().enumerate() {
@@ -1021,7 +1022,9 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         );
         // The sim thread publishes the tool snapshot outside the core, dropping the previous.
         let publish = Instant::now();
-        *published.write().unwrap() = outcome.road_snapshot;
+        if let Some(publication) = outcome.road_snapshot {
+            published.publish(publication);
+        }
         let publish_ms = publish.elapsed().as_secs_f64() * 1e3;
         // Godot uploads the republished chunks (not timed here) and acknowledges them.
         let published_chunks = core.pending_road_mesh_chunks.len();
@@ -1171,6 +1174,7 @@ pub(super) fn commit_trunk_branch(
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            preview: None,
         },
         road_total,
         Default::default(),

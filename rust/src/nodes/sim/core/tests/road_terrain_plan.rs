@@ -22,6 +22,7 @@ fn cold_road_commit_completes_terrain_plan_before_mutation() {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            preview: None,
         },
         std::time::Instant::now(),
         Default::default(),

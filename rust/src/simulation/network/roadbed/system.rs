@@ -4,7 +4,7 @@
 //! compiled generation gate.
 
 use super::index::{PieceFootprint, PieceIndex, RenderGrid};
-use super::layout::{ArmKey, EdgeEnd};
+use super::layout::{ArmKey, EdgeEnd, NodeKind};
 use super::mesh::PieceMesh;
 use super::node::{NodeError, NodePiece, NodePlan, NodeScratch, build_node_piece, plan_node};
 use super::query::PieceId;
@@ -73,6 +73,87 @@ pub struct RoadbedSystem {
     // Nodes whose piece failed in the published generation, with the reason, and their ids.
     failed: imbl::OrdMap<u32, NodeError>,
     failed_ids: Arc<Vec<u32>>,
+    // Owners whose pieces installs replaced since the road tool last took them (`ROAD-68-E`).
+    rebuilt: RebuiltOwners,
+}
+
+/// Owners (nodes and edges) whose pieces were rebuilt, swapped or dropped since the last
+/// [`RoadbedSystem::take_rebuilt_owners`] (`ROAD-68-E`). Every graph edit that can change a
+/// piece marks its owners dirty and compiles, so these are the graph records a replica of the
+/// graph must copy to match it in every value a piece reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RebuiltOwners {
+    /// Every owner, after the first compile or a clear.
+    pub all: bool,
+    /// Nodes in ascending order.
+    pub nodes: BTreeSet<u32>,
+    /// Edges in ascending order.
+    pub edges: BTreeSet<usize>,
+}
+
+impl RebuiltOwners {
+    /// True when nothing was rebuilt.
+    pub fn is_empty(&self) -> bool {
+        !self.all && self.nodes.is_empty() && self.edges.is_empty()
+    }
+}
+
+/// The pieces one compile built for its dirty closure, not yet installed (`ROAD-68-E`).
+///
+/// A preview compiles it on an `O(1)` copy of the published roadbed and the edited graph; the
+/// commit installs the same pieces, without rebuilding them, when its roadbed still stands at
+/// the generation and dirty marks the delta was compiled from ([`RoadbedSystem::can_install`]).
+#[derive(Clone)]
+pub struct RoadbedDelta {
+    base_generation: u64,
+    base_compiled: bool,
+    dirty_edges: BTreeSet<usize>,
+    dirty_nodes: BTreeSet<u32>,
+    spans: Vec<(usize, Option<Arc<SpanPiece>>)>,
+    nodes: Vec<(u32, BuiltNode)>,
+}
+
+// A closure node's built piece, `None` for a node without one, or why it failed.
+type BuiltNode = Result<Option<Arc<NodePiece>>, NodeError>;
+
+impl RoadbedDelta {
+    /// Generation of the roadbed the delta was compiled from.
+    pub fn base_generation(&self) -> u64 {
+        self.base_generation
+    }
+
+    /// The rebuilt span and node pieces, by owner in install order; `None` where the owner has
+    /// no piece. A failed node is absent.
+    pub fn pieces(&self) -> impl Iterator<Item = (PieceId, Option<&PieceMesh>)> + '_ {
+        let spans = self
+            .spans
+            .iter()
+            .map(|(edge, span)| (PieceId::Span(*edge), span.as_deref().map(SpanPiece::mesh)));
+        let nodes = self.nodes.iter().filter_map(|(node, built)| {
+            let piece = built.as_ref().ok()?;
+            Some((PieceId::Node(*node), piece.as_deref().map(NodePiece::mesh)))
+        });
+        spans.chain(nodes)
+    }
+
+    /// Nodes whose piece failed in this compile, with the reason, in ascending order.
+    pub fn failed_nodes(&self) -> impl Iterator<Item = (u32, NodeError)> + '_ {
+        self.nodes
+            .iter()
+            .filter_map(|(node, built)| built.as_ref().err().map(|error| (*node, *error)))
+    }
+}
+
+/// What one install replaced: undo swaps it back (`ROAD-68-E`). The restored pieces are the
+/// pre-edit `Arc`s themselves, published in the restoring generation, so every consumer that
+/// follows build generations (render publication, terrain) sees them as rebuilt.
+#[derive(Clone)]
+pub struct RoadbedRestore {
+    installed_generation: u64,
+    // The piece each owner held before the install, and whether the install published one.
+    pieces: Vec<(PieceId, Option<PublishedPiece>, bool)>,
+    // Each closure node's failure before and after the install.
+    failures: Vec<(u32, Option<NodeError>, Option<NodeError>)>,
 }
 
 impl RoadbedSystem {
@@ -99,7 +180,36 @@ impl RoadbedSystem {
             changed_bounds: Vec::new(),
             failed: imbl::OrdMap::new(),
             failed_ids: Arc::default(),
+            rebuilt: RebuiltOwners::default(),
         }
+    }
+
+    /// An `O(1)` copy of the published pieces without the change logs (render chunks, terrain
+    /// bounds and rebuilt owners), for the road tool's context (`ROAD-68-E`).
+    pub fn snapshot(&self) -> Self {
+        Self {
+            changed_chunks: BTreeSet::new(),
+            changed_bounds: Vec::new(),
+            rebuilt: RebuiltOwners::default(),
+            dirty_edges: self.dirty_edges.clone(),
+            dirty_nodes: self.dirty_nodes.clone(),
+            pieces: self.pieces.clone(),
+            index: self.index.clone(),
+            failed: self.failed.clone(),
+            failed_ids: Arc::clone(&self.failed_ids),
+            ..*self
+        }
+    }
+
+    /// Records that every owner counts as rebuilt, for edits that rewrite the whole graph
+    /// (terrain sync, load), so the road tool copies the graph once instead of record by record.
+    pub fn note_full_rebuild(&mut self) {
+        self.rebuilt.all = true;
+    }
+
+    /// Owners rebuilt since the last call; taking them clears the list.
+    pub fn take_rebuilt_owners(&mut self) -> RebuiltOwners {
+        std::mem::take(&mut self.rebuilt)
     }
 
     /// Drops every piece and dirty mark; the next compile rebuilds everything from the graph.
@@ -116,6 +226,7 @@ impl RoadbedSystem {
         self.index = PieceIndex::default();
         self.failed = imbl::OrdMap::new();
         self.failed_ids = Arc::default();
+        self.rebuilt.all = true;
     }
 
     /// Marks an edge's span piece, and through it the dirty closure, for the next compile.
@@ -153,6 +264,25 @@ impl RoadbedSystem {
     pub fn compile_dirty(&mut self, graph: &RegionGraph) -> Vec<SurfaceChunkKey> {
         if self.is_current() {
             return Vec::new();
+        }
+        let delta = self.compile_delta(graph);
+        self.install(&delta).0
+    }
+
+    /// Builds the pieces [`Self::compile_dirty`] would publish, without publishing them: the
+    /// same closure, plans and parallel builds, so installing the delta equals that compile
+    /// bitwise. Empty when nothing is pending.
+    pub fn compile_delta(&self, graph: &RegionGraph) -> RoadbedDelta {
+        let mut delta = RoadbedDelta {
+            base_generation: self.generation,
+            base_compiled: self.compiled,
+            dirty_edges: self.dirty_edges.clone(),
+            dirty_nodes: self.dirty_nodes.clone(),
+            spans: Vec::new(),
+            nodes: Vec::new(),
+        };
+        if self.is_current() {
+            return delta;
         }
         let (nodes, edges) = self.dirty_closure(graph);
         let mut plans = plan_nodes(graph, &nodes);
@@ -210,24 +340,81 @@ impl RoadbedSystem {
                 .collect();
             (spans, nodes)
         });
-        self.generation = self.generation.wrapping_add(1);
-        let mut changed = BTreeSet::new();
-        for (&edge_idx, span) in edges.iter().zip(built_spans) {
-            let piece = span.map(|span| Piece::Span(Arc::new(span)));
-            self.replace_piece(PieceId::Span(edge_idx), piece, &mut changed);
+        delta.spans = edges
+            .into_iter()
+            .zip(built_spans)
+            .map(|(edge_idx, span)| (edge_idx, span.map(Arc::new)))
+            .collect();
+        delta.nodes = built_nodes
+            .into_iter()
+            .map(
+                |(node, built): (u32, Result<Option<NodePiece>, NodeError>)| {
+                    (node, built.map(|piece| piece.map(Arc::new)))
+                },
+            )
+            .collect();
+        delta
+    }
+
+    /// True when this roadbed stands where `delta` was compiled: the same published generation
+    /// and dirty marks, so installing it equals compiling here.
+    pub fn can_install(&self, delta: &RoadbedDelta) -> bool {
+        self.generation == delta.base_generation
+            && self.compiled == delta.base_compiled
+            && self.dirty_edges == delta.dirty_edges
+            && self.dirty_nodes == delta.dirty_nodes
+    }
+
+    /// Publishes a delta's pieces as one compile would: returns the render chunks they changed
+    /// (also accumulated for the mesh publisher) and what they replaced, for undo. The caller
+    /// checks [`Self::can_install`] first. `O(rebuilt pieces * log pieces)`.
+    pub fn install(&mut self, delta: &RoadbedDelta) -> (Vec<SurfaceChunkKey>, RoadbedRestore) {
+        debug_assert!(
+            self.can_install(delta),
+            "a roadbed delta installs where it was compiled"
+        );
+        if self.is_current() {
+            let generation = self.generation;
+            let restore = RoadbedRestore {
+                installed_generation: generation,
+                pieces: Vec::new(),
+                failures: Vec::new(),
+            };
+            return (Vec::new(), restore);
         }
+        self.generation = self.generation.wrapping_add(1);
+        if !self.compiled {
+            self.rebuilt.all = true;
+        }
+        let mut changed = BTreeSet::new();
+        let mut replaced = Vec::with_capacity(delta.spans.len() + delta.nodes.len());
+        for (edge_idx, span) in &delta.spans {
+            let id = PieceId::Span(*edge_idx);
+            let piece = span.as_ref().map(|span| Piece::Span(Arc::clone(span)));
+            let published = piece.is_some();
+            let old = self.replace_piece(id, piece, &mut changed);
+            replaced.push((id, old, published));
+            self.rebuilt.edges.insert(*edge_idx);
+        }
+        let mut failures = Vec::with_capacity(delta.nodes.len());
         let mut failures_changed = false;
-        for (node, built) in built_nodes {
-            failures_changed |= self.failed.remove(&node).is_some();
+        for (node, built) in &delta.nodes {
+            let before = self.failed.remove(node);
+            failures_changed |= before.is_some();
             let piece = match built {
-                Ok(piece) => piece.map(|piece| Piece::Node(Arc::new(piece))),
+                Ok(piece) => piece.as_ref().map(|piece| Piece::Node(Arc::clone(piece))),
                 Err(error) => {
-                    self.failed.insert(node, error);
+                    self.failed.insert(*node, *error);
                     failures_changed = true;
                     None
                 }
             };
-            self.replace_piece(PieceId::Node(node), piece, &mut changed);
+            failures.push((*node, before, built.as_ref().err().copied()));
+            let id = PieceId::Node(*node);
+            let published = piece.is_some();
+            let old = self.replace_piece(id, piece, &mut changed);
+            replaced.push((id, old, published));
+            self.rebuilt.nodes.insert(*node);
         }
         if failures_changed {
             self.failed_ids = Arc::new(self.failed.keys().copied().collect());
@@ -236,7 +423,59 @@ impl RoadbedSystem {
         self.dirty_edges.clear();
         self.dirty_nodes.clear();
         self.compiled = true;
-        changed.into_iter().collect()
+        let restore = RoadbedRestore {
+            installed_generation: self.generation,
+            pieces: replaced,
+            failures,
+        };
+        (changed.into_iter().collect(), restore)
+    }
+
+    /// True when every owner a restore covers still holds what its install published, so
+    /// swapping the restore back equals recompiling the restored graph.
+    pub fn can_restore(&self, restore: &RoadbedRestore) -> bool {
+        self.is_current()
+            && restore.pieces.iter().all(|(id, _, published)| {
+                let current = self.pieces.get(id).map(|piece| piece.build_generation);
+                current == published.then_some(restore.installed_generation)
+            })
+            && restore
+                .failures
+                .iter()
+                .all(|(node, _, after)| self.failed.get(node).copied() == *after)
+    }
+
+    /// Swaps an install's replaced pieces and failures back as a new generation, which the
+    /// restored pieces take as their build generation. The caller checks [`Self::can_restore`]
+    /// first. `O(restored pieces * log pieces)`.
+    pub fn restore(&mut self, restore: &RoadbedRestore) {
+        debug_assert!(
+            self.can_restore(restore),
+            "a restore swaps back its own install"
+        );
+        if restore.pieces.is_empty() {
+            return;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let mut changed = BTreeSet::new();
+        for (id, old, _) in &restore.pieces {
+            let piece = old.as_ref().map(|old| old.piece.clone());
+            self.replace_piece(*id, piece, &mut changed);
+            match id {
+                PieceId::Span(edge_idx) => self.rebuilt.edges.insert(*edge_idx),
+                PieceId::Node(node) => self.rebuilt.nodes.insert(*node),
+            };
+        }
+        for (node, before, _) in &restore.failures {
+            match before {
+                Some(error) => self.failed.insert(*node, *error),
+                None => self.failed.remove(node),
+            };
+        }
+        if !restore.failures.is_empty() {
+            self.failed_ids = Arc::new(self.failed.keys().copied().collect());
+        }
+        self.changed_chunks.extend(changed);
     }
 
     // The node mouth sections at an edge's two ends: from this compile's plans, else from the
@@ -355,30 +594,43 @@ impl RoadbedSystem {
         (nodes, closure.into_iter().collect())
     }
 
+    // Publishes a piece built in this generation in place of the owner's current one, which
+    // it returns.
     fn replace_piece(
         &mut self,
         id: PieceId,
         piece: Option<Piece>,
         changed: &mut BTreeSet<SurfaceChunkKey>,
-    ) {
-        if let Some(old) = self.pieces.remove(&id) {
+    ) -> Option<PublishedPiece> {
+        let build_generation = self.generation;
+        let published = piece.map(|piece| PublishedPiece {
+            build_generation,
+            piece,
+        });
+        self.replace_published(id, published, changed)
+    }
+
+    fn replace_published(
+        &mut self,
+        id: PieceId,
+        published: Option<PublishedPiece>,
+        changed: &mut BTreeSet<SurfaceChunkKey>,
+    ) -> Option<PublishedPiece> {
+        let old = self.pieces.remove(&id);
+        if let Some(old) = &old {
             let footprint = old.parts().1;
             self.index.remove(id, footprint);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(old.mesh().bounds_xz());
         }
-        let Some(piece) = piece else {
-            return;
-        };
-        let published = PublishedPiece {
-            build_generation: self.generation,
-            piece,
-        };
-        let (mesh, footprint) = published.parts();
-        self.index.insert(id, mesh, footprint);
-        changed.extend(footprint.render_chunks().iter().copied());
-        self.changed_bounds.push(published.mesh().bounds_xz());
-        self.pieces.insert(id, published);
+        if let Some(published) = published {
+            let (mesh, footprint) = published.parts();
+            self.index.insert(id, mesh, footprint);
+            changed.extend(footprint.render_chunks().iter().copied());
+            self.changed_bounds.push(published.mesh().bounds_xz());
+            self.pieces.insert(id, published);
+        }
+        old
     }
 
     /// XZ bounds `[min_x, min_z, max_x, max_z]` of every old and new piece the compiles since
@@ -416,6 +668,29 @@ impl RoadbedSystem {
     /// Nodes whose pieces failed to build in the published generation, in ascending order.
     pub fn failed_nodes(&self) -> &[u32] {
         &self.failed_ids
+    }
+
+    /// Nodes that fail the commit's node check (`check_node`) although their piece built: a
+    /// bend or junction the profile solve leaves without a plane, which an edit rejects with
+    /// `NoPlane` before publishing. A load runs it on every published node piece, in parallel on
+    /// the shared pool, so a saved graph is validated like a commit (`ROAD-68-E`). Ascending.
+    pub fn unpinned_nodes(&self, graph: &RegionGraph) -> Vec<u32> {
+        let nodes: Vec<u32> = self
+            .pieces
+            .range(PieceId::Node(0)..)
+            .filter_map(|(id, published)| match (id, &published.piece) {
+                (PieceId::Node(node), Piece::Node(piece)) if piece.kind() != NodeKind::Terminal => {
+                    Some(*node)
+                }
+                _ => None,
+            })
+            .collect();
+        crate::thread_pools::install(|| {
+            nodes
+                .into_par_iter()
+                .filter(|&node| graph.junction_profile_solve_fails(node))
+                .collect()
+        })
     }
 
     /// Why a node's piece failed in the published generation.

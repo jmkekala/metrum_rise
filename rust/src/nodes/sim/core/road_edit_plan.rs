@@ -9,6 +9,8 @@ use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, prepare_road_input_for_tool,
     validate_road_edit,
 };
+use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
 /// Immutable preparation and solved local graph delta against pinned road/source revisions.
@@ -39,28 +41,55 @@ enum FailedCheck {
 impl RoadEditPlan {
     /// Builds the local road solution from borrowed live inputs without cloning the city.
     pub(crate) fn compile(core: &SimCore, request: RoadPreviewRequest) -> Self {
-        let prepared = prepare_road_input_for_tool(
-            &request.points,
+        Self::compile_from(
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.roadbed,
+            request,
+        )
+    }
+
+    /// Builds the local road solution from one generation's terrain, graph and roadbed: the
+    /// live core's at commit, the road tool's context in a preview (`ROAD-68-E`), through the
+    /// same preparation and validation. O(stroke points + local excerpt records).
+    pub(crate) fn compile_from(
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        roadbed: &RoadbedSystem,
+        request: RoadPreviewRequest,
+    ) -> Self {
+        let prepared = prepare_road_input_for_tool(
+            &request.points,
+            terrain,
+            graph,
+            roadbed,
             request.snap_to_existing_roads,
         );
         let (validation, topology) = validate_road_edit(
             &prepared,
             request.fwd_lanes.clamp(0, 255) as u8,
             request.bkw_lanes.clamp(0, 255) as u8,
-            &core.heightmap,
-            &core.region_graph,
+            terrain,
+            graph,
         );
         Self::new(
             request,
-            core.heightmap.source_generation(),
-            core.heightmap.visual_generation(),
+            terrain.source_generation(),
+            terrain.visual_generation(),
             prepared,
             validation,
             topology,
         )
+    }
+
+    /// The stroke this plan was compiled for.
+    pub(crate) fn request(&self) -> &RoadPreviewRequest {
+        &self.request
+    }
+
+    /// The prepared stroke.
+    pub(crate) fn prepared(&self) -> &PreparedRoadInput {
+        &self.prepared
     }
 
     /// Readiness against the live core. Local water, field, parcel and cell queries repeat under

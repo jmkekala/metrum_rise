@@ -42,7 +42,7 @@ pub use query::{LaneSurfaceQuery, PieceId};
 pub use section::{RoadBand, RoadSection};
 pub(crate) use span::incident_direction;
 pub use span::{MouthSection, SpanPiece};
-pub use system::RoadbedSystem;
+pub use system::{RebuiltOwners, RoadbedDelta, RoadbedRestore, RoadbedSystem};
 pub use terrain::{ChainSegment, TerrainLoop, TerrainLoopError, terrain_loops};
 pub(crate) use walkways::{FootpathJoin, NodeWalkways, SidewalkEnd};
 

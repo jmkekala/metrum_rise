@@ -256,17 +256,18 @@ pub(super) fn rebuild_loaded_graph_runtime(
     // synchronization is an edit: running it here moves roads away from their restored parcels
     // and changes the boundary geometry consumed by the renderer.
     transit_network.rebuild_roadbed(graph);
-    if transit_network.roadbed.failed_nodes().is_empty() {
+    // Every node is checked as a commit checks it (`ROAD-68-E`): its piece builds, and a bend
+    // or junction has a profile plane.
+    let rejected = rejected_loaded_nodes(graph, transit_network);
+    if rejected.is_empty() {
         return Ok(());
     }
     // Legacy saves can contain contradictory junction supports. Repair only rejected
-    // grounded junctions using the edit planner's finalizer, before lane/agent restoration.
-    // The source SQLite and terrain are not rewritten; valid saved profiles stay authoritative.
-    let nodes = transit_network
-        .roadbed
-        .failed_nodes()
-        .iter()
-        .copied()
+    // grounded junctions using the edit planner's finalizer, before lane/agent restoration
+    // (open question 8). The source SQLite and terrain are not rewritten; valid saved profiles
+    // stay authoritative.
+    let nodes = rejected
+        .into_iter()
         .filter(|&node| {
             graph.node_adjacency(node).iter().all(|&edge| {
                 graph.edge(edge).deleted
@@ -301,7 +302,22 @@ pub(super) fn rebuild_loaded_graph_runtime(
             transit_network.roadbed.node_error(node)
         )));
     }
+    if let Some(&node) = transit_network.roadbed.unpinned_nodes(graph).first() {
+        return Err(SaveLoadError::custom(format!(
+            "road surface load failed: node {node} has no profile plane (NoPlane)"
+        )));
+    }
     Ok(())
+}
+
+// Nodes whose piece failed or that the node check rejects, ascending and distinct.
+fn rejected_loaded_nodes(graph: &RegionGraph, transit_network: &TransitNetwork) -> Vec<u32> {
+    let roadbed = &transit_network.roadbed;
+    let mut nodes = roadbed.unpinned_nodes(graph);
+    nodes.extend_from_slice(roadbed.failed_nodes());
+    nodes.sort_unstable();
+    nodes.dedup();
+    nodes
 }
 
 pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> SaveLoadResult<u32> {

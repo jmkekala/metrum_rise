@@ -128,6 +128,7 @@ fn committed(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            preview: None,
         },
         Instant::now(),
         Default::default(),
@@ -157,7 +158,7 @@ fn starting_a_town(e: &mut Entries) -> SimCore {
     e.run("init", || {
         core.precompute_road_mesh_data();
         core.build_snapshot();
-        road_tool_snapshot_from_core(&core).unwrap();
+        core.publish_road_tool_view(None).unwrap();
     });
     e.run("asset packs", || assets_installed(&mut core));
 
@@ -350,14 +351,15 @@ fn loading_a_save(e: &mut Entries, core: &SimCore) {
 // The node's threads and jobs while Godot's main thread sends commands, stopped and joined as
 // freeing the node does.
 fn running_the_node_threads(e: &mut Entries, core: SimCore) {
-    let query = road_tool_snapshot_from_core(&core).unwrap();
+    let query = Arc::new(RoadToolShared::new(
+        road_tool_snapshot_from_core(&core).unwrap(),
+    ));
     let generation = core.terrain_payload_global_generation;
     let snapshot = Arc::new(RwLock::new(RenderSnapshot::default()));
     let core = Arc::new(Mutex::new(core));
     let (commands, command_rx) = std::sync::mpsc::channel();
     let sim_thread = {
         let (core, snapshot) = (Arc::clone(&core), Arc::clone(&snapshot));
-        let query = Arc::new(RwLock::new(query));
         std::thread::spawn(move || {
             run_sim_thread(core, snapshot, query, command_rx);
         })
@@ -393,6 +395,7 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
             snap_to_existing_roads: true,
             enqueued_at: Instant::now(),
             completion: road_done,
+            preview: None,
         },
         SimCommand::Undo,
     ] {

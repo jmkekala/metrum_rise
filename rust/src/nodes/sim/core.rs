@@ -19,6 +19,7 @@ mod road_commit;
 mod road_edit_plan;
 mod road_preview;
 mod road_rejection;
+mod road_tool_context;
 mod scenario;
 mod schedule;
 mod snapshot;
@@ -48,8 +49,8 @@ pub(crate) use budget::{
 };
 pub(crate) use road_preview::{
     RoadCorridorClearance, RoadPreviewRequest, RoadPreviewSnapshot, RoadToolQuerySnapshot,
-    road_tool_snapshot_from_core,
 };
+pub(crate) use road_tool_context::{RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
     WaterRuntimeSnapshot, access_phase_target,
@@ -69,6 +70,8 @@ pub(crate) use water_preview::{
 
 #[cfg(test)]
 pub(crate) use road_commit::RoadCommitRequest;
+#[cfg(test)]
+pub(crate) use road_preview::road_tool_snapshot_from_core;
 #[cfg(test)]
 use snapshot::pedestrian_lane_surface_height;
 #[cfg(test)]

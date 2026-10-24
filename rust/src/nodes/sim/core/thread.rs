@@ -10,7 +10,8 @@ use super::frame::{
     run_sim_phase,
 };
 use super::road_commit::RoadCommitRequest;
-use super::road_preview::{RoadToolQuerySnapshot, road_tool_snapshot_from_core};
+use super::road_preview::RoadPreview;
+use super::road_tool_context::{RoadToolPublication, RoadToolShared};
 use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
@@ -55,6 +56,8 @@ pub(crate) enum SimCommand {
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
         completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
+        /// The road tool's synchronous preview of this stroke (`ROAD-68-E`).
+        preview: Option<Arc<RoadPreview>>,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -69,22 +72,13 @@ pub(crate) enum SimCommand {
 
 // Parallel rebuilds: they run in the shared pool, as every phase under the core lock does
 // (CODE-17). The lock stays on this thread; a pool worker never waits for it (`SIM-01`).
-fn finalize_network_render_products(core: &mut SimCore) -> Option<RoadToolQuerySnapshot> {
+fn finalize_network_render_products(core: &mut SimCore) -> Option<RoadToolPublication> {
     crate::thread_pools::install(|| {
         core.rebuild_network_surface_terrain_internal();
         core.precompute_road_mesh_data();
         core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        road_tool_snapshot_from_core(core)
+        core.publish_road_tool_view(None)
     })
-}
-
-fn publish_road_tool_snapshot(
-    road_query_snapshot: &RwLock<RoadToolQuerySnapshot>,
-    query_snapshot: RoadToolQuerySnapshot,
-) {
-    *road_query_snapshot
-        .write()
-        .expect("road query snapshot lock poisoned") = query_snapshot;
 }
 
 fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
@@ -102,7 +96,7 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
 pub(crate) fn run_sim_thread(
     core: Arc<Mutex<SimCore>>,
     snapshot: Arc<RwLock<RenderSnapshot>>,
-    road_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
+    road_tool: Arc<RoadToolShared>,
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
 ) {
     let target = Duration::from_micros(16_667); // ~60 Hz
@@ -192,7 +186,7 @@ pub(crate) fn run_sim_thread(
                         }
                     };
                     if let Some(query_snapshot) = road_snapshot {
-                        publish_road_tool_snapshot(&road_query_snapshot, query_snapshot);
+                        road_tool.publish(query_snapshot);
                     }
                 }
                 Ok(SimCommand::Bulldoze { target }) => {
@@ -213,7 +207,7 @@ pub(crate) fn run_sim_thread(
                         }
                     };
                     if let Some(query_snapshot) = road_snapshot {
-                        publish_road_tool_snapshot(&road_query_snapshot, query_snapshot);
+                        road_tool.publish(query_snapshot);
                     }
                 }
                 Ok(SimCommand::AddRoad {
@@ -223,6 +217,7 @@ pub(crate) fn run_sim_thread(
                     snap_to_existing_roads,
                     enqueued_at,
                     completion,
+                    preview,
                 }) => {
                     commands_processed += 1;
                     add_road_commands += 1;
@@ -255,13 +250,14 @@ pub(crate) fn run_sim_thread(
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
+                                preview,
                             },
                             road_total,
                             edit_metrics,
                         )
                     };
                     if let Some(query_snapshot) = outcome.road_snapshot {
-                        publish_road_tool_snapshot(&road_query_snapshot, query_snapshot);
+                        road_tool.publish(query_snapshot);
                     }
                     if crate::debug::Channel::Perf.enabled() {
                         println!(

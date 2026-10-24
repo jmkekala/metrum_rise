@@ -563,8 +563,9 @@ protocol, and removal tombstones.
 **Context.** The road tool works on an immutable, versioned local context: the graph
 neighbourhood, terrain samples, sites, and zoning and field reservations. It is captured when the
 tool activates and refreshed when the simulation publishes a new generation. No per-pose work takes
-the core lock, which also resolves the hover core-lock bug listed under Validated Bugs in
-[`roadmap.md`](roadmap.md) (`get_agriculture_field_overlay_revision`).
+the core lock, which also resolves the hover core-lock bug `ROAD-70` in
+[`roadmap.md`](roadmap.md) (`get_agriculture_field_overlay_revision`, fixed in `ROAD-68-E`: the
+render snapshot publishes the revision and the getter reads it lock-free).
 
 **Preview.** `preview_road(context, stroke)` runs synchronously in RoadTool's early process
 callback:
@@ -2855,6 +2856,47 @@ Acceptance:
 - save → load reproduces bitwise-identical pieces
 - the Godot bridge suites pass
 - native per-stage timings are within budget on `sloped_t` and `sloped_branch`
+
+#### Progress (2026-10-24, branch `road68-E1`, work in progress)
+
+Landed on the road side (part 1, round 1); Godot, terrain tiles in the preview, payload packing,
+lane-local undo and the stage timings are open.
+
+- **Install API.** `RoadbedSystem::compile_dirty` is `compile_delta` (the pieces of the dirty
+  closure, built as before, unpublished) followed by `install`. A `RoadbedDelta` records the
+  generation and dirty marks it was compiled from; `can_install` checks them, so an installed
+  delta equals that compile bitwise. `install` returns a `RoadbedRestore` with the replaced
+  pieces and node failures; `restore` swaps the same `Arc`s back, published in a new
+  generation (render publication splices by build generation), and `can_restore` checks that
+  nothing rebuilt them since.
+- **Context.** `SimCore::publish_road_tool_view` replaces the per-command deep copies: terrain
+  and water are copied only when their own generations change, the roadbed is shared in `O(1)`
+  (`RoadbedSystem::snapshot`), and the graph is the commit's routing-rebuild copy (the one
+  `O(city)` copy a commit makes, which the CCH job needs anyway) or the previous view's when
+  nothing changed. The preview's private replica (`RoadPreviewContext`) follows each
+  publication by copying the records of the owners whose pieces the roadbed rebuilt
+  (`take_rebuilt_owners`, `RegionGraph::restore_undo_delta_local`, `O(records * log edges)`),
+  or by one copy after a load, a clear or a terrain sync. Debug builds compare the replica with
+  the published graph after every publication.
+- **Preview.** `RoadPreviewContext::preview_road` compiles the commit's `RoadEditPlan` on the
+  context (`compile_from`), applies its topology to the replica through
+  `RoadTopologyPlan::apply_to_graph` (the commit's adoption now calls the same function), marks
+  the closure through `AppliedRoadTopology::mark_pieces`, compiles a delta on an `O(1)` copy of
+  the roadbed and restores the replica from the same checkpoint the undo record captures. It
+  returns the plan, the delta and `RoadPreviewFingerprint` (road-tool surface, roadbed and
+  source and visual terrain generations). Godot: `preview_road(points, fwd, bkw, snap)`.
+- **Commit.** A click submits the latest preview of the same stroke. With a matching
+  fingerprint the commit uses its plan and installs its delta when `can_install` holds after
+  the adoption's marks; otherwise it plans and compiles locally (`preview_plan_reused`).
+- **Undo.** The road edit's undo record keeps the install's restore; undo and staged rollback
+  swap the pieces back when `can_restore` holds, and recompile the restored owners otherwise.
+- **Load.** Every published bend and junction piece is checked for a profile plane, as the
+  commit's `check_node` does (`RoadbedSystem::unpinned_nodes`, parallel); rejected grounded
+  nodes take the question 8 repair, and any left fail the load.
+- **Tests.** `core::tests::road_preview`: a current preview's pieces are the commit's own
+  `Arc`s and equal a fresh commit bitwise; a stale preview's commit equals a fresh commit; undo
+  restores the pre-edit `Arc`s; the replica follows commits and undo. `undoing_fourth_junction_
+  mouth_restores_exact_pre_edit_surface_topology` is re-enabled and passes.
 
 ### `ROAD-68-F` — remaining families
 

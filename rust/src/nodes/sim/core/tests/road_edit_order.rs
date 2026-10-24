@@ -135,6 +135,7 @@ pub(super) fn committed(strokes: &[Stroke], order: &[usize], sloped: bool) -> Si
                 fwd_lanes: lanes,
                 bkw_lanes: lanes,
                 snap_to_existing_roads: true,
+                preview: None,
             },
             std::time::Instant::now(),
             Default::default(),

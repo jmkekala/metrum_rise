@@ -395,11 +395,12 @@ impl SimulationNode {
         self.lock_core().get_coal_pit_overlay_revision_internal() as i64
     }
 
-    /// Returns a monotonic revision for committed agricultural field visuals.
+    /// Returns a monotonic revision for committed agricultural field visuals, from the latest
+    /// published render snapshot, so per-frame callers never wait for the core (`ROAD-55`).
     #[func]
     pub fn get_agriculture_field_overlay_revision(&self) -> i64 {
-        self.lock_core()
-            .get_agriculture_field_overlay_revision_internal() as i64
+        let revision = self.snapshot.read().unwrap().agriculture_field_revision;
+        i64::try_from(revision).unwrap_or(i64::MAX)
     }
 
     /// Commits the active transient lake-fill preview into authored world state.

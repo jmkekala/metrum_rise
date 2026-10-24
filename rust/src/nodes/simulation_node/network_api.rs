@@ -62,6 +62,9 @@ impl SimulationNode {
         let clone_ms = clone_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
+        let preview =
+            self.road_tool
+                .preview_for(&points, fwd_lanes, bkw_lanes, snap_to_existing_roads);
         let send_start = road_debug.then(Instant::now);
         let (completion, result) = std::sync::mpsc::sync_channel(1);
         self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
@@ -75,6 +78,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 enqueued_at: Instant::now(),
                 completion,
+                preview,
             })
             .is_ok();
         let send_ms = send_start

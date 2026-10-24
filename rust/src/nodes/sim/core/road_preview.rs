@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Road-tool preview requests, the immutable road-tool query snapshot and the synchronous
-//! `ROAD-68-A` preview, which validates the stroke and carries no geometry.
+//! preview (`ROAD-68-E`): the commit's own plan, compiled pieces and their dependency
+//! fingerprint, built on the road tool's context without the core lock.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use godot::prelude::Vector3;
 
+use super::road_edit_plan::RoadEditPlan;
+use super::road_tool_context::RoadPreviewContext;
 use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     RoadPreviewValidation, prepare_road_input_for_tool, validate_road_candidate_fast,
 };
-use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::network::roadbed::{RoadbedDelta, RoadbedSystem, SurfaceChunkKey};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 
@@ -151,4 +155,158 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         water: Arc::new(core.watermap.clone()),
         surface_generation: core.road_tool_surface_generation,
     })
+}
+
+/// The generations a preview's plan and pieces depend on (`ROAD-68-E`): the road-tool surface,
+/// the published roadbed and the source and visual terrain. A commit installs a preview's pieces
+/// only when the live core shows the same fingerprint; otherwise it recompiles locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RoadPreviewFingerprint {
+    pub(crate) surface_generation: u64,
+    pub(crate) roadbed_generation: u64,
+    pub(crate) terrain_source_generation: u64,
+    pub(crate) terrain_visual_generation: u64,
+}
+
+impl RoadPreviewFingerprint {
+    /// The fingerprint of one generation's inputs; the one definition preview and commit share.
+    pub(crate) fn of(
+        surface_generation: u64,
+        roadbed: &RoadbedSystem,
+        terrain: &TerrainSystem,
+    ) -> Self {
+        Self {
+            surface_generation,
+            roadbed_generation: roadbed.generation(),
+            terrain_source_generation: terrain.source_generation(),
+            terrain_visual_generation: terrain.visual_generation(),
+        }
+    }
+
+    /// The live core's fingerprint.
+    pub(crate) fn live(core: &SimCore) -> Self {
+        Self::of(
+            core.road_tool_surface_generation,
+            &core.transit_network.roadbed,
+            &core.heightmap,
+        )
+    }
+}
+
+/// Wall-clock milliseconds of one preview's stages, against `docs/roads.md` "Stage budgets".
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RoadPreviewTimes {
+    /// Preparation, validation and the topology and profile solve.
+    pub(crate) plan_ms: f64,
+    /// Layout and pieces of the dirty closure, with the replica's apply and restore.
+    pub(crate) roadbed_ms: f64,
+}
+
+/// The pieces a preview compiled for its dirty closure.
+pub(crate) struct RoadPreviewPieces {
+    /// What the commit installs.
+    pub(crate) delta: RoadbedDelta,
+    /// The context's roadbed with the delta installed: what the preview shows.
+    pub(crate) roadbed: RoadbedSystem,
+    /// Render chunks the delta changed, in ascending order. The XZ bounds of the replaced and
+    /// new pieces wait in `roadbed` for terrain patch selection.
+    pub(crate) changed_chunks: Vec<SurfaceChunkKey>,
+}
+
+/// One synchronous road preview: the plan the click submits, the pieces the commit installs and
+/// the fingerprint that decides whether it may (`ROAD-68-E`).
+pub(crate) struct RoadPreview {
+    pub(crate) plan: RoadEditPlan,
+    /// The plan's validation with the water check.
+    pub(crate) validation: RoadPreviewValidation,
+    pub(crate) fingerprint: RoadPreviewFingerprint,
+    /// `None` when the stroke is invalid or its plan incomplete.
+    pub(crate) pieces: Option<RoadPreviewPieces>,
+    pub(crate) times: RoadPreviewTimes,
+}
+
+impl RoadPreview {
+    /// True when this preview was made for exactly this stroke.
+    pub(crate) fn is_for(
+        &self,
+        points: &[Vector3],
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> bool {
+        let request = self.plan.request();
+        request.points == points
+            && request.fwd_lanes == fwd_lanes
+            && request.bkw_lanes == bkw_lanes
+            && request.snap_to_existing_roads == snap_to_existing_roads
+    }
+}
+
+impl RoadPreviewContext {
+    /// `preview_road(context, stroke)`: plans the stroke on the context, applies the plan to the
+    /// replica, compiles the dirty closure into an `O(1)` copy of the published roadbed and
+    /// restores the replica. The plan, marks and compile are the commit's own functions, so a
+    /// commit with a current fingerprint installs these pieces bitwise. No core lock; cost
+    /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
+    pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
+        let plan_start = Instant::now();
+        let fingerprint = RoadPreviewFingerprint::of(
+            self.view.surface_generation,
+            &self.view.roadbed,
+            &self.view.terrain,
+        );
+        let plan = RoadEditPlan::compile_from(
+            &self.view.terrain,
+            &self.replica,
+            &self.view.roadbed,
+            request,
+        );
+        let validation = {
+            let request = plan.request();
+            validate_road_candidate_against_water(
+                plan.prepared().class,
+                &plan.prepared().points,
+                request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                &self.view.water,
+                plan.validation().clone(),
+            )
+        };
+        let plan_ms = plan_start.elapsed().as_secs_f64() * 1000.0;
+        let roadbed_start = Instant::now();
+        let pieces = validation
+            .is_valid
+            .then(|| self.compile_plan_pieces(&plan))
+            .flatten();
+        let roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
+        RoadPreview {
+            plan,
+            validation,
+            fingerprint,
+            pieces,
+            times: RoadPreviewTimes {
+                plan_ms,
+                roadbed_ms,
+            },
+        }
+    }
+
+    // Applies the plan's topology to the replica, compiles what it dirtied and restores the
+    // replica from the same local checkpoint the commit's undo record captures.
+    fn compile_plan_pieces(&mut self, plan: &RoadEditPlan) -> Option<RoadPreviewPieces> {
+        let topology = plan.topology_for(&self.replica)?;
+        let (edges, nodes) = topology.source_topology_ids();
+        let checkpoint = self.replica.capture_undo_for_local_topology(edges, nodes);
+        let applied = topology.apply_to_graph(&mut self.replica)?;
+        let mut roadbed = self.view.roadbed.snapshot();
+        applied.mark_pieces(&mut roadbed);
+        let delta = roadbed.compile_delta(&self.replica);
+        self.replica.restore_undo_delta_local(&checkpoint);
+        let (changed_chunks, _) = roadbed.install(&delta);
+        Some(RoadPreviewPieces {
+            delta,
+            roadbed,
+            changed_chunks,
+        })
+    }
 }

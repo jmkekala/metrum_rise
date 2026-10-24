@@ -10,7 +10,9 @@ use std::sync::Condvar;
 #[test]
 fn stopping_the_workers_leaves_the_last_core_reference_to_the_caller() {
     let core = test_core_with_flat_terrain(0.0);
-    let query = Arc::new(RwLock::new(road_tool_snapshot_from_core(&core).unwrap()));
+    let query = Arc::new(RoadToolShared::new(
+        road_tool_snapshot_from_core(&core).unwrap(),
+    ));
     let core = Arc::new(Mutex::new(core));
 
     // The sender stays alive: the thread ends because it is told to, not by disconnection of

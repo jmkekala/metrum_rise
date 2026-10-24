@@ -529,6 +529,7 @@ impl TransitNetwork {
             node_ids.insert(graph.get_valid_node(edge.end_node));
         }
         self.mark_surface_dirty_from_sets(&edge_ids, &node_ids);
+        self.roadbed.note_full_rebuild();
     }
 
     /// Rebuilds the routing CCH hierarchy from scratch or perform incremental customization.

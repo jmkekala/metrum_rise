@@ -353,6 +353,8 @@ pub struct SimCore {
     pub(crate) cached_network_node_positions_dirty: bool,
     /// Monotonic stamp for road-tool terrain/surface snapshots.
     pub(crate) road_tool_surface_generation: u64,
+    /// What the road tool's context last received (`ROAD-68-E`); derived, never saved.
+    pub(crate) road_tool_publisher: super::RoadToolPublisher,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -460,6 +462,7 @@ impl SimCore {
             cached_network_node_positions: Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
+            road_tool_publisher: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             snapshot_agent_scratch: Default::default(),
             slot_route_scratch: Default::default(),

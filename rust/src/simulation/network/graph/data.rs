@@ -355,6 +355,102 @@ impl RegionGraph {
         }
     }
 
+    /// Installs a checkpoint's records and record counts and repairs adjacency and both spatial
+    /// indices for the records it touches only (`ROAD-68-E`): the same records as
+    /// [`Self::restore_undo_delta`], in `O(delta records * log edges)`. A checkpoint captured
+    /// from another graph replicates that graph's records here; it must then cover every record
+    /// past this graph's counts.
+    pub(crate) fn restore_undo_delta_local(&mut self, delta: &RegionGraphUndoDelta) {
+        let (edge_count, node_count) = (delta.original_edge_count, delta.original_node_count);
+        // Detach every record whose slot is replaced or dropped, from its current state.
+        let replaced_edges: HashSet<usize> = delta
+            .edges
+            .iter()
+            .map(|(edge_idx, _)| *edge_idx)
+            .chain(edge_count..self.edges.len())
+            .filter(|&edge_idx| edge_idx < self.edges.len())
+            .collect();
+        let mut touched_nodes: HashSet<u32> = delta.nodes.iter().map(|(id, _)| *id).collect();
+        for &edge_idx in &replaced_edges {
+            let edge = &self.edges[edge_idx];
+            touched_nodes.extend([edge.start_node, edge.end_node]);
+            if !edge.deleted {
+                self.remove_from_spatial_index(edge_idx);
+            }
+        }
+        let live_nodes = self.nodes.len();
+        let detached_nodes: Vec<usize> = delta
+            .nodes
+            .iter()
+            .map(|(id, _)| *id as usize)
+            .chain(node_count..live_nodes)
+            .filter(|&id| id < live_nodes)
+            .collect();
+        for node_id in detached_nodes {
+            let pos = self.nodes[node_id].pos;
+            self.remove_node_from_spatial_index(node_id as u32, pos);
+        }
+        self.edges.resize_with(edge_count, Edge::default);
+        let placeholder = || Node {
+            pos: Vector3::ZERO,
+            node_type: NodeType::default(),
+            lane_connections: HashMap::new(),
+            crosswalk_overrides: HashMap::new(),
+        };
+        self.nodes.resize_with(node_count, placeholder);
+        self.adjacency.resize_with(node_count, Vec::new);
+        for (node_id, node) in &delta.nodes {
+            if let Some(target) = self.nodes.get_mut(*node_id as usize) {
+                target.clone_from(node);
+            }
+        }
+        for (edge_idx, edge) in &delta.edges {
+            if let Some(target) = self.edges.get_mut(*edge_idx) {
+                target.clone_from(edge);
+                touched_nodes.extend([edge.start_node, edge.end_node]);
+            }
+        }
+        self.node_aliases
+            .retain(|&node_id, _| (node_id as usize) < node_count);
+        for &(node_id, previous) in &delta.aliases {
+            if let Some(canonical) = previous {
+                self.node_aliases.insert(node_id, canonical);
+            } else {
+                self.node_aliases.remove(&node_id);
+            }
+        }
+        // Adjacency holds the live edges at each raw endpoint in ascending order, as
+        // `rebuild_adjacency_list` builds it.
+        for &node_id in &touched_nodes {
+            if let Some(incident) = self.adjacency.get_mut(node_id as usize) {
+                incident.retain(|edge_idx| !replaced_edges.contains(edge_idx));
+            }
+        }
+        for (edge_idx, edge) in &delta.edges {
+            if *edge_idx < edge_count && !edge.deleted {
+                for node in [edge.start_node, edge.end_node] {
+                    self.adjacency[node as usize].push(*edge_idx);
+                }
+            }
+        }
+        for &node_id in &touched_nodes {
+            if let Some(incident) = self.adjacency.get_mut(node_id as usize) {
+                incident.sort_unstable();
+                incident.dedup();
+            }
+        }
+        for (edge_idx, _) in &delta.edges {
+            if *edge_idx < edge_count {
+                self.add_to_spatial_index(*edge_idx);
+            }
+        }
+        for (node_id, _) in &delta.nodes {
+            if (*node_id as usize) < node_count {
+                self.add_node_to_spatial_index(*node_id);
+            }
+        }
+    }
+
     /// Whether a node's turn rule keyed by `(edge_idx, lane_idx)` restricts vehicles. Pedestrian
     /// routes through a junction are recorded as rules too, sidewalks under lane index ±100 and
     /// footpaths under their own edge, so neither puts the junction into vehicle whitelist mode.

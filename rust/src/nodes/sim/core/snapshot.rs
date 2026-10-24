@@ -240,6 +240,8 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.
     pub(crate) trans_graph: Option<RegionGraphUndoDelta>,
+    /// The roadbed pieces the edit's install replaced; undo swaps them back (`ROAD-68-E`).
+    pub(crate) roadbed: Option<crate::simulation::network::roadbed::RoadbedRestore>,
     /// Parcels removed by one road bulldoze.
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
     /// Building/economy runtime state.
@@ -368,6 +370,9 @@ pub struct RenderSnapshot {
     pub zoning_overlay_revision: u64,
     /// Revision of zoning occupancy that affects overlay parcel coloring.
     pub zoning_overlay_occupancy_revision: u64,
+    /// Revision of committed agricultural field visuals, read lock-free by the road tool's hover
+    /// checks (`ROAD-55`).
+    pub agriculture_field_revision: u64,
     /// World-space positions of all live canonical network nodes.
     /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
     /// instead of locking SimCore — avoids main-thread stalls during road placement.
@@ -419,6 +424,7 @@ impl Default for RenderSnapshot {
             terrain_border_loop: Arc::new(Vec::new()),
             zoning_overlay_revision: 0,
             zoning_overlay_occupancy_revision: 0,
+            agriculture_field_revision: 0,
             node_positions: Arc::new(Vec::new()),
             heightmap_height: 0,
         }
@@ -578,6 +584,7 @@ impl SimCore {
         }
         snapshot.zoning_overlay_revision = self.zoning.overlay_revision();
         snapshot.zoning_overlay_occupancy_revision = self.zoning.overlay_occupancy_revision();
+        snapshot.agriculture_field_revision = self.agriculture.visual_revision();
         snapshot
     }
 }

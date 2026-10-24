@@ -20,7 +20,9 @@ use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, RoadExtensionReprofile, prepare_road_input_for_tool,
     validate_road_candidate_fast, validate_road_edit,
 };
-use crate::simulation::network::roadbed::{NodeArms, visual_roadbed_half_width_m};
+use crate::simulation::network::roadbed::{
+    NodeArms, RoadbedDelta, RoadbedRestore, visual_roadbed_half_width_m,
+};
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -81,8 +83,18 @@ impl RoadAddOutcome {
 impl SimCore {
     /// Accepts a road only after the roadbed and every affected terrain payload succeed,
     /// restoring the staged checkpoint otherwise.
+    #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        let patches = self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+        self.validate_staged_road_render_installing(None)
+    }
+
+    /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
+    /// apply (`ROAD-68-E`). The undo record keeps what the install replaced.
+    pub(crate) fn validate_staged_road_render_installing(
+        &mut self,
+        delta: Option<&RoadbedDelta>,
+    ) -> bool {
+        let (patches, restore) = self.publish_network_surface(false, delta);
         let validation = match self.transit_network.roadbed.failed_nodes().first() {
             None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
                 self, &patches,
@@ -92,11 +104,16 @@ impl SimCore {
         match validation {
             Ok(entries) => {
                 self.insert_refined_terrain_patch_cache_entries(entries);
+                if self.transit_network.road_edit_is_staged()
+                    && let Some(record) = self.undo_stack.back_mut()
+                {
+                    record.roadbed = Some(restore);
+                }
                 self.accept_staged_road_edit();
                 true
             }
             Err(reason) => {
-                self.rollback_staged_road_edit();
+                self.rollback_staged_road_edit(Some(&restore));
                 self.last_road_timing = format!("rejected=render_geometry_invalid {reason}");
                 self.last_road_rejection = Some(RoadRejection::new(
                     "render_geometry_invalid",
@@ -2082,14 +2099,32 @@ impl SimCore {
         &mut self,
         rebuild_entrances: bool,
     ) -> Vec<(usize, usize)> {
+        self.publish_network_surface(rebuild_entrances, None).0
+    }
+
+    /// Publishes the roadbed and dirties the terrain patches its changed pieces touch. Installs
+    /// `delta` (a preview's pieces, `ROAD-68-E`) when the roadbed still stands where it was
+    /// compiled, otherwise compiles the dirty closure. Returns the dirtied patches and what the
+    /// install replaced, for undo.
+    pub(crate) fn publish_network_surface(
+        &mut self,
+        rebuild_entrances: bool,
+        delta: Option<&RoadbedDelta>,
+    ) -> (Vec<(usize, usize)>, RoadbedRestore) {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
 
         let compile_start = road_debug.then(Instant::now);
-        let changed_chunks = self
-            .transit_network
-            .roadbed
-            .compile_dirty(&self.region_graph);
+        let roadbed = &mut self.transit_network.roadbed;
+        let compiled;
+        let delta = match delta.filter(|delta| roadbed.can_install(delta)) {
+            Some(delta) => delta,
+            None => {
+                compiled = roadbed.compile_delta(&self.region_graph);
+                &compiled
+            }
+        };
+        let (changed_chunks, restore) = roadbed.install(delta);
         let changed_bounds = self.transit_network.roadbed.take_changed_bounds();
         let road_terrain_patches = self.bump_road_terrain_payload_generations(&changed_bounds);
         // Generated trees keep clear of walkways and poles beside them, possibly from a
@@ -2128,7 +2163,7 @@ impl SimCore {
                     .unwrap_or(0.0)
             );
         }
-        road_terrain_patches
+        (road_terrain_patches, restore)
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within
@@ -3808,7 +3843,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-E: undo restores the exact pre-edit junction pieces and mesh"]
     fn undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology() {
         let mut core = test_core();
         let center = core

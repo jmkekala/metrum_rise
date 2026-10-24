@@ -59,7 +59,7 @@ impl SimulationNode {
         sticky_network_snap_release_dist_m: f32,
         angle_snap: Vector3,
     ) -> Variant {
-        let query = self.road_tool_query_snapshot.read().unwrap();
+        let query = self.road_tool.view.read().unwrap();
         let (world_w, world_h) = query.terrain.world_size();
         let half_w = world_w * 0.5;
         let half_h = world_h * 0.5;
@@ -204,7 +204,7 @@ impl SimulationNode {
         snap_edge: i64,
         surface_generation: i64,
     ) -> VarDictionary {
-        let query = self.road_tool_query_snapshot.read().unwrap();
+        let query = self.road_tool.view.read().unwrap();
         let target = (u64::try_from(surface_generation).ok() == Some(query.surface_generation))
             .then(|| {
                 u32::try_from(snap_node)

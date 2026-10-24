@@ -35,7 +35,7 @@ impl SimulationNode {
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
         let preview = {
-            let query = self.road_tool_query_snapshot.read().unwrap();
+            let query = self.road_tool.view.read().unwrap();
             query.preview(&RoadPreviewRequest {
                 include_terrain: false,
                 request_id: 0,
@@ -93,11 +93,7 @@ impl SimulationNode {
         _bkw_lanes: i32,
         surface_generation: i64,
     ) -> Variant {
-        let generation = self
-            .road_tool_query_snapshot
-            .read()
-            .unwrap()
-            .surface_generation;
+        let generation = self.road_tool.view.read().unwrap().surface_generation;
         if i64::try_from(generation).unwrap_or(i64::MAX) != surface_generation {
             return Variant::nil();
         }
@@ -124,7 +120,7 @@ impl SimulationNode {
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
-            let query = self.road_tool_query_snapshot.read().unwrap();
+            let query = self.road_tool.view.read().unwrap();
             let prepared_input = prepare_road_input_for_tool(
                 &points,
                 &query.terrain,
@@ -235,10 +231,86 @@ impl SimulationNode {
         i64::try_from(attempt).unwrap_or(i64::MAX)
     }
 
+    /// The synchronous road preview (`ROAD-68-E`): plans the stroke on the road tool's context,
+    /// compiles the pieces of its dirty closure and returns the validation, the dependency
+    /// fingerprint, the per-stage times and the render chunks the pieces change. A click on
+    /// the same stroke submits this preview, and the commit installs its pieces while the
+    /// fingerprint is current. Takes the context lock only, never the core lock.
+    #[func]
+    pub fn preview_road(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> VarDictionary {
+        let preview = {
+            let mut context = self
+                .road_tool
+                .context
+                .lock()
+                .expect("road tool context lock poisoned");
+            let surface_generation = context.view.surface_generation;
+            let preview = Arc::new(context.preview_road(RoadPreviewRequest {
+                include_terrain: true,
+                request_id: 0,
+                surface_generation,
+                points: points.to_vec(),
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads,
+            }));
+            context.last_preview = Some(Arc::clone(&preview));
+            preview
+        };
+        let mut dict = Self::road_candidate_validation_to_dictionary(
+            &preview.validation,
+            &preview.plan.prepared().points,
+        );
+        let generation = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+        let fingerprint = &preview.fingerprint;
+        dict.set(
+            "surface_generation",
+            generation(fingerprint.surface_generation),
+        );
+        dict.set(
+            "roadbed_generation",
+            generation(fingerprint.roadbed_generation),
+        );
+        dict.set(
+            "terrain_source_generation",
+            generation(fingerprint.terrain_source_generation),
+        );
+        dict.set(
+            "terrain_visual_generation",
+            generation(fingerprint.terrain_visual_generation),
+        );
+        dict.set("plan_ms", preview.times.plan_ms);
+        dict.set("roadbed_ms", preview.times.roadbed_ms);
+        let mut chunks = PackedInt32Array::new();
+        if let Some(pieces) = &preview.pieces {
+            for &(x, z) in &pieces.changed_chunks {
+                chunks.push(x);
+                chunks.push(z);
+            }
+        }
+        let failed = preview
+            .pieces
+            .as_ref()
+            .map_or(&[][..], |pieces| pieces.roadbed.failed_nodes());
+        dict.set(
+            "failed_nodes",
+            PackedInt64Array::from_iter(failed.iter().map(|&node| i64::from(node))),
+        );
+        dict.set("has_pieces", preview.pieces.is_some());
+        dict.set("changed_chunks", chunks);
+        dict
+    }
+
     /// Returns the road-tool surface snapshot generation currently used for validation.
     #[func]
     pub fn get_road_tool_surface_generation(&self) -> i64 {
-        let query = self.road_tool_query_snapshot.read().unwrap();
+        let query = self.road_tool.view.read().unwrap();
         i64::try_from(query.surface_generation).unwrap_or(i64::MAX)
     }
 
@@ -293,7 +365,8 @@ impl SimulationNode {
             + 1;
         let preview = {
             let query = self
-                .road_tool_query_snapshot
+                .road_tool
+                .view
                 .read()
                 .expect("road query snapshot lock poisoned");
             query.preview(&RoadPreviewRequest {

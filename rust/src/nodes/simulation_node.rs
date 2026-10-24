@@ -118,9 +118,11 @@ use crate::nodes::sim::core::{
     CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
-    RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
-    road_tool_snapshot_from_core, run_sim_thread,
+    RoadToolQuerySnapshot, RoadToolShared, SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore,
+    run_sim_thread,
 };
+#[cfg(test)]
+use crate::nodes::sim::core::road_tool_snapshot_from_core;
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
 };
@@ -256,8 +258,9 @@ pub struct SimulationNode {
         Option<std::sync::mpsc::Receiver<crate::nodes::sim::core::RoadCommitAck>>,
     /// Latest road-tool preview, validated synchronously when it was requested.
     pub(crate) road_preview_result: RwLock<Option<RoadPreviewSnapshot>>,
-    /// Immutable road-tool query state used by cursor picking without locking SimCore.
-    pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
+    /// The road tool's published view (cursor picking, hover, terrain jobs) and its preview
+    /// context, both read without locking SimCore (`ROAD-68-E`).
+    pub(crate) road_tool: Arc<RoadToolShared>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Main-thread presentation cache; never serialized or used by simulation decisions.
@@ -368,7 +371,7 @@ impl SimulationNode {
         if let Some(rx) = self.cmd_rx.take() {
             let core = Arc::clone(&self.core);
             let snap = Arc::clone(&self.snapshot);
-            let road_query = Arc::clone(&self.road_tool_query_snapshot);
+            let road_query = Arc::clone(&self.road_tool);
             self.sim_thread = Some(std::thread::spawn(move || {
                 run_sim_thread(core, snap, road_query, rx);
             }));
@@ -377,15 +380,15 @@ impl SimulationNode {
 
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
-        let (snapshot, road_tool_snapshot) = {
+        let (snapshot, road_tool_publication) = {
             let mut core = self.lock_core();
             let snapshot = core.build_snapshot();
-            let road_tool_snapshot = road_tool_snapshot_from_core(&core);
-            (snapshot, road_tool_snapshot)
+            let road_tool_publication = core.publish_road_tool_view(None);
+            (snapshot, road_tool_publication)
         };
         *self.snapshot.write().unwrap() = snapshot;
-        if let Some(road_query_snapshot) = road_tool_snapshot {
-            *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
+        if let Some(publication) = road_tool_publication {
+            self.road_tool.publish(publication);
         }
     }
 }
@@ -459,9 +462,10 @@ impl INode3D for SimulationNode {
 
         core.precompute_road_mesh_data();
         let initial_snapshot = core.build_snapshot();
-        let road_tool_query_snapshot = road_tool_snapshot_from_core(&core)
+        let road_tool = core
+            .publish_road_tool_view(None)
             .expect("the initial roadbed generation must be publishable");
-        let road_tool_query_snapshot = Arc::new(RwLock::new(road_tool_query_snapshot));
+        let road_tool = Arc::new(RoadToolShared::new(road_tool.view));
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
         let terrain_patch_payload_jobs = Arc::new(Mutex::new(TerrainPatchPayloadAsyncState::new()));
         let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
@@ -486,7 +490,7 @@ impl INode3D for SimulationNode {
             road_commit_request_id: 0,
             road_commit_result: None,
             road_preview_result: RwLock::new(None),
-            road_tool_query_snapshot,
+            road_tool,
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             car_visuals: Default::default(),

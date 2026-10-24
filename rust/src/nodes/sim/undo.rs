@@ -23,6 +23,7 @@ impl SimCore {
             return;
         }
         self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
             terrain: None,
             water: None,
             trans_graph: None,
@@ -58,6 +59,7 @@ impl SimCore {
         inc_runtime: bool,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
             terrain: if inc_terrain {
                 Some(self.heightmap.clone_visual_dense())
             } else {
@@ -126,6 +128,7 @@ impl SimCore {
         zoning: Option<ZoningParcelRemovalUndo>,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
             terrain: None,
             water: None,
             trans_graph: Some(graph),
@@ -155,6 +158,7 @@ impl SimCore {
             return;
         }
         self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
             terrain: None,
             water: None,
             trans_graph: None,
@@ -170,8 +174,13 @@ impl SimCore {
         self.undo_stack.push_back(snapshot);
     }
 
-    /// Rejects a staged road before lane, routing, entrance, or parcel maintenance runs.
-    pub(crate) fn rollback_staged_road_edit(&mut self) {
+    /// Rejects a staged road before lane, routing, entrance, or parcel maintenance runs. With
+    /// the install's `restore`, the roadbed swaps its replaced pieces back instead of
+    /// recompiling them (`ROAD-68-E`).
+    pub(crate) fn rollback_staged_road_edit(
+        &mut self,
+        restore: Option<&crate::simulation::network::roadbed::RoadbedRestore>,
+    ) {
         let state = self
             .undo_stack
             .pop_back()
@@ -189,7 +198,7 @@ impl SimCore {
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
-        self.reset_local_network_render_state(&edge_ids, &node_ids);
+        self.reset_local_network_render_state(&edge_ids, &node_ids, restore);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
     }
 
@@ -209,6 +218,7 @@ impl SimCore {
             return false;
         };
         self.push_undo_snapshot(SimulationSnapshot {
+            roadbed: None,
             terrain: None,
             water: None,
             trans_graph: None,
@@ -401,6 +411,7 @@ impl SimCore {
                 terrain,
                 water,
                 trans_graph,
+                roadbed,
                 zoning,
                 runtime,
             } = state;
@@ -498,7 +509,7 @@ impl SimCore {
                     self.zoning.invalidate_cell_lot_assets();
                     self.reset_network_render_state(old_engineered_patch_keys);
                 } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
-                    self.reset_local_network_render_state(&edge_ids, &node_ids);
+                    self.reset_local_network_render_state(&edge_ids, &node_ids, roadbed.as_ref());
                 }
             }
             return true;
@@ -533,14 +544,22 @@ impl SimCore {
         self.mark_network_render_dirty();
     }
 
-    // Undo restores the graph; the roadbed rebuilds the restored owners' pieces from it.
+    // Undo restores the graph. The roadbed swaps back the pieces the edit's install replaced
+    // when nothing rebuilt them since (`ROAD-68-E`), so it holds the pre-edit pieces themselves;
+    // otherwise it rebuilds the restored owners' pieces from the restored graph.
     fn reset_local_network_render_state(
         &mut self,
         edge_ids: &HashSet<usize>,
         node_ids: &HashSet<u32>,
+        restore: Option<&crate::simulation::network::roadbed::RoadbedRestore>,
     ) {
-        self.transit_network
-            .mark_surface_dirty_from_sets(edge_ids, node_ids);
+        let roadbed = &mut self.transit_network.roadbed;
+        match restore.filter(|restore| roadbed.can_restore(restore)) {
+            Some(restore) => roadbed.restore(restore),
+            None => self
+                .transit_network
+                .mark_surface_dirty_from_sets(edge_ids, node_ids),
+        }
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
     }
