@@ -74,6 +74,31 @@ impl NetworkMeshChunkPartition {
         };
         let (x0, x1) = range(|point| point.x, origin_x);
         let (z0, z1) = range(|point| point.z, origin_z);
+        // Most triangles lie in one chunk: no clip, the same output as clipping by its rectangle.
+        if (x0, z0) == (x1, z1) {
+            let chunk = (x0, z0);
+            if !self.target_chunks.contains(&chunk) {
+                return;
+            }
+            let (centre_x, centre_z) = self.frame_centre(chunk);
+            let local = triangle.points.map(|point| {
+                Vector3::new(
+                    render_frame_local(point.x, centre_x),
+                    point.y as f32,
+                    render_frame_local(point.z, centre_z),
+                )
+            });
+            let [a, b, c] = triangle.points;
+            if (b - a).cross(c - a) != RoadVec3::ZERO {
+                emit(
+                    self.chunks.entry(chunk).or_default(),
+                    local,
+                    triangle.uvs,
+                    triangle.paint,
+                );
+            }
+            return;
+        }
         for kx in x0..=x1 {
             for kz in z0..=z1 {
                 let chunk = (kx, kz);
