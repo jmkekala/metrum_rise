@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::nodes::simulation_node::SimulationNode;
-use crate::simulation::network::roadbed::{RoadVec3, road_ray_triangle_intersection_t};
+use crate::simulation::network::roadbed::RoadVec3;
 use godot::prelude::Vector2;
 use std::sync::Arc;
 
@@ -126,13 +126,6 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
     let mut graded_samples = 0;
     for index in 0..core.allocator.building_sites.len() {
         let site = core.allocator.building_sites[index].clone();
-        for (_, triangle) in site.foundation_mesh() {
-            assert!(
-                triangle
-                    .iter()
-                    .all(|p| (p.y - site.support_height_m).abs() < 0.0001)
-            );
-        }
         // Interior quadrature of every material region: no site/road/terrain hole may
         // hide behind a successful CDT status or a nonempty patch buffer.
         let surface = &site.surfaces[0];
@@ -195,16 +188,8 @@ fn rendered_paving_height(core: &SimCore, point: Vector2) -> Option<f32> {
     rendered_paving_surface(core, point).map(|sample| sample.0)
 }
 
+// The paved terrain face (site pads included, `ROAD-68-D`) over a point.
 fn rendered_paving_surface(core: &SimCore, point: Vector2) -> Option<(f32, Vector3)> {
-    for site in &core.allocator.building_sites {
-        for (material, triangle) in site.foundation_mesh() {
-            if material.is_some()
-                && let Some(y) = triangle_height(*triangle, point)
-            {
-                return Some((y, upward_triangle_normal(*triangle)));
-            }
-        }
-    }
     for patch in core.refined_terrain_patch_cache.values() {
         let Some(buffers) = &patch.mesh_buffers else {
             continue;
@@ -236,19 +221,23 @@ fn upward_triangle_normal(triangle: [Vector3; 3]) -> Vector3 {
     normal.normalized() * normal.y.signum()
 }
 
+// Height of a face over a point. Every face that is not exactly degenerate covers its closed plan
+// area, however thin (`ROAD-68-D`): the orientation signs of f32 points are exact in f64, so a
+// point on a shared edge lies in both faces.
 fn triangle_height(triangle: [Vector3; 3], point: Vector2) -> Option<f32> {
-    let triangle = triangle.map(|p| RoadVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)));
-    let top = triangle
-        .iter()
-        .map(|p| p.y)
-        .fold(f64::NEG_INFINITY, f64::max)
-        + 1.0;
-    road_ray_triangle_intersection_t(
-        triangle,
-        RoadVec3::new(f64::from(point.x), top, f64::from(point.y)),
-        -RoadVec3::Y,
-    )
-    .map(|t| (top - t) as f32)
+    let [a, b, c] =
+        triangle.map(|p| RoadVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)));
+    let q = RoadVec3::new(f64::from(point.x), 0.0, f64::from(point.y));
+    let orient = |u: RoadVec3, v: RoadVec3, w: RoadVec3| {
+        (v.x - u.x) * (w.z - u.z) - (v.z - u.z) * (w.x - u.x)
+    };
+    let area = orient(a, b, c);
+    let sides = [orient(a, b, q), orient(b, c, q), orient(c, a, q)];
+    if area == 0.0 || sides.iter().any(|side| side * area < 0.0) {
+        return None;
+    }
+    let [wc, wa, wb] = sides.map(|side| side / area);
+    Some((a.y * wa + b.y * wb + c.y * wc) as f32)
 }
 
 #[test]
@@ -407,7 +396,6 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                     assert_eq!(site.lot_footprint_world, expected.lot_footprint_world);
                     assert_eq!(site.support_height_m, expected.support_height_m);
                     assert_eq!(site.surfaces, expected.surfaces);
-                    assert_eq!(site.foundation_mesh(), expected.foundation_mesh());
                 }
                 for (key, expected) in &zoned_patches {
                     assert_eq!(
@@ -427,6 +415,8 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
     }
 }
 
+// The pad is composed into the terrain buffers (`ROAD-68-D`): every face over a pad point is a
+// pad face, flat at the support height, never ground graded or left over the pad.
 fn assert_no_terrain_over_site_pads(core: &SimCore) {
     for site in &core.allocator.building_sites {
         let center = site.footprint_world.iter().copied().sum::<Vector2>()
@@ -449,8 +439,9 @@ fn assert_no_terrain_over_site_pads(core: &SimCore) {
                     let triangle =
                         [face[0], face[1], face[2]].map(|i| buffers.terrain_vertices[i as usize]);
                     assert!(
-                        triangle_height(triangle, point - patch_center).is_none(),
-                        "terrain overlaps the flat building pad at {point:?}"
+                        triangle_height(triangle, point - patch_center).is_none()
+                            || triangle.iter().all(|p| p.y == site.support_height_m),
+                        "terrain overlaps the flat building pad at {point:?}: {triangle:?}"
                     );
                 }
             }
@@ -1025,7 +1016,6 @@ fn spawn_yard_access_agent(
 }
 
 #[test]
-#[ignore = "ROAD-68-D: seam samples of buildings 0 and 1 fall between the world-space foundation and the patch-local terrain (roads.md open question 23)"]
 fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
     let mut core = kuopio_yard_fixture();
     let mut points = Vec::new();
@@ -1037,7 +1027,9 @@ fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
         for u in [0.1, 0.3, 0.5, 0.7, 0.9] {
             for v in [0.05, 0.25, 0.5, 0.9] {
                 let point = p[0].lerp(p[1], u).lerp(p[3].lerp(p[2], u), v);
-                let height = rendered_paving_height(&core, point).unwrap();
+                let height = rendered_paving_height(&core, point).unwrap_or_else(|| {
+                    panic!("building {building} yard ({u}, {v}) at {point:?} is not paved")
+                });
                 let source = core.get_height_at_internal(point);
                 cut += usize::from(source - height > 0.1);
                 fill += usize::from(height - source > 0.1);

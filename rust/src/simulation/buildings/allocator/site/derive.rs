@@ -292,7 +292,6 @@ impl BuildingAllocator {
             .unwrap_or_default();
 
         BuildingSiteClient {
-            foundation_mesh: Default::default(),
             footprint_world,
             lot_footprint_world,
             support_height_m: building.support_height_m,

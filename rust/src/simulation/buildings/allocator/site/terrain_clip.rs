@@ -93,6 +93,17 @@ impl BuildingAllocator {
 }
 
 impl BuildingSiteTerrainSnapshot {
+    /// Returns the captured local sites' support pads, in site order.
+    pub(crate) fn foundations(&self) -> Vec<super::model::BuildingSiteFoundation> {
+        self.sites
+            .iter()
+            .map(|site| super::model::BuildingSiteFoundation {
+                footprint_world: site.footprint_world.clone(),
+                support_height_m: site.support_height_m,
+            })
+            .collect()
+    }
+
     /// Returns ordered paving regions from the captured local sites, including apron-only hits.
     pub(crate) fn paving_surfaces(&self) -> Vec<super::model::BuildingSiteSurfaceClient> {
         self.sites

@@ -65,39 +65,13 @@ impl SimCore {
         self.allocator.building_ref_revision()
     }
 
-    /// Returns world-space triangle buffers for live flat building-site top surfaces.
+    /// Returns the building-site revision and, on the buildings debug channel, the site debug
+    /// export. Site pads and their paving render as part of the terrain patches (`ROAD-68-D`).
     pub fn get_building_site_mesh_data_internal(&self) -> VarDictionary {
-        let mut ground_vertices = Vec::with_capacity(self.allocator.building_sites.len() * 6);
-        let mut asphalt_vertices = Vec::new();
-        let mut concrete_vertices = Vec::new();
-
-        for site in &self.allocator.building_sites {
-            for (material, triangle) in site.foundation_mesh() {
-                let target = match material {
-                    None => &mut ground_vertices,
-                    Some(SiteSurfaceMaterial::Asphalt) => &mut asphalt_vertices,
-                    Some(SiteSurfaceMaterial::Concrete) => &mut concrete_vertices,
-                };
-                target.extend_from_slice(triangle);
-            }
-        }
-
         let mut dict = VarDictionary::new();
         dict.set(
             "revision",
             i64::try_from(self.allocator.building_ref_revision()).unwrap_or(i64::MAX),
-        );
-        dict.set(
-            "ground_vertices",
-            PackedVector3Array::from_iter(ground_vertices),
-        );
-        dict.set(
-            "asphalt_vertices",
-            PackedVector3Array::from_iter(asphalt_vertices),
-        );
-        dict.set(
-            "concrete_vertices",
-            PackedVector3Array::from_iter(concrete_vertices),
         );
         if crate::debug::Channel::Buildings.enabled() {
             dict.set("debug_enabled", true);

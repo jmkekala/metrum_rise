@@ -1676,7 +1676,6 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     };
     let house = square(2.0, 10.0);
     core.allocator.building_sites.push(BuildingSiteClient {
-        foundation_mesh: Default::default(),
         structure_world: vec![[house[0], house[1], house[2], house[3]]],
         planting_world: Vec::new(),
         footprint_world: square(0.0, 20.0),

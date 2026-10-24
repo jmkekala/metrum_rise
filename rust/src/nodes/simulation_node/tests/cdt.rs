@@ -532,6 +532,7 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
     let cdt_input = TerrainCdtInput::new(previous.cdt_patch, Vec::new(), Vec::new());
     let input = RefinedTerrainPatchBuildInput {
         site_surfaces: Vec::new(),
+        site_foundations: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -676,6 +677,7 @@ fn local_refined_build_derives_complete_clip_counts_from_window_manifests() {
     mixed_window.site_clip_fingerprints = vec![9];
     let input = RefinedTerrainPatchBuildInput {
         site_surfaces: Vec::new(),
+        site_foundations: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -720,6 +722,7 @@ fn local_refined_build_rejects_equal_sized_wrong_contributor_manifest() {
     road_window.road_clip_fingerprints = vec![7];
     let input = RefinedTerrainPatchBuildInput {
         site_surfaces: Vec::new(),
+        site_foundations: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -769,6 +772,7 @@ fn refined_patch_build_never_reuses_failed_window() {
     let invalid_patch = TerrainCdtPatch::new(0.0, 0.0, 0.0, 1.0, [0.0; 4]);
     let input = RefinedTerrainPatchBuildInput {
         site_surfaces: Vec::new(),
+        site_foundations: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,

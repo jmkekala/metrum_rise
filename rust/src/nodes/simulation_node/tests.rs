@@ -97,6 +97,7 @@ fn test_cached_refined_terrain_patch(
 ) -> CachedRefinedTerrainPatch {
     CachedRefinedTerrainPatch {
         site_surfaces: Vec::new(),
+        site_foundations: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,

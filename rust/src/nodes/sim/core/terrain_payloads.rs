@@ -2,7 +2,7 @@
 
 //! Refined road-clipped terrain build and cache payload contracts.
 
-use crate::simulation::buildings::allocator::BuildingSiteSurfaceClient;
+use crate::simulation::buildings::allocator::{BuildingSiteFoundation, BuildingSiteSurfaceClient};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -47,6 +47,8 @@ pub(crate) struct RefinedTerrainPatchCacheKey {
 pub(crate) struct RefinedTerrainPatchBuildInput {
     /// Local material regions partitioned onto the final engineered ground.
     pub(crate) site_surfaces: Vec<BuildingSiteSurfaceClient>,
+    /// Local sites' support pads, composed into the patch's terrain (`ROAD-68-D`).
+    pub(crate) site_foundations: Vec<BuildingSiteFoundation>,
     /// Cache key for the produced patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
     /// Patch-local terrain source generation captured when this input was assembled.
@@ -219,6 +221,8 @@ pub(crate) struct CachedRefinedTerrainMeshBuffers {
 pub(crate) struct CachedRefinedTerrainPatch {
     /// Exact material inputs; material changes invalidate composed buffers, not CDT windows.
     pub(crate) site_surfaces: Vec<BuildingSiteSurfaceClient>,
+    /// Exact support pads composed into the buffers; a change invalidates them like materials.
+    pub(crate) site_foundations: Vec<BuildingSiteFoundation>,
     /// Cache key for this patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
     /// CDT contract revision used to build this cached patch.

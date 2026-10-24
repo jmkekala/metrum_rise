@@ -2422,7 +2422,6 @@ mod tests {
         allocator
             .building_sites
             .push(super::super::site::BuildingSiteClient {
-                foundation_mesh: Default::default(),
                 structure_world: Vec::new(),
                 planting_world: Vec::new(),
                 footprint_world: square_footprint(0.0, 0.0, 10.0, 10.0),

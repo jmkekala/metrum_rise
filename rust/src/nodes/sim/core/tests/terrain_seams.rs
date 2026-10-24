@@ -192,10 +192,14 @@ fn reference_junction_terrain_is_watertight() {
 
 // Interior edges of the published road chunks' surface layers that do not border exactly two
 // faces with bitwise equal world vertices (chunk-local f32 plus the chunk's frame centre, in f64).
-fn open_road_edges(core: &mut SimCore) -> Vec<String> {
+// Every published road chunk face edge in world coordinates, with its faces' (layer, chunk) and
+// the faces' points.
+type RoadEdges = BTreeMap<(Key, Key), Vec<(usize, (i32, (i32, i32)))>>;
+
+fn road_edges(core: &mut SimCore) -> (RoadEdges, Vec<[(f64, f64, f32); 3]>) {
     core.precompute_road_mesh_data();
     let roadbed = &core.transit_network.roadbed;
-    let mut edges = BTreeMap::<(Key, Key), Vec<(usize, (i32, i32))>>::new();
+    let mut edges = RoadEdges::new();
     let mut thirds = Vec::new();
     let span = roadbed.chunk_span_m();
     let (origin_x, origin_z) = roadbed.chunk_origin_m();
@@ -225,11 +229,17 @@ fn open_road_edges(core: &mut SimCore) -> Vec<String> {
                     edges
                         .entry(if p < q { (p, q) } else { (q, p) })
                         .or_default()
-                        .push((index, (layer as i32, chunk.0 * 1000 + chunk.1)));
+                        .push((index, (layer as i32, chunk)));
                 }
             }
         }
     }
+    (edges, thirds)
+}
+
+fn open_road_edges(core: &mut SimCore) -> Vec<String> {
+    let (edges, thirds) = road_edges(core);
+    let roadbed = &core.transit_network.roadbed;
     let mut problems = Vec::new();
     for ((p, q), users) in &edges {
         if users.len() == 2 {
@@ -276,6 +286,107 @@ fn reference_junction_road_chunks_are_watertight() {
         for (name, strokes, order) in reference_fixtures() {
             let mut core = committed(&strokes, &order, sloped);
             let problems = open_road_edges(&mut core);
+            if !problems.is_empty() {
+                failures.push(format!(
+                    "{name}/{sloped}: {} problems\n  {}",
+                    problems.len(),
+                    problems[..problems.len().min(12)].join("\n  ")
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// Terrain seam vertices (ends of edges with one face and road across) that the road chunk over
+// the same cell does not have with the same bits: the terrain patch and the road chunk over it are
+// one cell of one grid in one frame, so equal world bits mean equal local bits. Open (roads.md
+// question 23): the seam edges themselves are not all shared. Where a seam crosses a CDT tile line
+// inside a patch, the CDT clip adds a seam vertex the road does not have; and on `y_60` a terrain
+// seam edge runs straight past a road vertex 1.85 cm from its end. Both are T-vertices on straight
+// seam edges; the tile-line points are the only seam vertices allowed off the road.
+fn unshared_seam_vertices(core: &mut SimCore) -> Vec<String> {
+    let (faces, bounds) = terrain_faces(core);
+    let (road, _) = road_edges(core);
+    let road_vertices: std::collections::BTreeSet<Key> =
+        road.keys().flat_map(|&(p, q)| [p, q]).collect();
+    let tile = crate::simulation::terrain::TERRAIN_CDT_TILE_SPAN_MM as f64 / 1000.0;
+    let roadbed = &core.transit_network.roadbed;
+    let (origin_x, origin_z) = roadbed.chunk_origin_m();
+    let span = f64::from(roadbed.chunk_span_m());
+    let mut edges = BTreeMap::<(Key, Key), Vec<usize>>::new();
+    for (index, face) in faces.iter().enumerate() {
+        let [a, b, c] = face.points;
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            let (p, q) = (key(p), key(q));
+            edges
+                .entry(if p < q { (p, q) } else { (q, p) })
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut problems = Vec::new();
+    for ((p, q), users) in &edges {
+        if users.len() != 1 {
+            continue;
+        }
+        let face = &faces[users[0]];
+        let [a, b] = [p, q].map(|k| (f64::from_bits(k.0), f64::from_bits(k.1)));
+        let third = face
+            .points
+            .iter()
+            .find(|point| key(**point) != *p && key(**point) != *q)
+            .unwrap();
+        let (dx, dz) = (b.0 - a.0, b.1 - a.1);
+        let length = dx.hypot(dz);
+        let mut normal = (dz / length, -dx / length);
+        if normal.0 * (third.0 - a.0) + normal.1 * (third.1 - a.1) > 0.0 {
+            normal = (-normal.0, -normal.1);
+        }
+        let probe = (
+            (a.0 + b.0) * 0.5 + normal.0 * 0.005,
+            (a.1 + b.1) * 0.5 + normal.1 * 0.005,
+        );
+        if roadbed.band_at(probe.0 as f32, probe.1 as f32).is_none() {
+            continue;
+        }
+        // The road chunk holding the edge's middle is the patch's cell.
+        let middle = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+        let chunk = (
+            ((middle.0 - f64::from(origin_x)) / span).floor() as i32,
+            ((middle.1 - f64::from(origin_z)) / span).floor() as i32,
+        );
+        let patch = bounds[&face.patch];
+        let cell = [0, 1].map(|axis| {
+            let origin = f64::from([origin_x, origin_z][axis]);
+            ((patch[axis] - origin) / span).round() as i32
+        });
+        if chunk != (cell[0], cell[1]) {
+            problems.push(format!("seam edge in patch {:?} lies in road chunk {chunk:?}", face.patch));
+        }
+        for k in [p, q] {
+            let (x, z) = (f64::from_bits(k.0), f64::from_bits(k.1));
+            let on_tile_line =
+                ((x - patch[0]) / tile).fract() == 0.0 || ((z - patch[1]) / tile).fract() == 0.0;
+            if !road_vertices.contains(k) && !on_tile_line {
+                problems.push(format!(
+                    "seam vertex ({x:.4}, {z:.4}, {}) of patch {:?} is no road vertex",
+                    f32::from_bits(k.2),
+                    face.patch
+                ));
+            }
+        }
+    }
+    problems
+}
+
+#[test]
+fn reference_junction_road_and_terrain_share_seam_vertices() {
+    let mut failures = Vec::new();
+    for sloped in [false, true] {
+        for (name, strokes, order) in reference_fixtures() {
+            let mut core = committed(&strokes, &order, sloped);
+            let problems = unshared_seam_vertices(&mut core);
             if !problems.is_empty() {
                 failures.push(format!(
                     "{name}/{sloped}: {} problems\n  {}",

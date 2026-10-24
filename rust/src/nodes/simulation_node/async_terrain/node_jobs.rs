@@ -537,6 +537,7 @@ impl SimulationNode {
             request,
             input: RefinedTerrainPatchBuildInput {
                 site_surfaces: source.sites.paving_surfaces(),
+                site_foundations: source.sites.foundations(),
                 key: RefinedTerrainPatchCacheKey {
                     patch_x: request.key.patch_x,
                     patch_z: request.key.patch_z,

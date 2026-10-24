@@ -385,6 +385,7 @@ impl SimCore {
             );
             inputs.push(RefinedTerrainPatchBuildInput {
                 site_surfaces: sites.paving_surfaces(),
+                site_foundations: sites.foundations(),
                 key,
                 surface_generation,
                 patch: base_patch,
@@ -550,6 +551,7 @@ impl SimCore {
                         && previous.key == input.key
                         && previous.patch == input.patch
                         && previous.site_surfaces == input.site_surfaces
+                        && previous.site_foundations == input.site_foundations
                         && previous.windows.len() == windows.len()
                         && previous
                             .windows
@@ -597,6 +599,7 @@ impl SimCore {
                 };
                 let mut entry = CachedRefinedTerrainPatch {
                     site_surfaces: input.site_surfaces,
+                    site_foundations: input.site_foundations,
                     key: input.key,
                     contract_revision: TERRAIN_CDT_CONTRACT_REVISION,
                     surface_generation: input.surface_generation,
@@ -642,6 +645,7 @@ impl SimCore {
                         SimulationNode::partition_terrain_site_paving(
                             &entry.patch,
                             &entry.site_surfaces,
+                            &entry.site_foundations,
                             &mut buffers,
                         );
                         Some(Arc::new(buffers))

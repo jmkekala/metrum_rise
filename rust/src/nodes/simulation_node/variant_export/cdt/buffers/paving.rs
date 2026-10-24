@@ -1,27 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Material partition of final terrain buffers. No independent yard elevation solver.
+//! Material partition of final terrain buffers, and the site pads that fill the terrain's site
+//! holes. No independent yard elevation solver.
 
 use super::*;
 use crate::assets::SiteSurfaceMaterial;
-use crate::simulation::buildings::allocator::{BuildingSiteSurfaceClient, SitePavingPartition};
+use crate::simulation::buildings::allocator::{
+    BuildingSiteFoundation, BuildingSiteSurfaceClient, SitePavingPartition,
+    foundation_faces_in_frame,
+};
 use crate::simulation::terrain::TerrainPatchSnapshot;
 
 impl SimulationNode {
+    // Partitions the terrain faces by the site surfaces and appends each local site's pad, in
+    // the patch's frame (`ROAD-68-D`, open question 23): the pad's faces run through the same
+    // partition as the terrain's, so a yard edge crossing a footprint side splits pad and terrain
+    // at one point, and the pad's corners convert from f64 as the terrain's seam vertices do.
     pub(in crate::nodes::simulation_node) fn partition_terrain_site_paving(
         patch: &TerrainPatchSnapshot,
         surfaces: &[BuildingSiteSurfaceClient],
+        foundations: &[BuildingSiteFoundation],
         buffers: &mut CachedRefinedTerrainMeshBuffers,
     ) {
-        if surfaces.is_empty() || !buffers.variant_payload_valid {
+        if (surfaces.is_empty() && foundations.is_empty()) || !buffers.variant_payload_valid {
             return;
         }
         // Partition in patch-local coordinates, retaining original seam precision.
+        let (centre_x, centre_z) = patch.frame_centre();
         let mut local = surfaces.to_vec();
         for surface in &mut local {
             for p in &mut surface.vertices_world {
-                p.x -= patch.world_origin_x + patch.world_size_x * 0.5;
-                p.y -= patch.world_origin_z + patch.world_size_z * 0.5;
+                p.x = render_frame_local(f64::from(p.x), centre_x);
+                p.y = render_frame_local(f64::from(p.y), centre_z);
             }
         }
         let Some(partition) = SitePavingPartition::new(&local) else {
@@ -45,11 +55,7 @@ impl SimulationNode {
                     return;
                 }
                 changed = true;
-                let color = match material {
-                    None => Color::from_rgb(1.0, 1.0, 1.0),
-                    Some(SiteSurfaceMaterial::Asphalt) => Color::from_rgb(1.0, 0.0, 0.0),
-                    Some(SiteSurfaceMaterial::Concrete) => Color::from_rgb(0.0, 1.0, 0.0),
-                };
+                let color = material_color(material);
                 for point in triangle {
                     let weights = barycentric_xz(original, point);
                     let mut normal = Vector3::ZERO;
@@ -66,6 +72,46 @@ impl SimulationNode {
                 }
             });
         }
+        let rect = [
+            f64::from(patch.world_origin_x),
+            f64::from(patch.world_origin_z),
+            f64::from(patch.world_origin_x + patch.world_size_x),
+            f64::from(patch.world_origin_z + patch.world_size_z),
+        ];
+        let patch_uv = |point: Vector3| {
+            Vector2::new(
+                ((point.x + centre_x - patch.world_origin_x) / patch.world_size_x.max(0.001))
+                    .clamp(0.0, 1.0),
+                ((point.z + centre_z - patch.world_origin_z) / patch.world_size_z.max(0.001))
+                    .clamp(0.0, 1.0),
+            )
+        };
+        for foundation in foundations {
+            let triangulated =
+                foundation_faces_in_frame(foundation, rect, (centre_x, centre_z), |face| {
+                    partition.partition(face, |material, triangle| {
+                        // The pad is flat; an exactly degenerate piece covers nothing, as in
+                        // the CDT export.
+                        if (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0])
+                            == Vector3::ZERO
+                        {
+                            return;
+                        }
+                        changed = true;
+                        for point in triangle {
+                            vertices.push(point);
+                            output_indices.push((vertices.len() - 1) as i32);
+                            normals.push(Vector3::UP);
+                            uvs.push(patch_uv(point));
+                            colors.push(material_color(material));
+                        }
+                    });
+                });
+            if triangulated.is_none() {
+                buffers.variant_payload_valid = false;
+                return;
+            }
+        }
         if !changed {
             return;
         }
@@ -77,6 +123,15 @@ impl SimulationNode {
         buffers.terrain_colors = colors;
         buffers.variant_payload_valid =
             Self::cached_refined_terrain_mesh_buffers_are_valid(buffers);
+    }
+}
+
+// Terrain vertex colour of a material region: white terrain, red asphalt, green concrete.
+fn material_color(material: Option<SiteSurfaceMaterial>) -> Color {
+    match material {
+        None => Color::from_rgb(1.0, 1.0, 1.0),
+        Some(SiteSurfaceMaterial::Asphalt) => Color::from_rgb(1.0, 0.0, 0.0),
+        Some(SiteSurfaceMaterial::Concrete) => Color::from_rgb(0.0, 1.0, 0.0),
     }
 }
 

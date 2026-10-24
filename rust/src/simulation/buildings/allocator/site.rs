@@ -17,9 +17,9 @@ pub(crate) use grading::{
 pub(crate) use grading::{
     site_feasibility_dependency_margin_m, solve_building_site_support_height,
 };
-pub(crate) use model::BuildingSiteSurfaceClient;
+pub(crate) use model::{BuildingSiteFoundation, BuildingSiteSurfaceClient};
 pub(crate) use model::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
-pub(crate) use paving::SitePavingPartition;
+pub(crate) use paving::{SitePavingPartition, foundation_faces_in_frame};
 pub(crate) use query::NearbySites;
 
 #[cfg(test)]

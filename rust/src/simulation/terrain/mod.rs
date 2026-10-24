@@ -11,6 +11,7 @@ pub(crate) mod cdt;
 pub mod chunks;
 pub(crate) mod grading;
 mod patch_masks;
+pub(crate) mod rect_clip;
 pub mod rect_loops;
 mod visual;
 

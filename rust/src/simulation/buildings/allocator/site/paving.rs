@@ -2,10 +2,12 @@
 
 //! Exact material partition of existing support triangles; never chooses new ground heights.
 
-use super::model::{BuildingSiteClient, BuildingSiteSurfaceClient};
+use super::model::{BuildingSiteFoundation, BuildingSiteSurfaceClient};
 use crate::assets::SiteSurfaceMaterial;
 use crate::simulation::network::roadbed::{RoadVec3, triangulate_constrained_rings_xz};
-use godot::prelude::{Vector2, Vector3};
+use crate::simulation::terrain::rect_clip::clip_triangle_to_rect;
+use crate::simulation::terrain::render_frame_local;
+use godot::prelude::Vector3;
 use rstar::{AABB, RTree, RTreeObject};
 
 // One convex material region with its interior on the left of every edge: a whole convex
@@ -120,49 +122,41 @@ impl SitePavingPartition {
     }
 }
 
-impl BuildingSiteClient {
-    /// Foundation only. Paving beyond the foundation is part of the terrain mesh.
-    pub(crate) fn foundation_mesh(&self) -> &[(Option<SiteSurfaceMaterial>, [Vector3; 3])] {
-        self.foundation_mesh.get_or_init(|| {
-            let Some(triangles) =
-                site_foundation_triangles(&self.footprint_world, self.support_height_m)
-            else {
-                return Vec::new();
-            };
-            let Some(partition) = SitePavingPartition::new(&self.surfaces) else {
-                return Vec::new();
-            };
-            let mut result = Vec::new();
-            for triangle in triangles {
-                partition.partition(triangle, |material, mut triangle| {
-                    // Godot's front face uses clockwise winding viewed from above.
-                    if (triangle[1] - triangle[0])
-                        .cross(triangle[2] - triangle[0])
-                        .y
-                        > 0.0
-                    {
-                        triangle.swap(1, 2);
-                    }
-                    result.push((material, triangle));
-                });
-            }
-            result
-        })
-    }
-}
-
-// Foundation topology uses the same canonical triangulator as roads and material regions.
-fn site_foundation_triangles(points: &[Vector2], height: f32) -> Option<Vec<[Vector3; 3]>> {
-    let ring: Vec<_> = points
+/// The foundation's faces inside `rect` (`[min_x, min_z, max_x, max_z]`, a terrain patch), in
+/// the patch's render frame centred at `centre`: the footprint triangulated in f64 by the
+/// canonical triangulator, clipped to the patch canonically (neighbouring patches split a shared
+/// edge alike), and each vertex converted once from f64 by [`render_frame_local`], as the
+/// terrain's own vertices are, so the pad and the terrain around it share their seam vertices
+/// bitwise. Faces wind like the terrain's, with an upward `(b - a) x (c - a)`. `None` when the
+/// footprint does not triangulate. `O(V log V)` for `V` footprint corners.
+pub(crate) fn foundation_faces_in_frame(
+    foundation: &BuildingSiteFoundation,
+    rect: [f64; 4],
+    centre: (f32, f32),
+    mut emit: impl FnMut([Vector3; 3]),
+) -> Option<()> {
+    let height = f64::from(foundation.support_height_m);
+    let ring: Vec<_> = foundation
+        .footprint_world
         .iter()
-        .map(|p| RoadVec3::new(f64::from(p.x), f64::from(height), f64::from(p.y)))
+        .map(|p| RoadVec3::new(f64::from(p.x), height, f64::from(p.y)))
         .collect();
-    Some(
-        triangulate_constrained_rings_xz(&[ring])?
-            .into_iter()
-            .map(|triangle| triangle.map(to_vector3))
-            .collect(),
-    )
+    for triangle in triangulate_constrained_rings_xz(&[ring])? {
+        clip_triangle_to_rect(triangle, rect).fan(|face| {
+            let mut local = face.map(|vertex| {
+                Vector3::new(
+                    render_frame_local(vertex.point.x, centre.0),
+                    vertex.point.y as f32,
+                    render_frame_local(vertex.point.z, centre.1),
+                )
+            });
+            if (local[1] - local[0]).cross(local[2] - local[0]).y < 0.0 {
+                local.swap(1, 2);
+            }
+            emit(local);
+        });
+    }
+    Some(())
 }
 
 fn bounds(points: &[RoadVec3]) -> AABB<[f64; 2]> {
@@ -255,6 +249,7 @@ fn to_vector3(p: RoadVec3) -> Vector3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use godot::prelude::Vector2;
 
     #[test]
     fn paving_partitions_sloped_ground_without_gaps_or_height_changes() {
