@@ -334,6 +334,36 @@ fn preview_chunks_are_the_committed_chunks_without_lane_layers() {
     }
 }
 
+#[test]
+fn save_and_load_reproduce_the_pieces_bitwise() {
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH], &[0], sloped);
+        let points = stroke(&core, side);
+        let mut context = context(&core);
+        let previewed = Arc::new(preview(&mut context, &points));
+        commit(&mut core, &points, Some(previewed));
+        let before = pieces(&core);
+        let path = temp_save_path("road_preview_pieces");
+        core.save_game_settled(path.to_str().unwrap(), None)
+            .expect("the fixture saves");
+        let mut loaded = test_core();
+        let loaded_result = loaded.load_game_internal(path.to_str().unwrap());
+        std::fs::remove_file(&path).unwrap();
+        loaded_result.expect("the fixture loads");
+        assert!(loaded.transit_network.roadbed.is_current());
+        assert_eq!(
+            loaded.transit_network.roadbed.failed_nodes(),
+            core.transit_network.roadbed.failed_nodes()
+        );
+        assert_eq!(
+            bits_only(&pieces(&loaded)),
+            bits_only(&before),
+            "sloped {sloped}: a loaded city's pieces equal the saved city's bit for bit"
+        );
+    }
+}
+
 // Native per-stage preview timings on the `ROAD-30` preview fixtures (`docs/roads.md` "Stage
 // budgets"): `sloped_t` sweeps a T onto a 220 m trunk, `sloped_branch` orbits a fourth leg of
 // the T at (-65, 0). Eight poses each, as `road_preview_replay.gd` moves them; stages are
@@ -347,7 +377,9 @@ fn benchmark_road_preview_stages() {
     let leg = ([Vector2::new(-65.0, 0.0), Vector2::new(-65.0, 60.0)], 1);
     let sweep = |u: f32| Vector2::new(-40.0, 0.0).lerp(Vector2::new(90.0, 0.0), u);
     let orbit = |u: f32| Vector2::new(-60.0, -55.0) + Vector2::from_angle(std::f32::consts::TAU * u) * 15.0;
-    let cases: [(&str, Vec<Stroke>, Vector2, &dyn Fn(f32) -> Vector2); 2] = [
+    // Name, committed roads, stroke start and the end pose at u in [0, 1).
+    type Case<'a> = (&'a str, Vec<Stroke>, Vector2, &'a dyn Fn(f32) -> Vector2);
+    let cases: [Case; 2] = [
         ("sloped_t", vec![main], Vector2::new(0.0, -80.0), &sweep),
         ("sloped_branch", vec![main, leg], Vector2::new(-65.0, 0.0), &orbit),
     ];

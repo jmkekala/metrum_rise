@@ -286,9 +286,18 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	_expect(tool._commit_request_id == 0 and simulation.get_network_render_generation() > generation, "the commit must finish")
 	_expect(simulation.get_road_benchmark_state()["command"].get("preview_plan_reused", false), "a current preview is the commit's plan")
 	_expect(tool._swap_display == held and not held._instances.is_empty(), "the preview stays shown until the committed chunks are installed")
+	# The next stroke previews on the committed context before its chunks are installed.
+	tool.cancel_road()
+	tool._begin_stroke(_ground_point(-48.0, 40.0), 0, Vector3.ZERO)
+	tool.set_scripted_pointer(true, _ground_point(48.0, 40.0))
+	tool._process(1.0 / 60.0)
+	var next_keys: Array[Vector2i] = tool._preview_display._keys.duplicate()
 	generation = simulation.get_network_render_generation()
 	_expect(tool.update_main_mesh(generation) == generation, "committed chunks must replace the source generation")
 	_expect(tool._swap_display == null and held._instances.is_empty(), "installing the committed chunks ends the preview in the same call")
+	for key in tool._road_chunk_instances:
+		_expect(tool._road_chunk_instances[key].visible != (key in next_keys), "the next stroke's preview hides exactly the installed chunks it replaces")
+	tool.cancel_road()
 	for instance in tool._road_chunk_instances.values():
 		_expect(instance.visible, "the committed generation must be visible")
 	if lane_free:

@@ -567,6 +567,16 @@ the core lock, which also resolves the hover core-lock bug `ROAD-70` in
 [`roadmap.md`](roadmap.md) (`get_agriculture_field_overlay_revision`, fixed in `ROAD-68-E`: the
 render snapshot publishes the revision and the getter reads it lock-free).
 
+As built (`ROAD-68-E` part 1): the context is the published view plus the preview's private
+graph replica. The view shares terrain and water until their own generations change, the
+roadbed in `O(1)` and the published road chunks in `O(1)`, and takes its graph from the copy the
+command's routing rebuild made (commit, undo, road bulldoze); the replica follows by the records
+of the owners whose pieces the roadbed rebuilt. Sites, zoning and field reservations are not in
+the view yet: the parcel and field corridor checks run at the commit only (`ROAD-68-E` part 2,
+[open question 1](#road-68-open-questions), plans them from the preview's pieces), and the
+terrain inputs (refined patch entries, assembly ledgers, ownership margins, site snapshots) wait
+for terrain in the preview.
+
 **Preview.** `preview_road(context, stroke)` runs synchronously in RoadTool's early process
 callback:
 
@@ -581,6 +591,23 @@ the result in the same frame. There is no mailbox, worker queue, request-ID reti
 publisher, coarse preview ribbon or stale-result path. Reintroducing asynchrony requires a measured
 reason.
 
+As built (`ROAD-68-E` part 1): stages 1, 2 and the road half of 4. The road payload is every
+render chunk the stroke changes, built by the commit's own emission and splice
+(`RoadRenderer::generate_preview_chunks`) into the view's published chunks and sealed, so a
+stroke whose closure has no crossing and no sign publishes exactly the previewed chunks (tested
+in Rust and in `road_junction_preview_test.gd`). Crosswalk paint and road signs are missing from
+the preview's rebuilt pieces, because the renderer builds both from lanes, which a preview does
+not build; a zebra also cuts the asphalt triangles under it, so the asphalt of a rebuilt piece
+with a crossing differs too. `ROAD-68-F` owns "lane markings at junctions, street lights and road
+signs" and builds both from the layout's `Crosswalk` and arms for preview and commit alike (one
+function); no cheaper exact path exists now (lanes for the closure would need a lane-system
+replica), so payload equality stays open for those strokes
+([open question 24](#road-68-open-questions)). The parcel and field corridor checks run at the
+commit only ([open question 23](#road-68-open-questions)). Stage 3 and the terrain half of 4 are open. The fingerprint is the road-tool surface
+generation, the roadbed generation and the source and visual terrain generations: the roadbed
+generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
+generation was added; terrain patch and site revisions join it with terrain in the preview.
+
 **Commit.** A click submits the preview's plan as an ordered simulation operation.
 
 - If the fingerprint is still current, the simulation installs the preview's pieces and terrain
@@ -590,8 +617,22 @@ reason.
 Godot keeps showing the preview until the committed generation is acknowledged, then swaps road and
 terrain atomically, so no frame shows neither.
 
+As built (`ROAD-68-E` part 1): the click submits the latest preview of exactly that stroke; with a
+current fingerprint the commit uses its plan and installs its pieces when `can_install` holds,
+otherwise it plans and compiles locally. The commit acknowledgement carries its generation; the
+road tool holds the preview until that generation's chunks are installed, and the install
+(`NetworkTool._road_mesh_installed`) releases it in the same call. Terrain is still built by the
+commit's own staged validation.
+
 **Undo.** The undo record holds the replaced pieces (`Arc`) and terrain patch revisions; undo
 restores them by swapping.
+
+As built (`ROAD-68-E` part 1): undo swaps the replaced pieces back when nothing rebuilt them
+since, restores the graph in `O(delta records * log edges)`, and rebuilds the lanes of the
+restored closure as a commit does (the agents on them detach and reattach, the connection lanes
+of dropped nodes retire); a test checks the result equals a full lane rebuild. A dense terrain
+restore still rebuilds every lane, as it resets every road product. Terrain tile revisions are
+not recorded yet: undo rebuilds the touched terrain.
 
 **Load.** Load compiles every piece from the graph in parallel. A junction that fails layout or
 the profile solve fails the load with its typed error.
@@ -1345,6 +1386,27 @@ These need a user decision; work that does not depend on them continues.
       of margin is left to the kerbs, so no extra bar fits); and a triangle crossing a chunk line
       is clipped at it by the canonical rectangle clip, in the chunk's centre frame. The test
       passes on all 20 fixtures, flat and sloped.
+25. **Corridor checks in the synchronous preview (`ROAD-68-E` part 1) — decided by the coordinator
+    under the user's delegation, 2026-10-24, for review: option (a).**
+    - **Evidence.** The old hover path ran the parcel and field corridor checks under a per-pose
+      `try_lock_core` (`road_candidate_dictionary_with_parcel_clearance`). The spec forbids
+      per-pose core work ([Preview](#preview-commit-undo-and-load)), and the view holds no parcel
+      or field index.
+    - **Options.** (a) run them at the commit only (`RoadEditPlan::failed_check`): the preview shows
+      a parcel or field overlap only once the click is refused, until `ROAD-68-E` part 2 plans the
+      overlap checks from the preview's pieces against indices published with the view
+      ([open question 1](#road-68-open-questions)); (b) keep the per-pose `try_lock_core`, which
+      reintroduces the `ROAD-70` class of stall; (c) publish the parcel and field indices with the
+      view now, an `O(parcels)` copy per publication unless they become persistent.
+    - **Recommendation.** (a): no stall, no city copy, and part 2 replaces it with exact planned
+      checks. A refused click keeps its reason on the stroke until the pointer or the context moves.
+26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — open, target missed.**
+    The preview's chunks equal the committed chunks bitwise only when the edit's closure has no
+    crossing and no road sign: the renderer builds crosswalk paint (which also cuts the asphalt
+    triangles under it) and signs from lanes, and a preview builds no lanes. Building lanes for
+    the closure would need a lane-system replica beside the graph replica. The target stands:
+    `ROAD-68-F` builds both from the layout (`Crosswalk`, arms) in one function that preview and
+    commit share; gate E's payload acceptance stays open until then.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -2897,6 +2959,28 @@ lane-local undo and the stage timings are open.
   `Arc`s and equal a fresh commit bitwise; a stale preview's commit equals a fresh commit; undo
   restores the pre-edit `Arc`s; the replica follows commits and undo. `undoing_fourth_junction_
   mouth_restores_exact_pre_edit_surface_topology` is re-enabled and passes.
+
+Round 2 (part 1, 2026-10-24):
+
+- **Road payloads.** The preview returns the changed chunks as the commit publishes them, without
+  the lane-derived layers of rebuilt pieces (see [Preview](#preview-commit-undo-and-load)).
+  `preview_chunks_are_the_committed_chunks_without_lane_layers` checks a stroke apart from the
+  trunk publishes exactly the previewed chunks, flat and sloped.
+- **Godot.** `road_tool.gd` calls `preview_road` from its early process callback whenever the
+  stroke or the context generation changed and shows the chunks in that frame
+  (`road_preview_display.gd`, which replaces `road_junction_preview.gd`); a click submits that
+  preview, which stays shown until the committed chunks are installed. Deleted: the late
+  publisher, the request object and request-id plumbing (Rust and GDScript), the ribbon, the
+  `RoadPreviewSnapshot` path and D3's "Road only" setting, menu and settings key.
+  `network_tool_chunk_renderer_test`, `road_junction_preview_test` and `road_preview_stream_test`
+  are rewritten for the synchronous path and run again in `./run.sh --test`.
+- **Undo.** Lane-local and graph-local (see [Undo](#preview-commit-undo-and-load));
+  `undo_rebuilds_lanes_locally_as_a_full_rebuild_would` checks it flat and sloped. Undo and road
+  bulldoze offer their routing rebuild's graph copy to the view (`RoadToolPublisher::offer_graph`),
+  so they copy the graph once, not twice; debug builds check the offered copy equals the live
+  graph.
+- **Open in part 1:** terrain tiles and payloads in the preview, the terrain halves of the
+  fingerprint, the commit install and the undo record, and the save → load bitwise test.
 
 ### `ROAD-68-F` — remaining families
 

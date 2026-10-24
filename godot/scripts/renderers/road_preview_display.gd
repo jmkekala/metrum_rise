@@ -11,6 +11,8 @@ extends RefCounted
 var sequence: int = 0
 var _instances: Array[MeshInstance3D] = []
 var _hidden: Array[MeshInstance3D] = []
+# The chunk keys the displayed preview replaces.
+var _keys: Array[Vector2i] = []
 # Never displayed. Staging fills only these, so a failed batch cannot touch the visible one.
 # Trimmed to the displayed count on install: the pool is one staging set, not cursor history.
 var _spare: Array[MeshInstance3D] = []
@@ -60,11 +62,8 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 		tool._place_road_chunk_instance(instance, key, span, origin_x, origin_z)
 	# Everything is staged before the visible state changes: no frame shows a partial swap.
 	clear()
-	for key in keys:
-		if tool._road_chunk_instances.has(key):
-			var original: MeshInstance3D = tool._road_chunk_instances[key]
-			original.visible = false
-			_hidden.append(original)
+	_keys = keys
+	_hide_originals(tool)
 	for instance in staged:
 		tool.road_mesh_root.add_child(instance)
 	_instances = staged
@@ -73,14 +72,33 @@ func show(tool: Node3D, preview: Dictionary, preview_sequence: int) -> bool:
 		_spare.pop_back().free()
 	return true
 
+## Hides the resident chunks installed since the preview was shown, such as a previous commit's,
+## in place of the originals they replaced.
+func refresh_originals(tool: Node3D) -> void:
+	if sequence == 0:
+		return
+	_show_hidden()
+	_hide_originals(tool)
+
 ## Hides the replacements and shows the originals again.
 func clear() -> void:
+	_show_hidden()
+	_keys.clear()
+	_recycle(_instances)
+	sequence = 0
+
+func _hide_originals(tool: Node3D) -> void:
+	for key in _keys:
+		if tool._road_chunk_instances.has(key):
+			var original: MeshInstance3D = tool._road_chunk_instances[key]
+			original.visible = false
+			_hidden.append(original)
+
+func _show_hidden() -> void:
 	for instance in _hidden:
 		if is_instance_valid(instance):
 			instance.visible = true
 	_hidden.clear()
-	_recycle(_instances)
-	sequence = 0
 
 ## Releases every preview-owned node, including spares. Use when the preview session ends.
 func reset() -> void:
