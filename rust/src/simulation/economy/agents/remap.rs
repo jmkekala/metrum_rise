@@ -22,6 +22,30 @@ const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
 // fixed fast hasher answers exactly as SipHash did, at a fraction of the cost per probe.
 type EditSet<T> = HashSet<T, foldhash::fast::FixedState>;
 
+// The edit's nodes, which the route-state test probes once per path node of every agent on the
+// network. A fixed 4096-bit filter of the ids answers almost every miss without hashing; a set
+// bit is confirmed in the set, so membership is exact. O(edit nodes) to build, in any city.
+struct EditNodes {
+    filter: [u64; 64],
+    nodes: EditSet<u32>,
+}
+
+impl EditNodes {
+    fn new(nodes: EditSet<u32>) -> Self {
+        let mut filter = [0; 64];
+        for &node in &nodes {
+            let bit = node as usize & 4095;
+            filter[bit >> 6] |= 1 << (bit & 63);
+        }
+        Self { filter, nodes }
+    }
+
+    fn contains(&self, node: u32) -> bool {
+        let bit = node as usize & 4095;
+        self.filter[bit >> 6] & (1 << (bit & 63)) != 0 && self.nodes.contains(&node)
+    }
+}
+
 /// Agent lane references keyed by their pre-rebuild lane id; see
 /// [`AgentSystem::capture_lane_identities`].
 pub(crate) struct AgentLaneIdentities(HashMap<usize, LaneIdentity>);
@@ -213,7 +237,7 @@ impl AgentSystem {
         let input_edges = affected_edges;
         let affected_edges = edit_closure(graph, affected_edges);
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
-        let affected_nodes = collect_nodes_for_edges(&affected_edges, graph);
+        let affected_nodes = EditNodes::new(collect_nodes_for_edges(&affected_edges, graph));
         let max_dist_sq = LANE_REATTACH_MAX_DIST_M * LANE_REATTACH_MAX_DIST_M;
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
         if traffic_debug {
@@ -619,7 +643,7 @@ fn agent_route_state_touches_road_edit(
     agents: &AgentSystem,
     i: usize,
     affected_edges: &EditSet<usize>,
-    affected_nodes: &EditSet<u32>,
+    affected_nodes: &EditNodes,
     affected_lane_ids: &EditSet<usize>,
     lane_system: &LaneSystem,
 ) -> bool {
@@ -628,7 +652,7 @@ fn agent_route_state_touches_road_edit(
         return true;
     }
     let current_node = agents.agents.current_node[i];
-    if current_node != u32::MAX && affected_nodes.contains(&current_node) {
+    if current_node != u32::MAX && affected_nodes.contains(current_node) {
         return true;
     }
     if lane_usize_touches_road_edit(
@@ -654,17 +678,17 @@ fn agent_route_state_touches_road_edit(
     }
 
     let attach_node = agents.agents.planned_attach_node[i];
-    if attach_node != u32::MAX && affected_nodes.contains(&attach_node) {
+    if attach_node != u32::MAX && affected_nodes.contains(attach_node) {
         return true;
     }
     let detach_node = agents.agents.planned_detach_node[i];
-    if detach_node != u32::MAX && affected_nodes.contains(&detach_node) {
+    if detach_node != u32::MAX && affected_nodes.contains(detach_node) {
         return true;
     }
 
     agents.agents.current_path[i]
         .iter()
-        .any(|node| affected_nodes.contains(node))
+        .any(|&node| affected_nodes.contains(node))
 }
 
 fn lane_u32_touches_road_edit(
