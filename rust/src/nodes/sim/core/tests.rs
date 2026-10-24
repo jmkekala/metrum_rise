@@ -11,6 +11,7 @@ mod road_edit_order;
 mod road_reference_probe;
 mod road_plan_scaling;
 mod road_terrain_plan;
+mod terrain_seams;
 mod routing_adoption;
 mod zoning_buildability;
 

@@ -81,6 +81,13 @@ impl SimulationNode {
                 include_debug,
                 true,
             );
+            if let Some(bounds) = Self::terrain_cdt_window_bounds(
+                patch,
+                window.cdt_patch,
+                &window_terrain_buffers.vertices,
+            ) {
+                cdt_windows.push(bounds);
+            }
             Self::append_triangle_buffer_export(&mut terrain_buffers, window_terrain_buffers);
             let window_retaining_buffers = Self::terrain_cdt_triangle_buffers(
                 patch,
@@ -91,17 +98,12 @@ impl SimulationNode {
                 false,
             );
             Self::append_triangle_buffer_export(&mut retaining_buffers, window_retaining_buffers);
-            if let Some(mut bounds) =
-                Self::terrain_cdt_window_bounds(patch, window.cdt_patch, boundary_step_m)
-            {
-                Self::append_terrain_cdt_mesh_side_samples(&mut bounds, &mesh.vertices);
-                cdt_windows.push(bounds);
-            }
         }
         Self::append_regular_terrain_mesh_outside_cdt_windows(
             &mut terrain_buffers,
             patch,
             &cdt_windows,
+            boundary_step_m,
         );
         Self::reconcile_terrain_mesh_duplicate_normals(&mut terrain_buffers);
         let terrain_buffer_ms = terrain_buffer_start
@@ -163,44 +165,23 @@ impl SimulationNode {
         );
         let mut cdt_windows = Vec::with_capacity(windows.len());
         for (window, mesh) in windows {
-            if let Some(buffers) = window.mesh_buffers.as_deref() {
-                Self::append_cached_refined_window_mesh_buffers(
-                    &mut terrain_buffers,
-                    &mut retaining_buffers,
-                    buffers,
-                );
-            } else {
-                let buffers = Self::prepare_cached_refined_terrain_window_mesh_buffers(
-                    patch,
-                    window.cdt_patch,
-                    boundary_step_m,
-                    mesh,
-                );
-                Self::append_cached_refined_window_mesh_buffers(
-                    &mut terrain_buffers,
-                    &mut retaining_buffers,
-                    &buffers,
-                );
-            }
-            if let Some(mut bounds) =
-                Self::terrain_cdt_window_bounds(patch, window.cdt_patch, boundary_step_m)
-            {
-                if let Some(buffers) = window.mesh_buffers.as_deref() {
-                    bounds
-                        .min_x_side_zs
-                        .clone_from(&buffers.window_min_x_side_zs);
-                    bounds
-                        .max_x_side_zs
-                        .clone_from(&buffers.window_max_x_side_zs);
-                    bounds
-                        .min_z_side_xs
-                        .clone_from(&buffers.window_min_z_side_xs);
-                    bounds
-                        .max_z_side_xs
-                        .clone_from(&buffers.window_max_z_side_xs);
-                } else {
-                    Self::append_terrain_cdt_mesh_side_samples(&mut bounds, &mesh.vertices);
+            let prepared;
+            let buffers = match window.mesh_buffers.as_deref() {
+                Some(buffers) => buffers,
+                None => {
+                    prepared =
+                        Self::prepare_cached_refined_terrain_window_mesh_buffers(patch, mesh);
+                    &prepared
                 }
+            };
+            Self::append_cached_refined_window_mesh_buffers(
+                &mut terrain_buffers,
+                &mut retaining_buffers,
+                buffers,
+            );
+            if let Some(bounds) =
+                Self::terrain_cdt_window_bounds(patch, window.cdt_patch, &buffers.terrain_vertices)
+            {
                 cdt_windows.push(bounds);
             }
         }
@@ -208,6 +189,7 @@ impl SimulationNode {
             &mut terrain_buffers,
             patch,
             &cdt_windows,
+            boundary_step_m,
         );
         Self::reconcile_terrain_mesh_duplicate_normals(&mut terrain_buffers);
         let mut buffers = CachedRefinedTerrainMeshBuffers {
@@ -216,10 +198,6 @@ impl SimulationNode {
             terrain_vertices: terrain_buffers.vertices,
             terrain_normals: terrain_buffers.normals,
             terrain_normal_sum_lengths: Vec::new(),
-            window_min_x_side_zs: Vec::new(),
-            window_max_x_side_zs: Vec::new(),
-            window_min_z_side_xs: Vec::new(),
-            window_max_z_side_xs: Vec::new(),
             terrain_uvs: terrain_buffers.uvs,
             terrain_indices: terrain_buffers.indices,
             retaining_vertices: retaining_buffers.vertices,
@@ -284,8 +262,6 @@ impl SimulationNode {
     /// Converts one successful fixed CDT window into immutable patch-local render arrays.
     pub(in crate::nodes::simulation_node) fn prepare_cached_refined_terrain_window_mesh_buffers(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        cdt_patch: TerrainCdtPatch,
-        boundary_step_m: f32,
         mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
     ) -> CachedRefinedTerrainMeshBuffers {
         let terrain_buffers = Self::terrain_cdt_triangle_buffers(
@@ -304,10 +280,6 @@ impl SimulationNode {
             false,
             false,
         );
-        let mut window_bounds = Self::terrain_cdt_window_bounds(patch, cdt_patch, boundary_step_m);
-        if let Some(bounds) = window_bounds.as_mut() {
-            Self::append_terrain_cdt_mesh_side_samples(bounds, &mesh.vertices);
-        }
         CachedRefinedTerrainMeshBuffers {
             terrain_colors: Vec::new(),
             // Window buffers are never exported directly; the composed patch validates once.
@@ -315,18 +287,6 @@ impl SimulationNode {
             terrain_vertices: terrain_buffers.vertices,
             terrain_normals: terrain_buffers.normals,
             terrain_normal_sum_lengths: terrain_buffers.normal_sum_lengths,
-            window_min_x_side_zs: window_bounds
-                .as_ref()
-                .map_or_else(Vec::new, |bounds| bounds.min_x_side_zs.clone()),
-            window_max_x_side_zs: window_bounds
-                .as_ref()
-                .map_or_else(Vec::new, |bounds| bounds.max_x_side_zs.clone()),
-            window_min_z_side_xs: window_bounds
-                .as_ref()
-                .map_or_else(Vec::new, |bounds| bounds.min_z_side_xs.clone()),
-            window_max_z_side_xs: window_bounds
-                .as_ref()
-                .map_or_else(Vec::new, |bounds| bounds.max_z_side_xs.clone()),
             terrain_uvs: terrain_buffers.uvs,
             terrain_indices: terrain_buffers.indices,
             retaining_vertices: retaining_buffers.vertices,
@@ -820,7 +780,9 @@ impl SimulationNode {
         let normal_y = az * bx - ax * bz;
         let normal_z = ax * by - ay * bx;
         let normal_length_squared = normal_x * normal_x + normal_y * normal_y + normal_z * normal_z;
-        if normal_length_squared <= 0.000_001 {
+        // Only an exactly degenerate face covers nothing. A small or thin face is part of the
+        // triangulation: dropping it opens a hole its neighbours do not cover (`ROAD-68-D`).
+        if normal_length_squared == 0.0 {
             return None;
         }
         let normal_length = normal_length_squared.sqrt();
@@ -846,10 +808,12 @@ impl SimulationNode {
             .max(edge_length_squared(points[1], points[2]))
             .max(edge_length_squared(points[2], points[0]))
             .sqrt() as f32;
+        // The face's own slope, without absolute cut-offs: a small face is not vertical, and
+        // only a face with no plan area is (`ROAD-68-D`).
         let horizontal_normal = (normal_x * normal_x + normal_z * normal_z).sqrt();
-        let slope_ratio = if horizontal_normal <= 0.000_001 {
+        let slope_ratio = if horizontal_normal == 0.0 {
             0.0
-        } else if normal_y.abs() <= 0.000_001 {
+        } else if normal_y == 0.0 {
             1_000_000.0
         } else {
             (horizontal_normal / normal_y.abs()) as f32
@@ -900,33 +864,6 @@ impl SimulationNode {
         target.longest_triangle_edge_m = target
             .longest_triangle_edge_m
             .max(source.longest_triangle_edge_m);
-    }
-
-    /// Adds actual CDT side vertices to the canonical filler seam manifests.
-    pub(in crate::nodes::simulation_node) fn append_terrain_cdt_mesh_side_samples(
-        bounds: &mut TerrainCdtWindowBounds,
-        vertices: &[TerrainCdtVertex],
-    ) {
-        for vertex in vertices {
-            let x = vertex.x as f32;
-            let z = vertex.z as f32;
-            if Self::axis_lines_touch(x, bounds.min_x) {
-                bounds.min_x_side_zs.push(z);
-            }
-            if Self::axis_lines_touch(x, bounds.max_x) {
-                bounds.max_x_side_zs.push(z);
-            }
-            if Self::axis_lines_touch(z, bounds.min_z) {
-                bounds.min_z_side_xs.push(x);
-            }
-            if Self::axis_lines_touch(z, bounds.max_z) {
-                bounds.max_z_side_xs.push(x);
-            }
-        }
-        Self::sort_dedup_axis_lines(&mut bounds.min_x_side_zs);
-        Self::sort_dedup_axis_lines(&mut bounds.max_x_side_zs);
-        Self::sort_dedup_axis_lines(&mut bounds.min_z_side_xs);
-        Self::sort_dedup_axis_lines(&mut bounds.max_z_side_xs);
     }
 
     /// Assigns one accumulated normal to every quantized duplicate terrain vertex.

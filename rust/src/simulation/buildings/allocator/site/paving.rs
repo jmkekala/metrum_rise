@@ -8,50 +8,64 @@ use crate::simulation::network::roadbed::{RoadVec3, triangulate_constrained_ring
 use godot::prelude::{Vector2, Vector3};
 use rstar::{AABB, RTree, RTreeObject};
 
-struct PavingTriangle {
-    triangle: [RoadVec3; 3],
+// One convex material region with its interior on the left of every edge: a whole convex
+// surface, or one triangle of a non-convex surface.
+struct PavingRegion {
+    polygon: Vec<RoadVec3>,
     order: usize,
     material: SiteSurfaceMaterial,
 }
 
-impl RTreeObject for PavingTriangle {
+impl RTreeObject for PavingRegion {
     type Envelope = AABB<[f64; 2]>;
     fn envelope(&self) -> Self::Envelope {
-        bounds(&self.triangle)
+        bounds(&self.polygon)
     }
 }
 
 /// Reuses the road polygon CDT and R-tree for one bounded set of site materials.
 /// Construction is O(paving vertices + triangulation + T log T); queries visit
-/// only overlapping material triangles, not every building or every site polygon.
+/// only overlapping material regions, not every building or every site polygon.
 pub(crate) struct SitePavingPartition {
-    triangles: RTree<PavingTriangle>,
+    regions: RTree<PavingRegion>,
 }
 
 impl SitePavingPartition {
     /// First authored region wins overlaps; caller supplies stable building/asset order.
+    /// A convex surface is clipped against as a whole: splitting it into triangles would add
+    /// internal edges whose split points two neighbouring pieces compute apart (`ROAD-68-D`).
     pub(crate) fn new(surfaces: &[BuildingSiteSurfaceClient]) -> Option<Self> {
-        let mut triangles = Vec::new();
+        let mut regions = Vec::new();
         for surface in surfaces {
-            let ring: Vec<_> = surface
+            let mut ring: Vec<_> = surface
                 .vertices_world
                 .iter()
                 .map(|p| RoadVec3::new(f64::from(p.x), 0.0, f64::from(p.y)))
                 .collect();
-            let pieces = triangulate_constrained_rings_xz(&[ring])?;
-            for mut triangle in pieces {
+            if signed_area(&ring) < 0.0 {
+                ring.reverse();
+            }
+            if strictly_convex(&ring) {
+                regions.push(PavingRegion {
+                    polygon: ring,
+                    order: regions.len(),
+                    material: surface.material,
+                });
+                continue;
+            }
+            for mut triangle in triangulate_constrained_rings_xz(&[ring])? {
                 if cross(triangle[0], triangle[1], triangle[2]) < 0.0 {
                     triangle.swap(1, 2);
                 }
-                triangles.push(PavingTriangle {
-                    triangle,
-                    order: triangles.len(),
+                regions.push(PavingRegion {
+                    polygon: triangle.to_vec(),
+                    order: regions.len(),
                     material: surface.material,
                 });
             }
         }
         Some(Self {
-            triangles: RTree::bulk_load(triangles),
+            regions: RTree::bulk_load(regions),
         })
     }
 
@@ -65,7 +79,7 @@ impl SitePavingPartition {
         let triangle =
             triangle.map(|p| RoadVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)));
         let mut candidates: Vec<_> = self
-            .triangles
+            .regions
             .locate_in_envelope_intersecting(&bounds(&triangle))
             .collect();
         if candidates.is_empty() {
@@ -78,11 +92,12 @@ impl SitePavingPartition {
             let mut next = Vec::new();
             for polygon in remaining {
                 let mut inside = polygon;
-                for edge in 0..3 {
+                let corners = candidate.polygon.len();
+                for edge in 0..corners {
                     let (kept, outside) = split(
                         &inside,
-                        candidate.triangle[edge],
-                        candidate.triangle[(edge + 1) % 3],
+                        candidate.polygon[edge],
+                        candidate.polygon[(edge + 1) % corners],
                     );
                     if outside.len() >= 3 {
                         next.push(outside);
@@ -150,12 +165,36 @@ fn site_foundation_triangles(points: &[Vector2], height: f32) -> Option<Vec<[Vec
     )
 }
 
-fn bounds(triangle: &[RoadVec3; 3]) -> AABB<[f64; 2]> {
-    AABB::from_points(&triangle.map(|p| [p.x, p.z]))
+fn bounds(points: &[RoadVec3]) -> AABB<[f64; 2]> {
+    let (low, high) = points.iter().fold(
+        ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+        |(low, high), p| {
+            (
+                [low[0].min(p.x), low[1].min(p.z)],
+                [high[0].max(p.x), high[1].max(p.z)],
+            )
+        },
+    );
+    AABB::from_corners(low, high)
 }
 
 fn cross(a: RoadVec3, b: RoadVec3, p: RoadVec3) -> f64 {
     (b.x - a.x) * (p.z - a.z) - (b.z - a.z) * (p.x - a.x)
+}
+
+fn signed_area(ring: &[RoadVec3]) -> f64 {
+    (0..ring.len())
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            a.x * b.z - b.x * a.z
+        })
+        .sum()
+}
+
+// Every corner turns left: no repeated, collinear or reflex corner.
+fn strictly_convex(ring: &[RoadVec3]) -> bool {
+    let n = ring.len();
+    n >= 3 && (0..n).all(|i| cross(ring[i], ring[(i + 1) % n], ring[(i + 2) % n]) > 0.0)
 }
 
 // The input and both outputs are convex. The same intersection value goes to
@@ -174,7 +213,14 @@ fn split(points: &[RoadVec3], a: RoadVec3, b: RoadVec3) -> (Vec<RoadVec3>, Vec<R
             outside.push(point);
         }
         if (d < 0.0 && next_d > 0.0) || (d > 0.0 && next_d < 0.0) {
-            let hit = point + (next - point) * (d / (d - next_d));
+            // From the segment's lexicographically lower end, so the two faces that share the
+            // segment (it runs the other way in one of them) split it at the same point.
+            let (from, to, from_d, to_d) = if (point.x, point.z) <= (next.x, next.z) {
+                (point, next, d, next_d)
+            } else {
+                (next, point, next_d, d)
+            };
+            let hit = from + (to - from) * (from_d / (from_d - to_d));
             inside.push(hit);
             outside.push(hit);
         }

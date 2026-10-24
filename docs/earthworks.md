@@ -1039,7 +1039,10 @@ The building-site implementation must reuse existing ownership and indexing syst
 - building-site render buffers are rebuilt from allocator revisions, not every frame
 - foundation material partitions are cached per derived site; terrain material partitions are built
   off-thread per affected patch using the existing polygon CDT and an R-tree over local material
-  triangles. No city-wide building query or new global spatial index is introduced.
+  regions: a strictly convex surface is one region, a non-convex one its triangles, and a split
+  point is computed from its segment's lower end so the faces sharing a segment split it alike
+  (`ROAD-68-D`; a region's own triangulation diagonal left T-vertex cracks before). No
+  city-wide building query or new global spatial index is introduced.
 - exact paving inputs participate in terrain-buffer reuse and RoadEditPlan site dependencies;
   a material-only edit can reuse geometric CDT windows but must rebuild the final material partition
 - point queries allocate nothing and use the existing patch/64 m CDT tile grid, then the road

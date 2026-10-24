@@ -4891,9 +4891,9 @@ Deterministic terrain-render rules:
   contributors omit their old refined coverage so regular terrain fills it again, while unrelated
   tile fingerprints and compiled meshes remain unchanged
 - seam invalidation remains cardinal, but only tiles with current road/site contributors enter the
-  CDT builder; contributor-free neighbors return to the regular filler, which consumes the exact
-  adjacent window side manifest, and contributor coverage/guide generation share one adaptive
-  grading-margin probe result
+  CDT builder; contributor-free neighbors return to the regular filler, which takes the exact
+  exported side vertices of each adjacent window, and contributor coverage/guide generation share
+  one adaptive grading-margin probe result
 - contributor margin/guide generation and tile-local clipping, sampling, and fingerprint generation
   run as ordered Rayon jobs; deterministic serial aggregation retains canonical tile and manifest
   ordering, keeping total work `O(contributors + windows)` while reducing its wall-clock critical path
@@ -4930,12 +4930,18 @@ Deterministic terrain-render rules:
   `f32` buffers. Converting kilometre-scale world coordinates first can collapse a valid
   sub-millimetre road/site separation, inflate its measured slope, and falsely suppress the whole
   atomic patch. The saved benchmark-city regression covers that case at patch `(27, 0)`.
-- successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
-  normal-sum magnitudes, and side-seam manifests; reuse therefore skips triangle conversion,
-  window-side vertex scans, and triangle-index normal reconstruction for unchanged tiles
-- canonical world-aligned boundary-lattice samples remain local to directly adjacent seam filler;
-  only non-lattice geometry breakpoints propagate into patch-wide filler partitions, so adding
-  fixed tiles cannot create a Cartesian filler-grid expansion
+- successful tile output caches vertices, normals, UVs, offset-ready indices and pre-normalized
+  local normal-sum magnitudes; reuse therefore skips triangle conversion and triangle-index normal
+  reconstruction for unchanged tiles, and composition reads each window's side vertices from its
+  exported vertices (`O(window vertices)`, as the copy already is)
+- the regular filler is conforming (`ROAD-68-D` part 4, [`roads.md`](roads.md#footprint-and-terrain)):
+  filler cells are bounded by patch and window lines only; a cell side shared with a window takes
+  that window's exported side vertices bitwise, every other cell side the render-step boundary
+  lattice, and one strip per side joins it to the cell's regular grid. No side vertex runs on as
+  a grid line into other cells, so there is neither a T-vertex nor a Cartesian filler-grid
+  expansion. Only exactly
+  degenerate faces are dropped from CDT and filler output, and face slopes are measured without
+  absolute cut-offs (a small face is not vertical)
 - atomic composition still copies the complete bounded render-patch mesh because Godot owns one
   surface per patch; concatenation, regular filler, duplicate-normal reconciliation, and upload
   remain `O(patch output vertices + indices)`, while contributor queries, CDT input assembly,

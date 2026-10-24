@@ -7,7 +7,9 @@ use super::async_terrain::{
     TerrainPatchPayloadKey, TerrainPatchPayloadRequest, WaterPatchPayloadAsyncState,
     WaterPatchPayloadKey,
 };
-use super::variant_export::{TerrainCdtSourceExport, TerrainCdtTriangleBufferExport};
+use super::variant_export::{
+    TerrainCdtSourceExport, TerrainCdtTriangleBufferExport, TerrainCdtWindowBounds,
+};
 #[cfg(test)]
 use super::*;
 use crate::nodes::sim::core::CityTreasury;

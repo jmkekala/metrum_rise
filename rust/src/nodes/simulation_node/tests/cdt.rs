@@ -505,8 +505,6 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
     let previous_buffers = Arc::new(
         SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
             &test_patch(),
-            previous_window.cdt_patch,
-            2.0,
             previous_window
                 .mesh_result
                 .as_ref()
@@ -625,20 +623,10 @@ fn cached_window_buffers_preserve_multi_window_patch_assembly() {
     );
 
     left_window.mesh_buffers = Some(Arc::new(
-        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
-            &patch,
-            left_window.cdt_patch,
-            2.0,
-            &left_mesh,
-        ),
+        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(&patch, &left_mesh),
     ));
     right_window.mesh_buffers = Some(Arc::new(
-        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
-            &patch,
-            right_window.cdt_patch,
-            2.0,
-            &right_mesh,
-        ),
+        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(&patch, &right_mesh),
     ));
     let cached = SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
         &patch,
@@ -933,7 +921,7 @@ fn terrain_cdt_regular_filler_stats_measure_emitted_faces() {
         ..test_patch()
     };
 
-    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &[]);
+    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &[], 2.0);
 
     assert!(export.emitted_faces > 0);
     assert!(export.max_face_y_delta_m >= 2.0);
@@ -2072,136 +2060,163 @@ fn terrain_cdt_grid_sampling_is_bounded_for_large_local_windows() {
     );
 }
 
-#[test]
-fn regular_terrain_filler_refines_cdt_window_sides() {
-    let patch = TerrainPatchSnapshot {
+fn filler_patch(size: f32, samples: usize) -> TerrainPatchSnapshot {
+    TerrainPatchSnapshot {
         patch_x: 0,
         patch_z: 0,
-        sample_width: 5,
-        sample_height: 5,
-        texture_width: 5,
-        texture_height: 5,
+        sample_width: samples,
+        sample_height: samples,
+        texture_width: samples,
+        texture_height: samples,
         inner_offset_x: 0,
         inner_offset_z: 0,
         world_origin_x: 0.0,
         world_origin_z: 0.0,
-        world_size_x: 40.0,
-        world_size_z: 40.0,
-        height_data: vec![0.0; 25],
+        world_size_x: size,
+        world_size_z: size,
+        height_data: vec![0.0; samples * samples],
+    }
+}
+
+// A window whose exported side vertices are its boundary lattice plus `extra` world points.
+fn filler_window(
+    patch: &TerrainPatchSnapshot,
+    bounds: [f64; 4],
+    step: f32,
+    extra: &[(f32, f32)],
+) -> TerrainCdtWindowBounds {
+    let [min_x, min_z, max_x, max_z] = bounds.map(|value| value as f32);
+    let centre = patch.world_size_x * 0.5;
+    let local = |x: f32, z: f32| {
+        Vector3::new(
+            (f64::from(x) - f64::from(centre)) as f32,
+            0.0,
+            (f64::from(z) - f64::from(centre)) as f32,
+        )
     };
-    let cdt_patch = TerrainCdtPatch::new(10.0, 10.0, 30.0, 30.0, [0.0; 4]);
-    let window = SimulationNode::terrain_cdt_window_bounds(&patch, cdt_patch, 5.0).unwrap();
-    let mut export = TerrainCdtTriangleBufferExport::empty();
+    let mut vertices = Vec::new();
+    for x in SimulationNode::terrain_cdt_axis_samples(min_x, max_x, step) {
+        vertices.extend([local(x, min_z), local(x, max_z)]);
+    }
+    for z in SimulationNode::terrain_cdt_axis_samples(min_z, max_z, step) {
+        vertices.extend([local(min_x, z), local(max_x, z)]);
+    }
+    vertices.extend(extra.iter().map(|&(x, z)| local(x, z)));
+    let cdt_patch = TerrainCdtPatch::new(bounds[0], bounds[1], bounds[2], bounds[3], [0.0; 4]);
+    SimulationNode::terrain_cdt_window_bounds(patch, cdt_patch, &vertices).unwrap()
+}
 
-    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &[window]);
-
-    assert!(
-        export_has_world_xz(&export, &patch, 10.0, 15.0),
-        "regular filler must share non-corner vertical CDT-window boundary samples"
-    );
-    assert!(
-        export_has_world_xz(&export, &patch, 15.0, 10.0),
-        "regular filler must share non-corner horizontal CDT-window boundary samples"
-    );
+// Every filler edge used by one filler face lies on the patch boundary or is one edge of a
+// window's side polyline: no T-vertex against a window and none between filler cells.
+fn assert_filler_conforms(
+    patch: &TerrainPatchSnapshot,
+    windows: &[TerrainCdtWindowBounds],
+    export: &TerrainCdtTriangleBufferExport,
+) {
+    type Point = (u32, u32);
+    let key = |index: i32| {
+        let vertex = export.vertices[index as usize];
+        (vertex.x.to_bits(), vertex.z.to_bits())
+    };
+    let mut edges = BTreeMap::<(Point, Point), usize>::new();
+    for face in export.indices.as_chunks::<3>().0 {
+        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            let (a, b) = (key(a), key(b));
+            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let mut window_edges = std::collections::BTreeSet::new();
+    for window in windows {
+        for x_line in [false, true] {
+            let mut lines = BTreeMap::<u32, Vec<Vector3>>::new();
+            for vertex in &window.side_vertices {
+                let on = if x_line { vertex.x } else { vertex.z };
+                lines.entry(on.to_bits()).or_default().push(*vertex);
+            }
+            for points in lines.values_mut() {
+                points.sort_by(|a, b| {
+                    let along = |p: &Vector3| if x_line { p.z } else { p.x };
+                    along(a).total_cmp(&along(b))
+                });
+                for pair in points.windows(2) {
+                    let (a, b) = (
+                        (pair[0].x.to_bits(), pair[0].z.to_bits()),
+                        (pair[1].x.to_bits(), pair[1].z.to_bits()),
+                    );
+                    window_edges.insert((a.min(b), a.max(b)));
+                }
+            }
+        }
+    }
+    let half = patch.world_size_x * 0.5;
+    for ((a, b), count) in edges {
+        assert!(
+            count <= 2,
+            "filler edge {a:?}-{b:?} shared by {count} faces"
+        );
+        if count == 2 || window_edges.contains(&(a, b)) {
+            continue;
+        }
+        let (ax, az, bx, bz) = (
+            f32::from_bits(a.0),
+            f32::from_bits(a.1),
+            f32::from_bits(b.0),
+            f32::from_bits(b.1),
+        );
+        let on_patch_side = (ax == bx && ax.abs() == half) || (az == bz && az.abs() == half);
+        assert!(
+            on_patch_side,
+            "open filler edge ({ax}, {az})-({bx}, {bz}) is neither shared nor a window side edge"
+        );
+    }
 }
 
 #[test]
-fn regular_terrain_filler_splits_at_non_lattice_cdt_side_vertices() {
-    let patch = TerrainPatchSnapshot {
-        patch_x: 0,
-        patch_z: 0,
-        sample_width: 5,
-        sample_height: 5,
-        texture_width: 5,
-        texture_height: 5,
-        inner_offset_x: 0,
-        inner_offset_z: 0,
-        world_origin_x: 0.0,
-        world_origin_z: 0.0,
-        world_size_x: 40.0,
-        world_size_z: 40.0,
-        height_data: vec![0.0; 25],
-    };
-    let cdt_patch = TerrainCdtPatch::new(10.0, 10.0, 30.0, 30.0, [0.0; 4]);
-    let mut window = SimulationNode::terrain_cdt_window_bounds(&patch, cdt_patch, 5.0).unwrap();
-    SimulationNode::append_terrain_cdt_mesh_side_samples(
-        &mut window,
-        &[TerrainCdtVertex::new(10.0, 0.0, 17.3)],
-    );
-    let mut export = TerrainCdtTriangleBufferExport::empty();
-
-    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &[window]);
-
-    assert!(
-        export_has_world_xz(&export, &patch, 10.0, 17.3),
-        "regular filler must split its shared edge at every actual CDT side vertex"
-    );
-}
-
-#[test]
-fn regular_terrain_filler_propagates_cdt_breakpoints_across_filler_partitions() {
-    let patch = TerrainPatchSnapshot {
-        patch_x: 0,
-        patch_z: 0,
-        sample_width: 5,
-        sample_height: 5,
-        texture_width: 5,
-        texture_height: 5,
-        inner_offset_x: 0,
-        inner_offset_z: 0,
-        world_origin_x: 0.0,
-        world_origin_z: 0.0,
-        world_size_x: 40.0,
-        world_size_z: 40.0,
-        height_data: vec![0.0; 25],
-    };
-    let mut road_window = SimulationNode::terrain_cdt_window_bounds(
-        &patch,
-        TerrainCdtPatch::new(10.0, 10.0, 30.0, 30.0, [0.0; 4]),
-        5.0,
-    )
-    .unwrap();
-    SimulationNode::append_terrain_cdt_mesh_side_samples(
-        &mut road_window,
-        &[TerrainCdtVertex::new(10.0, 0.0, 17.3)],
-    );
-    let partitioning_window = SimulationNode::terrain_cdt_window_bounds(
-        &patch,
-        TerrainCdtPatch::new(5.0, 32.0, 8.0, 36.0, [0.0; 4]),
-        5.0,
-    )
-    .unwrap();
+fn regular_terrain_filler_shares_cdt_window_side_vertices() {
+    let patch = filler_patch(40.0, 5);
+    let window = filler_window(&patch, [10.0, 10.0, 30.0, 30.0], 5.0, &[(10.0, 17.3)]);
     let mut export = TerrainCdtTriangleBufferExport::empty();
 
     SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(
         &mut export,
         &patch,
-        &[road_window, partitioning_window],
+        std::slice::from_ref(&window),
+        5.0,
     );
 
-    assert!(
-        export_has_world_xz(&export, &patch, 5.0, 17.3),
-        "a CDT side breakpoint must cross unrelated filler partitions instead of ending in a T-junction"
+    for (x, z) in [(10.0, 15.0), (15.0, 10.0), (10.0, 17.3)] {
+        assert!(
+            export_has_world_xz(&export, &patch, x, z),
+            "regular filler must reuse the window side vertex ({x}, {z})"
+        );
+    }
+    assert_filler_conforms(&patch, &[window], &export);
+}
+
+#[test]
+fn regular_terrain_filler_conforms_across_filler_cells() {
+    // A window's off-lattice side vertex must not run on as a grid line through other filler
+    // cells: each cell side carries exactly the vertices of its neighbour.
+    let patch = filler_patch(40.0, 5);
+    let windows = [
+        filler_window(&patch, [10.0, 10.0, 30.0, 30.0], 5.0, &[(10.0, 17.3)]),
+        filler_window(&patch, [5.0, 32.0, 8.0, 36.0], 5.0, &[]),
+    ];
+    let mut export = TerrainCdtTriangleBufferExport::empty();
+
+    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(
+        &mut export,
+        &patch,
+        &windows,
+        5.0,
     );
+
+    assert_filler_conforms(&patch, &windows, &export);
 }
 
 #[test]
 fn regular_terrain_filler_does_not_globalize_canonical_window_lattices() {
-    let patch = TerrainPatchSnapshot {
-        patch_x: 0,
-        patch_z: 0,
-        sample_width: 9,
-        sample_height: 9,
-        texture_width: 9,
-        texture_height: 9,
-        inner_offset_x: 0,
-        inner_offset_z: 0,
-        world_origin_x: 0.0,
-        world_origin_z: 0.0,
-        world_size_x: 512.0,
-        world_size_z: 512.0,
-        height_data: vec![0.0; 81],
-    };
+    let patch = filler_patch(512.0, 9);
     let mut windows = Vec::new();
     for tile_z in 0..8 {
         for tile_x in 0..8 {
@@ -2210,19 +2225,22 @@ fn regular_terrain_filler_does_not_globalize_canonical_window_lattices() {
             }
             let min_x = f64::from(tile_x * 64);
             let min_z = f64::from(tile_z * 64);
-            windows.push(
-                SimulationNode::terrain_cdt_window_bounds(
-                    &patch,
-                    TerrainCdtPatch::new(min_x, min_z, min_x + 64.0, min_z + 64.0, [0.0; 4]),
-                    2.0,
-                )
-                .expect("fixed window should intersect the test patch"),
-            );
+            windows.push(filler_window(
+                &patch,
+                [min_x, min_z, min_x + 64.0, min_z + 64.0],
+                2.0,
+                &[],
+            ));
         }
     }
     let mut export = TerrainCdtTriangleBufferExport::empty();
 
-    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &windows);
+    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(
+        &mut export,
+        &patch,
+        &windows,
+        2.0,
+    );
 
     assert!(!export.vertices.is_empty());
     assert!(
@@ -2230,6 +2248,7 @@ fn regular_terrain_filler_does_not_globalize_canonical_window_lattices() {
         "canonical 2 m side lattices must not create a patch-wide Cartesian filler grid; emitted {} vertices",
         export.vertices.len()
     );
+    assert_filler_conforms(&patch, &windows, &export);
 }
 
 #[test]

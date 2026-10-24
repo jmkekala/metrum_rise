@@ -11,7 +11,6 @@ impl SimCore {
     pub(crate) fn build_refined_terrain_cdt_window(
         window: RefinedTerrainCdtWindowBuildInput,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        boundary_step_m: f32,
     ) -> (Arc<CachedRefinedTerrainCdtWindow>, bool) {
         if let Some(previous) = window
             .previous
@@ -40,12 +39,7 @@ impl SimCore {
         ));
         let mesh_buffers = mesh_result.as_ref().ok().map(|mesh| {
             Arc::new(
-                SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
-                    patch,
-                    cdt_patch,
-                    boundary_step_m,
-                    mesh,
-                ),
+                SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(patch, mesh),
             )
         });
         (
@@ -506,13 +500,10 @@ impl SimCore {
                 let mut cdt_ms = 0.0;
                 let mut reused_windows = 0usize;
                 let patch = &input.patch;
-                let boundary_step_m = (input.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
                 let mut window_results = input
                     .windows
                     .into_par_iter()
-                    .map(|window| {
-                        Self::build_refined_terrain_cdt_window(window, patch, boundary_step_m)
-                    })
+                    .map(|window| Self::build_refined_terrain_cdt_window(window, patch))
                     .collect::<Vec<_>>();
                 window_results.extend(
                     input

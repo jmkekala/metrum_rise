@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Regular terrain filler buffers emitted outside refined CDT windows.
+//!
+//! The filler conforms to everything around it (`ROAD-68-D`): a cell side shared with a CDT
+//! window takes that window's exported side vertices bitwise, and every other side (another
+//! cell, the patch side) takes the render-step boundary lattice CDT windows put on their sides,
+//! at the patch height function the windows' side samples use. Inside a cell a regular grid
+//! follows the terrain samples, and one strip per side joins the side to the grid's outer row.
 
 use super::super::super::super::*;
 use super::super::types::*;
+
+// Patch-local f32 of a world coordinate, rounded once from f64 exactly as the CDT export does.
+fn patch_local(world: f32, centre: f32) -> f32 {
+    (f64::from(world) - f64::from(centre)) as f32
+}
 
 impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn append_regular_terrain_mesh_outside_cdt_windows(
         export: &mut TerrainCdtTriangleBufferExport,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         windows: &[TerrainCdtWindowBounds],
+        boundary_step_m: f32,
     ) {
         let patch_min_x = patch.world_origin_x;
         let patch_min_z = patch.world_origin_z;
@@ -27,61 +39,23 @@ impl SimulationNode {
             );
             return;
         }
-        let step_m = Self::regular_terrain_mesh_step_m(patch);
-
+        // Cells are bounded by the patch and window lines only, so every cell side lies wholly
+        // on one window side or on none.
         let mut x_lines = vec![patch_min_x, patch_max_x];
         let mut z_lines = vec![patch_min_z, patch_max_z];
         for window in windows {
             x_lines.extend([window.min_x, window.max_x]);
             z_lines.extend([window.min_z, window.max_z]);
-            // Only geometry-added side vertices must cross unrelated filler partitions. The
-            // canonical fine boundary lattice remains available to directly adjacent filler
-            // regions below, but promoting it globally creates a Cartesian fine-grid blow-up.
-            Self::extend_axis_with_non_lattice_window_side_samples(
-                &mut x_lines,
-                &window.min_z_side_xs,
-                window.min_x,
-                window.max_x,
-                window.boundary_step_mm,
-            );
-            Self::extend_axis_with_non_lattice_window_side_samples(
-                &mut x_lines,
-                &window.max_z_side_xs,
-                window.min_x,
-                window.max_x,
-                window.boundary_step_mm,
-            );
-            Self::extend_axis_with_non_lattice_window_side_samples(
-                &mut z_lines,
-                &window.min_x_side_zs,
-                window.min_z,
-                window.max_z,
-                window.boundary_step_mm,
-            );
-            Self::extend_axis_with_non_lattice_window_side_samples(
-                &mut z_lines,
-                &window.max_x_side_zs,
-                window.min_z,
-                window.max_z,
-                window.boundary_step_mm,
-            );
         }
-        Self::sort_dedup_axis_lines(&mut x_lines);
-        Self::sort_dedup_axis_lines(&mut z_lines);
+        for lines in [&mut x_lines, &mut z_lines] {
+            lines.sort_by(f32::total_cmp);
+            lines.dedup();
+        }
         for x_pair in x_lines.windows(2) {
-            let min_x = x_pair[0];
-            let max_x = x_pair[1];
-            if max_x <= min_x + 0.001 {
-                continue;
-            }
             for z_pair in z_lines.windows(2) {
-                let min_z = z_pair[0];
-                let max_z = z_pair[1];
-                if max_z <= min_z + 0.001 {
-                    continue;
-                }
-                let mid_x = (min_x + max_x) * 0.5;
-                let mid_z = (min_z + max_z) * 0.5;
+                let cell = [x_pair[0], z_pair[0], x_pair[1], z_pair[1]];
+                let mid_x = (cell[0] + cell[2]) * 0.5;
+                let mid_z = (cell[1] + cell[3]) * 0.5;
                 if windows.iter().any(|window| {
                     mid_x >= window.min_x
                         && mid_x <= window.max_x
@@ -90,22 +64,263 @@ impl SimulationNode {
                 }) {
                     continue;
                 }
-                let mut xs =
-                    Self::regular_terrain_axis_samples_aligned(min_x, max_x, step_m, patch_min_x);
-                let mut zs =
-                    Self::regular_terrain_axis_samples_aligned(min_z, max_z, step_m, patch_min_z);
-                Self::refine_regular_terrain_axes_for_cdt_window_sides(
-                    &mut xs, &mut zs, min_x, min_z, max_x, max_z, windows,
+                Self::append_regular_terrain_filler_cell(
+                    export,
+                    patch,
+                    windows,
+                    cell,
+                    boundary_step_m,
                 );
-                Self::append_regular_terrain_grid_region_with_axes(export, patch, &xs, &zs);
             }
         }
     }
 
+    // One filler cell `[min_x, min_z, max_x, max_z]`: the regular grid strictly inside (or the
+    // cell's midline where it is narrower than two steps) and four strips joining it to the
+    // sides. O(grid vertices + side vertices).
+    fn append_regular_terrain_filler_cell(
+        export: &mut TerrainCdtTriangleBufferExport,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        windows: &[TerrainCdtWindowBounds],
+        [min_x, min_z, max_x, max_z]: [f32; 4],
+        boundary_step_m: f32,
+    ) {
+        let step_m = Self::regular_terrain_mesh_step_m(patch);
+        let interior = |min: f32, max: f32, anchor: f32| {
+            let samples = Self::regular_terrain_axis_samples_aligned(min, max, step_m, anchor);
+            match &samples[1..samples.len() - 1] {
+                [] => vec![(min + max) * 0.5],
+                lines => lines.to_vec(),
+            }
+        };
+        let xs = interior(min_x, max_x, patch.world_origin_x);
+        let zs = interior(min_z, max_z, patch.world_origin_z);
+        let base_index = export.vertices.len();
+        // One vertex per XZ position in the cell; window vertices go first, so a corner a window
+        // shares keeps the window's bits.
+        let mut indices = HashMap::<(u32, u32), usize>::new();
+        // Bottom, right, top and left sides.
+        let mut sides = [
+            (min_z, (min_x, max_x), false),
+            (max_x, (min_z, max_z), true),
+            (max_z, (min_x, max_x), false),
+            (min_x, (min_z, max_z), true),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(slot, (fixed, along, x_line))| {
+            let (points, from_window) = Self::regular_terrain_filler_side(
+                patch,
+                windows,
+                fixed,
+                along,
+                x_line,
+                boundary_step_m,
+            );
+            (slot, points, from_window)
+        })
+        .collect::<Vec<_>>();
+        sides.sort_by_key(|(_, _, from_window)| !*from_window);
+        let mut side_rows = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for (slot, points, _) in sides {
+            side_rows[slot] = points
+                .into_iter()
+                .map(|point| {
+                    Self::regular_terrain_filler_vertex(export, patch, &mut indices, point)
+                })
+                .collect::<Vec<_>>();
+        }
+        let centre_x = patch.world_origin_x + patch.world_size_x * 0.5;
+        let centre_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let grid = zs
+            .iter()
+            .map(|&z| {
+                xs.iter()
+                    .map(|&x| {
+                        let point = Vector3::new(
+                            patch_local(x, centre_x),
+                            Self::terrain_patch_height_at_world_m(patch, x, z),
+                            patch_local(z, centre_z),
+                        );
+                        Self::regular_terrain_filler_vertex(export, patch, &mut indices, point)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for rows in grid.windows(2) {
+            for x_index in 0..xs.len() - 1 {
+                let (i00, i10) = (rows[0][x_index], rows[0][x_index + 1]);
+                let (i01, i11) = (rows[1][x_index], rows[1][x_index + 1]);
+                Self::append_regular_terrain_triangle(export, [i00, i11, i10]);
+                Self::append_regular_terrain_triangle(export, [i00, i01, i11]);
+            }
+        }
+        let first_column = grid.iter().map(|row| row[0]).collect::<Vec<_>>();
+        let last_column = grid.iter().map(|row| row[xs.len() - 1]).collect::<Vec<_>>();
+        let [bottom, right, top, left] = &side_rows;
+        Self::append_regular_terrain_strip(export, bottom, &grid[0], false);
+        Self::append_regular_terrain_strip(export, right, &last_column, true);
+        Self::append_regular_terrain_strip(export, top, &grid[zs.len() - 1], false);
+        Self::append_regular_terrain_strip(export, left, &first_column, true);
+        for (normal, normal_sum_length) in export.normals[base_index..]
+            .iter_mut()
+            .zip(&mut export.normal_sum_lengths[base_index..])
+        {
+            *normal_sum_length = normal.length();
+            *normal = if normal.length_squared() == 0.0 {
+                Vector3::UP
+            } else {
+                normal.normalized()
+            };
+        }
+    }
+
+    // The patch-local vertices of the cell side at `fixed` (an x line when `x_line`) spanning
+    // `start..end`, in increasing along order, and whether a window supplied them: a window
+    // across the side supplies its exported side vertices, and any other side carries the
+    // boundary lattice at the patch heights.
+    fn regular_terrain_filler_side(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        windows: &[TerrainCdtWindowBounds],
+        fixed: f32,
+        (start, end): (f32, f32),
+        x_line: bool,
+        boundary_step_m: f32,
+    ) -> (Vec<Vector3>, bool) {
+        let centre_x = patch.world_origin_x + patch.world_size_x * 0.5;
+        let centre_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let lattice_point = |along: f32| {
+            let (x, z) = if x_line {
+                (fixed, along)
+            } else {
+                (along, fixed)
+            };
+            Vector3::new(
+                patch_local(x, centre_x),
+                Self::terrain_patch_height_at_world_m(patch, x, z),
+                patch_local(z, centre_z),
+            )
+        };
+        let (fixed_local, along_centre) = if x_line {
+            (patch_local(fixed, centre_x), centre_z)
+        } else {
+            (patch_local(fixed, centre_z), centre_x)
+        };
+        let (start_local, end_local) = (
+            patch_local(start, along_centre),
+            patch_local(end, along_centre),
+        );
+        let split = |point: &Vector3| {
+            if x_line {
+                (point.x, point.z)
+            } else {
+                (point.z, point.x)
+            }
+        };
+        let across = windows.iter().find(|window| {
+            let (low, high, from, to) = if x_line {
+                (window.min_x, window.max_x, window.min_z, window.max_z)
+            } else {
+                (window.min_z, window.max_z, window.min_x, window.max_x)
+            };
+            (low == fixed || high == fixed) && from <= start && to >= end
+        });
+        let points = match across {
+            Some(window) => {
+                let mut points = window
+                    .side_vertices
+                    .iter()
+                    .copied()
+                    .filter(|point| {
+                        let (on, along) = split(point);
+                        on.to_bits() == fixed_local.to_bits()
+                            && along >= start_local
+                            && along <= end_local
+                    })
+                    .collect::<Vec<_>>();
+                points.sort_by(|a, b| split(a).1.total_cmp(&split(b).1));
+                points.dedup_by(|a, b| split(a).1.to_bits() == split(b).1.to_bits());
+                // A window always has its corners; the cell's ends are window corners.
+                if points
+                    .first()
+                    .is_none_or(|point| split(point).1 != start_local)
+                {
+                    points.insert(0, lattice_point(start));
+                }
+                if points
+                    .last()
+                    .is_none_or(|point| split(point).1 != end_local)
+                {
+                    points.push(lattice_point(end));
+                }
+                points
+            }
+            None => Self::terrain_cdt_axis_samples(start, end, boundary_step_m)
+                .into_iter()
+                .map(lattice_point)
+                .collect(),
+        };
+        (points, across.is_some())
+    }
+
+    fn regular_terrain_filler_vertex(
+        export: &mut TerrainCdtTriangleBufferExport,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        indices: &mut HashMap<(u32, u32), usize>,
+        point: Vector3,
+    ) -> usize {
+        *indices
+            .entry((point.x.to_bits(), point.z.to_bits()))
+            .or_insert_with(|| {
+                let uv = |local: f32, size: f32| {
+                    ((f64::from(local) / f64::from(size.max(0.001))) + 0.5).clamp(0.0, 1.0) as f32
+                };
+                export.vertices.push(point);
+                export.normals.push(Vector3::ZERO);
+                export.normal_sum_lengths.push(0.0);
+                export.uvs.push(Vector2::new(
+                    uv(point.x, patch.world_size_x),
+                    uv(point.z, patch.world_size_z),
+                ));
+                export.vertices.len() - 1
+            })
+    }
+
+    // Joins a cell side (`outer`) to the parallel grid row inside it (`inner`), both in
+    // increasing along order, with their first and last vertices joined by the neighbouring
+    // strips. Each triangle takes two consecutive vertices of one row and one of the other,
+    // advancing by along position, so the strip has no gap and no overlap.
+    fn append_regular_terrain_strip(
+        export: &mut TerrainCdtTriangleBufferExport,
+        outer: &[usize],
+        inner: &[usize],
+        along_z: bool,
+    ) {
+        let along = |export: &TerrainCdtTriangleBufferExport, index: usize| {
+            let point = export.vertices[index];
+            if along_z { point.z } else { point.x }
+        };
+        let (mut i, mut j) = (0, 0);
+        while i + 1 < outer.len() || j + 1 < inner.len() {
+            let advance_outer = j + 1 == inner.len()
+                || (i + 1 < outer.len()
+                    && along(export, outer[i + 1]) <= along(export, inner[j + 1]));
+            if advance_outer {
+                Self::append_regular_terrain_triangle(export, [outer[i], outer[i + 1], inner[j]]);
+                i += 1;
+            } else {
+                Self::append_regular_terrain_triangle(export, [outer[i], inner[j + 1], inner[j]]);
+                j += 1;
+            }
+        }
+    }
+
+    /// The window's patch-clipped bounds and its exported (patch-local) terrain vertices on
+    /// its four sides.
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_bounds(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         cdt_patch: TerrainCdtPatch,
-        boundary_step_m: f32,
+        exported_vertices: &[Vector3],
     ) -> Option<TerrainCdtWindowBounds> {
         let patch_min_x = patch.world_origin_x;
         let patch_min_z = patch.world_origin_z;
@@ -115,119 +330,28 @@ impl SimulationNode {
         let min_z = (cdt_patch.min_z as f32).clamp(patch_min_z, patch_max_z);
         let max_x = (cdt_patch.max_x as f32).clamp(patch_min_x, patch_max_x);
         let max_z = (cdt_patch.max_z as f32).clamp(patch_min_z, patch_max_z);
-        if max_x <= min_x + 0.001 || max_z <= min_z + 0.001 {
+        if max_x <= min_x || max_z <= min_z {
             return None;
         }
-        let boundary_step_m = boundary_step_m.max(f32::EPSILON);
-        let boundary_step_mm =
-            Self::quantize_cdt_coord_mm(f64::from(boundary_step_m.max(0.001))).max(1);
-        let side_xs = Self::terrain_cdt_axis_samples(min_x, max_x, boundary_step_m);
-        let side_zs = Self::terrain_cdt_axis_samples(min_z, max_z, boundary_step_m);
+        let centre_x = patch.world_origin_x + patch.world_size_x * 0.5;
+        let centre_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let xs = [min_x, max_x].map(|x| patch_local(x, centre_x).to_bits());
+        let zs = [min_z, max_z].map(|z| patch_local(z, centre_z).to_bits());
+        let side_vertices = exported_vertices
+            .iter()
+            .copied()
+            .filter(|point| xs.contains(&point.x.to_bits()) || zs.contains(&point.z.to_bits()))
+            .collect();
         Some(TerrainCdtWindowBounds {
             min_x,
             min_z,
             max_x,
             max_z,
-            boundary_step_mm,
-            min_x_side_zs: side_zs.clone(),
-            max_x_side_zs: side_zs,
-            min_z_side_xs: side_xs.clone(),
-            max_z_side_xs: side_xs,
+            side_vertices,
         })
     }
 
-    fn extend_axis_with_non_lattice_window_side_samples(
-        axis: &mut Vec<f32>,
-        manifest: &[f32],
-        min: f32,
-        max: f32,
-        boundary_step_mm: i64,
-    ) {
-        let min_mm = Self::quantize_cdt_coord_mm(f64::from(min));
-        let max_mm = Self::quantize_cdt_coord_mm(f64::from(max));
-        let boundary_step_mm = boundary_step_mm.max(1);
-        axis.extend(manifest.iter().copied().filter(|sample| {
-            let sample_mm = Self::quantize_cdt_coord_mm(f64::from(*sample));
-            sample_mm > min_mm && sample_mm < max_mm && sample_mm.rem_euclid(boundary_step_mm) != 0
-        }));
-    }
-
-    pub(in crate::nodes::simulation_node) fn refine_regular_terrain_axes_for_cdt_window_sides(
-        xs: &mut Vec<f32>,
-        zs: &mut Vec<f32>,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-        windows: &[TerrainCdtWindowBounds],
-    ) {
-        for window in windows {
-            let z_overlap_min = min_z.max(window.min_z);
-            let z_overlap_max = max_z.min(window.max_z);
-            if z_overlap_max > z_overlap_min + 0.001 {
-                if Self::axis_lines_touch(max_x, window.min_x) {
-                    Self::extend_axis_samples_from_manifest(
-                        zs,
-                        z_overlap_min,
-                        z_overlap_max,
-                        &window.min_x_side_zs,
-                    );
-                }
-                if Self::axis_lines_touch(min_x, window.max_x) {
-                    Self::extend_axis_samples_from_manifest(
-                        zs,
-                        z_overlap_min,
-                        z_overlap_max,
-                        &window.max_x_side_zs,
-                    );
-                }
-            }
-
-            let x_overlap_min = min_x.max(window.min_x);
-            let x_overlap_max = max_x.min(window.max_x);
-            if x_overlap_max > x_overlap_min + 0.001 {
-                if Self::axis_lines_touch(max_z, window.min_z) {
-                    Self::extend_axis_samples_from_manifest(
-                        xs,
-                        x_overlap_min,
-                        x_overlap_max,
-                        &window.min_z_side_xs,
-                    );
-                }
-                if Self::axis_lines_touch(min_z, window.max_z) {
-                    Self::extend_axis_samples_from_manifest(
-                        xs,
-                        x_overlap_min,
-                        x_overlap_max,
-                        &window.max_z_side_xs,
-                    );
-                }
-            }
-        }
-    }
-
-    /// Extends one filler axis with the overlapping portion of a CDT side manifest.
-    pub(in crate::nodes::simulation_node) fn extend_axis_samples_from_manifest(
-        samples: &mut Vec<f32>,
-        min: f32,
-        max: f32,
-        manifest: &[f32],
-    ) {
-        samples.extend(
-            manifest
-                .iter()
-                .copied()
-                .filter(|sample| *sample >= min - 0.001 && *sample <= max + 0.001),
-        );
-        Self::sort_dedup_axis_lines(samples);
-    }
-
-    /// Returns whether two quantized seam axes represent the same world line.
-    pub(in crate::nodes::simulation_node) fn axis_lines_touch(left: f32, right: f32) -> bool {
-        (left - right).abs() <= 0.001
-    }
-
-    pub(in crate::nodes::simulation_node) fn sort_dedup_axis_lines(values: &mut Vec<f32>) {
+    fn sort_dedup_axis_lines(values: &mut Vec<f32>) {
         values.sort_by(|left, right| left.total_cmp(right));
         values.dedup_by(|left, right| (*left - *right).abs() <= 0.001);
     }
@@ -343,18 +467,21 @@ impl SimulationNode {
         }
     }
 
+    // Emits one filler face with an upward cross product, as CDT faces have. Only an exactly
+    // degenerate face is skipped: it covers nothing.
     pub(in crate::nodes::simulation_node) fn append_regular_terrain_triangle(
         export: &mut TerrainCdtTriangleBufferExport,
-        triangle: [usize; 3],
+        mut triangle: [usize; 3],
     ) {
-        let points = [
-            export.vertices[triangle[0]],
-            export.vertices[triangle[1]],
-            export.vertices[triangle[2]],
-        ];
-        let normal = (points[1] - points[0]).cross(points[2] - points[0]);
-        if normal.length_squared() <= 0.000_001 {
+        let mut points = triangle.map(|index| export.vertices[index]);
+        let mut normal = (points[1] - points[0]).cross(points[2] - points[0]);
+        if normal.length_squared() == 0.0 {
             return;
+        }
+        if normal.y < 0.0 {
+            triangle.swap(1, 2);
+            points.swap(1, 2);
+            normal = -normal;
         }
         let normal = normal.normalized();
         let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
@@ -402,10 +529,10 @@ impl SimulationNode {
         let b = points[2] - points[0];
         let normal = a.cross(b);
         let horizontal_normal = (normal.x * normal.x + normal.z * normal.z).sqrt();
-        if horizontal_normal <= 0.000_001 {
+        if horizontal_normal == 0.0 {
             return 0.0;
         }
-        if normal.y.abs() <= 0.000_001 {
+        if normal.y == 0.0 {
             return 1_000_000.0;
         }
         horizontal_normal / normal.y.abs()

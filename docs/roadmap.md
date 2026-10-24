@@ -82,18 +82,24 @@ orientation, one source `RoadBoundary` replaces the legacy span and node sources
 share one grading envelope, and edits stamp only the tiles their old and new pieces reach. Road
 seams on tile sides are exact in both tiles. 24 of its 25 disabled tests are re-enabled and 23
 pass; the recorded Kuopio replay and the hillside fixture predate `ROAD-68-C` and wait for
-`ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled (a site paving and
-foundation coverage gap, still open). The reference screenshots show single-pixel terrain
-pinholes, new in `ROAD-68-D` (a seam crack; open, blocking). Part 3 fixed the economy perf contract regression (a
+`ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled (the world-space
+foundation and the patch-local terrain do not share their seam; open question 23, open,
+blocking; part 4 fixed the material partition's T-vertex cracks). Part 4 made the terrain
+watertight (a conforming regular filler, no dropped small faces; test
+`reference_junction_terrain_is_watertight`): the reference screenshots' pinholes fell from 33 to
+9, none on the flat fixtures; the 9 lie in the road surface on slopes, uncovered now that the
+terrain is clipped (open question 24, open, blocking). Part 3 fixed the economy perf contract regression (a
 quadratic orientation test in the grading pass, and building-site changes re-grading roads): every
 timing is back within the control's range with identical work counts. The sloped T's terrain
 stage meets its 2 ms target at 1.85–1.88 ms (open question 22, resolved). Span rows follow one
 constructive station rule and terminal cap apexes are exact. Tests that need later gates are
 disabled until then (11 Rust tests, 4 Godot scripts). `ROAD-68-D`, `-E`, `-F` and `-H` are
-open, and `roads.md` lists twenty-two open questions; open question 16 (strokes pinned to the
+open, and `roads.md` lists twenty-four open questions; open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
-decided, and 22 (the 2 ms terrain stage) is resolved. Design,
+decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
+frames, the yard test) is decided under delegation and not yet built, and 24 (road surface
+pinholes on slopes) is open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

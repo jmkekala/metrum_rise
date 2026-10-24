@@ -1025,7 +1025,7 @@ fn spawn_yard_access_agent(
 }
 
 #[test]
-#[ignore = "ROAD-68-D: building 1's samples lie on its site loop seam, building 3's inside its site loop but outside any foundation paving (roads.md ROAD-68-D part 3)"]
+#[ignore = "ROAD-68-D: seam samples of buildings 0 and 1 fall between the world-space foundation and the patch-local terrain (roads.md open question 23)"]
 fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
     let mut core = kuopio_yard_fixture();
     let mut points = Vec::new();
@@ -1756,3 +1756,4 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
         }
     }
 }
+

@@ -15,5 +15,5 @@ pub(in crate::nodes::simulation_node) use input::{
 };
 #[cfg(test)]
 pub(in crate::nodes::simulation_node) use types::{
-    TerrainCdtSourceExport, TerrainCdtTriangleBufferExport,
+    TerrainCdtSourceExport, TerrainCdtTriangleBufferExport, TerrainCdtWindowBounds,
 };

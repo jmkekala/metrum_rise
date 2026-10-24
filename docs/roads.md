@@ -473,6 +473,23 @@ The road side is rewritten:
   lies on the footprint and is dropped, so both tiles emit the same side and no sliver. Arm knot
   laterals divide by the length rather than multiply by its reciprocal, so an axis-aligned arm's
   runs, terminal cap ends included, lie exactly on the span's grid line.
+- **Watertight patches.** A render patch's terrain is its CDT tiles plus regular filler over its
+  contributor-free tiles, and every terrain edge borders two faces with bitwise equal vertices
+  unless it lies on a road seam, a site loop or a refined patch's outer side (`ROAD-68-D` part 4,
+  test `reference_junction_terrain_is_watertight` over all 20 reference junctions). The filler is
+  conforming: filler cells are bounded by patch and tile lines only; a cell side shared with a
+  tile takes that tile's exported side vertices bitwise, every other cell side the render-step
+  boundary lattice the tiles also put on their sides, and one strip per side joins it to the
+  cell's regular grid, so no vertex of one side runs on as a grid line into other cells. Every
+  face the CDT emits is exported unless it is exactly degenerate, and a face's slope is its own
+  (no absolute cut-offs): thin and small faces are part of the triangulation. Open: the filler's
+  lattice heights come from the patch snapshot and the tiles' from the terrain system, two
+  bilinear evaluations that agree on sample points but may differ in the last bit between them,
+  so a filler cell side whose neighbour is a tile of another patch, or a filler corner shared
+  only through a tile corner, can differ by an ulp of height in worlds whose lattice misses the
+  sample points (open question 23). A refined patch's outer side carries the boundary lattice,
+  and an unrefined neighbour renders its regular heightmap grid there (a T-junction on a
+  straight edge, as tiles on patch sides always had).
 - **Patch selection.** Every compile records the XZ bounds of the old and new pieces it replaced
   (`RoadbedSystem::take_changed_bounds`); the edit marks the render patches and CDT tiles within
   the envelope cap of them and stamps the tiles in the assembly ledger
@@ -1188,6 +1205,67 @@ These need a user decision; work that does not depend on them continues.
       of `O(E)`; (c) plan and triangulate each tile in one task instead of a plan barrier
       followed by the tile CDTs; (d) accept a 2.5 ms budget for the T. (a) and (b) keep every
       output bitwise; (c) changes only scheduling.
+23. **Seams between meshes in different frames (`ROAD-68-D` part 4) — decided by the
+    coordinator under the user's delegation, 2026-10-24, for review: (a).** The yard test
+    `cars_and_walkers_enter_and_exit_on_compiled_yards` samples exactly on the terrain/foundation
+    seam (coordinator's decision of 2026-10-24: a seam point must be covered).
+    - **Evidence.** Kuopio yard fixture, after part 4. Building 1, sample (65.538, −95.030): the
+      foundation's paved triangle misses it by 2.7 µm across the footprint side, and the terrain
+      faces along the same side miss it too. The foundation is a world-space f32 mesh
+      (`foundation_mesh`, uploaded by `get_building_site_mesh_data_internal`); the terrain is
+      patch-local f32 (`(x − centre) as f32` from f64), and each partition adds its own split
+      point where a yard triangle edge crosses the side: (66.766045, −92.73785) in the
+      foundation, (66.766052, −92.737839) in the terrain, 13 µm apart. In general the two frames
+      also round the same footprint vertex differently. Building 3, yard centre
+      (75.703, −978.962): the centre lies on the diagonal of the yard's two triangles;
+      `SitePavingPartition::partition` clips each foundation triangle by each yard triangle on
+      its own, so one side of the diagonal keeps an unsplit edge while the other is split at
+      (76.058914, −977.6029), and that T-vertex, rounded to f32, opens a crack the centre falls
+      into (it misses both paved neighbours by under 4 µm). **Fixed in part 4:** a convex surface
+      is clipped against as one polygon (no internal diagonal), and `split` computes a segment's
+      split point from its lexicographically lower end, so the two faces sharing a segment split
+      it at the same point; building 3 is covered, and building 0's seam sample (u = 0.9,
+      v = 0.9, on a footprint side like building 1's) now misses instead, by the frame split
+      alone. The same frame split exists between the world-space road
+      chunks and the patch-local terrain along every road seam.
+    - **Options.** (a) Build the foundation's faces into the terrain patch buffers, in the
+      patch's frame and through the same material partition as the terrain paving (clip each
+      foundation triangle by the patch), and stop uploading the separate world-space foundation
+      mesh; the seam is then one shared edge by construction. (b) Keep two
+      meshes and give coverage a seam tolerance (rejected: tolerance). (c) Move the samples off
+      the seam (rejected by the coordinator's decision). **Recommendation: (a)**, with the road
+      seam (question 24) following the same rule.
+    - **Not yet done.** Part 4 does not implement (a); the yard test stays a `ROAD-68-D` ignore
+      (seam samples of buildings 0 and 1).
+      Also open under this question: filler and tile side heights come from two bilinear
+      evaluations (patch snapshot and terrain system) that agree on sample points but can differ
+      in the last bit between them ([watertight patches](#footprint-and-terrain)); one shared
+      height function (the snapshot carrying the terrain grid frame) closes it.
+24. **Road surface pinholes on slopes (`ROAD-68-D` part 4, open).** With the terrain watertight,
+    the reference screenshots keep 9 single sky pixels, all on the sloped fixtures and none on
+    the flat ones (`pinholes.py`): 8 inside the carriageway (`t`, `four_way` and
+    `t_footpath_beside_arm` at one screen point near the side arm's curb, three in a row on the
+    junction of `y_25_branches_first` but none in `y_25`, one in `y_40`) and 1 on the outer seam
+    between a sidewalk and the terrain (`t_mixed_4lane_through`). The terrain under a road is
+    now omitted, so any crack in the road surface shows the sky; before `ROAD-68-D` the
+    unclipped terrain hid it. Not attributed yet. What part 4 established: the published road
+    chunk meshes are chunk-local f32 (each triangle routed to the chunk of its centroid and
+    stored minus that chunk's minimum corner, `push_triangle_to_layer`), and the terrain is
+    patch-local f32 (minus the patch centre). A vertex that two chunks share, or that a chunk
+    shares with a terrain patch along the outer seam, is therefore rounded twice in two frames
+    and is not one rendered point; the gap is micrometres, about 10⁻³ of a pixel here, so it
+    shows only now and then, and only where nothing lies below. (A first temporary edge-matching
+    test over the chunks read their vertices as world positions; its open edges along the
+    `x = 0` and `z = 0` chunk lines are that frame difference, not an attribution.) The two Y
+    drawing orders also differ in height on the slope (junction centre 3.2651 m drawn branches
+    first, 3.1992 m drawn stem first), so invariant 6 fails for those images; that belongs to
+    question 16. Options: (a) one frame per shared seam: clip road triangles at chunk lines
+    (so a vertex on a chunk line is exact in both chunks, as tile vertices on patch sides are)
+    and give road chunks and terrain patches one grid and one frame origin per cell, then add a
+    road-chunk edge-matching test (in world coordinates) beside
+    `reference_junction_terrain_is_watertight`; (b) hide the cracks under terrain again
+    (rejected: terrain must stay clipped). **Recommendation: (a)**, together with question
+    23's frame rule; the remaining cracks are then attributed by the test.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -2519,7 +2597,7 @@ Part 3 (2026-10-24, same branch, rebased on `road` at `27797b92`):
   families with one subdivision, removes 26; the apex adds 8). `ROAD-68-D` adds 167 in all.
 - **Entry points.** `terrain_cdt_window_build_inputs_with_roads`, `terrain_cdt_road_tile_loops`,
   `roadbed::terrain::terrain_loops` and `grading::road_loop_grading` keep their signatures.
-- **Open: terrain pinholes (blocks the gate's seam acceptance).** The reference screenshots
+- **Open at part 3: terrain pinholes (part 4 fixes the terrain's share).** The reference screenshots
   (`road_junction_reference_test.gd`, oblique views over the production terrain payloads) show
   33 isolated sky-coloured pixels through the terrain in 12 of the 20 fixtures, flat and sloped,
   and none in the pre-D set from the same harness; the part 2 tree shows 40 at the same points,
@@ -2548,6 +2626,60 @@ Part 3 (2026-10-24, same branch, rebased on `road` at `27797b92`):
 | first WIP (control) | 2.882 / 2.903 | 1.360 / 1.367 | 0.332 / 0.333 | 1.064 / 1.076 |
 | part 2 (`409a0212`) | 2.202 / 2.249 | 0.741 / 0.753 | 0.321 / 0.325 | 1.105 / 1.124 |
 | part 3 | 1.850 / 1.883 | 0.422 / 0.386 | 0.331 / 0.328 | 1.027 / 1.121 |
+
+Part 4 (2026-10-24, same branch): watertight terrain.
+
+- **Test first.** `reference_junction_terrain_is_watertight` (`nodes/sim/core/tests/terrain_seams.rs`)
+  builds the 20 reference junctions as the screenshot harness does (`SimCore::commit_road` on the
+  512 m world, flat and on the 2.5% slope), composes every refined patch payload, and requires
+  every terrain edge, in world coordinates from the patch-local f32 vertices, to border exactly
+  two faces with bitwise equal vertices, or to border the road (`band_at` 5 mm across it), a
+  building site or the refined area's edge. On the part 3 tree it failed every fixture with 90
+  to 416 open edges.
+- **Cause 1: small faces dropped.** The CDT export skipped every face whose 3D cross product
+  had a squared length of at most 10⁻⁶, a face of up to 5 cm² (`terrain_cdt_triangle_geometry`).
+  The tie-in guides put triples of vertices 1.5 mm to 1 cm apart along a corner curve, and the
+  slivers between them and the next sample (0.5 m long, 1.5 mm wide) fell under the cut-off:
+  holes the neighbouring faces do not cover, at the screenshots' recurring points (the T's
+  corner at (8.5, 8.3)). Only an exactly degenerate face is skipped now. The face slope metric
+  had the same kind of cut-off (a face with a plan-area cross product of at most 10⁻⁶ counted as
+  vertical, slope 10⁶); a small face is measured at its own slope now, which keeps the Kuopio
+  fixture's guide slivers (slope 3 to 8) under the 256 pathology limit.
+- **Cause 2: a non-conforming filler.** The regular filler over contributor-free tiles took
+  every CDT vertex lying on a tile side, including those of faces inside the footprint, as
+  side samples, ran every off-lattice one as a grid line across the whole patch, and densified
+  a cell only where it touched a tile: T-vertices against tile sides without those vertices
+  (the main road's 1 m span rows on the `z = 0` tile line reached `z = −64`) and between filler
+  cells, and on slopes the filler's side heights came from the patch snapshot while the tile's
+  came from the terrain system. The filler is conforming now ([watertight
+  patches](#footprint-and-terrain)): window side vertices are read from the window's exported
+  vertices, and a filler cell takes them bitwise on a shared side.
+- **Result.** The test passes on all 20 fixtures. The screenshots (`$ARTIFACTS/screenshots-D4`)
+  go from 33 pinholes to 9 (`pinholes.py`), none on the flat fixtures; the 9 lie in the road
+  surface or its outer seam on the sloped fixtures (open question 24). Fresh: debug
+  `cargo test --lib` 1,867 passed, 0 failed, 168 ignored (`ROAD-68-D` 1, the yard test; `-E` 5;
+  `-F` 5); `./run.sh --test` exit 0 before the paving change below (Rust-only). The filler tests
+  are rewritten to the conforming contract
+  (`regular_terrain_filler_shares_cdt_window_side_vertices`,
+  `regular_terrain_filler_conforms_across_filler_cells`,
+  `regular_terrain_filler_does_not_globalize_canonical_window_lattices`).
+- **Tried and reverted.** Sampling the tiles' source heights with the patch snapshot function,
+  so tile and filler share one height function, made the Kuopio fixture's patch (14, 22)
+  pathological at first; the cause was the slope metric's cut-off above, not the heights, but
+  the change was not needed for the fixtures and stays open (question 23).
+- **Yard test: building 3 fixed, seams open** (open question 23). Building 3's yard centre fell
+  into a T-vertex crack on the yard's diagonal in the material partition
+  (`SitePavingPartition`): a convex surface is now clipped against as one polygon, and a split
+  point is computed from its segment's lower end, so faces sharing a segment split it alike.
+  The seam samples of buildings 0 and 1 still fall between the world-space foundation and the
+  patch-local terrain, whose seam split points two partitions compute in two frames; the
+  recommended fix builds the foundation's faces into the terrain patch buffers.
+- **Entry points.** `terrain_cdt_window_build_inputs_with_roads`, `terrain_cdt_road_tile_loops`,
+  `roadbed::terrain::terrain_loops` and `grading::road_loop_grading` keep their signatures.
+  `SimCore::build_refined_terrain_cdt_window` and
+  `prepare_cached_refined_terrain_window_mesh_buffers` lose their unused boundary-step and
+  window-bounds parameters, and the cached window buffers lose their four side manifests.
+  `roadbed/` is unchanged (7,588 lines).
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 

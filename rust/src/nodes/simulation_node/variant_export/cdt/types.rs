@@ -87,14 +87,7 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBounds {
     pub(in crate::nodes::simulation_node) max_x: f32,
     /// Parent-patch-clipped maximum world Z.
     pub(in crate::nodes::simulation_node) max_z: f32,
-    /// Canonical fixed-window boundary sample cadence in quantized millimetres.
-    pub(in crate::nodes::simulation_node) boundary_step_mm: i64,
-    /// Canonical Z samples emitted on the minimum-X side.
-    pub(in crate::nodes::simulation_node) min_x_side_zs: Vec<f32>,
-    /// Canonical Z samples emitted on the maximum-X side.
-    pub(in crate::nodes::simulation_node) max_x_side_zs: Vec<f32>,
-    /// Canonical X samples emitted on the minimum-Z side.
-    pub(in crate::nodes::simulation_node) min_z_side_xs: Vec<f32>,
-    /// Canonical X samples emitted on the maximum-Z side.
-    pub(in crate::nodes::simulation_node) max_z_side_xs: Vec<f32>,
+    /// The window's exported patch-local terrain vertices on its four sides, with their
+    /// heights: the regular filler reuses them bitwise on every side it shares.
+    pub(in crate::nodes::simulation_node) side_vertices: Vec<Vector3>,
 }

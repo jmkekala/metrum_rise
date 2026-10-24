@@ -9,7 +9,7 @@ use crate::simulation::network::roadbed::fixtures::{ProductProbe, assert_probes}
 use godot::prelude::Vector2;
 
 // The reference harness's fixtures, by name: strokes and their commit order.
-fn reference_fixtures() -> Vec<(&'static str, Vec<Stroke>, Vec<usize>)> {
+pub(super) fn reference_fixtures() -> Vec<(&'static str, Vec<Stroke>, Vec<usize>)> {
     let road = |a: Vector2, b: Vector2| ([a, b], 1);
     let west_east = road(Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0));
     let side = road(Vector2::ZERO, Vector2::new(0.0, ARM_M));

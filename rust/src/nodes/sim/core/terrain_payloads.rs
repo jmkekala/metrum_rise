@@ -182,14 +182,6 @@ pub(crate) struct CachedRefinedTerrainMeshBuffers {
     pub(crate) terrain_normals: Vec<Vector3>,
     /// Magnitude of each pre-normalized tile-local normal sum; empty on complete patch buffers.
     pub(crate) terrain_normal_sum_lengths: Vec<f32>,
-    /// Minimum-X seam samples for one fixed window; empty on complete patch buffers.
-    pub(crate) window_min_x_side_zs: Vec<f32>,
-    /// Maximum-X seam samples for one fixed window; empty on complete patch buffers.
-    pub(crate) window_max_x_side_zs: Vec<f32>,
-    /// Minimum-Z seam samples for one fixed window; empty on complete patch buffers.
-    pub(crate) window_min_z_side_xs: Vec<f32>,
-    /// Maximum-Z seam samples for one fixed window; empty on complete patch buffers.
-    pub(crate) window_max_z_side_xs: Vec<f32>,
     /// Ordinary terrain UV coordinates.
     pub(crate) terrain_uvs: Vec<Vector2>,
     /// Ordinary terrain triangle indices.
