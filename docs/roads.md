@@ -747,7 +747,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
-| `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
+| `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the road half of the preview, commit adoption, local undo and the load check; terrain in the preview and part 2 (open questions) are open |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
@@ -2979,8 +2979,47 @@ Round 2 (part 1, 2026-10-24):
   bulldoze offer their routing rebuild's graph copy to the view (`RoadToolPublisher::offer_graph`),
   so they copy the graph once, not twice; debug builds check the offered copy equals the live
   graph.
+- **Load.** `save_and_load_reproduce_the_pieces_bitwise`: a saved city's pieces (flat and
+  sloped T) load back bit for bit, with the same failed nodes.
+- **Small closures inline.** `RoadbedSystem::compile_delta` builds a closure of at most 16 pieces
+  (an edit's or a preview's) on the calling thread and larger ones (loads, terrain syncs) on the
+  shared pool: same functions, same order, so the products are unchanged; waking the pool for a
+  handful of pieces cost more than building them (timings below).
 - **Open in part 1:** terrain tiles and payloads in the preview, the terrain halves of the
-  fingerprint, the commit install and the undo record, and the save → load bitwise test.
+  fingerprint, the commit install and the undo record ([Preview](#preview-commit-undo-and-load));
+  the Godot stage below; the context refresh and the commit's graph copy at 10k and 100k.
+
+**Stage timings (part 1, 2026-10-24).** Native: `$TEST_BINARY
+nodes::sim::core::tests::road_preview::benchmark_road_preview_stages --exact --ignored
+--nocapture`, release, `RAYON_NUM_THREADS=4`, pinned to the P-cores, both timing locks, the
+`ROAD-30` preview worlds (512 m, 2.5% slope): `sloped_t` sweeps a T onto a 220 m trunk and
+`sloped_branch` orbits a fourth leg of the T at (-65, 0), eight poses each as
+`road_preview_replay.gd` moves them, 50 measured repetitions, ms p50 / p95. A is the round-2
+binary (every closure on the pool), B adds the inline small-closure build; A B B A in one
+session. No earlier synchronous preview exists to control against; the budgets are absolute.
+
+| Stage (budget) | `sloped_t` A | `sloped_t` B | `sloped_branch` A | `sloped_branch` B |
+| --- | --- | --- | --- | --- |
+| Edit plan (1.0) | 0.24–0.28 / 0.41–0.61 | 0.18–0.19 / 0.25–0.26 | 0.20–0.22 / 0.34–0.40 | 0.15–0.16 / 0.21–0.22 |
+| Roadbed (0.5) | 0.35–0.44 / 0.60–0.84 | 0.25 / 0.32–0.35 | 0.32–0.33 / 0.66–0.69 | 0.25 / 0.31 |
+| Road chunks (part of packing, 1.0) | 0.28–0.35 / 0.51–0.72 | 0.23 / 0.25–0.29 | 0.25–0.30 / 0.49–0.63 | 0.23 / 0.25–0.27 |
+| Preview call | 0.91–1.08 / 1.52–2.08 | 0.66–0.67 / 0.81 | 0.79–0.84 / 1.47–1.66 | 0.64 / 0.75–0.78 |
+
+With B every native stage is within budget at p95. The bridge's dictionary packing
+(`packing_ms`) adds 0.33–0.50 ms p50 in the Godot run below, so road payload packing is about
+0.6 ms of its 1.0 ms. The context refresh after one commit on these fixtures (publication
+including the routing graph copy, then the context's apply by records) is 0.005–0.012 ms; at
+city scale it is the graph copy (2.6 ms at 100k residents, `ROAD-68-G` part 2, historical) plus
+the rebuilt owners' records, not re-measured here.
+
+Godot (A's release library, `road_preview_stream_test.gd` headless, pinned, both locks, 96
+moving frames per fixture with a 1/60 s timer between them): every moved frame previewed and
+showed its own pose on all nine fixtures; the tool's `_process` took 5.6–8.6 ms p50. Inside it
+the native stages took four to five times the harness's (plan 1.0–1.3, roadbed 1.1–1.8, road
+chunks 1.0–2.1 ms p50), and the rest of the frame (bridge call, chunk `ArrayMesh` upload and
+staging) 2.1–3.2 ms p50 against the 2.0 ms Godot budget. Headless frames idle between inputs,
+so cores clock down and caches go cold; the gap is not attributed yet. The Godot stage is an
+open miss; the 16.7 ms frame holds.
 
 ### `ROAD-68-F` — remaining families
 

@@ -66,13 +66,11 @@ func native_terrain_face() -> ArrayMesh:
 	var simulation := SimulationNode.new()
 	root.add_child(simulation)
 	expect(simulation.create_blank_world(80, 80, 10, 40, 0), "native winding fixture must initialize")
-	var request := simulation.request_preview_road_surface_with_snap(
+	# The synchronous preview's terrain payload (`ROAD-68-E`; terrain joins the preview after
+	# part 1, so until then this fixture finds no faces, as since `ROAD-68-A`).
+	var result: Variant = simulation.preview_road(
 		PackedVector3Array([Vector3(-10, 0, 0), Vector3(10, 0, 0)]), 1, 1, true)
-	var result: Variant = null
-	var deadline := Time.get_ticks_msec() + 15000
-	while result == null and Time.get_ticks_msec() < deadline:
-		result = simulation.get_preview_road_surface_result(request, 0, PackedInt64Array())
-		await process_frame
+	await process_frame
 	var selected := PackedVector3Array()
 	var faces := 0
 	var backwards := 0

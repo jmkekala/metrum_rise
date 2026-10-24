@@ -80,15 +80,9 @@ func _scenario(speed: float) -> Array[Dictionary]:
 
 func _measure_commit(cells: Node, points: PackedVector3Array) -> Dictionary:
 	# Exact preview first, as the production tool does; its latency is not measured here.
-	var request := simulation.request_preview_road_surface_with_snap(points, 1, 1, true)
-	var preview: Variant = null
-	for attempt in range(TIMEOUT_FRAMES):
-		preview = simulation.get_preview_road_surface_result(request, 0, PackedInt64Array())
-		if preview != null:
-			break
-		await process_frame
-	_expect(preview is Dictionary and preview.get("is_valid", false), "Latency road preview must be valid: %s" % points)
-	if not (preview is Dictionary and preview.get("is_valid", false)):
+	var preview: Dictionary = simulation.preview_road(points, 1, 1, true)
+	_expect(preview.get("is_valid", false), "Latency road preview must be valid: %s" % points)
+	if not preview.get("is_valid", false):
 		return {}
 	await _tick()
 	var generation := int(simulation.get_network_render_generation())

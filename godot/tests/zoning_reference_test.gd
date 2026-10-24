@@ -40,14 +40,10 @@ func _path(points: Array, angle: float = 0.0) -> PackedVector3Array:
 	return result
 
 func _commit(points: PackedVector3Array, forward: int = 1, backward: int = 1) -> bool:
-	var preview_request := simulation.request_preview_road_surface_with_snap(points, forward, backward, true)
-	var preview_deadline := Time.get_ticks_msec() + 20000
-	var preview: Variant = null
-	while preview == null and Time.get_ticks_msec() < preview_deadline:
-		preview = simulation.get_preview_road_surface_result(preview_request, 0, PackedInt64Array())
-		await process_frame
-	_expect(preview is Dictionary and preview.get("is_valid", false), "Reference road preview %s: %s" % [points, preview.get("invalid_reason", "missing") if preview is Dictionary else "timeout"])
-	if not preview is Dictionary or not preview.get("is_valid", false):
+	# The synchronous preview the production tool submits with the click (`ROAD-68-E`).
+	var preview: Dictionary = simulation.preview_road(points, forward, backward, true)
+	_expect(preview.get("is_valid", false), "Reference road preview %s: %s" % [points, preview.get("invalid_reason", "missing")])
+	if not preview.get("is_valid", false):
 		return false
 	var request := simulation.add_road_with_snap(points, forward, backward, true)
 	var deadline := Time.get_ticks_msec() + 20000
