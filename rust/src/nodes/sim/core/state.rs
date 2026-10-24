@@ -1903,7 +1903,8 @@ impl SimCore {
     // Marks each site change's terrain and refreshes the ownership of the union of the render
     // patches the boxes touch, each once (`SIM-02-K`). A patch's ownership is a function of the
     // roads, sites and heightmap, so a patch no box touches keeps its state; one box merged over
-    // changes far apart would refresh and re-upload every patch between them.
+    // changes far apart would refresh and re-upload every patch between them. Only site
+    // ownership is recomputed: a site moves no road and no terrain height (`ROAD-68-D`).
     // O(boxes × patches a box touches × log).
     fn mark_building_site_terrain_only_boxes(&mut self, boxes: &[(f32, f32, f32, f32)]) {
         let margin_m =
@@ -1926,7 +1927,7 @@ impl SimCore {
         }
         dirty_patch_keys.sort_unstable();
         dirty_patch_keys.dedup();
-        self.refresh_engineered_terrain_patch_ownership_for_keys(
+        self.refresh_site_terrain_patch_ownership_for_keys(
             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             &dirty_patch_keys,
         );

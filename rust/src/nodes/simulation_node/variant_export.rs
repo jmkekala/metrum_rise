@@ -9,7 +9,7 @@ mod water;
 mod world;
 mod zoning;
 
-pub(super) use cdt::{TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtTileId};
+pub(super) use cdt::{TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtRoads, TerrainCdtTileId};
 #[cfg(test)]
 pub(super) use cdt::{TerrainCdtSourceExport, TerrainCdtTriangleBufferExport};
 pub(super) use economy::budget_ledger_entry_dict;

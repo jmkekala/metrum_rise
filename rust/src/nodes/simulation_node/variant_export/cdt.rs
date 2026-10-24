@@ -10,7 +10,9 @@ mod sidecars;
 mod status;
 mod types;
 
-pub(in crate::nodes::simulation_node) use input::{TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtTileId};
+pub(in crate::nodes::simulation_node) use input::{
+    TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtRoads, TerrainCdtTileId,
+};
 #[cfg(test)]
 pub(in crate::nodes::simulation_node) use types::{
     TerrainCdtSourceExport, TerrainCdtTriangleBufferExport,

@@ -185,27 +185,28 @@ fn edges(
         .chain(vertex_edges)
 }
 
-// The outward (non-road) side of an edge: road chains keep the road on their left, so outward
-// is the right; a loop wound against that convention (test input) flips it.
-fn outward(
-    road_loop: &TerrainCdtRoadLoop,
-    start: TerrainCdtVertex,
-    end: TerrainCdtVertex,
-) -> Option<(f64, f64)> {
+// Whether the loop keeps the road on its left: road chains do; a loop wound against that
+// convention (test input) does not. `O(V)`, once per loop.
+fn road_on_left(road_loop: &TerrainCdtRoadLoop) -> bool {
+    (signed_area(&road_loop.vertices) > 0.0) != road_loop.is_hole
+}
+
+// The outward (non-road) side of an edge: the right when the road is on the left.
+fn outward(road_left: bool, start: TerrainCdtVertex, end: TerrainCdtVertex) -> Option<(f64, f64)> {
     let (dx, dz) = (end.x - start.x, end.z - start.z);
     let length = dx.hypot(dz);
     if length <= f64::EPSILON {
         return None;
     }
-    let road_left = (signed_area(&road_loop.vertices) > 0.0) != road_loop.is_hole;
     let sign = if road_left { 1.0 } else { -1.0 };
     Some((sign * dz / length, -sign * dx / length))
 }
 
 // Rays at `step_m` or finer along each edge, both ends included; the flag marks an edge's first.
 fn visit_edge_rays(road_loop: &TerrainCdtRoadLoop, step_m: f32, mut visit: impl FnMut(Ray, bool)) {
+    let road_left = road_on_left(road_loop);
     for (start, end) in edges(road_loop) {
-        let Some(outward) = outward(road_loop, start, end) else {
+        let Some(outward) = outward(road_left, start, end) else {
             continue;
         };
         let length = (end.x - start.x).hypot(end.z - start.z);
@@ -249,8 +250,9 @@ fn visit_vertex_rays(road_loop: &TerrainCdtRoadLoop, mut visit: impl FnMut(Ray))
             });
         }
     };
+    let road_left = road_on_left(road_loop);
     for (start, end) in edges(road_loop) {
-        let Some(normal) = outward(road_loop, start, end) else {
+        let Some(normal) = outward(road_left, start, end) else {
             continue;
         };
         joint(previous, start, normal);

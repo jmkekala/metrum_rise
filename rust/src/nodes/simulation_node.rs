@@ -175,7 +175,7 @@ use async_terrain::{
     WaterPatchPayloadRequestState,
 };
 use variant_export::{
-    TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtTileId, budget_ledger_entry_dict,
+    TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtRoads, TerrainCdtTileId, budget_ledger_entry_dict,
     prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,
     zoning_parcel_cell_dimensions, zoning_parcel_color, zoning_parcel_geometries_array,
     zoning_parcel_geometries_packed_dict, zoning_parcel_geometry_dict,

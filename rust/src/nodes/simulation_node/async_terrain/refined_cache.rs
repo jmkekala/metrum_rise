@@ -97,6 +97,28 @@ impl SimCore {
         render_step_m: f32,
         patch_keys: &[(usize, usize)],
     ) -> usize {
+        self.refresh_terrain_patch_ownership(render_step_m, patch_keys, true)
+    }
+
+    /// Refreshes the site ownership of render patches after building-site changes and keeps their
+    /// road ownership: a site change moves neither a road nor the heightmap, the only inputs of a
+    /// patch's road grading margin (`ROAD-68-D`).
+    pub(crate) fn refresh_site_terrain_patch_ownership_for_keys(
+        &mut self,
+        render_step_m: f32,
+        patch_keys: &[(usize, usize)],
+    ) -> usize {
+        self.refresh_terrain_patch_ownership(render_step_m, patch_keys, false)
+    }
+
+    // Recomputes the road margin only with `refresh_roads` and a compiled roadbed; otherwise the
+    // patch keeps its last road ownership.
+    fn refresh_terrain_patch_ownership(
+        &mut self,
+        render_step_m: f32,
+        patch_keys: &[(usize, usize)],
+        refresh_roads: bool,
+    ) -> usize {
         if patch_keys.is_empty() {
             return 0;
         }
@@ -116,12 +138,26 @@ impl SimCore {
         };
         let mut changed_keys = Vec::new();
         let mut invalidated_cache_entries = 0usize;
-        // A dirty roadbed keeps the last published road ownership until it compiles.
-        let roads_current = self.transit_network.roadbed.is_current();
-        for key in unique_keys {
+        // A dirty roadbed keeps the last published road ownership until it compiles. Patch road
+        // margins are independent, so they are graded in parallel; the indexed collect keeps
+        // them in key order.
+        let refresh_roads = refresh_roads && self.transit_network.roadbed.is_current();
+        let road_margins: Vec<Option<f32>> = if refresh_roads {
+            let (terrain, roads) = (
+                &self.heightmap,
+                (&self.region_graph, &self.transit_network.roadbed),
+            );
+            unique_keys
+                .par_iter()
+                .map(|&key| Self::road_terrain_patch_margin_m(terrain, roads, key, safe_render_step_m))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (index, key) in unique_keys.into_iter().enumerate() {
             let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
-            let road_margin = if roads_current {
-                self.road_terrain_patch_margin_m(key, safe_render_step_m)
+            let road_margin = if refresh_roads {
+                road_margins[index]
             } else {
                 self.road_locked_terrain_patch_margins.get(&key).copied()
             };
@@ -214,38 +250,44 @@ impl SimCore {
     // when no tile has one (`ROAD-68-D`). A chain that cannot close locks the patch at the
     // envelope cap, so its build reports the typed error instead of showing raw terrain under
     // a road.
-    fn road_terrain_patch_margin_m(&self, key: (usize, usize), render_step_m: f32) -> Option<f32> {
+    fn road_terrain_patch_margin_m(
+        terrain: &TerrainSystem,
+        roads: TerrainCdtRoads<'_>,
+        key: (usize, usize),
+        render_step_m: f32,
+    ) -> Option<f32> {
         use crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M;
-        let patch = self.heightmap.visual_patch_snapshot(key.0, key.1)?;
+        let patch = terrain.visual_patch_snapshot(key.0, key.1)?;
         let bounds = (
             patch.world_origin_x,
             patch.world_origin_z,
             patch.world_origin_x + patch.world_size_x,
             patch.world_origin_z + patch.world_size_z,
         );
-        let roads = (&self.region_graph, &self.transit_network.roadbed);
-        let mut margin: Option<f32> = None;
-        for tile_id in SimulationNode::terrain_cdt_tile_ids_for_bounds(&patch, bounds) {
-            let Some(tile_bounds) = SimulationNode::terrain_cdt_tile_bounds(&patch, tile_id) else {
-                continue;
-            };
-            match SimulationNode::terrain_cdt_road_tile_loops(
-                &self.heightmap,
-                roads,
-                tile_bounds,
-                render_step_m,
-                false,
-            ) {
-                Ok(loops) => {
-                    for tile_loop in loops {
-                        let margin_m = tile_loop.margin_m;
-                        margin = Some(margin.map_or(margin_m, |current| current.max(margin_m)));
-                    }
-                }
-                Err(_) => return Some(GRADING_ENVELOPE_MAX_MARGIN_M),
-            }
-        }
-        margin
+        // Tiles grade independently and `max` is order-free, so the margin does not depend on
+        // the workers. `Err` is a tile whose chains cannot close.
+        let larger = |a: Option<f32>, b: Option<f32>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        SimulationNode::terrain_cdt_tile_ids_for_bounds(&patch, bounds)
+            .into_par_iter()
+            .map(|tile_id| -> Result<Option<f32>, &'static str> {
+                let Some(tile_bounds) = SimulationNode::terrain_cdt_tile_bounds(&patch, tile_id)
+                else {
+                    return Ok(None);
+                };
+                let loops = SimulationNode::terrain_cdt_road_tile_loops(
+                    terrain,
+                    roads,
+                    tile_bounds,
+                    render_step_m,
+                    false,
+                )?;
+                Ok(loops.iter().map(|tile_loop| tile_loop.margin_m).reduce(f32::max))
+            })
+            .try_reduce(|| None, |a, b| Ok(larger(a, b)))
+            .unwrap_or(Some(GRADING_ENVELOPE_MAX_MARGIN_M))
     }
 
     #[cfg(test)]
