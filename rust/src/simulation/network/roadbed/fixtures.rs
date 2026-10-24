@@ -80,6 +80,24 @@ pub(crate) fn t_junction(sloped: bool) -> RegionGraph {
     graph
 }
 
+/// A right-angle bend of two-lane roads with sidewalks at the origin, each arm ending at a road
+/// end: edge 0 leaves the bend eastward for `first_m` (its legacy-first arm, D8), edge 1 arrives
+/// from `second_m` to the north (+z). Then the graph clips.
+pub(crate) fn bend(first_m: f32, second_m: f32, sloped: bool) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let hub = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
+    let east = graph.add_node(point(first_m, 0.0, sloped), NodeType::Junction);
+    let north = graph.add_node(point(0.0, second_m, sloped), NodeType::Junction);
+    for (a, b) in [(hub, east), (north, hub)] {
+        let edge = connect(&mut graph, a, b, 7.0, sloped);
+        let edge = graph.edge_mut(edge);
+        edge.fwd_lanes = 1;
+        edge.bkw_lanes = 1;
+    }
+    graph.rebuild_intersection_clips();
+    graph
+}
+
 /// The T junction plus one edge of every other profile, apart from it: a road without
 /// sidewalks, a footpath, a four-lane road and a bridge.
 pub(crate) fn mixed_profiles(sloped: bool) -> RegionGraph {

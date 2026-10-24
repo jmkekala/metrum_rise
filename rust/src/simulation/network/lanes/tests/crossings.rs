@@ -7,8 +7,10 @@
 //! span beside it, with kerb points from the span's own section row.
 
 use super::super::super::graph::RegionGraph;
-use super::super::super::roadbed::fixtures::{connect, point};
-use super::super::super::roadbed::{BandKind, EdgeEnd, NodePiece, RoadSection, RoadbedSystem};
+use super::super::super::roadbed::fixtures::{bend, connect, point};
+use super::super::super::roadbed::{
+    BandKind, EdgeEnd, LayoutError, NodeError, NodePiece, RoadSection, RoadbedSystem,
+};
 use super::super::super::types::NodeType;
 use super::super::{CrosswalkMarking, LaneSystem, LaneType};
 use godot::prelude::*;
@@ -503,5 +505,53 @@ fn crossing_overrides_at_degree_two_nodes_follow_the_legacy_rule() {
                 }
             }
         }
+    }
+}
+
+// Open question 13: a bend's default crossing that its first arm cannot hold moves to the other
+// arm. A 15 m arm leaves its end 7.5 m: room for the 3.5 m corner (tangent at 7 m) but not for the
+// strip beyond even the smallest one (5.5 m + 3 m).
+#[test]
+fn a_bend_crossing_that_does_not_fit_on_its_first_arm_moves_to_the_other_arm() {
+    for sloped in [false, true] {
+        let mut graph = bend(15.0, 120.0, sloped);
+        assert_eq!(legacy_first_edge(&graph), 0);
+        let (lanes, roadbed) = built(&mut graph);
+        assert_eq!(crossing_edges(&lanes), BTreeSet::from([1]), "{sloped}");
+        let piece = hub_piece(&roadbed);
+        for arm in &piece.layout().arms {
+            assert_eq!(arm.crosswalk.is_some(), arm.key.edge == 1, "{sloped}");
+            // The short arm keeps its full-radius corner.
+            if arm.key.edge == 0 {
+                assert_eq!(arm.mouth_station_m, 7.0, "{sloped}");
+            }
+        }
+        check_crossing_walks(&format!("{sloped}"), &lanes, 1);
+        // With room on both arms the first arm crosses, as before.
+        let (lanes, _) = built(&mut bend(120.0, 120.0, sloped));
+        assert_eq!(crossing_edges(&lanes), BTreeSet::from([0]), "{sloped}");
+    }
+}
+
+#[test]
+fn a_bend_that_holds_its_crossing_on_neither_arm_is_rejected() {
+    for sloped in [false, true] {
+        let mut graph = bend(15.0, 15.0, sloped);
+        let mut roadbed = RoadbedSystem::new(64.0);
+        roadbed.compile_dirty(&graph);
+        assert_eq!(roadbed.failed_nodes(), [HUB], "{sloped}");
+        // The first arm's reason is reported.
+        let first = super::super::super::roadbed::ArmKey {
+            edge: 0,
+            end: EdgeEnd::Start,
+        };
+        assert_eq!(
+            roadbed.node_error(HUB),
+            Some(NodeError::Layout(LayoutError::CornerDoesNotFit { arm: first })),
+            "{sloped}"
+        );
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        assert!(crossing_edges(&lanes).is_empty(), "{sloped}");
     }
 }

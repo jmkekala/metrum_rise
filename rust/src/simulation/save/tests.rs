@@ -2029,6 +2029,34 @@ fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
     assert_eq!(agents.target_building[walker], 0);
 }
 
+// Open question 13: a save holding a bend whose first arm cannot hold the crossing loads, with
+// the crossing on the other arm.
+#[test]
+fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
+    use crate::simulation::network::roadbed::fixtures::bend;
+    let graph = bend(15.0, 120.0, true);
+    let maps =
+        build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let mut loaded = network::load_graph(&conn).unwrap();
+    let mut transit = TransitNetwork::new();
+    network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit).unwrap();
+    assert!(transit.roadbed.failed_nodes().is_empty());
+    let piece = transit.roadbed.node_piece(0).expect("bend node piece");
+    let crossing: Vec<usize> = piece
+        .layout()
+        .arms
+        .iter()
+        .filter(|arm| arm.crosswalk.is_some())
+        .map(|arm| arm.key.edge)
+        .collect();
+    assert_eq!(crossing, [1]);
+}
+
 #[test]
 #[ignore = "ROAD-68-F: node 1 joins a footpath to two roads (D5), so it has no node piece yet"]
 fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {

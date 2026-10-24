@@ -65,6 +65,9 @@ pub(crate) struct NodeArms {
     // index into the edge's centreline points, and height.
     centreline: Vec<(f64, usize, f64)>,
     bands: Vec<ArmBand>,
+    // A bend's default crossing that its layout cannot hold moves from the first arm (input
+    // order) to the second (`ROAD-68` open question 13).
+    crossing_fallback: Option<[usize; 2]>,
 }
 
 impl NodeArms {
@@ -82,6 +85,10 @@ impl NodeArms {
             return None;
         }
         let pos = graph.node(node).pos;
+        let degree_two = match incidents[..] {
+            [a, b] => Some(degree_two_crossings(graph, node, [a, b])),
+            _ => None,
+        };
         let mut arms = Self {
             node,
             position: RoadVec2::new(f64::from(pos.x), f64::from(pos.z)),
@@ -89,9 +96,13 @@ impl NodeArms {
             knots: Vec::new(),
             centreline: Vec::new(),
             bands: Vec::new(),
+            crossing_fallback: degree_two.as_ref().and_then(|crossings| crossings.fallback),
         };
         for (index, &(key, _)) in incidents.iter().enumerate() {
-            let crossable = arm_crosses(graph, node, &incidents, index);
+            let crossable = match &degree_two {
+                Some(crossings) => crossings.crosses[index],
+                None => junction_arm_crosses(graph, node, &incidents, index),
+            };
             arms.push_arm(key, graph.edge(key.edge), crossable);
         }
         Some(arms)
@@ -221,10 +232,20 @@ impl NodeArms {
         }
     }
 
-    /// Lays the node out; arm `i` of the input is arm `i` here.
+    /// Lays the node out; arm `i` of the input is arm `i` here. A bend whose default crossing
+    /// does not fit on its legacy-ordered arm takes it on the other arm instead, as the
+    /// pass-through rule does; it fails, with the first arm's error, only when neither fits
+    /// (D8, `ROAD-68` open question 13). Node pieces, clips and lanes all lay out through here.
     pub(crate) fn layout(&self) -> Result<JunctionLayout, LayoutError> {
-        let inputs: Vec<_> = (0..self.len()).map(|index| self.input(index)).collect();
-        JunctionLayout::build(self.position, &inputs)
+        let mut inputs: Vec<_> = (0..self.len()).map(|index| self.input(index)).collect();
+        match (JunctionLayout::build(self.position, &inputs), self.crossing_fallback) {
+            (Err(error), Some([from, to])) => {
+                inputs[from].crossable = false;
+                inputs[to].crossable = true;
+                JunctionLayout::build(self.position, &inputs).map_err(|_| error)
+            }
+            (layout, _) => layout,
+        }
     }
 
     /// Where horizontal station `station_m` of arm `index` lies on its edge's centreline points
@@ -346,45 +367,50 @@ pub(super) fn pass_through_crossings(
         return None;
     };
     passes_through(&incidents).then(|| {
-        let crosses = degree_two_crossings(graph, node, [a, b]);
+        let crosses = degree_two_crossings(graph, node, [a, b]).crosses;
         [(a.0, crosses[0]), (b.0, crosses[1])]
     })
 }
 
-// D8 crossings (`ROAD-68-C`): whether arm `index` of `incidents` crosses. Only car roads with
-// sidewalks cross.
+// D8 crossings (`ROAD-68-C`). Only car roads with sidewalks cross.
 // - Three or more arms: every such arm, unless a node override of `false` removes it.
-// - Two arms, bends and pass-through nodes alike: the legacy `ROAD-64` rule. Arms are taken in
-//   order of their direction's angle in `(-pi, pi]`, then edge index; an override of `true`
-//   always crosses, `false` never does, and without an override an arm crosses only if no
-//   earlier arm did. So a node has exactly one crossing by default, on its first arm, and an
-//   override of `false` there moves it to the other arm. A pass-through crossing lies on its
-//   arm's span, so that arm must hold the strip within the half of its edge the far node leaves
-//   it (`JunctionLayout` gives each end at most half), or it does not cross.
+// - Two arms, bends and pass-through nodes alike: the legacy `ROAD-64` rule
+//   ([`degree_two_crossings`]).
 // - One arm: none; the sidewalk wraps the round cap.
-fn arm_crosses(
+fn junction_arm_crosses(
     graph: &RegionGraph,
     node: u32,
     incidents: &[(ArmKey, RoadVec2)],
     index: usize,
 ) -> bool {
-    match *incidents {
-        [a, b] => degree_two_crossings(graph, node, [a, b])[index],
-        _ => {
-            let key = incidents[index].0;
-            incidents.len() >= 3
-                && has_sidewalks(graph, key)
-                && graph.node(node).crosswalk_overrides.get(&key.edge) != Some(&false)
-        }
-    }
+    let key = incidents[index].0;
+    incidents.len() >= 3
+        && has_sidewalks(graph, key)
+        && graph.node(node).crosswalk_overrides.get(&key.edge) != Some(&false)
 }
 
-// The legacy `ROAD-64` rule at a degree-two node, per arm in input order.
+// The legacy `ROAD-64` rule at a degree-two node, per arm in input order, and the arms a default
+// crossing may move between.
+struct DegreeTwoCrossings {
+    crosses: [bool; 2],
+    // `[from, to]`: the default crossing's arm and the other arm, when that one may cross by
+    // default too.
+    fallback: Option<[usize; 2]>,
+}
+
+// Arms are taken in order of their direction's angle in `(-pi, pi]`, then edge index; an override
+// of `true` always crosses, `false` never does, and without an override an arm crosses only if
+// no earlier arm did. So a node has exactly one crossing by default, on its first arm, and an
+// override of `false` there moves it to the other arm. A pass-through crossing lies on its arm's
+// span, so that arm must hold the strip within the half of its edge the far node leaves it
+// (`JunctionLayout` gives each end at most half), or it does not cross. A bend's default crossing
+// that its layout cannot hold moves to the other arm when that arm has no override
+// ([`NodeArms::layout`]).
 fn degree_two_crossings(
     graph: &RegionGraph,
     node: u32,
     arms: [(ArmKey, RoadVec2); 2],
-) -> [bool; 2] {
+) -> DegreeTwoCrossings {
     let overrides = &graph.node(node).crosswalk_overrides;
     let pass_through = passes_through(&arms);
     let fits = |key: ArmKey| {
@@ -399,17 +425,27 @@ fn degree_two_crossings(
         std::cmp::Ordering::Greater => 1,
         _ => 0,
     };
-    let mut crossable = [false; 2];
+    let eligible = |index: usize| has_sidewalks(graph, arms[index].0) && fits(arms[index].0);
+    let free = |index: usize| !overrides.contains_key(&arms[index].0.edge);
+    let mut crosses = [false; 2];
     let mut crossed = false;
     for index in [first, 1 - first] {
-        let key = arms[index].0;
-        if !has_sidewalks(graph, key) || !fits(key) {
+        if !eligible(index) {
             continue;
         }
-        crossable[index] = overrides.get(&key.edge).copied().unwrap_or(!crossed);
-        crossed |= crossable[index];
+        crosses[index] = overrides
+            .get(&arms[index].0.edge)
+            .copied()
+            .unwrap_or(!crossed);
+        crossed |= crosses[index];
     }
-    crossable
+    let by_default = [first, 1 - first]
+        .into_iter()
+        .find(|&index| crosses[index] && free(index));
+    let fallback = by_default
+        .map(|from| [from, 1 - from])
+        .filter(|&[_, to]| !pass_through && !crosses[to] && eligible(to) && free(to));
+    DegreeTwoCrossings { crosses, fallback }
 }
 
 fn has_sidewalks(graph: &RegionGraph, key: ArmKey) -> bool {
