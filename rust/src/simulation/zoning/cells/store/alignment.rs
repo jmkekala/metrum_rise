@@ -208,6 +208,28 @@ impl CellStore {
         alignment.frames_for(graph, id)
     }
 
+    /// The `edited` roads and every road at their endpoints: the roads whose curb frames
+    /// [`Self::refresh_road_alignments`] refreshes. O(edited roads + their incidences).
+    pub(crate) fn road_alignment_scope(
+        graph: &RegionGraph,
+        edited: &BTreeSet<usize>,
+    ) -> BTreeSet<usize> {
+        let mut scope = edited.clone();
+        for &id in edited {
+            if let Some(edge) = graph.get_edge(id) {
+                for node in [edge.start_node, edge.end_node] {
+                    scope.extend(
+                        graph
+                            .node_adjacency(graph.get_valid_node(node))
+                            .iter()
+                            .copied(),
+                    );
+                }
+            }
+        }
+        scope
+    }
+
     /// Updates edited roads and one adjacency ring, returning, in id order, the roads of that
     /// scope whose curb frames changed or that have none: their cells must be invalidated whole
     /// even where their geometry did not change. A road without frames takes its grid phase
@@ -222,20 +244,7 @@ impl CellStore {
         config: &WorldConfig,
         edges: impl IntoIterator<Item = usize>,
     ) -> Vec<usize> {
-        let edited: BTreeSet<_> = edges.into_iter().collect();
-        let mut scope = edited.clone();
-        for &id in &edited {
-            if let Some(edge) = graph.get_edge(id) {
-                for node in [edge.start_node, edge.end_node] {
-                    scope.extend(
-                        graph
-                            .node_adjacency(graph.get_valid_node(node))
-                            .iter()
-                            .copied(),
-                    );
-                }
-            }
-        }
+        let scope = Self::road_alignment_scope(graph, &edges.into_iter().collect());
         let cell_m = f64::from(config.zone_cell_m);
         // Main-thread border edits reach here outside any pool (CODE-17).
         let roads: BTreeMap<_, _> = crate::thread_pools::install(|| {

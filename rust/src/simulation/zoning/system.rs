@@ -43,6 +43,10 @@ pub struct ZoningSystem {
     overlay_occupancy_revision: u64,
     // Parcel storage indices changed at each occupancy revision, for incremental tables.
     occupancy_changes: crate::simulation::core::change_log::IndexChangeLog,
+    // Test builds can mark every road a road edit refreshes, as before `ROAD-68-G` part 3, to
+    // compare the narrower marks against (`mark_cell_lots_for_road_edit`).
+    #[cfg(test)]
+    pub(crate) full_road_marks: bool,
 }
 
 /// Operation-local parcel records removed by one road bulldoze.
@@ -73,6 +77,8 @@ impl ZoningSystem {
             overlay_revision: 0,
             overlay_occupancy_revision: 0,
             occupancy_changes: Default::default(),
+            #[cfg(test)]
+            full_road_marks: false,
         }
     }
 

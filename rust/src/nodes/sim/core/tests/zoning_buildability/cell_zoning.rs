@@ -9,6 +9,7 @@ use glam::DVec2;
 mod curves;
 mod merges;
 mod movement;
+mod road_marks;
 mod terrain;
 
 #[test]

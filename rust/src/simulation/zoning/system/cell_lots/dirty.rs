@@ -5,7 +5,9 @@
 
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::zoning::cells::{CELL_GROUP_COLUMNS, CellBounds, CellKey, CellLotSize};
+use crate::simulation::zoning::cells::{
+    CELL_GROUP_COLUMNS, CellBounds, CellKey, CellLotSize, CellStore,
+};
 use crate::simulation::zoning::{MAX_PARCEL_FRONTAGE_M, cells::CELL_DEPTH};
 use glam::DVec2;
 use std::collections::{BTreeSet, HashSet, VecDeque};
@@ -143,21 +145,26 @@ impl ZoningSystem {
         self.cell_lot_queue.mark(bounds);
     }
 
-    /// Queues the supplied topology edit's road corridors, including retained deleted geometry.
+    /// Queues the supplied topology edit's road corridors, including retained deleted geometry,
+    /// and those of every road at their endpoints, whose curb frames the edit refreshes.
     pub(crate) fn mark_cell_lots_for_roads(
         &mut self,
         graph: &RegionGraph,
         edges: impl IntoIterator<Item = usize>,
     ) {
         let edges: BTreeSet<_> = edges.into_iter().collect();
-        self.mark_cell_lots_for_road_edit(graph, &edges, &edges);
+        let scope = CellStore::road_alignment_scope(graph, &edges);
+        self.mark_cell_lots_for_road_edit(graph, &edges, &scope);
     }
 
     /// [`Self::mark_cell_lots_for_roads`] for an edit that knows which of its `dirty` roads
-    /// changed geometry, endpoints or deletion (`changed`). All of `dirty` refresh their curb
-    /// frames as before; a dirty road whose geometry and frames are unchanged queues nothing of
-    /// its own: its cells change only near the changed roads, whose corridors cover them.
-    /// O(dirty roads + their incidences).
+    /// changed geometry, endpoints or deletion (`changed`) and regenerates every pending region
+    /// before it returns (a road commit). All of `dirty` refresh their curb frames as before; a
+    /// road whose geometry and frames are unchanged queues nothing of its own: its cells change
+    /// only near the changed roads, whose corridors cover them, and the regions those mark are
+    /// derived at once, so the queue is left as the wider marks leave it. An edit that leaves
+    /// its regions to the `cell lots` queue marks the whole scope, or the queue would serve
+    /// other regions at other slots (`ROAD-68-G` part 4). O(dirty roads + their incidences).
     pub(crate) fn mark_cell_lots_for_road_edit(
         &mut self,
         graph: &RegionGraph,
@@ -173,6 +180,10 @@ impl ZoningSystem {
             return;
         }
         let mut edges: Vec<_> = changed.iter().copied().chain(realigned).collect();
+        #[cfg(test)]
+        if self.full_road_marks {
+            edges.extend(CellStore::road_alignment_scope(graph, dirty));
+        }
         edges.sort_unstable();
         edges.dedup();
         for id in edges {
