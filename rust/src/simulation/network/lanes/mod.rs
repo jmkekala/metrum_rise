@@ -122,6 +122,10 @@ pub struct LaneSystem {
     // Lanes below this id already sit on the visible road surface. Rebuilds only append lanes
     // (old ids become tombstones), so every lane at or above it still has flat build heights.
     surface_synced_len: usize,
+    // `(first, generation)`: every lane from `first` up to `surface_synced_len` was lifted onto
+    // roadbed generation `generation`, and only lifts and tombstoning write lane geometry, so
+    // lifting such a lane again while the roadbed is at that generation changes nothing.
+    lifted_since: Option<(usize, u64)>,
 }
 
 impl Default for LaneSystem {
@@ -141,6 +145,7 @@ impl LaneSystem {
             revision: 0,
             planar_bounds: Default::default(),
             surface_synced_len: 0,
+            lifted_since: None,
         }
     }
 
@@ -152,6 +157,7 @@ impl LaneSystem {
         self.node_lanes.clear();
         self.crosswalks.clear();
         self.surface_synced_len = 0;
+        self.lifted_since = None;
     }
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when
@@ -179,6 +185,7 @@ impl LaneSystem {
             sync_lane_height_to_visible_surface(lane, graph, roadbed);
         }
         self.surface_synced_len = self.lanes.len();
+        self.lifted_since = Some((0, roadbed.generation()));
     }
 
     /// Live lanes (an edge's or a node's) whose points a full surface sync would still move:
@@ -207,18 +214,37 @@ impl LaneSystem {
     /// Lifts every lane appended since the last sync onto the visible road surface.
     ///
     /// Lane length feeds agent motion and route costs, so this runs at fixed points of the
-    /// simulation (frame start and road commits) rather than only when a chunk is drawn.
-    /// O(new lane points).
+    /// simulation (frame start and road commits) rather than only when a chunk is drawn. Each
+    /// lane reads only the roadbed and writes only itself, so the shared pool lifts them.
+    /// O(new lane points / P).
     pub(crate) fn sync_new_lanes_to_visible_surface(
         &mut self,
         graph: &RegionGraph,
         roadbed: &RoadbedSystem,
     ) {
+        use rayon::prelude::*;
         let start = self.surface_synced_len.min(self.lanes.len());
-        for lane in &mut self.lanes[start..] {
-            sync_lane_height_to_visible_surface(lane, graph, roadbed);
-        }
+        let new_lanes = &mut self.lanes[start..];
+        // The frame and the commit call this inside the shared pool; other callers are not.
+        crate::thread_pools::install(|| {
+            new_lanes
+                .par_iter_mut()
+                .for_each(|lane| sync_lane_height_to_visible_surface(lane, graph, roadbed));
+        });
         self.surface_synced_len = self.lanes.len();
+        let generation = roadbed.generation();
+        self.lifted_since = Some(match self.lifted_since {
+            Some((first, lifted)) if lifted == generation => (first, generation),
+            _ => (start, generation),
+        });
+    }
+
+    // Whether `lane_id` was lifted onto the roadbed generation it is at now
+    // (`sync_new_lanes_to_visible_surface`), so lifting it again would change nothing.
+    fn lifted_onto(&self, lane_id: usize, roadbed: &RoadbedSystem) -> bool {
+        self.lifted_since.is_some_and(|(first, generation)| {
+            generation == roadbed.generation() && (first..self.surface_synced_len).contains(&lane_id)
+        })
     }
 
     pub(crate) fn sync_heights_to_visible_surface_for_owners(
@@ -229,10 +255,27 @@ impl LaneSystem {
         node_ids: &[u32],
     ) {
         let road_debug = crate::debug::Channel::Road.enabled();
+        // A rebuilt piece's new lanes were lifted onto it already (`ROAD-68-G` part 4).
+        let lifted = |lane_id: usize| {
+            let skip = self.lifted_onto(lane_id, roadbed);
+            #[cfg(debug_assertions)]
+            if skip {
+                let mut lifted = self.lanes[lane_id].clone();
+                sync_lane_height_to_visible_surface(&mut lifted, graph, roadbed);
+                assert_eq!(lifted.geometry, self.lanes[lane_id].geometry, "lane {lane_id}");
+            }
+            skip
+        };
         let mut edge_lane_ids = BTreeSet::new();
         for edge_idx in edge_indices {
             if let Some(ids) = self.edge_lanes.get(edge_idx) {
-                edge_lane_ids.extend(ids.iter().copied());
+                edge_lane_ids.extend(ids.iter().copied().filter(|&id| !lifted(id)));
+            }
+        }
+        let mut node_lane_ids = BTreeSet::new();
+        for node_id in node_ids {
+            if let Some(ids) = self.node_lanes.get(&(*node_id as usize)) {
+                node_lane_ids.extend(ids.iter().copied().filter(|&id| !lifted(id)));
             }
         }
         let edge_point_count = road_debug.then(|| {
@@ -253,12 +296,6 @@ impl LaneSystem {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
 
-        let mut node_lane_ids = BTreeSet::new();
-        for node_id in node_ids {
-            if let Some(ids) = self.node_lanes.get(&(*node_id as usize)) {
-                node_lane_ids.extend(ids.iter().copied());
-            }
-        }
         let node_point_count = road_debug.then(|| {
             node_lane_ids
                 .iter()
