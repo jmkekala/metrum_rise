@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Road drawing tool — straight and curve modes with live compiled preview and lane configuration.
+## Road drawing tool — straight and curve modes with a synchronous WYSIWYG preview and lane
+## configuration.
 ##
-## Extends NetworkTool. Adds: Rust-compiled roadbed preview, checkbox-controlled zoning-grid
-## snapping, angle snapping (Shift draws free) and the distance + angle HUD label.
-## Rust methods called: get_road_tool_cursor_pos(), get_road_tool_start_direction().
+## Extends NetworkTool. Adds: the synchronous road preview (`ROAD-68-E`): every frame whose
+## stroke changed calls Rust's `preview_road`, which plans the stroke on the road tool's
+## context and returns the changed road chunks exactly as the commit publishes them, and shows
+## them in that frame in place of the resident chunks. A click submits that preview; the
+## preview stays shown until the committed generation's chunks are installed, then both swap
+## in one call. Also checkbox-controlled zoning-grid snapping, angle snapping (Shift draws
+## free) and the distance + angle HUD label.
+## Rust methods called: preview_road(), add_road_with_snap(), get_road_commit_result(),
+## get_road_tool_cursor_pos(), get_road_tool_start_direction().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
 ## Drawing is continuous: an accepted road starts the next one at its end, using its end
 ## direction for straight-road snapping, until right-click/Esc, a connection to existing roads,
@@ -13,10 +20,9 @@
 ## State machine: IDLE → [SETTING_CONTROL] → SETTING_END → accepted commit → next stroke.
 extends "res://scripts/tools/network_tool.gd"
 
-const GameSettings = preload("res://scripts/core/game_settings.gd")
-const PreviewPublisher := preload("res://scripts/tools/road_preview_publisher.gd")
+const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
+# Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
-const PREVIEW_PUBLISH_PROCESS_PRIORITY := 100
 
 enum State { IDLE, SETTING_CONTROL, SETTING_END }
 var current_state = State.IDLE
@@ -51,54 +57,30 @@ var _preview_metric_row: Dictionary = {}
 var _road_debug_enabled: bool:
 	get:
 		return MetrumDebug.is_enabled("road")
-var _preview_cache_points: PackedVector3Array = PackedVector3Array()
-var _preview_cache_surface: Dictionary = {}
-const PreviewRequest := preload("res://scripts/tools/road_preview_request.gd")
-# Outstanding exact requests, oldest first: the running one, the latest pending one and at most
-# one more submitted before its start was observable. Bounded by the one-input native mailbox.
-var _preview_requests: Array[RefCounted] = []
-var _preview_cache_request: RefCounted
-var _preview_display_request: RefCounted
-var _preview_request_id: int = 0
-var _preview_drawn_request_id: int = 0
 var _preview_update_pending: bool = false
-var _preview_publication_pending: bool = false
-var _preview_publisher: Node
-var _preview_sample_points := PackedVector3Array()
-var _preview_sample_validation: Dictionary = {}
-var _preview_sample_path_id: int = 0
-var _preview_sample_has_pointer: bool = false
-var _preview_sample_pointer := Vector3.ZERO
-var _preview_sample_start := Vector3.ZERO
-var _preview_sample_control := Vector3.ZERO
-var _preview_sample_mode: int = -1
-var _preview_sample_state: int = -1
-var _preview_sample_fwd_lanes: int = -1
-var _preview_sample_bkw_lanes: int = -1
-var _preview_sample_snap_node: int = -1
-var _preview_sample_snap_edge: int = -1
-var _preview_sample_snap_generation: int = -1
-var _preview_sample_surface_generation: int = -1
-var _preview_sample_zoning_revision: int = -1
-var _preview_sample_field_revision: int = -1
-var _preview_result_pending: bool:
-	get: return not _preview_requests.is_empty()
+# The latest synchronous preview (`preview_road`'s dictionary) and the exact stroke it is for.
+# A new context generation or a different stroke makes it stale.
+var _preview: Dictionary = {}
+var _preview_points := PackedVector3Array()
+var _preview_fwd_lanes: int = -1
+var _preview_bkw_lanes: int = -1
+var _preview_snap_to_roads: bool = true
+# Counts preview_road calls; it names displayed results for the metrics trace only.
+var _preview_sequence: int = 0
+var _preview_drawn_sequence: int = 0
+var _preview_display = PreviewDisplay.new()
+# An accepted commit's preview, held until the chunks of `_swap_generation` are installed.
+var _swap_display = null
+var _swap_generation: int = -1
 var _commit_request_id: int = 0
 var _commit_path_id: int = 0
 var _commit_points := PackedVector3Array()
 var _commit_validation: Dictionary = {}
 var _commit_border_check: Array = []
-var _candidate_cache_points: PackedVector3Array = PackedVector3Array()
-var _candidate_cache_validation: Dictionary = {}
-var _candidate_cache_fwd_lanes: int = -1
-var _candidate_cache_bkw_lanes: int = -1
-var _candidate_cache_snap_to_roads: bool = true
-var _candidate_cache_surface_generation: int = -1
 var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
-var _road_preview_mode := GameSettings.DEFAULT_ROAD_PREVIEW_MODE
+# Reversible terrain staging for the preview's terrain payloads (`ROAD-68-E`, next round).
 var _terrain_preview = preload("res://scripts/renderers/road_terrain_preview.gd").new()
-var _junction_preview = preload("res://scripts/renderers/road_junction_preview.gd").new()
 
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
@@ -125,46 +107,24 @@ var _angle_snapped: bool = false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
-		if is_instance_valid(_preview_publisher):
-			_preview_publisher.cancel_publication()
 		_terrain_preview.reset()
-
-func set_road_preview_mode(mode: int) -> void:
-	mode = mode if mode in [0, 1] else GameSettings.DEFAULT_ROAD_PREVIEW_MODE
-	if mode == _road_preview_mode:
-		return
-	_clear_preview_visual()
-	_terrain_preview.reset()
-	_clear_preview_cache()
-	_road_preview_mode = mode
-	_preview_update_pending = true
-
-func _invalidate_terrain_preview() -> void:
-	_clear_preview_visual()
-	_preview_update_pending = true
 
 func begin_preview_measurement() -> RefCounted:
 	preview_metrics = preload("res://scripts/benchmarks/road_preview_metrics.gd").new()
 	if DisplayServer.get_name() != "headless" and not RenderingServer.frame_post_draw.is_connected(_preview_frame_completed):
 		RenderingServer.frame_post_draw.connect(_preview_frame_completed)
-	if is_inside_tree() and MetrumDebug.is_enabled("perf") and DisplayServer.get_name() != "headless":
+	if DisplayServer.get_name() != "headless":
 		preview_metrics.viewport = get_viewport().get_viewport_rid()
 		RenderingServer.viewport_set_measure_render_time(preview_metrics.viewport, true)
 	return preview_metrics
 
 func _preview_frame_completed() -> void:
 	if preview_metrics != null:
-		preview_metrics.frame(_preview_drawn_request_id, DisplayServer.get_name() != "headless")
+		preview_metrics.frame(_preview_drawn_sequence, DisplayServer.get_name() != "headless")
 
 func _ready():
 	super._ready()
 	process_priority = PREVIEW_SAMPLE_PROCESS_PRIORITY
-	_preview_publisher = PreviewPublisher.new()
-	_preview_publisher.bind(self, PREVIEW_PUBLISH_PROCESS_PRIORITY)
-	add_child(_preview_publisher)
-	set_preview_publication_active(active)
-	add_to_group("road_preview_tools")
-	_road_preview_mode = GameSettings.get_road_preview_mode()
 	if blueprint_mesh:
 		_road_preview_material = WorldMaterials.road_preview_material()
 		blueprint_mesh.material_override = _road_preview_material
@@ -185,59 +145,39 @@ func _ready():
 
 func _process(delta):
 	if preview_metrics != null and DisplayServer.get_name() == "headless":
-		preview_metrics.frame(_preview_drawn_request_id, false)
+		preview_metrics.frame(_preview_drawn_sequence, false)
 	_poll_road_commit_result()
+	_release_swapped_preview()
 	var previous_mouse_pos := _last_world_mouse_pos
 	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
-	if _junction_preview.generation >= 0 and (
-		not active
-		or _junction_preview.generation != simulation_node.get_road_tool_surface_generation()
-		or not _preview_zoning_revision_is_current(_preview_cache_surface)
-	):
-		_clear_preview_visual()
-		if current_path != null:
-			_queue_preview_update()
-	# The base tool has now resolved this frame's pointer, including camera-only movement.
-	if current_path != null and _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos):
-		_queue_preview_update()
 	if not active:
 		_clear_sticky_network_snap()
 		if _info_label:
 			_info_label.visible = false
+	# The base tool has now resolved this frame's pointer, including camera-only movement.
+	if current_path != null and _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos):
+		_queue_preview_update()
 	var zoning_snap := _zoning_snap_enabled()
 	if zoning_snap != _last_zoning_snap_enabled:
 		_last_zoning_snap_enabled = zoning_snap
-		_clear_preview_visual()
 		_clear_sticky_network_snap()
-		_clear_preview_cache()
 		if current_path != null:
 			_queue_preview_update()
-	if current_path != null and not _preview_zoning_revision_is_current(_candidate_cache_validation):
+	# A publication (commit, undo, terrain edit) moves the context on: preview again.
+	if current_path != null and not _preview.is_empty() and int(_preview.get("surface_generation", -1)) != simulation_node.get_road_tool_surface_generation():
 		_preview_update_pending = true
-	# A running job never suppresses fresh input or result consumption. The current curve
-	# replaces the native mailbox's single pending input while the worker runs the older one.
-	if _preview_update_pending or _preview_result_pending:
+	if _preview_update_pending:
 		_preview_update_pending = false
 		_update_preview()
-	if (_preview_result_pending or _preview_publication_pending) and is_instance_valid(_preview_publisher):
-		_preview_publisher.request_publication()
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
-	if _info_label and _info_label.visible:
+	if _info_label and _info_label.visible and is_inside_tree():
 		var camera := get_viewport().get_camera_3d()
 		if camera:
 			var screen_pos: Vector2 = camera.unproject_position(_label_world_pos)
 			# Offset slightly so the label sits above-right of the midpoint.
 			_info_label.position = screen_pos + Vector2(8.0, -24.0)
-
-func set_preview_publication_active(enabled: bool) -> void:
-	if not is_instance_valid(_preview_publisher):
-		return
-	if enabled:
-		_preview_publisher.request_publication()
-	else:
-		_preview_publisher.cancel_publication()
 
 func _snap_to_roads_enabled() -> bool:
 	return true
@@ -333,124 +273,94 @@ func _handle_click():
 	)
 
 func _update_preview():
-	if current_path == null or _commit_request_id > 0: return
+	if current_path == null or _commit_request_id > 0:
+		return
 	var points := _refresh_preview_curve()
+	if points.size() < 2:
+		_clear_preview_visual()
+		return
 	if preview_metrics != null:
 		preview_metrics.sample(points, _preview_input_us if _preview_input_us > 0 else Time.get_ticks_usec())
-	if _preview_display_request != null and not _preview_display_request.matches_context(self):
-		_clear_preview_visual()
-	var exact := _cached_preview_surface_for_points(points)
-	# Reuse exact work before invoking hover validation; an exact current result needs neither
-	# a second validity check nor a fallback ribbon that will never be displayed.
-	var validation := exact if not exact.is_empty() else _candidate_validation_for_points(points)
-	if not exact.is_empty():
-		_remember_candidate_validation(points, exact)
-	is_valid = bool(validation.get("is_valid", false))
-	_remember_preview_sample(points, validation)
-	if is_valid and exact.is_empty() and points.size() > 1 and not _preview_input_is_requested(points):
-		var dispatch_us := Time.get_ticks_usec() if preview_metrics != null else 0
-		_preview_request_id = simulation_node.request_preview_road_surface_with_options(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), _road_preview_mode == 1)
-		if preview_metrics != null:
-			preview_metrics.dispatch(_preview_request_id, dispatch_us, Time.get_ticks_usec(), _road_preview_mode == 1)
-		_preview_requests.append(PreviewRequest.new(self, points, _preview_request_id))
-	_preview_publication_pending = true
+	_preview_road(points)
+	_show_preview(points)
 
-func _publish_preview_result_late() -> bool:
-	# This callback stays enabled while the road tool is selected so Godot schedules it before
-	# the frame begins. The idle path performs no allocation or native call.
-	if _preview_requests.is_empty() and not _preview_publication_pending:
-		return false
-	if not _preview_sample_is_current():
-		_clear_preview_cache()
-		# A dependency can change after sampling even while the pointer stays still.
-		if active and current_path != null:
-			_preview_update_pending = true
-		return false
-	if not _preview_requests.is_empty() and _poll_pending_preview_result():
-		_preview_publication_pending = true
-	if not _preview_publication_pending:
-		return not _preview_requests.is_empty()
-	var points := _preview_sample_points
-	var exact := _cached_preview_surface_for_points(points)
-	var validation := exact if not exact.is_empty() else _preview_sample_validation
-	is_valid = bool(validation.get("is_valid", false))
-	if not exact.is_empty():
-		_remember_candidate_validation(points, exact)
-	if bool(validation.get("is_pending", false)) or not bool(validation.get("is_valid", false)):
-		_preview_publication_pending = false
-		if bool(validation.get("is_pending", false)) and _junction_preview.generation >= 0:
-			_preview_update_pending = true
-			_update_preview_measurement_label(validation.get("prepared_points", points), validation)
-		else:
-			_draw_candidate_preview(points, validation)
-		return not _preview_requests.is_empty()
-	if not exact.is_empty():
-		if _draw_compiled_preview_surface(points, exact, validation):
-			_preview_display_request = _preview_cache_request
-			_preview_publication_pending = false
-		else:
-			_preview_update_pending = true
-		return _preview_publication_pending or not _preview_requests.is_empty()
-	# Older poses are display-only while exact work for this sample is pending.
-	var newer_scene: bool = (
-		_preview_cache_request != null and _preview_cache_request.id != _preview_drawn_request_id
-		and _preview_cache_surface.get("is_valid", false)
-		and _preview_cache_surface.has("junction_preview")
-		and _preview_cache_request.matches_context(self)
-		and _preview_surface_generation_is_current(_preview_cache_surface)
-	)
-	if newer_scene:
-		if _draw_compiled_preview_surface(points, _preview_cache_surface, validation):
-			_preview_display_request = _preview_cache_request
-			_preview_publication_pending = false
-		else:
-			_preview_update_pending = true
-		return _preview_publication_pending or not _preview_requests.is_empty()
-	if _junction_preview.generation >= 0:
-		_update_preview_measurement_label(validation.get("prepared_points", points), validation, "provisional")
-	else:
-		_draw_candidate_preview(points, validation)
-	_preview_publication_pending = false
-	return not _preview_requests.is_empty()
+# Previews `points` unless the latest preview is for exactly this stroke on the current context.
+func _preview_road(points: PackedVector3Array) -> Dictionary:
+	if _preview_is_for(points):
+		return _preview
+	_preview_sequence += 1
+	var start_us := Time.get_ticks_usec()
+	_preview = simulation_node.preview_road(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
+	if preview_metrics != null:
+		preview_metrics.dispatch(_preview_sequence, start_us, Time.get_ticks_usec(), true)
+		preview_metrics.poll(_preview_sequence, 0, _preview)
+	_preview["sequence"] = _preview_sequence
+	_preview_points = points
+	_preview_fwd_lanes = fwd_lanes
+	_preview_bkw_lanes = bkw_lanes
+	_preview_snap_to_roads = _snap_to_roads_enabled()
+	return _preview
 
-func _remember_preview_sample(points: PackedVector3Array, validation: Dictionary) -> void:
-	_preview_sample_points = points
-	_preview_sample_validation = validation
-	_preview_sample_path_id = current_path.get_instance_id() if current_path != null else 0
-	_preview_sample_has_pointer = _has_last_world_mouse_pos
-	_preview_sample_pointer = _last_world_mouse_pos
-	_preview_sample_start = start_pos
-	_preview_sample_control = control_pos
-	_preview_sample_mode = draw_mode
-	_preview_sample_state = current_state
-	_preview_sample_fwd_lanes = fwd_lanes
-	_preview_sample_bkw_lanes = bkw_lanes
-	_preview_sample_snap_node = int(_sticky_network_snap.get("snap_node", -1))
-	_preview_sample_snap_edge = int(_sticky_network_snap.get("snap_edge", -1))
-	_preview_sample_snap_generation = int(_sticky_network_snap.get("surface_generation", -1))
-	_preview_sample_surface_generation = simulation_node.get_road_tool_surface_generation()
-	_preview_sample_zoning_revision = simulation_node.get_zoning_overlay_revision()
-	_preview_sample_field_revision = simulation_node.get_agriculture_field_overlay_revision()
-
-func _preview_sample_is_current() -> bool:
+func _preview_is_for(points: PackedVector3Array) -> bool:
 	return (
-		active and current_path != null
-		and current_path.get_instance_id() == _preview_sample_path_id
-		and _has_last_world_mouse_pos == _preview_sample_has_pointer
-		and _last_world_mouse_pos == _preview_sample_pointer
-		and start_pos == _preview_sample_start and control_pos == _preview_sample_control
-		and draw_mode == _preview_sample_mode and current_state == _preview_sample_state
-		and fwd_lanes == _preview_sample_fwd_lanes and bkw_lanes == _preview_sample_bkw_lanes
-		and int(_sticky_network_snap.get("snap_node", -1)) == _preview_sample_snap_node
-		and int(_sticky_network_snap.get("snap_edge", -1)) == _preview_sample_snap_edge
-		and int(_sticky_network_snap.get("surface_generation", -1)) == _preview_sample_snap_generation
-		and simulation_node.get_road_tool_surface_generation() == _preview_sample_surface_generation
-		and simulation_node.get_zoning_overlay_revision() == _preview_sample_zoning_revision
-		and simulation_node.get_agriculture_field_overlay_revision() == _preview_sample_field_revision
+		not _preview.is_empty()
+		and points == _preview_points
+		and fwd_lanes == _preview_fwd_lanes
+		and bkw_lanes == _preview_bkw_lanes
+		and _snap_to_roads_enabled() == _preview_snap_to_roads
+		and int(_preview.get("surface_generation", -1)) == simulation_node.get_road_tool_surface_generation()
 	)
 
-# Starts a stroke at `pos`. Rust supplies `kind` (0 means no road reference) and `direction`
-# for the HUD and straight-road angle snapping; curves always choose a free control point.
+# Shows the latest preview's chunks in this frame; an invalid stroke shows only its reason.
+func _show_preview(points: PackedVector3Array) -> void:
+	is_valid = bool(_preview.get("is_valid", false))
+	_update_road_preview_material(_preview)
+	var sequence := int(_preview.get("sequence", 0))
+	if sequence != _preview_drawn_sequence:
+		if preview_metrics != null:
+			_preview_metric_row = preview_metrics.request(sequence)
+		var stage_us := Time.get_ticks_usec()
+		var shown := false
+		if is_valid and bool(_preview.get("has_road_chunks", false)):
+			shown = _preview_display.show(self, _preview, sequence)
+		if not shown:
+			_preview_display.clear()
+		_preview_drawn_sequence = sequence
+		if preview_metrics != null:
+			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
+			preview_metrics.installed(sequence)
+	_update_preview_measurement_label(_preview.get("prepared_points", points), _preview)
+
+func _clear_preview_visual() -> void:
+	_preview_display.clear()
+	_preview_drawn_sequence = 0
+	if blueprint_mesh:
+		blueprint_mesh.mesh = null
+	if _info_label:
+		_info_label.visible = false
+
+# After an accepted commit the preview stays shown until the committed generation's chunks are
+# installed; `_road_mesh_installed` releases it in the same call, so no frame shows neither.
+func _hold_preview_until(generation: int) -> void:
+	if _swap_display != null:
+		_swap_display.reset()
+	_swap_display = _preview_display
+	_swap_generation = generation
+	_preview_display = PreviewDisplay.new()
+	_preview_drawn_sequence = 0
+	_release_swapped_preview()
+
+func _release_swapped_preview() -> void:
+	if _swap_display != null and _road_mesh_generation >= _swap_generation:
+		_swap_display.reset()
+		_swap_display = null
+		_swap_generation = -1
+
+func _road_mesh_installed(_generation: int) -> void:
+	# The acknowledgement may arrive in the same frame as the chunks it names.
+	_poll_road_commit_result()
+	_release_swapped_preview()
+
 func _begin_stroke(pos: Vector3, kind: int, direction: Vector3) -> void:
 	start_pos = pos
 	control_pos = pos
@@ -512,272 +422,6 @@ func _queue_preview_update() -> void:
 		_preview_input_us = Time.get_ticks_usec()
 	# Coalesce input bursts; validation, curve baking and mesh upload happen once in _process.
 	_preview_update_pending = true
-
-func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
-	if points.size() < 2:
-		return {
-			"is_valid": false,
-			"invalid_reason": "too_short"
-		}
-	if (
-		not _candidate_cache_validation.is_empty()
-		and _candidate_cache_fwd_lanes == fwd_lanes
-		and _candidate_cache_bkw_lanes == bkw_lanes
-		and _candidate_cache_snap_to_roads == _snap_to_roads_enabled()
-		and _candidate_cache_surface_generation == simulation_node.get_road_tool_surface_generation()
-		and _preview_zoning_revision_is_current(_candidate_cache_validation)
-		and _road_surface_points_match(points, _candidate_cache_points)
-	):
-		return _candidate_cache_validation
-
-	var validation_variant = simulation_node.validate_road_candidate_with_snap(
-		points,
-		fwd_lanes,
-		bkw_lanes,
-		_snap_to_roads_enabled()
-	)
-	var validation: Dictionary = validation_variant if validation_variant is Dictionary else {
-		"is_valid": false,
-		"invalid_reason": "validation_unavailable"
-	}
-	_remember_candidate_validation(points, validation)
-	return validation
-
-func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
-	if points.size() < 2:
-		return {
-			"is_valid": false,
-			"invalid_reason": "too_short"
-		}
-
-	var exact_preview := _cached_preview_surface_for_points(points)
-	if (
-		not exact_preview.is_empty()
-		and _preview_surface_generation_is_current(exact_preview)
-	):
-		_remember_candidate_validation(points, exact_preview)
-		return exact_preview
-
-	var validation_variant = simulation_node.validate_road_candidate_for_commit_with_snap(
-		points,
-		fwd_lanes,
-		bkw_lanes,
-		_snap_to_roads_enabled()
-	)
-	var validation: Dictionary = validation_variant if validation_variant is Dictionary else {
-		"is_valid": false,
-		"invalid_reason": "validation_unavailable"
-	}
-	_remember_candidate_validation(points, validation)
-	return validation
-
-func _remember_candidate_validation(points: PackedVector3Array, validation: Dictionary) -> void:
-	if bool(validation.get("is_pending", false)):
-		return
-	_candidate_cache_points = points
-	# Payload dictionaries are immutable once cached; packed geometry is not deep-copied per frame.
-	_candidate_cache_validation = validation
-	_candidate_cache_fwd_lanes = fwd_lanes
-	_candidate_cache_bkw_lanes = bkw_lanes
-	_candidate_cache_snap_to_roads = _snap_to_roads_enabled()
-	_candidate_cache_surface_generation = int(validation.get("surface_generation", -1))
-
-func _preview_surface_generation_is_current(preview: Dictionary) -> bool:
-	if preview.is_empty():
-		return false
-	var generation := int(preview.get("surface_generation", -1))
-	if generation <= 0:
-		return false
-	return generation == simulation_node.get_road_tool_surface_generation() and _preview_zoning_revision_is_current(preview)
-
-func _preview_zoning_revision_is_current(preview: Dictionary) -> bool:
-	return (
-		(not preview.has("zoning_revision") or int(preview["zoning_revision"]) == simulation_node.get_zoning_overlay_revision())
-		and (not preview.has("field_revision") or int(preview["field_revision"]) == simulation_node.get_agriculture_field_overlay_revision())
-	)
-
-func _poll_pending_preview_result() -> bool:
-	if _preview_requests.is_empty():
-		return false
-	# Read before polling: every request older than the started one has already published or
-	# been abandoned, so a result missed below can never arrive later.
-	var started := int(simulation_node.get_preview_road_surface_started_request_id())
-	var consumed := false
-	# The native slot holds one result; newest first, older records are superseded by it.
-	for index in range(_preview_requests.size() - 1, -1, -1):
-		var request: RefCounted = _preview_requests[index]
-		var poll_us := Time.get_ticks_usec() if preview_metrics != null else 0
-		var preview = simulation_node.get_preview_road_surface_result(request.id, _junction_preview.retained_revision, _terrain_preview.revisions())
-		if preview_metrics != null:
-			preview_metrics.poll(request.id, Time.get_ticks_usec() - poll_us, preview)
-		if preview == null:
-			continue
-		for older_index in range(index):
-			_forget_preview_request(_preview_requests[older_index])
-		var remaining := _preview_requests.size() - index - 1
-		for remaining_index in range(remaining):
-			_preview_requests[remaining_index] = _preview_requests[index + 1 + remaining_index]
-		_preview_requests.resize(remaining)
-		# Older completed poses stay usable as display-only feedback while their context holds.
-		if request.matches_context(self) and _preview_surface_generation_is_current(preview):
-			_remember_preview_surface(request.points, preview, request)
-			consumed = true
-		break
-	_retire_preview_requests(started)
-	return consumed
-
-func _retire_preview_requests(started: int) -> void:
-	# Keep the running request and the latest submission if it may still be pending. Other newer
-	# ones were displaced from the mailbox unrun; context changes retire every request.
-	var latest: RefCounted = _preview_requests.back() if not _preview_requests.is_empty() else null
-	var write_index := 0
-	for request in _preview_requests:
-		if (request.id == started or (request == latest and request.id > started)) and request.matches_context(self):
-			_preview_requests[write_index] = request
-			write_index += 1
-		else:
-			_forget_preview_request(request)
-	_preview_requests.resize(write_index)
-
-func _preview_input_is_requested(points: PackedVector3Array) -> bool:
-	# The latest submission already covers this pose; resubmitting would only restart the worker.
-	if _preview_requests.is_empty():
-		return false
-	var latest: RefCounted = _preview_requests.back()
-	return latest.matches_context(self) and _road_surface_points_match(points, latest.points)
-
-func _forget_preview_request(request: RefCounted) -> void:
-	if preview_metrics != null:
-		preview_metrics.forget(request.id)
-
-func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary) -> void:
-	if bool(validation.get("is_pending", false)):
-		_preview_update_pending = true
-	is_valid = bool(validation.get("is_valid", false))
-	if points.size() > 1:
-		_draw_coarse_preview_surface(points, validation)
-	else:
-		_clear_preview_visual()
-
-func _clear_preview_visual() -> void:
-	_terrain_preview.clear()
-	_junction_preview.clear()
-	_preview_display_request = null
-	blueprint_mesh.mesh = null
-	_preview_drawn_request_id = 0
-	if _info_label:
-		_info_label.visible = false
-
-func _draw_compiled_preview_surface(
-	points: PackedVector3Array,
-	preview: Dictionary,
-	validation: Dictionary
-) -> bool:
-	if bool(preview.get("include_terrain", false)) != (_road_preview_mode == 1):
-		return false
-	var preview_verts: PackedVector3Array = preview.get("prepared_points", PackedVector3Array())
-	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
-	if (not preview.has("junction_preview") and surface_vertices.size() < 3) or not bool(preview.get("is_valid", true)) or not bool(validation.get("is_valid", false)):
-		return false
-
-	var preview_request_id := int(preview.get("request_id", 0))
-	_update_road_preview_material(validation)
-	if preview_request_id > 0 and preview_request_id == _preview_drawn_request_id:
-		_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation, preview.get("plan_state", ""))
-		return true
-
-	if preview_metrics != null:
-		_preview_metric_row = preview_metrics.request(preview_request_id)
-	var stage_us := Time.get_ticks_usec() if preview_metrics != null else 0
-	if preview.has("junction_preview"):
-		var scene: Dictionary = preview["junction_preview"]
-		var staged: Array = []
-		var full_terrain: bool = preview.get("include_terrain", false)
-		if full_terrain:
-			if not preview.has("terrain_preview"):
-				return false
-			var payloads: Variant = preview["terrain_preview"].get("patches")
-			if not payloads is Array:
-				return false
-			if not payloads.is_empty():
-				_terrain_preview.metrics = _preview_metric_row
-				staged = _terrain_preview.stage(terrain_node, payloads, int(preview["surface_generation"]))
-				if staged.is_empty() and _terrain_preview.missing_revision:
-					# A delta names preview terrain no longer held. Re-export the same result against
-					# the current holdings; if it was superseded, request this pose again.
-					var complete: Variant = simulation_node.get_preview_road_surface_result(preview_request_id, _junction_preview.retained_revision, _terrain_preview.revisions())
-					if not complete is Dictionary or not complete.has("terrain_preview"):
-						if is_same(preview, _preview_cache_surface):
-							_preview_cache_surface = {}
-						_preview_update_pending = true
-						return false
-					preview["terrain_preview"] = complete["terrain_preview"]
-					staged = _terrain_preview.stage(terrain_node, complete["terrain_preview"].get("patches"), int(preview["surface_generation"]))
-				if staged.is_empty():
-					if not _preview_metric_row.is_empty():
-						_preview_metric_row.terrain_retries += 1
-					_preview_update_pending = true
-					return false
-		if not _junction_preview.show_preview(self, scene, preview_request_id):
-			_terrain_preview.discard(staged)
-			return false
-		if full_terrain:
-			_terrain_preview.commit(terrain_node, staged, preview_request_id, _invalidate_terrain_preview)
-		else:
-			_terrain_preview.clear()
-		blueprint_mesh.mesh = null
-	else:
-		_terrain_preview.clear()
-		_junction_preview.clear()
-		if not _upload_road_preview_mesh(preview):
-			return false
-	_preview_drawn_request_id = preview_request_id
-	if preview_metrics != null:
-		_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
-		preview_metrics.installed(preview_request_id)
-	_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation, preview.get("plan_state", ""))
-	return true
-
-func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionary = {}) -> bool:
-	_terrain_preview.clear()
-	_junction_preview.clear()
-	_update_road_preview_material(preview)
-	var ribbon: Variant = preview
-	var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
-	if vertices.is_empty():
-		# Reuse Rust's prepared profile. Building display-only geometry must not snap/revalidate.
-		ribbon = simulation_node.build_road_preview_ribbon(
-			preview.get("prepared_points", PackedVector3Array()), fwd_lanes, bkw_lanes,
-			int(preview.get("surface_generation", -1))
-		)
-		if not ribbon is Dictionary or int(ribbon.get("surface_generation", -1)) != simulation_node.get_road_tool_surface_generation():
-			_clear_preview_visual()
-			_preview_update_pending = true
-			return false
-	if not _upload_road_preview_mesh(ribbon):
-		_clear_preview_visual()
-		_update_preview_measurement_label(preview.get("prepared_points", points), preview)
-		return false
-	_preview_drawn_request_id = 0
-	var prepared: PackedVector3Array = preview.get("prepared_points", points)
-	_update_preview_measurement_label(prepared, preview, "provisional")
-	return true
-
-func _upload_road_preview_mesh(preview: Dictionary) -> bool:
-	var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
-	var uvs: PackedVector2Array = preview.get("surface_uvs", PackedVector2Array())
-	var colors: PackedColorArray = preview.get("surface_colors", PackedColorArray())
-	if vertices.size() < 3 or vertices.size() % 3 != 0 or uvs.size() != vertices.size() or colors.size() != vertices.size():
-		return false
-	var arr_mesh := ArrayMesh.new()
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_COLOR] = colors
-	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	blueprint_mesh.mesh = arr_mesh
-	return true
 
 func _update_blueprint_visuals() -> void:
 	# Road status is applied with its matching geometry, after this frame's validation.
@@ -925,7 +569,8 @@ func _commit_segment(end_pos: Vector3) -> bool:
 	var raw_points := current_path.curve.get_baked_points() if current_path else PackedVector3Array()
 	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
 	var preview_start_us := Time.get_ticks_usec()
-	var validation := _commit_validation_for_points(points)
+	# The click submits the preview of exactly this stroke; Rust attaches it to the command.
+	var validation := _preview_road(points) if points.size() > 1 else {"is_valid": false, "invalid_reason": "too_short"}
 	var preview_ms := float(Time.get_ticks_usec() - preview_start_us) / 1000.0
 	var queued := false
 	var preview_valid := bool(validation.get("is_valid", false))
@@ -950,7 +595,7 @@ func _commit_segment(end_pos: Vector3) -> bool:
 	var bookkeeping_ms := 0.0
 	var cancel_ms := 0.0
 	if points.size() > 1 and not preview_valid:
-		_draw_candidate_preview(points, validation)
+		_show_preview(points)
 		# Rust logs the full report on events: why, where and the exact stroke for replay.
 		simulation_node.log_road_tool_rejection(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), validation)
 	if points.size() > 1 and preview_valid:
@@ -1028,6 +673,9 @@ func _poll_road_commit_result() -> void:
 	_commit_request_id = 0
 	if not committed:
 		_pending_border_checks.erase(_commit_border_check)
+	else:
+		# The preview shows until the commit's own chunks are installed (`ROAD-68-E`).
+		_hold_preview_until(int(result.get("generation", 0)))
 	# Cancellation or a new drawing gesture must not be undone by an older completion.
 	if current_path != null and current_path.get_instance_id() == _commit_path_id:
 		if committed:
@@ -1037,14 +685,17 @@ func _poll_road_commit_result() -> void:
 			if chain and active:
 				_begin_stroke(end_pos, 1, _commit_end_dir)
 		else:
+			# The rejection stays on the stroke until the pointer or the context moves.
 			var rejected := _commit_validation.duplicate(false)
 			rejected["is_valid"] = false
 			rejected["is_pending"] = false
 			rejected["invalid_reason"] = "road_commit_rejected"
 			rejected["surface_generation"] = simulation_node.get_road_tool_surface_generation()
-			_clear_preview_cache()
-			_remember_candidate_validation(_commit_points, rejected)
-			_draw_candidate_preview(_commit_points, rejected)
+			rejected["sequence"] = _preview_sequence + 1
+			_preview_sequence += 1
+			_preview = rejected
+			_preview_points = _commit_points
+			_show_preview(_commit_points)
 	_commit_points = PackedVector3Array()
 	_commit_validation = {}
 	_commit_border_check = []
@@ -1065,7 +716,6 @@ func cancel_road():
 	_clear_sticky_network_snap()
 	_clear_preview_visual()
 	_terrain_preview.reset()
-	_junction_preview.reset()
 	if current_path:
 		current_path.queue_free()
 	current_path = null
@@ -1076,8 +726,12 @@ func cancel_road():
 
 func reset_main_mesh_chunks() -> void:
 	_clear_preview_visual()
+	_preview_display.reset()
+	if _swap_display != null:
+		_swap_display.reset()
+		_swap_display = null
+		_swap_generation = -1
 	_terrain_preview.reset()
-	_junction_preview.reset()
 	_clear_preview_cache()
 	super.reset_main_mesh_chunks()
 	_queue_preview_update()
@@ -1208,45 +862,12 @@ func _xz_distance(a: Vector3, b: Vector3) -> float:
 	return sqrt(dx * dx + dz * dz)
 
 
-func _remember_preview_surface(points: PackedVector3Array, preview: Dictionary, request: RefCounted = null) -> void:
-	_preview_cache_points = points
-	_preview_cache_surface = preview
-	_preview_cache_request = request if request != null else PreviewRequest.new(self, points, int(preview.get("request_id", 0)))
-
-func _cached_preview_surface_for_points(points: PackedVector3Array) -> Dictionary:
-	if _preview_cache_surface.is_empty() or _preview_cache_request == null:
-		return {}
-	if not _preview_cache_request.matches_context(self) or not _preview_surface_generation_is_current(_preview_cache_surface):
-		return {}
-	if not _road_surface_points_match(points, _preview_cache_points):
-		return {}
-	return _preview_cache_surface
-
 func _clear_preview_cache() -> void:
-	_preview_sample_points = PackedVector3Array()
-	_preview_sample_validation = {}
-	_preview_sample_path_id = 0
-	_preview_sample_has_pointer = false
-	_preview_publication_pending = false
-	_preview_cache_points = PackedVector3Array()
-	_preview_cache_surface = {}
-	_preview_cache_request = null
-	for request in _preview_requests:
-		_forget_preview_request(request)
-	_preview_requests.clear()
-	_preview_display_request = null
-	_candidate_cache_points = PackedVector3Array()
-	_candidate_cache_validation = {}
-	_candidate_cache_fwd_lanes = -1
-	_candidate_cache_bkw_lanes = -1
-	_candidate_cache_snap_to_roads = true
-	_candidate_cache_surface_generation = -1
-	_preview_request_id = 0
-	_preview_drawn_request_id = 0
-
-func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
-	# A completed preview must describe the current candidate, even for sub-5 cm pointer motion.
-	return left == right
+	_preview = {}
+	_preview_points = PackedVector3Array()
+	_preview_fwd_lanes = -1
+	_preview_bkw_lanes = -1
+	_preview_drawn_sequence = 0
 
 func _road_surface_points_from_curve(curve: Curve3D) -> PackedVector3Array:
 	var raw_points: PackedVector3Array = curve.get_baked_points()

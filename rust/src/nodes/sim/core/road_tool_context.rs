@@ -170,6 +170,7 @@ pub(crate) struct RoadToolShared {
 
 impl RoadToolShared {
     /// Captures the shared state from a first view (one graph copy for the replica).
+    #[cfg(test)]
     pub(crate) fn new(view: RoadToolQuerySnapshot) -> Self {
         Self {
             context: Mutex::new(RoadPreviewContext::capture(view.clone())),

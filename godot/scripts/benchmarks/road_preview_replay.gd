@@ -5,9 +5,9 @@
 extends RefCounted
 
 const Metrics := preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
-const CASES := ["flat_t", "sloped_t", "flat_multi", "sloped_multi", "dense", "residency_retry",
+const CASES := ["flat_t", "sloped_t", "flat_multi", "sloped_multi", "dense",
 	"flat_branch", "sloped_branch", "flat_cross", "sloped_cross"]
-# Road and terrain only: it is the mode with terrain preview work to measure.
+# D3: the one preview mode, road and terrain together (`ROAD-68-E`).
 const MODE := 1
 # Moving-phase pointer speed: 0.5 m per 60 Hz input.
 const MOVE_SPEED_MPS := 30.0
@@ -78,7 +78,6 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	if not idle.get("ok", false):
 		return {"ok": false, "error": "fixture settlement", "wait": idle}
 	var tool: Node = bench.road_tool
-	tool.set_road_preview_mode(mode)
 	var state: Dictionary = sim.get_road_benchmark_state()
 	var result := {"case_id": name, "mode": mode, "ok": false,
 		"setup_ms": float(Time.get_ticks_usec() - setup_us) / 1000.0,
@@ -96,20 +95,6 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	tool._clear_preview_cache()
 	for index in range(bench.repetitions):
 		_set_pointer(bench, _pose(scenario, float((index + 1) % 8) / 8.0))
-		if name == "residency_retry" and mode == 1:
-			# Withhold reference patch lookup for three retry frames. Do not destroy its resources.
-			tool._clear_preview_cache()
-			tool._preview_metric_row = {}
-			var held: Dictionary = bench.terrain.patches
-			bench.terrain.set_process(false)
-			bench.terrain.patches = {}
-			var deadline := Time.get_ticks_msec() + 30000
-			while tool._preview_cache_surface.is_empty() and Time.get_ticks_msec() < deadline:
-				await bench.get_tree().process_frame
-			while tool._preview_metric_row.get("terrain_retries", 0) < 3 and Time.get_ticks_msec() < deadline:
-				await bench.get_tree().process_frame
-			bench.terrain.patches = held
-			bench.terrain.set_process(true)
 		if not await _wait_exact(bench):
 			return {"ok": false, "error": "stationary preview timeout", "case_id": name, "mode": mode}
 		result.stationary.append(trace.last_rendered.duplicate(true))
@@ -250,6 +235,6 @@ func _wait_exact(bench: Node) -> bool:
 	while Time.get_ticks_msec() < deadline:
 		await bench.get_tree().process_frame
 		var row: Dictionary = tool.preview_metrics.last_rendered
-		if not row.is_empty() and row.input_id == tool.preview_metrics.input_id and row.request_id == tool._preview_drawn_request_id and not tool._preview_update_pending and not tool._preview_result_pending:
+		if not row.is_empty() and row.input_id == tool.preview_metrics.input_id and row.request_id == tool._preview_drawn_sequence and not tool._preview_update_pending:
 			return true
 	return false

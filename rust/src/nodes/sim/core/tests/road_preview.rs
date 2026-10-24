@@ -4,7 +4,7 @@
 //! installs (the same `Arc`s), a stale preview's commit equals a fresh commit bitwise, undo swaps
 //! the pre-edit pieces back, and the road tool's replica follows every publication.
 
-use super::road_edit_order::{ARM_M, committed};
+use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::{RoadPreview, RoadPreviewRequest};
@@ -331,5 +331,93 @@ fn preview_chunks_are_the_committed_chunks_without_lane_layers() {
                 "sloped {sloped}: chunk {chunk:?} is published as previewed"
             );
         }
+    }
+}
+
+// Native per-stage preview timings on the `ROAD-30` preview fixtures (`docs/roads.md` "Stage
+// budgets"): `sloped_t` sweeps a T onto a 220 m trunk, `sloped_branch` orbits a fourth leg of
+// the T at (-65, 0). Eight poses each, as `road_preview_replay.gd` moves them; stages are
+// medians and p95 over the measured repetitions. The context refresh after a commit (the
+// publication and the replica's records) and the commit's graph copy are measured apart.
+#[test]
+#[ignore = "controlled release timing: cargo test --release --lib benchmark_road_preview_stages -- --ignored --nocapture"]
+fn benchmark_road_preview_stages() {
+    use std::time::Instant;
+    let main = ([Vector2::new(-110.0, 0.0), Vector2::new(110.0, 0.0)], 1);
+    let leg = ([Vector2::new(-65.0, 0.0), Vector2::new(-65.0, 60.0)], 1);
+    let sweep = |u: f32| Vector2::new(-40.0, 0.0).lerp(Vector2::new(90.0, 0.0), u);
+    let orbit = |u: f32| Vector2::new(-60.0, -55.0) + Vector2::from_angle(std::f32::consts::TAU * u) * 15.0;
+    let cases: [(&str, Vec<Stroke>, Vector2, &dyn Fn(f32) -> Vector2); 2] = [
+        ("sloped_t", vec![main], Vector2::new(0.0, -80.0), &sweep),
+        ("sloped_branch", vec![main, leg], Vector2::new(-65.0, 0.0), &orbit),
+    ];
+    let percentile = |values: &mut Vec<f64>, q: f64| {
+        values.sort_by(f64::total_cmp);
+        values[((values.len() - 1) as f64 * q).round() as usize]
+    };
+    for (name, roads, start, pose) in cases {
+        let order: Vec<usize> = (0..roads.len()).collect();
+        let mut core = committed(&roads, &order, true);
+        let mut context = context(&core);
+        // Follow the publisher, so the commit below refreshes the context by records.
+        let first = core.publish_road_tool_view(None).expect("current roadbed");
+        assert!(context.apply(&first));
+        let strokes: Vec<Vec<Vector3>> = (0..8)
+            .map(|index| stroke(&core, [start, pose(index as f32 / 8.0)]))
+            .collect();
+        let mut stages = [(); 4].map(|()| Vec::new());
+        for repetition in 0..60 {
+            for points in &strokes {
+                let start = Instant::now();
+                let preview = preview(&mut context, points);
+                let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+                assert!(
+                    preview.pieces.as_ref().is_some_and(|pieces| pieces.chunks.is_some()),
+                    "{name}: every pose previews its chunks: {}",
+                    preview.validation.invalid_reason
+                );
+                if repetition >= 10 {
+                    let times = preview.times;
+                    for (samples, ms) in stages
+                        .iter_mut()
+                        .zip([times.plan_ms, times.roadbed_ms, times.payload_ms, total_ms])
+                    {
+                        samples.push(ms);
+                    }
+                }
+            }
+        }
+        let [plan, roadbed, payload, total] = stages.map(|mut samples| {
+            (percentile(&mut samples, 0.5), percentile(&mut samples, 0.95))
+        });
+        // One commit of the first pose: its graph copy and the context refresh it publishes.
+        core.benchmark_mode = false;
+        let copy_start = Instant::now();
+        let copy = std::hint::black_box(core.region_graph.clone());
+        let graph_copy_ms = copy_start.elapsed().as_secs_f64() * 1000.0;
+        drop(copy);
+        let previewed = Arc::new(preview(&mut context, &strokes[0]));
+        let outcome = commit(&mut core, &strokes[0], Some(previewed));
+        let publication = outcome.road_snapshot.expect("a commit publishes");
+        let refresh_start = Instant::now();
+        assert!(context.apply(&publication));
+        let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
+            crate::thread_pools::install(rayon::current_num_threads),
+            8 * 50,
+            plan.0,
+            plan.1,
+            roadbed.0,
+            roadbed.1,
+            payload.0,
+            payload.1,
+            total.0,
+            total.1,
+            outcome.snapshot_ms,
+            apply_ms,
+            graph_copy_ms,
+            core.region_graph.edge_count(),
+        );
     }
 }

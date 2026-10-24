@@ -522,7 +522,12 @@ func _commit_road_mesh_update(
 	_road_chunk_span_m = chunk_span_m
 	_road_chunk_origin_x_m = chunk_origin_x_m
 	_road_chunk_origin_z_m = chunk_origin_z_m
+	_road_mesh_installed(surface_generation)
 	return surface_generation
+
+# Called once a generation's road chunks are installed; RoadTool swaps its held preview here.
+func _road_mesh_installed(_generation: int) -> void:
+	pass
 
 func reset_main_mesh_chunks() -> void:
 	discard_staged_main_mesh_update()

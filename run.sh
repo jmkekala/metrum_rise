@@ -1066,7 +1066,6 @@ if [ $TEST -eq 1 ]; then
         # ROAD-68: suites that need roadbed geometry stay off until the gate that rebuilds it
         # (docs/roads.md, ROAD-68-A disabled tests).
         case "$bridge_test_script" in
-            network_tool_chunk_renderer_test | road_junction_preview_test | road_preview_stream_test) road68_gate=E ;;
             zoning_cells_tool_test) road68_gate=F ;;
             *) road68_gate= ;;
         esac

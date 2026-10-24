@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Continuous-motion regression and latency capture through the production RoadTool process path.
+## Continuous-motion regression and latency capture through the production RoadTool process path
+## with the synchronous preview (`ROAD-68-E`): every moved frame previews and shows its own pose.
 ## Uses fixed world-space input, not OS raycasts or GPU presentation. No midpoint idle hold.
 extends "res://tests/road_junction_preview_test.gd"
 
@@ -85,16 +86,11 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	tool._node_visuals_dirty = false
 	tool._node_visuals_visible = true
 	var before := simulation.get_road_benchmark_state()
-	var request_inputs := {}
 	var samples := []
-	var update_latencies := []
-	var update_gaps := []
-	var pointer_ages := []
 	var process_times := []
+	var stage_times := {"plan_ms": [], "roadbed_ms": [], "payload_ms": [], "packing_ms": [], "godot_ms": []}
 	var started_us := Time.get_ticks_usec()
-	var last_display_us := started_us
-	var displayed_id := 0
-	var first_display_ms := -1.0
+	var shown_frames := 0
 	var final_points := PackedVector3Array()
 	for index in range(motion_frames):
 		# Slide the endpoint along/across the trunk and reverse without any stationary samples.
@@ -109,47 +105,34 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		var input_us := Time.get_ticks_usec()
 		tool._process(INPUT_INTERVAL_SEC)
 		var displayed_us := Time.get_ticks_usec()
-		process_times.append(float(displayed_us - input_us) / 1000.0)
+		var frame_ms := float(displayed_us - input_us) / 1000.0
+		process_times.append(frame_ms)
 		final_points = tool._road_surface_points_from_curve(tool.current_path.curve)
 		if tool.draw_mode == 1:
 			_expect(tool.current_path.curve.get_point_out(0) == tool.control_pos - tool.start_pos, "moving curve preview must retain the freely chosen control handle")
 			_expect(tool.current_path.curve.get_point_in(1) == tool.control_pos - point, "moving curve preview must follow the control point and current endpoint")
-		var requested_id: int = tool._preview_request_id
-		if requested_id > 0 and not request_inputs.has(requested_id):
-			request_inputs[requested_id] = input_us
-		var shown_id: int = tool._junction_preview.request_id
-		_expect(shown_id > 0 or displayed_id == 0, "valid continuous motion must retain the junction: fixture=%s frame=%d valid=%s" % [fixture.name, index, tool.is_valid])
-		if shown_id > 0:
-			_expect(request_inputs.has(shown_id), "rendered request must come from this drag")
-			var age_ms := float(displayed_us - int(request_inputs.get(shown_id, displayed_us))) / 1000.0
-			pointer_ages.append(age_ms)
-			if shown_id != displayed_id:
-				_expect(shown_id > displayed_id, "displayed inputs must advance monotonically")
-				update_latencies.append(age_ms)
-				if displayed_id > 0:
-					update_gaps.append(float(displayed_us - last_display_us) / 1000.0)
-				else:
-					first_display_ms = float(displayed_us - started_us) / 1000.0
-				last_display_us = displayed_us
-				displayed_id = shown_id
-		# An older rendered pose must not become exact validation for the current pointer.
-		var exact: Dictionary = tool._cached_preview_surface_for_points(final_points)
-		_expect(exact.is_empty() or tool._preview_cache_points == final_points, "click cache must match exact current input")
-		samples.append({"frame": index, "input_us": input_us, "display_us": displayed_us, "request_id": requested_id, "displayed_id": shown_id})
+		var preview: Dictionary = tool._preview
+		# The frame that sampled the pose previewed it; a valid pose is shown in that frame.
+		_expect(tool._preview_is_for(final_points), "every frame previews its own pose: fixture=%s frame=%d" % [fixture.name, index])
+		var valid: bool = preview.get("is_valid", false)
+		var shown: bool = tool._preview_display.sequence == int(preview.get("sequence", -1))
+		_expect(not valid or shown, "a valid pose is shown in the frame that sampled it: fixture=%s frame=%d" % [fixture.name, index])
+		if valid and shown:
+			shown_frames += 1
+			var native := 0.0
+			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "packing_ms"]:
+				var ms := float(preview.get(stage, 0.0))
+				stage_times[stage].append(ms)
+				native += ms
+			# The rest of the frame: the bridge call and the chunk staging and install.
+			stage_times["godot_ms"].append(maxf(frame_ms - native, 0.0))
+		samples.append({"frame": index, "input_us": input_us, "display_us": displayed_us, "sequence": int(preview.get("sequence", 0)), "valid": valid})
 		# Optional rendered pose diagnostics deliberately stall this trace; exclude them from timings.
 		if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty() and index in [16, 24, 40]:
 			await _capture(tool.road_mesh_root, fixture.name + "_motion_" + str(index))
 		await create_timer(INPUT_INTERVAL_SEC).timeout
 	var motion_ms := float(Time.get_ticks_usec() - started_us) / 1000.0
-	# Settling must catch up to the final input; movement is not allowed to starve compilation.
-	var deadline := Time.get_ticks_msec() + 20000
-	while Time.get_ticks_msec() < deadline:
-		tool._process(INPUT_INTERVAL_SEC)
-		if not tool._cached_preview_surface_for_points(final_points).is_empty() and not tool._preview_result_pending:
-			break
-		await create_timer(INPUT_INTERVAL_SEC).timeout
-	_expect(not tool._cached_preview_surface_for_points(final_points).is_empty(), "final pointer must receive exact validation")
-	_expect(update_latencies.size() >= 4, "junction must update repeatedly before the pointer stops")
+	_expect(shown_frames >= motion_frames / 2, "the junction must show during motion: fixture=%s shown=%d" % [fixture.name, shown_frames])
 	var after := simulation.get_road_benchmark_state()
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		_expect(before[field] == after[field], "stream must not mutate authoritative " + field)
@@ -157,13 +140,12 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	for original in tool._road_chunk_instances.values():
 		_expect(original.visible, "stream cancellation must restore originals")
 	tool.free()
+	var stages := {}
+	for stage in stage_times:
+		stages[stage] = Metrics.distribution(stage_times[stage])
 	return {
-		"case": fixture.name, "motion_ms": motion_ms, "first_display_ms": first_display_ms,
-		"updates_during_motion": update_latencies.size(), "visible_motion_frames": pointer_ages.size(),
-		"input_to_display_ms": Metrics.distribution(update_latencies),
-		"displayed_input_age_ms": Metrics.distribution(pointer_ages),
-		"update_interval_ms": Metrics.distribution(update_gaps),
-		"tool_process_ms": Metrics.distribution(process_times), "samples": samples,
+		"case": fixture.name, "motion_ms": motion_ms, "shown_motion_frames": shown_frames,
+		"tool_process_ms": Metrics.distribution(process_times), "stage_ms": stages, "samples": samples,
 		"state_before": before, "state_after": after,
 	}
 

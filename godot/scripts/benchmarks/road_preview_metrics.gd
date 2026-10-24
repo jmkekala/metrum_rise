@@ -98,6 +98,12 @@ func poll(id: int, elapsed_us: int, payload: Variant) -> void:
 		row["received_us"] = Time.get_ticks_usec()
 		row["native"] = payload.get("preview_timing", {})
 		row["packed_bytes"] = packed_bytes(payload)
+		# The synchronous preview's native stages (`docs/roads.md` "Stage budgets").
+		if payload.has("plan_ms"):
+			var stages := {}
+			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "packing_ms"]:
+				stages[stage] = float(payload.get(stage, 0.0))
+			row["stages"] = stages
 		if not row.native.is_empty():
 			worker_results += 1
 			worker_service_ms += row.native.worker_ms - row.native.core_wait_ms

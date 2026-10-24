@@ -56,7 +56,7 @@ func _process(_delta: float) -> void:
 	if _last_frame_us > 0:
 		_frame_samples.append(float(now - _last_frame_us) / 1000.0)
 	_last_frame_us = now
-	var request_id: int = road_tool._preview_request_id
+	var request_id: int = road_tool._preview_sequence
 	if request_id > 0 and request_id != _last_preview_id:
 		_preview_requests += 1
 		_last_preview_id = request_id
@@ -951,7 +951,7 @@ func _run_segment(
 		{
 			"ok": bool(preview_wait.get("ok", false)) or expected_rejection,
 			"elapsed_ms": preview_ms,
-			"request_id": road_tool._preview_request_id,
+			"request_id": road_tool._preview_sequence,
 			"expected_rejection": expected_rejection,
 			"invalid_reason": actual_invalid_reason,
 		}
@@ -1072,7 +1072,6 @@ func _begin_scripted_road(
 ) -> void:
 	road_tool.cancel_road()
 	road_tool.active = true
-	road_tool.set_preview_publication_active(true)
 	road_tool.draw_mode = int(segment["draw_mode"])
 	road_tool.fwd_lanes = int(segment["fwd_lanes"])
 	road_tool.bkw_lanes = int(segment["bkw_lanes"])
@@ -1096,34 +1095,21 @@ func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:
 		start_us = Time.get_ticks_usec()
 	while _elapsed_ms(start_us) < timeout_sec * 1000.0:
 		await get_tree().process_frame
-		var validation: Dictionary = road_tool._candidate_cache_validation
-		if not validation.is_empty() and not bool(validation.get("is_valid", false)):
-			return {
-				"ok": false,
-				"elapsed_ms": _elapsed_ms(start_us),
-				"invalid_reason": validation.get("invalid_reason", "unknown"),
-			}
-		var preview: Dictionary = road_tool._preview_cache_surface
-		if (
-			not preview.is_empty()
-			and not bool(preview.get("is_valid", false))
-			and not road_tool._preview_result_pending
-			and road_tool._preview_surface_generation_is_current(preview)
-		):
+		# The preview is synchronous: the frame that sampled the stroke previewed and staged it.
+		var points: PackedVector3Array = road_tool._road_surface_points_from_curve(road_tool.current_path.curve)
+		var preview: Dictionary = road_tool._preview
+		var current: bool = not road_tool._preview_update_pending and road_tool._preview_is_for(points)
+		if current and not bool(preview.get("is_valid", false)):
 			return {
 				"ok": false,
 				"elapsed_ms": _elapsed_ms(start_us),
 				"invalid_reason": preview.get("invalid_reason", "unknown"),
 			}
 		if (
-			not preview.is_empty()
+			current
 			and bool(preview.get("is_valid", false))
-			and not road_tool._preview_update_pending
-			and not road_tool._preview_result_pending
-			and road_tool._preview_surface_generation_is_current(preview)
-			and not road_tool._cached_preview_surface_for_points(road_tool._road_surface_points_from_curve(road_tool.current_path.curve)).is_empty()
-			# Exact-junction readiness includes successful render staging, not only worker completion.
-			and (not preview.has("junction_preview") or road_tool._junction_preview.request_id == int(preview.get("request_id", 0)))
+			# Readiness includes successful render staging.
+			and road_tool._preview_drawn_sequence == int(preview.get("sequence", 0))
 		):
 			var ready_ms := _elapsed_ms(start_us)
 			await get_tree().process_frame
@@ -1369,7 +1355,6 @@ func _stop_scripted_tool() -> void:
 	if road_tool != null:
 		road_tool.cancel_road()
 		road_tool.active = false
-		road_tool.set_preview_publication_active(false)
 		road_tool.set_scripted_pointer(false)
 
 func _write_metrics() -> bool:

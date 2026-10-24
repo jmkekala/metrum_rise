@@ -370,7 +370,6 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				if not enabled:
 					road_tool.cancel_road()
 				road_tool.active = enabled
-				road_tool.set_preview_publication_active(enabled)
 				if enabled:
 					road_tool.fwd_lanes = 1
 					road_tool.bkw_lanes = 1
@@ -382,7 +381,6 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				if not enabled:
 					road_tool.cancel_road()
 				road_tool.active = enabled
-				road_tool.set_preview_publication_active(enabled)
 				if enabled:
 					road_tool.fwd_lanes = 0
 					road_tool.bkw_lanes = 0

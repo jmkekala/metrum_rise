@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Headless contract test for atomic road-chunk hydration and replacement.
+## Headless contract test for atomic road-chunk hydration and replacement, and for the road
+## tool's synchronous preview (`ROAD-68-E`): one frame samples, previews and shows a stroke.
 extends SceneTree
 
 const NetworkRendererScript := preload("res://scripts/renderers/network_renderer.gd")
 const TerrainRendererScript := preload("res://scripts/renderers/terrain.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const InputManagerScript := preload("res://scripts/core/input_manager.gd")
-const PreviewPublisherScript := preload("res://scripts/tools/road_preview_publisher.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const LAYERS := ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
 const CHUNK_SPAN_M := 510.0
@@ -200,18 +200,12 @@ class TestRoadTool:
 
 class MockRoadCandidateSimulation:
 	extends MockSimulation
-	var zoning_revision: int = 1
 	var validation: Dictionary = {}
-	var validation_calls: int = 0
-	var preview_requests: int = 0
-	var preview_result_polls: int = 0
-	var ribbon_builds: int = 0
-	var completed_preview: Variant = null
-	# One running request and one replaceable pending input, as in the native mailbox.
-	var running_request: int = 0
-	var pending_request: int = 0
-	var started_request: int = 0
+	# preview_road calls and the exact stroke of the last one.
+	var preview_calls: int = 0
+	var last_preview_points := PackedVector3Array()
 	var commit_requests: int = 0
+	var commit_points := PackedVector3Array()
 	var commit_result: Variant = null
 	var border_node: int = -1
 	var start_direction := {"kind": 0, "direction": Vector3.ZERO}
@@ -219,8 +213,9 @@ class MockRoadCandidateSimulation:
 	func get_road_tool_start_direction(_pos, _node, _edge, _generation) -> Dictionary:
 		return start_direction
 
-	func add_road_with_snap(_points, _fwd, _bkw, _snap) -> int:
+	func add_road_with_snap(points, _fwd, _bkw, _snap) -> int:
 		commit_requests += 1
+		commit_points = points
 		return commit_requests
 
 	func get_road_commit_result(_request_id: int) -> Variant:
@@ -229,55 +224,13 @@ class MockRoadCandidateSimulation:
 	func check_border_candidate(_pos: Vector3) -> int:
 		return border_node
 
-	func get_zoning_overlay_revision() -> int:
-		return zoning_revision
-
-	func get_agriculture_field_overlay_revision() -> int:
-		return 1
-
-	func validate_road_candidate_with_snap(_points, _fwd, _bkw, _snap) -> Dictionary:
-		validation_calls += 1
+	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
+		preview_calls += 1
+		last_preview_points = points
 		var result := validation.duplicate(true)
-		result["prepared_points"] = _points
+		result["prepared_points"] = points
 		result["surface_generation"] = generation
 		return result
-
-	func build_road_preview_ribbon(_points, _fwd, _bkw, source_generation) -> Variant:
-		ribbon_builds += 1
-		if source_generation != generation:
-			return null
-		return {"surface_generation": generation}
-
-	func validate_road_candidate_for_commit_with_snap(_points, _fwd, _bkw, _snap) -> Dictionary:
-		validation_calls += 1
-		return validation.duplicate(true)
-
-	func request_preview_road_surface_with_options(_points, _fwd, _bkw, _snap, _terrain) -> int:
-		preview_requests += 1
-		if running_request == 0:
-			running_request = preview_requests
-			started_request = preview_requests
-		else:
-			pending_request = preview_requests
-		return preview_requests
-
-	func get_preview_road_surface_started_request_id() -> int:
-		return started_request
-
-	## Publishes the running request's result, then starts the pending input if any.
-	func finish(result: Dictionary) -> void:
-		result["request_id"] = running_request
-		completed_preview = result
-		running_request = pending_request
-		pending_request = 0
-		if running_request > 0:
-			started_request = running_request
-
-	func get_preview_road_surface_result(request_id: int, _retained_revision: int, _terrain_revisions: PackedInt64Array) -> Variant:
-		preview_result_polls += 1
-		if completed_preview != null and int(completed_preview["request_id"]) == request_id:
-			return completed_preview
-		return null
 
 class ClickRoadTool:
 	extends RoadToolScript
@@ -291,11 +244,8 @@ class PointerRoadTool:
 	extends RoadToolScript
 	var pointer: Vector3 = Vector3.ZERO
 	var pointer_queries: int = 0
-	var coarse_draws: int = 0
+	var draws: int = 0
 	var last_drawn_points := PackedVector3Array()
-	var clicked_points := PackedVector3Array()
-	var exact_draws: int = 0
-	var compiled_draw_succeeds: bool = true
 
 	func get_world_mouse_pos() -> Vector3:
 		pointer_queries += 1
@@ -308,52 +258,20 @@ class PointerRoadTool:
 	func _update_node_visuals() -> void:
 		pass
 
-	func _draw_coarse_preview_surface(points: PackedVector3Array, _preview: Dictionary = {}) -> bool:
-		coarse_draws += 1
+	func _show_preview(points: PackedVector3Array) -> void:
+		draws += 1
 		last_drawn_points = points
-		return super._draw_coarse_preview_surface(points, _preview)
-
-	func _upload_road_preview_mesh(_preview: Dictionary) -> bool:
-		return true
-
-	func _draw_compiled_preview_surface(points: PackedVector3Array, _preview: Dictionary, _validation: Dictionary) -> bool:
-		if not compiled_draw_succeeds:
-			return false
-		if _preview_drawn_request_id != int(_preview.get("request_id", 0)):
-			exact_draws += 1
-		_preview_drawn_request_id = int(_preview.get("request_id", 0))
-		if _preview.has("junction_preview"):
-			_junction_preview.generation = int(_preview["surface_generation"])
-		last_drawn_points = points
-		return true
-
-	func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
-		clicked_points = points
-		# Capture click geometry without placing a live road in this input-path regression.
-		return {"is_valid": false, "invalid_reason": "test_rejection"}
-
-class LatePhaseProbe:
-	extends Node
-	var events: Array[String] = []
-	var frames: Array[int] = []
-
-	func _publish_preview_result_late() -> bool:
-		events.append("late")
-		frames.append(Engine.get_process_frames())
-		return false
+		super._show_preview(points)
 
 class ProcessPhaseProbe:
 	extends Node
 	var phase := ""
 	var events: Array[String]
 	var frames: Array[int]
-	var publisher: Node
 
 	func _process(_delta: float) -> void:
 		events.append(phase)
 		frames.append(Engine.get_process_frames())
-		if publisher != null:
-			publisher.request_publication()
 		set_process(false)
 
 var _failures: int = 0
@@ -363,11 +281,10 @@ func _initialize() -> void:
 
 func _run() -> void:
 	await _test_road_preview_process_phases()
-	_test_road_preview_late_publication()
 	_test_road_pointer_frame_updates()
-	_test_road_preview_scheduling_resets()
+	_test_road_preview_swaps_on_installed_commit()
 	await _test_native_road_cursor_contract()
-	_test_road_parcel_validation_cache()
+	_test_road_preview_context_revision()
 	_test_road_commit_acknowledgment()
 	_test_free_control_curve_chain()
 	_test_real_terrain_atomic_transaction()
@@ -1295,110 +1212,68 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.add_child(tool._info_label)
 	var points := PackedVector3Array([Vector3(-40.0, 0.0, -8.0), Vector3(0.0, 0.0, 8.0), Vector3(40.0, 0.0, -8.0)])
 	for lanes in [Vector2i(1, 1), Vector2i(3, 1), Vector2i(1, 0), Vector2i(0, 0)]:
-		tool.fwd_lanes = lanes.x
-		tool.bkw_lanes = lanes.y
-		var preview: Dictionary = simulation.validate_road_candidate_with_snap(points, lanes.x, lanes.y, false)
-		_expect(not preview.has("surface_vertices"), "hover validation must not build or export an unused ribbon")
-		var ribbon: Dictionary = simulation.build_road_preview_ribbon(preview["prepared_points"], lanes.x, lanes.y, preview["surface_generation"])
-		_expect(simulation.build_road_preview_ribbon(preview["prepared_points"], lanes.x, lanes.y, preview["surface_generation"] - 1) == null, "fallback geometry must reject a stale prepared profile")
-		var vertices: PackedVector3Array = ribbon.get("surface_vertices", PackedVector3Array())
-		var uvs: PackedVector2Array = ribbon.get("surface_uvs", PackedVector2Array())
-		var colors: PackedColorArray = ribbon.get("surface_colors", PackedColorArray())
-		_expect(not vertices.is_empty() and vertices.size() == uvs.size() and vertices.size() == colors.size(), "native moving preview must export material and lane coordinates with its geometry")
-		_expect(tool._draw_coarse_preview_surface(points, preview), "moving preview must upload a textured road mesh")
-		_expect(tool.blueprint_mesh.mesh.get_surface_count() == 1, "moving preview must remain a single draw surface")
-		for point in vertices:
-			_expect(point.y >= 0.149, "preview must float above the flat visual terrain")
-		if lanes == Vector2i.ZERO:
-			for uv in uvs:
-				_expect(absf(uv.y) <= 1.001, "zero-lane preview must be a 2-metre walkway, not a road plus sidewalks")
+		var preview: Dictionary = simulation.preview_road(points, lanes.x, lanes.y, false)
+		_expect(preview.get("is_valid", false), "isolated %s preview must validate: %s" % [lanes, preview.get("invalid_reason", "")])
+		_expect(preview.get("has_road_chunks", false), "the synchronous preview must return its road chunks")
+		_expect(int(preview.get("surface_generation", -1)) == simulation.get_road_tool_surface_generation(), "the preview names its context generation")
+		_expect(not preview.has("surface_vertices") and not preview.has("request_id"), "no ribbon and no request id remain")
+		for stage in ["plan_ms", "roadbed_ms", "payload_ms", "packing_ms"]:
+			_expect(float(preview.get(stage, -1.0)) >= 0.0, "the preview reports its %s" % stage)
+		var chunks: Array = preview.get("road_chunks", [])
+		_expect(not chunks.is_empty() and chunks.size() * 2 == PackedInt32Array(preview.get("changed_chunks", PackedInt32Array())).size(), "every changed chunk has its update")
+		for chunk in chunks:
+			if not chunk.get("removed", false):
+				_expect(chunk.get("road_mesh_payload_validated", false), "preview chunks are sealed as committed chunks are")
+	_expect(simulation.validate_road_candidate_with_snap(points, 1, 1, false).get("is_valid", false), "hover validation keeps its prepared profile")
 	tool.fwd_lanes = 2
 	tool.bkw_lanes = 1
-	var request := simulation.request_preview_road_surface_with_snap(points, 2, 1, false)
-	var completed: Variant = null
-	var deadline := Time.get_ticks_msec() + 10000
-	while completed == null and Time.get_ticks_msec() < deadline:
-		completed = simulation.get_preview_road_surface_result(request, 0, PackedInt64Array())
-		await process_frame
-	_expect(completed is Dictionary, "native exact preview must finish")
-	if completed is Dictionary:
-		_expect(completed.has("junction_preview"), "isolated exact preview must export the compiled local scene")
-		_expect(tool._draw_compiled_preview_surface(points, completed, completed), "exact preview must display compiled textured chunks")
-		var instances: Array = tool._junction_preview._instances.duplicate()
-		_expect(not instances.is_empty() and tool.blueprint_mesh.mesh == null, "compiled isolated preview must not also display a ribbon")
-		_expect(tool._draw_compiled_preview_surface(points, completed, completed) and tool._junction_preview._instances == instances, "unchanged exact preview must not upload another mesh")
-		for state in [{"is_valid": true}, {"is_pending": true}, {"is_valid": false}]:
-			tool._update_road_preview_material(state)
-			var expected := 1 if state.has("is_pending") else (0 if state["is_valid"] else 2)
-			_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
-		var rejected: Dictionary = completed.duplicate(false)
-		rejected["is_valid"] = false
-		rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
-		_expect(rejected["surface_vertices"].is_empty(), "exact scene fixture must exercise the empty legacy mesh field")
-		tool._draw_candidate_preview(points, rejected)
-		_expect(tool.blueprint_mesh.mesh != null and tool._junction_preview.generation == -1, "rejected exact scenes must restore roads and build a visible fallback")
-		_expect(tool._info_label.visible and tool._info_label.text.contains("terrain boundary"), "terrain rejection must retain an explanatory label")
-		_expect(tool._road_preview_material.get_shader_parameter("placement_state") == 2, "rejected fallback must be red")
-		if not OS.get_environment("METRUM_ROAD_PREVIEW_CAPTURE").is_empty():
-			# This diagnostic owns the moving-ribbon material; exact chunks have their own tests.
-			var moving: Dictionary = simulation.validate_road_candidate_with_snap(points, tool.fwd_lanes, tool.bkw_lanes, false)
-			_expect(tool._draw_coarse_preview_surface(points, moving), "moving-ribbon capture must explicitly stage fallback geometry")
-			await _capture_road_preview(tool.blueprint_mesh.mesh, tool._road_preview_material)
+	tool.active = true
+	tool._node_visuals_dirty = false
+	tool._node_visuals_visible = true
+	tool._begin_stroke(points[0], 0, Vector3.ZERO)
+	tool.set_scripted_pointer(true, points[-1])
+	tool._process(1.0 / 60.0)
+	_expect(tool._preview_display.sequence > 0, "one frame previews and shows the stroke's chunks")
+	var instances: Array = tool._preview_display._instances.duplicate()
+	_expect(not instances.is_empty() and tool.blueprint_mesh.mesh == null, "the preview shows compiled chunks, never a ribbon")
+	var calls := tool._preview_sequence
+	tool._queue_preview_update()
+	tool._process(1.0 / 60.0)
+	_expect(tool._preview_sequence == calls and tool._preview_display._instances == instances, "an unchanged stroke neither previews nor uploads again")
+	for state in [{"is_valid": true}, {"is_pending": true}, {"is_valid": false}]:
+		tool._update_road_preview_material(state)
+		var expected := 1 if state.has("is_pending") else (0 if state["is_valid"] else 2)
+		_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
+	var malformed: Dictionary = tool._preview.duplicate(true)
+	malformed["road_chunks"][0]["road_normals"] = PackedVector3Array()
+	_expect(not tool._preview_display.show(tool, malformed, tool._preview_sequence + 1), "incomplete mesh batches must fail atomically")
+	_expect(tool._preview_display._instances == instances, "failed staging must preserve the complete previous preview")
+	var rejected: Dictionary = tool._preview.duplicate(false)
+	rejected["is_valid"] = false
+	rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
+	rejected["sequence"] = tool._preview_sequence + 1
+	tool._preview = rejected
+	tool._show_preview(points)
+	_expect(tool._preview_display.sequence == 0 and tool._preview_display._instances.is_empty(), "a rejected stroke shows no road")
+	_expect(tool._info_label.visible and tool._info_label.text.contains("terrain boundary"), "terrain rejection must retain an explanatory label")
+	_expect(tool._road_preview_material.get_shader_parameter("placement_state") == 2, "rejected placement must be red")
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":
 		for lane_count in [1, 4]:
-			tool.fwd_lanes = lane_count
-			tool.bkw_lanes = lane_count
 			var timings: Array[int] = []
 			for iteration in range(220):
 				points[-1].x = 40.0 + float(iteration % 20) * 0.01
 				var start := Time.get_ticks_usec()
-				var preview: Dictionary = simulation.validate_road_candidate_with_snap(points, lane_count, lane_count, false)
-				tool._draw_coarse_preview_surface(points, preview)
+				simulation.preview_road(points, lane_count, lane_count, false)
 				if iteration >= 20:
 					timings.append(Time.get_ticks_usec() - start)
 			timings.sort()
-			print("ROAD_PREVIEW_TIMING lanes=%d samples=%d validation_and_upload_p50_us=%d p95_us=%d" % [lane_count * 2, timings.size(), timings[100], timings[190]])
+			print("ROAD_PREVIEW_TIMING lanes=%d samples=%d preview_road_p50_us=%d p95_us=%d" % [lane_count * 2, timings.size(), timings[100], timings[190]])
+	tool.cancel_road()
 	tool.free()
-
-func _capture_road_preview(mesh: Mesh, material: ShaderMaterial) -> void:
-	# Optional real-renderer diagnostic. Normal headless regression runs do not render or save images.
-	var viewport := SubViewport.new()
-	viewport.size = Vector2i(960, 720)
-	viewport.own_world_3d = true
-	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	root.add_child(viewport)
-	var ground := MeshInstance3D.new()
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(200.0, 160.0)
-	ground.mesh = plane
-	var ground_mat := StandardMaterial3D.new()
-	ground_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	ground_mat.albedo_color = Color(0.22, 0.34, 0.18)
-	ground.material_override = ground_mat
-	viewport.add_child(ground)
-	for state in range(3):
-		var instance := MeshInstance3D.new()
-		instance.mesh = mesh
-		instance.position.z = float(state - 1) * 32.0
-		var copy := material.duplicate() as ShaderMaterial
-		copy.set_shader_parameter("placement_state", state)
-		instance.material_override = copy
-		viewport.add_child(instance)
-	var camera := Camera3D.new()
-	viewport.add_child(camera)
-	camera.position = Vector3(35.0, 100.0, 100.0)
-	camera.look_at(Vector3.ZERO)
-	camera.current = true
-	for frame in range(5):
-		await process_frame
-	await RenderingServer.frame_post_draw
-	var result := viewport.get_texture().get_image().save_png(OS.get_environment("METRUM_ROAD_PREVIEW_CAPTURE"))
-	_expect(result == OK, "preview diagnostic image must save")
-	viewport.free()
 
 func _pointer_road_tool(simulation: MockRoadCandidateSimulation) -> PointerRoadTool:
 	simulation.generation = 1
-	simulation.validation = {"is_valid": true, "zoning_revision": 1, "surface_generation": 1}
+	simulation.validation = {"is_valid": true}
 	var tool := PointerRoadTool.new()
 	tool.simulation_node = simulation
 	tool.blueprint_mesh = MeshInstance3D.new()
@@ -1417,118 +1292,30 @@ func _pointer_road_tool(simulation: MockRoadCandidateSimulation) -> PointerRoadT
 
 func _road_frame(tool: PointerRoadTool) -> void:
 	tool._process(1.0 / 60.0)
-	tool._publish_preview_result_late()
 
 func _test_road_preview_process_phases() -> void:
-	var owner := LatePhaseProbe.new()
-	root.add_child(owner)
-	var publisher := PreviewPublisherScript.new()
-	publisher.bind(owner, RoadToolScript.PREVIEW_PUBLISH_PROCESS_PRIORITY)
-	root.add_child(publisher)
-	publisher.request_publication()
+	# Input and camera settle first; the road tool previews this frame's pointer after them.
+	var events: Array[String] = []
+	var frames: Array[int] = []
 	for phase_spec in [
-		["input", InputManagerScript.CAMERA_INPUT_PROCESS_PRIORITY, null],
-		["camera", InputManagerScript.CAMERA_SETTLE_PROCESS_PRIORITY, null],
-		["sample", RoadToolScript.PREVIEW_SAMPLE_PROCESS_PRIORITY, null],
-		["completion", 0, null],
+		["input", InputManagerScript.CAMERA_INPUT_PROCESS_PRIORITY],
+		["camera", InputManagerScript.CAMERA_SETTLE_PROCESS_PRIORITY],
+		["sample", RoadToolScript.PREVIEW_SAMPLE_PROCESS_PRIORITY],
+		["completion", 0],
 	]:
 		var probe := ProcessPhaseProbe.new()
 		probe.phase = phase_spec[0]
 		probe.process_priority = phase_spec[1]
-		probe.publisher = phase_spec[2]
-		probe.events = owner.events
-		probe.frames = owner.frames
+		probe.events = events
+		probe.frames = frames
 		root.add_child(probe)
 	await process_frame
 	await process_frame
-	_expect(owner.events == ["input", "camera", "sample", "completion", "late"], "an active publisher must run after sampling and ordinary completion in the same frame")
-	_expect(owner.frames.size() == 5 and owner.frames.all(func(frame): return frame == owner.frames[0]), "all preview phases must execute in one rendered frame")
-	owner.free()
-	publisher.free()
+	_expect(events == ["input", "camera", "sample", "completion"], "the preview samples after input and camera settle, before ordinary completion")
+	_expect(frames.size() == 4 and frames.all(func(frame): return frame == frames[0]), "all preview phases must execute in one rendered frame")
 	for child in root.get_children():
 		if child is ProcessPhaseProbe:
 			child.free()
-
-func _test_road_preview_late_publication() -> void:
-	_expect(
-		InputManagerScript.CAMERA_INPUT_PROCESS_PRIORITY < InputManagerScript.CAMERA_SETTLE_PROCESS_PRIORITY
-		and InputManagerScript.CAMERA_SETTLE_PROCESS_PRIORITY < RoadToolScript.PREVIEW_SAMPLE_PROCESS_PRIORITY
-		and RoadToolScript.PREVIEW_SAMPLE_PROCESS_PRIORITY < RoadToolScript.PREVIEW_PUBLISH_PROCESS_PRIORITY,
-		"camera movement and clearance must settle before sampling, with publication last"
-	)
-	var idle_owner := Node.new()
-	var idle_publisher := PreviewPublisherScript.new()
-	idle_publisher.bind(idle_owner, RoadToolScript.PREVIEW_PUBLISH_PROCESS_PRIORITY)
-	root.add_child(idle_publisher)
-	_expect(not idle_publisher.is_processing(), "the late publisher must stay idle after entering the tree")
-	idle_publisher.request_publication()
-	_expect(idle_publisher.is_processing(), "an outstanding request must enable late publication")
-	idle_publisher.cancel_publication()
-	_expect(not idle_publisher.is_processing(), "cancellation must disable late publication")
-	idle_publisher.free()
-	idle_owner.free()
-	var simulation := MockRoadCandidateSimulation.new()
-	var tool := _pointer_road_tool(simulation)
-	tool.pointer = Vector3(24.0, 0.0, 0.0)
-	tool._process(1.0 / 60.0)
-	_expect(simulation.preview_requests == 1 and simulation.preview_result_polls == 0, "the early phase must sample and dispatch without polling")
-	var sample_points := PackedVector3Array([tool.start_pos, tool.pointer])
-	simulation.finish({
-		"is_valid": true, "surface_generation": 1, "zoning_revision": 1,
-		"prepared_points": sample_points, "junction_preview": {},
-	})
-	tool._publish_preview_result_late()
-	_expect(simulation.preview_result_polls == 1 and tool.exact_draws == 1, "the late phase must publish a completed exact result in the sampled frame")
-	_expect(tool.coarse_draws == 0, "a same-frame exact result must not upload a fallback ribbon first")
-	_expect(tool.pointer_queries == 1 and tool.last_drawn_points == sample_points, "late publication must reuse the stored sample without querying the pointer")
-
-	tool.pointer = Vector3(25.0, 0.0, 0.0)
-	tool._process(1.0 / 60.0)
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	tool.compiled_draw_succeeds = false
-	tool._publish_preview_result_late()
-	_expect(tool.exact_draws == 1 and tool.last_drawn_points == sample_points and tool._preview_update_pending, "a failed late stage must preserve the previously installed pair and retry")
-
-	tool.compiled_draw_succeeds = true
-	tool._clear_preview_cache()
-	tool.pointer = Vector3(26.0, 0.0, 0.0)
-	tool._process(1.0 / 60.0)
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	tool._last_world_mouse_pos = Vector3(27.0, 0.0, 0.0)
-	tool._publish_preview_result_late()
-	_expect(tool.exact_draws == 1 and not tool._preview_result_pending, "a late result must not publish after the sampled cursor changes")
-	tool.free()
-	simulation.free()
-
-	var rejected_simulation := MockRoadCandidateSimulation.new()
-	var rejected_tool := _pointer_road_tool(rejected_simulation)
-	rejected_tool.pointer = Vector3(28.0, 0.0, 0.0)
-	rejected_tool._process(1.0 / 60.0)
-	rejected_simulation.finish({
-		"is_valid": false, "invalid_reason": "test_exact_rejection",
-		"surface_generation": 1, "zoning_revision": 1,
-	})
-	rejected_tool._publish_preview_result_late()
-	_expect(not rejected_tool.is_valid and rejected_tool.coarse_draws == 1, "an exact rejection must replace provisional feedback in the same late phase")
-	rejected_tool.free()
-	rejected_simulation.free()
-
-	var revised_simulation := MockRoadCandidateSimulation.new()
-	var revised_tool := _pointer_road_tool(revised_simulation)
-	revised_tool.pointer = Vector3(29.0, 0.0, 0.0)
-	revised_tool._process(1.0 / 60.0)
-	revised_simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	revised_simulation.zoning_revision = 2
-	revised_simulation.validation["zoning_revision"] = 2
-	revised_tool._publish_preview_result_late()
-	_expect(revised_tool.exact_draws == 0 and revised_tool._preview_update_pending, "a dependency change before first publication must reject the stale sample and queue another")
-	revised_tool._process(1.0 / 60.0)
-	_expect(revised_simulation.preview_requests == 2, "a stationary pointer must redispatch after late dependency invalidation")
-	revised_simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 2, "junction_preview": {}})
-	revised_tool._publish_preview_result_late()
-	_expect(revised_tool.exact_draws == 1 and revised_tool._junction_preview.generation == 1, "the refreshed dependency sample must recover without pointer motion")
-	revised_tool.free()
-	revised_simulation.free()
 
 func _test_road_pointer_frame_updates() -> void:
 	var simulation := MockRoadCandidateSimulation.new()
@@ -1537,139 +1324,86 @@ func _test_road_pointer_frame_updates() -> void:
 		tool.pointer = Vector3(20.0 + index, 0.0, 0.0)
 		tool._unhandled_input(InputEventMouseMotion.new())
 		tool._queue_preview_update()
-	_expect(simulation.validation_calls == 0 and tool.coarse_draws == 0, "input bursts must not validate or upload before the frame update")
+	_expect(simulation.preview_calls == 0 and tool.draws == 0, "input bursts must not preview before the frame update")
 	_road_frame(tool)
 	_expect(tool.pointer_queries == 1, "the frame must resolve the cursor once")
-	_expect(simulation.validation_calls == 1 and tool.coarse_draws == 1, "32 queued updates must coalesce into one validation/draw")
-	_expect(tool.last_drawn_points[-1] == tool.pointer, "the preview must use this frame's pointer, not last frame's cache")
-	_expect(simulation.preview_requests == 1, "immediate feedback must also dispatch exact work without an idle hold")
-	var first_points := PackedVector3Array([tool.start_pos, tool.pointer])
+	_expect(simulation.preview_calls == 1 and tool.draws == 1, "32 queued updates must coalesce into one synchronous preview")
+	_expect(tool.last_drawn_points[-1] == tool.pointer and simulation.last_preview_points[-1] == tool.pointer, "the frame previews and shows this frame's pointer")
 	tool.pointer = Vector3(60.0, 0.0, 0.0)
 	_road_frame(tool)
-	_expect(tool.coarse_draws == 2 and tool.last_drawn_points[-1] == tool.pointer, "camera-only pointer movement must refresh the preview without a motion event")
-	_expect(simulation.preview_requests == 2 and simulation.pending_request == 2, "moving input must queue as the worker's next input while it runs")
-	# Rapid motion replaces the one pending input; tool bookkeeping stays bounded.
+	_expect(simulation.preview_calls == 2 and tool.last_drawn_points[-1] == tool.pointer, "camera-only pointer movement must preview again without a motion event")
 	for index in range(8):
 		tool.pointer.x = 60.25 + float(index) * 0.25
 		_road_frame(tool)
-		_expect(tool._preview_requests.size() <= 3, "rapid motion must keep at most three requests outstanding")
-	_expect(simulation.preview_requests == 10 and simulation.running_request == 1 and simulation.pending_request == 10, "each pose must replace the pending input without a backlog")
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "prepared_points": first_points, "junction_preview": {}})
-	var ribbon_builds := simulation.ribbon_builds
-	tool.pointer.x = 63.0
-	_road_frame(tool)
-	_expect(tool.exact_draws == 1 and simulation.preview_requests == 11, "motion must display completed older geometry while the newest input stays queued")
-	_expect(simulation.ribbon_builds == ribbon_builds, "displaying a completed junction must skip fallback mesh construction")
-	_expect(tool._preview_requests.map(func(request): return request.id) == [10, 11], "only the running request and the pending input may stay outstanding")
-	_expect(tool._cached_preview_surface_for_points(PackedVector3Array([tool.start_pos, tool.pointer])).is_empty(), "displaying an older junction must not authorize the current click")
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	_road_frame(tool)
-	_expect(tool.exact_draws == 2 and simulation.preview_requests == 11, "a stopped pointer must not resubmit the pose already queued")
-	_expect(tool._preview_requests.map(func(request): return request.id) == [11], "consumed and superseded requests must never be polled again")
-	simulation.finish({
-		"is_valid": true, "surface_generation": 1, "zoning_revision": 1,
-		"prepared_points": PackedVector3Array([tool.start_pos, tool.pointer]), "junction_preview": {},
-	})
-	var validation_calls := simulation.validation_calls
-	_road_frame(tool)
-	_expect(tool.exact_draws == 3 and not tool._preview_result_pending, "the stationary result must catch up to the exact current input")
-	_expect(simulation.validation_calls == validation_calls and simulation.ribbon_builds == ribbon_builds, "matching exact results must skip hover validation and fallback construction")
-	var settled_draws := tool.coarse_draws
+		_expect(simulation.last_preview_points[-1] == tool.pointer, "every moved pose is previewed in its own frame")
+	_expect(simulation.preview_calls == 10, "one preview per moved frame, no backlog")
 	for index in range(16):
 		tool._unhandled_input(InputEventMouseMotion.new())
 	_road_frame(tool)
-	_expect(tool.coarse_draws == settled_draws and tool.exact_draws == 3, "motion within an unchanged snap must not downgrade or redraw a settled preview")
+	_expect(simulation.preview_calls == 10, "an unchanged stroke must not preview again")
 	tool.pointer.x += 0.01
 	_road_frame(tool)
-	_expect(tool._cached_preview_surface_for_points(PackedVector3Array([tool.start_pos, tool.pointer])).is_empty(), "a sub-5 cm move must invalidate exact click reuse")
-	_expect(simulation.preview_requests == 12, "fine pointer movements must request matching geometry immediately")
-	_road_frame(tool)
-	_expect(tool.exact_draws == 3, "an already consumed result must not upload again")
-	simulation.validation = {"is_valid": false, "is_pending": true}
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	tool.pointer.x += 0.01
-	_road_frame(tool)
-	_expect(tool._junction_preview.generation == 1 and tool.coarse_draws == settled_draws, "a busy validation check must not make the visible junction flicker")
-	_expect(not tool.is_valid and tool._preview_update_pending, "pending feedback must retry without authorizing a click")
-	simulation.validation = {"is_valid": true, "surface_generation": 1, "zoning_revision": 1}
-	_road_frame(tool)
-	_expect(tool.exact_draws == 4 and simulation.preview_requests == 13, "a completed pose consumed during pending validation must display when validation recovers")
-	_expect(simulation.ribbon_builds == ribbon_builds, "pending recovery must reuse the compiled pose without a ribbon")
-	# Mode changes retire both visible and in-flight results even when the pointer stays put.
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
+	_expect(simulation.preview_calls == 11, "a sub-5 cm move must preview the exact new stroke")
 	tool.adjust_lanes(1, 0)
 	_road_frame(tool)
-	_expect(tool.exact_draws == 4 and tool._junction_preview.generation == -1, "a previous-width result must never reappear")
-	_expect(simulation.preview_requests == 14, "the updated width must replace the retired request")
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	tool._sticky_network_snap = {"snap_edge": 9, "snap_node": -1}
-	_road_frame(tool)
-	_expect(tool.exact_draws == 4 and simulation.preview_requests == 15, "changing the Rust-selected snap target must retire in-flight geometry")
-	# Click between frames: no _process call may be needed to update the committed endpoint.
+	_expect(simulation.preview_calls == 12, "a lane change must preview the new width")
+	# Click between frames: the click previews the freshly resolved cursor and submits it.
+	simulation.validation = {"is_valid": false, "invalid_reason": "test_rejection"}
 	tool.pointer = Vector3(75.0, 0.0, 0.0)
 	tool._handle_click()
-	_expect(tool.clicked_points[-1] == tool.pointer, "clicks must commit the freshly resolved cursor position")
+	_expect(simulation.last_preview_points[-1] == tool.pointer and simulation.commit_requests == 0, "a refused click previews the clicked stroke and commits nothing")
 	_expect(simulation.rejection_reports.size() == 1, "a refused click must report once")
 	var report: Dictionary = simulation.rejection_reports[-1] if simulation.rejection_reports.size() > 0 else {}
-	_expect(report.get("points") == tool.clicked_points and report.get("validation", {}).get("invalid_reason") == "test_rejection", "the report must carry the clicked stroke and its validation")
-	tool._remember_preview_surface(PackedVector3Array([tool.start_pos, tool.pointer]), {"request_id": 6, "surface_generation": 1, "is_valid": true})
+	_expect(report.get("points") == simulation.last_preview_points and report.get("validation", {}).get("invalid_reason") == "test_rejection", "the report must carry the clicked stroke and its validation")
 	tool.reset_main_mesh_chunks()
-	_expect(tool._preview_cache_surface.is_empty(), "renderer reset must retire delta payloads whose retained meshes were released")
+	_expect(tool._preview.is_empty(), "renderer reset must retire the preview")
 	tool.free()
 	simulation.free()
 
-func _test_road_preview_scheduling_resets() -> void:
+func _test_road_preview_swaps_on_installed_commit() -> void:
 	var simulation := MockRoadCandidateSimulation.new()
 	var tool := _pointer_road_tool(simulation)
-	tool.pointer = Vector3(20.0, 0.0, 0.0)
+	tool.pointer = Vector3(40.0, 0.0, 0.0)
 	_road_frame(tool)
-	_expect(simulation.preview_requests == 1, "the first pose must start the worker")
-	# A cache reset while the worker runs must neither stall dispatch nor revive its result.
-	tool._clear_preview_cache()
-	tool.pointer.x = 21.0
-	_road_frame(tool)
-	_expect(simulation.preview_requests == 2, "clearing the preview cache must not block the next dispatch")
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	_road_frame(tool)
-	_expect(tool.exact_draws == 0 and tool._preview_requests.map(func(request): return request.id) == [2], "a retired request's late result must not display")
-	tool.cancel_road()
-	_expect(not tool._preview_result_pending, "cancel must retire every outstanding request")
-	simulation.finish({"is_valid": true, "surface_generation": 1, "zoning_revision": 1, "junction_preview": {}})
-	_road_frame(tool)
-	_expect(tool.exact_draws == 0 and simulation.preview_requests == 2, "a result finishing after cancel must neither display nor dispatch")
+	var shown = tool._preview_display
+	_expect(tool._commit_segment(tool.pointer), "a valid click queues the previewed stroke")
+	_expect(simulation.commit_points == simulation.last_preview_points, "the click submits exactly the previewed stroke")
+	simulation.commit_result = {"committed": true, "generation": 5}
+	tool._poll_road_commit_result()
+	_expect(tool._swap_display == shown and tool._swap_generation == 5, "an accepted commit keeps its preview shown until its chunks are installed")
+	tool._road_mesh_generation = 4
+	tool._road_mesh_installed(4)
+	_expect(tool._swap_display == shown, "an older generation's chunks do not end the preview")
+	tool._road_mesh_generation = 5
+	tool._road_mesh_installed(5)
+	_expect(tool._swap_display == null and shown._instances.is_empty(), "the committed chunks replace the preview in the same call")
 	tool.free()
 	simulation.free()
 
-func _test_road_parcel_validation_cache() -> void:
+func _test_road_preview_context_revision() -> void:
 	var simulation := MockRoadCandidateSimulation.new()
-	simulation.generation = 1
-	var tool = RoadToolScript.new()
-	tool.simulation_node = simulation
-	var points := PackedVector3Array([Vector3.ZERO, Vector3(50.0, 0.0, 0.0)])
-	simulation.validation = {"is_valid": false, "invalid_reason": "parcel_overlap", "zoning_revision": 1}
-	var blocked: Dictionary = tool._candidate_validation_for_points(points)
-	_expect(not blocked["is_valid"], "parcel conflicts must invalidate the road preview")
-	_expect(tool._preview_invalid_text(blocked).contains("zoning"), "parcel conflicts must explain the rejection")
-	simulation.zoning_revision = 2
-	simulation.validation = {"is_valid": true, "zoning_revision": 2, "surface_generation": 1}
-	_expect(tool._candidate_validation_for_points(points)["is_valid"], "removing zoning must invalidate the blocked candidate cache")
-	tool._remember_preview_surface(points, simulation.validation)
-	simulation.zoning_revision = 3
-	simulation.validation = {"is_valid": false, "invalid_reason": "parcel_overlap", "zoning_revision": 3}
-	_expect(not tool._commit_validation_for_points(points)["is_valid"], "new zoning must invalidate an exact cached commit verdict")
-	tool._clear_preview_cache()
-	simulation.validation = {"is_valid": false, "is_pending": true}
-	tool._candidate_validation_for_points(points)
-	_expect(tool._candidate_cache_validation.is_empty(), "a busy parcel check must remain retryable")
-	simulation.validation = {"is_valid": true, "zoning_revision": 3}
-	_expect(tool._candidate_validation_for_points(points)["is_valid"], "the next parcel check must recover after lock contention")
+	var tool := _pointer_road_tool(simulation)
+	tool._info_label = Label.new()
+	tool.add_child(tool._info_label)
+	simulation.validation = {"is_valid": false, "invalid_reason": "parcel_overlap"}
+	tool.pointer = Vector3(50.0, 0.0, 0.0)
+	_road_frame(tool)
+	_expect(not tool.is_valid and tool._info_label.text.contains("zoning"), "a refused preview must explain the rejection")
+	var calls := simulation.preview_calls
+	_road_frame(tool)
+	_expect(simulation.preview_calls == calls, "a stationary stroke on the same context is previewed once")
+	# A publication (commit, undo, edit) moves the context on; the stationary stroke previews again.
+	simulation.generation += 1
+	simulation.validation = {"is_valid": true}
+	_road_frame(tool)
+	_expect(simulation.preview_calls == calls + 1 and tool.is_valid, "a new context generation previews a stationary stroke again")
 	tool.free()
 	simulation.free()
 
 func _test_road_commit_acknowledgment() -> void:
 	var simulation := MockRoadCandidateSimulation.new()
 	simulation.generation = 1
-	simulation.validation = {"is_valid": true, "surface_generation": 1}
+	simulation.validation = {"is_valid": true}
 	var tool := RoadToolScript.new()
 	tool.simulation_node = simulation
 	tool.active = true
@@ -1686,23 +1420,24 @@ func _test_road_commit_acknowledgment() -> void:
 	tool._last_world_mouse_pos = endpoint
 	tool._has_last_world_mouse_pos = true
 	tool._update_preview()
-	_expect(simulation.preview_requests == 1 and tool._preview_result_pending, "hover must start an exact preview before the click")
+	_expect(simulation.preview_calls == 1, "hover previews the stroke before the click")
 	_expect(tool._commit_segment(endpoint), "valid click must queue a placement")
+	_expect(simulation.preview_calls == 1, "the click reuses the preview of the same stroke")
 	tool._poll_road_commit_result()
 	_expect(tool.current_path == path and tool._commit_request_id > 0, "pending placement must retain its stroke")
 	_expect(not tool._commit_segment(endpoint) and simulation.commit_requests == 1, "pending placement must block duplicate dispatch")
-	simulation.finish({"is_valid": true, "surface_generation": 1, "junction_preview": {}})
 	tool._update_preview()
-	_expect(simulation.preview_requests == 1 and tool._preview_cache_surface.is_empty(), "a pending placement must neither dispatch nor adopt previews")
+	_expect(simulation.preview_calls == 1, "a pending placement must not preview")
 	simulation.commit_result = {"committed": false, "detail": "rejected=road_plan_invalid"}
 	tool._poll_road_commit_result()
-	_expect(not tool._preview_result_pending, "a rejected placement must retire previews requested before it")
 	_expect(tool.current_path == path and tool._commit_request_id == 0, "rejection must keep the stroke editable")
 	_expect(tool._info_label.visible and tool._info_label.text.contains("could not be built"), "rejection must explain that no road was built")
 	_expect(tool._pending_border_checks.is_empty(), "rejection must retire its border check")
 	simulation.commit_result = null
-	_expect(tool._commit_segment(endpoint), "rejected stroke must permit another attempt")
-	simulation.commit_result = {"committed": true}
+	_expect(not tool._commit_segment(endpoint) and simulation.commit_requests == 1, "the same stroke on the same context keeps its rejection")
+	endpoint = Vector3(44.0, 0.0, 0.0)
+	_expect(tool._commit_segment(endpoint), "a moved stroke permits another attempt")
+	simulation.commit_result = {"committed": true, "generation": 2}
 	tool._poll_road_commit_result()
 	_expect(tool.current_path != null and tool.current_path != path and tool.current_state == RoadToolScript.State.SETTING_END, "acceptance must start the next straight stroke")
 	_expect(tool.start_pos == endpoint and tool._angle_snap() == Vector3.RIGHT, "straight continuation must retain the accepted endpoint and end direction")
@@ -1716,7 +1451,7 @@ func _test_road_commit_acknowledgment() -> void:
 func _test_free_control_curve_chain() -> void:
 	var simulation := MockRoadCandidateSimulation.new()
 	simulation.generation = 1
-	simulation.validation = {"is_valid": true, "surface_generation": 1}
+	simulation.validation = {"is_valid": true}
 	var tool := ClickRoadTool.new()
 	tool.simulation_node = simulation
 	tool.blueprint_mesh = MeshInstance3D.new()

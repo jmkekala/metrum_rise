@@ -128,7 +128,7 @@ func _run_stroke(bench: Node, fixture: Dictionary, stroke: Dictionary) -> Dictio
 	return step
 
 func capture_preview(bench: Node) -> void:
-	var validation: Dictionary = bench.road_tool._preview_cache_surface
+	var validation: Dictionary = bench.road_tool._preview
 	_preview = {}
 	for key in ["is_valid", "invalid_reason", "max_grade", "allowed_grade", "request_id", "surface_generation"]:
 		if validation.has(key):

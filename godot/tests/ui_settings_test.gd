@@ -42,7 +42,7 @@ func _run() -> void:
 		_test_refresh(style)
 		_test_building_quality()
 		_test_frame_settings()
-		_test_road_preview_mode()
+		_test_single_road_preview_mode()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
 		file.store_buffer(original)
@@ -151,19 +151,10 @@ func _benchmark(style: Script) -> void:
 		print("UI_SCALE_BENCH " + JSON.stringify({"labels": count, "median_us": samples[4], "samples_us": samples}))
 		container.free()
 
-func _test_road_preview_mode() -> void:
-	for value in [-1, 0, 1, 9]:
-		Settings.set_value(Settings.SECTION_GAMEPLAY, Settings.KEY_ROAD_PREVIEW_MODE, value)
-		_expect(Settings.get_road_preview_mode() == (value if value in [0, 1] else 0), "Invalid road preview modes fall back to road only")
-	var panel = preload("res://scripts/ui/gameplay_options.gd").new()
-	root.add_child(panel)
-	panel._pending_mode = 1
-	_expect(panel.has_pending_changes(), "Preview preference edits stay pending")
-	panel.refresh()
-	_expect(not panel.has_pending_changes() and panel._pending_mode == 0, "Cancel discards preview preference edits")
-	panel._pending_mode = 1
-	_expect(panel.apply_changes() == OK and Settings.get_road_preview_mode() == 1, "Full terrain preference persists on Apply")
-	panel.reset_defaults()
-	_expect(panel.has_pending_changes() and Settings.get_road_preview_mode() == 1, "Reset remains pending until Apply")
-	_expect(panel.apply_changes() == OK and Settings.get_road_preview_mode() == 0, "Road-only default persists")
-	panel.free()
+func _test_single_road_preview_mode() -> void:
+	# D3 (`ROAD-68-E`): one preview mode, road and terrain together; no setting or menu remains.
+	_expect(not "KEY_ROAD_PREVIEW_MODE" in Settings, "The road preview mode setting is gone")
+	var cfg := ConfigFile.new()
+	Settings._write_defaults(cfg)
+	_expect(not cfg.has_section_key("gameplay", "road_preview_mode"), "Defaults write no road preview mode")
+	_expect(not ResourceLoader.exists("res://scripts/ui/gameplay_options.gd"), "The road preview options panel is gone")
