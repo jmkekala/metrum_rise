@@ -542,11 +542,12 @@ Budgets are revised openly from measurements; the end-to-end target is not.
 
 ### Guardrails
 
-- **Size.** `roadbed/` production code aims at 8,000 lines, tests excluded, through
-  `ROAD-68-E`, and 10,000 from `ROAD-68-F`, recording each family's lines. The numbers are review
-  triggers, not hard stops (user, 2026-10-24): each gate records its count, and going over
-  requires a written reason here. Code is cut to remove duplication, dead code or needless
-  generality, never to meet the count; comments that explain geometry or rules stay.
+- **Size.** There is no line limit (user, 2026-10-24: up-front estimates are not reliable).
+  Each gate records the `roadbed/` production line count, tests excluded, and `ROAD-68-F` records
+  each family's lines; large growth gets a written reason in the gate's record. Code is cut to
+  remove duplication, dead code or needless generality, never to meet a count; comments that
+  explain geometry or rules stay. Earlier gate records compare against the former 8,000-line
+  estimate.
 - **No stage caches.** Only final immutable pieces are kept. A new cache needs a measurement that
   shows the need.
 - **No hot-path allocation.** Per-pose scratch buffers live in the preview context and are reused.
