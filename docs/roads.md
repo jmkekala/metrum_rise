@@ -378,12 +378,19 @@ compute no crossing or corner geometry of their own
 
 **Span piece.** Sections are placed at the physical knots, at the refinement stations, and at the
 two mouth sections (copied). Each band is one quad strip, with curb faces along both carriageway
-edges.
+edges. One station rule places them (`ROAD-68-D`): the fixed stations are the protected ones
+(span ends, mouths, crossings, the profile range and the ends of its fades, the width tapers)
+and the knots outside their 0.125 m clearance; each interval between consecutive fixed stations
+is divided evenly at its step, 2 m inside a profile fade or a taper and the class step (8, 12 or
+10 m) elsewhere. Cadence rows and class rows no longer start from different origins, so no two
+rows fall a few millimetres apart before a knot.
 
 **Other node kinds.**
 
 - `Bend` is a two-arm junction with one concave corner and one round join.
-- `Terminal` is a one-arm junction with a round cap ([D2](#product-decisions)).
+- `Terminal` is a one-arm junction with a round cap ([D2](#product-decisions)). The cap's apex
+  sample is its start turned a quarter exactly, not a polar sample, so an axis-aligned arm's
+  apex lies on its axis.
 - Bridges and tunnels use the same pieces, with class-specific terrain handling in
   [`ROAD-68-F`](#road-68-f--remaining-families).
 
@@ -473,6 +480,14 @@ The road side is rewritten:
   neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
   it, from the same per-tile loops; while the roadbed is dirty it keeps its last road ownership.
   Undo and rollback go through the same compile, so they follow.
+- **Ownership refresh.** A patch's road ownership is recomputed only while it is pending: a
+  compile stamped it, or a terrain stroke changed heights within twice the envelope cap of it
+  (its loops reach the cap beyond the tile, their rays the cap beyond the loops), or an undo that
+  restores the terrain cleared it (every formerly engineered patch). An edit's
+  validation refreshes its patches once, and the commit's later refresh finds them done. A
+  building-site change refreshes only site ownership: it moves no road and no height. Patch
+  margins grade in parallel; the largest margin is order-free, so it is the same on any worker
+  count.
 - **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts keep the
   existing rules ([`ROAD-68-F`](#road-68-f--remaining-families)).
 - **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
@@ -755,7 +770,9 @@ requires the merged node's piece before the merge.
 stroke fails node 5 with `node_piece_failed` at `79e7a476` as well, so it predates `ROAD-68-D`;
 the recorded placements predate `ROAD-68-C`, [open question 8](#road-68-open-questions)). One
 stays disabled, `cars_and_walkers_enter_and_exit_on_compiled_yards` (`ROAD-68-D`: Kuopio yard
-samples of buildings 1 and 3 find no rendered terrain face at all; see the gate's progress).
+samples of buildings 1 and 3 find no rendered paving face: building 1's lie on its site loop's
+sides, building 3's inside its site loop but outside any foundation paving; see the gate's
+part 3).
 
 | Module | Tests | Reason |
 | --- | --- | --- |
@@ -1135,8 +1152,10 @@ These need a user decision; work that does not depend on them continues.
       chunks' kept runs (`O(chunk vertices)`, 3–5 chunks of 512 m) and the payload certificate.
     - **Growing with the city, about 11 ms at 100k:** the agent passes (4.0 + 1.2 ms, `O(A / P)`
       and `O(A)`), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`), the road-locked
-      terrain state (2.6 ms; it walks unacknowledged dirty terrain patches, possibly a harness
-      artifact, `ROAD-68-D` part 2's to confirm) and the snapshot publish (1.1 ms).
+      terrain state (2.6 ms; it walked unacknowledged dirty terrain patches and re-graded the
+      edit's own, which its validation had graded: real duplicate work, not only the harness.
+      `ROAD-68-D` part 3 refreshes only pending patches, so the commit's refresh finds none;
+      not re-measured at 100k) and the snapshot publish (1.1 ms).
     - **Options.** (a) Let the `cell lots` queue serve the commit's regions from the next slot,
       as it serves painted regions, instead of draining them on the commit; the next preview
       and commit would plan against lots up to a slot old, which `SIM-02-H` ruled out (user
@@ -1145,7 +1164,12 @@ These need a user decision; work that does not depend on them continues.
       roadbed index is) so the snapshot copies `O(1)`, and keep per-lane or per-edge agent
       lists so the agent passes visit only the edit's agents. (d) Accept a commit of about
       41 ms at 100k (two to three frames). `ROAD-68-G` stays open until the commit fits a frame.
-22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — missed; needs a decision.**
+22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
+    no decision needed.** The grading pass computed its loop's orientation once per edge
+    (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
+    and 1.85 / 1.88 ms with the constructive station rule (A B B A against the part 2 binary at
+    2.20–2.25 ms, [part 3](#road-68-d--footprint-and-terrain)). Options (a)–(c) below are not
+    needed; (d) is withdrawn. The record of part 2 follows.
     - **Target.** The T fixture's tiles total at most 2 ms on four workers (gate acceptance and
       [stage budgets](#stage-budgets)).
     - **Evidence.** `benchmark_roadbed_terrain_tiles` (release, 4 workers, P-cores, both timing
@@ -2388,7 +2412,7 @@ Part 2 (2026-10-24, same branch):
 - **Grading in one pass.** `grading::road_loop_grading` probes each ray's reach once for the
   margin and the guides, and a tile emits only the rings of rays whose reach meets it. The
   generic rectangle clip and join moved from `roadbed/terrain.rs` to `terrain/rect_loops.rs`.
-- **Economy perf contract: regression, cause open.** The economy work is unchanged (every work
+- **Economy perf contract: regression (fixed in part 3).** The economy work is unchanged (every work
   count equal, hourly cost equal or lower), but snapshot loads, city generation and building churn
   are slower: against `79e7a476` (A) and the D tree before `ROAD-68-G` (B), and again against
   `road` at `98c2f8cb` (A) and D rebased on it (B), the 10k load takes 3.85 s instead of 2.85 s
@@ -2397,8 +2421,8 @@ Part 2 (2026-10-24, same branch):
   (30k), and the fiscal-stress day 13.4 s instead of 4.0 s (10k) and 42 s instead of 11 s (30k).
   Reusing each patch's road margin until roads near it change did not move these numbers, so it
   was reverted. A flat profile of the fiscal-stress day puts half its time in
-  `grading::road_loop_grading` (47%, with terrain sampling 4%): refined rebuilds plan every tile's
-  road loops and rays of a whole patch, even when one tile is dirty. This blocks the gate.
+  `grading::road_loop_grading` (47%, with terrain sampling 4%). Part 3 found the callers with a
+  call-graph profile; refined rebuilds were not one of them.
 - **Product probe.** Both product-hash probes (`ProductProbe`, recorded at `79e7a476`) are
   re-recorded, every change attributed by rebuilding without the lateral change: with it
   reverted, all 93 roadbed fixtures and 20 reference junctions differ only in the span hash (the
@@ -2414,8 +2438,8 @@ Part 2 (2026-10-24, same branch):
   terrain loop entry point (`terrain.rs`, 162: chain gathering, joins at mouth corners, open-end
   errors and the provenance types) and the changed-bounds record (`system.rs`, 19). The generic
   rectangle clip and join live in `terrain/rect_loops.rs`, the owner of terrain geometry.
-- **Open.** The perf contract regression above; `./run.sh --test` and the rendered screenshots,
-  not yet run on this tree. The 2 ms terrain stage (open question 22). The yard test
+- **Open at part 2** (part 3 closes all but the yard test). The perf contract regression above;
+  `./run.sh --test` and the rendered screenshots, not yet run on this tree. The 2 ms terrain stage (open question 22). The yard test
   `cars_and_walkers_enter_and_exit_on_compiled_yards`: building 1's samples lie in no road or
   site loop of their tile, yet the tile's CDT emits no face over them (a face dropped for crossing
   an unpreserved constraint is the next suspect); building 3's sample lies inside its own 6-vertex
@@ -2437,7 +2461,84 @@ against the first WIP binary): the sloped T over a 256 m patch plans 16 tiles an
 | first WIP (control) | 2.924 / 2.899 | 1.385 / 1.401 | 0.335 / 0.333 | 1.200 / 1.132 |
 | part 2 | 2.332 / 2.347 | 0.746 / 0.751 | 0.350 / 0.349 | 1.157 / 1.176 |
 
-**The 2 ms target is missed** (open question 22 has the profile and the options).
+Part 2 missed the 2 ms target; part 3 meets it (below and open question 22).
+
+Part 3 (2026-10-24, same branch, rebased on `road` at `27797b92`):
+
+- **The perf contract regression: cause and fix.** A call-graph profile (`perf record --call-graph
+  lbr`, the 10k fiscal-stress day) put the time under `mark_building_site_terrain_only_boxes` and
+  the snapshot load, both through the patch ownership refresh into
+  `terrain_cdt_road_tile_loops` and `road_loop_grading`, and inside the grading pass 30% of the
+  whole run in `signed_area`. Three causes, three fixes, every output unchanged:
+  - the grading pass computed its loop's orientation (`signed_area`, `O(V)`) once per edge, from
+    both the edge rays and the vertex rays, so a loop cost `O(V^2)`; it is computed once per loop;
+  - a building-site change re-graded the road loops of every tile of its patches, although a site
+    moves no road and no height; it now refreshes only site ownership
+    (`refresh_site_terrain_patch_ownership_for_keys`);
+  - patch road margins graded one patch and one tile at a time; they grade in parallel, with an
+    indexed collect and the order-free largest margin.
+  Road ownership then follows the changes that move it ([ownership
+  refresh](#footprint-and-terrain)): a commit's validation grades the edit's patches once, and the
+  commit's later `refresh_road_locked_terrain_patch_state` refreshes only patches still pending,
+  instead of every unacknowledged dirty patch (the 2.6 ms `ROAD-68-G` part 2 measured at 100k,
+  open question 21, was that walk: real duplicate work, not only the harness). A terrain stroke
+  marks the patches within twice the envelope cap of its brush pending and refreshes them when it
+  ends; before, nothing refreshed road ownership after a stroke.
+  Economy perf contract (`tools/perf_contract.py`, release test binaries, 8 workers, `taskset -c
+  0,2,4,6,8,10,12,14`, both timing locks, A B B A in one session; A = `road` at `27797b92`, B =
+  this tree): every work count identical, every timing within or below the control's range. The
+  remaining failures are the seven work-count limits both builds fail (open question 20).
+
+  | Metric (s, hourly ms) | A1 | B1 | B2 | A2 | part 2 B, earlier session |
+  | --- | --- | --- | --- | --- | --- |
+  | generation 10k / 30k | 25.05 / 90.89 | 25.34 / 89.96 | 25.03 / 89.73 | 25.42 / 90.59 | 29 / 174 |
+  | fiscal generation 10k / 30k | 14.93 / 41.82 | 14.56 / 40.59 | 14.31 / 40.84 | 14.72 / 41.76 | 40 / 158 |
+  | load 10k / 30k | 2.83 / 7.59 | 2.68 / 7.20 | 2.69 / 7.21 | 2.83 / 7.60 | 3.85 / 10.5 |
+  | baseline day total 10k / 30k | 4.29 / 13.69 | 4.12 / 13.20 | 4.14 / 13.25 | 4.28 / 13.69 | |
+  | fiscal-stress day total 10k / 30k | 3.86 / 10.86 | 3.69 / 10.49 | 3.70 / 10.45 | 3.85 / 10.88 | 13.4 / 42 |
+  | hourly ms, baseline 10k / 30k | 0.85 / 4.31 | 0.86 / 4.13 | 0.87 / 4.16 | 0.83 / 4.14 | |
+  | hourly ms, fiscal 10k / 30k | 6.52 / 28.30 | 6.51 / 28.53 | 6.57 / 28.34 | 6.55 / 28.63 | |
+- **The 2 ms terrain stage: met** (open question 22). The orientation fix alone, bitwise
+  unchanged, takes the sloped T to 1.913 / 1.885 ms (plan 0.448 / 0.421 ms), A B B A with the
+  `409a0212` part 2 binary at 2.221 / 2.172 ms in the same session; the final tree, with the
+  station rule's rows, measures 1.850 / 1.883 ms (table below). Options (a)–(c) of the question
+  are not needed.
+- **Span station rule.** Constructive, as the [span piece](#pieces-and-meshes) states: fixed
+  stations, each interval divided evenly at its step. Test
+  `sloped_span_rows_never_fall_millimetres_apart` (no two rows of the sloped T within 0.1 m).
+- **Terminal cap apex.** The half turn's middle sample is its start turned a quarter exactly; test
+  `an_axis_aligned_terminal_cap_apex_lies_on_its_axis`.
+- **Product probes re-recorded,** each change attributed by a build without the other: the station
+  rule alone changes the spans and queries of all 93 fixtures and of 18 of the 20 reference
+  junctions (with the lanes of the 9 sloped ones), nothing else; the cap apex on top changes the
+  nodes and layouts of 65 fixtures (with their walkways, lanes and queries where those follow the
+  cap) and nodes, layouts, walkways, lanes and queries of all 20 reference junctions, never a
+  span. Neither touches the graph.
+- **Size.** `roadbed/` holds 7,588 lines by the part 2 count (7,606 at part 2 rebased on
+  `27797b92`, 7,421 on `road`): part 3 removes 18 (the station rule replaces two sampling
+  families with one subdivision, removes 26; the apex adds 8). `ROAD-68-D` adds 167 in all.
+- **Entry points.** `terrain_cdt_window_build_inputs_with_roads`, `terrain_cdt_road_tile_loops`,
+  `roadbed::terrain::terrain_loops` and `grading::road_loop_grading` keep their signatures.
+- **Open: the yard test** `cars_and_walkers_enter_and_exit_on_compiled_yards` (`ROAD-68-D`
+  ignore). A diagnostic over its three missing samples finds two site-side cases, not the roadbed
+  clip. Building 1 (patch (17, 17), tile x 64..128, z -128..-64): both samples (u = 0.1 and
+  u = 0.9 of its yard) lie on sides of the building's site loop, the seam between terrain and
+  foundation, to within about 0.2 mm; the terrain face along that side is in the tile and patch
+  buffers, but in their patch-local f32 coordinates the sample falls just outside it, and the
+  foundation's paved triangles (world f32) do not take it either. Whether that is only the test
+  sampling a seam or a real sub-millimetre gap is open. Building 3 (patch (17, 15)): the yard's
+  centre lies inside the building's own 6-vertex site loop, so the CDT rightly leaves no terrain
+  there, but no paved foundation triangle covers it: either `foundation_mesh` is empty (it returns
+  no triangles when its triangulation or partition fails) or the foundation footprint is smaller
+  than the site loop, which would be a visible hole. The patch buffers also hold zero-area faces
+  (three equal vertices), likely from the paving partition's f32 output of near-degenerate
+  pieces.
+
+| Build (part 3 session) | Total p50 (ms) | Plan p50 (ms) | Tile CDT p50 (ms) | Slowest tile (ms) |
+| --- | --- | --- | --- | --- |
+| first WIP (control) | 2.882 / 2.903 | 1.360 / 1.367 | 0.332 / 0.333 | 1.064 / 1.076 |
+| part 2 (`409a0212`) | 2.202 / 2.249 | 0.741 / 0.753 | 0.321 / 0.325 | 1.105 / 1.124 |
+| part 3 | 1.850 / 1.883 | 0.422 / 0.386 | 0.331 / 0.328 | 1.027 / 1.121 |
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 

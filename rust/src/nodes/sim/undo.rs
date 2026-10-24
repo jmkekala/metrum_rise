@@ -507,7 +507,7 @@ impl SimCore {
     }
 
     fn reset_network_render_state(&mut self, old_engineered_patch_keys: Vec<(usize, usize)>) {
-        for (patch_x, patch_z) in old_engineered_patch_keys {
+        for &(patch_x, patch_z) in &old_engineered_patch_keys {
             if let Some((min_x, min_z, max_x, max_z)) =
                 self.heightmap.render_patch_world_bounds(patch_x, patch_z)
             {
@@ -523,7 +523,9 @@ impl SimCore {
         self.refined_terrain_assembly_ledgers.clear();
         self.road_locked_terrain_patch_keys.clear();
         self.road_locked_terrain_patch_margins.clear();
-        self.road_ownership_pending_patch_keys.clear();
+        // Every formerly engineered patch re-derives its road and site ownership on the restored
+        // heights; the recompile stamps the road patches too (`ROAD-68-D`).
+        self.road_ownership_pending_patch_keys = old_engineered_patch_keys.into_iter().collect();
         self.building_site_owned_terrain_patch_keys.clear();
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();

@@ -82,15 +82,17 @@ orientation, one source `RoadBoundary` replaces the legacy span and node sources
 share one grading envelope, and edits stamp only the tiles their old and new pieces reach. Road
 seams on tile sides are exact in both tiles. 24 of its 25 disabled tests are re-enabled and 23
 pass; the recorded Kuopio replay and the hillside fixture predate `ROAD-68-C` and wait for
-`ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled. The sloped T's terrain
-stage takes 2.3 ms against the 2 ms target (open question 22), and the economy perf contract
-shows slower loads, city generation and building churn from refined rebuilds planning whole
-patches' road tiles (blocking; see `roads.md`). Tests that need later gates are
+`ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled (a site paving and
+foundation coverage gap, still open). Part 3 fixed the economy perf contract regression (a
+quadratic orientation test in the grading pass, and building-site changes re-grading roads): every
+timing is back within the control's range with identical work counts. The sloped T's terrain
+stage meets its 2 ms target at 1.85–1.88 ms (open question 22, resolved). Span rows follow one
+constructive station rule and terminal cap apexes are exact. Tests that need later gates are
 disabled until then (11 Rust tests, 4 Godot scripts). `ROAD-68-D`, `-E`, `-F` and `-H` are
 open, and `roads.md` lists twenty-two open questions; open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
-decided, and 22 (the 2 ms terrain stage) needs a decision. Design,
+decided, and 22 (the 2 ms terrain stage) is resolved. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

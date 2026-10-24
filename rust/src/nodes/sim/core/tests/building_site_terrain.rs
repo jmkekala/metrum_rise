@@ -1025,7 +1025,7 @@ fn spawn_yard_access_agent(
 }
 
 #[test]
-#[ignore = "ROAD-68-D: Kuopio yard samples of buildings 1 and 3 find no rendered terrain face (roads.md ROAD-68-D progress)"]
+#[ignore = "ROAD-68-D: building 1's samples lie on its site loop seam, building 3's inside its site loop but outside any foundation paving (roads.md ROAD-68-D part 3)"]
 fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
     let mut core = kuopio_yard_fixture();
     let mut points = Vec::new();
