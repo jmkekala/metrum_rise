@@ -10,7 +10,7 @@ use crate::simulation::zoning::cells::generation::straight_frame;
 use crate::simulation::zoning::cells::geometry::road_source_precision;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// Persistent curb frames and their source address. Empty roads retain these choices too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,7 +208,11 @@ impl CellStore {
         alignment.frames_for(graph, id)
     }
 
-    /// Updates changed roads and one adjacency ring, returning the scope to invalidate.
+    /// Updates edited roads and one adjacency ring, returning, in id order, the roads of that
+    /// scope whose curb frames changed or that have none: their cells must be invalidated whole
+    /// even where their geometry did not change. A road without frames takes its grid phase
+    /// from its endpoint junctions (`junction_anchor`). The caller invalidates the roads whose
+    /// geometry changed as well.
     /// Work is O((K + A) log K + K log R + X) for affected roads, incidences, retained
     /// alignment entries R and tested point/source pairs;
     /// retained choices stop traversal at that ring rather than walking the city network.
@@ -255,6 +259,10 @@ impl CellStore {
                 }
             }
         }
+        let before: Vec<_> = scope
+            .iter()
+            .map(|&id| (id, self.road_alignments.get(&id).copied()))
+            .collect();
         let bases = select_bases(&self.road_alignments, graph, &roads, &old_at_node);
         let phases = select_phases(graph, &roads, &old_at_node, &bases);
         for &id in &scope {
@@ -272,7 +280,13 @@ impl CellStore {
                 },
             );
         }
-        scope.into_iter().collect()
+        before
+            .into_iter()
+            .filter_map(|(id, before)| {
+                let after = self.road_alignments.get(&id).copied();
+                (after.is_none() || after != before).then_some(id)
+            })
+            .collect()
     }
 }
 

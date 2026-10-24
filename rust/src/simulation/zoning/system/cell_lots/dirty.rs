@@ -149,14 +149,32 @@ impl ZoningSystem {
         graph: &RegionGraph,
         edges: impl IntoIterator<Item = usize>,
     ) {
+        let edges: BTreeSet<_> = edges.into_iter().collect();
+        self.mark_cell_lots_for_road_edit(graph, &edges, &edges);
+    }
+
+    /// [`Self::mark_cell_lots_for_roads`] for an edit that knows which of its `dirty` roads
+    /// changed geometry, endpoints or deletion (`changed`). All of `dirty` refresh their curb
+    /// frames as before; a dirty road whose geometry and frames are unchanged queues nothing of
+    /// its own: its cells change only near the changed roads, whose corridors cover them.
+    /// O(dirty roads + their incidences).
+    pub(crate) fn mark_cell_lots_for_road_edit(
+        &mut self,
+        graph: &RegionGraph,
+        dirty: &BTreeSet<usize>,
+        changed: &BTreeSet<usize>,
+    ) {
         // Empty generated grids also become stale when a road changes eligibility.
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
-        let edges = self
-            .cells
-            .refresh_road_alignments(graph, &self.config, edges);
+        let realigned =
+            self.cells
+                .refresh_road_alignments(graph, &self.config, dirty.iter().copied());
         if !self.cells.has_paint() && !self.cells.has_cached_chunks() {
             return;
         }
+        let mut edges: Vec<_> = changed.iter().copied().chain(realigned).collect();
+        edges.sort_unstable();
+        edges.dedup();
         for id in edges {
             let Some(edge) = graph.get_edge(id) else {
                 continue;

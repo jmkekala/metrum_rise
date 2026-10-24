@@ -8,7 +8,7 @@ use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 mod input;
@@ -32,6 +32,9 @@ pub(crate) struct FinalizedRoadGeometry {
     pub(crate) profile_us: u128,
     /// Time spent rebuilding clips; zero when adopting a solved plan.
     pub(crate) clips_us: u128,
+    /// The dirty edges whose geometry, clips, endpoints or deletion changed, as an adopted
+    /// plan knows them; `None` when every dirty edge may have changed. Cell lots follow these.
+    pub(crate) changed_edges: Option<BTreeSet<usize>>,
 }
 
 /// Ordered split provenance and pre-finalization lengths used by dependent-record migration.
@@ -227,6 +230,7 @@ impl TransitNetwork {
             affected_nodes,
             profile_us,
             clips_us,
+            changed_edges: None,
         }
     }
 
@@ -344,6 +348,13 @@ impl TransitNetwork {
             );
         }
         let dirty_edges = plan.dirty_edges.iter().map(|id| edge_ids[*id]).collect();
+        let changed_edges = plan
+            .edges
+            .iter()
+            .zip(&edge_ids)
+            .filter(|(planned, _)| planned.geometry.is_some())
+            .map(|(_, &id)| id)
+            .collect();
         let affected_nodes = plan
             .affected_nodes
             .iter()
@@ -354,6 +365,7 @@ impl TransitNetwork {
         Some(FinalizedRoadGeometry {
             dirty_edges,
             affected_nodes,
+            changed_edges: Some(changed_edges),
             ..Default::default()
         })
     }

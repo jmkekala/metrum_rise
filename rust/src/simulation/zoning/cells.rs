@@ -24,6 +24,10 @@ pub(crate) use store::{CellStore, RoadCellAlignment};
 
 use serde::{Deserialize, Serialize};
 
+// Cell keys and frames hash on every lookup of generation and lot derivation. The fixed hasher
+// is several times cheaper than SipHash; no caller depends on a map's iteration order.
+type CellMap<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
+
 /// Number of full square rows offered on each eligible road side.
 pub(crate) const CELL_DEPTH: usize = 6;
 

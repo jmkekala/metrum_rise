@@ -1321,8 +1321,21 @@ impl SimCore {
             .as_ref()
             .map(|geometry| &geometry.dirty_edges)
             .unwrap_or(&self.transit_network.bulk_dirty_edges);
-        self.zoning
-            .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied());
+        // An adopted plan names the dirty edges whose geometry changed (`ROAD-68-G`); the
+        // others' cells change only near those, so they queue no lot regions of their own.
+        match finalized_geometry
+            .as_ref()
+            .and_then(|geometry| geometry.changed_edges.as_ref())
+        {
+            Some(changed) => self.zoning.mark_cell_lots_for_road_edit(
+                &self.region_graph,
+                &dirty.iter().copied().collect(),
+                changed,
+            ),
+            None => self
+                .zoning
+                .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied()),
+        }
         let road_dirty_edges = std::mem::replace(
             &mut self.transit_network.bulk_dirty_edges,
             earlier_bulk_dirty_edges,

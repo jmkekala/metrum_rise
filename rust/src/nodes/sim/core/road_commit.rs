@@ -146,6 +146,7 @@ impl SimCore {
                 affected_nodes: _affected_nodes,
                 profile_us: dt_profile_us,
                 clips_us: dt_clips_us,
+                ..
             } = road_add
                 .finalized_geometry
                 .take()

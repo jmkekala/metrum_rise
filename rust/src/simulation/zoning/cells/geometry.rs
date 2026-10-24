@@ -234,11 +234,26 @@ pub(super) fn valid_point(point: DVec2) -> bool {
 
 /// Rounds a world coordinate onto the shared micrometre representation.
 pub(super) fn canonical_point(point: DVec2) -> DVec2 {
-    (point * COORDINATE_SCALE).round() / COORDINATE_SCALE
+    let scaled = point * COORDINATE_SCALE;
+    DVec2::new(round_half_away(scaled.x), round_half_away(scaled.y)) / COORDINATE_SCALE
 }
 
 fn integer_point(point: DVec2) -> [i64; 2] {
-    [point.x, point.y].map(|value| (value * COORDINATE_SCALE).round() as i64)
+    [point.x, point.y].map(|value| round_half_away(value * COORDINATE_SCALE) as i64)
+}
+
+// `f64::round` (ties away from zero), bit for bit, without the libm call it lowers to here:
+// x86-64-v2 rounds to integers in one instruction only toward zero, nearest-even or the
+// infinities. `value - trunc` is exact, zeros keep `trunc`'s sign, NaN and infinities pass
+// through. Every corner and overlap test of cell generation rounds eight coordinates.
+#[inline]
+fn round_half_away(value: f64) -> f64 {
+    let whole = value.trunc();
+    if (value - whole).abs() >= 0.5 {
+        whole + value.signum()
+    } else {
+        whole
+    }
 }
 
 /// Tests convex interiors exactly on the canonical coordinate grid. Boundary contact is legal.
@@ -380,4 +395,28 @@ pub(super) fn segment_intersects_cell(corners: &[DVec2; 4], start: DVec2, end: D
                     && c[axis].min(d[axis]) <= a[axis].max(b[axis])
             })
     })
+}
+
+#[cfg(test)]
+#[test]
+fn half_away_rounding_matches_std_bit_for_bit() {
+    let ties = [0.5, 1.5, 2.5, 0.49999999999999994, 4503599627370495.5];
+    let limits = [1e300, f64::MIN_POSITIVE, f64::INFINITY, f64::MAX];
+    let mut values: Vec<f64> = [0.0].iter().chain(&ties).chain(&limits).copied().collect();
+    values.extend(values.clone().into_iter().map(|value| -value));
+    // Scaled world coordinates with every fractional pattern near the tie.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    for _ in 0..100_000 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let unit = (state >> 11) as f64 / (1_u64 << 53) as f64;
+        values.push((unit - 0.5) * 2.0e10);
+        values.push(((unit * 1e6).floor() + 0.5) * if state & 1 == 0 { 1.0 } else { -1.0 });
+    }
+    for value in values {
+        let (ours, std) = (round_half_away(value), value.round());
+        assert_eq!(ours.to_bits(), std.to_bits(), "{value}");
+    }
+    assert!(round_half_away(f64::NAN).is_nan());
 }

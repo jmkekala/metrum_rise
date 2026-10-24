@@ -9,7 +9,7 @@ mod support;
 use super::geometry::interiors_overlap;
 use super::sources::{CellCurveSource, CurveSourceKey};
 use super::{
-    CELL_DEPTH, CellBounds, CellFrontage, CellKey, CellRoadFrontage, CellStore, GridFrame,
+    CELL_DEPTH, CellBounds, CellFrontage, CellKey, CellMap, CellRoadFrontage, CellStore, GridFrame,
 };
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -17,7 +17,6 @@ use crate::simulation::network::types::{EdgeClass, TransitType};
 use glam::DVec2;
 use godot::prelude::Vector3;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 // Four frontage cells per rigid curved group. Extra polyline height samples do not change
@@ -172,12 +171,21 @@ impl CellStore {
         // frontage/priority metadata. Quote its immutable footprint once, retaining every
         // candidate and its original publication ordering below. This local sorted key list
         // costs O(C log C) time/O(C) scratch, within generation's existing sorting bound.
-        let mut footprints: Vec<_> = candidates
+        // Each candidate's index rides along, so its footprint is found without a search.
+        let mut keyed: Vec<_> = candidates
             .par_iter()
-            .map(|candidate| (candidate.frame, candidate.x, candidate.y))
+            .enumerate()
+            .map(|(index, candidate)| (candidate.frame, candidate.x, candidate.y, index))
             .collect();
-        footprints.par_sort_unstable();
-        footprints.dedup();
+        keyed.par_sort_unstable();
+        let mut footprints = Vec::with_capacity(keyed.len());
+        let mut footprint_of = vec![0; keyed.len()];
+        for &(frame, x, y, index) in &keyed {
+            if footprints.last() != Some(&(frame, x, y)) {
+                footprints.push((frame, x, y));
+            }
+            footprint_of[index] = footprints.len() - 1;
+        }
         let legal: Vec<_> = footprints
             .par_iter()
             .map(|&(frame, x, y)| {
@@ -192,19 +200,20 @@ impl CellStore {
                 ) && !blocked(&corners)
             })
             .collect();
-        candidates.retain(|candidate| {
-            legal[footprints
-                .binary_search(&(candidate.frame, candidate.x, candidate.y))
-                .unwrap()]
+        let mut index = 0;
+        candidates.retain(|_| {
+            index += 1;
+            legal[footprint_of[index - 1]]
         });
         lap(1);
 
         // Reuse the cell block spatial structure as a temporary candidate index. It is local
         // to this operation and does not clone or scan the city's persistent frame registry.
         let mut raw = CellStore::default();
-        let mut priorities = HashMap::with_capacity(candidates.len());
-        let mut frontages: HashMap<CellKey, Vec<CellRoadFrontage>> = HashMap::new();
-        let mut sources = HashMap::new();
+        let mut priorities =
+            CellMap::with_capacity_and_hasher(candidates.len(), Default::default());
+        let mut frontages: CellMap<CellKey, Vec<CellRoadFrontage>> = CellMap::default();
+        let mut sources = CellMap::default();
         // Current road candidates establish ownership first. A retained copy of the same
         // square must not promote its whole strip just because a cell was painted. Only
         // historical geometry absent from the current roads needs retained priority.
@@ -323,7 +332,7 @@ impl CellStore {
         // Keep unchanged cells in place, avoiding revision churn and invalidating only actual
         // geometry differences. Conversion allocates ids for new frames in stable order.
         let mut output = Vec::with_capacity(accepted.len());
-        let mut output_frontages = HashMap::new();
+        let mut output_frontages = CellMap::default();
         let mut comparisons = 0;
         for (key, valid, count) in accepted {
             comparisons += count;

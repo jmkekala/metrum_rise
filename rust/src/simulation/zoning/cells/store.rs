@@ -10,11 +10,11 @@ pub(crate) use alignment::RoadCellAlignment;
 
 use super::sources::{CellCurveSource, CurveSourceKey};
 use super::{
-    BLOCK_CELLS, BLOCK_SIDE, BlockKey, CellBounds, CellKey, CellLot, CellRoadFrontage, GridFrame,
+    BLOCK_CELLS, BLOCK_SIDE, BlockKey, CellBounds, CellKey, CellLot, CellMap, CellRoadFrontage,
+    GridFrame,
 };
 use crate::simulation::network::graph::RegionGraph;
 use glam::DVec2;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -64,13 +64,13 @@ struct CellChunk {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CellStore {
     frames: Vec<GridFrame>,
-    frame_ids: HashMap<GridFrame, u64>,
-    blocks: HashMap<BlockKey, CellBlock>,
-    chunks: HashMap<(i32, i32), CellChunk>,
+    frame_ids: CellMap<GridFrame, u64>,
+    blocks: CellMap<BlockKey, CellBlock>,
+    chunks: CellMap<(i32, i32), CellChunk>,
     // Warm chunks invalidated since the last drain; bounded by the edits' footprints.
     stale_chunks: Vec<(i32, i32)>,
-    frontages: HashMap<CellKey, Vec<CellRoadFrontage>>,
-    curve_sources: HashMap<CurveSourceKey, Arc<CellCurveSource>>,
+    frontages: CellMap<CellKey, Vec<CellRoadFrontage>>,
+    curve_sources: CellMap<CurveSourceKey, Arc<CellCurveSource>>,
     road_alignments: imbl::HashMap<usize, RoadCellAlignment>,
     painted_count: usize,
     claimed_count: usize,

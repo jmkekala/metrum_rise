@@ -10,7 +10,7 @@ pub(super) fn has_road_column(
     key: CellKey,
     depths: [u8; 4],
     survives: impl Fn(CellKey) -> bool,
-    frontages: &HashMap<CellKey, Vec<CellRoadFrontage>>,
+    frontages: &CellMap<CellKey, Vec<CellRoadFrontage>>,
     graph: &RegionGraph,
 ) -> bool {
     for ((boundary, dx, dy), mut mask) in [
