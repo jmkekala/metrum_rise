@@ -214,17 +214,23 @@ impl LaneSystem {
     /// Lifts every lane appended since the last sync onto the visible road surface.
     ///
     /// Lane length feeds agent motion and route costs, so this runs at fixed points of the
-    /// simulation (frame start and road commits) rather than only when a chunk is drawn.
-    /// O(new lane points).
+    /// simulation (frame start and road commits) rather than only when a chunk is drawn. Each
+    /// lane reads only the roadbed and writes only itself, so the shared pool lifts them.
+    /// O(new lane points / P).
     pub(crate) fn sync_new_lanes_to_visible_surface(
         &mut self,
         graph: &RegionGraph,
         roadbed: &RoadbedSystem,
     ) {
+        use rayon::prelude::*;
         let start = self.surface_synced_len.min(self.lanes.len());
-        for lane in &mut self.lanes[start..] {
-            sync_lane_height_to_visible_surface(lane, graph, roadbed);
-        }
+        let new_lanes = &mut self.lanes[start..];
+        // The frame and the commit call this inside the shared pool; other callers are not.
+        crate::thread_pools::install(|| {
+            new_lanes
+                .par_iter_mut()
+                .for_each(|lane| sync_lane_height_to_visible_surface(lane, graph, roadbed));
+        });
         self.surface_synced_len = self.lanes.len();
         let generation = roadbed.generation();
         self.lifted_since = Some(match self.lifted_since {
