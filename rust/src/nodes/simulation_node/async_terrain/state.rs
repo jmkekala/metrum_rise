@@ -155,9 +155,10 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadRequestState {
 pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildJob {
     Ready(TerrainPatchPayload),
     Failed(TerrainPatchPayloadRequest),
+    // Boxed: the input dwarfs the other variants; one box per refined patch job.
     Refined {
         request: TerrainPatchPayloadRequest,
-        input: RefinedTerrainPatchBuildInput,
+        input: Box<RefinedTerrainPatchBuildInput>,
     },
 }
 

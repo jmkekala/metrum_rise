@@ -195,8 +195,9 @@ fn reference_junction_terrain_is_watertight() {
 // Every published road chunk face edge in world coordinates, with its faces' (layer, chunk) and
 // the faces' points.
 type RoadEdges = BTreeMap<(Key, Key), Vec<(usize, (i32, (i32, i32)))>>;
+type FacePoints = Vec<[(f64, f64, f32); 3]>;
 
-fn road_edges(core: &mut SimCore) -> (RoadEdges, Vec<[(f64, f64, f32); 3]>) {
+fn road_edges(core: &mut SimCore) -> (RoadEdges, FacePoints) {
     core.precompute_road_mesh_data();
     let roadbed = &core.transit_network.roadbed;
     let mut edges = RoadEdges::new();

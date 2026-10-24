@@ -95,10 +95,7 @@ impl NetworkMeshChunkPartition {
                     self.axis_line(kz + 1, origin_z),
                 ];
                 let polygon = clip_triangle_to_rect(triangle.points, rect);
-                let mesh = self
-                    .chunks
-                    .entry(chunk)
-                    .or_insert_with(NetworkMeshData::new);
+                let mesh = self.chunks.entry(chunk).or_default();
                 polygon.fan(|face| {
                     emit(
                         mesh,

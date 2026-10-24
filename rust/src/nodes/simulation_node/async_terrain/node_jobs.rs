@@ -535,7 +535,7 @@ impl SimulationNode {
         );
         TerrainPatchPayloadBuildJob::Refined {
             request,
-            input: RefinedTerrainPatchBuildInput {
+            input: Box::new(RefinedTerrainPatchBuildInput {
                 site_surfaces: source.sites.paving_surfaces(),
                 site_foundations: source.sites.foundations(),
                 key: RefinedTerrainPatchCacheKey {
@@ -564,7 +564,7 @@ impl SimulationNode {
                 clip_query_margin_m: source.road_locked_margin_m,
                 // Road loops are taken per tile, so the windows' fingerprints are the counts.
                 derive_clip_counts_from_windows: true,
-            },
+            }),
         }
     }
 
@@ -586,7 +586,7 @@ impl SimulationNode {
                 TerrainPatchPayloadBuildJob::Failed(request) => failed.push(request),
                 TerrainPatchPayloadBuildJob::Refined { request, input } => {
                     refined_requests.push(request);
-                    refined_inputs.push(input);
+                    refined_inputs.push(*input);
                 }
             }
         }
