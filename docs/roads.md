@@ -1172,36 +1172,37 @@ These need a user decision; work that does not depend on them continues.
     found that the harness never acknowledged an upload; with Godot's acknowledgements modelled,
     publication, entrances and the agent pass follow the edit. Part 3
     ([commit cell lots](#commit-cell-lots-road-68-g-part-3-2026-10-24)) made the lot
-    regeneration follow the changed roads and generation cheaper, bit for bit: the commit takes
-    8.7 / 16.1 / 19.3 / 20.3 / 28.6 ms at 0 / 2k / 10k / 30k / 100k residents (same-session
-    control 8.6 / 29.0 / 34.8 / 34.6 / 41.7). The acceptance (under 16.7 ms at 100k buildings)
-    is still not met. At 100k:
-    - **Cell lots, 6.4–7.8 ms, flat from 1,413 buildings.** Generating the cells along the
-      changed roads' envelopes (bounding box plus 216 m) dominates; the commit thread is held by
-      generation's serial candidate sort, indexing loop and footprint corners.
-    - **Render publication, 7.5–10.4 ms**, flat. In a perf profile of part 3's commits (2k and
-      10k) lifting lanes onto the surface is 53 % of its samples (`LaneSurfaceQuery::height_at`
-      45 %; most new lanes are lifted twice), growing vectors and their page faults 15 %, road
-      signs 10 %, piece surfaces 8 %, the payload certificate 5 %.
-    - **Growing with the city, about 10 ms at 100k:** the agent passes (3.8 + 1.2 ms, `O(A / P)`
-      and `O(A)`; the invalidation is 0.3 ms on the pool since part 3's last step), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`, `ROAD-68-E`'s
-      context replacement) and the snapshot publish (3.6 ms: dropping the previous snapshot,
-      which no longer shares structure with the core once terrain acknowledgements are
-      modelled; not yet attributed). The road-locked terrain state (2.6 ms) was a harness
-      artifact and is gone.
-    - **Options.** (a) Let the `cell lots` queue serve the commit's regions from the next slot
-      (ruled out by the user's decision, `SIM-02-H`). (b) Derive the commit's lots from the
-      preview's plan in `ROAD-68-E`, so the commit installs them as it installs pieces (the
-      user's fallback). (c) Keep per-edge or per-lane agent lists (and an index of planned routes
-      by edge) so the agent passes visit only the edit's agents, and make the graph persistent so
-      the snapshot copies and drops `O(1)`. (d) Lift each new lane once, and attribute the
-      publication's remaining 7.5 ms. (e) Make generation's serial part cheaper (an exact
-      priority sort over compact keys, fewer corner evaluations) or prove a narrower cell
-      invalidation radius (the 80 m lot reach is not an input of cell generation).
-      Recommendation: (c), (d) and (e) in `ROAD-68-G`, then (b) if the lots still do not fit.
-      Estimate from this breakdown: with (c) and (d) the commit would take about 15 ms at 100k
-      with the lots as they are (too close to the frame), about 7 ms with (b). `ROAD-68-G` stays
-      open until the commit fits a frame.
+    regeneration follow the changed roads and generation cheaper, bit for bit (28.6 ms at 100k
+    against a 41.7 ms control). Part 4
+    ([commit stages](#commit-stages-part-4-road-68-g-2026-10-24)) first fixed a difference in
+    part 3's marks (undo queued fewer regions), then lifted each new lane once, spliced into
+    reserved buffers, invalidated cells without the lots' frontage reach and made the agent
+    passes' set probes cheap, bit for bit: per sample at 100k the commit takes 23.9 / 20.1 /
+    16.2 ms (median 20.1), at 2k 20.0 / 8.9 / 3.2 ms. The acceptance (under 16.7 ms at 100k
+    buildings) is still not met. At 100k, second sample:
+    - **Snapshot publish, 4.2 ms**, and the **tool snapshot, 2.8 ms** (`ROAD-68-E`'s road-tool
+      context). The publish drops the previous snapshot inside the view's write lock on the sim
+      thread; dropping a warm, unshared copy of the live graph costs only 0.66 ms, so most of it
+      is freeing what the old snapshot alone still holds (not split further). The tool snapshot
+      is the graph clone (24 % of the commit thread's samples in a 100k profile, most of it
+      cloning every node's lane-connection map).
+    - **Cell lots, 3.5–8.9 ms.** 43 % of generation is the per-footprint legality test against
+      the roadbed (`cell_site_blocked`, parallel); the candidate index and sort stay serial.
+    - **Render publication, 3.2–5.0 ms**: street lights and signs for every covered edge (13 %),
+      piece surfaces (12 %), the remaining lane lifts.
+    - **Agent passes, 1.8–3.7 ms + 0.2 ms**, still `O(A / P)`.
+    - **Options.** (a) Ruled out (`SIM-02-H`). (b) Derive the commit's lots from the preview's
+      plan in `ROAD-68-E`, so the commit installs them (the user's fallback): removes 3.5–8.9 ms.
+      (c) In `ROAD-68-E`'s publication, swap the view under the lock and drop the old one on the
+      shared pool, and share the graph replica instead of cloning it: removes up to 7 ms.
+      (d) Per-edge agent lists and an index of planned routes by node, so the agent passes
+      visit only the edit's agents. (e) Splice street lights and signs like piece triangles
+      where their street is unchanged.
+      Recommendation: (c) in `ROAD-68-E` round 2 (it owns the publication), then (b) if the
+      first, grid-adjacent sample still misses; (d) and (e) only if needed after both.
+      Estimate from this breakdown: with (c) the median commit takes about 13 ms and the first
+      sample about 20 ms; with (b) as well, about 8 and 11 ms. `ROAD-68-G` stays open until the
+      commit fits a frame.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -3238,6 +3239,93 @@ test reads and its write touches only agent `i`). At 100k, same session, exclusi
 click → ack 45.3 / 29.6 / 24.1 → 40.6 / 27.7 / 23.9 ms; product digests and the determinism
 reference digest unchanged. The passes stay `O(A / P)`: visiting only the edit's agents needs
 per-edge agent lists and an index of planned routes.
+
+#### Commit stages, part 4 (`ROAD-68-G`, 2026-10-24)
+
+**Narrow cell-lot marks, checked against the whole ring.** Part 3 proved its narrower marks only
+on T splits, through the breakdown's digests. A digest test
+(`narrow_road_marks_match_marking_the_whole_refreshed_ring`) now builds the zoned 800 m street
+grid twice, every lot built, once marking as part 3 does and once marking every road the curb-
+frame refresh touches (a test-only switch), and runs on both: a T split off the trunk, its undo,
+the split again, a move of the branch's free end, a straight extension, a painted block's cross
+street turned into a bridge and back, a crossing turned off and on, a bulldoze of a painted
+block's cross street, a road beside the painted grid, a T off it, a T off the trunk beside the
+painted rows, moves of a painted edge T and an interior crossing, and undo. After each edit,
+with every chunk's cells generated first (so a cached chunk a narrower mark left valid is
+compared with the one a wider mark regenerated), it compares the paint and lot claims, the
+generated cells, the parcels in store order, the queued lot regions, the curb frames and every
+building's attachment.
+
+- **Difference found and fixed.** Undo (and rollback and border edits) leave their regions to
+  the `cell lots` queue instead of deriving them at once. With part 3's marks they queued fewer
+  regions than before (the undo of the interior node move: the queued-region digest differed), so
+  the queue would serve other regions at other slots and the game would diverge. Every edit but
+  the commit now marks its roads and the whole ring at their ends again
+  (`mark_cell_lots_for_roads`); only the commit, which derives every pending region before it
+  returns, keeps the narrow marks. The test passes with every product equal.
+- **The test is not vacuous.** Run with part 3's marks restored for the other edits, it fails at
+  the undo of the interior move (queued regions); with a commit that marks nothing, it fails at
+  the first T split (generated cells). A commit that marks only one of its changed roads, or
+  only the changed roads without the realigned ones, still passes: on these fixtures each
+  changed road's corridor (bounding box plus 216 m) covers the others' changes at the junction.
+- **The first sample's larger area** (part 3: 10,100 against 5,300 and 2,600 candidate
+  footprints at 2k) is the fixture, not a stale mark: the samples split the trunk 100, 250 and
+  400 m west of the painted grid, each in the piece the previous one left, so the split's east
+  half ends at the grid's west junction, then at the first branch, then at the second, and its
+  corridor (bounding box plus 216 m) reaches 216 m, 116 m and nothing of the painted grid.
+
+**Render publication: each new lane lifted once.** The publication lifted the commit's new lanes
+onto the roadbed (`sync_new_lane_heights`), then lifted every lane of the rebuilt pieces again,
+most of them the same new lanes, against the same roadbed generation: 56 % of the publication's
+samples were lane lifts. Lanes are only appended (a rebuild tombstones old ids), and only lifts
+and tombstoning write lane geometry, so the lane system records from which lane on every lane
+was lifted at which roadbed generation (`LaneSystem::lifted_since`); the rebuilt pieces' lift
+skips those lanes while the roadbed is still at that generation, where a second lift changes no
+point. Test builds lift a copy of every skipped lane and assert it unchanged. The breakdown
+still counts no live lane off the surface after any commit. Same session, pinned, eight workers,
+against part 3's last build (`63ee8bde`), per sample, with the new lanes then also lifted on the
+pool (reverted since, below): render publication 15.2 / 8.3 / 2.5 → 8.4 / 4.4 / 0.8 ms at 2k
+and 13.3 / 7.4 / 6.1 → 5.8 / 3.3 / 3.9 ms at 100k; both product digests equal in every sample.
+
+**Deadlock in the debug suite, and why the lift stays serial.** Lifting the new lanes and
+sealing the changed chunks on the shared pool deadlocked the debug suite (18 frame-stepping
+scenario tests; every thread in a futex wait, no CPU). A frame adopts a routing rebuild with
+`PureJob::take`, which blocks its thread while a pool worker runs the job. A pool worker waiting
+in a join steals other work, here another test's frame (the suite runs many cities on one
+shared pool), whose `take` then blocks that worker while the job it waits for, or the work that
+job waits for, lies lower on a blocked worker's stack. The pure-job module's guarantee ("a taker
+never blocks a pool worker on work queued behind it") does not cover work stolen beneath a
+running job. Both steps are serial again; every other join already on those paths keeps the
+same hazard, which no run has shown before. Recorded for `ROAD-68-H` and the pure-job owner:
+take results outside the pool, or make a waiting taker help run the pool instead of blocking.
+
+**The rest of the publication.** A 100k profile of the commit thread after the lift change: the
+splice copying the changed chunks' kept runs grew every layer's buffers run by run (17 % of the
+commit thread in `realloc`); each spliced layer is now reserved once at its final size
+(`NetworkMeshData::reserve_layer`). Street lights and signs (13 %), piece surfaces (12 %) and
+the payload certificates are still produced for every covered edge, rebuilt piece and changed
+chunk.
+
+**Cell lots: generation without the lot reach.** A road edit invalidated generated cells over its
+lot regions: the road's bounding box plus its candidate rows (half width, sidewalk, six cells)
+plus a parcel frontage (80 m), plus the 70 m conflict and support halo. Cell generation reads a
+road only through its candidate rows and its corridor; the 80 m is how far a lot can reach along
+its cells, which is the lot derivation's concern. Cells are now invalidated over the rows and
+the halo alone, and the lot regions keep the reach (`mark_road_cells_dirty`); the commit's
+regions then regenerate about half the candidate footprints. The candidate sort compares the
+priority field by field instead of building two keys per comparison (the same outcomes give the
+unstable sort the same permutation), and the generation's temporary candidate index no longer
+stamps chunk revisions nothing reads (`CellStore::insert_unstamped`). The digest test compares
+the narrower invalidation with the wider one for every edit kind above, and the breakdown's
+product digests equal the control's at every tier and sample (below).
+
+**Agent passes.** The lane invalidation, reattachment and route-state tests probe the edit's
+edge, node and lane sets once per agent, and the route-state test once per path node of every
+agent on the network: 28 % of their samples were SipHash. The sets use the fixed fast hasher
+(only membership is read; the reattachment breaks ties by distance and lane id), and the edit's
+nodes sit behind a fixed 4096-bit filter of their ids, so almost every path node misses without
+hashing (a set bit is confirmed in the set). The passes stay `O(A / P)`; visiting only the
+edit's agents needs per-edge agent lists and an index of planned routes (open question 21).
 
 
 ### `ROAD-68-H` — acceptance and cleanup

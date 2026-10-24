@@ -74,9 +74,14 @@ publication now re-emits only the rebuilt pieces, the entrance rebuild derives o
 entrances and the agent pass runs in parallel, bit for bit as before: 41 ms at 100k (78 ms
 before). Part 3 made the commit's cell lots follow the roads whose geometry or curb frames
 changed and made cell generation cheaper, products bit for bit unchanged: 28.6 ms at 100k
-(41.7 ms in the same session's control). It still misses a frame (open question 21: agent
-passes, snapshot copy and drop, render publication and the remaining lot generation), so its
-acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
+(41.7 ms in the same session's control). Part 4 fixed a difference in part 3's marks (undo,
+which leaves its regions to the `cell lots` queue, queued fewer of them; every edit but the
+commit marks the whole ring again, checked by a digest test over every edit kind), then lifted
+each new lane once, spliced the publication into reserved buffers, invalidated cells without
+the lots' frontage reach and made the agent passes' set probes cheap, products and determinism
+digests bit for bit unchanged: median 20.1 ms at 100k (16.2–23.9 per sample). It still misses
+a frame (open question 21: snapshot publish and copy, which `ROAD-68-E`'s road-tool context
+owns, then the lots, publication and agent passes), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20).
 `ROAD-68-D` (terrain from the roadbed's outer chains) is done on branch `road68-D` (part 5,
