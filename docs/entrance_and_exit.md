@@ -2350,6 +2350,9 @@ and a road bulldoze ([`roads.md`](roads.md) D7) therefore never route between th
   synchronously on Godot's main thread. Such a rebuild replaces a pending job's result with a
   build of the live graph; the hold still runs out. Load builds synchronously and drops a
   pending job with the replaced network.
+- The hold lasts at least the full rebuild: 311 ms at 100k residents, so agents pause about
+  0.3 s per road edit there. [`NET-09`](roadmap.md) replaces the full rebuild with an incremental
+  update whose latency follows the edit.
 
 ##### Pedestrian direction audit measurements
 
