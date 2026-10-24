@@ -2,7 +2,7 @@
 
 //! Shared section projection and quad emission helpers for section-based road meshes.
 
-use super::super::{MeshLayer, NetworkMeshData, push_triangle};
+use super::super::{MeshLayer, NetworkMeshData, push_triangle, world_point};
 use crate::simulation::network::roadbed::RoadSection;
 use godot::prelude::{Color, Vector2, Vector3};
 
@@ -67,7 +67,7 @@ pub(super) fn emit_surface_quad(
         push_triangle(
             mesh,
             layer,
-            [vertices[0], vertices[1], vertices[2]],
+            [vertices[0], vertices[1], vertices[2]].map(world_point),
             [uvs[0], uvs[1], uvs[2]],
             color,
         );
@@ -76,7 +76,7 @@ pub(super) fn emit_surface_quad(
         push_triangle(
             mesh,
             layer,
-            [vertices[0], vertices[2], vertices[3]],
+            [vertices[0], vertices[2], vertices[3]].map(world_point),
             [uvs[0], uvs[2], uvs[3]],
             color,
         );

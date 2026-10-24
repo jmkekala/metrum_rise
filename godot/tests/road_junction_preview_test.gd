@@ -318,7 +318,7 @@ func _expect_existing_road_height(scene: Dictionary) -> void:
 	var checked := 0
 	var raised := 0
 	for chunk in scene["chunks"] + scene["approach_chunks"] + scene.get("retained_chunks", []):
-		var origin := Vector3(scene["chunk_origin_x_m"] + chunk["chunk_x"] * scene["chunk_span_m"], 0.0, scene["chunk_origin_z_m"] + chunk["chunk_z"] * scene["chunk_span_m"])
+		var origin := Vector3(scene["chunk_origin_x_m"] + (chunk["chunk_x"] + 0.5) * scene["chunk_span_m"], 0.0, scene["chunk_origin_z_m"] + (chunk["chunk_z"] + 0.5) * scene["chunk_span_m"])
 		for local in chunk.get("road_vertices", PackedVector3Array()):
 			var point: Vector3 = local + origin
 			if point.x < -32.0 and absf(point.z) < 3.51:

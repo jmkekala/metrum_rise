@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::simulation::network::roadbed::{BandKind, RoadVec2};
+use crate::simulation::terrain::render_frame_centre;
 
 // Trunk-to-edge gap beside footpaths and sidewalks. Crowns (up to about 5 m across the
 // broadleaf models) may still overhang a little, as street-side trees do; the gap keeps
@@ -42,7 +43,7 @@ fn lamps_clear(core: &SimCore, point: Vector2) -> bool {
     let origin = Vector2::new(ox, oz);
     let first = ((point - Vector2::splat(LAMP_CLEAR_RADIUS_M) - origin) / span).floor();
     let last = ((point + Vector2::splat(LAMP_CLEAR_RADIUS_M) - origin) / span).floor();
-    // The exact poles, already routed into road mesh chunks (chunk-local XZ) by
+    // The exact poles, already routed into road mesh chunks (chunk-frame XZ) by
     // push_street_light and rebuilt before publication. Only candidates beside a road get
     // here; each scans the poles of its one to four 512 m chunks, bounded by street density
     // per chunk rather than city size, without allocation.
@@ -51,7 +52,13 @@ fn lamps_clear(core: &SimCore, point: Vector2) -> bool {
             let Some(mesh) = core.cached_road_mesh_chunks.get(&(cx, cz)) else {
                 continue;
             };
-            let local = point - origin - Vector2::new(cx as f32, cz as f32) * span;
+            // Poles are local to the chunk's frame centre.
+            let min = origin + Vector2::new(cx as f32, cz as f32) * span;
+            let local = point
+                - Vector2::new(
+                    render_frame_centre(min.x, span),
+                    render_frame_centre(min.y, span),
+                );
             if mesh.street_lights.iter().any(|light| {
                 local.distance_squared_to(Vector2::new(light.position.x, light.position.z))
                     < LAMP_CLEAR_RADIUS_M * LAMP_CLEAR_RADIUS_M

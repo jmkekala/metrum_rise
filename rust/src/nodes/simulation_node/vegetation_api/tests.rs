@@ -130,9 +130,10 @@ fn vegetation_lamp_clearance_uses_local_poles_across_offset_chunk_boundaries() {
         .compile_dirty(&core.region_graph);
     assert!(core.transit_network.roadbed.is_current());
     let mut mesh = NetworkMeshData::new();
-    // World position (36, -4.45), one metre before a shifted chunk boundary.
+    // World position (36, -4.45), one metre before a shifted chunk boundary, local to the
+    // centre (-219, 236) of chunk (-1, 0).
     mesh.street_lights.push(StreetLight {
-        position: Vector3::new(511.0, 0.0, 15.55),
+        position: Vector3::new(255.0, 0.0, -240.45),
         yaw: 0.0,
         kind: StreetLightKind::Path,
     });

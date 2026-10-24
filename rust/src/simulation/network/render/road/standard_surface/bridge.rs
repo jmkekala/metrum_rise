@@ -4,7 +4,7 @@
 
 use super::super::{
     MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color,
-    push_triangle_preserving_winding_with_exact_normal,
+    push_triangle_preserving_winding_with_exact_normal, world_point,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_boundary_world_point, triangle_is_too_small};
@@ -189,7 +189,7 @@ fn emit_bridge_pier_quad(mesh: &mut NetworkMeshData, vertices: [Vector3; 4], nor
         push_triangle_preserving_winding_with_exact_normal(
             mesh,
             MeshLayer::Concrete,
-            triangle,
+            triangle.map(world_point),
             triangle_uvs,
             concrete_color(),
             normal,

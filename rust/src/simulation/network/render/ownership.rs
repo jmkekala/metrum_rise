@@ -2,9 +2,6 @@
 
 //! Exact source ranges in cached road meshes for reversible local editor replacements.
 
-mod preview;
-pub(super) use preview::{Polygon, Vertex};
-
 use super::NetworkMeshData;
 use godot::prelude::{Color, Vector2, Vector3};
 use std::ops::Range;

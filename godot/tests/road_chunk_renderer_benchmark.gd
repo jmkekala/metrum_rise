@@ -318,11 +318,12 @@ func _build_layer_arrays(vertex_counts: Dictionary) -> Dictionary:
 func _chunk_key(index: int) -> Vector2i:
 	return Vector2i(index % 16, index / 16)
 
+# Chunk nodes sit at their chunk's centre, the payload's frame.
 func _chunk_position(key: Vector2i) -> Vector3:
 	return Vector3(
-		CHUNK_ORIGIN_X_M + float(key.x) * CHUNK_SPAN_M,
+		CHUNK_ORIGIN_X_M + (float(key.x) + 0.5) * CHUNK_SPAN_M,
 		0.0,
-		CHUNK_ORIGIN_Z_M + float(key.y) * CHUNK_SPAN_M
+		CHUNK_ORIGIN_Z_M + (float(key.y) + 0.5) * CHUNK_SPAN_M
 	)
 
 func _layer_vertex_count(layer_arrays: Dictionary) -> int:

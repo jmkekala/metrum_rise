@@ -4,7 +4,8 @@
 
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{RoadbedSystem, SurfaceChunkKey};
+use crate::simulation::network::roadbed::{RoadVec3, RoadbedSystem, SurfaceChunkKey};
+use crate::simulation::terrain::render_frame_local;
 use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +15,7 @@ use std::time::Instant;
 use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
 use standard_surface::CompiledSurfaceCoverage;
 
+mod chunks;
 /// Intersection crosswalk markings.
 pub mod crosswalks;
 /// Cosmetic Finnish crossing and speed-limit sign placement.
@@ -256,6 +258,7 @@ pub(super) fn push_quad(
     uvs: [Vector2; 4],
     color: Color,
 ) {
+    let vertices = vertices.map(world_point);
     push_triangle(
         mesh,
         layer,
@@ -272,15 +275,26 @@ pub(super) fn push_quad(
     );
 }
 
+// World metres of an f32 render vertex, exactly.
+pub(super) fn world_point(vertex: Vector3) -> RoadVec3 {
+    RoadVec3::new(f64::from(vertex.x), f64::from(vertex.y), f64::from(vertex.z))
+}
+
+// The f32 world vertex of a world point, for winding, normals and paint frames.
+pub(super) fn render_point(point: RoadVec3) -> Vector3 {
+    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
+}
+
 pub(super) fn push_triangle(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    mut vertices: [Vector3; 3],
+    mut vertices: [RoadVec3; 3],
     mut uvs: [Vector2; 3],
     color: Color,
 ) {
-    let projected_winding = (vertices[1].x - vertices[0].x) * (vertices[2].z - vertices[0].z)
-        - (vertices[1].z - vertices[0].z) * (vertices[2].x - vertices[0].x);
+    let points = vertices.map(render_point);
+    let projected_winding = (points[1].x - points[0].x) * (points[2].z - points[0].z)
+        - (points[1].z - points[0].z) * (points[2].x - points[0].x);
     if projected_winding < 0.0 {
         vertices.swap(1, 2);
         uvs.swap(1, 2);
@@ -292,11 +306,12 @@ pub(super) fn push_triangle(
 pub(super) fn push_triangle_preserving_winding(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    vertices: [Vector3; 3],
+    vertices: [RoadVec3; 3],
     uvs: [Vector2; 3],
     color: Color,
 ) {
-    let mut normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
+    let points = vertices.map(render_point);
+    let mut normal = (points[1] - points[0]).cross(points[2] - points[0]);
     if normal.length_squared() <= 1e-8 {
         normal = Vector3::UP;
     } else {
@@ -312,7 +327,7 @@ pub(super) fn push_triangle_preserving_winding(
 pub(super) fn push_triangle_preserving_winding_with_exact_normal(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    vertices: [Vector3; 3],
+    vertices: [RoadVec3; 3],
     uvs: [Vector2; 3],
     color: Color,
     mut normal: Vector3,
@@ -340,8 +355,9 @@ impl NetworkMeshData {
             if !partition.target_chunks.contains(&chunk) {
                 return;
             }
-            sign.position.x -= partition.chunk_origin_x_m + chunk.0 as f32 * partition.chunk_span_m;
-            sign.position.z -= partition.chunk_origin_z_m + chunk.1 as f32 * partition.chunk_span_m;
+            let (centre_x, centre_z) = partition.frame_centre(chunk);
+            sign.position.x = render_frame_local(f64::from(sign.position.x), centre_x);
+            sign.position.z = render_frame_local(f64::from(sign.position.z), centre_z);
             partition
                 .chunks
                 .entry(chunk)
@@ -353,8 +369,8 @@ impl NetworkMeshData {
         self.road_signs.push(sign);
     }
 
-    // Routes a light to its chunk like a triangle centroid, in chunk-local coordinates; lights
-    // outside the target chunks belong to another rebuild and are dropped.
+    // Routes a light to the chunk holding its pole, in that chunk's frame; lights outside the
+    // target chunks belong to another rebuild and are dropped.
     fn push_street_light(&mut self, mut light: street_lights::StreetLight) {
         if let Some(partition) = self.chunk_partition.as_mut() {
             // Keep world-space poles for sign clearance, including poles outside target chunks.
@@ -371,10 +387,9 @@ impl NetworkMeshData {
             if !partition.target_chunks.contains(&chunk) {
                 return;
             }
-            light.position.x -=
-                partition.chunk_origin_x_m + chunk.0 as f32 * partition.chunk_span_m;
-            light.position.z -=
-                partition.chunk_origin_z_m + chunk.1 as f32 * partition.chunk_span_m;
+            let (centre_x, centre_z) = partition.frame_centre(chunk);
+            light.position.x = render_frame_local(f64::from(light.position.x), centre_x);
+            light.position.z = render_frame_local(f64::from(light.position.z), centre_z);
             partition
                 .chunks
                 .entry(chunk)
@@ -390,20 +405,13 @@ impl NetworkMeshData {
 fn push_triangle_to_layer(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    vertices: [Vector3; 3],
+    vertices: [RoadVec3; 3],
     uvs: [Vector2; 3],
     color: Color,
     normal: Vector3,
 ) {
     if matches!(layer, MeshLayer::Road) {
-        let triangle = std::array::from_fn(|i| super::ownership::Vertex {
-            p: vertices[i],
-            n: normal,
-            uv: uvs[i],
-            c: color,
-            crossing: Vector4::ZERO,
-        });
-        crosswalks::emit_triangle(mesh, triangle, 0);
+        crosswalks::emit_triangle(mesh, vertices, uvs, color, normal);
     } else {
         push_triangle_to_layer_with_crossing(
             mesh,
@@ -417,106 +425,102 @@ fn push_triangle_to_layer(
     }
 }
 
+// A partitioned mesh routes the triangle into its chunks' frames (`chunks.rs`); a plain mesh
+// keeps it in f32 world space.
 #[allow(clippy::too_many_arguments)]
 fn push_triangle_to_layer_with_crossing(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    vertices: [Vector3; 3],
+    vertices: [RoadVec3; 3],
     uvs: [Vector2; 3],
     color: Color,
     normal: Vector3,
     crossing: [Vector4; 3],
 ) {
-    if (vertices[1] - vertices[0])
-        .cross(vertices[2] - vertices[0])
-        .length_squared()
-        == 0.0
-    {
+    if let Some(partition) = mesh.chunk_partition.as_mut() {
+        let owner = mesh.current_owner;
+        let triangle = chunks::WorldTriangle {
+            points: vertices,
+            uvs,
+            paint: crossing,
+        };
+        partition.route(&triangle, |chunk_mesh, local, uvs, paint| {
+            chunk_mesh.current_owner = owner;
+            chunk_mesh.push_layer_triangle(layer, local, uvs, color, normal, paint);
+        });
         return;
     }
-    if let Some(partition) = mesh.chunk_partition.as_mut() {
-        let centroid_x =
-            (f64::from(vertices[0].x) + f64::from(vertices[1].x) + f64::from(vertices[2].x)) / 3.0;
-        let centroid_z =
-            (f64::from(vertices[0].z) + f64::from(vertices[1].z) + f64::from(vertices[2].z)) / 3.0;
-        let chunk_span_m = f64::from(partition.chunk_span_m);
-        let chunk = (
-            ((centroid_x - f64::from(partition.chunk_origin_x_m)) / chunk_span_m).floor() as i32,
-            ((centroid_z - f64::from(partition.chunk_origin_z_m)) / chunk_span_m).floor() as i32,
-        );
-        if !partition.target_chunks.contains(&chunk) {
+    mesh.push_layer_triangle(layer, vertices.map(render_point), uvs, color, normal, crossing);
+}
+
+impl NetworkMeshData {
+    // Appends a triangle in this mesh's own coordinates; one exactly degenerate in f32 is skipped.
+    fn push_layer_triangle(
+        &mut self,
+        layer: MeshLayer,
+        vertices: [Vector3; 3],
+        uvs: [Vector2; 3],
+        color: Color,
+        normal: Vector3,
+        crossing: [Vector4; 3],
+    ) {
+        if (vertices[1] - vertices[0])
+            .cross(vertices[2] - vertices[0])
+            .length_squared()
+            == 0.0
+        {
             return;
         }
-        let origin_x = partition.chunk_origin_x_m + chunk.0 as f32 * partition.chunk_span_m;
-        let origin_z = partition.chunk_origin_z_m + chunk.1 as f32 * partition.chunk_span_m;
-        let local_vertices =
-            vertices.map(|vertex| Vector3::new(vertex.x - origin_x, vertex.y, vertex.z - origin_z));
-        let chunk_mesh = partition
-            .chunks
-            .entry(chunk)
-            .or_insert_with(NetworkMeshData::new);
-        chunk_mesh.current_owner = mesh.current_owner;
-        push_triangle_to_layer_with_crossing(
-            chunk_mesh,
-            layer,
-            local_vertices,
-            uvs,
-            color,
-            normal,
-            crossing,
-        );
-        return;
+        if matches!(layer, MeshLayer::Road) {
+            self.road_crossings.extend_from_slice(&crossing);
+        }
+        let target = match layer {
+            MeshLayer::Curb => (
+                &mut self.curb_vertices,
+                &mut self.curb_normals,
+                &mut self.curb_uvs,
+                &mut self.curb_colors,
+            ),
+            MeshLayer::RaisedStep => (
+                &mut self.raised_step_vertices,
+                &mut self.raised_step_normals,
+                &mut self.raised_step_uvs,
+                &mut self.raised_step_colors,
+            ),
+            MeshLayer::Sidewalk => (
+                &mut self.sidewalk_vertices,
+                &mut self.sidewalk_normals,
+                &mut self.sidewalk_uvs,
+                &mut self.sidewalk_colors,
+            ),
+            MeshLayer::Road => (
+                &mut self.road_vertices,
+                &mut self.road_normals,
+                &mut self.road_uvs,
+                &mut self.road_colors,
+            ),
+            MeshLayer::Marking => (
+                &mut self.marking_vertices,
+                &mut self.marking_normals,
+                &mut self.marking_uvs,
+                &mut self.marking_colors,
+            ),
+            MeshLayer::Concrete => (
+                &mut self.concrete_vertices,
+                &mut self.concrete_normals,
+                &mut self.concrete_uvs,
+                &mut self.concrete_colors,
+            ),
+        };
+        for index in 0..3 {
+            target.0.push(vertices[index]);
+            target.1.push(normal);
+            target.2.push(uvs[index]);
+            target.3.push(color);
+        }
+        let end = target.0.len();
+        self.record_owner_triangle(layer as usize, end);
     }
-
-    if matches!(layer, MeshLayer::Road) {
-        mesh.road_crossings.extend_from_slice(&crossing);
-    }
-    let target = match layer {
-        MeshLayer::Curb => (
-            &mut mesh.curb_vertices,
-            &mut mesh.curb_normals,
-            &mut mesh.curb_uvs,
-            &mut mesh.curb_colors,
-        ),
-        MeshLayer::RaisedStep => (
-            &mut mesh.raised_step_vertices,
-            &mut mesh.raised_step_normals,
-            &mut mesh.raised_step_uvs,
-            &mut mesh.raised_step_colors,
-        ),
-        MeshLayer::Sidewalk => (
-            &mut mesh.sidewalk_vertices,
-            &mut mesh.sidewalk_normals,
-            &mut mesh.sidewalk_uvs,
-            &mut mesh.sidewalk_colors,
-        ),
-        MeshLayer::Road => (
-            &mut mesh.road_vertices,
-            &mut mesh.road_normals,
-            &mut mesh.road_uvs,
-            &mut mesh.road_colors,
-        ),
-        MeshLayer::Marking => (
-            &mut mesh.marking_vertices,
-            &mut mesh.marking_normals,
-            &mut mesh.marking_uvs,
-            &mut mesh.marking_colors,
-        ),
-        MeshLayer::Concrete => (
-            &mut mesh.concrete_vertices,
-            &mut mesh.concrete_normals,
-            &mut mesh.concrete_uvs,
-            &mut mesh.concrete_colors,
-        ),
-    };
-    for index in 0..3 {
-        target.0.push(vertices[index]);
-        target.1.push(normal);
-        target.2.push(uvs[index]);
-        target.3.push(color);
-    }
-    let end = target.0.len();
-    mesh.record_owner_triangle(layer as usize, end);
 }
 
 // Per-vertex road description for the asphalt shader (road_asphalt.gdshader), in 8-bit

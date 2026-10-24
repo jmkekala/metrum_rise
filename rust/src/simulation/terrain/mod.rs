@@ -116,6 +116,29 @@ pub(crate) struct TerrainPatchSnapshot {
     pub height_data: Vec<f32>,
 }
 
+impl TerrainPatchSnapshot {
+    /// World XZ centre of the patch's render frame, where Godot places the patch node; the
+    /// road render chunk over the patch shares it.
+    pub(crate) fn frame_centre(&self) -> (f32, f32) {
+        (
+            render_frame_centre(self.world_origin_x, self.world_size_x),
+            render_frame_centre(self.world_origin_z, self.world_size_z),
+        )
+    }
+}
+
+/// Centre of a render frame spanning `size_m` from `min_m`: the local origin of a terrain patch
+/// and of the road render chunk over it (`ROAD-68-D`, open question 23).
+pub(crate) fn render_frame_centre(min_m: f32, size_m: f32) -> f32 {
+    min_m + size_m * 0.5
+}
+
+/// A world coordinate local to the render frame centred at `centre_m`: subtracted in f64 and
+/// rounded once, so every mesh in one frame gives a world point the same bits.
+pub(crate) fn render_frame_local(world_m: f64, centre_m: f32) -> f32 {
+    (world_m - f64::from(centre_m)) as f32
+}
+
 /// Dual-buffer heightmap for the terrain surface.
 #[derive(Clone)]
 pub struct TerrainSystem {

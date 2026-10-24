@@ -413,16 +413,18 @@ func _run() -> void:
 	var sentinel: MeshInstance3D = road_tool._road_chunk_instances[sentinel_key]
 	var previous_changed: MeshInstance3D = road_tool._road_chunk_instances[changed_key]
 	_expect(
-		sentinel.position == Vector3(CHUNK_ORIGIN_X_M, 0.0, CHUNK_ORIGIN_Z_M),
-		"chunk zero must be placed at the published origin"
+		sentinel.position == Vector3(
+			CHUNK_ORIGIN_X_M + 0.5 * CHUNK_SPAN_M, 0.0, CHUNK_ORIGIN_Z_M + 0.5 * CHUNK_SPAN_M
+		),
+		"chunk zero must be placed at its centre from the published origin"
 	)
 	_expect(
 		previous_changed.position == Vector3(
-			CHUNK_ORIGIN_X_M + 3.0 * CHUNK_SPAN_M,
+			CHUNK_ORIGIN_X_M + 3.5 * CHUNK_SPAN_M,
 			0.0,
-			CHUNK_ORIGIN_Z_M - 2.0 * CHUNK_SPAN_M
+			CHUNK_ORIGIN_Z_M - 1.5 * CHUNK_SPAN_M
 		),
-		"nonzero chunk must be placed relative to the published origin"
+		"nonzero chunk must be placed at its centre relative to the published origin"
 	)
 	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "full snapshot must record x origin")
 	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "full snapshot must record z origin")

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Finnish zebra masks partition the existing asphalt triangles, never an offset paint plane.
+//! Finnish zebra paint on the existing asphalt triangles, never an offset paint plane and never a
+//! cut: the triangles under a crossing's bars carry its paint frame, and the shader draws the bars.
 
-use super::super::ownership::{Polygon, Vertex};
 use super::*;
 
 // Finnish L3_2 at urban speeds: planar metres, preserved from the existing marking contract.
@@ -47,6 +47,41 @@ impl Crossing {
         let d = p - self.origin;
         Vector2::new(d.dot(self.across), d.dot(self.along))
     }
+
+    // Whether a triangle meets the bar rectangle `[0, width] x [-half, half]` of the paint frame,
+    // by separating axes: the rectangle's two, then the triangle's three edge normals. Touching
+    // counts as apart; paint never reaches the rectangle's edge.
+    fn meets_bars(self, vertices: [Vector3; 3]) -> bool {
+        let uv = vertices.map(|p| self.uv(p));
+        let half = CROSSWALK_STRIPE_LEN * 0.5;
+        if uv.iter().all(|p| p.x <= 0.0)
+            || uv.iter().all(|p| p.x >= self.width)
+            || uv.iter().all(|p| p.y <= -half)
+            || uv.iter().all(|p| p.y >= half)
+        {
+            return false;
+        }
+        let corners = [
+            Vector2::new(0.0, -half),
+            Vector2::new(self.width, -half),
+            Vector2::new(self.width, half),
+            Vector2::new(0.0, half),
+        ];
+        let winding = (uv[1] - uv[0]).cross(uv[2] - uv[0]);
+        (0..3).all(|i| {
+            let (a, b) = (uv[i], uv[(i + 1) % 3]);
+            corners
+                .iter()
+                .any(|&corner| (b - a).cross(corner - a) * winding > 0.0)
+        })
+    }
+
+    // CUSTOM0: stripe metres, longitudinal metres, age+1 (zero means no crossing), distance
+    // from the kerb for wheel-path phase, including the symmetric margin.
+    fn paint(self, p: Vector3) -> Vector4 {
+        let uv = self.uv(p);
+        Vector4::new(uv.x, uv.y, self.age + 1.0, uv.x + self.margin)
+    }
 }
 
 /// Registers local crossing frames before emitting asphalt triangles.
@@ -85,88 +120,40 @@ pub(super) fn prepare_crosswalks(
     }
 }
 
-/// Partitions an asphalt triangle while preserving its original surface attributes.
-/// O(K * (T + V)) for T input and V output triangles of the touched owner and K local
-/// crossings, never city-wide. Span K is at most two; node K follows its incident arms.
-/// Each rectangle cuts a triangle into at most nine triangles. Fixed polygon scratch avoids
-/// per-triangle allocations; recursion advances through local crossings only.
-pub(super) fn emit_triangle(mesh: &mut NetworkMeshData, triangle: [Vertex; 3], next: usize) {
-    let crossing = mesh
+/// Emits an asphalt triangle whole. A triangle that meets one of its owner's crossings' bar
+/// rectangle carries that crossing's paint frame on its three vertices; the frame is affine in
+/// XZ, so it interpolates exactly, and the shader draws only the bars (their count leaves less
+/// than a bar's pitch between the outer bars and the kerbs). No triangle is cut, so both sides
+/// of every asphalt edge keep the piece's vertices (`ROAD-68-D`, open question 24). The layout's
+/// strips are disjoint and bounded by mesh rows, so at most one crossing meets a triangle.
+/// `O(K)` for the owner's `K` local crossings, without allocation.
+pub(super) fn emit_triangle(
+    mesh: &mut NetworkMeshData,
+    world: [RoadVec3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+    normal: Vector3,
+) {
+    let vertices = world.map(render_point);
+    let crossings = mesh
         .current_owner
         .and_then(|owner| mesh.crosswalks.get(&owner))
-        .and_then(|crossings| crossings.get(next))
-        .copied();
-    let Some(crossing) = crossing else {
-        push_triangle_to_layer_with_crossing(
-            mesh,
-            MeshLayer::Road,
-            triangle.map(|v| v.p),
-            triangle.map(|v| v.uv),
-            triangle[0].c,
-            triangle[0].n,
-            [Vector4::ZERO; 3],
-        );
-        return;
-    };
-    let coords = triangle.map(|v| crossing.uv(v.p));
-    let half = CROSSWALK_STRIPE_LEN * 0.5;
-    if coords.iter().all(|uv| uv.x <= 0.0)
-        || coords.iter().all(|uv| uv.x >= crossing.width)
-        || coords.iter().all(|uv| uv.y <= -half)
-        || coords.iter().all(|uv| uv.y >= half)
-    {
-        emit_triangle(mesh, triangle, next + 1);
-        return;
-    }
-    let mut inner = Polygon {
-        vertices: [Vertex::default(); 8],
-        len: 3,
-    };
-    inner.vertices[..3].copy_from_slice(&triangle);
-    for (axis, boundary, keep_high) in [
-        (0, 0.0, true),
-        (0, crossing.width, false),
-        (1, -half, true),
-        (1, half, false),
-    ] {
-        if inner.len < 3 {
-            break;
-        }
-        let (low, high) = inner.split_by(
-            |v| {
-                let uv = crossing.uv(v.p);
-                if axis == 0 { uv.x } else { uv.y }
-            },
-            boundary,
-        );
-        let outer;
-        (inner, outer) = if keep_high { (high, low) } else { (low, high) };
-        for i in 1..outer.len.saturating_sub(1) {
-            emit_triangle(
-                mesh,
-                [outer.vertices[0], outer.vertices[i], outer.vertices[i + 1]],
-                next + 1,
-            );
-        }
-    }
-    for i in 1..inner.len.saturating_sub(1) {
-        let vertices = [inner.vertices[0], inner.vertices[i], inner.vertices[i + 1]];
-        let paint = vertices.map(|v| {
-            let uv = crossing.uv(v.p);
-            // CUSTOM0: stripe metres, longitudinal metres, age+1 (zero means no crossing),
-            // distance from the kerb for wheel-path phase, including the symmetric margin.
-            Vector4::new(uv.x, uv.y, crossing.age + 1.0, uv.x + crossing.margin)
+        .map_or(&[][..], Vec::as_slice);
+    debug_assert!(
+        crossings
+            .iter()
+            .filter(|crossing| crossing.meets_bars(vertices))
+            .count()
+            <= 1,
+        "an asphalt triangle meets two crossings"
+    );
+    let paint = crossings
+        .iter()
+        .find(|crossing| crossing.meets_bars(vertices))
+        .map_or([Vector4::ZERO; 3], |crossing| {
+            vertices.map(|p| crossing.paint(p))
         });
-        push_triangle_to_layer_with_crossing(
-            mesh,
-            MeshLayer::Road,
-            vertices.map(|v| v.p),
-            vertices.map(|v| v.uv),
-            vertices[0].c,
-            vertices[0].n,
-            paint,
-        );
-    }
+    push_triangle_to_layer_with_crossing(mesh, MeshLayer::Road, world, uvs, color, normal, paint);
 }
 
 #[cfg(test)]
@@ -175,7 +162,7 @@ mod tests {
     use crate::simulation::network::lanes::CrosswalkMarking;
 
     #[test]
-    fn zebra_partitions_preserve_surface_and_planar_dimensions() {
+    fn zebra_paint_frames_whole_asphalt_triangles_under_its_bars() {
         // A diagonal, sloping road: crossing geometry must not inherit the crossfall tilt.
         let across = Vector3::new(0.6, 0.0, 0.8);
         let along = Vector3::new(-0.8, 0.0, 0.6);
@@ -198,53 +185,35 @@ mod tests {
         let owner = NetworkMeshOwner::Edge(0);
         mesh.set_owner(owner);
         mesh.crosswalks.insert(owner, vec![crossing]);
-        push_quad(
-            &mut mesh,
-            MeshLayer::Road,
-            [
-                point(-4.0, -3.5),
-                point(-4.0, 3.5),
-                point(4.0, 3.5),
-                point(4.0, -3.5),
-            ],
-            [
-                Vector2::new(-4.0, -3.5),
-                Vector2::new(-4.0, 3.5),
-                Vector2::new(4.0, 3.5),
-                Vector2::new(4.0, -3.5),
-            ],
-            Color::from_rgba(0.0, 0.0, 0.0, 0.0), // junction asphalt: no road space
-        );
-        assert!(mesh.marking_vertices.is_empty());
-        assert_eq!(mesh.road_crossings.len(), mesh.road_vertices.len());
-        let mut area = 0.0;
-        let mut painted_area = 0.0;
-        for (tri, paint) in mesh
-            .road_vertices
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(mesh.road_crossings.as_chunks::<3>().0.iter())
-        {
-            let a = ((tri[1] - tri[0]).cross(tri[2] - tri[0])).y.abs() * 0.5;
-            area += a;
-            if paint[0].z > 0.0 {
-                painted_area += a;
-                for v in paint {
-                    assert!((v.z - 1.7).abs() < 1e-5);
-                    assert!(v.x >= -1e-5 && v.x <= 6.5 + 1e-5);
-                    assert!(v.y.abs() <= CROSSWALK_STRIPE_LEN * 0.5 + 1e-5);
-                    assert!((v.w - v.x - 0.25).abs() < 1e-5);
-                }
-            }
-        }
-        assert!((area - 56.0).abs() < 1e-4);
-        assert!((painted_area - 6.5 * 2.5).abs() < 1e-4);
-        for (p, uv) in mesh.road_vertices.iter().zip(&mesh.road_uvs) {
-            assert!((p.y - (2.0 + uv.x * 0.1 + uv.y * 0.05)).abs() < 1e-5);
-            assert!(
-                Vector2::new(p.x - point(uv.x, uv.y).x, p.z - point(uv.x, uv.y).z).length() < 1e-5
+        // Under the bars, then beyond them.
+        for (s0, s1) in [(-4.0, 4.0), (4.0, 8.0)] {
+            push_quad(
+                &mut mesh,
+                MeshLayer::Road,
+                [point(s0, -3.5), point(s0, 3.5), point(s1, 3.5), point(s1, -3.5)],
+                [
+                    Vector2::new(s0, -3.5),
+                    Vector2::new(s0, 3.5),
+                    Vector2::new(s1, 3.5),
+                    Vector2::new(s1, -3.5),
+                ],
+                Color::from_rgba(0.0, 0.0, 0.0, 0.0), // junction asphalt: no road space
             );
+        }
+        assert!(mesh.marking_vertices.is_empty());
+        // No cut: the four triangles come out whole.
+        assert_eq!(mesh.road_vertices.len(), 12);
+        assert_eq!(mesh.road_crossings.len(), mesh.road_vertices.len());
+        for (index, (paint, uv)) in mesh.road_crossings.iter().zip(&mesh.road_uvs).enumerate() {
+            if index >= 6 {
+                assert_eq!(*paint, Vector4::ZERO);
+                continue;
+            }
+            // The frame: metres across from the margin, metres along from the crossing line.
+            assert!((paint.z - 1.7).abs() < 1e-5);
+            assert!((paint.x - (uv.y + 3.25)).abs() < 1e-5);
+            assert!((paint.y - uv.x).abs() < 1e-5);
+            assert!((paint.w - paint.x - 0.25).abs() < 1e-5);
         }
     }
 }

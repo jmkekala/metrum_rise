@@ -5,6 +5,7 @@
 use super::super::super::*;
 use super::types::*;
 use crate::simulation::core::round_f64_to_i64;
+use crate::simulation::terrain::render_frame_local;
 
 mod paving;
 mod regular;
@@ -663,8 +664,7 @@ impl SimulationNode {
             triangle_sources.len(),
             "CDT triangle source sidecars must match the emitted triangle bucket"
         );
-        let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
-        let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let (center_x, center_z) = patch.frame_centre();
         let mut vertices = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
@@ -719,9 +719,9 @@ impl SimulationNode {
                     // Subtract in f64 before the GPU conversion. World-space f32 loses the
                     // sub-millimetre separation retained by the CDT at kilometre-scale origins.
                     vertices.push(Vector3::new(
-                        (point.x - f64::from(center_x)) as f32,
+                        render_frame_local(point.x, center_x),
                         point.height_m,
-                        (point.z - f64::from(center_z)) as f32,
+                        render_frame_local(point.z, center_z),
                     ));
                     normals.push(Vector3::new(0.0, 0.0, 0.0));
                     uvs.push(Vector2::new(

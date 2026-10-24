@@ -11,15 +11,15 @@
 
 use super::super::{
     MeshLayer, NetworkMeshData, NetworkMeshOwner, curb_color, footpath_color, push_triangle,
-    push_triangle_preserving_winding_with_exact_normal, road_color, road_space_color,
-    sidewalk_color,
+    push_triangle_preserving_winding_with_exact_normal, render_point, road_color,
+    road_space_color, sidewalk_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::triangle_is_too_small;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadbedSystem};
 use crate::simulation::network::types::TransitType;
-use godot::prelude::{Color, Vector2, Vector3};
+use godot::prelude::{Color, Vector2};
 
 // Bands other than carriageway and curb draw on the sidewalk layer.
 const NON_ROAD_KINDS: [BandKind; 6] = [
@@ -115,10 +115,6 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
     }
 }
 
-fn render_point(point: RoadVec3) -> Vector3 {
-    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
-}
-
 fn emit_band(
     mesh: &mut NetworkMeshData,
     piece: &PieceMesh,
@@ -128,9 +124,9 @@ fn emit_band(
     color: Color,
 ) {
     for triangle in piece.band_triangles(kind) {
-        let vertices = triangle.map(|vertex| render_point(piece.positions()[vertex as usize]));
+        let vertices = triangle.map(|vertex| piece.positions()[vertex as usize]);
         let uvs = match uvs {
-            Uvs::World => vertices.map(|vertex| Vector2::new(vertex.x, vertex.z)),
+            Uvs::World => vertices.map(|vertex| Vector2::new(vertex.x as f32, vertex.z as f32)),
             Uvs::RoadSpace => triangle.map(|vertex| {
                 let [s_m, lateral_m] = piece.road_space()[vertex as usize];
                 Vector2::new(s_m, lateral_m)
@@ -143,14 +139,15 @@ fn emit_band(
 // Vertical faces keep their winding; `-(b - a) x (c - a)` faces the carriageway.
 fn emit_curb_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
     for triangle in piece.curb_face_triangles() {
-        let [a, b, c] = triangle.map(|vertex| render_point(piece.positions()[vertex as usize]));
+        let world = triangle.map(|vertex| piece.positions()[vertex as usize]);
+        let [a, b, c] = world.map(render_point);
         if triangle_is_too_small(a, b, c) {
             continue;
         }
         push_triangle_preserving_winding_with_exact_normal(
             mesh,
             MeshLayer::RaisedStep,
-            [a, b, c],
+            world,
             [
                 Vector2::ZERO,
                 Vector2::new(1.0, 0.0),
@@ -168,7 +165,7 @@ mod tests {
     use crate::simulation::network::lanes::LaneSystem;
     use crate::simulation::network::roadbed::fixtures::mixed_profiles;
     use crate::simulation::network::roadbed::{RoadbedSystem, SurfaceChunkKey};
-    use crate::simulation::terrain::TerrainSystem;
+    use crate::simulation::terrain::{TerrainSystem, render_frame_centre, render_frame_local};
     use godot::prelude::Vector3;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -181,8 +178,10 @@ mod tests {
         key
     }
 
+    // Every piece triangle inside one chunk comes out whole in that chunk's frame, bitwise; one
+    // crossing chunk lines comes out clipped at them, covering the same plan area.
     #[test]
-    fn chunk_partition_preserves_the_piece_triangle_multiset() {
+    fn chunk_partition_keeps_whole_triangles_and_clips_at_chunk_lines() {
         let graph = mixed_profiles(true);
         let mut roadbed = RoadbedSystem::new_with_chunk_grid(32.0, -7.0, 3.0);
         roadbed.compile_dirty(&graph);
@@ -198,31 +197,44 @@ mod tests {
         );
 
         let (span_m, (origin_x, origin_z)) = (roadbed.chunk_span_m(), roadbed.chunk_origin_m());
+        let centre = |chunk: SurfaceChunkKey| {
+            (
+                render_frame_centre(origin_x + chunk.0 as f32 * span_m, span_m),
+                render_frame_centre(origin_z + chunk.1 as f32 * span_m, span_m),
+            )
+        };
+        let plan_area = |[a, b, c]: [[f64; 2]; 3]| {
+            ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() * 0.5
+        };
         let mut expected: BTreeMap<SurfaceChunkKey, Vec<Triangle>> = BTreeMap::new();
+        let mut piece_area = 0.0;
+        let mut clipped = 0;
         let spans = (0..graph.edge_count()).map(|edge| roadbed.span_piece(edge).unwrap().mesh());
         let nodes = (0..graph.node_count() as u32)
             .filter_map(|node| roadbed.node_piece(node).map(|piece| piece.mesh()));
         for piece in spans.chain(nodes) {
             for triangle in piece.triangles() {
-                let world = triangle.map(|vertex| {
-                    let p = piece.positions()[vertex as usize];
-                    Vector3::new(p.x as f32, p.y as f32, p.z as f32)
+                let world = triangle.map(|vertex| piece.positions()[vertex as usize]);
+                piece_area += plan_area(world.map(|p| [p.x, p.z]));
+                let keys = world.map(|p| roadbed.chunk_key_at(p.x, p.z));
+                if keys.iter().any(|&key| key != keys[0]) {
+                    clipped += 1;
+                    continue;
+                }
+                let (cx, cz) = centre(keys[0]);
+                let local = world.map(|p| {
+                    Vector3::new(
+                        render_frame_local(p.x, cx),
+                        p.y as f32,
+                        render_frame_local(p.z, cz),
+                    )
                 });
-                let centroid = |axis: fn(&Vector3) -> f32| {
-                    world.iter().map(|v| f64::from(axis(v))).sum::<f64>() / 3.0
-                };
-                let chunk = roadbed.chunk_key_at(centroid(|v| v.x), centroid(|v| v.z));
-                assert!(targets.contains(&chunk), "home chunk {chunk:?} is occupied");
-                let (cx, cz) = (
-                    origin_x + chunk.0 as f32 * span_m,
-                    origin_z + chunk.1 as f32 * span_m,
-                );
-                let local = world.map(|v| Vector3::new(v.x - cx, v.y, v.z - cz));
-                expected.entry(chunk).or_default().push(key(local));
+                expected.entry(keys[0]).or_default().push(key(local));
             }
         }
-        let mut actual: BTreeMap<SurfaceChunkKey, Vec<Triangle>> = BTreeMap::new();
+        let mut emitted_area = 0.0;
         for (&chunk, mesh) in &chunks {
+            let (cx, cz) = centre(chunk);
             for layer in [
                 &mesh.curb_vertices,
                 &mesh.raised_step_vertices,
@@ -230,19 +242,35 @@ mod tests {
                 &mesh.road_vertices,
             ] {
                 for triangle in layer.as_chunks::<3>().0 {
-                    actual.entry(chunk).or_default().push(key(*triangle));
+                    let triangle_key = key(*triangle);
+                    if let Some(whole) = expected.get_mut(&chunk)
+                        && let Some(index) = whole.iter().position(|t| *t == triangle_key)
+                    {
+                        whole.swap_remove(index);
+                    }
+                    emitted_area += plan_area(triangle.map(|v| {
+                        [f64::from(v.x) + f64::from(cx), f64::from(v.z) + f64::from(cz)]
+                    }));
                 }
             }
         }
-        for triangles in expected.values_mut().chain(actual.values_mut()) {
-            triangles.sort_unstable();
-        }
-        assert_eq!(actual, expected);
-        let total: usize = expected.values().map(Vec::len).sum();
         assert!(
-            total > 1000 && expected.len() > 10,
-            "{total} triangles in {} chunks",
-            expected.len()
+            expected.values().all(Vec::is_empty),
+            "whole triangles missing from their chunk: {:?}",
+            expected
+                .iter()
+                .filter(|(_, left)| !left.is_empty())
+                .map(|(chunk, left)| (chunk, left.len()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            (emitted_area - piece_area).abs() <= piece_area * 1e-6,
+            "plan area {emitted_area} emitted for {piece_area}"
+        );
+        assert!(
+            clipped > 10 && chunks.len() > 10,
+            "{clipped} clipped triangles in {} chunks",
+            chunks.len()
         );
     }
 }

@@ -13,7 +13,7 @@ use super::super::types::*;
 
 // Patch-local f32 of a world coordinate, rounded once from f64 exactly as the CDT export does.
 fn patch_local(world: f32, centre: f32) -> f32 {
-    (f64::from(world) - f64::from(centre)) as f32
+    crate::simulation::terrain::render_frame_local(f64::from(world), centre)
 }
 
 impl SimulationNode {
@@ -130,8 +130,7 @@ impl SimulationNode {
                 })
                 .collect::<Vec<_>>();
         }
-        let centre_x = patch.world_origin_x + patch.world_size_x * 0.5;
-        let centre_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let (centre_x, centre_z) = patch.frame_centre();
         let grid = zs
             .iter()
             .map(|&z| {
@@ -187,8 +186,7 @@ impl SimulationNode {
         x_line: bool,
         boundary_step_m: f32,
     ) -> (Vec<Vector3>, bool) {
-        let centre_x = patch.world_origin_x + patch.world_size_x * 0.5;
-        let centre_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let (centre_x, centre_z) = patch.frame_centre();
         let lattice_point = |along: f32| {
             let (x, z) = if x_line {
                 (fixed, along)
@@ -333,8 +331,7 @@ impl SimulationNode {
         if max_x <= min_x || max_z <= min_z {
             return None;
         }
-        let centre_x = patch.world_origin_x + patch.world_size_x * 0.5;
-        let centre_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let (centre_x, centre_z) = patch.frame_centre();
         let xs = [min_x, max_x].map(|x| patch_local(x, centre_x).to_bits());
         let zs = [min_z, max_z].map(|z| patch_local(z, centre_z).to_bits());
         let side_vertices = exported_vertices

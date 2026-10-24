@@ -504,11 +504,7 @@ func _commit_road_mesh_update(
 			continue
 		if not props:
 			continue
-		var origin := Vector3(
-			chunk_origin_x_m + float(key.x) * chunk_span_m,
-			0.0,
-			chunk_origin_z_m + float(key.y) * chunk_span_m
-		)
+		var origin := _road_chunk_frame_centre(key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
 		var lights = chunk_data.get("street_lights")
 		_street_lights.set_chunk(
 			key, origin, lights if typeof(lights) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
@@ -591,10 +587,20 @@ func _place_road_chunk_instance(
 	chunk_origin_x_m: float,
 	chunk_origin_z_m: float
 ) -> void:
-	instance.position = Vector3(
-		chunk_origin_x_m + float(key.x) * chunk_span_m,
+	instance.position = _road_chunk_frame_centre(key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
+
+# A road chunk's payload (mesh, lights, signs) is local to the chunk's centre, the frame of the
+# terrain patch over it, so shared seam vertices land on the same bits (roads.md, ROAD-68-D).
+func _road_chunk_frame_centre(
+	key: Vector2i,
+	chunk_span_m: float,
+	chunk_origin_x_m: float,
+	chunk_origin_z_m: float
+) -> Vector3:
+	return Vector3(
+		chunk_origin_x_m + float(key.x) * chunk_span_m + chunk_span_m * 0.5,
 		0.0,
-		chunk_origin_z_m + float(key.y) * chunk_span_m
+		chunk_origin_z_m + float(key.y) * chunk_span_m + chunk_span_m * 0.5
 	)
 
 # Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure.

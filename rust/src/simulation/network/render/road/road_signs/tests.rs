@@ -6,6 +6,7 @@ use super::*;
 use crate::simulation::network::graph::Node;
 use crate::simulation::network::render::road::RoadRenderer;
 use crate::simulation::network::types::{NodeType, TransitFlags};
+use crate::simulation::terrain::render_frame_centre;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn fixture(
@@ -396,8 +397,9 @@ fn assert_chunk_output(f: &mut (RegionGraph, LaneSystem, RoadbedSystem, TerrainS
         assert!(mesh.render_payload_is_valid());
         for sign in &mesh.road_signs {
             let mut sign = *sign;
-            sign.position.x += ox + x as f32 * f.2.chunk_span_m();
-            sign.position.z += oz + z as f32 * f.2.chunk_span_m();
+            let span = f.2.chunk_span_m();
+            sign.position.x += render_frame_centre(ox + x as f32 * span, span);
+            sign.position.z += render_frame_centre(oz + z as f32 * span, span);
             restored.push(sign);
         }
     }
