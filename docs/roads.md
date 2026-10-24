@@ -1184,7 +1184,7 @@ These need a user decision; work that does not depend on them continues.
       45 %; most new lanes are lifted twice), growing vectors and their page faults 15 %, road
       signs 10 %, piece surfaces 8 %, the payload certificate 5 %.
     - **Growing with the city, about 10 ms at 100k:** the agent passes (3.8 + 1.2 ms, `O(A / P)`
-      and `O(A)`), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`, `ROAD-68-E`'s
+      and `O(A)`; the invalidation is 0.3 ms on the pool since part 3's last step), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`, `ROAD-68-E`'s
       context replacement) and the snapshot publish (3.6 ms: dropping the previous snapshot,
       which no longer shares structure with the core once terrain acknowledgements are
       modelled; not yet attributed). The road-locked terrain state (2.6 ms) was a harness
@@ -3229,6 +3229,15 @@ eight-worker reference, one and three workers, a rebuild delayed 400 ms at one a
 workers, and a save inside the hold give identical hourly fingerprints (6) and saved tables
 (72), in the control and in this part, and both reference runs print digest
 `6252b7ba71c5a6f1`, part 2's.
+
+**Agent passes, first step** (after the breakdown above). The lane-invalidation test and the
+reattachment's choice of detached agents ran serially over every agent; both now test the agents
+on the shared pool and write in agent order, as part 2 did for the route-state test (agent `i`'s
+test reads and its write touches only agent `i`). At 100k, same session, exclusive lock, against
+`80defe1e`: invalidation 1.25–1.30 → 0.27–0.33 ms, agents and lanes 3.91–5.96 → 3.55–5.47 ms,
+click → ack 45.3 / 29.6 / 24.1 → 40.6 / 27.7 / 23.9 ms; product digests and the determinism
+reference digest unchanged. The passes stay `O(A / P)`: visiting only the edit's agents needs
+per-edge agent lists and an index of planned routes.
 
 
 ### `ROAD-68-H` — acceptance and cleanup

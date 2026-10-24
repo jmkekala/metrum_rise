@@ -130,20 +130,28 @@ impl AgentSystem {
             );
         }
 
-        for i in 0..self.agents.len() {
+        // The test reads only agent `i`'s lane and the edit's sets, and the writes below touch
+        // only agent `i`, so the shared pool tests every agent first and the writes follow in
+        // agent order, as the serial loop made them. O(A / P + invalidated agents).
+        let agents = &self.agents;
+        let invalidated: Vec<(usize, usize)> = crate::thread_pools::install(|| {
+            (0..agents.len())
+                .into_par_iter()
+                .filter_map(|i| {
+                    let lane = lane_system.lanes.get(agents.current_lane_id[i])?;
+                    invalidated_lane_reattach_edge(
+                        lane,
+                        &affected_edges,
+                        &affected_lane_ids,
+                        lane_system,
+                    )
+                    .map(|edge| (i, edge))
+                })
+                .collect()
+        });
+        for (i, reattach_edge_id) in invalidated {
             let lid = self.agents.current_lane_id[i];
-            if lid == usize::MAX || lid >= lane_system.lanes.len() {
-                continue;
-            }
             let lane = &lane_system.lanes[lid];
-            let Some(reattach_edge_id) = invalidated_lane_reattach_edge(
-                lane,
-                &affected_edges,
-                &affected_lane_ids,
-                lane_system,
-            ) else {
-                continue;
-            };
             {
                 let old_edge = self.agents.current_edge[i];
                 let old_node = self.agents.current_node[i];
@@ -212,17 +220,21 @@ impl AgentSystem {
                 graph,
             );
         }
-        for i in 0..self.agents.len() {
-            if self.agents.current_lane_id[i] != usize::MAX
-                || !matches!(
-                    self.agents.transit[i],
-                    TRANSIT_NETWORK | TRANSIT_INTERSECTION
-                )
-                || !affected_edges.contains(&self.agents.current_edge[i])
-            {
-                continue;
-            }
-
+        // Agent `i`'s reattachment reads only agent `i` and the rebuilt lanes and writes only
+        // agent `i`: the shared pool finds the invalidated on-road agents, which then reattach
+        // in agent order, as the serial loop did. O(A / P + invalidated agents).
+        let agents = &self.agents;
+        let detached: Vec<usize> = crate::thread_pools::install(|| {
+            (0..agents.len())
+                .into_par_iter()
+                .filter(|&i| {
+                    agents.current_lane_id[i] == usize::MAX
+                        && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+                        && affected_edges.contains(&agents.current_edge[i])
+                })
+                .collect()
+        });
+        for i in detached {
             let desired_lane_type = if self.agents.transit_mode[i] == MODE_WALK {
                 LaneType::Foot
             } else {
