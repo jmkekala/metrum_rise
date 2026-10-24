@@ -13,6 +13,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::road_preview::{RoadPreview, RoadToolQuerySnapshot, road_tool_snapshot_from_core};
+use super::road_terrain_inputs::RoadTerrainInputs;
 use super::state::SimCore;
 use crate::simulation::network::graph::{RegionGraph, RegionGraphUndoDelta};
 
@@ -77,6 +78,7 @@ impl SimCore {
         if !self.transit_network.roadbed.is_current() {
             return None;
         }
+        let terrain_inputs = self.refresh_road_terrain_inputs();
         #[cfg(debug_assertions)]
         if let Some(graph) = &graph {
             assert_replica_matches(graph, &self.region_graph);
@@ -132,6 +134,7 @@ impl SimCore {
                     water,
                     road_mesh_chunks: Arc::clone(&self.published_road_mesh_chunks),
                     road_mesh_generation: self.road_mesh_lane_generation,
+                    terrain_inputs,
                     surface_generation: self.road_tool_surface_generation,
                 };
                 (view, replica)
@@ -208,16 +211,35 @@ impl RoadToolShared {
             .cloned()
     }
 
-    /// Applies a publication to the context and, when it was newer, to the view.
-    pub(crate) fn publish(&self, publication: RoadToolPublication) {
-        let applied = self
+    /// Applies a publication to the context and, when it was newer, to the view. Terrain inputs
+    /// newer than the publication's (published since by [`Self::publish_terrain_inputs`]) stay.
+    pub(crate) fn publish(&self, mut publication: RoadToolPublication) {
+        let mut context = self
             .context
             .lock()
-            .expect("road tool context lock poisoned")
-            .apply(&publication);
-        if applied {
+            .expect("road tool context lock poisoned");
+        if context.apply(&publication) {
+            publication.view.terrain_inputs = context.view.terrain_inputs.clone();
             *self.view.write().expect("road tool view lock poisoned") = publication.view;
         }
+    }
+
+    /// Takes newer terrain inputs into the context and the view, between publications: the
+    /// Godot thread publishes them after inserting refined entries its payload jobs built, so
+    /// the next preview reuses them as the commit will (`ROAD-68-E`).
+    pub(crate) fn publish_terrain_inputs(&self, inputs: RoadTerrainInputs) {
+        let mut context = self
+            .context
+            .lock()
+            .expect("road tool context lock poisoned");
+        if inputs.revision <= context.view.terrain_inputs.revision {
+            return;
+        }
+        context.view.terrain_inputs = inputs.clone();
+        self.view
+            .write()
+            .expect("road tool view lock poisoned")
+            .terrain_inputs = inputs;
     }
 }
 
@@ -257,7 +279,13 @@ impl RoadPreviewContext {
             }
             _ => self.replica = (*publication.view.region_graph).clone(),
         }
+        let newer_terrain = (self.view.terrain_inputs.revision
+            > publication.view.terrain_inputs.revision)
+            .then(|| self.view.terrain_inputs.clone());
         self.view = publication.view.clone();
+        if let Some(inputs) = newer_terrain {
+            self.view.terrain_inputs = inputs;
+        }
         self.sequence = publication.sequence;
         self.last_preview = None;
         #[cfg(debug_assertions)]

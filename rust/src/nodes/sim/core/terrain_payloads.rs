@@ -262,3 +262,56 @@ pub(crate) struct CachedRefinedTerrainPatch {
     /// Number of windows reused from the previous cache entry.
     pub(crate) reused_windows: usize,
 }
+
+/// The provisional terrain payload generation of a preview's patches (`ROAD-68-E`): later than
+/// every stamp, as the commit's new generation is. A commit that adopts the entries re-stamps
+/// them with its own generation.
+pub(crate) const ROAD_PREVIEW_TERRAIN_GENERATION: u64 = u64::MAX;
+
+/// What decides one road-touched patch's refined build besides the roads, the heightmap and the
+/// generation: the previous entry it reuses, the assembly scope, its ownership and margins and
+/// the building sites it reads. A commit adopts a preview's entry only when its own source has
+/// the same signature (`ROAD-68-E`).
+#[derive(Clone, Debug)]
+pub(crate) struct RoadTerrainSourceSignature {
+    pub(crate) previous: Option<Arc<CachedRefinedTerrainPatch>>,
+    /// The local tiles, or `None` for the full patch.
+    pub(crate) scope: Option<Vec<(i64, i64)>>,
+    pub(crate) requires_engineered_refinement: bool,
+    pub(crate) requires_road_clipping: bool,
+    pub(crate) road_locked_margin_bits: u32,
+    pub(crate) sites: crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot,
+}
+
+impl PartialEq for RoadTerrainSourceSignature {
+    fn eq(&self, other: &Self) -> bool {
+        let same_previous = match (&self.previous, &other.previous) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        same_previous
+            && self.scope == other.scope
+            && self.requires_engineered_refinement == other.requires_engineered_refinement
+            && self.requires_road_clipping == other.requires_road_clipping
+            && self.road_locked_margin_bits == other.road_locked_margin_bits
+            && self.sites == other.sites
+    }
+}
+
+/// One patch a preview's pieces touch.
+#[derive(Clone, Debug)]
+pub(crate) struct RoadPreviewTerrainPatch {
+    pub(crate) key: (usize, usize),
+    /// The refined source's signature; `None` when the patch stays raw terrain.
+    pub(crate) source: Option<RoadTerrainSourceSignature>,
+    /// The refined entry, with [`ROAD_PREVIEW_TERRAIN_GENERATION`]; `None` for raw terrain.
+    pub(crate) entry: Option<Arc<CachedRefinedTerrainPatch>>,
+}
+
+/// The terrain stage of one preview (`ROAD-68-E`): every patch its pieces touch, in key order,
+/// built by the commit's own source and build functions.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RoadPreviewTerrain {
+    pub(crate) patches: Vec<RoadPreviewTerrainPatch>,
+}

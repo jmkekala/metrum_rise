@@ -4,23 +4,46 @@
 
 use super::super::*;
 use super::state::*;
-use crate::nodes::sim::core::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyScope};
+use crate::nodes::sim::core::{
+    ROAD_LOCKED_TERRAIN_RENDER_STEP_M, ROAD_PREVIEW_TERRAIN_GENERATION,
+    RefinedTerrainAssemblyLedger, RefinedTerrainAssemblyScope, RoadPreviewTerrain,
+    RoadPreviewTerrainPatch, RoadTerrainInputs, RoadTerrainPatchInputs, RoadTerrainSourceSignature,
+};
 use std::collections::BTreeSet;
+
+// What one patch's refined source reads besides the heightmap and the site query.
+pub(in crate::nodes::simulation_node) struct RefinedTerrainSourceInputs<'a> {
+    request: TerrainPatchPayloadRequest,
+    patch: TerrainPatchSnapshot,
+    previous: Option<Arc<CachedRefinedTerrainPatch>>,
+    global_generation: u64,
+    ledger: Option<&'a RefinedTerrainAssemblyLedger>,
+    engineered_margin_m: Option<f32>,
+    road_locked: bool,
+    road_surface_generation: u64,
+}
 
 impl SimulationNode {
     /// Builds the actual renderer products for the edit's affected patches before acceptance.
     /// Work is limited to those patches and their dirty 64 m windows; no world snapshot is copied.
+    /// When `preview` built the same sources (the same signatures for the same patches), its
+    /// entries are adopted, re-stamped with the patches' generations, instead of rebuilt
+    /// (`ROAD-68-E`); the second value tells which happened. The caller passes a preview only
+    /// when it installed the preview's pieces into this core.
     pub(crate) fn validate_staged_road_terrain(
         core: &mut SimCore,
         patch_keys: &[(usize, usize)],
-    ) -> Result<Vec<Arc<CachedRefinedTerrainPatch>>, String> {
+        preview: Option<&RoadPreviewTerrain>,
+    ) -> Result<(Vec<Arc<CachedRefinedTerrainPatch>>, bool), String> {
         core.refresh_engineered_terrain_patch_ownership_for_keys(
             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             patch_keys,
         );
         let mut sources = Vec::with_capacity(patch_keys.len());
+        let mut signatures = Vec::with_capacity(patch_keys.len());
         for &(patch_x, patch_z) in patch_keys {
             if !core.terrain_patch_requires_engineered_refinement(patch_x, patch_z) {
+                signatures.push(((patch_x, patch_z), None));
                 continue;
             }
             let request = TerrainPatchPayloadRequest {
@@ -34,16 +57,65 @@ impl SimulationNode {
             };
             let source = Self::terrain_patch_payload_build_source_for_request(core, request)
                 .ok_or_else(|| format!("terrain_input_unavailable patch=({patch_x},{patch_z})"))?;
+            let signature = match &source {
+                TerrainPatchPayloadBuildSource::Refined(source) => {
+                    Some(Self::road_terrain_source_signature(source))
+                }
+                TerrainPatchPayloadBuildSource::Ready(_) => None,
+            };
+            signatures.push(((patch_x, patch_z), signature));
             sources.push(source);
         }
+        if let Some(preview) = preview
+            && preview.patches.len() == signatures.len()
+            && preview
+                .patches
+                .iter()
+                .zip(&signatures)
+                .all(|(patch, (key, signature))| patch.key == *key && patch.source == *signature)
+        {
+            let entries = preview
+                .patches
+                .iter()
+                .filter_map(|patch| patch.entry.as_ref())
+                .map(|entry| {
+                    let generation = core
+                        .terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z);
+                    Arc::new(CachedRefinedTerrainPatch {
+                        surface_generation: generation,
+                        ..CachedRefinedTerrainPatch::clone(entry)
+                    })
+                })
+                .collect();
+            return Ok((entries, true));
+        }
+        let entries = Self::build_road_terrain_sources(
+            &core.region_graph,
+            &core.transit_network.roadbed,
+            &core.heightmap,
+            core.road_tool_surface_generation,
+            sources,
+        )?;
+        Ok((entries, false))
+    }
+
+    // Builds the sources' refined entries in parallel (the caller is inside the shared pool)
+    // and fails on the first typed CDT failure, as an edit must.
+    fn build_road_terrain_sources(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        roadbed: &crate::simulation::network::roadbed::RoadbedSystem,
+        terrain: &TerrainSystem,
+        road_surface_generation: u64,
+        sources: Vec<TerrainPatchPayloadBuildSource>,
+    ) -> Result<Vec<Arc<CachedRefinedTerrainPatch>>, String> {
         let jobs = sources
             .into_par_iter()
             .map(|source| {
                 Self::terrain_patch_payload_build_job_for_world(
-                    &core.region_graph,
-                    &core.transit_network.roadbed,
-                    &core.heightmap,
-                    core.road_tool_surface_generation,
+                    graph,
+                    roadbed,
+                    terrain,
+                    road_surface_generation,
                     source,
                 )
             })
@@ -66,6 +138,123 @@ impl SimulationNode {
             }
         }
         Ok(entries)
+    }
+
+    fn road_terrain_source_signature(
+        source: &RefinedTerrainPatchBuildSource,
+    ) -> RoadTerrainSourceSignature {
+        RoadTerrainSourceSignature {
+            previous: source.previous.clone(),
+            scope: match &source.assembly_scope {
+                RefinedTerrainAssemblyScope::FullPatch => None,
+                RefinedTerrainAssemblyScope::LocalTiles(tiles) => Some(tiles.clone()),
+            },
+            requires_engineered_refinement: source.requires_engineered_refinement,
+            requires_road_clipping: source.requires_road_clipping,
+            road_locked_margin_bits: source.road_locked_margin_m.to_bits(),
+            sites: source.sites.clone(),
+        }
+    }
+
+    /// The preview's terrain stage (`ROAD-68-E`): the patches and tiles `tiles` names (what a
+    /// commit of the same pieces stamps), built from the road tool's terrain inputs, the edited
+    /// `graph` and the preview's `roadbed` through the commit's ownership, source and build
+    /// functions, in parallel on the shared pool. Entries carry
+    /// [`ROAD_PREVIEW_TERRAIN_GENERATION`]. Fails as the commit's validation would.
+    /// `O(touched patches * their dirty tiles' CDT)`, independent of the city.
+    pub(crate) fn build_road_preview_terrain(
+        terrain: &TerrainSystem,
+        inputs: &RoadTerrainInputs,
+        graph: &crate::simulation::network::graph::RegionGraph,
+        roadbed: &crate::simulation::network::roadbed::RoadbedSystem,
+        road_surface_generation: u64,
+        tiles: &std::collections::BTreeMap<(usize, usize), BTreeSet<(i64, i64)>>,
+    ) -> Result<RoadPreviewTerrain, String> {
+        if inputs.stroke_active || !roadbed.is_current() {
+            return Err("terrain_input_unavailable".to_owned());
+        }
+        let step_m = ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+        let site_margin_m =
+            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain, step_m);
+        let none = RoadTerrainPatchInputs::default();
+        let mut patches = Vec::with_capacity(tiles.len());
+        let mut sources = Vec::with_capacity(tiles.len());
+        for (&key, patch_tiles) in tiles {
+            let patch_inputs = inputs.patch(key).unwrap_or(&none);
+            let road_margin_m =
+                SimCore::road_terrain_patch_margin_m(terrain, (graph, roadbed), key, step_m);
+            let engineered_margin_m = SimCore::engineered_terrain_margin_m(
+                road_margin_m,
+                patch_inputs.site_owned,
+                site_margin_m,
+            );
+            if engineered_margin_m.is_none() {
+                patches.push(RoadPreviewTerrainPatch {
+                    key,
+                    source: None,
+                    entry: None,
+                });
+                continue;
+            }
+            let patch = terrain
+                .visual_patch_snapshot(key.0, key.1)
+                .ok_or_else(|| format!("terrain_input_unavailable patch=({},{})", key.0, key.1))?;
+            // The ledger as the commit's stamps leave it.
+            let mut ledger = patch_inputs.ledger.clone().unwrap_or_default();
+            for &tile in patch_tiles {
+                ledger
+                    .road_tile_dirty_at
+                    .insert(tile, ROAD_PREVIEW_TERRAIN_GENERATION);
+            }
+            let request = TerrainPatchPayloadRequest {
+                key: TerrainPatchPayloadKey {
+                    patch_x: key.0,
+                    patch_z: key.1,
+                    render_step_mm: Self::refined_patch_cache_key(key.0, key.1, step_m)
+                        .render_step_mm,
+                },
+                request_id: 0,
+                surface_generation: ROAD_PREVIEW_TERRAIN_GENERATION,
+            };
+            let source = Self::refined_terrain_patch_source(
+                terrain,
+                RefinedTerrainSourceInputs {
+                    request,
+                    patch,
+                    previous: patch_inputs.entry.clone(),
+                    global_generation: inputs.global_generation,
+                    ledger: Some(&ledger),
+                    engineered_margin_m,
+                    road_locked: road_margin_m.is_some(),
+                    road_surface_generation,
+                },
+                |min_x, min_z, max_x, max_z| {
+                    patch_inputs.sites.within_bounds(min_x, min_z, max_x, max_z)
+                },
+            );
+            patches.push(RoadPreviewTerrainPatch {
+                key,
+                source: Some(Self::road_terrain_source_signature(&source)),
+                entry: None,
+            });
+            sources.push(TerrainPatchPayloadBuildSource::Refined(source));
+        }
+        let entries = crate::thread_pools::install(|| {
+            Self::build_road_terrain_sources(
+                graph,
+                roadbed,
+                terrain,
+                road_surface_generation,
+                sources,
+            )
+        })?;
+        for entry in entries {
+            let key = (entry.key.patch_x, entry.key.patch_z);
+            if let Some(patch) = patches.iter_mut().find(|patch| patch.key == key) {
+                patch.entry = Some(entry);
+            }
+        }
+        Ok(RoadPreviewTerrain { patches })
     }
 
     pub(in crate::nodes::simulation_node) fn lock_water_patch_mesh_jobs(
@@ -113,7 +302,20 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn drain_completed_terrain_patch_payload_jobs(
         &self,
     ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
-        Self::finish_terrain_patch_payload_jobs(&self.core, &self.terrain_patch_payload_jobs)
+        let drained =
+            Self::finish_terrain_patch_payload_jobs(&self.core, &self.terrain_patch_payload_jobs);
+        // The entries just inserted reach the road tool's terrain inputs now, not at the next
+        // edit's publication (`ROAD-68-E`). `O(noted patches)`, never blocking on the core.
+        if !drained.0.is_empty()
+            && let Some(mut core) = Self::try_lock_shared_core(&self.core)
+            && core.road_terrain_inputs.has_changes()
+            && core.transit_network.roadbed.is_current()
+        {
+            let inputs = core.refresh_road_terrain_inputs();
+            drop(core);
+            self.road_tool.publish_terrain_inputs(inputs);
+        }
+        drained
     }
 
     pub(in crate::nodes::simulation_node) fn finish_terrain_patch_payload_jobs(
@@ -328,71 +530,107 @@ impl SimulationNode {
             }
             Some(_) => {
                 core.refined_terrain_patch_cache.remove(&cache_key);
+                core.road_terrain_inputs
+                    .note([(request.key.patch_x, request.key.patch_z)]);
                 None
             }
             None => None,
         };
-
-        let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
         let base_patch = core
             .heightmap
             .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
-        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
-            &core.heightmap,
-            render_step_m,
-        );
         let request_key = (request.key.patch_x, request.key.patch_z);
-        let engineered_margin = core
-            .engineered_terrain_patch_margins
-            .get(&request_key)
-            .copied();
-        let requires_engineered_refinement = engineered_margin.is_some();
-        let requires_road_clipping = core
-            .road_locked_terrain_patch_margins
-            .contains_key(&request_key);
-        let engineered_query_margin_m = engineered_margin
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let allocator = &core.allocator;
+        Some(TerrainPatchPayloadBuildSource::Refined(
+            Self::refined_terrain_patch_source(
+                &core.heightmap,
+                RefinedTerrainSourceInputs {
+                    request,
+                    patch: base_patch,
+                    previous,
+                    global_generation: core.terrain_payload_global_generation,
+                    ledger: core.refined_terrain_assembly_ledgers.get(&request_key),
+                    engineered_margin_m: core
+                        .engineered_terrain_patch_margins
+                        .get(&request_key)
+                        .copied(),
+                    road_locked: core
+                        .road_locked_terrain_patch_margins
+                        .contains_key(&request_key),
+                    road_surface_generation: core.road_tool_surface_generation,
+                },
+                |min_x, min_z, max_x, max_z| {
+                    allocator.terrain_site_snapshot_for_world_bounds(min_x, min_z, max_x, max_z)
+                },
+            ),
+        ))
+    }
+
+    // The refined source of one patch from what it reads: the one function the core's requests,
+    // the commit's staged validation and the preview share (`ROAD-68-E`), so margins, assembly
+    // scope and site bounds cannot differ between them. `sites` answers a world-bounds query.
+    fn refined_terrain_patch_source(
+        terrain: &TerrainSystem,
+        inputs: RefinedTerrainSourceInputs<'_>,
+        sites: impl FnOnce(f32, f32, f32, f32) -> BuildingSiteTerrainSnapshot,
+    ) -> RefinedTerrainPatchBuildSource {
+        let RefinedTerrainSourceInputs {
+            request,
+            patch: base_patch,
+            previous,
+            global_generation,
+            ledger,
+            engineered_margin_m,
+            road_locked: requires_road_clipping,
+            road_surface_generation,
+        } = inputs;
+        let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
+        let site_margin_m =
+            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain, render_step_m);
+        let requires_engineered_refinement = engineered_margin_m.is_some();
+        let engineered_query_margin_m = engineered_margin_m
             .unwrap_or(site_margin_m)
             .max(site_margin_m);
         let road_locked_margin_m = if requires_road_clipping {
             crate::simulation::terrain::terrain_cdt_road_query_margin_m(
-                &core.heightmap,
+                terrain,
                 render_step_m,
                 engineered_query_margin_m,
             )
         } else {
             engineered_query_margin_m
         };
-        let assembly_scope = Self::refined_terrain_assembly_scope_for_request(
-            core,
+        let assembly_scope = Self::refined_terrain_assembly_scope(
+            global_generation,
+            ledger,
             &base_patch,
             previous.as_deref(),
             request.surface_generation,
         );
-        core.allocator
-            .prepare_building_site_query_index(core.config.zone_cell_m);
-        let sites = core.allocator.terrain_site_snapshot_for_world_bounds(
+        let sites = sites(
             base_patch.world_origin_x - road_locked_margin_m,
             base_patch.world_origin_z - road_locked_margin_m,
             base_patch.world_origin_x + base_patch.world_size_x + road_locked_margin_m,
             base_patch.world_origin_z + base_patch.world_size_z + road_locked_margin_m,
         );
-        Some(TerrainPatchPayloadBuildSource::Refined(
-            RefinedTerrainPatchBuildSource {
-                request,
-                patch: base_patch,
-                previous,
-                assembly_scope,
-                requires_engineered_refinement,
-                requires_road_clipping,
-                road_locked_margin_m,
-                road_surface_generation: core.road_tool_surface_generation,
-                sites,
-            },
-        ))
+        RefinedTerrainPatchBuildSource {
+            request,
+            patch: base_patch,
+            previous,
+            assembly_scope,
+            requires_engineered_refinement,
+            requires_road_clipping,
+            road_locked_margin_m,
+            road_surface_generation,
+            sites,
+        }
     }
 
-    fn refined_terrain_assembly_scope_for_request(
-        core: &SimCore,
+    fn refined_terrain_assembly_scope(
+        global_generation: u64,
+        ledger: Option<&RefinedTerrainAssemblyLedger>,
         patch: &TerrainPatchSnapshot,
         previous: Option<&CachedRefinedTerrainPatch>,
         surface_generation: u64,
@@ -400,11 +638,10 @@ impl SimulationNode {
         let Some(previous) = previous else {
             return RefinedTerrainAssemblyScope::FullPatch;
         };
-        if core.terrain_payload_global_generation > previous.surface_generation {
+        if global_generation > previous.surface_generation {
             return RefinedTerrainAssemblyScope::FullPatch;
         }
-        let patch_key = (patch.patch_x, patch.patch_z);
-        let Some(ledger) = core.refined_terrain_assembly_ledgers.get(&patch_key) else {
+        let Some(ledger) = ledger else {
             return RefinedTerrainAssemblyScope::FullPatch;
         };
         if ledger

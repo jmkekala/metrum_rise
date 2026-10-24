@@ -11,9 +11,12 @@ use std::time::Instant;
 use godot::prelude::Vector3;
 
 use super::road_edit_plan::RoadEditPlan;
+use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
-use super::state::SimCore;
+use super::state::{SimCore, road_terrain_tiles};
+use super::terrain_payloads::RoadPreviewTerrain;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
+use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::render::road::RoadRenderer;
@@ -93,6 +96,9 @@ pub(crate) struct RoadToolQuerySnapshot {
     /// The roadbed generation `road_mesh_chunks` were published at; the preview splices only
     /// into chunks of its own roadbed generation.
     pub(crate) road_mesh_generation: Option<u64>,
+    /// What road-touched refined terrain sources read besides the heightmap, per render patch;
+    /// shared in `O(1)` (`ROAD-68-E`).
+    pub(crate) terrain_inputs: RoadTerrainInputs,
     pub(crate) surface_generation: u64,
 }
 
@@ -146,6 +152,7 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         water: Arc::new(core.watermap.clone()),
         road_mesh_chunks: Arc::clone(&core.published_road_mesh_chunks),
         road_mesh_generation: core.road_mesh_lane_generation,
+        terrain_inputs: core.road_terrain_inputs.current(),
         surface_generation: core.road_tool_surface_generation,
     })
 }
@@ -195,6 +202,8 @@ pub(crate) struct RoadPreviewTimes {
     pub(crate) roadbed_ms: f64,
     /// The changed render chunks: the pieces emitted and spliced into the published chunks.
     pub(crate) payload_ms: f64,
+    /// The refined terrain patches the pieces touch, built on the shared pool.
+    pub(crate) terrain_ms: f64,
 }
 
 /// The pieces a preview compiled for its dirty closure.
@@ -203,9 +212,12 @@ pub(crate) struct RoadPreviewPieces {
     pub(crate) delta: RoadbedDelta,
     /// The context's roadbed with the delta installed: what the preview shows.
     pub(crate) roadbed: RoadbedSystem,
-    /// Render chunks the delta changed, in ascending order. The XZ bounds of the replaced and
-    /// new pieces wait in `roadbed` for terrain patch selection.
+    /// Render chunks the delta changed, in ascending order.
     pub(crate) changed_chunks: Vec<SurfaceChunkKey>,
+    /// The terrain patches the delta's old and new pieces touch, as the commit builds them, or
+    /// the reason the commit's terrain validation would refuse the edit. A commit installs the
+    /// entries only when its own sources have the same signatures.
+    pub(crate) terrain: Result<RoadPreviewTerrain, String>,
     /// The changed chunks' meshes as the commit publishes them, without the lane-derived layers
     /// (crosswalk paint, road signs) of the rebuilt pieces; a changed chunk missing here is
     /// empty. Sealed (render-validated) as the commit publishes them. `None` if the published
@@ -244,8 +256,8 @@ impl RoadPreview {
 
 impl RoadPreviewContext {
     /// `preview_road(context, stroke)`: plans the stroke on the context, applies the plan to the
-    /// replica, compiles the dirty closure into an `O(1)` copy of the published roadbed and
-    /// restores the replica. The plan, marks and compile are the commit's own functions, so a
+    /// replica, compiles the dirty closure into an `O(1)` copy of the published roadbed, builds
+    /// the terrain patches its pieces touch and restores the replica. The plan, marks and compile are the commit's own functions, so a
     /// commit with a current fingerprint installs these pieces bitwise. No core lock; cost
     /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
     pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
@@ -311,6 +323,17 @@ impl RoadPreviewContext {
         let delta = roadbed.compile_delta(&self.replica);
         let (changed_chunks, _) = roadbed.install(&delta);
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
+        let terrain_start = Instant::now();
+        let tiles = road_terrain_tiles(&self.view.terrain, &roadbed.take_changed_bounds());
+        let terrain = SimulationNode::build_road_preview_terrain(
+            &self.view.terrain,
+            &self.view.terrain_inputs,
+            &self.replica,
+            &roadbed,
+            self.view.surface_generation,
+            &tiles,
+        );
+        times.terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
         let payload_start = Instant::now();
         let target_chunks: BTreeSet<_> = changed_chunks.iter().copied().collect();
         let built_after = self.view.roadbed.generation();
@@ -340,6 +363,7 @@ impl RoadPreviewContext {
             delta,
             roadbed,
             changed_chunks,
+            terrain,
             chunks,
         })
     }

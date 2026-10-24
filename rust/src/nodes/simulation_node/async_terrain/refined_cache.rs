@@ -186,12 +186,8 @@ impl SimCore {
                 self.building_site_owned_terrain_patch_keys.remove(&key);
             }
 
-            let engineered_margin = match (road_margin, site_owned) {
-                (Some(road_margin_m), true) => Some(road_margin_m.max(site_margin_m)),
-                (Some(road_margin_m), false) => Some(road_margin_m),
-                (None, true) => Some(site_margin_m),
-                (None, false) => None,
-            };
+            let engineered_margin =
+                Self::engineered_terrain_margin_m(road_margin, site_owned, site_margin_m);
             if let Some(margin_m) = engineered_margin {
                 self.engineered_terrain_patch_margins.insert(key, margin_m);
             } else {
@@ -238,16 +234,33 @@ impl SimCore {
         // Road-only margin changes retain the already-stamped old/new query-chunk scope. Other
         // ownership transitions still get a full scope when no caller proved a local mutation.
         self.bump_terrain_payload_patch_generations(&full_dirty_keys);
+        self.road_terrain_inputs.note(unique_keys.iter().copied());
         self.terrain_dirty |= !changed_keys.is_empty();
         invalidated_cache_entries
     }
 
-    // Grading margin of the roads whose envelope reaches a render patch: the largest margin of
-    // any tile's road loops (`terrain_cdt_road_tile_loops`, the loops the build uses), `None`
-    // when no tile has one (`ROAD-68-D`). A chain that cannot close locks the patch at the
-    // envelope cap, so its build reports the typed error instead of showing raw terrain under
-    // a road.
-    fn road_terrain_patch_margin_m(
+    /// The engineered margin of a patch from its road margin and site ownership: what the
+    /// ownership refresh stores and the preview derives (`ROAD-68-E`). `None` leaves the patch
+    /// raw terrain.
+    pub(crate) fn engineered_terrain_margin_m(
+        road_margin_m: Option<f32>,
+        site_owned: bool,
+        site_margin_m: f32,
+    ) -> Option<f32> {
+        match (road_margin_m, site_owned) {
+            (Some(road_margin_m), true) => Some(road_margin_m.max(site_margin_m)),
+            (Some(road_margin_m), false) => Some(road_margin_m),
+            (None, true) => Some(site_margin_m),
+            (None, false) => None,
+        }
+    }
+
+    /// Grading margin of the roads whose envelope reaches a render patch: the largest margin of
+    /// any tile's road loops (`terrain_cdt_road_tile_loops`, the loops the build uses), `None`
+    /// when no tile has one (`ROAD-68-D`). A chain that cannot close locks the patch at the
+    /// envelope cap, so its build reports the typed error instead of showing raw terrain under
+    /// a road. The live core and the preview's edited replica both call it (`ROAD-68-E`).
+    pub(crate) fn road_terrain_patch_margin_m(
         terrain: &TerrainSystem,
         roads: TerrainCdtRoads<'_>,
         key: (usize, usize),
@@ -782,6 +795,8 @@ impl SimCore {
                 surface_generation,
             ) && SimulationNode::cached_refined_cdt_failure_label(&entry).is_none()
             {
+                self.road_terrain_inputs
+                    .note([(entry.key.patch_x, entry.key.patch_z)]);
                 self.refined_terrain_patch_cache.insert(entry.key, entry);
                 inserted += 1;
             }

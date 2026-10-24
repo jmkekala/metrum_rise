@@ -93,6 +93,20 @@ impl BuildingAllocator {
 }
 
 impl BuildingSiteTerrainSnapshot {
+    /// The captured sites overlapping the bounds, in capture order: what
+    /// [`BuildingAllocator::terrain_site_snapshot_for_world_bounds`] returns for bounds inside
+    /// the captured ones, since both keep the overlapping sites in building order.
+    pub(crate) fn within_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> Self {
+        Self {
+            sites: self
+                .sites
+                .iter()
+                .filter(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Returns the captured local sites' support pads, in site order.
     pub(crate) fn foundations(&self) -> Vec<super::model::BuildingSiteFoundation> {
         self.sites

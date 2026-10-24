@@ -367,8 +367,8 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                     .copied()
                     .collect();
                 assert!(!keys.is_empty());
-                let patches =
-                    SimulationNode::validate_staged_road_terrain(&mut core, &keys).unwrap();
+                let (patches, _) =
+                    SimulationNode::validate_staged_road_terrain(&mut core, &keys, None).unwrap();
                 assert!(patches.iter().any(|patch| patch.site_clip_loop_count > 0));
                 core.insert_refined_terrain_patch_cache_entries(patches);
                 for site in &core.allocator.building_sites {

@@ -81,7 +81,7 @@ impl SimulationNode {
         PackedByteArray::from(bytes.as_slice())
     }
 
-    pub(in crate::nodes::simulation_node) fn refined_patch_cache_key(
+    pub(crate) fn refined_patch_cache_key(
         patch_x: usize,
         patch_z: usize,
         render_step_m: f32,

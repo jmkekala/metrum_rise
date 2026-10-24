@@ -574,6 +574,7 @@ impl SimCore {
         self.building_site_owned_terrain_patch_keys.clear();
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
+        self.road_terrain_inputs.note_all();
         self.terrain_dirty = true;
         self.mark_network_render_dirty();
     }

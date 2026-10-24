@@ -620,6 +620,7 @@ impl SimCore {
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
         self.terrain_payload_patch_generations.clear();
+        self.road_terrain_inputs.note_all();
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
         self.last_tick_duration = 0.0;

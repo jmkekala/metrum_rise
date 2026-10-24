@@ -8,10 +8,10 @@ mod state;
 
 pub(in crate::nodes::simulation_node) use state::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
-    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
+    TerrainPatchPayloadKey, TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
     WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
     WaterPatchPayloadRequestState,
 };
 
 #[cfg(test)]
-pub(in crate::nodes::simulation_node) use state::{TerrainPatchPayloadKey, WaterPatchPayloadKey};
+pub(in crate::nodes::simulation_node) use state::WaterPatchPayloadKey;

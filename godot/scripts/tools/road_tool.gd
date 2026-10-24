@@ -21,6 +21,7 @@
 extends "res://scripts/tools/network_tool.gd"
 
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
+const TerrainPreview := preload("res://scripts/renderers/road_terrain_preview.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -79,8 +80,11 @@ var _commit_validation: Dictionary = {}
 var _commit_border_check: Array = []
 var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
-# Reversible terrain staging for the preview's terrain payloads (`ROAD-68-E`, next round).
-var _terrain_preview = preload("res://scripts/renderers/road_terrain_preview.gd").new()
+# Reversible terrain staging of the preview's terrain patches, shown with its road chunks
+# (`ROAD-68-E`).
+var _terrain_preview = TerrainPreview.new()
+# An accepted commit's terrain preview, shown until the commit's own patches replace it.
+var _swap_terrain = null
 
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
@@ -108,6 +112,8 @@ var _angle_snapped: bool = false
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
 		_terrain_preview.reset()
+		if _swap_terrain != null:
+			_swap_terrain.reset()
 
 func begin_preview_measurement() -> RefCounted:
 	preview_metrics = preload("res://scripts/benchmarks/road_preview_metrics.gd").new()
@@ -321,18 +327,50 @@ func _show_preview(points: PackedVector3Array) -> void:
 			_preview_metric_row = preview_metrics.request(sequence)
 		var stage_us := Time.get_ticks_usec()
 		var shown := false
+		var terrain_ready := true
 		if is_valid and bool(_preview.get("has_road_chunks", false)):
+			# Road and terrain stage before either is shown, so a frame shows both or neither.
+			var staged: Variant = _stage_preview_terrain()
+			terrain_ready = staged != null
 			shown = _preview_display.show(self, _preview, sequence)
+			if shown and terrain_ready:
+				_terrain_preview.commit(terrain_node, staged, sequence, _terrain_preview_invalidated.bind(_terrain_preview))
+			else:
+				if terrain_ready:
+					_terrain_preview.discard(staged)
+				_terrain_preview.clear()
 		if not shown:
 			_preview_display.clear()
-		_preview_drawn_sequence = sequence
+			_terrain_preview.clear()
+		# Terrain the renderer cannot stage yet (a streaming patch) is staged again next frame.
+		_preview_drawn_sequence = sequence if terrain_ready else 0
 		if preview_metrics != null:
 			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
 			preview_metrics.installed(sequence)
 	_update_preview_measurement_label(_preview.get("prepared_points", points), _preview)
 
+# The preview's terrain patches staged on the terrain renderer, or null when the renderer cannot
+# stage them yet. Nothing to stage (no patches, or no terrain renderer) is an empty batch.
+func _stage_preview_terrain() -> Variant:
+	var payloads: Variant = _preview.get("terrain_patches", [])
+	if not payloads is Array or payloads.is_empty() or not is_instance_valid(terrain_node):
+		return []
+	var staged: Array = _terrain_preview.stage(terrain_node, payloads, int(_preview.get("terrain_generation", 0)))
+	return staged if not staged.is_empty() else null
+
+# A resident patch under a terrain preview is about to change. The commit's own patch replaces a
+# held preview, released in the same call; a live preview is staged again next frame.
+func _terrain_preview_invalidated(preview) -> void:
+	if _swap_terrain != null and is_same(preview, _swap_terrain):
+		_swap_terrain.reset()
+		_swap_terrain = null
+	elif is_same(preview, _terrain_preview):
+		_terrain_preview.clear()
+		_preview_drawn_sequence = 0
+
 func _clear_preview_visual() -> void:
 	_preview_display.clear()
+	_terrain_preview.clear()
 	_preview_drawn_sequence = 0
 	if blueprint_mesh:
 		blueprint_mesh.mesh = null
@@ -347,6 +385,10 @@ func _hold_preview_until(generation: int) -> void:
 	_swap_display = _preview_display
 	_swap_generation = generation
 	_preview_display = PreviewDisplay.new()
+	if _swap_terrain != null:
+		_swap_terrain.reset()
+	_swap_terrain = _terrain_preview
+	_terrain_preview = TerrainPreview.new()
 	_preview_drawn_sequence = 0
 	_release_swapped_preview()
 
@@ -734,6 +776,9 @@ func reset_main_mesh_chunks() -> void:
 		_swap_display = null
 		_swap_generation = -1
 	_terrain_preview.reset()
+	if _swap_terrain != null:
+		_swap_terrain.reset()
+		_swap_terrain = null
 	_clear_preview_cache()
 	super.reset_main_mesh_chunks()
 	_queue_preview_update()

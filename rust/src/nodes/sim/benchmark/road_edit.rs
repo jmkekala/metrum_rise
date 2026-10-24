@@ -16,6 +16,9 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) add_ms: f64,
     /// Whether the exact road geometry came from the worker's latest completed preview.
     pub(crate) preview_plan_reused: bool,
+    /// Whether the commit installed the preview's terrain entries instead of building its own
+    /// (`ROAD-68-E`).
+    pub(crate) preview_terrain_adopted: bool,
     /// Reuse checks or a fresh local road solve; included in add_ms.
     pub(crate) road_plan_ms: f64,
     /// Deferred structural stamps, site capture and terrain compilation; included in add_ms.
@@ -53,6 +56,7 @@ impl RoadEditMetrics {
             core_work_ms,
             add_ms,
             preview_plan_reused,
+            preview_terrain_adopted,
             road_plan_ms,
             terrain_plan_ms,
             finalize_ms,

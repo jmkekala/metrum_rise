@@ -171,9 +171,9 @@ mod zoning_api;
 
 use async_terrain::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
-    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
-    WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
-    WaterPatchPayloadRequestState,
+    TerrainPatchPayloadKey, TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState,
+    WaterPatchMeshAsyncState, WaterPatchPayload, WaterPatchPayloadAsyncState,
+    WaterPatchPayloadRequest, WaterPatchPayloadRequestState,
 };
 use variant_export::{
     TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtRoads, TerrainCdtTileId, budget_ledger_entry_dict,

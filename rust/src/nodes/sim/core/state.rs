@@ -355,6 +355,9 @@ pub struct SimCore {
     pub(crate) road_tool_surface_generation: u64,
     /// What the road tool's context last received (`ROAD-68-E`); derived, never saved.
     pub(crate) road_tool_publisher: super::RoadToolPublisher,
+    /// The road tool's terrain inputs and the patches noted since their last rebuild
+    /// (`ROAD-68-E`); derived, never saved.
+    pub(crate) road_terrain_inputs: super::RoadTerrainInputsLog,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -463,6 +466,7 @@ impl SimCore {
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             road_tool_publisher: Default::default(),
+            road_terrain_inputs: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             snapshot_agent_scratch: Default::default(),
             slot_route_scratch: Default::default(),
@@ -487,6 +491,7 @@ impl SimCore {
 
     pub(crate) fn bump_global_terrain_payload_generation(&mut self) {
         self.terrain_payload_global_generation = self.next_terrain_payload_generation();
+        self.road_terrain_inputs.note_all();
     }
 
     pub(crate) fn bump_terrain_payload_patch_generations(&mut self, patch_keys: &[(usize, usize)]) {
@@ -502,53 +507,17 @@ impl SimCore {
                 .or_default()
                 .full_dirty_at = Some(generation);
         }
+        self.road_terrain_inputs.note(patch_keys.iter().copied());
     }
 
-    /// Marks the terrain a road edit's old and new pieces touch (`ROAD-68-D`): every render
-    /// patch and CDT tile within the grading envelope cap (the tile halo) of a changed piece's
-    /// XZ bounds. The patches get a new generation and the ledger stamps their tiles, so the
-    /// refined build re-assembles only those tiles. Returns the sorted patch keys. `O(changed
-    /// pieces * covered tiles)`.
+    /// Marks the terrain a road edit's old and new pieces touch (`ROAD-68-D`): the patches and
+    /// tiles of [`road_terrain_tiles`] get a new generation, and the ledger stamps the tiles, so
+    /// the refined build re-assembles only those tiles. Returns the sorted patch keys.
     pub(crate) fn bump_road_terrain_payload_generations(
         &mut self,
         changed_bounds: &[[f64; 4]],
     ) -> Vec<(usize, usize)> {
-        let margin_m =
-            f64::from(crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M);
-        let mut tiles = BTreeMap::<(usize, usize), BTreeSet<(i64, i64)>>::new();
-        let mut keys = Vec::new();
-        for bounds in changed_bounds {
-            let reach = [
-                bounds[0] - margin_m,
-                bounds[1] - margin_m,
-                bounds[2] + margin_m,
-                bounds[3] + margin_m,
-            ];
-            keys.clear();
-            self.heightmap.append_render_patch_keys_for_world_bounds(
-                reach[0] as f32,
-                reach[1] as f32,
-                reach[2] as f32,
-                reach[3] as f32,
-                &mut keys,
-            );
-            for &key in &keys {
-                let Some(patch) = self.heightmap.render_patch_world_bounds(key.0, key.1) else {
-                    continue;
-                };
-                let inside = [
-                    reach[0].max(f64::from(patch.0)),
-                    reach[1].max(f64::from(patch.1)),
-                    reach[2].min(f64::from(patch.2)),
-                    reach[3].min(f64::from(patch.3)),
-                ];
-                if inside[0] <= inside[2] && inside[1] <= inside[3] {
-                    tiles.entry(key).or_default().extend(
-                        crate::simulation::terrain::terrain_cdt_tile_keys_for_world_bounds(inside),
-                    );
-                }
-            }
-        }
+        let tiles = road_terrain_tiles(&self.heightmap, changed_bounds);
         if tiles.is_empty() {
             return Vec::new();
         }
@@ -566,6 +535,7 @@ impl SimCore {
                 ledger.road_tile_dirty_at.insert(tile, generation);
             }
         }
+        self.road_terrain_inputs.note(tiles.keys().copied());
         tiles.into_keys().collect()
     }
 
@@ -623,6 +593,7 @@ impl SimCore {
             if ledger.full_dirty_at.is_none() && ledger.road_tile_dirty_at.is_empty() {
                 self.refined_terrain_assembly_ledgers.remove(&key);
             }
+            self.road_terrain_inputs.note([key]);
         }
         true
     }
@@ -1941,8 +1912,68 @@ impl SimCore {
             &dirty_patch_keys,
         );
         self.bump_terrain_payload_patch_generations(&dirty_patch_keys);
+        // A road-touched source near these sites queries them with a wider margin (`ROAD-68-E`).
+        let sites_margin_m =
+            super::road_terrain_inputs::road_terrain_sites_margin_m(&self.heightmap);
+        let mut site_query_keys = Vec::new();
+        for &(min_x, min_z, max_x, max_z) in boxes {
+            self.heightmap.append_render_patch_keys_for_world_bounds(
+                min_x - sites_margin_m,
+                min_z - sites_margin_m,
+                max_x + sites_margin_m,
+                max_z + sites_margin_m,
+                &mut site_query_keys,
+            );
+        }
+        self.road_terrain_inputs.note(site_query_keys);
         self.terrain_dirty = true;
     }
+}
+
+/// The render patches and 64 m CDT tiles a road edit's changed pieces touch (`ROAD-68-D`):
+/// every patch and tile within the grading envelope cap (the tile halo) of a changed piece's XZ
+/// bounds, by patch. The commit stamps them; the preview builds the same patches
+/// (`ROAD-68-E`). `O(changed pieces * covered tiles * log)`.
+pub(crate) fn road_terrain_tiles(
+    heightmap: &crate::simulation::terrain::TerrainSystem,
+    changed_bounds: &[[f64; 4]],
+) -> BTreeMap<(usize, usize), BTreeSet<(i64, i64)>> {
+    let margin_m = f64::from(crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M);
+    let mut tiles = BTreeMap::<(usize, usize), BTreeSet<(i64, i64)>>::new();
+    let mut keys = Vec::new();
+    for bounds in changed_bounds {
+        let reach = [
+            bounds[0] - margin_m,
+            bounds[1] - margin_m,
+            bounds[2] + margin_m,
+            bounds[3] + margin_m,
+        ];
+        keys.clear();
+        heightmap.append_render_patch_keys_for_world_bounds(
+            reach[0] as f32,
+            reach[1] as f32,
+            reach[2] as f32,
+            reach[3] as f32,
+            &mut keys,
+        );
+        for &key in &keys {
+            let Some(patch) = heightmap.render_patch_world_bounds(key.0, key.1) else {
+                continue;
+            };
+            let inside = [
+                reach[0].max(f64::from(patch.0)),
+                reach[1].max(f64::from(patch.1)),
+                reach[2].min(f64::from(patch.2)),
+                reach[3].min(f64::from(patch.3)),
+            ];
+            if inside[0] <= inside[2] && inside[1] <= inside[3] {
+                tiles.entry(key).or_default().extend(
+                    crate::simulation::terrain::terrain_cdt_tile_keys_for_world_bounds(inside),
+                );
+            }
+        }
+    }
+    tiles
 }
 
 // The first slot of the hour after `slot`'s.

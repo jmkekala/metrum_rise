@@ -573,9 +573,13 @@ roadbed in `O(1)` and the published road chunks in `O(1)`, and takes its graph f
 command's routing rebuild made (commit, undo, road bulldoze); the replica follows by the records
 of the owners whose pieces the roadbed rebuilt. Sites, zoning and field reservations are not in
 the view yet: the parcel and field corridor checks run at the commit only (`ROAD-68-E` part 2,
-[open question 1](#road-68-open-questions), plans them from the preview's pieces), and the
-terrain inputs (refined patch entries, assembly ledgers, ownership margins, site snapshots) wait
-for terrain in the preview.
+[open question 1](#road-68-open-questions), plans them from the preview's pieces). The terrain
+inputs are a persistent map published with the view in `O(1)` (round 3): per render patch the
+refined cache entry, the assembly ledger, the site ownership and the building sites within the
+widest road query margin. The core notes every patch whose inputs may change (generation bumps,
+ledger stamps and acknowledgements, cache inserts and removals, ownership refreshes, site
+changes within that margin) and rebuilds only those patches at the next publication; a world
+reset or global terrain generation rebuilds every patch.
 
 **Preview.** `preview_road(context, stroke)` runs synchronously in RoadTool's early process
 callback:
@@ -603,10 +607,23 @@ signs" and builds both from the layout's `Crosswalk` and arms for preview and co
 function); no cheaper exact path exists now (lanes for the closure would need a lane-system
 replica), so payload equality stays open for those strokes
 ([open question 24](#road-68-open-questions)). The parcel and field corridor checks run at the
-commit only ([open question 23](#road-68-open-questions)). Stage 3 and the terrain half of 4 are open. The fingerprint is the road-tool surface
+commit only ([open question 23](#road-68-open-questions)). The fingerprint is the road-tool surface
 generation, the roadbed generation and the source and visual terrain generations: the roadbed
 generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
-generation was added; terrain patch and site revisions join it with terrain in the preview.
+generation was added.
+
+Stage 3 and the terrain half of 4 (round 3): the patches and tiles the preview's old and new
+pieces touch are the commit's (`road_terrain_tiles`, the function the commit's stamps use). Each
+patch's ownership (`road_terrain_patch_margin_for` on the edited replica and the preview's
+roadbed), assembly scope, margins and site query come from the one source function the core's
+requests and the commit's staged validation also call (`refined_terrain_patch_source`); the
+ledger is the published one with the preview's tiles stamped at a provisional generation later
+than every stamp, as the commit's new generation is. The patches build with the commit's job
+and entry functions on the shared pool. The terrain half of the fingerprint is each built
+patch's source signature: the previous entry it reuses (by identity), the scope, the ownership
+flags and margin, and the sites it reads. The payloads are the dictionaries
+`poll_ready_terrain_patch_payloads` returns, with the shading masks baked as the payload
+workers bake them; Godot stages them with `road_terrain_preview.gd` beside the road chunks.
 
 **Commit.** A click submits the preview's plan as an ordered simulation operation.
 
@@ -621,8 +638,14 @@ As built (`ROAD-68-E` part 1): the click submits the latest preview of exactly t
 current fingerprint the commit uses its plan and installs its pieces when `can_install` holds,
 otherwise it plans and compiles locally. The commit acknowledgement carries its generation; the
 road tool holds the preview until that generation's chunks are installed, and the install
-(`NetworkTool._road_mesh_installed`) releases it in the same call. Terrain is still built by the
-commit's own staged validation.
+(`NetworkTool._road_mesh_installed`) releases it in the same call. When the commit installed
+the preview's pieces, its staged terrain validation builds its own sources and compares their
+signatures with the preview's, patch for patch; on a match it installs the preview's entries,
+re-stamped with the commit's patch generations, instead of building them
+(`preview_terrain_adopted`), otherwise it builds them as before. The comparison is of the
+inputs themselves, so a context that missed a change only costs the reuse, never a wrong patch.
+The road tool holds the terrain preview until the commit's own patches replace it: the terrain
+renderer's `patch_render_will_change` releases it in the call that installs them.
 
 **Undo.** The undo record holds the replaced pieces (`Arc`) and terrain patch revisions; undo
 restores them by swapping.
@@ -1407,6 +1430,22 @@ These need a user decision; work that does not depend on them continues.
     the closure would need a lane-system replica beside the graph replica. The target stands:
     `ROAD-68-F` builds both from the layout (`Crosswalk`, arms) in one function that preview and
     commit share; gate E's payload acceptance stays open until then.
+25. **Godot stage timings at the CPU's idle clock (`ROAD-68-E` part 1) — decided by the coordinator
+    under the user's delegation, 2026-10-25, for review: option (a).**
+    - **Evidence.** The headless stream test sleeps 16.7 ms between inputs; on an otherwise idle
+      machine the P-cores then stay at the 800 MHz floor (0.77-0.9 GHz measured through the motion
+      phases), and every preview stage runs about six times slower: Godot stage and install
+      2.1-3.0 ms p50 against 2.0, native stages 1.0-2.0 ms. At operating clock the same library
+      measures 0.41-0.50 ms for the Godot stage and harness-like native stages (gate E round 3).
+      In the game, rendering and the simulation keep the clock up; a paused, empty city at 60
+      fps may not.
+    - **Options.** (a) state the stage budgets at operating clock and measure the stream with
+      back-to-back frames (`METRUM_PREVIEW_STREAM_INTERVAL_SEC=0`), keeping the idle-clock
+      numbers as an observation; (b) hold the budgets at the idle clock too, which needs about a
+      sixfold cut of every stage; (c) keep the main thread busy between frames (a spin), which
+      wastes power to win a benchmark.
+    - **Recommendation.** (a): the budgets describe work, and the end-to-end 16.7 ms holds even at
+      the idle clock (_process max 9.7 ms). The idle-clock numbers stay recorded with every run.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -3023,6 +3062,56 @@ staging) 2.1–3.2 ms p50 against the 2.0 ms Godot budget. B's library gives the
 Headless frames idle between inputs, so cores may clock down and caches go cold; the gap is not
 attributed yet. The Godot stage and the in-Godot native stages are open misses (profile with
 continuously rendered frames next); the 16.7 ms frame holds on every fixture (max 9.7 ms).
+
+Round 3 (part 1, 2026-10-25, work in progress):
+
+- **Decision (coordinator under the user's delegation, 2026-10-24, for review): terrain in the
+  preview.** A persistent per-patch terrain context published with the view and refreshed from
+  a change log; one source-phase implementation for the live core and the published context;
+  the commit installs the preview's entries when they match; undo swaps the replaced refined
+  entries back. As built, the match is decided by the patches' full source signatures (previous
+  entry by identity, assembly scope, ownership and margin, sites) instead of payload
+  generations and entry identities alone: the signature is what the build reads besides the
+  roads and the heightmap, which the road fingerprint and the installed delta already cover, so
+  a context that missed a change cannot install a wrong patch.
+- **Terrain in the preview.** Stage 3 and the terrain half of 4 (see
+  [Preview](#preview-commit-undo-and-load)): `RoadTerrainInputs` (the published map, refreshed
+  from `RoadTerrainInputsLog`), `road_terrain_tiles` (factored out of the commit's stamps),
+  `refined_terrain_patch_source` (one source function for core requests, the commit and the
+  preview), `SimulationNode::build_road_preview_terrain` and the commit's adoption in
+  `validate_staged_road_terrain`. Bridge: `preview_road` returns `terrain_patches` (payload
+  dictionaries with baked shading masks), `terrain_generation`, `terrain_error` and
+  `terrain_ms`. Godot: `road_tool.gd` stages the terrain patches with `road_terrain_preview.gd`
+  before it shows the road chunks and commits both in the same call; an accepted commit holds the
+  terrain preview until the commit's own patches replace it.
+- **Tests.** `preview_terrain_is_what_the_commit_installs` (flat and sloped T): the commit adopts
+  the preview's entries (`preview_terrain_adopted`), the installed buffers are the preview's own
+  `Arc`s at the commit's generations, and every refined patch's render buffers equal a fresh
+  commit's bit for bit; `a_stale_preview_recompiles_to_a_fresh_commit` now also checks that a
+  stale preview's terrain is rebuilt and equals a fresh commit's.
+- **The Godot gap, attributed.** The in-Godot native stages ran 4-5 times the harness's because
+  the CPU ran them at its lowest clock. `perf stat -I 250` of the headless stream (round-2 B
+  library, `RAYON_NUM_THREADS=4`, pinned, both locks, nothing else running): 4.8-5.0 GHz while
+  Godot loads, 0.77-0.9 GHz through every motion phase (intel_pstate, powersave governor, HWP
+  `balance_performance`, 800 MHz floor, C10 idle): the headless test sleeps 16.7 ms between
+  inputs and the main thread works about 1.3 ms of each, so on an otherwise idle machine the
+  cores never leave the floor. The same library and configuration ran at harness speed whenever
+  the clock was up: back-to-back frames, 2 ms or 5 ms intervals, a busy-wait instead of the
+  timer, or another process busy on the machine (`sloped_t` over five such runs: plan 0.22-0.27,
+  roadbed 0.27-0.32, chunks 0.24-0.31, packing 0.07-0.09, Godot stage and install 0.41-0.50 ms
+  p50; the native harness in the same session 0.19 / 0.25 / 0.23 ms on its own `sloped_t`). Pool
+  size is not the cause (1, 4 and 24 workers alike when the clock is up); 24 workers pinned to the
+  8 P-cores do slow the main thread by spinning after pool work (back-to-back frames 0.6-1.0 ms
+  per stage, and the native harness with 8 workers on 8 CPUs is twice as slow), so timing runs
+  use 4 workers, as the budget is stated. Per-call allocation and Variant conversion are inside
+  the 0.07-0.09 ms packing. No code change follows;
+  `road_preview_stream_test.gd` takes `METRUM_PREVIEW_STREAM_INTERVAL_SEC` (0 drives frames
+  back to back) so the stage timings are reproducible at operating clock
+  ([open question 25](#road-68-open-questions)).
+- **Open in part 1:** undo's terrain record (the replaced refined entries swapped back), a
+  Godot test of the terrain staging and swap on a resident terrain renderer, the roadbed p95
+  per-pose scratch, the context refresh and graph copy at 10k and 100k, the load
+  `unpinned_nodes` test and timing, and the rebase onto gate D.
 
 ### `ROAD-68-F` — remaining families
 

@@ -5,8 +5,8 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadRejection, SERVICE_BUILD_COST_PER_LOT_CELL,
-    SimCore,
+    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadPreviewTerrain, RoadRejection,
+    SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
@@ -85,24 +85,30 @@ impl SimCore {
     /// restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None)
+        self.validate_staged_road_render_installing(None, None)
+            .is_some()
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
-    /// apply (`ROAD-68-E`). The undo record keeps what the install replaced.
+    /// apply, and then its terrain entries when the commit's sources match the preview's
+    /// (`ROAD-68-E`). The undo record keeps what the install replaced. `Some(adopted)` when the
+    /// edit is accepted, telling whether the preview's terrain was installed.
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
-    ) -> bool {
-        let (patches, restore) = self.publish_network_surface(false, delta);
+        terrain: Option<&RoadPreviewTerrain>,
+    ) -> Option<bool> {
+        let (patches, restore, installed) = self.publish_network_surface(false, delta);
         let validation = match self.transit_network.roadbed.failed_nodes().first() {
             None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
-                self, &patches,
+                self,
+                &patches,
+                terrain.filter(|_| installed),
             ),
             Some(node) => Err(format!("node_piece_failed node={node}")),
         };
         match validation {
-            Ok(entries) => {
+            Ok((entries, adopted)) => {
                 self.insert_refined_terrain_patch_cache_entries(entries);
                 if self.transit_network.road_edit_is_staged()
                     && let Some(record) = self.undo_stack.back_mut()
@@ -110,7 +116,7 @@ impl SimCore {
                     record.roadbed = Some(restore);
                 }
                 self.accept_staged_road_edit();
-                true
+                Some(adopted)
             }
             Err(reason) => {
                 self.rollback_staged_road_edit(Some(&restore));
@@ -127,7 +133,7 @@ impl SimCore {
                     "road_commit_rejected reason=render_geometry_invalid detail={} rollback=true",
                     reason
                 );
-                false
+                None
             }
         }
     }
@@ -2104,20 +2110,22 @@ impl SimCore {
 
     /// Publishes the roadbed and dirties the terrain patches its changed pieces touch. Installs
     /// `delta` (a preview's pieces, `ROAD-68-E`) when the roadbed still stands where it was
-    /// compiled, otherwise compiles the dirty closure. Returns the dirtied patches and what the
-    /// install replaced, for undo.
+    /// compiled, otherwise compiles the dirty closure. Returns the dirtied patches, what the
+    /// install replaced, for undo, and whether `delta` was the one installed.
     pub(crate) fn publish_network_surface(
         &mut self,
         rebuild_entrances: bool,
         delta: Option<&RoadbedDelta>,
-    ) -> (Vec<(usize, usize)>, RoadbedRestore) {
+    ) -> (Vec<(usize, usize)>, RoadbedRestore, bool) {
         let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
 
         let compile_start = road_debug.then(Instant::now);
         let roadbed = &mut self.transit_network.roadbed;
         let compiled;
-        let delta = match delta.filter(|delta| roadbed.can_install(delta)) {
+        let preview = delta.filter(|delta| roadbed.can_install(delta));
+        let installed = preview.is_some();
+        let delta = match preview {
             Some(delta) => delta,
             None => {
                 compiled = roadbed.compile_delta(&self.region_graph);
@@ -2163,7 +2171,7 @@ impl SimCore {
                     .unwrap_or(0.0)
             );
         }
-        (road_terrain_patches, restore)
+        (road_terrain_patches, restore, installed)
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within

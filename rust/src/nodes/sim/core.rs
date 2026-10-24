@@ -19,6 +19,7 @@ mod road_commit;
 mod road_edit_plan;
 mod road_preview;
 mod road_rejection;
+mod road_terrain_inputs;
 mod road_tool_context;
 mod scenario;
 mod schedule;
@@ -50,6 +51,7 @@ pub(crate) use budget::{
 pub(crate) use road_preview::{
     RoadCorridorClearance, RoadPreviewRequest, RoadToolQuerySnapshot,
 };
+pub(crate) use road_terrain_inputs::{RoadTerrainInputs, RoadTerrainInputsLog, RoadTerrainPatchInputs};
 pub(crate) use road_tool_context::{RoadToolPublisher, RoadToolShared};
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
@@ -59,8 +61,10 @@ pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use terrain_payloads::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
     CachedTerrainCdtRoadInput, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyScope,
+    ROAD_PREVIEW_TERRAIN_GENERATION, RefinedTerrainAssemblyLedger,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey,
+    RefinedTerrainPatchCacheKey, RoadPreviewTerrain, RoadPreviewTerrainPatch,
+    RoadTerrainSourceSignature,
 };
 pub(crate) use thread::run_sim_thread;
 pub(crate) use water_preview::{

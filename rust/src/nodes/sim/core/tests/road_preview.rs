@@ -63,8 +63,22 @@ fn stroke(core: &SimCore, ends: [Vector2; 2]) -> Vec<Vector3> {
     .to_vec()
 }
 
-fn context(core: &SimCore) -> RoadPreviewContext {
+// The road tool's context as a publication leaves it: terrain inputs rebuilt first.
+fn context(core: &mut SimCore) -> RoadPreviewContext {
+    core.refresh_road_terrain_inputs();
     RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"))
+}
+
+// Every refined cache entry's final render buffers, by patch, as `Debug` text: it prints each
+// float's shortest round-trip form, so equal text is equal bits.
+fn terrain_buffers(core: &SimCore) -> BTreeMap<(usize, usize), String> {
+    core.refined_terrain_patch_cache
+        .values()
+        .map(|entry| {
+            let key = (entry.key.patch_x, entry.key.patch_z);
+            (key, format!("{:?}", entry.mesh_buffers))
+        })
+        .collect()
 }
 
 fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview {
@@ -105,7 +119,7 @@ fn a_current_preview_is_what_the_commit_installs() {
         let mut core = committed(&[THROUGH], &[0], sloped);
         let mut control = committed(&[THROUGH], &[0], sloped);
         let points = stroke(&core, side);
-        let mut context = context(&core);
+        let mut context = context(&mut core);
         let preview = Arc::new(preview(&mut context, &points));
         assert!(
             preview.validation.is_valid,
@@ -153,7 +167,7 @@ fn a_stale_preview_recompiles_to_a_fresh_commit() {
     for sloped in [false, true] {
         let mut core = committed(&[THROUGH], &[0], sloped);
         let side_points = stroke(&core, side);
-        let mut context = context(&core);
+        let mut context = context(&mut core);
         let stale = Arc::new(preview(&mut context, &side_points));
         let other = stroke(&core, elsewhere.0);
         commit(&mut core, &other, None);
@@ -161,6 +175,10 @@ fn a_stale_preview_recompiles_to_a_fresh_commit() {
         assert!(
             !core.last_road_edit_metrics.preview_plan_reused,
             "sloped {sloped}: a stale fingerprint recompiles"
+        );
+        assert!(
+            !core.last_road_edit_metrics.preview_terrain_adopted,
+            "sloped {sloped}: a stale preview's terrain is rebuilt"
         );
         let control = committed(&[THROUGH, elsewhere], &[0, 1], sloped);
         let mut control = control;
@@ -170,6 +188,73 @@ fn a_stale_preview_recompiles_to_a_fresh_commit() {
             bits_only(&pieces(&control)),
             "sloped {sloped}: the stale commit equals a fresh one"
         );
+        assert_eq!(
+            terrain_buffers(&core),
+            terrain_buffers(&control),
+            "sloped {sloped}: the stale commit's terrain equals a fresh one's"
+        );
+    }
+}
+
+#[test]
+fn preview_terrain_is_what_the_commit_installs() {
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH], &[0], sloped);
+        let mut control = committed(&[THROUGH], &[0], sloped);
+        let points = stroke(&core, side);
+        let mut context = context(&mut core);
+        let preview = Arc::new(preview(&mut context, &points));
+        let terrain = preview
+            .pieces
+            .as_ref()
+            .expect("a valid stroke compiles pieces")
+            .terrain
+            .as_ref()
+            .expect("the preview's terrain builds");
+        let entries: Vec<_> = terrain
+            .patches
+            .iter()
+            .filter_map(|patch| patch.entry.as_ref())
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "sloped {sloped}: the T touches refined terrain"
+        );
+        commit(&mut core, &points, Some(Arc::clone(&preview)));
+        assert!(
+            core.last_road_edit_metrics.preview_terrain_adopted,
+            "sloped {sloped}: a current preview's terrain is the commit's"
+        );
+        for entry in &entries {
+            let live = &core.refined_terrain_patch_cache[&entry.key];
+            assert_eq!(
+                live.surface_generation,
+                core.terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z),
+                "the adopted entry carries the commit's generation"
+            );
+            if let (Some(live), Some(previewed)) = (&live.mesh_buffers, &entry.mesh_buffers) {
+                assert!(Arc::ptr_eq(live, previewed), "the preview's own buffers");
+            }
+        }
+        commit(&mut control, &points, None);
+        assert!(!control.last_road_edit_metrics.preview_terrain_adopted);
+        assert_eq!(
+            terrain_buffers(&core),
+            terrain_buffers(&control),
+            "sloped {sloped}: the adopted terrain equals a fresh commit's bit for bit"
+        );
+        for entry in &entries {
+            assert_eq!(
+                format!("{:?}", entry.mesh_buffers),
+                format!(
+                    "{:?}",
+                    control.refined_terrain_patch_cache[&entry.key].mesh_buffers
+                ),
+                "sloped {sloped}: the previewed patch {:?} equals a fresh commit's",
+                entry.key
+            );
+        }
     }
 }
 
@@ -181,7 +266,7 @@ fn undo_swaps_the_pre_edit_pieces_back() {
         core.benchmark_mode = false;
         let before = pieces(&core);
         let points = stroke(&core, side);
-        let mut context = context(&core);
+        let mut context = context(&mut core);
         let preview = Arc::new(preview(&mut context, &points));
         commit(&mut core, &points, Some(preview));
         assert_ne!(bits_only(&pieces(&core)), bits_only(&before));
@@ -201,7 +286,7 @@ fn the_replica_follows_commits_and_undo() {
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
     let mut core = committed(&[THROUGH], &[0], true);
     core.benchmark_mode = false;
-    let mut context = context(&core);
+    let mut context = context(&mut core);
     // The initial capture was made outside the publisher; its first publication replaces it.
     let first = core.publish_road_tool_view(None).expect("current roadbed");
     assert!(context.apply(&first));
@@ -316,7 +401,7 @@ fn preview_chunks_are_the_committed_chunks_without_lane_layers() {
     for sloped in [false, true] {
         let mut core = committed(&[THROUGH], &[0], sloped);
         let points = stroke(&core, apart);
-        let mut context = context(&core);
+        let mut context = context(&mut core);
         let preview = Arc::new(preview(&mut context, &points));
         let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
         let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
@@ -340,7 +425,7 @@ fn save_and_load_reproduce_the_pieces_bitwise() {
     for sloped in [false, true] {
         let mut core = committed(&[THROUGH], &[0], sloped);
         let points = stroke(&core, side);
-        let mut context = context(&core);
+        let mut context = context(&mut core);
         let previewed = Arc::new(preview(&mut context, &points));
         commit(&mut core, &points, Some(previewed));
         let before = pieces(&core);
@@ -390,14 +475,15 @@ fn benchmark_road_preview_stages() {
     for (name, roads, start, pose) in cases {
         let order: Vec<usize> = (0..roads.len()).collect();
         let mut core = committed(&roads, &order, true);
-        let mut context = context(&core);
+        let mut context = context(&mut core);
         // Follow the publisher, so the commit below refreshes the context by records.
         let first = core.publish_road_tool_view(None).expect("current roadbed");
         assert!(context.apply(&first));
         let strokes: Vec<Vec<Vector3>> = (0..8)
             .map(|index| stroke(&core, [start, pose(index as f32 / 8.0)]))
             .collect();
-        let mut stages = [(); 4].map(|()| Vec::new());
+        let mut stages = [(); 5].map(|()| Vec::new());
+        let mut terrain_patches = 0;
         for repetition in 0..60 {
             for points in &strokes {
                 let start = Instant::now();
@@ -408,18 +494,26 @@ fn benchmark_road_preview_stages() {
                     "{name}: every pose previews its chunks: {}",
                     preview.validation.invalid_reason
                 );
+                let terrain = preview.pieces.as_ref().map(|pieces| &pieces.terrain);
+                let Some(Ok(terrain)) = terrain else {
+                    panic!("{name}: every pose previews its terrain: {terrain:?}");
+                };
+                terrain_patches = terrain_patches.max(terrain.patches.len());
                 if repetition >= 10 {
                     let times = preview.times;
-                    for (samples, ms) in stages
-                        .iter_mut()
-                        .zip([times.plan_ms, times.roadbed_ms, times.payload_ms, total_ms])
-                    {
+                    for (samples, ms) in stages.iter_mut().zip([
+                        times.plan_ms,
+                        times.roadbed_ms,
+                        times.payload_ms,
+                        times.terrain_ms,
+                        total_ms,
+                    ]) {
                         samples.push(ms);
                     }
                 }
             }
         }
-        let [plan, roadbed, payload, total] = stages.map(|mut samples| {
+        let [plan, roadbed, payload, terrain, total] = stages.map(|mut samples| {
             (percentile(&mut samples, 0.5), percentile(&mut samples, 0.95))
         });
         // One commit of the first pose: its graph copy and the context refresh it publishes.
@@ -435,7 +529,7 @@ fn benchmark_road_preview_stages() {
         assert!(context.apply(&publication));
         let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "road_preview_stages fixture={name} workers={} poses=8 samples={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} terrain_adopted={} edges={}",
             crate::thread_pools::install(rayon::current_num_threads),
             8 * 50,
             plan.0,
@@ -444,11 +538,15 @@ fn benchmark_road_preview_stages() {
             roadbed.1,
             payload.0,
             payload.1,
+            terrain.0,
+            terrain.1,
+            terrain_patches,
             total.0,
             total.1,
             outcome.snapshot_ms,
             apply_ms,
             graph_copy_ms,
+            core.last_road_edit_metrics.preview_terrain_adopted,
             core.region_graph.edge_count(),
         );
     }

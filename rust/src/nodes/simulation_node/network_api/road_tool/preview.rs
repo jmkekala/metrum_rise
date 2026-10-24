@@ -221,7 +221,7 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
-        let (preview, span_m, origin) = {
+        let (preview, span_m, origin, view_terrain) = {
             let mut context = self
                 .road_tool
                 .context
@@ -238,7 +238,12 @@ impl SimulationNode {
             context.last_preview = Some(Arc::clone(&preview));
             let roadbed = &context.view.roadbed;
             let (origin_x, origin_z) = roadbed.chunk_origin_m();
-            (preview, roadbed.chunk_span_m(), (origin_x, origin_z))
+            (
+                preview,
+                roadbed.chunk_span_m(),
+                (origin_x, origin_z),
+                Arc::clone(&context.view.terrain),
+            )
         };
         let mut dict = Self::road_candidate_validation_to_dictionary(
             &preview.validation,
@@ -265,9 +270,12 @@ impl SimulationNode {
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);
+        dict.set("terrain_ms", preview.times.terrain_ms);
         let packing_start = std::time::Instant::now();
         let mut chunks = PackedInt32Array::new();
         let mut road_chunks = VarArray::new();
+        let mut terrain_patches = VarArray::new();
+        let mut terrain_error = String::new();
         if let Some(pieces) = &preview.pieces {
             for &(x, z) in &pieces.changed_chunks {
                 chunks.push(x);
@@ -276,7 +284,19 @@ impl SimulationNode {
             if let Some(meshes) = &pieces.chunks {
                 road_chunks = Self::preview_road_chunk_updates(&pieces.changed_chunks, meshes);
             }
+            match &pieces.terrain {
+                Ok(terrain) => {
+                    terrain_patches = Self::preview_terrain_patch_payloads(&view_terrain, terrain);
+                }
+                Err(reason) => terrain_error.clone_from(reason),
+            }
         }
+        dict.set("terrain_patches", terrain_patches);
+        dict.set("terrain_error", terrain_error.as_str());
+        dict.set(
+            "terrain_generation",
+            generation(crate::nodes::sim::core::ROAD_PREVIEW_TERRAIN_GENERATION),
+        );
         let has_road_chunks = preview
             .pieces
             .as_ref()
@@ -301,6 +321,67 @@ impl SimulationNode {
         dict.set("has_pieces", preview.pieces.is_some());
         dict.set("changed_chunks", chunks);
         dict
+    }
+
+    // The preview's terrain patches in the format `poll_ready_terrain_patch_payloads` returns
+    // them, shading masks baked as the payload workers bake them (in parallel on the shared
+    // pool): a refined patch's entry, or the raw heightmap patch of one the edit leaves raw.
+    // `surface_generation` is the provisional preview generation, never acknowledged.
+    fn preview_terrain_patch_payloads(
+        terrain: &TerrainSystem,
+        preview: &crate::nodes::sim::core::RoadPreviewTerrain,
+    ) -> VarArray {
+        use crate::nodes::sim::core::ROAD_PREVIEW_TERRAIN_GENERATION;
+        let payloads: Vec<TerrainPatchPayload> = crate::thread_pools::install(|| {
+            preview
+                .patches
+                .par_iter()
+                .filter_map(|patch| {
+                    let (key, data) = match &patch.entry {
+                        Some(entry) => (
+                            TerrainPatchPayloadKey {
+                                patch_x: entry.key.patch_x,
+                                patch_z: entry.key.patch_z,
+                                render_step_mm: entry.key.render_step_mm,
+                            },
+                            TerrainPatchPayloadData::Refined {
+                                patch: Arc::clone(entry),
+                            },
+                        ),
+                        None => {
+                            let snapshot =
+                                terrain.visual_patch_snapshot(patch.key.0, patch.key.1)?;
+                            let height_bytes = Self::f32_bytes_vec(&snapshot.height_data);
+                            (
+                                TerrainPatchPayloadKey {
+                                    patch_x: patch.key.0,
+                                    patch_z: patch.key.1,
+                                    render_step_mm: 0,
+                                },
+                                TerrainPatchPayloadData::Regular {
+                                    patch: snapshot,
+                                    height_bytes,
+                                },
+                            )
+                        }
+                    };
+                    let mut payload = TerrainPatchPayload {
+                        key,
+                        request_id: 0,
+                        surface_generation: ROAD_PREVIEW_TERRAIN_GENERATION,
+                        data,
+                        mask_bytes: Vec::new(),
+                    };
+                    payload.bake_shading_masks();
+                    Some(payload)
+                })
+                .collect()
+        });
+        let mut patches = VarArray::new();
+        for payload in &payloads {
+            patches.push(&Self::terrain_patch_payload_dict(payload).to_variant());
+        }
+        patches
     }
 
     // The preview's changed chunks in the committed publication's update format: a chunk the

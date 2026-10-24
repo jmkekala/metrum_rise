@@ -9,11 +9,18 @@ const Metrics := preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
 const MOTION_FRAMES := 96
 const INPUT_INTERVAL_SEC := 1.0 / 60.0
 var motion_frames: int = MOTION_FRAMES
+# Seconds between inputs. A headless run idles through each wait, and on an otherwise idle
+# machine the CPU then holds the stages at its lowest clock; METRUM_PREVIEW_STREAM_INTERVAL_SEC=0
+# drives the frames back to back, as continuously rendered frames keep the clock up.
+var input_interval_sec: float = INPUT_INTERVAL_SEC
 
 func _run() -> void:
 	var requested_frames := int(OS.get_environment("METRUM_PREVIEW_STREAM_FRAMES"))
 	if requested_frames > 0:
 		motion_frames = requested_frames
+	var requested_interval := OS.get_environment("METRUM_PREVIEW_STREAM_INTERVAL_SEC")
+	if not requested_interval.is_empty():
+		input_interval_sec = maxf(float(requested_interval), 0.0)
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
 	var fixtures := []
@@ -31,7 +38,7 @@ func _run() -> void:
 		fixtures.append(await _stream_fixture(fixture))
 	var capture := {
 		"schema_version": 1, "success": _failures == 0, "fixtures": fixtures,
-		"input_frames": motion_frames, "input_interval_sec": INPUT_INTERVAL_SEC,
+		"input_frames": motion_frames, "input_interval_sec": input_interval_sec,
 		"binary_sha256": FileAccess.get_sha256("res://bin/libmetrum_rise.so"),
 		"tool_sha256": FileAccess.get_sha256("res://scripts/tools/road_tool.gd"),
 		"harness_sha256": FileAccess.get_sha256(get_script().resource_path),
@@ -88,7 +95,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	var before := simulation.get_road_benchmark_state()
 	var samples := []
 	var process_times := []
-	var stage_times := {"plan_ms": [], "roadbed_ms": [], "payload_ms": [], "packing_ms": [], "godot_ms": []}
+	var stage_times := {"plan_ms": [], "roadbed_ms": [], "payload_ms": [], "terrain_ms": [], "packing_ms": [], "godot_ms": []}
 	var started_us := Time.get_ticks_usec()
 	var shown_frames := 0
 	var final_points := PackedVector3Array()
@@ -120,17 +127,20 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		if valid and shown:
 			shown_frames += 1
 			var native := 0.0
-			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "packing_ms"]:
+			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "terrain_ms", "packing_ms"]:
 				var ms := float(preview.get(stage, 0.0))
 				stage_times[stage].append(ms)
 				native += ms
-			# The rest of the frame: the bridge call and the chunk staging and install.
+			# The rest of the frame: the bridge call and the road and terrain staging and install.
 			stage_times["godot_ms"].append(maxf(frame_ms - native, 0.0))
 		samples.append({"frame": index, "input_us": input_us, "display_us": displayed_us, "sequence": int(preview.get("sequence", 0)), "valid": valid})
 		# Optional rendered pose diagnostics deliberately stall this trace; exclude them from timings.
 		if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty() and index in [16, 24, 40]:
 			await _capture(tool.road_mesh_root, fixture.name + "_motion_" + str(index))
-		await create_timer(INPUT_INTERVAL_SEC).timeout
+		if input_interval_sec > 0.0:
+			await create_timer(input_interval_sec).timeout
+		else:
+			await process_frame
 	var motion_ms := float(Time.get_ticks_usec() - started_us) / 1000.0
 	_expect(shown_frames >= motion_frames / 2, "the junction must show during motion: fixture=%s shown=%d" % [fixture.name, shown_frames])
 	var after := simulation.get_road_benchmark_state()
