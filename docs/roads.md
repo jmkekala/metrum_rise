@@ -602,7 +602,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | open | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
-| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; the commit still misses a frame on other stages ([open question 19](#road-68-open-questions)) |
+| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; the commit still misses a frame on other stages ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -1002,7 +1002,7 @@ These need a user decision; work that does not depend on them continues.
       other footpaths there, and the walking proof is withdrawn on such a network. The legacy rule
       joined it to the corner between the nearest sidewalk arms, across the car-only road. No
       fixture or perf city has one.
-18. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution, open).** In one
+20. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution, open).** In one
     session the last pre-`ROAD-68` code (`d6c80f91`) and the `ROAD-68-G` base (`c59955e6` plus
     the gate's test-only harness) ran the economy performance contract A B B A, each on its own
     generated cities ([attribution](#attribution-of-the-perf-contract-rise-road-68-g)). Five of the
@@ -1017,7 +1017,7 @@ These need a user decision; work that does not depend on them continues.
     find which supplier candidates the new lanes add or remove at each tier and fix the cause if
     it is a defect; or accept the new counts and re-baseline these two limits (user decision).
 
-19. **The commit's other stages exceed a frame (`ROAD-68-G` measurement, open).** With the CCH
+21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement, open).** With the CCH
     off the commit, click → acknowledgement is still 2.4 s at 100k residents (76,109
     buildings) and 19 ms on a 44-edge street grid ([commit
     breakdown](#implementation-road-68-g-2026-10-24)), so the gate's acceptance (under 16.7 ms
@@ -2213,7 +2213,7 @@ splits the trunk. Medians of the three samples, in ms; control / gate where they
   scheduling, 5 µs. The snapshot's clones cost 2.7 ms at 100k (the terrain and water clones are
   O(1); the graph clone is 3.5 ms on its own), so reusing the snapshot's graph saved a copy.
 - **The commit still misses 16.7 ms at every tier**, on stages outside this gate
-  ([open question 19](#road-68-open-questions)). The render publication
+  ([open question 21](#road-68-open-questions)). The render publication
   (`precompute_road_mesh_data`) grows with the network, about 0.4–0.55 ms per edge, to 2.3 s
   at 100k; the entrance rebuild costs about 20–30 ms from 1,413 buildings up; agents and lanes
   reach 19 ms at 100k.
@@ -2258,7 +2258,7 @@ the exclusive timing lock, no build or backup running; command as in the attribu
 
 Work counts are identical in all four runs. The differences lie inside the control's own spread,
 so the contract is unchanged: no time limit fails, and the same seven work-count limits fail in
-control and change ([open question 18](#road-68-open-questions) and the attribution below). The
+control and change ([open question 20](#road-68-open-questions) and the attribution below). The
 contract's cities build no roads during the measured day, so no hold occurs in it.
 
 #### Attribution of the perf-contract rise (`ROAD-68-G`)
@@ -2295,7 +2295,7 @@ RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 \
   `staffing_trials` (49,289 → 231,170) and `job_search_keys` (64 → 15,448), and fiscal
   `buyer_sites_built` (716 → 2,764) and `cch_searches` (6,771 → 26,851). B fails the same five
   (20 → 396, 40,983 → 231,810, 69 → 21,371, 708 → 2,808, 5,817 → 26,657) and two more, baseline
-  `supplier_searches` and `supplier_routes` ([open question 18](#road-68-open-questions)). No
+  `supplier_searches` and `supplier_routes` ([open question 20](#road-68-open-questions)). No
   time limit fails in either.
 - **Time does not follow the counts.** At baseline 30k, B does 9% more supplier routes than A
   and runs 6% faster. In the fiscal workload the counts match within 1% and B is 17–23% faster;

@@ -67,10 +67,10 @@ Tests that need later gates are disabled until then (32 Rust tests, 4 Godot scri
 pure job on the road-tool snapshot's graph and adopts it six frames later, the simulation frame
 holding meanwhile, deterministically across worker counts, a late rebuild and a save in the hold.
 That takes the CCH build (312 ms at 100k residents) off the commit, but the commit still takes
-2.4 s there, mostly a render publication that grows with the network (open question 19), so its
+2.4 s there, mostly a render publication that grows with the network (open question 21), so its
 acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
-cities (open question 18). `ROAD-68-D`, `-E`, `-F` and `-H` are open, and `roads.md` lists
+cities (open question 20). `ROAD-68-D`, `-E`, `-F` and `-H` are open, and `roads.md` lists
 nineteen open questions; open question 16
 (strokes pinned to the pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, and open
 question 17 records the remaining footpath attachment defaults. Design,
