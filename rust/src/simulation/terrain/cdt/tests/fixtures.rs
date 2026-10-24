@@ -36,7 +36,7 @@ pub(super) fn sourced_l_road_loop_with_notch_sources(
     notch_horizontal_source: TerrainCdtRoadBoundarySource,
     notch_vertical_source: TerrainCdtRoadBoundarySource,
 ) -> TerrainCdtRoadLoop {
-    let fallback_source = test_node_boundary_source(88, TerrainCdtRoadBandKind::Sidewalk, 3);
+    let fallback_source = test_node_boundary_source(88, 3);
     let vertices = vec![
         TerrainCdtVertex::new(2.0, 0.0, 2.0),
         TerrainCdtVertex::new(8.0, 0.0, 2.0),
@@ -66,135 +66,84 @@ pub(super) fn sourced_l_road_loop_with_notch_sources(
     TerrainCdtRoadLoop::new_with_source_edges(88, 0, vertices, source_edges)
 }
 
-pub(super) fn test_node_boundary_source(
-    node_id: u32,
-    owner_kind: TerrainCdtRoadBandKind,
-    owner_index: u32,
+fn test_road_source(
+    piece: TerrainCdtRoadPiece,
+    chain: u32,
+    segment: u32,
+    support: TerrainCdtRoadSupport,
 ) -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-        node_id,
-        node_kind: TerrainCdtNodePieceKind::JunctionN,
-        owner_kind,
-        owner_index,
-        boundary_source: None,
+    TerrainCdtRoadBoundarySource::RoadBoundary {
+        piece,
+        chain,
+        segment,
+        support,
     }
 }
 
+pub(super) fn test_node_boundary_source(node_id: u32, chain: u32) -> TerrainCdtRoadBoundarySource {
+    test_road_source(
+        TerrainCdtRoadPiece::Node(node_id),
+        chain,
+        0,
+        TerrainCdtRoadSupport::Grounded,
+    )
+}
+
+// Distinct segments of one node chain stand for the legacy per-vertex provenance.
 pub(super) fn test_node_boundary_source_with_direct_provenance(
     node_id: u32,
-    owner_kind: TerrainCdtRoadBandKind,
-    owner_index: u32,
-    start_grade_authority_index: u64,
-    end_grade_authority_index: u64,
+    chain: u32,
+    start_segment: u64,
+    _end_segment: u64,
 ) -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-        node_id,
-        node_kind: TerrainCdtNodePieceKind::JunctionN,
-        owner_kind,
-        owner_index,
-        boundary_source: Some(TerrainCdtNodeFootprintBoundarySegmentSource {
-            start: TerrainCdtNodeFootprintBoundaryVertexSource::Direct(
-                TerrainCdtNodeFootprintBoundaryDirectSource {
-                    top_surface_source_index: 7,
-                    grade_authority_index: start_grade_authority_index,
-                },
-            ),
-            end: TerrainCdtNodeFootprintBoundaryVertexSource::Direct(
-                TerrainCdtNodeFootprintBoundaryDirectSource {
-                    top_surface_source_index: 7,
-                    grade_authority_index: end_grade_authority_index,
-                },
-            ),
-        }),
-    }
+    test_road_source(
+        TerrainCdtRoadPiece::Node(node_id),
+        chain,
+        u32::try_from(start_segment).unwrap(),
+        TerrainCdtRoadSupport::Grounded,
+    )
 }
 
-pub(super) fn test_span_boundary_source(
-    edge_idx: u64,
-    band_kind: TerrainCdtRoadBandKind,
-    source_band_index: u32,
-) -> TerrainCdtRoadBoundarySource {
-    test_span_boundary_source_range(edge_idx, band_kind, source_band_index, 3, 4, 12.0, 16.0)
+pub(super) fn test_span_boundary_source(edge_idx: u64, chain: u32) -> TerrainCdtRoadBoundarySource {
+    test_span_boundary_source_range(edge_idx, chain, 3, 4, 12.0, 16.0)
 }
 
+// Segment `start_section_index` of a span chain; the end and stations of the legacy range
+// source no longer exist.
 pub(super) fn test_span_boundary_source_range(
     edge_idx: u64,
-    band_kind: TerrainCdtRoadBandKind,
-    source_band_index: u32,
+    chain: u32,
     start_section_index: u32,
-    end_section_index: u32,
-    start_s_m: f32,
-    end_s_m: f32,
+    _end_section_index: u32,
+    _start_s_m: f32,
+    _end_s_m: f32,
 ) -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-        edge_idx,
-        edge_class: TerrainCdtEdgeClass::Standard,
-        support_policy: TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan,
-        source_band_index,
-        band_kind,
-        role: match band_kind {
-            TerrainCdtRoadBandKind::Carriageway => TerrainCdtSpanRegionRole::Asphalt,
-            TerrainCdtRoadBandKind::CurbOrShoulder => TerrainCdtSpanRegionRole::CurbOrShoulder,
-            _ => TerrainCdtSpanRegionRole::NonRoad,
-        },
+    test_road_source(
+        TerrainCdtRoadPiece::Span(edge_idx),
+        chain,
         start_section_index,
-        end_section_index,
-        start_s_m,
-        end_s_m,
-    }
+        TerrainCdtRoadSupport::Grounded,
+    )
 }
 
 pub(super) fn test_structural_span_boundary_source(
     edge_idx: u64,
-    band_kind: TerrainCdtRoadBandKind,
-    source_band_index: u32,
+    chain: u32,
 ) -> TerrainCdtRoadBoundarySource {
-    test_nonstandard_span_boundary_source(
-        edge_idx,
-        TerrainCdtEdgeClass::Bridge,
-        TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
-        band_kind,
-        source_band_index,
+    test_road_source(
+        TerrainCdtRoadPiece::Span(edge_idx),
+        chain,
+        3,
+        TerrainCdtRoadSupport::Structure,
     )
 }
 
+// Tunnel portals are structures; their portal-specific wall rule is `ROAD-68-F`.
 pub(super) fn test_tunnel_span_boundary_source(
     edge_idx: u64,
-    band_kind: TerrainCdtRoadBandKind,
-    source_band_index: u32,
+    chain: u32,
 ) -> TerrainCdtRoadBoundarySource {
-    test_nonstandard_span_boundary_source(
-        edge_idx,
-        TerrainCdtEdgeClass::Tunnel,
-        TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals,
-        band_kind,
-        source_band_index,
-    )
-}
-
-fn test_nonstandard_span_boundary_source(
-    edge_idx: u64,
-    edge_class: TerrainCdtEdgeClass,
-    support_policy: TerrainCdtEarthworkSupportPolicy,
-    band_kind: TerrainCdtRoadBandKind,
-    source_band_index: u32,
-) -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-        edge_idx,
-        edge_class,
-        support_policy,
-        source_band_index,
-        band_kind,
-        role: match band_kind {
-            TerrainCdtRoadBandKind::Carriageway => TerrainCdtSpanRegionRole::Asphalt,
-            TerrainCdtRoadBandKind::CurbOrShoulder => TerrainCdtSpanRegionRole::CurbOrShoulder,
-            _ => TerrainCdtSpanRegionRole::NonRoad,
-        },
-        start_section_index: 3,
-        end_section_index: 4,
-        start_s_m: 12.0,
-        end_s_m: 16.0,
-    }
+    test_structural_span_boundary_source(edge_idx, chain)
 }
 
 pub(super) fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {
@@ -578,108 +527,25 @@ pub(super) fn assert_source_exports_structured_provenance(
         "{case_name}: source should retain a human debug label"
     );
     match source {
-        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-            support_policy,
-            start_section_index,
-            end_section_index,
-            start_s_m,
-            end_s_m,
-            ..
-        } => {
+        TerrainCdtRoadBoundarySource::RoadBoundary { support, .. } => {
             assert_eq!(
                 source.source_kind_code(),
                 0,
-                "{case_name}: span support source kind code changed"
+                "{case_name}: road source kind code changed"
             );
             assert!(source.primary_id_code() >= 0);
-            assert!(source.edge_class_code() >= 0);
-            assert!(source.owner_kind_code() >= 0);
-            assert!(source.owner_index_code() >= 0);
-            assert!(source.role_code() >= 0);
-            assert!(source.support_policy_code() >= 0);
-            assert_eq!(
-                support_policy,
-                TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
-            );
-            assert!(end_section_index >= start_section_index);
-            assert!(end_s_m >= start_s_m);
-            assert_eq!(
-                source.section_range_codes(),
-                [
-                    i32::try_from(start_section_index).unwrap(),
-                    i32::try_from(end_section_index).unwrap()
-                ]
-            );
-            assert_eq!(source.s_range_values(), [start_s_m, end_s_m]);
+            assert_eq!(support, TerrainCdtRoadSupport::Grounded);
         }
-        TerrainCdtRoadBoundarySource::NodeFootprintBoundary { owner_index, .. } => {
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary { building_idx, .. } => {
             assert_eq!(
                 source.source_kind_code(),
                 1,
-                "{case_name}: node footprint source kind code changed"
-            );
-            assert!(source.primary_id_code() >= 0);
-            assert!(source.node_kind_code() >= 0);
-            assert!(source.owner_kind_code() >= 0);
-            assert_eq!(
-                source.owner_index_code(),
-                i32::try_from(owner_index).unwrap()
-            );
-            assert_eq!(source.support_policy_code(), -1);
-            assert_eq!(source.role_code(), -1);
-            assert_eq!(source.section_range_codes(), [-1, -1]);
-            assert_eq!(source.s_range_values(), [-1.0, -1.0]);
-        }
-        TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
-            owner_index_a,
-            owner_index_b,
-            boundary_source,
-            ..
-        } => {
-            assert_eq!(
-                source.source_kind_code(),
-                2,
-                "{case_name}: node same-material handoff source kind code changed"
-            );
-            assert!(source.primary_id_code() >= 0);
-            assert!(source.node_kind_code() >= 0);
-            assert!(source.owner_kind_code() >= 0);
-            assert_eq!(
-                source.owner_index_code(),
-                i32::try_from(owner_index_a).unwrap()
-            );
-            assert!(owner_index_b >= owner_index_a);
-            assert!(boundary_source.is_some());
-            assert_eq!(source.support_policy_code(), -1);
-            assert_eq!(source.role_code(), -1);
-            assert_eq!(source.section_range_codes(), [-1, -1]);
-            assert_eq!(source.s_range_values(), [-1.0, -1.0]);
-        }
-        TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
-            building_idx,
-            local_loop_index,
-            ..
-        } => {
-            assert_eq!(
-                source.source_kind_code(),
-                3,
                 "{case_name}: building-site source kind code changed"
             );
             assert_eq!(
                 source.primary_id_code(),
                 i32::try_from(building_idx).unwrap_or(i32::MAX)
             );
-            assert_eq!(
-                source.owner_index_code(),
-                i32::try_from(local_loop_index).unwrap_or(i32::MAX)
-            );
-            assert_eq!(source.node_kind_code(), -1);
-            assert_eq!(source.edge_class_code(), -1);
-            assert_eq!(source.owner_kind_code(), -1);
-            assert_eq!(source.support_policy_code(), -1);
-            assert_eq!(source.role_code(), -1);
-            assert_eq!(source.section_range_codes(), [-1, -1]);
-            assert_eq!(source.s_range_values(), [-1.0, -1.0]);
         }
         TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => {
             panic!("{case_name}: source-preserving validation must not use synthetic sources")

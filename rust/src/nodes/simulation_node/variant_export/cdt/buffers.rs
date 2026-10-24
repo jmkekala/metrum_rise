@@ -893,35 +893,6 @@ impl SimulationNode {
             .face_sources
             .primary_ids
             .extend(source.face_sources.primary_ids);
-        target
-            .face_sources
-            .node_kind_codes
-            .extend(source.face_sources.node_kind_codes);
-        target
-            .face_sources
-            .edge_class_codes
-            .extend(source.face_sources.edge_class_codes);
-        target
-            .face_sources
-            .owner_kinds
-            .extend(source.face_sources.owner_kinds);
-        target
-            .face_sources
-            .owner_indices
-            .extend(source.face_sources.owner_indices);
-        target
-            .face_sources
-            .support_policies
-            .extend(source.face_sources.support_policies);
-        target.face_sources.roles.extend(source.face_sources.roles);
-        target
-            .face_sources
-            .section_ranges
-            .extend(source.face_sources.section_ranges);
-        target
-            .face_sources
-            .s_ranges
-            .extend(source.face_sources.s_ranges);
         target.emitted_faces += source.emitted_faces;
         target.omitted_pathological_faces += source.omitted_pathological_faces;
         target.max_face_y_delta_m = target.max_face_y_delta_m.max(source.max_face_y_delta_m);

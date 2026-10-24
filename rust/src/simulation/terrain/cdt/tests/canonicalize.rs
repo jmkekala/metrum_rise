@@ -66,7 +66,7 @@ fn bounded_halo_grading_matches_complete_halo() {
                         TerrainCdtVertex::new(f64::from(x), offset + slope * x as f32, 4.0)
                     }))
                     .collect();
-            let source = test_span_boundary_source(3, TerrainCdtRoadBandKind::Sidewalk, 5);
+            let source = test_span_boundary_source(3, 5);
             let input = TerrainCdtInput::new(
                 TerrainCdtPatch::new(-8.0, -8.0, 8.0, 8.0, [0.0; 4]),
                 vec![sourced_road_loop(3, 0, points, source)],
@@ -113,7 +113,7 @@ fn indexed_source_recovery_matches_exhaustive_recovery() {
         .map(|(i, &start)| TerrainCdtRoadLoopSourceEdge {
             start,
             end: points[(i + 1) % points.len()],
-            source: test_span_boundary_source(i as u64, TerrainCdtRoadBandKind::Sidewalk, 5),
+            source: test_span_boundary_source(i as u64, 5),
         })
         .collect::<Vec<_>>();
     // Duplicate ownership and opposite winding retain the
@@ -121,7 +121,7 @@ fn indexed_source_recovery_matches_exhaustive_recovery() {
     sources.push(TerrainCdtRoadLoopSourceEdge {
         start: points[1],
         end: points[0],
-        source: test_span_boundary_source(999, TerrainCdtRoadBandKind::Sidewalk, 5),
+        source: test_span_boundary_source(999, 5),
     });
     let expected = (0..points.len())
         .map(|i| {
@@ -147,7 +147,7 @@ fn grading_guide_on_a_road_seam_uses_the_retained_constraint_height() {
             TerrainCdtVertex::new(b.x, b.height_m, b.z + 5.0),
             TerrainCdtVertex::new(a.x, a.height_m, a.z + 5.0),
         ],
-        test_span_boundary_source(3, TerrainCdtRoadBandKind::Sidewalk, 5),
+        test_span_boundary_source(3, 5),
     );
     let mesh = build_road_touched_terrain_patch(
         TerrainCdtInput::new(
@@ -279,33 +279,9 @@ fn inside_boundary_guides_join_the_exact_tile_side_without_slivers() {
 
 #[test]
 fn cdt_splits_loop_segments_through_source_vertices_before_source_mapping() {
-    let source_a = test_span_boundary_source_range(
-        92,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        15,
-        16,
-        10.0,
-        11.0,
-    );
-    let source_b = test_span_boundary_source_range(
-        92,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        16,
-        17,
-        11.0,
-        12.0,
-    );
-    let source_c = test_span_boundary_source_range(
-        92,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        17,
-        18,
-        12.0,
-        13.0,
-    );
+    let source_a = test_span_boundary_source_range(92, 5, 15, 16, 10.0, 11.0);
+    let source_b = test_span_boundary_source_range(92, 5, 16, 17, 11.0, 12.0);
+    let source_c = test_span_boundary_source_range(92, 5, 17, 18, 12.0, 13.0);
     let p0 = TerrainCdtVertex::new(3.0, 1.0, 3.0);
     let p1 = TerrainCdtVertex::new(5.0, 1.0, 3.0);
     let p2 = TerrainCdtVertex::new(7.0, 1.0, 3.0);
@@ -414,7 +390,7 @@ fn cdt_keeps_source_for_submillimeter_boundary_across_identity_cells() {
 
 #[test]
 fn cdt_rejects_unsourced_road_boundary_constraints() {
-    let source = test_node_boundary_source(91, TerrainCdtRoadBandKind::Sidewalk, 2);
+    let source = test_node_boundary_source(91, 2);
     let road = vec![
         TerrainCdtVertex::new(3.0, 0.0, 3.0),
         TerrainCdtVertex::new(7.0, 0.0, 3.0),
@@ -444,7 +420,7 @@ fn cdt_rejects_unsourced_road_boundary_constraints() {
 
 #[test]
 fn cdt_rejects_conflicting_source_split_heights() {
-    let source = test_span_boundary_source(93, TerrainCdtRoadBandKind::Sidewalk, 0);
+    let source = test_span_boundary_source(93, 0);
     let points = square_road_loop(2.0, 8.0, 0.0);
     let conflicting_split_a = TerrainCdtVertex::new(5.0, 1.0, 2.0);
     let conflicting_split_b = TerrainCdtVertex::new(5.0, 2.0, 2.0);
@@ -535,7 +511,6 @@ fn clip_generated_outer_and_hole_rails_keep_retained_terrain_corner_heights() {
             ];
             let source = test_node_boundary_source(
                 u32::try_from(stable_piece_id).unwrap(),
-                TerrainCdtRoadBandKind::Sidewalk,
                 local_loop_index,
             );
             let source_edges = vertices

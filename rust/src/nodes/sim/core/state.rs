@@ -308,6 +308,13 @@ pub struct SimCore {
     pub(crate) road_locked_terrain_patch_keys: Vec<(usize, usize)>,
     /// Required grading margin for each road-locked terrain render patch.
     pub(crate) road_locked_terrain_patch_margins: BTreeMap<(usize, usize), f32>,
+    /// Render patches whose road margin above is current (`ROAD-68-D`): no compile has changed
+    /// a piece within the grading envelope cap of them, and the visual terrain is the one in
+    /// `road_ownership_visual_generation`, since it was computed. Derived; cleared with
+    /// the margins.
+    pub(crate) road_ownership_current_keys: BTreeSet<(usize, usize)>,
+    /// Visual terrain generation the current road margins were computed on.
+    pub(crate) road_ownership_visual_generation: u64,
     /// Terrain patches owned by at least one indexed building site.
     pub(crate) building_site_owned_terrain_patch_keys: HashSet<(usize, usize)>,
     /// Site boxes whose render-patch ownership the building removal queue left for later slots
@@ -438,6 +445,8 @@ impl SimCore {
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             road_locked_terrain_patch_margins: BTreeMap::new(),
+            road_ownership_current_keys: BTreeSet::new(),
+            road_ownership_visual_generation: 0,
             building_site_owned_terrain_patch_keys: HashSet::new(),
             deferred_site_terrain_boxes: Default::default(),
             engineered_terrain_patch_keys: Vec::new(),
@@ -496,6 +505,71 @@ impl SimCore {
         }
     }
 
+    /// Marks the terrain a road edit's old and new pieces touch (`ROAD-68-D`): every render
+    /// patch and CDT tile within the grading envelope cap (the tile halo) of a changed piece's
+    /// XZ bounds. The patches get a new generation and the ledger stamps their tiles, so the
+    /// refined build re-assembles only those tiles. Returns the sorted patch keys. `O(changed
+    /// pieces * covered tiles)`.
+    pub(crate) fn bump_road_terrain_payload_generations(
+        &mut self,
+        changed_bounds: &[[f64; 4]],
+    ) -> Vec<(usize, usize)> {
+        let margin_m =
+            f64::from(crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M);
+        let mut tiles = BTreeMap::<(usize, usize), BTreeSet<(i64, i64)>>::new();
+        let mut keys = Vec::new();
+        for bounds in changed_bounds {
+            let reach = [
+                bounds[0] - margin_m,
+                bounds[1] - margin_m,
+                bounds[2] + margin_m,
+                bounds[3] + margin_m,
+            ];
+            keys.clear();
+            self.heightmap.append_render_patch_keys_for_world_bounds(
+                reach[0] as f32,
+                reach[1] as f32,
+                reach[2] as f32,
+                reach[3] as f32,
+                &mut keys,
+            );
+            for &key in &keys {
+                let Some(patch) = self.heightmap.render_patch_world_bounds(key.0, key.1) else {
+                    continue;
+                };
+                let inside = [
+                    reach[0].max(f64::from(patch.0)),
+                    reach[1].max(f64::from(patch.1)),
+                    reach[2].min(f64::from(patch.2)),
+                    reach[3].min(f64::from(patch.3)),
+                ];
+                if inside[0] <= inside[2] && inside[1] <= inside[3] {
+                    tiles.entry(key).or_default().extend(
+                        crate::simulation::terrain::terrain_cdt_tile_keys_for_world_bounds(inside),
+                    );
+                }
+            }
+        }
+        if tiles.is_empty() {
+            return Vec::new();
+        }
+        let generation = self.next_terrain_payload_generation();
+        for (&key, patch_tiles) in &tiles {
+            self.road_ownership_current_keys.remove(&key);
+            self.heightmap.mark_render_patch_dirty(key.0, key.1);
+            self.terrain_payload_patch_generations
+                .insert(key, generation);
+            let ledger = self
+                .refined_terrain_assembly_ledgers
+                .entry(key)
+                .or_default();
+            for &tile in patch_tiles {
+                ledger.road_tile_dirty_at.insert(tile, generation);
+            }
+        }
+        tiles.into_keys().collect()
+    }
+
     pub(crate) fn terrain_payload_generation_for_patch(
         &self,
         patch_x: usize,
@@ -545,9 +619,9 @@ impl SimCore {
                 ledger.full_dirty_at = None;
             }
             ledger
-                .road_query_chunk_dirty_at
+                .road_tile_dirty_at
                 .retain(|_, stamp| *stamp > generation);
-            if ledger.full_dirty_at.is_none() && ledger.road_query_chunk_dirty_at.is_empty() {
+            if ledger.full_dirty_at.is_none() && ledger.road_tile_dirty_at.is_empty() {
                 self.refined_terrain_assembly_ledgers.remove(&key);
             }
         }

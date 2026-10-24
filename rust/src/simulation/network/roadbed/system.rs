@@ -68,6 +68,8 @@ pub struct RoadbedSystem {
     pub(super) index: PieceIndex,
     // Render chunks changed since the mesh publisher last took them.
     changed_chunks: BTreeSet<SurfaceChunkKey>,
+    // XZ bounds of the old and new pieces replaced since terrain last took them (`ROAD-68-D`).
+    changed_bounds: Vec<[f64; 4]>,
     // Nodes whose piece failed in the published generation, with the reason, and their ids.
     failed: imbl::OrdMap<u32, NodeError>,
     failed_ids: Arc<Vec<u32>>,
@@ -94,6 +96,7 @@ impl RoadbedSystem {
             pieces: imbl::OrdMap::new(),
             index: PieceIndex::default(),
             changed_chunks: BTreeSet::new(),
+            changed_bounds: Vec::new(),
             failed: imbl::OrdMap::new(),
             failed_ids: Arc::default(),
         }
@@ -103,6 +106,8 @@ impl RoadbedSystem {
     /// The dropped pieces' chunks count as changed.
     pub fn clear(&mut self) {
         self.changed_chunks.extend(self.index.occupied_chunks());
+        let dropped = self.pieces.values().map(|piece| piece.mesh().bounds_xz());
+        self.changed_bounds.extend(dropped);
         self.compiled = false;
         self.generation = self.generation.wrapping_add(1);
         self.dirty_edges.clear();
@@ -360,6 +365,7 @@ impl RoadbedSystem {
             let footprint = old.parts().1;
             self.index.remove(id, footprint);
             changed.extend(footprint.render_chunks().iter().copied());
+            self.changed_bounds.push(old.mesh().bounds_xz());
         }
         let Some(piece) = piece else {
             return;
@@ -371,7 +377,20 @@ impl RoadbedSystem {
         let (mesh, footprint) = published.parts();
         self.index.insert(id, mesh, footprint);
         changed.extend(footprint.render_chunks().iter().copied());
+        self.changed_bounds.push(published.mesh().bounds_xz());
         self.pieces.insert(id, published);
+    }
+
+    /// XZ bounds `[min_x, min_z, max_x, max_z]` of every old and new piece the compiles since
+    /// the last call replaced, added or removed, in compile order: the footprints whose terrain
+    /// patches an edit touches (`ROAD-68-D`). Taking them clears the list.
+    pub fn take_changed_bounds(&mut self) -> Vec<[f64; 4]> {
+        std::mem::take(&mut self.changed_bounds)
+    }
+
+    /// The bounds [`Self::take_changed_bounds`] would return, left in place.
+    pub fn changed_bounds(&self) -> &[[f64; 4]] {
+        &self.changed_bounds
     }
 
     /// Sorted render chunks changed by compiles since the mesh publisher last took them.

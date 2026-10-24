@@ -136,7 +136,7 @@ fn cached_patch_from_planned_windows(
 }
 
 #[test]
-fn terrain_cdt_structured_face_sources_preserve_span_fields() {
+fn terrain_cdt_structured_face_sources_label_span_boundaries() {
     let source = span_source();
     let export = SimulationNode::terrain_cdt_triangle_buffers(
         &test_patch(),
@@ -156,18 +156,14 @@ fn terrain_cdt_structured_face_sources_preserve_span_fields() {
     assert_eq!(export.face_sources.labels.len(), 1);
     assert_eq!(export.face_sources.kind_codes, vec![0]);
     assert_eq!(export.face_sources.primary_ids, vec![123]);
-    assert_eq!(export.face_sources.node_kind_codes, vec![-1]);
-    assert_eq!(export.face_sources.edge_class_codes, vec![1]);
-    assert_eq!(export.face_sources.owner_kinds, vec![2]);
-    assert_eq!(export.face_sources.owner_indices, vec![7]);
-    assert_eq!(export.face_sources.support_policies, vec![1]);
-    assert_eq!(export.face_sources.roles, vec![2]);
-    assert_eq!(export.face_sources.section_ranges, vec![2, 5]);
-    assert_eq!(export.face_sources.s_ranges, vec![10.5, 14.0]);
+    assert_eq!(
+        export.face_sources.labels,
+        vec!["road span=123 chain=1 segment=2 support=structure".to_owned()]
+    );
 }
 
 #[test]
-fn terrain_cdt_structured_face_sources_preserve_node_fields() {
+fn terrain_cdt_structured_face_sources_label_node_boundaries() {
     let source = node_source();
     let export = SimulationNode::terrain_cdt_triangle_buffers(
         &test_patch(),
@@ -185,16 +181,12 @@ fn terrain_cdt_structured_face_sources_preserve_node_fields() {
     assert_eq!(export.emitted_faces, 1);
     assert_eq!(export.face_sources.counts, vec![1]);
     assert_eq!(export.face_sources.labels.len(), 1);
-    assert_eq!(export.face_sources.kind_codes, vec![1]);
+    assert_eq!(export.face_sources.kind_codes, vec![0]);
     assert_eq!(export.face_sources.primary_ids, vec![77]);
-    assert_eq!(export.face_sources.node_kind_codes, vec![2]);
-    assert_eq!(export.face_sources.edge_class_codes, vec![-1]);
-    assert_eq!(export.face_sources.owner_kinds, vec![1]);
-    assert_eq!(export.face_sources.owner_indices, vec![3]);
-    assert_eq!(export.face_sources.support_policies, vec![-1]);
-    assert_eq!(export.face_sources.roles, vec![-1]);
-    assert_eq!(export.face_sources.section_ranges, vec![-1, -1]);
-    assert_eq!(export.face_sources.s_ranges, vec![-1.0, -1.0]);
+    assert_eq!(
+        export.face_sources.labels,
+        vec!["road node=77 chain=0 segment=3 support=grounded".to_owned()]
+    );
 }
 
 #[test]
@@ -218,10 +210,8 @@ fn terrain_cdt_face_source_counts_skip_degenerate_triangles() {
     assert_eq!(export.emitted_faces, 1);
     assert_eq!(export.face_sources.counts, vec![2]);
     assert_eq!(export.face_sources.labels.len(), 2);
-    assert_eq!(export.face_sources.kind_codes, vec![0, 1]);
+    assert_eq!(export.face_sources.kind_codes, vec![0, 0]);
     assert_eq!(export.face_sources.primary_ids, vec![123, 77]);
-    assert_eq!(export.face_sources.section_ranges, vec![2, 5, -1, -1]);
-    assert_eq!(export.face_sources.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
 }
 
 #[test]
@@ -960,16 +950,8 @@ fn terrain_cdt_road_seam_sample_sources_export_structured_rows() {
 
     assert_eq!(export.counts, vec![2]);
     assert_eq!(export.labels.len(), 2);
-    assert_eq!(export.kind_codes, vec![0, 1]);
+    assert_eq!(export.kind_codes, vec![0, 0]);
     assert_eq!(export.primary_ids, vec![123, 77]);
-    assert_eq!(export.node_kind_codes, vec![-1, 2]);
-    assert_eq!(export.edge_class_codes, vec![1, -1]);
-    assert_eq!(export.owner_kinds, vec![2, 1]);
-    assert_eq!(export.owner_indices, vec![7, 3]);
-    assert_eq!(export.support_policies, vec![1, -1]);
-    assert_eq!(export.roles, vec![2, -1]);
-    assert_eq!(export.section_ranges, vec![2, 5, -1, -1]);
-    assert_eq!(export.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
 }
 
 #[test]
@@ -980,12 +962,8 @@ fn terrain_cdt_retaining_wall_sample_sources_export_structured_rows() {
 
     assert_eq!(export.counts, vec![1, 1]);
     assert_eq!(export.labels.len(), 2);
-    assert_eq!(export.kind_codes, vec![0, 1]);
+    assert_eq!(export.kind_codes, vec![0, 0]);
     assert_eq!(export.primary_ids, vec![123, 77]);
-    assert_eq!(export.owner_kinds, vec![2, 1]);
-    assert_eq!(export.owner_indices, vec![7, 3]);
-    assert_eq!(export.section_ranges, vec![2, 5, -1, -1]);
-    assert_eq!(export.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
 }
 
 #[test]
@@ -998,8 +976,6 @@ fn terrain_cdt_tie_in_widened_sample_sources_export_one_source_per_sample() {
     assert_eq!(export.labels.len(), 2);
     assert_eq!(export.kind_codes, vec![0, 0]);
     assert_eq!(export.primary_ids, vec![123, 123]);
-    assert_eq!(export.section_ranges, vec![2, 5, 2, 5]);
-    assert_eq!(export.s_ranges, vec![10.5, 14.0, 10.5, 14.0]);
 }
 
 #[test]
@@ -1009,12 +985,8 @@ fn terrain_cdt_invalid_constraint_sample_sources_keep_absence_visible() {
 
     assert_eq!(export.counts, vec![0, 1]);
     assert_eq!(export.labels.len(), 1);
-    assert_eq!(export.kind_codes, vec![1]);
+    assert_eq!(export.kind_codes, vec![0]);
     assert_eq!(export.primary_ids, vec![77]);
-    assert_eq!(export.owner_kinds, vec![1]);
-    assert_eq!(export.owner_indices, vec![3]);
-    assert_eq!(export.section_ranges, vec![-1, -1]);
-    assert_eq!(export.s_ranges, vec![-1.0, -1.0]);
 }
 
 #[test]
@@ -1708,7 +1680,6 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_adjacent_tiles_emit_identical_shared_side_vertices() {
     let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
     let patch = planner_test_patch(128.0, 64.0);
@@ -1886,7 +1857,6 @@ fn terrain_cdt_local_bounds_skip_margin_only_loop_outside_patch() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_guides_use_shared_source_height_and_final_grade_limits() {
     let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
     let patch = TerrainPatchSnapshot {
@@ -1983,7 +1953,6 @@ fn terrain_cdt_guides_use_shared_source_height_and_final_grade_limits() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_local_bounds_expand_for_required_grading_distance() {
     let terrain = TerrainSystem::with_chunking(101, 101, 1.0, 100, 0.0);
     let patch = TerrainPatchSnapshot {
@@ -2023,7 +1992,6 @@ fn terrain_cdt_local_bounds_expand_for_required_grading_distance() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn terrain_cdt_input_keeps_multi_loop_tie_in_guides_unconstrained() {
     let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
     let patch = TerrainPatchSnapshot {

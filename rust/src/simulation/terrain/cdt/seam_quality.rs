@@ -224,139 +224,70 @@ fn source_owned_vertex_can_be_removed(
     )
 }
 
+// Two consecutive seam edges merge when they come from one road chain or one site loop; the
+// merged edge keeps the lower segment index.
 pub(super) fn mergeable_terrain_cdt_seam_source(
     first: TerrainCdtRoadBoundarySource,
     second: TerrainCdtRoadBoundarySource,
 ) -> Option<TerrainCdtRoadBoundarySource> {
+    use TerrainCdtRoadBoundarySource as Source;
     match (first, second) {
         (
-            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                edge_idx: edge_idx_a,
-                edge_class: edge_class_a,
-                support_policy: support_policy_a,
-                source_band_index: source_band_index_a,
-                band_kind: band_kind_a,
-                role: role_a,
-                start_section_index: start_section_index_a,
-                end_section_index: end_section_index_a,
-                start_s_m: start_s_m_a,
-                end_s_m: end_s_m_a,
+            Source::RoadBoundary {
+                piece,
+                chain,
+                segment: segment_a,
+                support,
             },
-            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                edge_idx: edge_idx_b,
-                edge_class: edge_class_b,
-                support_policy: support_policy_b,
-                source_band_index: source_band_index_b,
-                band_kind: band_kind_b,
-                role: role_b,
-                start_section_index: start_section_index_b,
-                end_section_index: end_section_index_b,
-                start_s_m: start_s_m_b,
-                end_s_m: end_s_m_b,
+            Source::RoadBoundary {
+                piece: piece_b,
+                chain: chain_b,
+                segment: segment_b,
+                support: support_b,
             },
-        ) if edge_idx_a == edge_idx_b
-            && edge_class_a == edge_class_b
-            && support_policy_a == support_policy_b
-            && source_band_index_a == source_band_index_b
-            && band_kind_a == band_kind_b
-            && role_a == role_b =>
-        {
-            Some(TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                edge_idx: edge_idx_a,
-                edge_class: edge_class_a,
-                support_policy: support_policy_a,
-                source_band_index: source_band_index_a,
-                band_kind: band_kind_a,
-                role: role_a,
-                start_section_index: start_section_index_a.min(start_section_index_b),
-                end_section_index: end_section_index_a.max(end_section_index_b),
-                start_s_m: start_s_m_a.min(start_s_m_b),
-                end_s_m: end_s_m_a.max(end_s_m_b),
+        ) if piece == piece_b && chain == chain_b && support == support_b => {
+            Some(Source::RoadBoundary {
+                piece,
+                chain,
+                segment: segment_a.min(segment_b),
+                support,
             })
         }
         (
-            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-                node_id: node_id_a,
-                node_kind: node_kind_a,
-                owner_kind: owner_kind_a,
-                owner_index: owner_index_a,
-                boundary_source: boundary_source_a,
+            Source::BuildingSiteBoundary {
+                building_idx,
+                local_loop_index,
+                local_edge_index: edge_a,
             },
-            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-                node_id: node_id_b,
-                node_kind: node_kind_b,
-                owner_kind: owner_kind_b,
-                owner_index: owner_index_b,
-                boundary_source: boundary_source_b,
+            Source::BuildingSiteBoundary {
+                building_idx: building_b,
+                local_loop_index: loop_b,
+                local_edge_index: edge_b,
             },
-        ) if node_id_a == node_id_b
-            && node_kind_a == node_kind_b
-            && owner_kind_a == owner_kind_b
-            && owner_index_a == owner_index_b
-            && boundary_source_a == boundary_source_b =>
-        {
-            Some(first)
-        }
-        (
-            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
-                node_id: node_id_a,
-                node_kind: node_kind_a,
-                owner_kind: owner_kind_a,
-                owner_index_a: owner_index_a_a,
-                owner_index_b: owner_index_b_a,
-                boundary_source: boundary_source_a,
-            },
-            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
-                node_id: node_id_b,
-                node_kind: node_kind_b,
-                owner_kind: owner_kind_b,
-                owner_index_a: owner_index_a_b,
-                owner_index_b: owner_index_b_b,
-                boundary_source: boundary_source_b,
-            },
-        ) if node_id_a == node_id_b
-            && node_kind_a == node_kind_b
-            && owner_kind_a == owner_kind_b
-            && owner_index_a_a == owner_index_a_b
-            && owner_index_b_a == owner_index_b_b
-            && boundary_source_a == boundary_source_b =>
-        {
-            Some(first)
-        }
-        (
-            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
-                building_idx: building_idx_a,
-                local_loop_index: local_loop_index_a,
-                local_edge_index: local_edge_index_a,
-            },
-            TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
-                building_idx: building_idx_b,
-                local_loop_index: local_loop_index_b,
-                local_edge_index: local_edge_index_b,
-            },
-        ) if building_idx_a == building_idx_b && local_loop_index_a == local_loop_index_b => {
-            Some(TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
-                building_idx: building_idx_a,
-                local_loop_index: local_loop_index_a,
-                local_edge_index: local_edge_index_a.min(local_edge_index_b),
+        ) if building_idx == building_b && local_loop_index == loop_b => {
+            Some(Source::BuildingSiteBoundary {
+                building_idx,
+                local_loop_index,
+                local_edge_index: edge_a.min(edge_b),
             })
         }
+        #[cfg(test)]
         (
-            TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
-                stable_piece_id: stable_piece_id_a,
-                local_loop_index: local_loop_index_a,
-                local_edge_index: local_edge_index_a,
+            Source::SyntheticTestBoundary {
+                stable_piece_id,
+                local_loop_index,
+                local_edge_index: edge_a,
             },
-            TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
-                stable_piece_id: stable_piece_id_b,
-                local_loop_index: local_loop_index_b,
-                local_edge_index: local_edge_index_b,
+            Source::SyntheticTestBoundary {
+                stable_piece_id: piece_b,
+                local_loop_index: loop_b,
+                local_edge_index: edge_b,
             },
-        ) if stable_piece_id_a == stable_piece_id_b && local_loop_index_a == local_loop_index_b => {
-            Some(TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
-                stable_piece_id: stable_piece_id_a,
-                local_loop_index: local_loop_index_a,
-                local_edge_index: local_edge_index_a.min(local_edge_index_b),
+        ) if stable_piece_id == piece_b && local_loop_index == loop_b => {
+            Some(Source::SyntheticTestBoundary {
+                stable_piece_id,
+                local_loop_index,
+                local_edge_index: edge_a.min(edge_b),
             })
         }
         _ => None,
@@ -385,9 +316,11 @@ pub(super) fn append_seam_quality_samples(
 pub(super) fn normalized_road_loop_source_edges(
     road_loop: &TerrainCdtRoadLoop,
 ) -> Vec<TerrainCdtRoadLoopSourceEdge> {
-    let mut source_edges = road_loop.source_edges.clone();
-    if source_edges.is_empty() && !road_loop.vertices.is_empty() {
-        source_edges = road_loop
+    let source_edges = road_loop.source_edges.clone();
+    // Tests may pass bare loops; production loops always carry their sources.
+    #[cfg(test)]
+    let source_edges = if source_edges.is_empty() && !road_loop.vertices.is_empty() {
+        road_loop
             .vertices
             .iter()
             .copied()
@@ -401,8 +334,10 @@ pub(super) fn normalized_road_loop_source_edges(
                     local_edge_index: u32::try_from(index).unwrap_or(u32::MAX),
                 },
             })
-            .collect();
-    }
+            .collect()
+    } else {
+        source_edges
+    };
     source_edges
         .into_iter()
         .filter(|edge| !same_xz(edge.start, edge.end))

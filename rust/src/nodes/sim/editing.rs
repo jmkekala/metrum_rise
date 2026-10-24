@@ -2061,6 +2061,8 @@ impl SimCore {
             .transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
+        let changed_bounds = self.transit_network.roadbed.take_changed_bounds();
+        let road_terrain_patches = self.bump_road_terrain_payload_generations(&changed_bounds);
         // Generated trees keep clear of walkways and poles beside them, possibly from a
         // neighboring terrain patch; the canopy margin covers both setbacks.
         for &chunk in &changed_chunks {
@@ -2086,9 +2088,10 @@ impl SimCore {
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_rebuild_detail roadbed_ms={:.3} changed_chunks={} dirty_render_patches={} entrances_ms={:.3} total_ms={:.3}",
+                "terrain_rebuild_detail roadbed_ms={:.3} changed_chunks={} road_terrain_patches={} dirty_render_patches={} entrances_ms={:.3} total_ms={:.3}",
                 compile_ms,
                 changed_chunks.len(),
+                road_terrain_patches.len(),
                 self.heightmap.dirty_render_patches().len(),
                 entrances_ms,
                 total_start
@@ -2096,8 +2099,7 @@ impl SimCore {
                     .unwrap_or(0.0)
             );
         }
-        // Terrain receives no road loops until `ROAD-68-D`, so no road-locked patch changes.
-        Vec::new()
+        road_terrain_patches
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within
@@ -3474,7 +3476,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-D: road terrain patches"]
     fn accepted_road_has_current_terrain_payloads_before_publication() {
         let mut core = test_core();
         core.benchmark_mode = false;
@@ -3518,7 +3519,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-D: road terrain patches"]
     fn terrain_rejection_restores_split_dependents_and_preserves_undo_history() {
         use crate::simulation::buildings::allocator::EdgeOccupancy;
         let mut core = test_core();
@@ -3599,7 +3599,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-D: road terrain patches"]
     fn undoing_road_restore_invalidates_road_locked_terrain_state() {
         let mut core = test_core();
         core.benchmark_mode = false;
@@ -3668,7 +3667,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "ROAD-68-D: road terrain patches"]
     fn undoing_road_restore_invalidates_derived_render_cache() {
         let mut core = test_core();
         core.benchmark_mode = false;
@@ -3703,7 +3701,7 @@ mod tests {
                 ledger.full_dirty_at.is_none(),
                 "road-only ownership refresh must not replace exact query chunks with full scope"
             );
-            assert!(!ledger.road_query_chunk_dirty_at.is_empty());
+            assert!(!ledger.road_tile_dirty_at.is_empty());
         }
         let previous_windows = core
             .refined_terrain_patch_cache

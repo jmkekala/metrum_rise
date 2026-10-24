@@ -110,7 +110,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 14
+const TERRAIN_CDT_CONTRACT_REVISION := 15
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
@@ -4015,6 +4015,8 @@ func _road_geometry_terrain_tie_in_kind_label(kind: int) -> String:
 		return "retaining_wall"
 	return "terrain"
 
+# Source rows carry the Rust debug label of each CDT source (ROAD-68-D); kind code 0 is a
+# roadbed chain segment, 1 a building-site loop edge.
 func _road_geometry_cdt_sample_sources_label(
 	patch_data: Dictionary,
 	prefix: String,
@@ -4032,65 +4034,12 @@ func _road_geometry_cdt_sample_sources_label(
 	var row_start := 0
 	for index in range(sample_index):
 		row_start += maxi(0, counts[index])
-	var kind_codes: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_kind_codes", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var primary_ids: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_primary_ids", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var node_kind_codes: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_node_kind_codes", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var edge_class_codes: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_edge_class_codes", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var owner_kinds: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_owner_kinds", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var owner_indices: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_owner_indices", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var support_policies: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_support_policies", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var roles: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_roles", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var section_ranges: PackedInt32Array = (
-		patch_data.get(prefix + "_sample_source_section_ranges", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var s_ranges: PackedFloat32Array = (
-		patch_data.get(prefix + "_sample_source_s_ranges", PackedFloat32Array())
-		as PackedFloat32Array
+	var labels: PackedStringArray = (
+		patch_data.get(prefix + "_sample_sources", PackedStringArray()) as PackedStringArray
 	)
 	var parts: Array[String] = []
 	for local_index in range(source_count):
-		var row: int = row_start + local_index
-		parts.append(
-			_road_geometry_cdt_source_row_label(
-				_road_geometry_int_at(kind_codes, row, -1),
-				_road_geometry_int_at(primary_ids, row, -1),
-				_road_geometry_int_at(node_kind_codes, row, -1),
-				_road_geometry_int_at(edge_class_codes, row, -1),
-				_road_geometry_int_at(owner_kinds, row, -1),
-				_road_geometry_int_at(owner_indices, row, -1),
-				_road_geometry_int_at(support_policies, row, -1),
-				_road_geometry_int_at(roles, row, -1),
-				_road_geometry_int_pair_at(section_ranges, row, 0, -1),
-				_road_geometry_int_pair_at(section_ranges, row, 1, -1),
-				_road_geometry_float_pair_at(s_ranges, row, 0, -1.0),
-				_road_geometry_float_pair_at(s_ranges, row, 1, -1.0)
-			)
-		)
+		parts.append(_road_geometry_string_at(labels, row_start + local_index))
 	return "[" + ", ".join(parts) + "]"
 
 func _road_geometry_cdt_face_sources_summary_label(patch_data: Dictionary, prefix: String) -> String:
@@ -4099,52 +4048,18 @@ func _road_geometry_cdt_face_sources_summary_label(patch_data: Dictionary, prefi
 		as PackedInt32Array
 	)
 	if counts.is_empty():
-		return "{faces=0,unsourced=0,source_rows=0,span=0,node=0,synthetic=0,samples=[]}"
+		return "{faces=0,unsourced=0,source_rows=0,road=0,site=0,samples=[]}"
 	var kind_codes: PackedInt32Array = (
 		patch_data.get(prefix + "_face_source_kind_codes", PackedInt32Array())
 		as PackedInt32Array
 	)
-	var primary_ids: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_primary_ids", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var node_kind_codes: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_node_kind_codes", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var edge_class_codes: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_edge_class_codes", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var owner_kinds: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_owner_kinds", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var owner_indices: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_owner_indices", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var support_policies: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_support_policies", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var roles: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_roles", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var section_ranges: PackedInt32Array = (
-		patch_data.get(prefix + "_face_source_section_ranges", PackedInt32Array())
-		as PackedInt32Array
-	)
-	var s_ranges: PackedFloat32Array = (
-		patch_data.get(prefix + "_face_source_s_ranges", PackedFloat32Array())
-		as PackedFloat32Array
+	var labels: PackedStringArray = (
+		patch_data.get(prefix + "_face_sources", PackedStringArray()) as PackedStringArray
 	)
 	var unsourced_count := 0
 	var source_rows := 0
-	var span_source_rows := 0
-	var node_source_rows := 0
-	var synthetic_source_rows := 0
+	var road_source_rows := 0
+	var site_source_rows := 0
 	var row_cursor := 0
 	var first_unsourced_face := -1
 	var samples: Array[String] = []
@@ -4161,28 +4076,11 @@ func _road_geometry_cdt_face_sources_summary_label(patch_data: Dictionary, prefi
 			var row: int = row_cursor + local_index
 			var source_kind_code: int = _road_geometry_int_at(kind_codes, row, -1)
 			if source_kind_code == 0:
-				span_source_rows += 1
+				road_source_rows += 1
 			elif source_kind_code == 1:
-				node_source_rows += 1
-			elif source_kind_code == 2:
-				synthetic_source_rows += 1
+				site_source_rows += 1
 			if samples.size() < ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT:
-				source_parts.append(
-					_road_geometry_cdt_source_row_label(
-						source_kind_code,
-						_road_geometry_int_at(primary_ids, row, -1),
-						_road_geometry_int_at(node_kind_codes, row, -1),
-						_road_geometry_int_at(edge_class_codes, row, -1),
-						_road_geometry_int_at(owner_kinds, row, -1),
-						_road_geometry_int_at(owner_indices, row, -1),
-						_road_geometry_int_at(support_policies, row, -1),
-						_road_geometry_int_at(roles, row, -1),
-						_road_geometry_int_pair_at(section_ranges, row, 0, -1),
-						_road_geometry_int_pair_at(section_ranges, row, 1, -1),
-						_road_geometry_float_pair_at(s_ranges, row, 0, -1.0),
-						_road_geometry_float_pair_at(s_ranges, row, 1, -1.0)
-					)
-				)
+				source_parts.append(_road_geometry_string_at(labels, row))
 		if not source_parts.is_empty() and samples.size() < ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT:
 			samples.append(
 				"{face=%d,sources=[%s]}" % [face_index, ", ".join(source_parts)]
@@ -4191,147 +4089,23 @@ func _road_geometry_cdt_face_sources_summary_label(patch_data: Dictionary, prefi
 	if samples.is_empty() and first_unsourced_face >= 0:
 		samples.append("{face=%d,sources=[]}" % [first_unsourced_face])
 	return (
-		"{faces=%d,unsourced=%d,source_rows=%d,span=%d,node=%d,synthetic=%d,samples=%s}"
+		"{faces=%d,unsourced=%d,source_rows=%d,road=%d,site=%d,samples=%s}"
 		% [
 			counts.size(),
 			unsourced_count,
 			source_rows,
-			span_source_rows,
-			node_source_rows,
-			synthetic_source_rows,
+			road_source_rows,
+			site_source_rows,
 			"[" + ", ".join(samples) + "]",
 		]
 	)
 
-func _road_geometry_cdt_source_row_label(
-	source_kind_code: int,
-	primary_id: int,
-	node_kind_code: int,
-	edge_class_code: int,
-	owner_kind_code: int,
-	owner_index: int,
-	support_policy_code: int,
-	role_code: int,
-	section_start: int,
-	section_end: int,
-	s_start_m: float,
-	s_end_m: float
-) -> String:
-	if source_kind_code == 0:
-		return (
-			"{kind=span_support,edge=%d,edge_class=%s,support_policy=%s,owner_kind=%s,owner=%d,role=%s,sections=%d..%d,s=%.3f..%.3f}"
-			% [
-				primary_id,
-				_road_geometry_cdt_edge_class_label(edge_class_code),
-				_road_geometry_cdt_support_policy_label(support_policy_code),
-				_road_geometry_cdt_owner_kind_label(owner_kind_code),
-				owner_index,
-				_road_geometry_cdt_role_label(role_code),
-				section_start,
-				section_end,
-				s_start_m,
-				s_end_m,
-			]
-		)
-	if source_kind_code == 1:
-		return (
-			"{kind=node_footprint,node=%d,node_kind=%s,owner_kind=%s,owner=%d}"
-			% [
-				primary_id,
-				_road_geometry_cdt_node_kind_label(node_kind_code),
-				_road_geometry_cdt_owner_kind_label(owner_kind_code),
-				owner_index,
-			]
-		)
-	if source_kind_code == 2:
-		return "{kind=synthetic_test,piece=%d}" % [primary_id]
-	return (
-		"{kind=unknown,primary=%d,owner_kind=%s,owner=%d}"
-		% [
-			primary_id,
-			_road_geometry_cdt_owner_kind_label(owner_kind_code),
-			owner_index,
-		]
-	)
-
-func _road_geometry_cdt_node_kind_label(code: int) -> String:
-	if code == 0:
-		return "terminal"
-	if code == 1:
-		return "bend"
-	if code == 2:
-		return "junction_n"
-	return "unknown"
-
-func _road_geometry_cdt_edge_class_label(code: int) -> String:
-	if code == 0:
-		return "standard"
-	if code == 1:
-		return "bridge"
-	if code == 2:
-		return "tunnel"
-	return "unknown"
-
-func _road_geometry_cdt_support_policy_label(code: int) -> String:
-	if code == 0:
-		return "standard_full_grounded_span"
-	if code == 1:
-		return "bridge_endpoint_abutments"
-	if code == 2:
-		return "tunnel_visible_portals"
-	return "unknown"
-
-func _road_geometry_cdt_owner_kind_label(code: int) -> String:
-	if code == 0:
-		return "carriageway"
-	if code == 1:
-		return "curb_or_shoulder"
-	if code == 2:
-		return "sidewalk"
-	if code == 3:
-		return "footpath"
-	if code == 4:
-		return "median"
-	if code == 5:
-		return "parking"
-	if code == 6:
-		return "cycle_track"
-	if code == 7:
-		return "tram_reservation"
-	return "unknown"
-
-func _road_geometry_cdt_role_label(code: int) -> String:
-	if code == 0:
-		return "asphalt"
-	if code == 1:
-		return "curb_or_shoulder"
-	if code == 2:
-		return "non_road"
-	return "unknown"
+func _road_geometry_string_at(values: PackedStringArray, index: int) -> String:
+	if index < 0 or index >= values.size():
+		return "unknown"
+	return "{" + values[index] + "}"
 
 func _road_geometry_int_at(values: PackedInt32Array, index: int, fallback: int) -> int:
-	if index >= 0 and index < values.size():
-		return values[index]
-	return fallback
-
-func _road_geometry_int_pair_at(
-	values: PackedInt32Array,
-	pair_index: int,
-	component_index: int,
-	fallback: int
-) -> int:
-	var index: int = pair_index * 2 + component_index
-	if index >= 0 and index < values.size():
-		return values[index]
-	return fallback
-
-func _road_geometry_float_pair_at(
-	values: PackedFloat32Array,
-	pair_index: int,
-	component_index: int,
-	fallback: float
-) -> float:
-	var index: int = pair_index * 2 + component_index
 	if index >= 0 and index < values.size():
 		return values[index]
 	return fallback

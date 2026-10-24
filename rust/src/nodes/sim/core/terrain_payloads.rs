@@ -6,7 +6,6 @@ use crate::simulation::buildings::allocator::BuildingSiteSurfaceClient;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::simulation::network::roadbed::SurfaceChunkKey;
 use crate::simulation::terrain::TerrainPatchSnapshot;
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch, TerrainCdtRoadLoop,
@@ -20,8 +19,9 @@ pub(crate) use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 pub(crate) struct RefinedTerrainAssemblyLedger {
     /// Latest generation requiring a full-patch input rebuild.
     pub(crate) full_dirty_at: Option<u64>,
-    /// Latest local-road generation touching each fixed 32 m spatial-query chunk.
-    pub(crate) road_query_chunk_dirty_at: BTreeMap<SurfaceChunkKey, u64>,
+    /// Latest local-road generation touching each fixed 64 m terrain CDT tile `(x, z)`: tiles
+    /// whose halo meets an edit's old or new pieces (`ROAD-68-D`).
+    pub(crate) road_tile_dirty_at: BTreeMap<(i64, i64), u64>,
 }
 
 /// Input-assembly scope captured for one immutable refined-terrain request.

@@ -16,7 +16,7 @@ fn near_corner_road_site_input() -> TerrainCdtInput {
             TerrainCdtVertex::new(28.0, 0.0, 10.00051),
             TerrainCdtVertex::new(2.0, 0.0, 10.00051),
         ],
-        test_span_boundary_source(1, TerrainCdtRoadBandKind::Sidewalk, 0),
+        test_span_boundary_source(1, 0),
     );
     let site = sourced_road_loop(
         2,
@@ -151,55 +151,10 @@ fn unpreserved_constraint_filter_catches_centroid_outside_overlap() {
         centroid(points),
         std::slice::from_ref(&road_loop)
     ));
-    assert!(terrain_triangle_is_road_owned(
-        [0, 1, 2],
-        points,
-        &BTreeMap::new(),
-        std::slice::from_ref(&road_loop),
-    ));
     assert!(triangle_crosses_road_constraint(
         points,
         road_loop.vertices[0],
         road_loop.vertices[3],
-    ));
-}
-
-#[test]
-fn road_owned_triangle_rejection_keeps_exterior_seam_without_source_edge() {
-    let road_loop = canonical_square_road_loop(4.0, 6.0);
-    let points = [
-        TerrainCdtVertex::new(4.0, 0.0, 4.0),
-        TerrainCdtVertex::new(6.0, 0.0, 4.0),
-        TerrainCdtVertex::new(4.0, 0.0, 0.0),
-    ];
-
-    assert!(!terrain_triangle_is_road_owned(
-        [0, 1, 2],
-        points,
-        &BTreeMap::new(),
-        &[road_loop],
-    ));
-}
-
-#[test]
-fn road_owned_triangle_rejection_catches_boundary_chord_with_centroid_outside() {
-    let road_loop = canonical_square_road_loop(4.0, 6.0);
-    let points = [
-        TerrainCdtVertex::new(4.0, 0.0, 4.0),
-        TerrainCdtVertex::new(6.0, 0.0, 6.0),
-        TerrainCdtVertex::new(2.0, 0.0, 6.0),
-    ];
-    let road_loops = [road_loop.clone()];
-
-    assert!(!point_strictly_inside_any_road_footprint(
-        centroid(points),
-        &road_loops,
-    ));
-    assert!(terrain_triangle_is_road_owned(
-        [0, 1, 2],
-        points,
-        &BTreeMap::new(),
-        &road_loops,
     ));
 }
 
@@ -407,6 +362,49 @@ fn building_site_boundary_abutting_road_corner_uses_road_height_without_input_er
             && same_coord(vertex.z, 12.0)
             && same_height(vertex.height_m, 0.0)
     }));
+}
+
+#[test]
+fn roadbed_boundary_height_wins_over_a_site_at_shared_vertices() {
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 32.0, 32.0, [0.0; 4]);
+    let road = vec![
+        TerrainCdtVertex::new(4.0, 0.5, 8.0),
+        TerrainCdtVertex::new(20.0, 0.5, 8.0),
+        TerrainCdtVertex::new(20.0, 0.5, 12.0),
+        TerrainCdtVertex::new(4.0, 0.5, 12.0),
+    ];
+    let site = vec![
+        TerrainCdtVertex::new(4.0, 2.0, 12.0),
+        TerrainCdtVertex::new(16.0, 2.0, 12.0),
+        TerrainCdtVertex::new(16.0, 2.0, 22.0),
+        TerrainCdtVertex::new(4.0, 2.0, 22.0),
+    ];
+    let site_source = TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+        building_idx: 8,
+        local_loop_index: 0,
+        local_edge_index: 0,
+    };
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        patch,
+        vec![
+            sourced_road_loop(31, 0, road, test_span_boundary_source(31, 1)),
+            sourced_road_loop(88, 0, site, site_source),
+        ],
+        piece_source_samples(),
+    ))
+    .expect("a site abutting a roadbed chain shares its vertices");
+
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    for x in [4.0, 16.0] {
+        assert!(
+            mesh.vertices.iter().any(|vertex| {
+                same_coord(vertex.x, x)
+                    && same_coord(vertex.z, 12.0)
+                    && same_height(vertex.height_m, 0.5)
+            }),
+            "the shared vertex at x={x} takes the road height"
+        );
+    }
 }
 
 #[test]

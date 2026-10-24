@@ -329,7 +329,14 @@ fn set_span_frame_laterals(knots: &mut [ArmKnot]) {
     for index in 0..count {
         let (from, to) = (index.saturating_sub(1), (index + 1).min(count - 1));
         let along = knots[to].position - knots[from].position;
-        knots[index].lateral = along.normalize_or_zero().perp();
+        // Divide rather than multiply by the reciprocal: an axis-aligned arm keeps an exact axis
+        // (`249 * (1 / 249)` rounds below one), so its runs stay on the span's grid lines.
+        let length = along.length();
+        knots[index].lateral = if length > 0.0 {
+            (along / length).perp()
+        } else {
+            RoadVec2::ZERO
+        };
     }
 }
 

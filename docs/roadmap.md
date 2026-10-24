@@ -65,7 +65,6 @@ moves and road removals, and turn the remaining silent skips into placement reje
 Before `ROAD-68-E` the roadbed was compacted for quality (2026-10-24, user decision): duplication,
 dead code and needless parameters removed, `roadbed/` at 7,229 production lines (7,545 before),
 with every product bitwise unchanged under a product-hash probe that later gates keep.
-Tests that need later gates are disabled until then (32 Rust tests, 4 Godot scripts).
 `ROAD-68-G` (2026-10-24, D7) is implemented: a commit, undo, road bulldoze or other topology edit
 rebuilds the CCH as a pure job on a graph copy and adopts it one frame later, the simulation frame
 holding meanwhile, deterministically across worker counts, a late rebuild and a save in the hold.
@@ -76,10 +75,20 @@ entrances and the agent pass runs in parallel, bit for bit as before: 41 ms at 1
 before). The commit's synchronous cell-lot regeneration (about 20 ms) still misses a frame (open
 question 21), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
-cities (open question 20). `ROAD-68-D`, `-E`, `-F` and `-H` are open, and `roads.md` lists
-nineteen open questions; open question 16
-(strokes pinned to the pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, and open
-question 17 records the remaining footpath attachment defaults. Design,
+cities (open question 20).
+`ROAD-68-D` (terrain from the roadbed's outer chains) is in progress on branch `road68-D`: every
+64 m CDT tile takes its road loops from its own halo rectangle of outer chains, holes come from
+orientation, one source `RoadBoundary` replaces the legacy span and node sources, roads and sites
+share one grading envelope, and edits stamp only the tiles their old and new pieces reach. Road
+seams on tile sides are exact in both tiles. 24 of its 25 disabled tests are re-enabled and 23
+pass; the recorded Kuopio replay and the hillside fixture predate `ROAD-68-C` and wait for
+`ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled. The sloped T's terrain
+stage takes 2.3 ms against the 2 ms target (open question 22). Tests that need later gates are
+disabled until then (11 Rust tests, 4 Godot scripts). `ROAD-68-D`, `-E`, `-F` and `-H` are
+open, and `roads.md` lists twenty-two open questions; open question 16 (strokes pinned to the
+pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, 17 records footpath defaults to
+confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
+decided, and 22 (the 2 ms terrain stage) needs a decision. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

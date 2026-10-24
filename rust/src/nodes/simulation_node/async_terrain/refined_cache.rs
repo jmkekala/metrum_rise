@@ -116,11 +116,39 @@ impl SimCore {
         };
         let mut changed_keys = Vec::new();
         let mut invalidated_cache_entries = 0usize;
+        // A dirty roadbed keeps the last published road ownership until it compiles. A patch's
+        // road margin is recomputed only when a compile changed pieces within the envelope cap
+        // of it (taken bounds remove it from the current keys, pending ones are checked here) or
+        // the visual terrain changed: site-only and unrelated refreshes reuse it.
+        let roads_current = self.transit_network.roadbed.is_current();
+        if self.road_ownership_visual_generation != self.heightmap.visual_generation() {
+            self.road_ownership_visual_generation = self.heightmap.visual_generation();
+            self.road_ownership_current_keys.clear();
+        }
         for key in unique_keys {
             let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
-            // Roads have no terrain grading envelope until `ROAD-68-D`: no patch is road-locked.
-            self.road_locked_terrain_patch_margins.remove(&key);
-            Self::set_sorted_patch_membership(&mut self.road_locked_terrain_patch_keys, key, false);
+            let road_margin = if roads_current
+                && (!self.road_ownership_current_keys.contains(&key)
+                    || self.road_changes_pending_near(key))
+            {
+                let margin = self.road_terrain_patch_margin_m(key, safe_render_step_m);
+                if !self.road_changes_pending_near(key) {
+                    self.road_ownership_current_keys.insert(key);
+                }
+                margin
+            } else {
+                self.road_locked_terrain_patch_margins.get(&key).copied()
+            };
+            if let Some(margin_m) = road_margin {
+                self.road_locked_terrain_patch_margins.insert(key, margin_m);
+            } else {
+                self.road_locked_terrain_patch_margins.remove(&key);
+            }
+            Self::set_sorted_patch_membership(
+                &mut self.road_locked_terrain_patch_keys,
+                key,
+                road_margin.is_some(),
+            );
 
             let site_owned = self
                 .heightmap
@@ -139,7 +167,12 @@ impl SimCore {
                 self.building_site_owned_terrain_patch_keys.remove(&key);
             }
 
-            let engineered_margin = site_owned.then_some(site_margin_m);
+            let engineered_margin = match (road_margin, site_owned) {
+                (Some(road_margin_m), true) => Some(road_margin_m.max(site_margin_m)),
+                (Some(road_margin_m), false) => Some(road_margin_m),
+                (None, true) => Some(site_margin_m),
+                (None, false) => None,
+            };
             if let Some(margin_m) = engineered_margin {
                 self.engineered_terrain_patch_margins.insert(key, margin_m);
             } else {
@@ -177,7 +210,7 @@ impl SimCore {
                             .full_dirty_at
                             .is_some_and(|stamp| stamp <= current_generation)
                             || ledger
-                                .road_query_chunk_dirty_at
+                                .road_tile_dirty_at
                                 .values()
                                 .any(|stamp| *stamp == current_generation)
                     })
@@ -188,6 +221,67 @@ impl SimCore {
         self.bump_terrain_payload_patch_generations(&full_dirty_keys);
         self.terrain_dirty |= !changed_keys.is_empty();
         invalidated_cache_entries
+    }
+
+    // Whether compiled but not yet taken piece changes lie within the envelope cap of a patch.
+    // `O(pending changes)`.
+    fn road_changes_pending_near(&self, key: (usize, usize)) -> bool {
+        use crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M;
+        let Some((min_x, min_z, max_x, max_z)) =
+            self.heightmap.render_patch_world_bounds(key.0, key.1)
+        else {
+            return false;
+        };
+        let cap = f64::from(GRADING_ENVELOPE_MAX_MARGIN_M);
+        self.transit_network
+            .roadbed
+            .changed_bounds()
+            .iter()
+            .any(|bounds| {
+                bounds[0] - cap <= f64::from(max_x)
+                    && bounds[2] + cap >= f64::from(min_x)
+                    && bounds[1] - cap <= f64::from(max_z)
+                    && bounds[3] + cap >= f64::from(min_z)
+            })
+    }
+
+    // Grading margin of the roads whose envelope reaches a render patch: the largest margin of
+    // any tile's road loops (`terrain_cdt_road_tile_loops`, the loops the build uses), `None`
+    // when no tile has one (`ROAD-68-D`). A chain that cannot close locks the patch at the
+    // envelope cap, so its build reports the typed error instead of showing raw terrain under
+    // a road.
+    fn road_terrain_patch_margin_m(&self, key: (usize, usize), render_step_m: f32) -> Option<f32> {
+        use crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M;
+        let patch = self.heightmap.visual_patch_snapshot(key.0, key.1)?;
+        let bounds = (
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+        let roads = (&self.region_graph, &self.transit_network.roadbed);
+        let mut margin: Option<f32> = None;
+        for tile_id in SimulationNode::terrain_cdt_tile_ids_for_bounds(&patch, bounds) {
+            let Some(tile_bounds) = SimulationNode::terrain_cdt_tile_bounds(&patch, tile_id) else {
+                continue;
+            };
+            match SimulationNode::terrain_cdt_road_tile_loops(
+                &self.heightmap,
+                roads,
+                tile_bounds,
+                render_step_m,
+                false,
+            ) {
+                Ok(loops) => {
+                    for tile_loop in loops {
+                        let margin_m = tile_loop.margin_m;
+                        margin = Some(margin.map_or(margin_m, |current| current.max(margin_m)));
+                    }
+                }
+                Err(_) => return Some(GRADING_ENVELOPE_MAX_MARGIN_M),
+            }
+        }
+        margin
     }
 
     #[cfg(test)]
@@ -244,13 +338,6 @@ impl SimCore {
             } else {
                 patch_margin_m
             };
-            let road_clip_query = SimulationNode::road_clip_loop_query_for_bounds(
-                self,
-                base_patch.world_origin_x - patch_query_margin_m,
-                base_patch.world_origin_z - patch_query_margin_m,
-                base_patch.world_origin_x + base_patch.world_size_x + patch_query_margin_m,
-                base_patch.world_origin_z + base_patch.world_size_z + patch_query_margin_m,
-            );
             let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
             let surface_generation = self.terrain_payload_generation_for_patch(patch_x, patch_z);
             if self
@@ -267,9 +354,17 @@ impl SimCore {
                 base_patch.world_origin_x + base_patch.world_size_x + patch_query_margin_m,
                 base_patch.world_origin_z + base_patch.world_size_z + patch_query_margin_m,
             );
-            let window_plan = SimulationNode::terrain_cdt_window_build_inputs(
+            let road_clip_query = SimulationNode::road_clip_loop_query_for_snapshot(
+                &sites,
+                base_patch.world_origin_x - patch_query_margin_m,
+                base_patch.world_origin_z - patch_query_margin_m,
+                base_patch.world_origin_x + base_patch.world_size_x + patch_query_margin_m,
+                base_patch.world_origin_z + base_patch.world_size_z + patch_query_margin_m,
+            );
+            let window_plan = SimulationNode::terrain_cdt_window_build_inputs_with_roads(
                 &self.heightmap,
                 &base_patch,
+                Some((&self.region_graph, &self.transit_network.roadbed)),
                 &road_clip_query.cdt_road_loops,
                 safe_render_step_m,
                 Some(TerrainCdtSiteGradingContext {
@@ -304,9 +399,11 @@ impl SimCore {
                 road_clip_source_count: road_clip_query.road_source_count,
                 road_clip_loop_count: road_clip_query.road_loop_count,
                 site_clip_loop_count: road_clip_query.site_loop_count,
-                clip_error_label: road_clip_query.clip_error_label,
+                clip_error_label: road_clip_query
+                    .clip_error_label
+                    .or(window_plan.road_error_label),
                 clip_query_margin_m: patch_query_margin_m,
-                derive_clip_counts_from_windows: false,
+                derive_clip_counts_from_windows: true,
             });
         }
 
@@ -335,6 +432,7 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
+        self.road_ownership_current_keys.clear();
         let patch_cols = self.heightmap.render_patch_cols();
         let patch_rows = self.heightmap.render_patch_rows();
         let mut patch_keys = Vec::with_capacity(patch_cols.saturating_mul(patch_rows));

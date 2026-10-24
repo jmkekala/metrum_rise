@@ -120,6 +120,7 @@ impl TerrainCdtRoadLoop {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_source_edges(
         stable_piece_id: u64,
         local_loop_index: u32,
@@ -173,119 +174,41 @@ pub(crate) struct TerrainCdtTieInGuideConstraint {
     pub(crate) end: TerrainCdtVertex,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TerrainCdtEdgeClass {
-    Standard,
-    Bridge,
-    Tunnel,
+/// Roadbed piece of a road boundary: the roadbed's `PieceId` (span of an edge, or node piece),
+/// kept free of network types so the CDT depends on none.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum TerrainCdtRoadPiece {
+    Span(u64),
+    Node(u32),
 }
 
-// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
-// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TerrainCdtRoadBandKind {
-    Carriageway,
-    CurbOrShoulder,
-    Sidewalk,
-    Footpath,
-    Median,
-    Parking,
-    CycleTrack,
-    TramReservation,
+/// How the road above a boundary stands: on the ground, or on a structure (bridge or tunnel,
+/// whose abutment and portal sources are `ROAD-68-F`). Only structures may tie in with
+/// retaining walls.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum TerrainCdtRoadSupport {
+    Grounded,
+    Structure,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TerrainCdtSpanRegionRole {
-    Asphalt,
-    CurbOrShoulder,
-    NonRoad,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TerrainCdtEarthworkSupportPolicy {
-    StandardFullGroundedSpan,
-    BridgeEndpointAbutments,
-    TunnelVisiblePortals,
-}
-
-// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
-// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TerrainCdtNodePieceKind {
-    Terminal,
-    Bend,
-    JunctionN,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct TerrainCdtNodeFootprintBoundaryDirectSource {
-    pub(crate) top_surface_source_index: u64,
-    pub(crate) grade_authority_index: u64,
-}
-
-// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
-// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) enum TerrainCdtNodeFootprintBoundaryVertexSource {
-    Direct(TerrainCdtNodeFootprintBoundaryDirectSource),
-    CanonicalBoundaryPoint {
-        x_key: i64,
-        z_key: i64,
-        y_mm: i64,
-    },
-    BoundaryInterpolation {
-        owning_segment_start: TerrainCdtNodeFootprintBoundaryDirectSource,
-        owning_segment_end: TerrainCdtNodeFootprintBoundaryDirectSource,
-        height_mm: i64,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct TerrainCdtNodeFootprintBoundarySegmentSource {
-    pub(crate) start: TerrainCdtNodeFootprintBoundaryVertexSource,
-    pub(crate) end: TerrainCdtNodeFootprintBoundaryVertexSource,
-}
-
-// Legacy road-surface sources: since ROAD-68-A only tests construct some variants, and
-// ROAD-68-D replaces them with one roadbed `RoadBoundary` source.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Provenance of one loop edge. Ordered by variant, then field by field.
+// The spec names the sources `RoadBoundary` and `BuildingSiteBoundary` (`docs/roads.md`).
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum TerrainCdtRoadBoundarySource {
-    SpanSupportBoundary {
-        edge_idx: u64,
-        edge_class: TerrainCdtEdgeClass,
-        support_policy: TerrainCdtEarthworkSupportPolicy,
-        source_band_index: u32,
-        band_kind: TerrainCdtRoadBandKind,
-        role: TerrainCdtSpanRegionRole,
-        start_section_index: u32,
-        end_section_index: u32,
-        start_s_m: f32,
-        end_s_m: f32,
-    },
-    NodeFootprintBoundary {
-        node_id: u32,
-        node_kind: TerrainCdtNodePieceKind,
-        owner_kind: TerrainCdtRoadBandKind,
-        owner_index: u32,
-        boundary_source: Option<TerrainCdtNodeFootprintBoundarySegmentSource>,
-    },
-    NodeSameMaterialBoundaryHandoff {
-        node_id: u32,
-        node_kind: TerrainCdtNodePieceKind,
-        owner_kind: TerrainCdtRoadBandKind,
-        owner_index_a: u32,
-        owner_index_b: u32,
-        boundary_source: Option<TerrainCdtNodeFootprintBoundarySegmentSource>,
+    /// Segment `segment` of outer chain `chain` of a roadbed piece (`ROAD-68-D`).
+    RoadBoundary {
+        piece: TerrainCdtRoadPiece,
+        chain: u32,
+        segment: u32,
+        support: TerrainCdtRoadSupport,
     },
     BuildingSiteBoundary {
         building_idx: u64,
         local_loop_index: u32,
         local_edge_index: u32,
     },
+    #[cfg(test)]
     SyntheticTestBoundary {
         stable_piece_id: u64,
         local_loop_index: u32,
@@ -296,174 +219,49 @@ pub(crate) enum TerrainCdtRoadBoundarySource {
 impl TerrainCdtRoadBoundarySource {
     pub(crate) fn source_kind_code(self) -> i32 {
         match self {
-            Self::SpanSupportBoundary { .. } => 0,
-            Self::NodeFootprintBoundary { .. } => 1,
-            Self::NodeSameMaterialBoundaryHandoff { .. } => 2,
-            Self::BuildingSiteBoundary { .. } => 3,
-            Self::SyntheticTestBoundary { .. } => 4,
+            Self::RoadBoundary { .. } => 0,
+            Self::BuildingSiteBoundary { .. } => 1,
+            #[cfg(test)]
+            Self::SyntheticTestBoundary { .. } => 2,
         }
     }
 
     pub(crate) fn primary_id_code(self) -> i32 {
         match self {
-            Self::SpanSupportBoundary { edge_idx, .. } => clamp_u64_to_i32(edge_idx),
-            Self::NodeFootprintBoundary { node_id, .. } => clamp_u32_to_i32(node_id),
-            Self::NodeSameMaterialBoundaryHandoff { node_id, .. } => clamp_u32_to_i32(node_id),
+            Self::RoadBoundary {
+                piece: TerrainCdtRoadPiece::Span(edge),
+                ..
+            } => clamp_u64_to_i32(edge),
+            Self::RoadBoundary {
+                piece: TerrainCdtRoadPiece::Node(node),
+                ..
+            } => i32::try_from(node).unwrap_or(i32::MAX),
             Self::BuildingSiteBoundary { building_idx, .. } => clamp_u64_to_i32(building_idx),
+            #[cfg(test)]
             Self::SyntheticTestBoundary {
                 stable_piece_id, ..
             } => clamp_u64_to_i32(stable_piece_id),
         }
     }
 
-    pub(crate) fn node_kind_code(self) -> i32 {
-        match self {
-            Self::NodeFootprintBoundary { node_kind, .. }
-            | Self::NodeSameMaterialBoundaryHandoff { node_kind, .. } => {
-                i32::from(terrain_cdt_node_kind_sort_key(node_kind))
-            }
-            _ => -1,
-        }
-    }
-
-    pub(crate) fn edge_class_code(self) -> i32 {
-        match self {
-            Self::SpanSupportBoundary { edge_class, .. } => {
-                i32::from(terrain_cdt_edge_class_sort_key(edge_class))
-            }
-            _ => -1,
-        }
-    }
-
-    pub(crate) fn support_policy_code(self) -> i32 {
-        match self {
-            Self::SpanSupportBoundary { support_policy, .. } => {
-                i32::from(terrain_cdt_support_policy_sort_key(support_policy))
-            }
-            _ => -1,
-        }
-    }
-
-    pub(crate) fn owner_kind_code(self) -> i32 {
-        match self {
-            Self::SpanSupportBoundary { band_kind, .. } => {
-                i32::from(terrain_cdt_band_kind_sort_key(band_kind))
-            }
-            Self::NodeFootprintBoundary { owner_kind, .. } => {
-                i32::from(terrain_cdt_band_kind_sort_key(owner_kind))
-            }
-            Self::NodeSameMaterialBoundaryHandoff { owner_kind, .. } => {
-                i32::from(terrain_cdt_band_kind_sort_key(owner_kind))
-            }
-            Self::BuildingSiteBoundary { .. } => -1,
-            Self::SyntheticTestBoundary { .. } => -1,
-        }
-    }
-
-    pub(crate) fn owner_index_code(self) -> i32 {
-        match self {
-            Self::SpanSupportBoundary {
-                source_band_index, ..
-            } => clamp_u32_to_i32(source_band_index),
-            Self::NodeFootprintBoundary { owner_index, .. } => clamp_u32_to_i32(owner_index),
-            Self::NodeSameMaterialBoundaryHandoff { owner_index_a, .. } => {
-                clamp_u32_to_i32(owner_index_a)
-            }
-            Self::BuildingSiteBoundary {
-                local_loop_index, ..
-            } => clamp_u32_to_i32(local_loop_index),
-            Self::SyntheticTestBoundary { .. } => -1,
-        }
-    }
-
-    pub(crate) fn role_code(self) -> i32 {
-        match self {
-            Self::SpanSupportBoundary { role, .. } => {
-                i32::from(terrain_cdt_span_role_sort_key(role))
-            }
-            _ => -1,
-        }
-    }
-
-    pub(crate) fn section_range_codes(self) -> [i32; 2] {
-        match self {
-            Self::SpanSupportBoundary {
-                start_section_index,
-                end_section_index,
-                ..
-            } => [
-                clamp_u32_to_i32(start_section_index),
-                clamp_u32_to_i32(end_section_index),
-            ],
-            _ => [-1, -1],
-        }
-    }
-
-    pub(crate) fn s_range_values(self) -> [f32; 2] {
-        match self {
-            Self::SpanSupportBoundary {
-                start_s_m, end_s_m, ..
-            } => [start_s_m, end_s_m],
-            _ => [-1.0, -1.0],
-        }
-    }
-
     pub(crate) fn debug_label(self) -> String {
         match self {
-            Self::SpanSupportBoundary {
-                edge_idx,
-                edge_class,
-                support_policy,
-                source_band_index,
-                band_kind,
-                role,
-                start_section_index,
-                end_section_index,
-                start_s_m,
-                end_s_m,
-            } => format!(
-                "span edge={} class={} policy={} band={} kind={} role={} sections={}..{} s={:.3}..{:.3}",
-                edge_idx,
-                terrain_cdt_edge_class_label(edge_class),
-                terrain_cdt_support_policy_label(support_policy),
-                source_band_index,
-                terrain_cdt_band_kind_label(band_kind),
-                terrain_cdt_span_role_label(role),
-                start_section_index,
-                end_section_index,
-                start_s_m,
-                end_s_m
-            ),
-            Self::NodeFootprintBoundary {
-                node_id,
-                node_kind,
-                owner_kind,
-                owner_index,
-                boundary_source,
-            } => format!(
-                "node id={} kind={} owner_kind={} owner_index={} boundary_source={:?}",
-                node_id,
-                terrain_cdt_node_kind_label(node_kind),
-                terrain_cdt_band_kind_label(owner_kind),
-                owner_index,
-                boundary_source
-            ),
-            Self::NodeSameMaterialBoundaryHandoff {
-                node_id,
-                node_kind,
-                owner_kind,
-                owner_index_a,
-                owner_index_b,
-                boundary_source,
-            } => format!(
-                "node_same_material_handoff id={} kind={} owner_kind={} owner_indices={}..{} boundary_source={:?}",
-                node_id,
-                terrain_cdt_node_kind_label(node_kind),
-                terrain_cdt_band_kind_label(owner_kind),
-                owner_index_a,
-                owner_index_b,
-                boundary_source
-            ),
+            Self::RoadBoundary {
+                piece,
+                chain,
+                segment,
+                support,
+            } => {
+                let (kind, id) = match piece {
+                    TerrainCdtRoadPiece::Span(edge) => ("span", edge),
+                    TerrainCdtRoadPiece::Node(node) => ("node", u64::from(node)),
+                };
+                let support = match support {
+                    TerrainCdtRoadSupport::Grounded => "grounded",
+                    TerrainCdtRoadSupport::Structure => "structure",
+                };
+                format!("road {kind}={id} chain={chain} segment={segment} support={support}")
+            }
             Self::BuildingSiteBoundary {
                 building_idx,
                 local_loop_index,
@@ -472,6 +270,7 @@ impl TerrainCdtRoadBoundarySource {
                 "building_site building={} loop={} edge={}",
                 building_idx, local_loop_index, local_edge_index
             ),
+            #[cfg(test)]
             Self::SyntheticTestBoundary {
                 stable_piece_id,
                 local_loop_index,
@@ -485,10 +284,6 @@ impl TerrainCdtRoadBoundarySource {
 }
 
 fn clamp_u64_to_i32(value: u64) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
-fn clamp_u32_to_i32(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
 

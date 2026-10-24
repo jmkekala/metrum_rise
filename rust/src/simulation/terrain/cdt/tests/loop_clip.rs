@@ -237,33 +237,9 @@ fn submillimetre_curved_edge_intersection_retains_exact_boundary_source() {
 
 #[test]
 fn clipping_preserves_multiple_sources_that_partition_one_output_edge() {
-    let source_a = test_span_boundary_source_range(
-        93,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        15,
-        16,
-        10.0,
-        11.0,
-    );
-    let source_b = test_span_boundary_source_range(
-        93,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        16,
-        17,
-        11.0,
-        12.0,
-    );
-    let source_c = test_span_boundary_source_range(
-        93,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        17,
-        18,
-        12.0,
-        13.0,
-    );
+    let source_a = test_span_boundary_source_range(93, 5, 15, 16, 10.0, 11.0);
+    let source_b = test_span_boundary_source_range(93, 5, 16, 17, 11.0, 12.0);
+    let source_c = test_span_boundary_source_range(93, 5, 17, 18, 12.0, 13.0);
     let p0 = TerrainCdtVertex::new(3.0, 1.0, 3.0);
     let p1 = TerrainCdtVertex::new(5.0, 1.0, 3.0);
     let p2 = TerrainCdtVertex::new(7.0, 1.0, 3.0);
@@ -326,42 +302,10 @@ fn clipping_preserves_multiple_sources_that_partition_one_output_edge() {
 
 #[test]
 fn default_patch_scale_short_source_partition_preserves_final_provenance() {
-    let short_source = test_span_boundary_source_range(
-        94,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        15,
-        16,
-        10.0,
-        10.1,
-    );
-    let long_source = test_span_boundary_source_range(
-        94,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        16,
-        17,
-        10.1,
-        520.0,
-    );
-    let remaining_source = test_span_boundary_source_range(
-        94,
-        TerrainCdtRoadBandKind::Sidewalk,
-        5,
-        17,
-        18,
-        520.0,
-        540.0,
-    );
-    let point_contact_source = test_span_boundary_source_range(
-        94,
-        TerrainCdtRoadBandKind::Sidewalk,
-        6,
-        18,
-        19,
-        540.0,
-        541.0,
-    );
+    let short_source = test_span_boundary_source_range(94, 5, 15, 16, 10.0, 10.1);
+    let long_source = test_span_boundary_source_range(94, 5, 16, 17, 10.1, 520.0);
+    let remaining_source = test_span_boundary_source_range(94, 5, 17, 18, 520.0, 540.0);
+    let point_contact_source = test_span_boundary_source_range(94, 6, 18, 19, 540.0, 541.0);
     let bottom_left = TerrainCdtVertex::new(-1.0, 1.0, 100.0);
     let short_end = TerrainCdtVertex::new(0.1, 1.0, 100.0);
     let bottom_right = TerrainCdtVertex::new(511.0, 1.0, 100.0);
@@ -454,7 +398,7 @@ fn disconnected_clip_test_loop() -> TerrainCdtRoadLoop {
 #[test]
 fn sourced_patch_edge_matrix_preserves_sources_after_clipping() {
     let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
-    let source = test_span_boundary_source(201, TerrainCdtRoadBandKind::CurbOrShoulder, 2);
+    let source = test_span_boundary_source(201, 2);
     let cases = [
         (
             "road footprint crossing one patch edge",
@@ -520,7 +464,7 @@ fn road_loop_patch_clipping_preserves_boundary_sources() {
         TerrainCdtVertex::new(20.0, 0.0, 20.0),
         6.0,
     );
-    let source = test_node_boundary_source(88, TerrainCdtRoadBandKind::Sidewalk, 5);
+    let source = test_node_boundary_source(88, 5);
 
     let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
         patch,

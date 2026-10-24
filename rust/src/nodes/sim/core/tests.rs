@@ -770,7 +770,6 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn planned_topology_terrain_rejection_restores_split_dependents() {
     use crate::simulation::buildings::allocator::EdgeOccupancy;
     let mut core = test_core();

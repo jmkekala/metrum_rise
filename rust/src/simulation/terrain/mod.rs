@@ -9,7 +9,9 @@
 
 pub(crate) mod cdt;
 pub mod chunks;
+pub(crate) mod grading;
 mod patch_masks;
+pub mod rect_loops;
 mod visual;
 
 pub(crate) use visual::{TerrainVisualOverlay, TerrainVisualSource};
@@ -41,6 +43,24 @@ const HEIGHT_REVISION_MARGIN_M: f32 = 96.0;
 
 /// Fine render step used by planned and committed road-clipped terrain patches.
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
+/// Span of the fixed world-aligned terrain CDT tile, the CDT, cache and ledger unit inside a
+/// render patch, in millimetres.
+pub(crate) const TERRAIN_CDT_TILE_SPAN_MM: i64 = 64_000;
+/// Halo around a CDT tile from which its road and site loops are taken.
+pub(crate) const TERRAIN_CDT_TILE_HALO_M: f32 = 64.0;
+
+/// CDT tile keys `(x, z)` whose tiles overlap world bounds, row by row (`ROAD-68-D`).
+pub(crate) fn terrain_cdt_tile_keys_for_world_bounds(
+    bounds: [f64; 4],
+) -> impl Iterator<Item = (i64, i64)> {
+    let tile = |value: f64, end: bool| {
+        let mm = (value * 1000.0).round() as i64;
+        (if end { mm - 1 } else { mm }).div_euclid(TERRAIN_CDT_TILE_SPAN_MM)
+    };
+    let (min_x, max_x) = (tile(bounds[0], false), tile(bounds[2], true));
+    let (min_z, max_z) = (tile(bounds[1], false), tile(bounds[3], true));
+    (min_z..=max_z).flat_map(move |z| (min_x..=max_x).map(move |x| (x, z)))
+}
 
 /// Returns the deterministic seam margin used by local terrain-CDT windows.
 pub(crate) fn terrain_cdt_local_sample_margin_m(

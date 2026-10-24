@@ -17,7 +17,8 @@ pub(super) const CURB_FACE_GROUP: usize = BAND_GROUPS;
 pub(super) const GROUPS: usize = BAND_GROUPS + 1;
 
 /// Footprint boundary polyline: vertex indices into its piece's positions, ordered so the road
-/// lies on the left, from one mouth corner to the next.
+/// lies on the left in XZ (the counter-clockwise quarter turn from +x towards +z), from one
+/// mouth corner to the next.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OuterChain {
     vertices: Box<[u32]>,
@@ -347,17 +348,16 @@ pub(super) fn build_span_mesh(
         }
     }
 
-    // Road on the left: the left boundary runs back from the end mouth, the right one forward.
+    // Road on the left in XZ (the counter-clockwise side, as the node chains): slot 0 runs
+    // forward from the start mouth, the last slot back from the end mouth (`ROAD-68-D`).
     let last = stride as u32 - 1;
     let outer_chains = vec![
         OuterChain {
-            vertices: (0..rows as u32)
-                .rev()
-                .map(|row| row * stride as u32)
-                .collect(),
+            vertices: (0..rows as u32).map(|row| row * stride as u32).collect(),
         },
         OuterChain {
             vertices: (0..rows as u32)
+                .rev()
                 .map(|row| row * stride as u32 + last)
                 .collect(),
         },

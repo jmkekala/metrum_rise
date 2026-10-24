@@ -367,7 +367,6 @@ impl SimulationNode {
             &base_patch,
             previous.as_deref(),
             request.surface_generation,
-            road_locked_margin_m,
         );
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
@@ -397,7 +396,6 @@ impl SimulationNode {
         patch: &TerrainPatchSnapshot,
         previous: Option<&CachedRefinedTerrainPatch>,
         surface_generation: u64,
-        current_clip_query_margin_m: f32,
     ) -> RefinedTerrainAssemblyScope {
         let Some(previous) = previous else {
             return RefinedTerrainAssemblyScope::FullPatch;
@@ -416,29 +414,21 @@ impl SimulationNode {
             return RefinedTerrainAssemblyScope::FullPatch;
         }
 
-        let expansion_m = previous
-            .clip_query_margin_m
-            .max(current_clip_query_margin_m)
-            .max(0.0);
+        // The ledger holds every tile whose halo meets an edit's old or new pieces; the halo
+        // also caps the grading envelope (`ROAD-68-D`).
         let mut dirty_tiles = BTreeSet::new();
-        let mut has_relevant_road_chunks = false;
-        for (&chunk, &stamp) in &ledger.road_query_chunk_dirty_at {
+        let mut has_relevant_road_tiles = false;
+        for (&(x, z), &stamp) in &ledger.road_tile_dirty_at {
             if stamp <= previous.surface_generation || stamp > surface_generation {
                 continue;
             }
-            has_relevant_road_chunks = true;
-            let [min_x, min_z, max_x, max_z] = core.transit_network.roadbed.chunk_bounds(chunk);
-            dirty_tiles.extend(Self::terrain_cdt_tile_ids_for_bounds(
-                patch,
-                (
-                    min_x as f32 - expansion_m,
-                    min_z as f32 - expansion_m,
-                    max_x as f32 + expansion_m,
-                    max_z as f32 + expansion_m,
-                ),
-            ));
+            has_relevant_road_tiles = true;
+            let tile_id = TerrainCdtTileId { x, z };
+            if Self::terrain_cdt_tile_bounds(patch, tile_id).is_some() {
+                dirty_tiles.insert(tile_id);
+            }
         }
-        if !has_relevant_road_chunks {
+        if !has_relevant_road_tiles {
             return RefinedTerrainAssemblyScope::FullPatch;
         }
         let changed_tiles = dirty_tiles.iter().copied().collect::<Vec<_>>();
@@ -492,10 +482,6 @@ impl SimulationNode {
             return TerrainPatchPayloadBuildJob::Failed(request);
         }
         let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
-        let local_assembly = matches!(
-            &source.assembly_scope,
-            RefinedTerrainAssemblyScope::LocalTiles(_)
-        );
         let (window_plan, road_clip_query) = match &source.assembly_scope {
             RefinedTerrainAssemblyScope::FullPatch => {
                 let road_clip_query = Self::road_clip_loop_query_for_snapshot(
@@ -509,9 +495,10 @@ impl SimulationNode {
                         + source.patch.world_size_z
                         + source.road_locked_margin_m,
                 );
-                let window_plan = Self::terrain_cdt_window_build_inputs(
+                let window_plan = Self::terrain_cdt_window_build_inputs_with_roads(
                     terrain,
                     &source.patch,
+                    Some((graph, road_surface)),
                     &road_clip_query.cdt_road_loops,
                     render_step_m,
                     Some(TerrainCdtSiteGradingContext {
@@ -570,9 +557,12 @@ impl SimulationNode {
                 road_clip_source_count: road_clip_query.road_source_count,
                 road_clip_loop_count: road_clip_query.road_loop_count,
                 site_clip_loop_count: road_clip_query.site_loop_count,
-                clip_error_label: road_clip_query.clip_error_label,
+                clip_error_label: road_clip_query
+                    .clip_error_label
+                    .or(window_plan.road_error_label),
                 clip_query_margin_m: source.road_locked_margin_m,
-                derive_clip_counts_from_windows: local_assembly,
+                // Road loops are taken per tile, so the windows' fingerprints are the counts.
+                derive_clip_counts_from_windows: true,
             },
         }
     }

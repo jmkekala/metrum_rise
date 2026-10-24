@@ -195,39 +195,30 @@ fn terrain_cdt_sources_allow_retaining_wall(sources: &[TerrainCdtRoadBoundarySou
         .any(terrain_cdt_boundary_source_allows_retaining_wall)
 }
 
+// Ordinary grounded roads and sites never tie in with a wall; structures may.
 pub(super) fn terrain_cdt_boundary_source_allows_retaining_wall(
     source: TerrainCdtRoadBoundarySource,
 ) -> bool {
     match source {
-        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-            edge_class,
-            support_policy,
-            ..
-        } => {
-            edge_class != TerrainCdtEdgeClass::Standard
-                || support_policy != TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan
+        TerrainCdtRoadBoundarySource::RoadBoundary { support, .. } => {
+            support == TerrainCdtRoadSupport::Structure
         }
-        TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
-        | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. } => false,
         TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. } => false,
+        #[cfg(test)]
         TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
     }
 }
 
+// Only tunnel portals require walls where widened samples cannot tie in; their sources arrive
+// with `ROAD-68-F`.
 pub(super) fn terrain_cdt_boundary_source_requires_widened_sample_retaining_wall(
     source: TerrainCdtRoadBoundarySource,
 ) -> bool {
     match source {
-        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-            edge_class: TerrainCdtEdgeClass::Tunnel,
-            support_policy: TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals,
-            ..
-        }
-        | TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
-        TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }
-        | TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
-        | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. }
+        TerrainCdtRoadBoundarySource::RoadBoundary { .. }
         | TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. } => false,
+        #[cfg(test)]
+        TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
     }
 }
 

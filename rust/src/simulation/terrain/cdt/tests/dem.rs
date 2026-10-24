@@ -90,7 +90,7 @@ fn authored_steep_dem_matrix_preserves_sourced_road_touched_contract() {
     ];
 
     for (case_name, road, source_samples, expect_retaining_wall) in cases {
-        let source = test_span_boundary_source(200, TerrainCdtRoadBandKind::Sidewalk, 4);
+        let source = test_span_boundary_source(200, 4);
         let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
             patch,
             vec![sourced_road_loop(200, 0, road.clone(), source)],

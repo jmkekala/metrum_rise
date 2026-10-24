@@ -421,7 +421,7 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
+#[ignore = "ROAD-68-E: a recorded Kuopio stroke fails node 5 (node_piece_failed) at 79e7a476 as well; the recorded placements predate ROAD-68-C (open question 8)"]
 fn kuopio_recorded_profiles_and_terrain_preserve_quality_limits() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

@@ -6,8 +6,6 @@
 //! pipeline from canonical input through constrained triangulation, face ownership, and
 //! diagnostics. No stage depends on Godot types.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 mod builder;
 mod canonicalize;
 mod constraints;

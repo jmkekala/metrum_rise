@@ -4,37 +4,21 @@
 
 use super::super::super::*;
 
+/// Per-sample or per-face CDT sources for the debug display: each source's Rust label, kind
+/// code (0 road, 1 building site) and primary id (edge, node or building).
 #[derive(Default)]
 pub(in crate::nodes::simulation_node) struct TerrainCdtSourceExport {
     pub(in crate::nodes::simulation_node) counts: Vec<i32>,
     pub(in crate::nodes::simulation_node) labels: Vec<String>,
     pub(in crate::nodes::simulation_node) kind_codes: Vec<i32>,
     pub(in crate::nodes::simulation_node) primary_ids: Vec<i32>,
-    pub(in crate::nodes::simulation_node) node_kind_codes: Vec<i32>,
-    pub(in crate::nodes::simulation_node) edge_class_codes: Vec<i32>,
-    pub(in crate::nodes::simulation_node) owner_kinds: Vec<i32>,
-    pub(in crate::nodes::simulation_node) owner_indices: Vec<i32>,
-    pub(in crate::nodes::simulation_node) support_policies: Vec<i32>,
-    pub(in crate::nodes::simulation_node) roles: Vec<i32>,
-    pub(in crate::nodes::simulation_node) section_ranges: Vec<i32>,
-    pub(in crate::nodes::simulation_node) s_ranges: Vec<f32>,
 }
 
 impl TerrainCdtSourceExport {
     pub(in crate::nodes::simulation_node) fn with_sample_capacity(sample_count: usize) -> Self {
         Self {
             counts: Vec::with_capacity(sample_count),
-            labels: Vec::new(),
-            kind_codes: Vec::new(),
-            primary_ids: Vec::new(),
-            node_kind_codes: Vec::new(),
-            edge_class_codes: Vec::new(),
-            owner_kinds: Vec::new(),
-            owner_indices: Vec::new(),
-            support_policies: Vec::new(),
-            roles: Vec::new(),
-            section_ranges: Vec::new(),
-            s_ranges: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -48,14 +32,6 @@ impl TerrainCdtSourceExport {
             self.labels.push(source.debug_label());
             self.kind_codes.push(source.source_kind_code());
             self.primary_ids.push(source.primary_id_code());
-            self.node_kind_codes.push(source.node_kind_code());
-            self.edge_class_codes.push(source.edge_class_code());
-            self.owner_kinds.push(source.owner_kind_code());
-            self.owner_indices.push(source.owner_index_code());
-            self.support_policies.push(source.support_policy_code());
-            self.roles.push(source.role_code());
-            self.section_ranges.extend(source.section_range_codes());
-            self.s_ranges.extend(source.s_range_values());
         }
     }
 }

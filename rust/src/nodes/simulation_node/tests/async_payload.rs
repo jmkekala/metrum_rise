@@ -547,7 +547,6 @@ fn building_site_dirty_patch_does_not_persist_as_road_owned() {
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes() {
     let mut core = test_core_with_flat_terrain(0.0);
     let key = (0, 0);
@@ -688,7 +687,6 @@ fn water_only_query_generation_change_keeps_published_surface_payloads_available
 }
 
 #[test]
-#[ignore = "ROAD-68-D: road terrain patches"]
 fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{

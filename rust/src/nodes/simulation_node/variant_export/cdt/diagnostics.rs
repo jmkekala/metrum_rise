@@ -259,29 +259,6 @@ impl SimulationNode {
         );
         Self::set_cdt_source_i32(dict, field_prefix, "kind_codes", &export.kind_codes);
         Self::set_cdt_source_i32(dict, field_prefix, "primary_ids", &export.primary_ids);
-        Self::set_cdt_source_i32(
-            dict,
-            field_prefix,
-            "node_kind_codes",
-            &export.node_kind_codes,
-        );
-        Self::set_cdt_source_i32(
-            dict,
-            field_prefix,
-            "edge_class_codes",
-            &export.edge_class_codes,
-        );
-        Self::set_cdt_source_i32(dict, field_prefix, "owner_kinds", &export.owner_kinds);
-        Self::set_cdt_source_i32(dict, field_prefix, "owner_indices", &export.owner_indices);
-        Self::set_cdt_source_i32(
-            dict,
-            field_prefix,
-            "support_policies",
-            &export.support_policies,
-        );
-        Self::set_cdt_source_i32(dict, field_prefix, "roles", &export.roles);
-        Self::set_cdt_source_i32(dict, field_prefix, "section_ranges", &export.section_ranges);
-        Self::set_cdt_source_f32(dict, field_prefix, "s_ranges", &export.s_ranges);
     }
 
     pub(in crate::nodes::simulation_node) fn set_cdt_source_i32(
@@ -294,19 +271,6 @@ impl SimulationNode {
         dict.set(
             key.as_str(),
             PackedInt32Array::from_iter(values.iter().copied()),
-        );
-    }
-
-    pub(in crate::nodes::simulation_node) fn set_cdt_source_f32(
-        dict: &mut VarDictionary,
-        field_prefix: &str,
-        suffix: &str,
-        values: &[f32],
-    ) {
-        let key = format!("{field_prefix}_{suffix}");
-        dict.set(
-            key.as_str(),
-            PackedFloat32Array::from_iter(values.iter().copied()),
         );
     }
 }

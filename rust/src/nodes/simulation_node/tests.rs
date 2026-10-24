@@ -13,13 +13,13 @@ use super::*;
 use crate::nodes::sim::core::CityTreasury;
 use crate::simulation::terrain::TerrainPatchSnapshot;
 use crate::simulation::terrain::cdt::{
-    TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass, TerrainCdtNodePieceKind,
-    TerrainCdtRoadBandKind, TerrainCdtRoadLoopSourceEdge, TerrainCdtSpanRegionRole,
+    TerrainCdtRoadLoopSourceEdge, TerrainCdtRoadPiece, TerrainCdtRoadSupport,
 };
 use crate::simulation::water::WaterSystem;
 
 mod async_payload;
 mod cdt;
+mod cdt_roadbed;
 mod global_pool;
 mod road_tool;
 mod shutdown;
@@ -188,42 +188,29 @@ fn source_export_for_samples(
 }
 
 fn span_source() -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-        edge_idx: 123,
-        edge_class: TerrainCdtEdgeClass::Bridge,
-        support_policy: TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
-        source_band_index: 7,
-        band_kind: TerrainCdtRoadBandKind::Sidewalk,
-        role: TerrainCdtSpanRegionRole::NonRoad,
-        start_section_index: 2,
-        end_section_index: 5,
-        start_s_m: 10.5,
-        end_s_m: 14.0,
+    TerrainCdtRoadBoundarySource::RoadBoundary {
+        piece: TerrainCdtRoadPiece::Span(123),
+        chain: 1,
+        segment: 2,
+        support: TerrainCdtRoadSupport::Structure,
     }
 }
 
 fn standard_span_source() -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-        edge_idx: 123,
-        edge_class: TerrainCdtEdgeClass::Standard,
-        support_policy: TerrainCdtEarthworkSupportPolicy::StandardFullGroundedSpan,
-        source_band_index: 7,
-        band_kind: TerrainCdtRoadBandKind::Sidewalk,
-        role: TerrainCdtSpanRegionRole::NonRoad,
-        start_section_index: 2,
-        end_section_index: 5,
-        start_s_m: 10.5,
-        end_s_m: 14.0,
+    TerrainCdtRoadBoundarySource::RoadBoundary {
+        piece: TerrainCdtRoadPiece::Span(123),
+        chain: 1,
+        segment: 2,
+        support: TerrainCdtRoadSupport::Grounded,
     }
 }
 
 fn node_source() -> TerrainCdtRoadBoundarySource {
-    TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-        node_id: 77,
-        node_kind: TerrainCdtNodePieceKind::JunctionN,
-        owner_kind: TerrainCdtRoadBandKind::CurbOrShoulder,
-        owner_index: 3,
-        boundary_source: None,
+    TerrainCdtRoadBoundarySource::RoadBoundary {
+        piece: TerrainCdtRoadPiece::Node(77),
+        chain: 0,
+        segment: 3,
+        support: TerrainCdtRoadSupport::Grounded,
     }
 }
 

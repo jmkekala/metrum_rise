@@ -4,6 +4,19 @@
 
 use super::super::super::*;
 
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::roadbed::{
+    PieceId, RoadbedSystem, TerrainLoop, TerrainLoopError, terrain_loops,
+};
+use crate::simulation::network::types::EdgeClass;
+use crate::simulation::terrain::cdt::{
+    TerrainCdtRoadLoopSourceEdge, TerrainCdtRoadPiece, TerrainCdtRoadSupport,
+};
+
+// Every road loop of one query is in one footprint group: holes (closed blocks) and islands
+// inside them classify by containment parity within the group. Site groups set the top bit.
+const ROAD_FOOTPRINT_GROUP_ID: u64 = 0x4000_0000_0000_0000;
+
 impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_bounds(
         core: &SimCore,
@@ -13,11 +26,16 @@ impl SimulationNode {
         max_z: f32,
     ) -> RoadClipLoopQuery {
         Self::road_clip_loop_query_for_sources(
+            &core.region_graph,
+            &core.transit_network.roadbed,
+            [min_x, min_z, max_x, max_z],
             core.allocator
                 .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z),
         )
     }
 
+    // Building-site loops only: terrain builds take their road loops per CDT tile
+    // (`terrain_cdt_road_tile_loops`).
     pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_snapshot(
         sites: &BuildingSiteTerrainSnapshot,
         min_x: f32,
@@ -25,13 +43,7 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> RoadClipLoopQuery {
-        Self::road_clip_loop_query_for_sources(
-            sites.terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z),
-        )
-    }
-
-    // Roads contribute no terrain loops until `ROAD-68-D`; building-site boundaries still clip.
-    fn road_clip_loop_query_for_sources(site_loops: Vec<TerrainCdtRoadLoop>) -> RoadClipLoopQuery {
+        let site_loops = sites.terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
         let site_loop_count = site_loops.len();
         RoadClipLoopQuery {
             cdt_road_loops: site_loops,
@@ -41,6 +53,108 @@ impl SimulationNode {
             site_loop_count,
             clip_error_label: None,
         }
+    }
+
+    // Road loops built from the roadbed's outer chains inside the bounds (`ROAD-68-D`), then the
+    // building-site loops. A chain that cannot close fails the query with its typed reason.
+    fn road_clip_loop_query_for_sources(
+        graph: &RegionGraph,
+        roadbed: &RoadbedSystem,
+        bounds: [f32; 4],
+        site_loops: Vec<TerrainCdtRoadLoop>,
+    ) -> RoadClipLoopQuery {
+        let site_loop_count = site_loops.len();
+        let (mut cdt_road_loops, clip_error_label) =
+            match Self::road_terrain_loops(graph, roadbed, bounds.map(f64::from)) {
+                Ok(loops) => (loops, None),
+                Err(error) => {
+                    crate::debug_log!(
+                        "terrain",
+                        "terrain_road_loops_failed bounds={bounds:?} error={error:?}"
+                    );
+                    (Vec::new(), Some(error.label()))
+                }
+            };
+        let road_loop_count = cdt_road_loops.len();
+        let road_source_count = cdt_road_loops
+            .iter()
+            .map(|road_loop| road_loop.source_edges.len())
+            .sum();
+        cdt_road_loops.extend(site_loops);
+        RoadClipLoopQuery {
+            cdt_road_loops,
+            source_count: road_source_count + site_loop_count,
+            road_source_count,
+            road_loop_count,
+            site_loop_count,
+            clip_error_label,
+        }
+    }
+
+    /// The roadbed's terrain loops inside `rect` as CDT road loops: vertices and heights are the
+    /// chain vertices, and every chain edge carries its `RoadBoundary` source.
+    pub(in crate::nodes::simulation_node) fn road_terrain_loops(
+        graph: &RegionGraph,
+        roadbed: &RoadbedSystem,
+        rect: [f64; 4],
+    ) -> Result<Vec<TerrainCdtRoadLoop>, TerrainLoopError> {
+        let loops = terrain_loops(roadbed, graph, rect)?;
+        Ok(loops
+            .iter()
+            .enumerate()
+            .map(|(index, terrain_loop)| Self::road_terrain_loop(graph, index, terrain_loop))
+            .collect())
+    }
+
+    fn road_terrain_loop(
+        graph: &RegionGraph,
+        index: usize,
+        terrain_loop: &TerrainLoop,
+    ) -> TerrainCdtRoadLoop {
+        let vertex = |point: crate::simulation::network::roadbed::RoadVec3| {
+            TerrainCdtVertex::new(point.x, point.y as f32, point.z)
+        };
+        let count = terrain_loop.points.len();
+        let source_edges = terrain_loop
+            .edges
+            .iter()
+            .enumerate()
+            .filter_map(|(edge, segment)| {
+                let segment = (*segment)?;
+                let (piece, support) = match segment.piece {
+                    PieceId::Span(edge_idx) => (
+                        TerrainCdtRoadPiece::Span(edge_idx as u64),
+                        if graph.edge(edge_idx).class == EdgeClass::Standard {
+                            TerrainCdtRoadSupport::Grounded
+                        } else {
+                            TerrainCdtRoadSupport::Structure
+                        },
+                    ),
+                    PieceId::Node(node) => (
+                        TerrainCdtRoadPiece::Node(node),
+                        TerrainCdtRoadSupport::Grounded,
+                    ),
+                };
+                Some(TerrainCdtRoadLoopSourceEdge {
+                    start: vertex(terrain_loop.points[edge]),
+                    end: vertex(terrain_loop.points[(edge + 1) % count]),
+                    source: TerrainCdtRoadBoundarySource::RoadBoundary {
+                        piece,
+                        chain: segment.chain,
+                        segment: segment.segment,
+                        support,
+                    },
+                })
+            })
+            .collect();
+        TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+            ROAD_FOOTPRINT_GROUP_ID | index as u64,
+            ROAD_FOOTPRINT_GROUP_ID,
+            u32::try_from(index).unwrap_or(u32::MAX),
+            terrain_loop.is_hole(),
+            terrain_loop.points.iter().copied().map(vertex).collect(),
+            source_edges,
+        )
     }
 
     pub(in crate::nodes::simulation_node) fn append_road_clip_query(

@@ -392,8 +392,10 @@ edges.
 - positions
 - per-layer triangle index lists (carriageway, curb or shoulder, sidewalk, footpath, curb face),
   with each triangle's band kind kept for queries
-- outer chains: footprint boundary polylines oriented with the road on their left, each running
-  from one mouth corner to the next
+- outer chains: footprint boundary polylines oriented with the road on their left (the
+  counter-clockwise side in XZ, from +x towards +z), each running from one mouth corner to the
+  next; `ROAD-68-D` reversed the span chains, which ran the other way, and tests the orientation
+  numerically
 - bounds
 - a per-piece triangle query grid, reusing the legacy `SurfaceTriangleGrid` design
 
@@ -417,17 +419,63 @@ loops, source samples and tie-in guides in; stitched patch mesh out. Its contrac
 
 The road side is rewritten:
 
-- **Patch loops.** The roadbed builds each patch's loops directly from outer chains: collect the
-  chains of pieces overlapping the patch from the chunk index, clip them to the patch rectangle,
-  and connect exits to entries along the rectangle boundary. Orientation is known, so holes such as
-  closed city blocks need no classification. Cost is `O(S log S)` for `S` local chain segments.
-  The legacy `terrain_clip/` union and `query/terrain_cdt/` adapters are deleted.
+- **Patch loops.** The CDT unit is the fixed world-aligned 64 m tile inside a heightmap render
+  patch, which stays the dirty and ownership unit. Each tile takes its road loops from the
+  rectangle of the tile plus its 64 m halo (`roadbed/terrain.rs`, `terrain_loops`): the pieces
+  that rectangle touches come from `pieces_in_bounds` on the 32 m query grid (there is no
+  chunk-to-pieces list), their chains join end to start at bit-identical mouth corners, and the
+  generic rectangle clip in `terrain/rect_loops.rs` cuts the joined paths to the rectangle and
+  joins each run's exit to the next entry counter-clockwise along its boundary, so the road stays
+  on the left. Cost is `O(S log S)` for `S` chain segments of the touched pieces. The rectangle
+  depends only on the tile, so every build, scope and ownership refresh sees the same loops. The
+  legacy `terrain_clip/` union and `query/terrain_cdt/` adapters are deleted.
+- **Holes.** Orientation is known: an outer boundary runs counter-clockwise in XZ, a hole (a
+  closed block) clockwise, so `is_hole` comes from the loop's signed area. The CDT still needs a
+  footprint group per loop, and a hole may hold an island (a separate road inside the block): all
+  road loops of one rectangle share one group, and the CDT classifies a point by containment
+  parity within a group (inside when an odd number of the group's loops contain it), which equals
+  the innermost-containing-loop rule (`ROAD-68-D` correction; the old rule paired each hole with
+  one outer loop).
+- **Open ends.** A chain end inside the rectangle with no published grounded chain to continue it
+  fails the rectangle with `TerrainLoopError::OpenEnd` (`roadbed_chain_open_end`): a failed
+  node's gap (which also rejects the edit), a node without a piece (bridge and tunnel terminals)
+  and a bridge or tunnel span (open question 19). There is no repair.
 - **Source tags.** `TerrainCdtRoadBoundarySource` keeps `BuildingSiteBoundary`. Its span, node and
-  handoff variants are replaced by one `RoadBoundary { piece, chain, segment }`.
-- **Grading envelope.** Tie-in guide samples and constraints are reimplemented against the outer
-  chains, following the existing rule in [`earthworks.md`](earthworks.md#geometry-decision): 2 m
-  or finer sampling, at most `EARTHWORK_MAX_MARGIN_M`.
-- **Patch selection.** Patches overlapping the old and new pieces' bounds plus grading margin.
+  handoff variants are replaced by one `RoadBoundary { piece, chain, segment, support }`, where
+  `support` is grounded or structure (from the edge class) and carries the retaining-wall policy:
+  only structures may tie in with walls. Sources order by their derived field order, adjacent
+  segments of one chain merge into the lower segment, and tile fingerprints hash piece identity,
+  chain and segment, which change only when that piece rebuilds. The CDT model stays free of
+  network types (`TerrainCdtRoadPiece`).
+- **Grading envelope.** One envelope for roads and sites (`terrain/grading.rs`, open question 3):
+  rays leave every sourced boundary edge at the render step (2 m or finer) and every boundary
+  vertex on its outward bisector; a ray reaches as far as the 1:2 tie-in from the seam height
+  needs to meet the probed terrain, at least the base local sample margin and at most
+  `GRADING_ENVELOPE_MAX_MARGIN_M`, the 64 m tile halo (open question 18). A loop's margin, the
+  largest of its rays, bounds its influence; sites use their vertex heights, as non-road loops
+  always did. Road guides are grade-limited samples on rings at one, two, four and eight steps
+  and the ray's own reach, so a guide depends only on the boundary near it; rails join
+  consecutive rings only for a single clean convex outer loop. One pass over a loop's rays
+  (`grading::road_loop_grading`) probes each reach once for both the margin and the ring, and a
+  tile emits only the rings of rays whose reach meets it (all of them when rails join them).
+  Sites keep their sample-only apron guides.
+- **Seams along a tile side.** A street on a 64 m tile line puts a road seam exactly on a tile
+  side, with the road inside one tile and beside the other. Exact comparisons, no tolerance: in
+  both tiles the seam's vertices on the side and the tile corners it passes are boundary
+  vertices at the seam's heights (the clip's own interpolation), and a side sample on the seam
+  lies on the footprint and is dropped, so both tiles emit the same side and no sliver. Arm knot
+  laterals divide by the length rather than multiply by its reciprocal, so an axis-aligned arm's
+  runs, terminal cap ends included, lie exactly on the span's grid line.
+- **Patch selection.** Every compile records the XZ bounds of the old and new pieces it replaced
+  (`RoadbedSystem::take_changed_bounds`); the edit marks the render patches and CDT tiles within
+  the envelope cap of them and stamps the tiles in the assembly ledger
+  (`road_tile_dirty_at`, keyed by tile), so a later request rebuilds only those tiles and their
+  neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
+  it, from the same per-tile loops; while the roadbed is dirty it keeps its last road ownership.
+  A patch's road margin stays current until a compile changes a piece within the envelope cap of
+  it (taken changed bounds clear it; bounds not yet taken are checked at the refresh) or the
+  visual terrain changes, so site-only and unrelated ownership refreshes reuse it instead of
+  rebuilding every tile's loops. Undo and rollback go through the same compile, so they follow.
 - **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts keep the
   existing rules ([`ROAD-68-F`](#road-68-f--remaining-families)).
 - **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
@@ -610,7 +658,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-A` | done | Remove the legacy compiler; add the roadbed façade; the crate compiles |
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
-| `ROAD-68-D` | open | Footprint chains and terrain patches |
+| `ROAD-68-D` | in progress | Footprint chains and terrain patches |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit (41 ms at 100k); the commit's lot regeneration still misses a frame ([open question 21](#road-68-open-questions)) |
@@ -705,33 +753,42 @@ below). `road_edit::tests::assert_cold_geometry_matches` compares node-piece mes
 again, and `node_merge_adoption_clears_survivor_restrictions_and_rejects_open_frontier` again
 requires the merged node's piece before the merge.
 
-`ROAD-68-D` (25):
+`ROAD-68-D` (25): `ROAD-68-D` re-enables 24; 23 pass, and
+`kuopio_recorded_profiles_and_terrain_preserve_quality_limits` moved to `ROAD-68-E` (a recorded
+stroke fails node 5 with `node_piece_failed` at `79e7a476` as well, so it predates `ROAD-68-D`;
+the recorded placements predate `ROAD-68-C`, [open question 8](#road-68-open-questions)). One
+stays disabled, `cars_and_walkers_enter_and_exit_on_compiled_yards` (`ROAD-68-D`: Kuopio yard
+samples of buildings 1 and 3 find no rendered terrain face at all; see the gate's progress).
 
 | Module | Tests | Reason |
 | --- | --- | --- |
 | `nodes::sim::core::tests::building_site_terrain` | `access_snapshot_pad_ownership_overrides_pending_visual_terrain`, `cars_and_walkers_enter_and_exit_on_compiled_yards`, `cars_pitch_and_roll_on_compiled_yards_in_both_access_directions`, `engineered_queries_reject_render_rejected_ground`, `interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz`, `kuopio_reference_supports_zoned_graded_yards_without_changing_fixture`, `large_paved_yards_remain_flat_over_hills_and_depressions`, `new_world_clears_populated_city_and_engineered_terrain`, `site_changes_far_apart_refresh_only_the_patches_they_touch`, `small_commercial_pads_leave_a_watertight_sloping_frontage`, `yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard`, `yard_material_changes_reuse_cdt_but_not_final_paving_buffers`, `zoned_yards_cover_uphill_and_downhill_frontages` | the frontage paving seam takes road heights only where the road's outer chains enter the terrain CDT (moved from `ROAD-68-B`) |
 | `nodes::sim::core::tests` | `planned_topology_terrain_rejection_restores_split_dependents` | road terrain patches |
-| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | road terrain patches |
 | `nodes::sim::editing::tests` | `accepted_road_has_current_terrain_payloads_before_publication`, `terrain_rejection_restores_split_dependents_and_preserves_undo_history`, `undoing_road_restore_invalidates_derived_render_cache`, `undoing_road_restore_invalidates_road_locked_terrain_state` | road terrain patches |
 | `nodes::simulation_node::tests::async_payload` | `conservative_road_grading_pad_filters_only_margin_only_engineered_patches`, `unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes` | road terrain patches |
 | `nodes::simulation_node::tests::cdt` | `terrain_cdt_adjacent_tiles_emit_identical_shared_side_vertices`, `terrain_cdt_guides_use_shared_source_height_and_final_grade_limits`, `terrain_cdt_input_keeps_multi_loop_tie_in_guides_unconstrained`, `terrain_cdt_local_bounds_expand_for_required_grading_distance` | road terrain patches |
 
-`ROAD-68-E` (2):
+`ROAD-68-E` (5; the third from pre-D, the last two from `ROAD-68-D`):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
+| `nodes::sim::core::tests::road_edit_order` | `sloped_junctions_do_not_depend_on_drawing_order` | open question 16: strokes pin to carriageways the edit rebuilds; needs the topology plan before stroke preparation (pre-D labelled it `ROAD-68-D`, relabelled before `ROAD-68-D`) |
 | `nodes::sim::editing::tests` | `undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology` | undo restores the exact pre-edit junction pieces and mesh |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_repairs_rejected_junction_before_publication` | a save from before `ROAD-68-C` re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration (moved from `ROAD-68-C`, [open question 8](#road-68-open-questions)) |
+| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | a recorded stroke fails node 5 (`node_piece_failed`) at `79e7a476` too; the recorded placements predate `ROAD-68-C` ([open question 8](#road-68-open-questions); moved from `ROAD-68-D`) |
+| `nodes::sim::core::tests::zoning_buildability` | `hillside_residential_sites_select_constructible_houses` | the recorded fixture predates `ROAD-68-C`: node 2 fails `MouthOffPlane` on its legacy clips, so its tiles report `roadbed_chain_open_end` ([open question 19](#road-68-open-questions)); clips recomputed as an edit does overlap the recorded parcels (`OverlapsExistingParcel`), so the fixture is regenerated with the load rebuild ([open question 8](#road-68-open-questions); added by `ROAD-68-D`) |
 
-`ROAD-68-F` (4; 7 at the gate, two re-enabled by the
+`ROAD-68-F` (5; 7 at the gate, two re-enabled by the
 [C follow-up](#tighter-corners-and-junction-crosswalks-follow-up) and one by the
-[footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d)):
+[footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d), one added by
+`ROAD-68-D`):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
 | `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | lights keep a span-end clearance; the terminal cap needs layout furniture stations (moved from `ROAD-68-C`) |
 | `nodes::sim::core::tests::zoning_buildability::cell_zoning::movement` | `node_move_into_paint_or_erased_occupied_claim_is_atomic`, `node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor` | node-move reservation check against moved pieces |
 | `nodes::simulation_node::tests::global_pool` | `bridge_entry_points_never_use_the_global_pool` | unchecked node moves leave a saved parcel over the moved road, so the load entry fails; every other entry point keeps to the shared pool (moved from `ROAD-68-B`) |
+| `simulation::terrain::cdt::tests::builder` | `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` | tunnel portal boundaries require walls where widened samples cannot tie in; `RoadBoundary` carries only grounded or structure support, and portal sources arrive with the tunnel family (from `ROAD-68-D`) |
 
 The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
 support target) pass on span sections and were re-enabled in `ROAD-68-B`.
@@ -765,6 +822,9 @@ These need a user decision; work that does not depend on them continues.
 3. **Site CDT margin — decided 2026-10-24 (user): resolved by `ROAD-68-D`'s shared grading envelope.** Building-site loops used the legacy seam-vertex grading margin for their
    sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
+   **Done in `ROAD-68-D`:** site loops take their influence margin from the shared envelope
+   function (`grading_envelope_margin_m`, vertex heights against the terrain below), as road
+   loops take theirs from their rays ([footprint and terrain](#footprint-and-terrain)).
 4. **Pinned Kuopio fixture hash (`ROAD-69`) — resolved 2026-10-23, re-pinned.**
    - **The fault.** `./run.sh --test` stopped at its first step: `tools/test_road_terrain_replay.py`
      (`test_pinned_fixture_integrity`) failed, on `road-legacy` too.
@@ -1013,6 +1073,35 @@ These need a user decision; work that does not depend on them continues.
       other footpaths there, and the walking proof is withdrawn on such a network. The legacy rule
       joined it to the corner between the nearest sidewalk arms, across the car-only road. No
       fixture or perf city has one.
+18. **Grading envelope cap (`ROAD-68-D`) — decided 2026-10-24 (user): the probed reach, capped at
+    the 64 m tile halo.** Each ray is probed until the 1:2 tie-in meets the terrain, at most
+    `GRADING_ENVELOPE_MAX_MARGIN_M`.
+    - **The gap.** `roads.md` capped the envelope at `EARTHWORK_MAX_MARGIN_M`, which no longer
+      exists in code; it was 18 m in the deleted legacy `surface/earthwork.rs` (ray search 4–18 m
+      at slope 0.5), used for patch selection. `earthworks.md` "Geometry Decision" fixes the rule
+      (the required grade-limited tie-in envelope) but no value.
+    - **Evidence.** The legacy CDT guide path never applied 18 m: it probed each ray until the 1:2
+      tie-in met the terrain. `terrain_cdt_local_bounds_expand_for_required_grading_distance` (a
+      16 m fill must widen local bounds past 33 m) and
+      `terrain_cdt_guides_use_shared_source_height_and_final_grade_limits` (a 16 m guide ring on a
+      20 m base margin) encode that rule; an 18 m cap fails the first.
+    - **Default.** The probed reach, capped at the 64 m tile halo
+      (`GRADING_ENVELOPE_MAX_MARGIN_M`): no tile can carry a tie-in to a footprint outside its halo,
+      and patch selection pads edits by the same cap. Both tests pass.
+    - **Options.** Keep the halo cap; cap at 18 m and accept narrower tie-ins on high fills; or a
+      larger cap with a larger halo (more loops per tile).
+19. **Open chain ends at structures and failed nodes (`ROAD-68-D`) — decided 2026-10-24 (user):
+    the typed error `roadbed_chain_open_end` until `ROAD-68-F` builds abutments and portals.**
+    - **The case.** Bridge and tunnel spans publish no terrain chains (no mid-span clipping), and
+      their terminals have no node piece, so a grounded chain that meets one ends inside a tile's
+      rectangle. A failed node publishes as a gap (question 11) and leaves the same open ends.
+    - **Default.** The tile fails with `roadbed_chain_open_end`; the patch is road-locked at the
+      envelope cap so its build reports the error instead of raw terrain under a road. A failed
+      node already rejects the edit; a bridge or tunnel leaves its patches without refined terrain
+      until `ROAD-68-F` builds abutments and portals.
+    - **Options.** Keep the error until `ROAD-68-F`; or close a grounded chain across the mouth row
+      it ends at (the exact boundary of the grounded footprint, but curb pairs share XZ with two
+      heights, so the seam steps 12 cm at the curb).
 20. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution, open).** In one
     session the last pre-`ROAD-68` code (`d6c80f91`) and the `ROAD-68-G` base (`c59955e6` plus
     the gate's test-only harness) ran the economy performance contract A B B A, each on its own
@@ -1059,6 +1148,25 @@ These need a user decision; work that does not depend on them continues.
       roadbed index is) so the snapshot copies `O(1)`, and keep per-lane or per-edge agent
       lists so the agent passes visit only the edit's agents. (d) Accept a commit of about
       41 ms at 100k (two to three frames). `ROAD-68-G` stays open until the commit fits a frame.
+22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — missed; needs a decision.**
+    - **Target.** The T fixture's tiles total at most 2 ms on four workers (gate acceptance and
+      [stage budgets](#stage-budgets)).
+    - **Evidence.** `benchmark_roadbed_terrain_tiles` (release, 4 workers, P-cores, both timing
+      locks, A B B A against the first `ROAD-68-D` WIP binary in the same session): total p50
+      2.92/2.90 ms for the control, 2.33/2.35 ms now; the patch plan fell from 1.39–1.40 to
+      0.75 ms with one ray pass per loop and rings only for rays that reach the tile. The 12 tile
+      CDTs on four workers take the other 1.6 ms (tile p50 0.35 ms, slowest about 1.15 ms). A
+      flat profile of the candidate: the grading pass 15% (still every ray of every halo loop
+      probed once per tile, 16 tiles), `widening_tie_in_sample_against_any_road_loop` 7% and
+      `point_inside_any_road_footprint` 3% (linear in the tile's loop edges per sample),
+      R-tree bulk loads and sorts for constraint noding about 6%, Spade about 10%.
+    - **Options.** (a) probe each chain segment's rays once per plan and share the reaches between
+      the tiles of the plan (the rays of a chain segment are the same in every tile; about 9x
+      fewer probes); (b) index the tile's loop edges once per canonicalization (the R-tree the
+      noding already builds) for the widening and footprint tests, `O(log E)` per sample instead
+      of `O(E)`; (c) plan and triangulate each tile in one task instead of a plan barrier
+      followed by the tile CDTs; (d) accept a 2.5 ms budget for the T. (a) and (b) keep every
+      output bitwise; (c) changes only scheduling.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -2242,6 +2350,80 @@ Acceptance:
 - the road–site shared-vertex rule holds
 - the existing CDT suite passes
 - per-patch timing is recorded, and the T fixture's patches total at most 2 ms on four workers
+
+#### Progress (2026-10-24, branch `road68-D`, work in progress)
+
+Landed (see [footprint and terrain](#footprint-and-terrain) for the contract):
+
+- `roadbed/terrain.rs`: `terrain_loops(roadbed, graph, rect)` builds a rectangle's loops from the
+  outer chains, with `ChainSegment` provenance per edge, orientation-derived holes and the typed
+  `TerrainLoopError::OpenEnd`. Span chains now run with the road on the left like node chains
+  (they ran the other way); `RoadbedSystem::take_changed_bounds` records replaced pieces' bounds.
+- `terrain/cdt/model.rs`: the legacy span, node and handoff sources and their seven supporting
+  types are gone; `RoadBoundary { piece, chain, segment, support }` and `BuildingSiteBoundary`
+  remain, `SyntheticTestBoundary` is `#[cfg(test)]`. Ordering is the derived `Ord`; the merge rule
+  joins segments of one chain; fingerprints and the debug export follow, and the export sends
+  only counts, kind codes, primary ids and the Rust label, which `terrain.gd` prints
+  (`TERRAIN_CDT_CONTRACT_REVISION` 15). The module-level `dead_code` allow in `terrain/cdt.rs` is
+  removed; the eight legacy face-ownership helpers it hid are deleted, with the two tests that
+  exercised only them.
+- Face classification uses containment parity within a footprint group.
+- `terrain/grading.rs`: the shared grading envelope (open questions 3 and 18).
+- Per-tile road contributors in the full-patch and local-tile plans, per-tile ownership, the
+  tile-keyed ledger and patch selection from changed piece bounds (open question 19 for open
+  ends).
+
+Part 2 (2026-10-24, same branch):
+
+- **Seams on tile sides.** The starter town's cross street at `x = 0` failed 46 `scenario` tests
+  with `terrain_cdt_pathological_output`: its terminal cap started at `x = -4.999999999999999`,
+  one ulp inside the sidewalk line `x = -5`, which is also a render patch side, and the CDT built a
+  vertical sliver between the cap and the side. Two constructive fixes: arm knot laterals divide by
+  the segment length instead of multiplying by its reciprocal (`249 * (1 / 249)` rounds below one),
+  so an axis-aligned arm's runs and cap ends lie exactly on the span's line; and the CDT treats a
+  seam lying exactly on a tile side as that side in both tiles
+  ([footprint and terrain](#footprint-and-terrain)), with the test
+  `a_seam_along_a_tile_side_is_that_side_in_both_tiles`.
+- **Recorded fixtures.** `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` fails
+  node 5 (`node_piece_failed`) at `79e7a476` too, and the hillside fixture's node 2 fails
+  `MouthOffPlane` on its legacy clips (recomputing them as an edit does overlaps its recorded
+  parcels). Both recordings predate `ROAD-68-C`; both are `ROAD-68-E` ignores (open question 8).
+- **Grading in one pass.** `grading::road_loop_grading` probes each ray's reach once for the
+  margin and the guides, and a tile emits only the rings of rays whose reach meets it. The
+  generic rectangle clip and join moved from `roadbed/terrain.rs` to `terrain/rect_loops.rs`.
+- **Ownership refresh.** The economy perf contract against `79e7a476` showed D's road ownership
+  refresh dominating city generation, snapshot loads and building churn: it rebuilt every
+  refreshed patch's tile loops and ray probes, on site-only refreshes too and, after each road
+  commit, for every dirty patch. A patch's road margin is now reused until roads near it or the
+  visual terrain change ([footprint and terrain](#footprint-and-terrain), patch selection).
+- **Size.** `roadbed/` holds 7,923 lines (every line of `roadbed.rs` and `roadbed/**/*.rs`
+  except tests and fixtures; 7,733 at `79e7a476` by the same count): `ROAD-68-D` adds 190, the
+  terrain loop entry point (`terrain.rs`, 162: chain gathering, joins at mouth corners, open-end
+  errors and the provenance types) and the changed-bounds record (`system.rs`, 19). The generic
+  rectangle clip and join live in `terrain/rect_loops.rs`, the owner of terrain geometry.
+- **Open.** The 2 ms terrain stage (open question 22). The yard test
+  `cars_and_walkers_enter_and_exit_on_compiled_yards`: building 1's samples lie in no road or
+  site loop of their tile, yet the tile's CDT emits no face over them (a face dropped for crossing
+  an unpreserved constraint is the next suspect); building 3's sample lies inside its own 6-vertex
+  site loop, which its foundation paving does not cover. Two sub-millimetre roadbed artefacts
+  remain for the CDT's 1 mm identity cell and 5 cm seam budget: a terminal cap's apex is a polar
+  sample (`sin(pi)` is not zero), so on a tile line it lies 6e-16 m off it; and the span station
+  rule (cadence rows from the profile range start, class rows from each knot) puts rows 3–6 mm
+  apart before knots on slopes. The constructive rule is to subdivide each interval between fixed
+  stations (knots, protected stations, cadence range ends) evenly at its step; it changes every
+  span's rows, so it waits for its own change with the span tests.
+
+Per-tile timing (2026-10-24, `benchmark_roadbed_terrain_tiles`, release test binaries,
+`RAYON_NUM_THREADS=4 taskset -c 0,2,4,6,8,10,12,14`, both timing locks, A B B A in one session
+against the first WIP binary): the sloped T over a 256 m patch plans 16 tiles and triangulates the
+12 with road contributors.
+
+| Build | Total p50 (ms) | Plan p50 (ms) | Tile CDT p50 (ms) | Slowest tile (ms) |
+| --- | --- | --- | --- | --- |
+| first WIP (control) | 2.924 / 2.899 | 1.385 / 1.401 | 0.335 / 0.333 | 1.200 / 1.132 |
+| part 2 | 2.332 / 2.347 | 0.746 / 0.751 | 0.350 / 0.349 | 1.157 / 1.176 |
+
+**The 2 ms target is missed** (open question 22 has the profile and the options).
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 

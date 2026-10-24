@@ -140,8 +140,16 @@ pub(super) fn canonicalize_input_with_grading_bounds(
             road_loop.local_loop_index,
         )
     });
+    // Road seams along a patch side (a street on a tile line, `ROAD-68-D`).
+    let mut side_seams = Vec::new();
     for road_loop in input.road_loops {
         let original_source_edges = normalized_road_loop_source_edges(&road_loop);
+        side_seams.extend(
+            original_source_edges
+                .iter()
+                .filter(|edge| road_seam_along_patch_side(edge, input.patch))
+                .map(|edge| (edge.start, edge.end)),
+        );
         let original_points = simplified_road_loop(road_loop.vertices)?;
         if original_points.len() < 3
             || signed_area(&original_points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M
@@ -255,6 +263,35 @@ pub(super) fn canonicalize_input_with_grading_bounds(
         }
     }
 
+    // A seam along a side is that side in every tile sharing it: its vertices on the side, and
+    // the corners it passes, are boundary vertices at the seam's heights (the clip's own
+    // interpolation), whether or not the road lies inside this tile.
+    for &(start, end) in &side_seams {
+        let corners = patch_corners.iter().filter_map(|&corner| {
+            let t = source_sample_parameter_on_road_constraint(start, end, corner)?;
+            on_side_seam(start, end, corner).then(|| TerrainCdtVertex {
+                height_m: interpolate_vertex(start, end, t).height_m,
+                ..corner
+            })
+        });
+        for vertex in [start, end]
+            .into_iter()
+            .filter(|&vertex| patch_contains(vertex, input.patch))
+            .chain(corners)
+        {
+            // A clipped road loop that already holds the vertex owns its height.
+            if !road_vertex_heights.contains_key(&terrain_cdt_vertex_xz_key(vertex)) {
+                insert_road_vertex(
+                    vertex,
+                    false,
+                    &mut vertices,
+                    &mut vertex_lookup,
+                    &mut road_vertex_heights,
+                )?;
+            }
+        }
+    }
+
     // Keep shared-side samples and grade them once against the uncut halo. Dropping
     // them lets adjacent tile triangulations bridge different heights across the side.
     // Structural retaining walls keep their own height authority. Building pads
@@ -353,7 +390,12 @@ pub(super) fn canonicalize_input_with_grading_bounds(
         if !patch_contains(sample, input.patch) {
             continue;
         }
-        if point_inside_any_road_footprint(sample, &road_loops) {
+        // A side sample on a seam along the side lies on the footprint.
+        if side_seams
+            .iter()
+            .any(|&(start, end)| on_side_seam(start, end, sample))
+            || point_inside_any_road_footprint(sample, &road_loops)
+        {
             continue;
         }
         if let Some(tie_in_sample) =
@@ -473,6 +515,25 @@ fn tie_in_guide_vertex_is_valid(
         && (vertex_on_patch_boundary(vertex, patch)
             || (widening_tie_in_sample_against_any_road_loop(vertex, road_loops).is_none()
                 && widening_tie_in_sample_against_any_road_loop(vertex, grading_loops).is_none()))
+}
+
+// A road seam lying exactly on a patch side line: both ends share the side's coordinate.
+fn road_seam_along_patch_side(edge: &TerrainCdtRoadLoopSourceEdge, patch: TerrainCdtPatch) -> bool {
+    let (start, end) = (edge.start, edge.end);
+    matches!(
+        edge.source,
+        TerrainCdtRoadBoundarySource::RoadBoundary { .. }
+    ) && ((start.x == end.x && (start.x == patch.min_x || start.x == patch.max_x))
+        || (start.z == end.z && (start.z == patch.min_z || start.z == patch.max_z)))
+}
+
+// Exactly on an axis-aligned seam, its end points included.
+fn on_side_seam(start: TerrainCdtVertex, end: TerrainCdtVertex, point: TerrainCdtVertex) -> bool {
+    if start.x == end.x {
+        point.x == start.x && point.z >= start.z.min(end.z) && point.z <= start.z.max(end.z)
+    } else {
+        point.z == start.z && point.x >= start.x.min(end.x) && point.x <= start.x.max(end.x)
+    }
 }
 
 fn vertex_on_patch_boundary(vertex: TerrainCdtVertex, patch: TerrainCdtPatch) -> bool {

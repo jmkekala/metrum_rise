@@ -9,12 +9,13 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample,
     clip_terrain_cdt_road_loop_to_patch, clip_terrain_cdt_segment_to_patch,
 };
+use crate::simulation::terrain::grading::{
+    TileGuides, append_road_grading_guides, grading_envelope_margin_m, road_loop_grading,
+};
+use crate::simulation::terrain::{TERRAIN_CDT_TILE_HALO_M, TERRAIN_CDT_TILE_SPAN_MM};
 use std::collections::{BTreeSet, HashSet};
 
 const TERRAIN_CDT_MIN_WINDOW_EXTENT_M: f32 = 0.001;
-// Two 32 m road-query cells per CDT tile bound each independently cached road rebuild.
-const TERRAIN_CDT_TILE_SPAN_MM: i64 = 64_000;
-const TERRAIN_CDT_TILE_HALO_M: f32 = 64.0;
 pub(in crate::nodes::simulation_node) const TERRAIN_CDT_TILE_NEIGHBORS: [(i64, i64); 4] =
     [(-1, 0), (0, -1), (0, 1), (1, 0)];
 
@@ -27,6 +28,15 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtTileId {
 struct TerrainCdtTileContributor {
     road_loop: Arc<TerrainCdtRoadLoop>,
     influence_bounds: (f32, f32, f32, f32),
+    guide_samples: Vec<TerrainCdtTieInGuideSample>,
+    guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
+}
+
+/// One road loop of a CDT tile (`ROAD-68-D`, from `terrain_cdt_road_tile_loops`).
+pub(in crate::nodes::simulation_node) struct TerrainCdtRoadTileLoop {
+    road_loop: TerrainCdtRoadLoop,
+    /// The loop's grading envelope margin.
+    pub(in crate::nodes::simulation_node) margin_m: f32,
     guide_samples: Vec<TerrainCdtTieInGuideSample>,
     guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
 }
@@ -61,9 +71,18 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBuildPlan {
     pub(in crate::nodes::simulation_node) expected_road_clip_fingerprints: Vec<u64>,
     /// Stable building-site contributor ids independently expected from this plan.
     pub(in crate::nodes::simulation_node) expected_site_clip_fingerprints: Vec<u64>,
+    /// Typed reason when a tile's roadbed loops cannot close (`ROAD-68-D`).
+    pub(in crate::nodes::simulation_node) road_error_label: Option<&'static str>,
 }
 
+/// The road graph and roadbed whose outer chains give each CDT tile its road loops.
+pub(in crate::nodes::simulation_node) type TerrainCdtRoads<'a> = (
+    &'a crate::simulation::network::graph::RegionGraph,
+    &'a crate::simulation::network::roadbed::RoadbedSystem,
+);
+
 impl SimulationNode {
+    #[cfg(test)]
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -72,7 +91,47 @@ impl SimulationNode {
         site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
         previous: Option<&CachedRefinedTerrainPatch>,
     ) -> TerrainCdtWindowBuildPlan {
-        if road_loops.is_empty() {
+        Self::terrain_cdt_window_build_inputs_with_roads(
+            terrain,
+            patch,
+            None,
+            road_loops,
+            render_step_m,
+            site_grading,
+            previous,
+        )
+    }
+
+    /// Plans every tile of a render patch: per-loop contributors for `clip_loops` (building
+    /// sites) and, with `roads`, each tile's roadbed loops from its own halo rectangle.
+    pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs_with_roads(
+        terrain: &impl TerrainVisualSource,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        roads: Option<TerrainCdtRoads<'_>>,
+        road_loops: &[TerrainCdtRoadLoop],
+        render_step_m: f32,
+        site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
+        previous: Option<&CachedRefinedTerrainPatch>,
+    ) -> TerrainCdtWindowBuildPlan {
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let patch_bounds = (
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+        let (road_contributors, road_error_label) = roads
+            .map(|roads| {
+                Self::terrain_cdt_road_contributors_for_tiles(
+                    terrain,
+                    patch,
+                    roads,
+                    &Self::terrain_cdt_tile_ids_for_bounds(patch, patch_bounds),
+                    safe_render_step_m,
+                )
+            })
+            .unwrap_or_default();
+        if road_loops.is_empty() && road_contributors.is_empty() {
             return TerrainCdtWindowBuildPlan {
                 windows: Vec::new(),
                 reused_windows: Vec::new(),
@@ -80,9 +139,9 @@ impl SimulationNode {
                 omitted_margin_loop_count: 0,
                 expected_road_clip_fingerprints: Vec::new(),
                 expected_site_clip_fingerprints: Vec::new(),
+                road_error_label,
             };
         }
-        let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let previous_windows = previous
             .map(|cached| {
                 cached
@@ -100,13 +159,18 @@ impl SimulationNode {
 
         // Margin probes and guide construction are independent per authoritative loop. Indexed
         // parallel collection retains input order, so downstream tile fingerprints stay exact.
-        let contributors = road_loops
+        let mut contributors = road_loops
             .par_iter()
             .cloned()
             .filter_map(|road_loop| {
                 Self::terrain_cdt_tile_contributor(terrain, patch, road_loop, safe_render_step_m)
             })
             .collect::<Vec<_>>();
+        contributors.extend(
+            road_contributors
+                .into_iter()
+                .map(|(_, contributor)| contributor),
+        );
 
         let mut contributors_by_tile = BTreeMap::<TerrainCdtTileId, Vec<usize>>::new();
         let mut represented_road_loop_count = 0;
@@ -208,7 +272,110 @@ impl SimulationNode {
             omitted_margin_loop_count: road_loops.len().saturating_sub(represented_road_loop_count),
             expected_road_clip_fingerprints: expected_road_clip_fingerprints.into_iter().collect(),
             expected_site_clip_fingerprints: expected_site_clip_fingerprints.into_iter().collect(),
+            road_error_label,
         }
+    }
+
+    /// Roads of one CDT tile (`ROAD-68-D`): the roadbed loops inside the tile and its halo whose
+    /// grading envelope reaches the tile, each with its envelope margin and, `with_guides`, the
+    /// guides the tile takes from it, all from one pass over the loop's rays. The rectangle
+    /// depends only on the tile, so builds and ownership refreshes see the same loops whichever
+    /// patch, scope or edit history asks.
+    pub(in crate::nodes::simulation_node) fn terrain_cdt_road_tile_loops(
+        terrain: &impl TerrainVisualSource,
+        roads: TerrainCdtRoads<'_>,
+        tile_bounds: (f32, f32, f32, f32),
+        render_step_m: f32,
+        with_guides: bool,
+    ) -> Result<Vec<TerrainCdtRoadTileLoop>, &'static str> {
+        let halo = TERRAIN_CDT_TILE_HALO_M;
+        let rect = [
+            tile_bounds.0 - halo,
+            tile_bounds.1 - halo,
+            tile_bounds.2 + halo,
+            tile_bounds.3 + halo,
+        ]
+        .map(f64::from);
+        let loops =
+            Self::road_terrain_loops(roads.0, roads.1, rect).map_err(|error| error.label())?;
+        let guide_bounds = Self::terrain_cdt_guide_bounds(tile_bounds);
+        Ok(loops
+            .into_iter()
+            .filter_map(|road_loop| {
+                let mut guide_samples = Vec::new();
+                let mut guide_constraints = Vec::new();
+                let guides = with_guides.then_some(TileGuides {
+                    tile: guide_bounds,
+                    samples: &mut guide_samples,
+                    constraints: &mut guide_constraints,
+                    rails: true,
+                });
+                let margin_m = road_loop_grading(terrain, &road_loop, render_step_m, guides);
+                Self::terrain_cdt_local_sample_bounds_for_world_bounds_with_margin(
+                    tile_bounds,
+                    std::slice::from_ref(&road_loop),
+                    margin_m,
+                )?;
+                Some(TerrainCdtRoadTileLoop {
+                    road_loop,
+                    margin_m,
+                    guide_samples,
+                    guide_constraints,
+                })
+            })
+            .collect())
+    }
+
+    // Road contributors of the given tiles, each mapped to its own tile only, in tile order; the
+    // first tile whose loops cannot close names the error.
+    fn terrain_cdt_road_contributors_for_tiles(
+        terrain: &impl TerrainVisualSource,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        roads: TerrainCdtRoads<'_>,
+        tile_ids: &[TerrainCdtTileId],
+        render_step_m: f32,
+    ) -> (
+        Vec<(TerrainCdtTileId, TerrainCdtTileContributor)>,
+        Option<&'static str>,
+    ) {
+        let per_tile = tile_ids
+            .par_iter()
+            .map(|&tile_id| {
+                let Some(tile_bounds) = Self::terrain_cdt_tile_bounds(patch, tile_id) else {
+                    return Ok(Vec::new());
+                };
+                let loops = Self::terrain_cdt_road_tile_loops(
+                    terrain,
+                    roads,
+                    tile_bounds,
+                    render_step_m,
+                    true,
+                )?;
+                Ok(loops
+                    .into_iter()
+                    .map(|tile_loop| {
+                        let contributor = TerrainCdtTileContributor {
+                            road_loop: Arc::new(tile_loop.road_loop),
+                            influence_bounds: tile_bounds,
+                            guide_samples: tile_loop.guide_samples,
+                            guide_constraints: tile_loop.guide_constraints,
+                        };
+                        (tile_id, contributor)
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .collect::<Vec<Result<_, &'static str>>>();
+        let mut contributors = Vec::new();
+        let mut error = None;
+        for tile in per_tile {
+            match tile {
+                Ok(tile) => contributors.extend(tile),
+                Err(label) => {
+                    error.get_or_insert(label);
+                }
+            }
+        }
+        (contributors, error)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -313,6 +480,23 @@ impl SimulationNode {
             }
         }
 
+        let rebuild_list = rebuild_tiles.iter().copied().collect::<Vec<_>>();
+        let (road_contributors, road_error_label) = Self::terrain_cdt_road_contributors_for_tiles(
+            terrain,
+            patch,
+            (graph, road_surface),
+            &rebuild_list,
+            safe_render_step_m,
+        );
+        for (tile_id, contributor) in road_contributors {
+            contributor_indices_by_tile
+                .entry(tile_id)
+                .or_default()
+                .push(contributors.len());
+            contributors.push(contributor);
+            represented_road_loop_count = represented_road_loop_count.saturating_add(1);
+        }
+
         let current_contributor_tiles = contributor_indices_by_tile
             .iter()
             .filter_map(|(&tile_id, indices)| (!indices.is_empty()).then_some(tile_id))
@@ -391,6 +575,7 @@ impl SimulationNode {
                 expected_site_clip_fingerprints: expected_site_clip_fingerprints
                     .into_iter()
                     .collect(),
+                road_error_label,
             },
             RoadClipLoopQuery {
                 cdt_road_loops: Vec::new(),
@@ -441,19 +626,28 @@ impl SimulationNode {
         render_step_m: f32,
     ) -> Option<TerrainCdtTileContributor> {
         let road_loops = std::slice::from_ref(&road_loop);
-        // Roads add no loops until `ROAD-68-D`, which also restores their grading envelope.
-        // Building-site loops take the base sample margin and no roadbed guides.
-        let grading_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
-            terrain.terrain(),
-            render_step_m,
-        );
+        // Roads and sites share one grading envelope (`ROAD-68-D`); only roads add guides here,
+        // sites keep their sample-only apron guides.
+        let grading_margin_m = grading_envelope_margin_m(terrain, &road_loop, render_step_m);
         let influence_bounds =
             Self::terrain_cdt_local_sample_bounds_with_margin(patch, road_loops, grading_margin_m)?;
+        let mut guide_samples = Vec::new();
+        let mut guide_constraints = Vec::new();
+        if !Self::terrain_cdt_loop_is_site(&road_loop) {
+            append_road_grading_guides(
+                terrain,
+                road_loops,
+                render_step_m,
+                &mut guide_samples,
+                &mut guide_constraints,
+                &mut HashSet::new(),
+            );
+        }
         Some(TerrainCdtTileContributor {
             road_loop: Arc::new(road_loop),
             influence_bounds,
-            guide_samples: Vec::new(),
-            guide_constraints: Vec::new(),
+            guide_samples,
+            guide_constraints,
         })
     }
 
@@ -587,6 +781,16 @@ impl SimulationNode {
         site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
     ) -> TerrainCdtInput {
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let mut guide_samples = Vec::new();
+        let mut guide_constraints = Vec::new();
+        append_road_grading_guides(
+            terrain,
+            road_loops,
+            safe_render_step_m,
+            &mut guide_samples,
+            &mut guide_constraints,
+            &mut HashSet::new(),
+        );
         let patch_model =
             Self::terrain_cdt_patch_for_bounds(terrain, bounds.0, bounds.1, bounds.2, bounds.3);
         let clipped_loops = road_loops
@@ -599,8 +803,8 @@ impl SimulationNode {
             clipped_loops,
             safe_render_step_m,
             bounds,
-            Vec::new(),
-            Vec::new(),
+            guide_samples,
+            guide_constraints,
             site_grading,
         )
     }
@@ -783,14 +987,22 @@ impl SimulationNode {
         }
     }
 
+    // A tile's guide rectangle: its bounds widened by the 1 mm guide tolerance.
+    fn terrain_cdt_guide_bounds(bounds: (f32, f32, f32, f32)) -> [f64; 4] {
+        [
+            f64::from(bounds.0) - 0.001,
+            f64::from(bounds.1) - 0.001,
+            f64::from(bounds.2) + 0.001,
+            f64::from(bounds.3) + 0.001,
+        ]
+    }
+
     fn terrain_cdt_vertex_in_bounds(
         vertex: TerrainCdtVertex,
         bounds: (f32, f32, f32, f32),
     ) -> bool {
-        vertex.x >= f64::from(bounds.0) - 0.001
-            && vertex.x <= f64::from(bounds.2) + 0.001
-            && vertex.z >= f64::from(bounds.1) - 0.001
-            && vertex.z <= f64::from(bounds.3) + 0.001
+        let [min_x, min_z, max_x, max_z] = Self::terrain_cdt_guide_bounds(bounds);
+        vertex.x >= min_x && vertex.x <= max_x && vertex.z >= min_z && vertex.z <= max_z
     }
 
     fn sort_dedup_terrain_cdt_guide_samples(samples: &mut Vec<TerrainCdtTieInGuideSample>) {
@@ -893,24 +1105,6 @@ impl SimulationNode {
                     a.source == b.source
                         && vertex_eq(&a.start, &b.start)
                         && vertex_eq(&a.end, &b.end)
-                        && match (a.source, b.source) {
-                            (
-                                TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                                    start_s_m: a_start,
-                                    end_s_m: a_end,
-                                    ..
-                                },
-                                TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                                    start_s_m: b_start,
-                                    end_s_m: b_end,
-                                    ..
-                                },
-                            ) => {
-                                a_start.to_bits() == b_start.to_bits()
-                                    && a_end.to_bits() == b_end.to_bits()
-                            }
-                            _ => true,
-                        }
                 })
     }
 
@@ -1217,217 +1411,52 @@ impl SimulationNode {
         Self::hash_u64(hash, vertex.z.to_bits());
     }
 
+    // Keyed by piece identity and chain position, which change only when that piece rebuilds,
+    // so a remote edit leaves a tile's fingerprint alone.
     fn hash_terrain_cdt_boundary_source(hash: &mut u64, source: TerrainCdtRoadBoundarySource) {
+        use crate::simulation::terrain::cdt::{TerrainCdtRoadPiece, TerrainCdtRoadSupport};
         match source {
-            TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                edge_idx,
-                edge_class,
-                support_policy,
-                source_band_index,
-                band_kind,
-                role,
-                start_section_index,
-                end_section_index,
-                start_s_m,
-                end_s_m,
+            TerrainCdtRoadBoundarySource::RoadBoundary {
+                piece,
+                chain,
+                segment,
+                support,
             } => {
                 Self::hash_u64(hash, 0);
-                Self::hash_u64(hash, edge_idx);
-                Self::hash_i64(
-                    hash,
-                    i64::from(
-                        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                            edge_idx,
-                            edge_class,
-                            support_policy,
-                            source_band_index,
-                            band_kind,
-                            role,
-                            start_section_index,
-                            end_section_index,
-                            start_s_m,
-                            end_s_m,
-                        }
-                        .edge_class_code(),
-                    ),
-                );
-                Self::hash_i64(
-                    hash,
-                    i64::from(
-                        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                            edge_idx,
-                            edge_class,
-                            support_policy,
-                            source_band_index,
-                            band_kind,
-                            role,
-                            start_section_index,
-                            end_section_index,
-                            start_s_m,
-                            end_s_m,
-                        }
-                        .support_policy_code(),
-                    ),
-                );
-                Self::hash_u64(hash, u64::from(source_band_index));
-                Self::hash_i64(
-                    hash,
-                    i64::from(
-                        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                            edge_idx,
-                            edge_class,
-                            support_policy,
-                            source_band_index,
-                            band_kind,
-                            role,
-                            start_section_index,
-                            end_section_index,
-                            start_s_m,
-                            end_s_m,
-                        }
-                        .owner_kind_code(),
-                    ),
-                );
-                Self::hash_i64(
-                    hash,
-                    i64::from(
-                        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
-                            edge_idx,
-                            edge_class,
-                            support_policy,
-                            source_band_index,
-                            band_kind,
-                            role,
-                            start_section_index,
-                            end_section_index,
-                            start_s_m,
-                            end_s_m,
-                        }
-                        .role_code(),
-                    ),
-                );
-                Self::hash_u64(hash, u64::from(start_section_index));
-                Self::hash_u64(hash, u64::from(end_section_index));
-                Self::hash_u64(hash, u64::from(start_s_m.to_bits()));
-                Self::hash_u64(hash, u64::from(end_s_m.to_bits()));
-            }
-            TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-                node_id,
-                node_kind,
-                owner_kind,
-                owner_index,
-                boundary_source,
-            } => {
-                let complete_source = TerrainCdtRoadBoundarySource::NodeFootprintBoundary {
-                    node_id,
-                    node_kind,
-                    owner_kind,
-                    owner_index,
-                    boundary_source,
-                };
-                Self::hash_u64(hash, 1);
-                Self::hash_u64(hash, u64::from(node_id));
-                Self::hash_i64(hash, i64::from(complete_source.node_kind_code()));
-                Self::hash_i64(hash, i64::from(complete_source.owner_kind_code()));
-                Self::hash_u64(hash, u64::from(owner_index));
-                Self::hash_terrain_cdt_boundary_segment_source(hash, boundary_source);
-            }
-            TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
-                node_id,
-                node_kind,
-                owner_kind,
-                owner_index_a,
-                owner_index_b,
-                boundary_source,
-            } => {
-                let complete_source =
-                    TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff {
-                        node_id,
-                        node_kind,
-                        owner_kind,
-                        owner_index_a,
-                        owner_index_b,
-                        boundary_source,
-                    };
-                Self::hash_u64(hash, 2);
-                Self::hash_u64(hash, u64::from(node_id));
-                Self::hash_i64(hash, i64::from(complete_source.node_kind_code()));
-                Self::hash_i64(hash, i64::from(complete_source.owner_kind_code()));
-                Self::hash_u64(hash, u64::from(owner_index_a));
-                Self::hash_u64(hash, u64::from(owner_index_b));
-                Self::hash_terrain_cdt_boundary_segment_source(hash, boundary_source);
+                match piece {
+                    TerrainCdtRoadPiece::Span(edge) => {
+                        Self::hash_u64(hash, 0);
+                        Self::hash_u64(hash, edge);
+                    }
+                    TerrainCdtRoadPiece::Node(node) => {
+                        Self::hash_u64(hash, 1);
+                        Self::hash_u64(hash, u64::from(node));
+                    }
+                }
+                Self::hash_u64(hash, u64::from(chain));
+                Self::hash_u64(hash, u64::from(segment));
+                Self::hash_u64(hash, u64::from(support == TerrainCdtRoadSupport::Structure));
             }
             TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
                 building_idx,
                 local_loop_index,
                 local_edge_index,
             } => {
-                Self::hash_u64(hash, 3);
+                Self::hash_u64(hash, 1);
                 Self::hash_u64(hash, building_idx);
                 Self::hash_u64(hash, u64::from(local_loop_index));
                 Self::hash_u64(hash, u64::from(local_edge_index));
             }
+            #[cfg(test)]
             TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
                 stable_piece_id,
                 local_loop_index,
                 local_edge_index,
             } => {
-                Self::hash_u64(hash, 4);
+                Self::hash_u64(hash, 2);
                 Self::hash_u64(hash, stable_piece_id);
                 Self::hash_u64(hash, u64::from(local_loop_index));
                 Self::hash_u64(hash, u64::from(local_edge_index));
-            }
-        }
-    }
-
-    fn hash_terrain_cdt_boundary_segment_source(
-        hash: &mut u64,
-        source: Option<
-            crate::simulation::terrain::cdt::TerrainCdtNodeFootprintBoundarySegmentSource,
-        >,
-    ) {
-        let Some(source) = source else {
-            Self::hash_u64(hash, 0);
-            return;
-        };
-        Self::hash_u64(hash, 1);
-        Self::hash_terrain_cdt_boundary_vertex_source(hash, source.start);
-        Self::hash_terrain_cdt_boundary_vertex_source(hash, source.end);
-    }
-
-    fn hash_terrain_cdt_boundary_vertex_source(
-        hash: &mut u64,
-        source: crate::simulation::terrain::cdt::TerrainCdtNodeFootprintBoundaryVertexSource,
-    ) {
-        use crate::simulation::terrain::cdt::TerrainCdtNodeFootprintBoundaryVertexSource;
-
-        match source {
-            TerrainCdtNodeFootprintBoundaryVertexSource::Direct(source) => {
-                Self::hash_u64(hash, 0);
-                Self::hash_u64(hash, source.top_surface_source_index);
-                Self::hash_u64(hash, source.grade_authority_index);
-            }
-            TerrainCdtNodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
-                x_key,
-                z_key,
-                y_mm,
-            } => {
-                Self::hash_u64(hash, 1);
-                Self::hash_i64(hash, x_key);
-                Self::hash_i64(hash, z_key);
-                Self::hash_i64(hash, y_mm);
-            }
-            TerrainCdtNodeFootprintBoundaryVertexSource::BoundaryInterpolation {
-                owning_segment_start,
-                owning_segment_end,
-                height_mm,
-            } => {
-                Self::hash_u64(hash, 2);
-                Self::hash_u64(hash, owning_segment_start.top_surface_source_index);
-                Self::hash_u64(hash, owning_segment_start.grade_authority_index);
-                Self::hash_u64(hash, owning_segment_end.top_surface_source_index);
-                Self::hash_u64(hash, owning_segment_end.grade_authority_index);
-                Self::hash_i64(hash, height_mm);
             }
         }
     }
@@ -1490,10 +1519,10 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
     ) -> Option<(f32, f32, f32, f32)> {
-        let margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
-            terrain.terrain(),
-            render_step_m,
-        );
+        let margin_m = road_loops
+            .iter()
+            .map(|road_loop| grading_envelope_margin_m(terrain, road_loop, render_step_m))
+            .fold(0.0_f32, f32::max);
         Self::terrain_cdt_local_sample_bounds_for_world_bounds_with_margin(
             patch_bounds,
             road_loops,
