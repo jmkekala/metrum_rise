@@ -561,6 +561,13 @@ impl TripQueryScratch {
         self.revision == Some(revision) && (!routes || self.route_revision == self.revision)
     }
 
+    /// Whether the prepared network carries the whole-network walking proof: every node lets
+    /// every arriving foot lane reach every leaving one.
+    #[cfg(test)]
+    pub(crate) fn walking_proof_complete_for_test(&self) -> bool {
+        self.connectors.complete
+    }
+
     /// Prepares predecessor and retained-path buffers only for full route work. Cost-only
     /// forecasts keep their existing storage; warm route queries merely check the revision.
     pub(crate) fn prepare_routes(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
@@ -1657,6 +1664,57 @@ mod tests {
     use crate::simulation::pathing::cch::CchGraph;
     use godot::prelude::Vector3;
 
+    // Builds lanes and the CCH for `graph` and reports the whole-network walking proof.
+    fn walking_proof(graph: &mut RegionGraph) -> bool {
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(graph);
+        network.cch_graph = CchGraph::build(graph);
+        let mut scratch = TripQueryScratch::default();
+        scratch.prepare(&network, graph);
+        scratch.connectors.complete
+    }
+
+    // A road of straight two-way edges with sidewalks through the given nodes, in order.
+    fn road_through(points: &[(f32, f32)]) -> RegionGraph {
+        let mut graph = RegionGraph::new();
+        for &(x, z) in points {
+            graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction);
+        }
+        for from in 0..points.len() as u32 - 1 {
+            let (a, b) = (graph.node(from).pos, graph.node(from + 1).pos);
+            let mut edge = super::super::tests::test_edge(from, from + 1, a.x, b.x);
+            edge.geometry = vec![a, b];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = (b - a).length();
+            graph.add_edge(edge);
+        }
+        graph.rebuild_adjacency_list();
+        graph
+    }
+
+    #[test]
+    fn walking_proof_holds_with_one_crossing_per_degree_two_node() {
+        // Pass-through nodes split a straight road; each crosses once on its span (D8).
+        let straight = [(0.0, 0.0), (80.0, 0.0), (160.0, 0.0), (240.0, 0.0)];
+        assert!(walking_proof(&mut road_through(&straight)));
+        // Bends cross once on their node pieces; road ends wrap their caps.
+        let bends = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (200.0, 100.0)];
+        assert!(walking_proof(&mut road_through(&bends)));
+        for (points, node) in [(&straight, 1), (&bends, 2)] {
+            // `false` on one arm moves the crossing to the other arm.
+            for edge in [node as usize - 1, node as usize] {
+                let mut graph = road_through(points);
+                graph.set_crosswalk_override(node, edge, false);
+                assert!(walking_proof(&mut graph), "node {node}, edge {edge}");
+            }
+            // With no crossing at one node, its sidewalks cannot change sides there.
+            let mut graph = road_through(points);
+            graph.set_crosswalk_override(node, node as usize - 1, false);
+            graph.set_crosswalk_override(node, node as usize, false);
+            assert!(!walking_proof(&mut graph), "node {node} without a crossing");
+        }
+    }
+
     #[test]
     fn prepared_commute_queries_match_connector_paths_without_growing_storage() {
         let mut graph = RegionGraph::new();
@@ -1679,10 +1737,6 @@ mod tests {
             edge.physical_length = (b - a).length();
             graph.add_edge(edge);
         }
-        // Walkers switch sides only on crossings (D8): force one at each bend so that every
-        // node lets every incoming sidewalk reach every outgoing one.
-        graph.set_crosswalk_override(4, 3, true);
-        graph.set_crosswalk_override(5, 4, true);
         graph.rebuild_adjacency_list();
         let mut network = TransitNetwork::new();
         network.lane_system.rebuild(&mut graph);

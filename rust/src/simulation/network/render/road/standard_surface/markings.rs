@@ -3,7 +3,7 @@
 //! Lane-divider marking placement along span sections.
 //!
 //! Zebra crossings sit on node pieces, inside the mouths (`ROAD-68-C`), so span markings run the
-//! whole span.
+//! whole span, except past a pass-through node's crossing strip, which lies on the span (D8).
 
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
@@ -12,7 +12,7 @@ use super::super::{
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
+use crate::simulation::network::roadbed::{BandKind, EdgeEnd, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2, Vector3};
 // Traficom, Liite 14 (2023), K0 table: centre line K1 and lane line K2_1 are 1 m dashes with
@@ -75,11 +75,16 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         let Some(sections) = roadbed.sections(edge_idx).filter(|s| s.len() >= 2) else {
             continue;
         };
+        let span = roadbed.span_piece(edge_idx);
+        let strip = |end: EdgeEnd| span.and_then(|span| span.crossing_strip_m(end));
         let marking_s_range = (
-            sections[0].s_m,
-            sections
-                .last()
-                .map_or(sections[0].s_m, |section| section.s_m),
+            strip(EdgeEnd::Start).map_or(sections[0].s_m, |(_, high)| high),
+            strip(EdgeEnd::End).map_or(
+                sections
+                    .last()
+                    .map_or(sections[0].s_m, |section| section.s_m),
+                |(low, _)| low,
+            ),
         );
         if marking_s_range.1 <= marking_s_range.0 + MIN_SEGMENT_LEN {
             continue;

@@ -5,9 +5,11 @@
 //! At a node with a junction layout, crossings and sidewalk corner routes come from the layout
 //! (`roadbed::NodeWalkways`): a crossing on each crossable arm, square to the road on its crossing line,
 //! and a corner route along the sidewalk around every sector between two arms with sidewalks.
-//! Nodes without a layout (pass-through pairs, footpath nodes, structure ends and failed layouts)
-//! have no crossings; their neighbouring sidewalks join by a straight walk, or by an arc about the
-//! node where that walk would cut across an arm's asphalt.
+//! A pass-through node's crossing (one by default, D8) lies on its arm's span and comes from the
+//! span's section there, through the same walkways. At nodes without a layout (pass-through
+//! pairs, footpath nodes, structure ends and failed layouts) neighbouring sidewalks join by a
+//! straight walk, or by an arc about the node where that walk would cut across an arm's asphalt;
+//! only pass-through nodes have crossings there.
 
 use super::super::graph::RegionGraph;
 use super::super::roadbed::{ArmKey, EdgeEnd, NodeWalkways, RoadVec3};
@@ -604,7 +606,8 @@ fn append_stationary_pedestrian_connection(
         .push((mouth.edge_idx, mouth.lane_idx));
 }
 
-// Crossings and corner routes at a node with a layout, both directions of each. A mouth is found
+// Crossings and corner routes of a node's walkways, both directions of each: a layout's, or a
+// pass-through node's span-owned crossings, which come without corner routes. A mouth is found
 // by its arm and layout side; a side without sidewalk lanes has neither. O(degree * mouths +
 // route points).
 fn append_layout_steps(
@@ -693,8 +696,9 @@ fn append_node_corner_steps(
 
 /// Builds pedestrian sidewalk connection lanes (crosswalks) at a single node.
 ///
-/// `walkways` is the node's layout walkways, `None` at a node without a layout; the node's
-/// sidewalk lanes must have been built against the same walkways.
+/// `walkways` is the node's walkways (its layout's, or a pass-through node's crossings), `None`
+/// at another node without a layout; the node's sidewalk lanes must have been built against the
+/// same walkways.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pedestrian_connections_at_node(
     lanes: &mut Vec<Lane>,
@@ -910,14 +914,17 @@ pub(crate) fn build_pedestrian_connections_at_node(
     let mut outgoing_steps = (0..mouths.len())
         .map(|_| Vec::with_capacity(2))
         .collect::<Vec<_>>();
-    match walkways {
-        Some(walkways) => append_layout_steps(
+    if let Some(walkways) = walkways {
+        append_layout_steps(
             &mut steps,
             &mut outgoing_steps,
             &mouths[..road_mouth_count],
             walkways,
-        ),
-        None => append_node_corner_steps(&mut steps, &mut outgoing_steps, &mouths, &arms, node_pos),
+        );
+    }
+    // A pass-through node's walkways hold only its span-owned crossings.
+    if walkways.is_none_or(|walkways| !walkways.has_layout()) {
+        append_node_corner_steps(&mut steps, &mut outgoing_steps, &mouths, &arms, node_pos);
     }
 
     for path_mouth in road_mouth_count..mouths.len() {

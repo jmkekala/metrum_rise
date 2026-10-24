@@ -407,18 +407,17 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
 
 #[test]
 fn pedestrian_route_the_layout_no_longer_has_is_dropped_and_its_walker_replans() {
-    let (mut graph, mut network) = fixture();
-    // The saving build crossed the bend at the origin; the loading one does not.
+    let (mut graph, network) = fixture();
+    // The saving build crossed the bend at the origin (D8); the loading one has no crossing
+    // there, so no walk changes sides at the bend.
     let bend = graph.get_valid_node(2);
-    graph.set_crosswalk_override(bend, 1, true);
-    network.lane_system.rebuild(&mut graph);
     let lanes = &network.lane_system;
     let crossing = lanes.node_lanes[&(bend as usize)]
         .iter()
         .copied()
         .filter(|&id| lanes.crosswalk(id).is_some())
         .min()
-        .expect("forced crossing");
+        .expect("the bend's crossing");
     let mut agents = AgentSystem::new();
     let walker = add_agent(&mut agents, crossing, &graph, lanes);
 
@@ -433,9 +432,10 @@ fn pedestrian_route_the_layout_no_longer_has_is_dropped_and_its_walker_replans()
     tx.commit().unwrap();
     let mut restored = load_agents(&conn, 0.0).unwrap();
     graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    // Loading compacts ids; no node of the loaded graph crosses.
     for node in 0..graph.node_count() as u32 {
         for edge in graph.node_adjacency(node).to_vec() {
-            graph.restore_crosswalk_override(node, edge, None);
+            graph.set_crosswalk_override(node, edge, false);
         }
     }
     let mut new_network = TransitNetwork::new();

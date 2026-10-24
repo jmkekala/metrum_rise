@@ -3,7 +3,8 @@
 //! The legacy section model of one edge: stations, frame, plane blend, width taper and section
 //! evaluation, ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules.
 
-use super::super::layout::EdgeEnd;
+use super::super::arms::pass_through_crossings;
+use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
 use super::super::profile::RoadProfile;
 use super::super::{RoadBand, RoadSection, RoadVec2, RoadVec3};
@@ -120,6 +121,9 @@ pub(super) struct SpanModel<'a> {
     frame: SpanTangentFrame,
     start_pass_through: Option<RoadVec2>,
     end_pass_through: Option<RoadVec2>,
+    // Crossing line of a pass-through node's span-owned crossing at each end (D8), a protected
+    // section station half the strip depth inside the mouth.
+    crossings_m: [Option<f32>; 2],
     layout: RowLayout,
 }
 
@@ -198,6 +202,24 @@ impl<'a> SpanModel<'a> {
         if total_length_m - end_mouth_m <= SAMPLE_EPSILON_M {
             end_tangent = end_pass_through.unwrap_or(end_tangent);
         }
+        let crossing_m = |end: EdgeEnd, kind: Option<NodeKind>, mouth_m: f32| {
+            let half_depth_m = (0.5 * CROSSWALK_DEPTH_M) as f32;
+            let key = ArmKey {
+                edge: edge_idx,
+                end,
+            };
+            let crosses = kind == Some(NodeKind::PassThrough)
+                && pass_through_crossings(graph, node_at(graph, edge, end))
+                    .is_some_and(|arms| arms.contains(&(key, true)));
+            crosses.then_some(match end {
+                EdgeEnd::Start => mouth_m + half_depth_m,
+                EdgeEnd::End => mouth_m - half_depth_m,
+            })
+        };
+        let crossings_m = [
+            crossing_m(EdgeEnd::Start, start_kind, start_mouth_m),
+            crossing_m(EdgeEnd::End, end_kind, end_mouth_m),
+        ];
         // A node piece's mouth fixes the frame at that end.
         if let Some(mouth) = mouths[0] {
             start_tangent = mouth.section.tangent_xz;
@@ -224,8 +246,55 @@ impl<'a> SpanModel<'a> {
             },
             start_pass_through,
             end_pass_through,
+            crossings_m,
             layout: RowLayout::new(&RoadProfile::for_edge(edge)),
         })
+    }
+
+    /// Span station of the crossing line of the pass-through node's crossing at `end`, when
+    /// this edge's arm carries it there (D8, `arms::pass_through_crossings`). Its strip runs
+    /// from the mouth half the crosswalk depth beyond this station, and the span keeps a
+    /// section row on it.
+    pub(super) fn crossing_m(&self, end: EdgeEnd) -> Option<f32> {
+        match end {
+            EdgeEnd::Start => self.crossings_m[0],
+            EdgeEnd::End => self.crossings_m[1],
+        }
+    }
+
+    /// The two carriageway-edge vertices of `section`'s row at ground level, negative lateral
+    /// side first: exactly the vertices [`push_section_row`] emits for them.
+    pub(super) fn carriageway_edge_vertices(&self, section: &RoadSection) -> Option<[RoadVec3; 2]> {
+        let (first, last) = self.layout.carriageway_edge_slots()?;
+        let mut row = Vec::with_capacity(self.layout.stride());
+        push_section_row(section, &self.layout, &mut row);
+        Some([row[first], row[last]])
+    }
+
+    /// Horizontal centreline metres from the node at `end` to span station `s_m`, on the segment
+    /// [`Self::section_at`] samples it on: the station measure of `NodeArms` and the lanes.
+    pub(super) fn horizontal_station_m(&self, s_m: f32, end: EdgeEnd) -> f64 {
+        let clamped_s = s_m.clamp(0.0, self.total_length_m);
+        let index = (0..self.points.len() - 1)
+            .find(|&index| clamped_s <= self.cumulative[index + 1])
+            .unwrap_or(self.points.len() - 2);
+        let segment_length =
+            (self.cumulative[index + 1] - self.cumulative[index]).max(SAMPLE_EPSILON_M);
+        let t = f64::from(((clamped_s - self.cumulative[index]) / segment_length).clamp(0.0, 1.0));
+        let horizontal = |i: usize| {
+            let (a, b) = (self.points[i], self.points[i + 1]);
+            RoadVec2::new(a.x, a.z).distance(RoadVec2::new(b.x, b.z))
+        };
+        match end {
+            EdgeEnd::Start => (0..index).map(horizontal).sum::<f64>() + t * horizontal(index),
+            EdgeEnd::End => {
+                (index + 1..self.points.len() - 1)
+                    .rev()
+                    .map(horizontal)
+                    .sum::<f64>()
+                    + (1.0 - t) * horizontal(index)
+            }
+        }
     }
 
     /// Row layout shared by every section of this span.
@@ -356,6 +425,9 @@ impl<'a> SpanModel<'a> {
         let total_length = self.total_length_m;
         let (start_mouth_m, end_mouth_m) = self.mouths_m;
         for distance_m in [0.0, total_length, start_mouth_m, end_mouth_m] {
+            push_protected_section_sample(samples, protected, distance_m, total_length);
+        }
+        for distance_m in self.crossings_m.into_iter().flatten() {
             push_protected_section_sample(samples, protected, distance_m, total_length);
         }
 

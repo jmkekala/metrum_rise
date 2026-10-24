@@ -193,6 +193,22 @@ impl RowLayout {
         usize::from(self.stride)
     }
 
+    /// Row slots of the two carriageway-edge vertices at ground level: the first carriageway
+    /// band's start and the last one's end. `None` without a carriageway band.
+    pub(super) fn carriageway_edge_slots(&self) -> Option<(usize, usize)> {
+        let kinds = &self.kinds[..usize::from(self.band_count)];
+        let first = kinds
+            .iter()
+            .position(|&kind| kind == BandKind::Carriageway)?;
+        let last = kinds
+            .iter()
+            .rposition(|&kind| kind == BandKind::Carriageway)?;
+        Some((
+            usize::from(self.band_slots[first].0),
+            usize::from(self.band_slots[last].1),
+        ))
+    }
+
     fn steps(&self) -> &[CurbStep] {
         &self.steps[..usize::from(self.step_count)]
     }

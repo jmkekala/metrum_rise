@@ -9,6 +9,11 @@
 //! bisected shared axis at pass-through nodes. A span runs between the mouth sections its two
 //! node pieces evaluated; an end without a node piece (a pass-through node) evaluates its own at
 //! the graph clip.
+//!
+//! A pass-through node's crossing (D8) is span-owned: it lies on its arm's span from the node's
+//! mouth out to the crosswalk depth, square to the road at its middle, where the span keeps a
+//! section row. Lanes read its kerb points and sidewalk ends from that section through
+//! [`pass_through_crossing`], the span model the compile builds the row with.
 
 mod model;
 
@@ -19,8 +24,9 @@ pub(super) use model::{
 };
 
 use super::index::{PieceFootprint, RenderGrid};
-use super::layout::EdgeEnd;
+use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::mesh::{PieceMesh, build_span_mesh};
+use super::node::plan_node;
 use super::profile::RoadProfile;
 use super::{RoadSection, RoadVec3};
 use crate::simulation::network::graph::RegionGraph;
@@ -49,6 +55,8 @@ pub struct SpanPiece {
     sections: Box<[RoadSection]>,
     start_mouth: Arc<MouthSection>,
     end_mouth: Arc<MouthSection>,
+    // Crossing line of a pass-through crossing at the start and end (D8).
+    crossings_m: [Option<f32>; 2],
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
 }
@@ -77,6 +85,18 @@ impl SpanPiece {
     /// The piece's mesh.
     pub fn mesh(&self) -> &PieceMesh {
         &self.mesh
+    }
+
+    /// Span stations `(low, high)` of the crossing strip a pass-through node at `end` puts on
+    /// this span (D8): from its mouth out to the crosswalk depth. A section row lies on the
+    /// strip's middle, the crossing line. `None` when that node does not cross this span.
+    pub fn crossing_strip_m(&self, end: EdgeEnd) -> Option<(f32, f32)> {
+        let half_depth_m = (0.5 * CROSSWALK_DEPTH_M) as f32;
+        match end {
+            EdgeEnd::Start => self.crossings_m[0],
+            EdgeEnd::End => self.crossings_m[1],
+        }
+        .map(|s_m| (s_m - half_depth_m, s_m + half_depth_m))
     }
 
     pub(super) fn shared_mesh(&self) -> &Arc<PieceMesh> {
@@ -135,8 +155,65 @@ pub(crate) fn build_span_piece(
         sections: sections.into_boxed_slice(),
         start_mouth,
         end_mouth,
+        crossings_m: [EdgeEnd::Start, EdgeEnd::End].map(|end| model.crossing_m(end)),
         mesh: Arc::new(mesh),
         footprint,
+    })
+}
+
+/// A pass-through node's crossing on one arm's span, from the span's own section function.
+pub(super) struct SpanCrossing {
+    /// Horizontal centreline metres from the node to the crossing line, the station measure of
+    /// `NodeArms` and the lanes.
+    pub(super) station_m: f64,
+    /// The span's section on the crossing line.
+    pub(super) section: RoadSection,
+    /// The section row's two carriageway-edge vertices, negative lateral side first.
+    pub(super) kerbs: [RoadVec3; 2],
+}
+
+/// The crossing that arm `arm`'s pass-through node puts on its span, or `None` when it puts none
+/// there. The span model is built as [`RoadbedSystem::compile_dirty`] builds it: with the far
+/// node's planned mouth, or the graph clip where that node has no piece. So the crossing section
+/// is bitwise the span's row on the crossing line, whichever runs first.
+///
+/// `O(far node plan + edge points)`; allocates the span model's buffers.
+///
+/// [`RoadbedSystem::compile_dirty`]: super::RoadbedSystem::compile_dirty
+pub(super) fn pass_through_crossing(graph: &RegionGraph, arm: ArmKey) -> Option<SpanCrossing> {
+    let edge = graph.get_edge(arm.edge)?;
+    let (far_end, far_node) = match arm.end {
+        EdgeEnd::Start => (EdgeEnd::End, edge.end_node),
+        EdgeEnd::End => (EdgeEnd::Start, edge.start_node),
+    };
+    let far_plan = plan_node(graph, graph.get_valid_node(far_node))
+        .ok()
+        .flatten();
+    let far_mouth = far_plan.as_ref().and_then(|plan| {
+        plan.mouth(ArmKey {
+            edge: arm.edge,
+            end: far_end,
+        })
+    });
+    let mouths = match arm.end {
+        EdgeEnd::Start => [None, far_mouth],
+        EdgeEnd::End => [far_mouth, None],
+    };
+    let (mut points, mut cumulative) = (Vec::new(), Vec::new());
+    let model = SpanModel::new(
+        graph,
+        arm.edge,
+        &mut points,
+        &mut cumulative,
+        mouths.map(|mouth| mouth.map(Arc::as_ref)),
+    )?;
+    let s_m = model.crossing_m(arm.end)?;
+    let section = model.section_at(s_m);
+    let kerbs = model.carriageway_edge_vertices(&section)?;
+    Some(SpanCrossing {
+        station_m: model.horizontal_station_m(s_m, arm.end),
+        section,
+        kerbs,
     })
 }
 

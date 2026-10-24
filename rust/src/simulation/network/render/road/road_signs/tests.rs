@@ -155,6 +155,51 @@ fn two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb() {
 }
 
 #[test]
+fn pass_through_zebra_signs_stand_beside_its_span_strip() {
+    // A straight road split at node 0. Its one crossing (D8) lies on edge 0's span, from the
+    // node out to 3 m, and both signs follow that marking. Street lights space along the whole
+    // street through degree-two nodes and do not avoid its crossing; here none stands near it.
+    let points = [
+        Vector3::ZERO,
+        Vector3::new(160.0, 0.0, 0.0),
+        Vector3::new(-80.0, 0.0, 0.0),
+    ];
+    let (mut graph, mut lanes, mut surface, terrain) =
+        fixture(&points, &[(0, 1, 1, 1), (2, 0, 1, 1)]);
+    graph.set_crosswalk_override(0, 0, true);
+    surface.clear();
+    surface.compile_dirty(&graph);
+    lanes.rebuild(&mut graph);
+    let f = (graph, lanes, surface, terrain);
+    let marking = f.1.node_lanes[&0]
+        .iter()
+        .find_map(|&lane| f.1.crosswalk_marking(lane))
+        .unwrap();
+    let center = (marking.start + marking.end) * 0.5;
+    assert!((center.x - 1.5).abs() < 1e-5, "{center:?}");
+    let mesh = generate(&f);
+    let signs: Vec<_> = mesh
+        .road_signs
+        .iter()
+        .filter(|s| crossing(s.kind))
+        .collect();
+    assert_eq!(signs.len(), 2, "{signs:?}");
+    for sign in &signs {
+        assert!(
+            (sign.position.z.abs() - (crate::config::LANE_WIDTH + 0.5)).abs() < 0.01,
+            "pole must be 0.5 m behind the kerb face: {sign:?}"
+        );
+        let front = Vector3::new(sign.yaw.sin(), 0.0, sign.yaw.cos());
+        let setback = (sign.position.x - center.x) * front.x;
+        assert!(
+            (1.25..2.0).contains(&setback),
+            "sign at the approach edge: {setback}"
+        );
+    }
+    assert!(signs[0].position.z * signs[1].position.z < 0.0);
+}
+
+#[test]
 fn uniform_limits_have_no_speed_signs_and_changed_limit_follows_the_zebra() {
     let mut f = junction();
     assert!(

@@ -702,10 +702,10 @@ fn test_crosswalk_counts() {
         crosswalk_lanes.len()
     }
 
-    // Crossings follow the junction layout's rule (D8): none at a terminal, whose sidewalk wraps
-    // its cap, or at a pass-through node, which has no layout; one per arm at junctions.
+    // Crossings follow the D8 rule: none at a terminal, whose sidewalk wraps its cap; one at a
+    // degree-two node, here a pass-through node's span-owned crossing; one per arm at junctions.
     assert_eq!(count_crosswalks_at(&lanes, &graph, n0 as usize), 0);
-    assert_eq!(count_crosswalks_at(&lanes, &graph, n1 as usize), 0);
+    assert_eq!(count_crosswalks_at(&lanes, &graph, n1 as usize), 1);
     assert_eq!(count_crosswalks_at(&lanes, &graph, n2 as usize), 3);
     assert_eq!(count_crosswalks_at(&lanes, &graph, n5 as usize), 4);
 }
@@ -1231,8 +1231,6 @@ fn lane_rebuild_frontier() -> (RegionGraph, usize, usize, usize) {
     let changed_edge = add_road_edge(&mut graph, center, east);
     let expanded_edge = add_road_edge(&mut graph, center, south);
     let preserved_edge = add_road_edge(&mut graph, south, farther_south);
-    // A bend crosses only where its node forces it (D8); keep one crossing at the centre.
-    graph.set_crosswalk_override(center, changed_edge, true);
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
     (graph, changed_edge, expanded_edge, preserved_edge)

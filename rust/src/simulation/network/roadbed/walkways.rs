@@ -18,14 +18,21 @@
 //!   samples) and out along the next arm's walkway to its sidewalk end, so it never leaves the
 //!   sidewalk. A terminal's route wraps its round cap.
 //!
-//! `O(degree * arm knots + sector samples)` per node; allocates only the returned buffers.
+//! A pass-through node has no layout, but its crossing (D8: one by default) is span-owned
+//! ([`pass_through_crossing`]): the crossing arm's sidewalks end on the crossing line, taken with
+//! the kerb points from the span's section there, and the node keeps the corner walks of a node
+//! without a layout (no corner routes here).
+//!
+//! `O(degree * arm knots + sector samples)` per node, plus a far-node plan per pass-through
+//! crossing; allocates only the returned buffers and the span model's.
 
-use super::arms::NodeArms;
+use super::arms::{NodeArms, pass_through_crossings};
 use super::layout::{
     ArmInput, ArmKey, ArmSide, EdgeEnd, JunctionLayout, NodeKind, SectorBoundary, SectorLayout,
 };
 use super::node::crossing_kerbs;
-use super::{BandKind, RoadVec2, RoadVec3};
+use super::span::{SpanCrossing, pass_through_crossing};
+use super::{BandKind, RoadBand, RoadSection, RoadVec2, RoadVec3};
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector3;
 use std::ops::Range;
@@ -64,18 +71,24 @@ const LEFT: usize = 1;
 
 /// The walkways of one node, for the lane rebuild.
 pub(crate) struct NodeWalkways {
+    // Every layout arm; at a pass-through node only its crossing arms.
     arms: Vec<WalkArm>,
+    // False at a pass-through node, which has no layout and no corner routes.
+    layout: bool,
     // Corner routes: from-arm and to-arm (layout order) and their points.
     corners: Vec<(usize, usize, Range<usize>)>,
     points: Vec<RoadVec3>,
 }
 
 impl NodeWalkways {
-    /// Walkways of `node`, or `None` when it has no layout: the cases of [`NodeArms::collect`],
-    /// a layout that fails (a placement rejection) or a bend or junction without a solved plane,
-    /// which leaves it without a node piece too.
+    /// Walkways of `node`: its layout's, or a pass-through node's span-owned crossings. `None`
+    /// for a pass-through node without a crossing and for the other nodes without a layout: the
+    /// cases of [`NodeArms::collect`], a layout that fails (a placement rejection) or a bend or
+    /// junction without a solved plane, which leaves it without a node piece too.
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
-        let arms = NodeArms::collect(graph, node)?;
+        let Some(arms) = NodeArms::collect(graph, node) else {
+            return Self::pass_through(graph, node);
+        };
         let layout = arms.layout().ok()?;
         let plane = match layout.kind {
             NodeKind::Terminal => None,
@@ -118,6 +131,7 @@ impl NodeWalkways {
             corners: Vec::with_capacity(layout.sectors.len()),
             points: Vec::new(),
             arms: walk_arms,
+            layout: true,
         };
         for sector in &layout.sectors {
             let (Some(start), Some(end)) = (
@@ -133,6 +147,28 @@ impl NodeWalkways {
                 .push((sector.from_arm, sector.to_arm, first..walkways.points.len()));
         }
         Some(walkways)
+    }
+
+    // A pass-through node's crossing arms, each with its sidewalk ends and kerbs on the span's
+    // section at the crossing line.
+    fn pass_through(graph: &RegionGraph, node: u32) -> Option<Self> {
+        let arms: Vec<WalkArm> = pass_through_crossings(graph, node)?
+            .into_iter()
+            .filter(|&(_, crosses)| crosses)
+            .filter_map(|(key, _)| Some(span_walk_arm(key, &pass_through_crossing(graph, key)?)))
+            .collect();
+        (!arms.is_empty()).then_some(Self {
+            arms,
+            layout: false,
+            corners: Vec::new(),
+            points: Vec::new(),
+        })
+    }
+
+    /// Whether the node has a junction layout, whose corner routes join its sidewalks; a
+    /// pass-through node's sidewalks join as at a node without one.
+    pub(crate) fn has_layout(&self) -> bool {
+        self.layout
     }
 
     /// The end of the sidewalk on the side of arm `key` whose lateral offset is positive
@@ -168,6 +204,61 @@ impl NodeWalkways {
     fn arm(&self, key: ArmKey) -> Option<&WalkArm> {
         self.arms.iter().find(|arm| arm.key == key)
     }
+}
+
+// A crossing arm of a pass-through node from its span crossing: sidewalk ends on the walkway
+// centre of the crossing section, at the centreline height as layout ends are, and the section
+// row's kerb vertices.
+fn span_walk_arm(key: ArmKey, crossing: &SpanCrossing) -> WalkArm {
+    let section = &crossing.section;
+    let point = |lateral_m: f64| {
+        let xz = section.center_xz + section.lateral_xz * lateral_m;
+        RoadVec3::new(xz.x, f64::from(section.center_height_m), xz.y)
+    };
+    let [negative, positive] = section_walk_laterals(section).map(|lateral_m| {
+        lateral_m.map(|lateral_m| SidewalkEnd {
+            station_m: crossing.station_m,
+            point: point(lateral_m),
+        })
+    });
+    let kerb = |p: RoadVec3| Vector3::new(p.x as f32, p.y as f32, p.z as f32);
+    let [negative_kerb, positive_kerb] = crossing.kerbs.map(kerb);
+    // Walking away from the node, the right side is the negative lateral one at an edge's start
+    // and the positive one at its end.
+    let (ends, kerbs) = match key.end {
+        EdgeEnd::Start => ([negative, positive], [negative_kerb, positive_kerb]),
+        EdgeEnd::End => ([positive, negative], [positive_kerb, negative_kerb]),
+    };
+    WalkArm {
+        key,
+        ends,
+        kerbs: Some(kerbs),
+    }
+}
+
+// Signed laterals of a section's walkway centres, negative side first: midway between the
+// carriageway edge and the section's outer edge, on a side with a sidewalk band.
+fn section_walk_laterals(section: &RoadSection) -> [Option<f64>; 2] {
+    let bands = &section.bands;
+    let carriageway = |band: &RoadBand| band.kind == BandKind::Carriageway;
+    let (Some(first), Some(last)) = (
+        bands.iter().position(carriageway),
+        bands.iter().rposition(carriageway),
+    ) else {
+        return [None, None];
+    };
+    let has_sidewalk = |side: &[RoadBand]| side.iter().any(|band| band.kind == BandKind::Sidewalk);
+    let centre = |kerb: f32, outer: f32| 0.5 * (f64::from(kerb) + f64::from(outer));
+    [
+        has_sidewalk(&bands[..first])
+            .then(|| centre(bands[first].lateral_start_m, bands[0].lateral_start_m)),
+        has_sidewalk(&bands[last + 1..]).then(|| {
+            centre(
+                bands[last].lateral_end_m,
+                bands[bands.len() - 1].lateral_end_m,
+            )
+        }),
+    ]
 }
 
 // Unsigned offset of a side's walkway centre: midway between the carriageway edge and the

@@ -22,6 +22,8 @@ mod frame_budget;
 mod routing_benchmark;
 #[cfg(test)]
 mod snapshot;
+#[cfg(test)]
+mod walking_proof;
 
 use std::time::{Duration, Instant};
 

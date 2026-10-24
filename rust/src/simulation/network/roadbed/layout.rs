@@ -81,7 +81,8 @@ const CURB_RETURN_RADIUS_M: f64 = 3.5;
 // outermost boundary at least this far from the corner centre.
 const CURB_RETURN_CLEARANCE_M: f64 = 0.5;
 // D8: on crossable arms the mouth moves this far beyond its sectors; the zebra strip fills it.
-const CROSSWALK_DEPTH_M: f64 = 3.0;
+// A pass-through node's crossing strip on its span has the same depth.
+pub(super) const CROSSWALK_DEPTH_M: f64 = 3.0;
 // s_min: every node piece reaches at least this far along each arm, so a mouth never sits on the
 // node's lateral line where round joins start.
 const MIN_MOUTH_STATION_M: f64 = 1.0;

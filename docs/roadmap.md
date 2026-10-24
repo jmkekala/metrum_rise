@@ -48,10 +48,13 @@ profile hard zone come from the layout mouths, and layout failures reject placem
 reasons; a four-way node piece builds in 0.071 ms and a six-way in 0.127 ms. Its follow-up
 (2026-10-24, user decisions D1 and D8) tightens curb returns to 3.5 m and moves the pedestrian
 crossings onto the layout: zebras sit right outside the curves, sidewalk corner walks follow the
-layout's sidewalk, and no zebra remains on a span. Tests that need later gates are disabled until
-then (32 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are open, and `roads.md` lists
-twelve open questions; open question 12 (walkers now change sides only on crossings) needs a
-decision before `road` merges. Design,
+layout's sidewalk. A second follow-up (2026-10-24, user decision "keep the old behaviour",
+open question 12) restores one crossing at every degree-two node: on a bend's node piece right
+outside the curve, and on a pass-through node's span beside the node, so walkers can change sides
+at every node again and the walking planner's whole-network proof holds. Tests that need later
+gates are disabled until then (32 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are open,
+and `roads.md` lists thirteen open questions; open question 13 (degree-two crossings that do not
+fit) records conservative choices for the user to confirm. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

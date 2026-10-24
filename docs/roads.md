@@ -201,7 +201,7 @@ compiler may special-case them.
 
 A layout is built for every node except degree-two pass-through nodes (the existing
 `directions_are_pass_through` rule). Those own no node piece; their spans meet at one bisected
-cross-section, as today.
+cross-section, as today, and their crossing lies on a span ([D8](#product-decisions)).
 
 **Arms.** Each incident live edge end becomes an arm with:
 
@@ -502,7 +502,7 @@ These defaults apply unless the user overrides them:
 | D5 | Footpath meeting a road junction | It joins the sidewalk ring at sidewalk height, with its end pinned there by the profile solve. Its ribbon ends at the sidewalk outer edge on shared vertices. |
 | D6 | Roads without sidewalks | Keep the current raised 0.75 m shoulder. |
 | D7 | Routing at commit | Confirmed by the user, 2026-10-23. Rebuild the CCH on an immutable graph snapshot as a scheduled job and adopt it at a fixed tick offset. Route queries issued meanwhile wait for adoption. If the job is late, the simulation blocks at the adoption tick, so results do not depend on machine speed. Revisit if the query backlog at adoption is too large at 100k buildings. |
-| D8 | Crosswalks | Right outside the curve (user-confirmed 2026-10-24). On crossable arms the mouth moves 3 m beyond the corner tangent station, and the 3 m zebra fills that straight approach: its inner edge is where the curb stops curving. The crossing is square to the road at the strip's middle, its kerb points at the two carriageway edges; sidewalk lanes end on that line, as `ROAD-64` requires. No zebra sits on a span. |
+| D8 | Crosswalks | Right outside the curve (user-confirmed 2026-10-24). On crossable arms the mouth moves 3 m beyond the corner tangent station, and the 3 m zebra fills that straight approach: its inner edge is where the curb stops curving. The crossing is square to the road at the strip's middle, its kerb points at the two carriageway edges; sidewalk lanes end on that line, as `ROAD-64` requires. Which arms cross (user-confirmed 2026-10-24, "keep the old behaviour"): every arm of a junction of three or more; exactly one arm of every degree-two node, bend or pass-through, as the legacy `ROAD-64` rule did; none at a road end, whose sidewalk wraps the cap. Only car roads with sidewalks cross, and node overrides adjust the rule. A pass-through node has no node piece, so its crossing is span-owned: it lies on the arm's span from the node out to 3 m, where the span keeps a section row on the crossing line; that row's carriageway-edge vertices are the kerb points. No other zebra sits on a span. |
 
 ## Implementation plan (`ROAD-68`)
 
@@ -736,7 +736,8 @@ These need a user decision; work that does not depend on them continues.
     crossing; none where a node override removes it) now decides both the 3 m mouth extension and
     the pedestrian lanes' crossings, which take the layout's zebra strip
     ([C follow-up](#tighter-corners-and-junction-crosswalks-follow-up)). Nodes without a layout
-    have no crossing. The two disabled lane and sign tests pass again.
+    have no crossing. The two disabled lane and sign tests pass again. Open question 12 later
+    restored one crossing per degree-two node.
 11. **Publication while a node fails (`ROAD-68-C`, guardrail) — resolved 2026-10-24, option (b).**
     - **Before.** While any node failed to compile, `SimCore::precompute_road_mesh_data` and
       `road_tool_snapshot_from_core` held the last fully valid generation. The screen could keep a
@@ -754,34 +755,37 @@ These need a user decision; work that does not depend on them continues.
       that dirties nodes (undo, terrain sync, node moves), so a published gap can only come from
       a bug.
 
-12. **Walkers switch sides only on crossings (`ROAD-68-C` follow-up).**
-    - **The problem.** Under the D8 rule (open question 10), walkers cross only on junction arms
-      and forced bend arms, and wrap a road end round its cap. Unforced bends, pass-through
-      nodes and other nodes without a layout have no crossing. The legacy lane rule crossed one
-      arm at every degree-two node and road end, so a walker could change sides at every node,
-      and the walking planner relies on that. It routes on the road-node CCH, which has no
-      sidewalk sides, and its cost forecasts use a whole-network proof that every node lets every
-      arriving sidewalk reach every leaving one (`ConnectorTargets::complete` in
-      `agents/tick/planning/candidate/query.rs`).
-    - **Consequences.** One node without a crossing makes that proof false for the whole network.
-      Walk forecasts then quote per lane pair rather than per node context. A walk that must
-      change sides and whose node path reaches no crossing fails to plan. The street-grid
-      benchmark city has four corner bends, so its proof is now false. The economy benchmarks
-      were not re-run.
-    - **Evidence.** `test_pedestrian_crosses_junction` (a straight road, home and shop on opposite
-      sides) found no walk until its road got a junction.
-      `prepared_commute_queries_match_connector_paths_without_growing_storage` keeps its network
-      complete only with forced crossings at its two bends. Forced crossings at pass-through
-      nodes do nothing now, because those nodes have no layout.
-    - **Options.**
-      - (a) Accept (current), and later make the walking planner side-aware: sidewalk contexts in
-        the CCH, or a per-node proof.
-      - (b) Cross one arm of every bend by default, on its node piece right outside the curve;
-        lay pass-through nodes out where a crossing is forced.
-      - (c) Unmarked crossings at those nodes. This breaks `ROAD-64` (walkers cross only on drawn
-        zebras).
-    - **Before merging to `main`:** the user should decide, and the economy performance contract
-      should be re-run.
+12. **Walkers switch sides only on crossings (`ROAD-68-C` follow-up) — resolved 2026-10-24: the
+    user chose "keep the old behaviour".**
+    - **The problem.** Under the first D8 rule (open question 10), walkers crossed only on
+      junction arms and forced bend arms. Unforced bends and pass-through nodes had no crossing.
+      The walking planner routes on the road-node CCH, which has no sidewalk sides, and its cost
+      forecasts use a whole-network proof that every node lets every arriving sidewalk reach every
+      leaving one (`ConnectorTargets::complete` in `agents/tick/planning/candidate/query.rs`). One
+      node without a crossing made that proof false for the whole network: walk forecasts quoted
+      per lane pair, and a walk that had to change sides without a crossing on its node path
+      failed to plan. The street-grid benchmark city's four corner bends made its proof false.
+    - **Decision.** Every degree-two node crosses once, on the legacy-ordered arm, and junctions
+      keep a crossing on every arm ([D8](#product-decisions)). A bend's crossing is its node
+      piece's strip right outside the curve; a pass-through node's lies on its arm's span beside
+      the node. A road end's walk round its cap is its side change. The proof holds again,
+      including on the street-grid city
+      ([follow-up 2](#one-crossing-per-degree-two-node-follow-up-2)).
+    - **Later.** Placing crossings where walkers need them, rather than by this mechanical rule,
+      remains `ROAD-58`.
+13. **Degree-two crossings that do not fit (`ROAD-68-C` follow-up 2).** Conservative choices,
+    for the user to confirm:
+    - A bend's crossing arm takes the 3 m strip as a junction arm does. If its layout then does
+      not fit, the edit is rejected with the existing reasons (`junction_arm_too_short`,
+      `junction_corner_does_not_fit`). So a bend with a short arm that `16354d77` accepted can be
+      rejected now, and a save holding one fails to load (open question 11).
+    - A pass-through arm crosses only if the strip fits within half its edge, measured
+      horizontally: the budget a layout gives each end, so the strip always ends before the far
+      node's mouth. Otherwise the default crossing goes to the other arm, and with neither the
+      node has none.
+    - An override of `false` on a degree-two node's first arm moves the default crossing to the
+      other arm, as the legacy rule did; `false` on both arms leaves the node without one.
+    - Nodes with a footpath arm have no layout until `ROAD-68-F` (D5), and so no crossing.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -1130,7 +1134,9 @@ Spec corrections in `ROAD-68-C`:
 - **Crossable arms** (D8) in this gate: car-road arms with sidewalks at junctions of three or more
   arms, bend arms only where the node forces a crossing, none where a node override removes it.
   At the gate, pedestrian lanes still placed crossings by the `ROAD-64` lane rule; the
-  [follow-up](#tighter-corners-and-junction-crosswalks-follow-up) moved them onto the layout.
+  [follow-up](#tighter-corners-and-junction-crosswalks-follow-up) moved them onto the layout, and
+  [follow-up 2](#one-crossing-per-degree-two-node-follow-up-2) gives every degree-two node one
+  crossing again.
 - **Nodes without pieces**: footpath nodes and footpaths meeting roads (D5), and bridge and tunnel
   terminals, keep the `ROAD-68-B` span ends until `ROAD-68-F`.
 
@@ -1250,8 +1256,9 @@ This pulls the crossings item of `ROAD-68-F` forward.
   no longer routes (crossings at bends, pass-through nodes and road ends). Loading omits them, and
   walkers on them replan. Vehicle connectors must still match.
 
-**Consequence.** Walkers now change sides only on crossings ([open question
-12](#road-68-open-questions)).
+**Consequence.** Walkers changed sides only on crossings ([open question
+12](#road-68-open-questions)); [follow-up 2](#one-crossing-per-degree-two-node-follow-up-2)
+restores a crossing at every degree-two node.
 
 **Tests.** `two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb` and
 `sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk` pass again. The second now
@@ -1350,7 +1357,115 @@ debug build (48 images, no fixture failures). The T, four-way and Y plan views s
   the span begins
 - no zebra on any span
 
-The 45° bend has no crossing, as the bend rule says.
+The 45° bend has no crossing, as the bend rule then said.
+
+#### One crossing per degree-two node (follow-up 2)
+
+**Status:** done 2026-10-24. The user resolved [open question 12](#road-68-open-questions) as
+"keep the old behaviour".
+
+**The rule** (`roadbed/arms.rs`, `crossable_arms`; [D8](#product-decisions)). One function
+decides the crossings for the layout, the spans and the lanes:
+
+- Junctions of three or more arms: every car-road arm with sidewalks, unless an override of
+  `false` removes it. Unchanged.
+- Degree-two nodes, bends and pass-through nodes alike: the legacy `ROAD-64` rule. Arms are taken
+  by direction angle in `(-pi, pi]` (atan2 of the direction to the first distinct centreline
+  point), then edge index. An override of `true` crosses, `false` does not, and an arm without one
+  crosses only if no earlier arm did. One crossing by default, on the first arm.
+- Road ends: none; the sidewalk walks round the cap.
+
+**Bends.** The crossing arm is crossable in the layout, so its zebra is the node piece's strip
+right outside the curve, its mouth 3 m beyond the tangent, exactly as on junction arms.
+
+**Pass-through nodes** (`roadbed/span.rs`, `span/model.rs`). There is no node piece, so the
+crossing is span-owned:
+
+- The strip runs on the crossing arm's span from the mouth at the node out to 3 m (span stations),
+  and the span keeps a protected section row on its middle, the crossing line.
+- `pass_through_crossing` builds the same span model the compile does: the far node's planned
+  mouth (`plan_node`), or the graph clip where it has no piece. Its section on the crossing line is
+  bitwise the span's row there, whichever of lanes and roadbed runs first.
+- Kerb points are that row's carriageway-edge vertices (`RowLayout::carriageway_edge_slots`), so
+  the crossing is square to the road. The crossing arm's sidewalk lanes end on the row's walkway
+  centres, at its horizontal station.
+- The other arm keeps the walk of a node without a layout: its sidewalks stop
+  `SIDEWALK_NODE_INSET` beyond the node, and the two sides join straight.
+- An arm crosses only if the strip fits within half its edge ([open question
+  13](#road-68-open-questions)).
+- `SpanPiece::crossing_strip_m` publishes the strip; lane markings stop at it, and crossing signs
+  find it on the span's own sections.
+
+**Walking proof.** `ConnectorTargets::complete` holds again. A road end's cap walk links its two
+sidewalks, so it counts as a side change.
+
+**Tests.** Restored to their pre-follow-up expectations:
+
+- `test_pedestrian_crosses_junction` (a straight road again)
+- `prepared_commute_queries_match_connector_paths_without_growing_storage` (no forced crossings)
+- `incremental_rebuild_repairs_connectors_at_expanded_edge_far_end` (the bend's default crossing)
+- `test_crosswalk_counts`: one crossing at the pass-through node. The road end keeps none.
+
+New or extended:
+
+- `lanes::tests::crossings`: the bend fixtures cross by default (45° and across the west
+  direction), and pass-through fixtures (straight both ways and bent 8°, flat and at 2.5%) join
+  the corner-walk and full/local rebuild repeat tests. `degree_two_nodes_cross_once_on_the_legacy_first_arm`,
+  `pass_through_crossing_lies_beside_the_node_on_the_span_row` (strip from the node out to 3 m,
+  kerb points bitwise the span row's vertices, square, on the carriageway, walks on the kerb
+  segment) and `crossing_overrides_at_degree_two_nodes_follow_the_legacy_rule` (bend and
+  pass-through: default, forced, moved, removed, both).
+- `walking_proof_holds_with_one_crossing_per_degree_two_node` (planner): a straight road split by
+  pass-through nodes and a road with two bends are complete, also with an override of `false` on
+  either arm; with no crossing at one node the proof is withdrawn.
+- `populated_city::walking_proof::street_grid_walking_proof_holds_at_its_corner_bends`: the 400 m
+  street grid has exactly four degree-two nodes, its corners, and its proof holds.
+
+**Checks** (fresh, on the follow-up 2 sources):
+
+- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`): 1,812 passed, 0 failed, 185 ignored
+  (follow-up: 1,806, 0, 185; six new tests).
+- Clippy (`--all-targets`) reports only the 59 legacy-tree warnings, and `cargo doc` reports no
+  missing docs.
+- `./run.sh --test` (isolated profile, no display) exits 0: the library suite as above,
+  `tests/growth_scenario.rs` with 4 passed, and the Godot bridge suites with the same results as
+  the follow-up (no script errors, `zoning_reference_test` 8 layouts, the same four scripts
+  skipped).
+- `roadbed/` holds 6,479 production lines (follow-up: 6,136), under the 8,000 cap.
+
+**Economy performance contract** ([`PERF-01`](economy.md#performance-contract-perf-01perf-05),
+2026-10-24). `16354d77` changed walk forecasts without re-running it, so it ran here on the final
+release library tests (`$TEST_BINARY`), pinned with `taskset -c 0,2,4,6,8,10,12,14` and
+`RAYON_NUM_THREADS=8`, under the exclusive timing lock with no build running:
+
+```bash
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 ./run.sh --perf-contract --binary "$TEST_BINARY"
+```
+
+- Both runs regenerated the 10k and 30k snapshots, because the fixture revision hashes the
+  fixture source, which gained the walking-proof test module. Generation took 25.3/90.6 s
+  (baseline) and 14.7/41.6 s (fiscal stress), outside the runtime budget. The regenerated cities
+  end day 12 with 5,311 and 15,180 households; the recorded runs had 5,330 and 15,180.
+- Two runs gave identical work counts. Hour means: 0.83–0.86 ms (baseline 10k), 4.10–4.11 ms
+  (baseline 30k), 6.42–6.47 ms (fiscal 10k) and 28.19–28.66 ms (fiscal 30k). The latest recorded
+  run (`SIM-02-K` part 7, [`simulation.md`](simulation.md)) had 0.81–0.92, 3.31–3.40, 8.36–8.51
+  and 26.09–26.64 ms, before `ROAD-68` changed the roads, lanes and walks the cities are built on.
+  No control binary ran, so the differences are not attributed.
+- No time limit fails. All 14 isolated phases, both locality checks and the agent checks pass.
+- Seven work-count limits fail: baseline `buyer_sites_built`, `staffing_trials`,
+  `supplier_searches`, `supplier_routes` and `job_search_keys`, and fiscal-stress
+  `buyer_sites_built` and `cch_searches`. The recorded runs also fail only work-count limits,
+  among them these scaling families and the fiscal `cch_searches` limit at its edge, but they do
+  not list the full set, so the docs alone cannot rule out a changed member.
+
+**Screenshots.** The [reference harness](#rendered-reference-screenshots) re-ran on the debug build
+(48 images, no fixture failures). The 45° bend's plan view shows one zebra on its 45° arm, the
+legacy-first arm, right outside the curve on the node piece, with the span starting at the moved
+mouth. The T, four-way and terminal images are byte-identical to the follow-up's. The Y images
+differ only in the junction core: by at most one colour level in the plan views, and in the
+oblique views in the pattern where the unclipped terrain shows through the core (`ROAD-68-D`).
+Each Y is drawn stem first, so its node is a bend, now with a crossing, before the branches
+arrive.
 
 ### `ROAD-68-D` — footprint and terrain
 
@@ -1508,18 +1623,26 @@ For the cross fixtures, set the cases to `flat_cross,sloped_cross` and use a fre
 
 > **`ROAD-68`:** since the [`ROAD-68-C` follow-up](#tighter-corners-and-junction-crosswalks-follow-up),
 > the crossings and sidewalk corner curves below come from the [junction layout](#junction-layout)
-> (`roadbed::NodeWalkways`), and `rounded_sidewalk_corner_path_xz` is removed. Otherwise this
-> contract is unchanged; the legacy lane audit measurements are archived.
+> (`roadbed::NodeWalkways`), and `rounded_sidewalk_corner_path_xz` is removed. Since
+> [follow-up 2](#one-crossing-per-degree-two-node-follow-up-2), every degree-two node crosses once
+> again, as the legacy rule did; a pass-through node's crossing comes from its arm's span. Otherwise
+> this contract is unchanged; the legacy lane audit measurements are archived.
 
 One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:
 
 - an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`. Lanes take
-  the layout's crossable rule ([D8](#product-decisions)): junction arms, and bend arms only where
-  the node forces a crossing. A node without a layout has none ([open question
-  12](#road-68-open-questions))
+  the [D8](#product-decisions) rule from `roadbed::arms`, which the layout and the spans read
+  too: every junction arm, one arm of every degree-two node and none at a road end, adjusted by
+  node overrides. At a degree-two node the crossing arm is the first by direction angle in
+  `(-pi, pi]`, then edge index; an override of `true` always crosses, `false` never does, and an
+  arm without one crosses only if no earlier arm did. Nodes with a footpath arm, structure ends
+  and failed layouts have none ([open question 13](#road-68-open-questions))
 - the marking is the layout's zebra strip: its kerb points are the two carriageway-edge points on
   the strip's crossing line, at the node plane's height, bitwise the node piece's
-  (`NodePiece::crosswalk_kerbs`)
+  (`NodePiece::crosswalk_kerbs`). A pass-through node has no node piece: its strip lies on the
+  arm's span from the node out to 3 m, the span keeps a section row on its crossing line, and the
+  kerb points are that row's carriageway-edge vertices, bitwise (`roadbed::span`
+  `pass_through_crossing`, the span model the compile builds the row with)
 - the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
   segment stored by the marking
 - routes between adjacent arms stay on the sidewalk and must not create direct mouth-to-mouth
@@ -1533,11 +1656,12 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
 - physical road-sidewalk lanes run on the profile's walkway centre. At a node with a layout they
   end exactly on the layout point: the crossing line of a crossable arm, and the mouth of any
   other arm. Those are the first and last points of their junction connectors, so walkers cannot
-  pass a zebra and backtrack. At a node without a layout they stop
+  pass a zebra and backtrack. On a pass-through node's crossing arm they end on its crossing line,
+  on the walkway centre of the span's section there. At other nodes without a layout they stop
   `config::SIDEWALK_NODE_INSET` beyond the clip
-- at a node without a layout, neighbouring sidewalks join by a straight walk, or by the
-  node-centred arc where that walk would cut into the asphalt of either arm, judged against the
-  arm centrelines (`TRAFFIC-04`). `ROAD-68-F` gives footpath nodes layouts
+- at a node without a layout, pass-through nodes included, neighbouring sidewalks join by a
+  straight walk, or by the node-centred arc where that walk would cut into the asphalt of either
+  arm, judged against the arm centrelines (`TRAFFIC-04`). `ROAD-68-F` gives footpath nodes layouts
 - a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
   road or reattaching farther along the reverse sidewalk
 - a crossing is square to the road where it is drawn (`ROAD-64`). Both kerb points, and the two

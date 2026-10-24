@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Node arms from the graph (`ROAD-68-C`): one [`ArmInput`] per live incident edge end, oriented
-//! away from the node, and the rule that decides which nodes get a layout.
+//! away from the node, the rule that decides which nodes get a layout, and the D8 rule that
+//! decides which arms cross ([`pass_through_crossings`] for nodes without one).
 //!
 //! An arm's knots are its edge's roadbed centreline points (the physical profile, else the
 //! control polyline; the polyline spans section) in world XZ, walked away from the node, with
@@ -14,13 +15,15 @@
 //! Collection is `O(degree * arm points)` and allocates only the returned buffers.
 
 use super::layout::{
-    ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, EdgeEnd, JunctionLayout, LayoutError,
+    ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, CROSSWALK_DEPTH_M, EdgeEnd, JunctionLayout,
+    LayoutError,
 };
 use super::profile::RoadProfile;
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+use godot::prelude::Vector3;
 use std::ops::Range;
 
 /// Where a mouth lies on its edge's centreline points: between `points[lo]` and `points[hi]`
@@ -65,47 +68,12 @@ impl NodeArms {
     /// footpath arm (D5 and footpath-only nodes arrive in `ROAD-68-F`), or a bridge or tunnel
     /// terminal.
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
-        // A node merged into another has no arms of its own.
-        if graph.get_valid_node(node) != node || node as usize >= graph.node_adjacency_count() {
-            return None;
-        }
-        let mut incidents: Vec<(ArmKey, RoadVec2)> = Vec::with_capacity(4);
-        for &edge_idx in graph.node_adjacency(node) {
-            let Some(edge) = graph
-                .get_edge(edge_idx)
-                .filter(|edge| is_surface_edge(edge))
-            else {
-                continue;
-            };
-            let end = if graph.get_valid_node(edge.start_node) == node {
-                EdgeEnd::Start
-            } else if graph.get_valid_node(edge.end_node) == node {
-                EdgeEnd::End
-            } else {
-                continue;
-            };
-            if let Some(direction) = incident_direction(edge, end) {
-                if edge.primary_type == TransitType::Foot {
-                    return None;
-                }
-                incidents.push((
-                    ArmKey {
-                        edge: edge_idx,
-                        end,
-                    },
-                    direction,
-                ));
-            }
-        }
-        incidents.sort_by_key(|(key, _)| *key);
-        incidents.dedup_by_key(|(key, _)| *key);
-        let passes_through = matches!(incidents.as_slice(), [(_, a), (_, b)]
-            if a.dot(*b) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD));
+        let incidents = node_incidents(graph, node)?;
         // Bridge and tunnel ends own their terminals until their portals and abutments
         // (`ROAD-68-F`).
         let structure_end = matches!(incidents.as_slice(), [(key, _)]
             if graph.edge(key.edge).class != EdgeClass::Standard);
-        if incidents.is_empty() || passes_through || structure_end {
+        if incidents.is_empty() || passes_through(&incidents) || structure_end {
             return None;
         }
         let pos = graph.node(node).pos;
@@ -117,11 +85,9 @@ impl NodeArms {
             knot_points: Vec::new(),
             bands: Vec::new(),
         };
-        let degree = incidents.len();
-        for (key, _) in incidents {
-            let edge = graph.edge(key.edge);
-            let crossable = arm_is_crossable(graph, node, key.edge, edge, degree);
-            arms.push_arm(key, edge, crossable);
+        for (index, &(key, _)) in incidents.iter().enumerate() {
+            let crossable = arm_crosses(graph, node, &incidents, index);
+            arms.push_arm(key, graph.edge(key.edge), crossable);
         }
         Some(arms)
     }
@@ -300,23 +266,143 @@ fn set_span_frame_laterals(knots: &mut [ArmKnot]) {
     }
 }
 
-// D8 crossings in `ROAD-68-C`: every car-road arm with sidewalks at a junction of three or more
-// arms, and bend arms only where the node forces a crossing. A node override of `false` removes
-// one. `ROAD-68-F` moves the pedestrian lanes onto these layout crossings.
-fn arm_is_crossable(
+// The live surface edge ends at `node`, sorted by key, each with its direction away from the
+// node; `None` for a node merged into another or one with a footpath arm (D5, `ROAD-68-F`).
+fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec2)>> {
+    if graph.get_valid_node(node) != node || node as usize >= graph.node_adjacency_count() {
+        return None;
+    }
+    let mut incidents: Vec<(ArmKey, RoadVec2)> = Vec::with_capacity(4);
+    for &edge_idx in graph.node_adjacency(node) {
+        let Some(edge) = graph
+            .get_edge(edge_idx)
+            .filter(|edge| is_surface_edge(edge))
+        else {
+            continue;
+        };
+        let end = if graph.get_valid_node(edge.start_node) == node {
+            EdgeEnd::Start
+        } else if graph.get_valid_node(edge.end_node) == node {
+            EdgeEnd::End
+        } else {
+            continue;
+        };
+        if let Some(direction) = incident_direction(edge, end) {
+            if edge.primary_type == TransitType::Foot {
+                return None;
+            }
+            incidents.push((
+                ArmKey {
+                    edge: edge_idx,
+                    end,
+                },
+                direction,
+            ));
+        }
+    }
+    incidents.sort_by_key(|(key, _)| *key);
+    incidents.dedup_by_key(|(key, _)| *key);
+    Some(incidents)
+}
+
+// A pass-through pair: two arms close enough to opposite that their spans share one bisected
+// section and the node has no layout.
+fn passes_through(incidents: &[(ArmKey, RoadVec2)]) -> bool {
+    matches!(incidents, [(_, a), (_, b)] if a.dot(*b) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD))
+}
+
+/// The two road arms of a pass-through node, each with whether it carries the node's
+/// span-owned crossing (the D8 rule of [`NodeArms::collect`]); `None` for any other node.
+pub(super) fn pass_through_crossings(
     graph: &RegionGraph,
     node: u32,
-    edge_idx: usize,
-    edge: &Edge,
-    degree: usize,
+) -> Option<[(ArmKey, bool); 2]> {
+    let incidents = node_incidents(graph, node)?;
+    let [a, b] = incidents[..] else {
+        return None;
+    };
+    passes_through(&incidents).then(|| {
+        let crosses = degree_two_crossings(graph, node, [a, b]);
+        [(a.0, crosses[0]), (b.0, crosses[1])]
+    })
+}
+
+// D8 crossings (`ROAD-68-C`): whether arm `index` of `incidents` crosses. Only car roads with
+// sidewalks cross.
+// - Three or more arms: every such arm, unless a node override of `false` removes it.
+// - Two arms, bends and pass-through nodes alike: the legacy `ROAD-64` rule. Arms are taken in
+//   order of their direction's angle in `(-pi, pi]`, then edge index; an override of `true`
+//   always crosses, `false` never does, and without an override an arm crosses only if no
+//   earlier arm did. So a node has exactly one crossing by default, on its first arm, and an
+//   override of `false` there moves it to the other arm. A pass-through crossing lies on its
+//   arm's span, so that arm must hold the strip within the half of its edge the far node leaves
+//   it (`JunctionLayout` gives each end at most half), or it does not cross.
+// - One arm: none; the sidewalk wraps the round cap.
+fn arm_crosses(
+    graph: &RegionGraph,
+    node: u32,
+    incidents: &[(ArmKey, RoadVec2)],
+    index: usize,
 ) -> bool {
-    let has_sidewalks = edge.primary_type == TransitType::Road
-        && edge.allowed_types & TransitFlags::CAR != 0
-        && edge.allowed_types & TransitFlags::FOOT != 0;
-    let forced = graph.node(node).crosswalk_overrides.get(&edge_idx).copied();
-    has_sidewalks
-        && match forced {
-            Some(force) => force && degree >= 2,
-            None => degree >= 3,
+    match *incidents {
+        [a, b] => degree_two_crossings(graph, node, [a, b])[index],
+        _ => {
+            let key = incidents[index].0;
+            incidents.len() >= 3
+                && has_sidewalks(graph, key)
+                && graph.node(node).crosswalk_overrides.get(&key.edge) != Some(&false)
         }
+    }
+}
+
+// The legacy `ROAD-64` rule at a degree-two node, per arm in input order.
+fn degree_two_crossings(
+    graph: &RegionGraph,
+    node: u32,
+    arms: [(ArmKey, RoadVec2); 2],
+) -> [bool; 2] {
+    let overrides = &graph.node(node).crosswalk_overrides;
+    let pass_through = passes_through(&arms);
+    let fits = |key: ArmKey| {
+        !pass_through
+            || 0.5 * horizontal_length_m(edge_points(graph.edge(key.edge))) >= CROSSWALK_DEPTH_M
+    };
+    let angle = |(_, direction): (ArmKey, RoadVec2)| direction.y.atan2(direction.x);
+    let first = match angle(arms[0])
+        .total_cmp(&angle(arms[1]))
+        .then(arms[0].0.cmp(&arms[1].0))
+    {
+        std::cmp::Ordering::Greater => 1,
+        _ => 0,
+    };
+    let mut crossable = [false; 2];
+    let mut crossed = false;
+    for index in [first, 1 - first] {
+        let key = arms[index].0;
+        if !has_sidewalks(graph, key) || !fits(key) {
+            continue;
+        }
+        crossable[index] = overrides.get(&key.edge).copied().unwrap_or(!crossed);
+        crossed |= crossable[index];
+    }
+    crossable
+}
+
+fn has_sidewalks(graph: &RegionGraph, key: ArmKey) -> bool {
+    let edge = graph.edge(key.edge);
+    edge.primary_type == TransitType::Road
+        && edge.allowed_types & TransitFlags::CAR != 0
+        && edge.allowed_types & TransitFlags::FOOT != 0
+}
+
+// Horizontal length of a centreline: the station measure of `NodeArms` (exact duplicates add
+// nothing).
+fn horizontal_length_m(points: &[Vector3]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| {
+            RoadVec2::new(f64::from(pair[0].x), f64::from(pair[0].z))
+                .distance(RoadVec2::new(f64::from(pair[1].x), f64::from(pair[1].z)))
+        })
+        .sum()
 }

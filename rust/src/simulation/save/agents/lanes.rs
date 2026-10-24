@@ -123,8 +123,9 @@ pub(in crate::simulation::save) fn restore_lane_references(
                 remap.insert(old, id);
             }
             // Pedestrian routes follow the junction layouts since `ROAD-68-C`: saves from before
-            // hold crossings the layout has not got (pass-through nodes, bends, road ends) and
-            // routes through them. Such a connector is omitted; agents on it replan below.
+            // hold crossings the layout has not got (road ends, which now wrap their caps) and
+            // routes through them, as can a save from a build whose crossing rule differed.
+            // Such a connector is omitted; agents on it replan below.
             (None, Some((&from, _))) if lanes.lanes[from].lane_type == LaneType::Foot => {}
             (None, _) => {
                 return Err(SaveLoadError::custom(format!(
