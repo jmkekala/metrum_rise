@@ -654,8 +654,12 @@ As built (`ROAD-68-E` part 1): undo swaps the replaced pieces back when nothing 
 since, restores the graph in `O(delta records * log edges)`, and rebuilds the lanes of the
 restored closure as a commit does (the agents on them detach and reattach, the connection lanes
 of dropped nodes retire); a test checks the result equals a full lane rebuild. A dense terrain
-restore still rebuilds every lane, as it resets every road product. Terrain tile revisions are
-not recorded yet: undo rebuilds the touched terrain.
+restore still rebuilds every lane, as it resets every road product. The record also keeps the
+refined terrain entries the edit's validation replaced and the patches' generations after the
+edit (round 3); when the roadbed swap held and no generation of those patches moved since,
+undo installs the pre-edit entries again at the swap's new generations (a patch that had none
+loses the edit's), so the restored terrain is the pre-edit terrain itself; otherwise the touched
+terrain rebuilds.
 
 **Load.** Load compiles every piece from the graph in parallel. A junction that fails layout or
 the profile solve fails the load with its typed error.
@@ -3084,6 +3088,9 @@ Round 3 (part 1, 2026-10-25, work in progress):
   `terrain_ms`. Godot: `road_tool.gd` stages the terrain patches with `road_terrain_preview.gd`
   before it shows the road chunks and commits both in the same call; an accepted commit holds the
   terrain preview until the commit's own patches replace it.
+- **Undo terrain.** See [Undo](#preview-commit-undo-and-load): the record keeps the replaced
+  refined entries; `undo_puts_the_pre_edit_terrain_back` (flat and sloped T) checks that undo's
+  refined buffers are the pre-edit ones bit for bit, as the same `Arc`s, at current generations.
 - **Tests.** `preview_terrain_is_what_the_commit_installs` (flat and sloped T): the commit adopts
   the preview's entries (`preview_terrain_adopted`), the installed buffers are the preview's own
   `Arc`s at the commit's generations, and every refined patch's render buffers equal a fresh
@@ -3108,8 +3115,31 @@ Round 3 (part 1, 2026-10-25, work in progress):
   `road_preview_stream_test.gd` takes `METRUM_PREVIEW_STREAM_INTERVAL_SEC` (0 drives frames
   back to back) so the stage timings are reproducible at operating clock
   ([open question 25](#road-68-open-questions)).
-- **Open in part 1:** undo's terrain record (the replaced refined entries swapped back), a
-  Godot test of the terrain staging and swap on a resident terrain renderer, the roadbed p95
+- **Stage timings (round 3, 2026-10-25).** `benchmark_road_preview_stages` as in part 1
+  (release, 4 workers, P-cores, both timing locks), C = this round's binary, B = round 2's
+  inline-build binary as the same-session control (C B; the second B and C were not run: the run
+  lock went to another gate's suite), ms p50 / p95:
+
+  | Stage (budget) | `sloped_t` C | `sloped_t` B | `sloped_branch` C | `sloped_branch` B |
+  | --- | --- | --- | --- | --- |
+  | Edit plan (1.0) | 0.25 / 0.29 | 0.19 / 0.27 | 0.21 / 0.24 | 0.16 / 0.22 |
+  | Roadbed (0.5) | 0.34 / 0.37 | 0.25 / 0.36 | 0.34 / 0.37 | 0.25 / 0.31 |
+  | Road chunks (part of packing, 1.0) | 0.26 / 0.29 | 0.23 / 0.32 | 0.26 / 0.29 | 0.23 / 0.25 |
+  | Terrain patches, four workers (3.0) | 7.04 / 8.12 | — | 8.15 / 8.95 | — |
+  | Preview call | 7.89 / 8.96 | 0.66 / 0.96 | 8.96 / 9.77 | 0.63 / 0.75 |
+
+  **The terrain stage misses its 3.0 ms budget by a factor of 2.3-2.7 (open).** Each pose
+  touches 11 render patches: the T splits the 220 m trunk, so the trunk's old
+  and new span pieces stamp every patch within the grading halo of the whole trunk, as the
+  commit's stamps do (the commit's terrain validation does the same work). The plan, roadbed and
+  chunk stages rose 0.03-0.09 ms p50 against the control although their code is unchanged,
+  probably because the terrain stage between poses evicts their caches (not measured). Not yet
+  attributed; next: profile one pose
+  (the per-patch ownership margin and source phase run serially before the parallel build), and
+  stamp only the tiles whose road loops change (the split halves of a straight trunk keep their
+  loops away from the node). The Godot stream with this round's library was not run.
+- **Open in part 1:** the terrain stage's 3.0 ms budget (above), a Godot test of the terrain
+  staging and swap on a resident terrain renderer, the roadbed p95
   per-pose scratch, the context refresh and graph copy at 10k and 100k, the load
   `unpinned_nodes` test and timing, and the rebase onto gate D.
 
