@@ -1248,24 +1248,29 @@ These need a user decision; work that does not depend on them continues.
     junction of `y_25_branches_first` but none in `y_25`, one in `y_40`) and 1 on the outer seam
     between a sidewalk and the terrain (`t_mixed_4lane_through`). The terrain under a road is
     now omitted, so any crack in the road surface shows the sky; before `ROAD-68-D` the
-    unclipped terrain hid it. Not attributed yet. What part 4 established: the published road
-    chunk meshes are chunk-local f32 (each triangle routed to the chunk of its centroid and
-    stored minus that chunk's minimum corner, `push_triangle_to_layer`), and the terrain is
-    patch-local f32 (minus the patch centre). A vertex that two chunks share, or that a chunk
-    shares with a terrain patch along the outer seam, is therefore rounded twice in two frames
-    and is not one rendered point; the gap is micrometres, about 10⁻³ of a pixel here, so it
-    shows only now and then, and only where nothing lies below. (A first temporary edge-matching
-    test over the chunks read their vertices as world positions; its open edges along the
-    `x = 0` and `z = 0` chunk lines are that frame difference, not an attribution.) The two Y
-    drawing orders also differ in height on the slope (junction centre 3.2651 m drawn branches
-    first, 3.1992 m drawn stem first), so invariant 6 fails for those images; that belongs to
-    question 16. Options: (a) one frame per shared seam: clip road triangles at chunk lines
-    (so a vertex on a chunk line is exact in both chunks, as tile vertices on patch sides are)
-    and give road chunks and terrain patches one grid and one frame origin per cell, then add a
-    road-chunk edge-matching test (in world coordinates) beside
-    `reference_junction_terrain_is_watertight`; (b) hide the cracks under terrain again
-    (rejected: terrain must stay clipped). **Recommendation: (a)**, together with question
-    23's frame rule; the remaining cracks are then attributed by the test.
+    unclipped terrain hid it. Attribution (a temporary test edge-matching every surface layer
+    of the published road chunks in world coordinates, chunk origin added in f64, with exact
+    and with 0.1 mm vertex matching): 72 to 86 edges per fixture with road on both sides
+    border one face only, flat and sloped alike, so they are topology, not rounding. They are
+    T-vertices: on `t`, the edge (−3.25, 6.5)–(−3.25, 9.2857) on one side against
+    (−3.25, 6.5)–(−3.25, 7.25) on the other, beside the side arm's zebra, exactly at the `t`
+    family's pinhole; on `y_25_branches_first`, the edge (0, 0)–(7.5079, −1.6645) along the
+    lower branch (the row of three pinholes) and a cluster at the upper branch's mouth,
+    (29.3–32.0, 3.2–3.8) (pinhole (1405, 543)). On flat ground a T-vertex lies on the plane of
+    the edge it meets, so nothing opens; on a slope its height leaves that edge and the crack
+    shows the sky. The `y_40` and `t_mixed_4lane_through` pinholes have no open edge within
+    1.5 m; the latter lies on the outer seam, where the road chunks (chunk-local f32, minus the
+    chunk's minimum corner, `push_triangle_to_layer`) and the terrain (patch-local f32, minus
+    the patch centre) round a shared vertex in two frames (the frame split of question 23).
+    The two Y drawing orders also differ in height on the slope (junction centre 3.2651 m drawn
+    branches first, 3.1992 m drawn stem first), so invariant 6 fails for those images; that
+    belongs to question 16. Options: (a) find where the render path splits one side of a shared
+    edge only (zebra cut-outs and band splits in `standard_surface` and `crosswalks` are the
+    first suspects, since piece meshes are watertight across mouths), make both sides take the
+    same vertices, add the road-chunk edge-matching test beside
+    `reference_junction_terrain_is_watertight`, then give road chunks and terrain one frame per
+    shared seam (question 23's rule); (b) hide the cracks under terrain again (rejected:
+    terrain must stay clipped). **Recommendation: (a).**
 
 Spec corrections in `ROAD-68-A`:
 
