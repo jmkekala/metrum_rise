@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Lane-divider marking placement and crosswalk-mouth clearance.
+//! Lane-divider marking placement along span sections.
+//!
+//! Zebra crossings sit on node pieces, inside the mouths (`ROAD-68-C`), so span markings run the
+//! whole span.
 
-use super::super::crosswalks::CROSSWALK_STRIPE_LEN;
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
     marking_dash_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
-use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::lanes::{LaneSystem, LaneType};
 use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2, Vector3};
-use std::collections::{BTreeSet, HashMap};
-
-const LANE_MARKING_CROSSWALK_CLEARANCE_M: f32 = 0.25;
 // Traficom, Liite 14 (2023), K0 table: centre line K1 and lane line K2_1 are 1 m dashes with
 // 3 m gaps at 50 km/h or less, and 3 m dashes with 9 m gaps above; 0.10 m wide, or 0.15 m
 // (K1_3, K2_1_3) above 50 km/h. Every longitudinal line is white since the 2020 Road Traffic Act.
@@ -57,17 +54,13 @@ impl FinnishLaneLine {
         })
     }
 }
-const CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M: f32 = 0.25;
 
 pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
-    lane_system: &LaneSystem,
     roadbed: &RoadbedSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
-    let crosswalk_endpoint_flags =
-        lane_marking_crosswalk_endpoint_flags_by_edge(graph, lane_system, &coverage.edge_indices);
     for &edge_idx in &coverage.edge_indices {
         mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
         let edge = graph.edge(edge_idx);
@@ -82,12 +75,11 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         let Some(sections) = roadbed.sections(edge_idx).filter(|s| s.len() >= 2) else {
             continue;
         };
-        let marking_s_range = edge_lane_marking_s_range(
-            sections,
-            crosswalk_endpoint_flags
-                .get(&edge_idx)
-                .copied()
-                .unwrap_or((false, false)),
+        let marking_s_range = (
+            sections[0].s_m,
+            sections
+                .last()
+                .map_or(sections[0].s_m, |section| section.s_m),
         );
         if marking_s_range.1 <= marking_s_range.0 + MIN_SEGMENT_LEN {
             continue;
@@ -157,158 +149,6 @@ fn emit_lane_marking_sections(
             line.pattern,
             marking_dash_color(),
         );
-    }
-}
-
-// Span sections run between the two mouths, which sit at the graph clips; a crosswalk at a mouth
-// keeps the markings its clearance gap inside the span.
-fn edge_lane_marking_s_range(
-    sections: &[RoadSection],
-    crosswalk_endpoint_flags: (bool, bool),
-) -> (f32, f32) {
-    let first_s = sections.first().map_or(0.0, |section| section.s_m);
-    let last_s = sections.last().map_or(first_s, |section| section.s_m);
-    let mut start_s = first_s;
-    let mut end_s = last_s;
-    let (has_start_crosswalk, has_end_crosswalk) = crosswalk_endpoint_flags;
-    let crosswalk_gap_m =
-        config::CROSSWALK_INSET + CROSSWALK_STRIPE_LEN * 0.5 + LANE_MARKING_CROSSWALK_CLEARANCE_M;
-
-    if has_start_crosswalk {
-        start_s += crosswalk_gap_m;
-    }
-    if has_end_crosswalk {
-        end_s -= crosswalk_gap_m;
-    }
-
-    (start_s.clamp(first_s, last_s), end_s.clamp(first_s, last_s))
-}
-
-fn lane_marking_crosswalk_endpoint_flags_by_edge(
-    graph: &RegionGraph,
-    lane_system: &LaneSystem,
-    edge_indices: &[usize],
-) -> HashMap<usize, (bool, bool)> {
-    let mut selected_edges = BTreeSet::new();
-    let mut endpoint_nodes = BTreeSet::new();
-    for &edge_idx in edge_indices {
-        if edge_idx >= graph.edge_count() {
-            continue;
-        }
-        let edge = graph.edge(edge_idx);
-        if edge.deleted || edge.primary_type != TransitType::Road {
-            continue;
-        }
-        selected_edges.insert(edge_idx);
-        endpoint_nodes.insert(graph.get_valid_node(edge.start_node));
-        endpoint_nodes.insert(graph.get_valid_node(edge.end_node));
-    }
-
-    let mut flags_by_edge = HashMap::new();
-    for node_id in endpoint_nodes {
-        let Some(lane_ids) = lane_system.node_lanes.get(&(node_id as usize)) else {
-            continue;
-        };
-        for &lane_id in lane_ids {
-            let Some(lane) = lane_system.lanes.get(lane_id) else {
-                continue;
-            };
-            let Some(crosswalk) = lane_system.crosswalk_marking(lane_id) else {
-                continue;
-            };
-            if lane.edge_id != usize::MAX
-                || lane.lane_type != LaneType::Foot
-                || !selected_edges.contains(&crosswalk.edge_id)
-                || crosswalk.edge_id >= graph.edge_count()
-            {
-                continue;
-            }
-
-            let edge = graph.edge(crosswalk.edge_id);
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-            let center = crosswalk_center_xz(crosswalk);
-            let at_start = graph.get_valid_node(edge.start_node) == node_id
-                && crosswalk_mouth_center(edge, true).is_some_and(|mouth| {
-                    mouth.distance_to(center) <= CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M
-                });
-            let at_end = graph.get_valid_node(edge.end_node) == node_id
-                && crosswalk_mouth_center(edge, false).is_some_and(|mouth| {
-                    mouth.distance_to(center) <= CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M
-                });
-            if at_start || at_end {
-                let endpoint_flags = flags_by_edge
-                    .entry(crosswalk.edge_id)
-                    .or_insert((false, false));
-                endpoint_flags.0 |= at_start;
-                endpoint_flags.1 |= at_end;
-            }
-        }
-    }
-
-    flags_by_edge
-}
-
-fn crosswalk_mouth_center(edge: &Edge, from_start: bool) -> Option<Vector2> {
-    let distance_m = if from_start {
-        edge.start_clip
-    } else {
-        edge.end_clip
-    } + config::CROSSWALK_INSET;
-    let point = walk_edge_geometry_from_end(&edge.geometry, distance_m, from_start)?;
-    Some(Vector2::new(point.x, point.z))
-}
-
-fn crosswalk_center_xz(crosswalk: crate::simulation::network::lanes::CrosswalkMarking) -> Vector2 {
-    Vector2::new(
-        (crosswalk.start.x + crosswalk.end.x) * 0.5,
-        (crosswalk.start.z + crosswalk.end.z) * 0.5,
-    )
-}
-
-fn walk_edge_geometry_from_end(
-    points: &[Vector3],
-    distance_m: f32,
-    from_start: bool,
-) -> Option<Vector3> {
-    let first = points.first().copied()?;
-    let last = points.last().copied()?;
-    if distance_m <= 0.0 {
-        return Some(if from_start { first } else { last });
-    }
-
-    let mut remaining = distance_m;
-    if from_start {
-        for pair in points.windows(2) {
-            let segment_len = pair[0].distance_to(pair[1]);
-            if remaining <= segment_len || pair[1] == last {
-                let t = if segment_len <= f32::EPSILON {
-                    0.0
-                } else {
-                    (remaining / segment_len).clamp(0.0, 1.0)
-                };
-                return Some(pair[0].lerp(pair[1], t));
-            }
-            remaining -= segment_len;
-        }
-        Some(last)
-    } else {
-        for index in (1..points.len()).rev() {
-            let start = points[index];
-            let end = points[index - 1];
-            let segment_len = start.distance_to(end);
-            if remaining <= segment_len || index == 1 {
-                let t = if segment_len <= f32::EPSILON {
-                    0.0
-                } else {
-                    (remaining / segment_len).clamp(0.0, 1.0)
-                };
-                return Some(start.lerp(end, t));
-            }
-            remaining -= segment_len;
-        }
-        Some(first)
     }
 }
 

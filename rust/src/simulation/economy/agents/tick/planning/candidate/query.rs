@@ -1679,6 +1679,10 @@ mod tests {
             edge.physical_length = (b - a).length();
             graph.add_edge(edge);
         }
+        // Walkers switch sides only on crossings (D8): force one at each bend so that every
+        // node lets every incoming sidewalk reach every outgoing one.
+        graph.set_crosswalk_override(4, 3, true);
+        graph.set_crosswalk_override(5, 4, true);
         graph.rebuild_adjacency_list();
         let mut network = TransitNetwork::new();
         network.lane_system.rebuild(&mut graph);

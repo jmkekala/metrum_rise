@@ -20,6 +20,7 @@ mod query;
 mod section;
 mod span;
 mod system;
+mod walkways;
 
 pub(crate) use arms::NodeArms;
 pub(crate) use geometry::{
@@ -28,8 +29,8 @@ pub(crate) use geometry::{
 };
 pub use layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmLayout, ArmSide, BoundaryBand, CoreVertex,
-    CoreVertexSource, Corner, CornerTangent, EdgeEnd, JunctionLayout, LayoutError, NodeKind,
-    SectorBoundary, SectorKind, SectorLayout, Side,
+    CoreVertexSource, Corner, CornerTangent, Crosswalk, EdgeEnd, JunctionLayout, LayoutError,
+    NodeKind, SectorBoundary, SectorKind, SectorLayout, Side,
 };
 pub use mesh::{OuterChain, PieceMesh};
 pub(crate) use node::check_node;
@@ -40,6 +41,7 @@ pub use query::{LaneSurfaceQuery, PieceId};
 pub use section::{RoadBand, RoadSection};
 pub use span::{MouthSection, SpanPiece};
 pub use system::RoadbedSystem;
+pub(crate) use walkways::NodeWalkways;
 
 /// Road chunk key `(x, z)` in the terrain-aligned render grid of a [`RoadbedSystem`].
 pub type SurfaceChunkKey = (i32, i32);

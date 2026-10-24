@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::simulation::economy::agents::lane_state::lane_for_mode;
-use crate::simulation::network::lanes::LaneSystem;
+use crate::simulation::network::lanes::{LaneSystem, LaneType};
 
 #[cfg(test)]
 mod tests;
@@ -111,21 +111,27 @@ pub(in crate::simulation::save) fn restore_lane_references(
         {
             continue;
         }
-        let id = remap
-            .get(&from)
-            .zip(remap.get(&to))
-            .and_then(|(&from, &to)| {
-                lanes.lanes[from].next_lanes.iter().copied().find(|&id| {
-                    let lane = &lanes.lanes[id];
-                    lane.node_id == node && lane.next_lanes.first() == Some(&to)
-                })
+        let ends = remap.get(&from).zip(remap.get(&to));
+        let id = ends.and_then(|(&from, &to)| {
+            lanes.lanes[from].next_lanes.iter().copied().find(|&id| {
+                let lane = &lanes.lanes[id];
+                lane.node_id == node && lane.next_lanes.first() == Some(&to)
             })
-            .ok_or_else(|| {
-                SaveLoadError::custom(format!(
+        });
+        match (id, ends) {
+            (Some(id), _) => {
+                remap.insert(old, id);
+            }
+            // Pedestrian routes follow the junction layouts since `ROAD-68-C`: saves from before
+            // hold crossings the layout has not got (pass-through nodes, bends, road ends) and
+            // routes through them. Such a connector is omitted; agents on it replan below.
+            (None, Some((&from, _))) if lanes.lanes[from].lane_type == LaneType::Foot => {}
+            (None, _) => {
+                return Err(SaveLoadError::custom(format!(
                     "saved connector {old} has no matching junction route"
-                ))
-            })?;
-        remap.insert(old, id);
+                )));
+            }
+        }
     }
     // Saves written before ROAD-65 can hold lane ids a terrain edit or undo had renumbered:
     // a lane the save no longer lists, or one of the agent's mode owned by another edge or

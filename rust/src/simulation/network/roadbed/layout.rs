@@ -44,8 +44,10 @@
 //!    taken from the `from_arm` curve. Joining at station zero there would make the core loop
 //!    cross itself whenever the widths are equal (`ROAD-68` open questions).
 //! 5. An arm's mouth station is the largest of `MIN_MOUTH_STATION_M` and the stations at which
-//!    its two sides leave their sectors, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). The
-//!    crosswalk station is the middle of that depth.
+//!    its two sides leave their sectors, plus `CROSSWALK_DEPTH_M` on crossable arms (D8). That
+//!    depth is the arm's [`Crosswalk`] strip, on the straight approach right outside the corners;
+//!    its crossing line is the middle of the depth, and its kerb points are the two
+//!    carriageway-edge points there.
 //! 6. A corner that would push a mouth past `max_station_m` shrinks its radius by bisection
 //!    towards the corner's raised width plus `CURB_RETURN_CLEARANCE_M` (D1). If that minimum does
 //!    not fit either, layout fails with [`LayoutError::CornerDoesNotFit`].
@@ -73,12 +75,12 @@ use super::{BandKind, Level, RoadVec2};
 use std::f64::consts::{PI, TAU};
 use std::ops::Range;
 
-// D1: the curb-return radius before fitting.
-const CURB_RETURN_RADIUS_M: f64 = 6.0;
+// D1: the curb-return radius at the carriageway edge before fitting (user-confirmed 2026-10-24).
+const CURB_RETURN_RADIUS_M: f64 = 3.5;
 // D1: the smallest radius is the corner's raised width plus this clearance, which keeps the
 // outermost boundary at least this far from the corner centre.
 const CURB_RETURN_CLEARANCE_M: f64 = 0.5;
-// D8: on crossable arms the mouth moves this far beyond its sectors; the crossing is centred in it.
+// D8: on crossable arms the mouth moves this far beyond its sectors; the zebra strip fills it.
 const CROSSWALK_DEPTH_M: f64 = 3.0;
 // s_min: every node piece reaches at least this far along each arm, so a mouth never sits on the
 // node's lateral line where round joins start.
@@ -98,7 +100,7 @@ const MIN_DIRECTION_RUN_M: f64 = 0.05;
 // Curve sampling: no sampled boundary segment is longer than this or turns more than this.
 const MAX_SAMPLE_SEGMENT_M: f64 = 0.5;
 const MAX_SAMPLE_ANGLE_RAD: f64 = PI / 18.0;
-// Radius bisection steps; 20 halvings resolve the 6 m to 2 m range to under 4 micrometres.
+// Radius bisection steps; 20 halvings resolve any radius range below 4 m to under 4 micrometres.
 const RADIUS_BISECTION_STEPS: usize = 20;
 // Lateral axes must be unit length to this tolerance on their squared length.
 const LATERAL_UNIT_TOLERANCE: f64 = 1e-9;
@@ -227,12 +229,28 @@ pub struct ArmLayout {
     pub angle_rad: f64,
     /// Station of the mouth section, where the node piece ends and the span begins.
     pub mouth_station_m: f64,
-    /// Crosswalk centre station on crossable arms.
-    pub crosswalk_station_m: Option<f64>,
+    /// Zebra strip of a crossable arm (D8); its outer edge is the mouth.
+    pub crosswalk: Option<Crosswalk>,
     /// Concave corner on the left side, toward the next arm.
     pub left_corner: Option<CornerTangent>,
     /// Concave corner on the right side, toward the previous arm.
     pub right_corner: Option<CornerTangent>,
+}
+
+/// The zebra strip of a crossable arm (D8): `CROSSWALK_DEPTH_M` deep across the arm's straight
+/// approach, from where both sides have left their sectors (the curbs stop curving) out to the
+/// mouth. Pedestrian lanes, zebra markings and node pieces all read it from here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crosswalk {
+    /// Station of the strip's inner edge: the larger of `s_min` and the stations at which the
+    /// arm's two sides leave their sectors.
+    pub inner_station_m: f64,
+    /// Station of the crossing line, the middle of the strip.
+    pub station_m: f64,
+    /// Carriageway-edge points on the crossing line, right side first:
+    /// `o(station, -right edge)` and `o(station, left edge)`. The crossing is square to the
+    /// arm's section frame there.
+    pub kerbs: [RoadVec2; 2],
 }
 
 /// A fitted curb-return corner.
@@ -581,7 +599,7 @@ fn sort_arms(node: RoadVec2, arms: &[ArmInput<'_>]) -> Result<Vec<ArmLayout>, La
             direction,
             angle_rad: direction.y.atan2(direction.x).rem_euclid(TAU),
             mouth_station_m: 0.0,
-            crosswalk_station_m: None,
+            crosswalk: None,
             left_corner: None,
             right_corner: None,
         });
@@ -938,7 +956,17 @@ fn assign_mouths(
         if arm.mouth_station_m > input.max_station_m {
             return Err(LayoutError::ArmTooShort { arm: arm.key });
         }
-        arm.crosswalk_station_m = input.crossable.then_some(reach_m + 0.5 * CROSSWALK_DEPTH_M);
+        arm.crosswalk = input.crossable.then(|| {
+            let station_m = reach_m + 0.5 * CROSSWALK_DEPTH_M;
+            Crosswalk {
+                inner_station_m: reach_m,
+                station_m,
+                kerbs: [
+                    input.offset_point(station_m, -input.right.core_offset()),
+                    input.offset_point(station_m, input.left.core_offset()),
+                ],
+            }
+        });
         arm.left_corner = left.corner.map(|corner| CornerTangent {
             station_m: boundaries[left.boundaries.start].from_station_m,
             radius_m: corner.radius_m,

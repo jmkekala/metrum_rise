@@ -20,7 +20,7 @@ use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, RoadExtensionReprofile, prepare_road_input_for_tool,
     validate_road_candidate_fast, validate_road_edit,
 };
-use crate::simulation::network::roadbed::visual_roadbed_half_width_m;
+use crate::simulation::network::roadbed::{NodeArms, visual_roadbed_half_width_m};
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -1955,23 +1955,61 @@ impl SimCore {
     }
 
     /// Toggles a user override for a crosswalk at a specific road mouth.
+    ///
+    /// A crossing moves its arm's mouth in the junction layout (D8), so the toggle re-lays the
+    /// node out as a road edit does: clips, the profile solve that pins the arms up to them, the
+    /// node's roadbed closure and its lanes. A toggle whose layout fails is refused.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
         if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return;
         }
-        self.push_network_undo_for_local_topology(
-            HashSet::from([edge_id as usize]),
-            HashSet::from([node_id]),
-        );
+        let node = self.region_graph.get_valid_node(node_id);
+        let edge_id = edge_id as usize;
+        let previous = self
+            .region_graph
+            .node(node)
+            .crosswalk_overrides
+            .get(&edge_id)
+            .copied();
+        // The layout reads the overrides of the node's surviving id.
         self.region_graph
-            .set_crosswalk_override(node_id, edge_id as usize, enabled);
-
+            .set_crosswalk_override(node, edge_id, enabled);
+        let lays_out =
+            NodeArms::collect(&self.region_graph, node).is_none_or(|arms| arms.layout().is_ok());
+        self.region_graph
+            .restore_crosswalk_override(node, edge_id, previous);
+        if !lays_out {
+            return;
+        }
         let affected: HashSet<usize> = self
             .region_graph
-            .node_adjacency(node_id)
+            .node_adjacency(node)
             .iter()
             .copied()
+            .filter(|&edge| !self.region_graph.edge(edge).deleted)
             .collect();
+        self.push_network_undo_for_local_topology(
+            affected.iter().copied().chain([edge_id]).collect(),
+            HashSet::from([node_id, node]),
+        );
+        self.region_graph
+            .set_crosswalk_override(node, edge_id, enabled);
+        let nodes = HashSet::from([node]);
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(&nodes);
+        // Every arm is stable: a crossing re-pins profiles, it never reshapes control geometry.
+        let changed = self
+            .region_graph
+            .finalize_junction_endpoint_profiles_for_edges(
+                &nodes,
+                &HashSet::new(),
+                &HashSet::new(),
+            );
+        self.transit_network
+            .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
+        self.transit_network
+            .mark_surface_dirty_from_sets(&changed, &HashSet::new());
+        let affected: HashSet<usize> = affected.into_iter().chain(changed).collect();
         self.agents.invalidate_lane_ids_for_edges(
             &affected,
             &self.transit_network.lane_system,
@@ -3309,6 +3347,100 @@ mod tests {
             core.terrain_payload_generation_for_patch(1, 0) > neighbor_generation_before,
             "neighbor patch payload generation must also advance"
         );
+    }
+
+    #[test]
+    fn toggling_a_crossing_moves_its_mouth_and_lanes_follow_the_node_piece() {
+        use crate::simulation::network::roadbed::{ArmKey, EdgeEnd};
+        let mut core = test_core();
+        core.treasury.balance = 10_000.0;
+        for points in [
+            vec![
+                Vector3::new(-100.0, 0.0, 0.0),
+                Vector3::new(100.0, 0.0, 0.0),
+            ],
+            vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)],
+        ] {
+            assert!(core.add_road_internal(points, 1, 1).committed);
+        }
+        core.precompute_road_mesh_data();
+        let graph = &core.region_graph;
+        let live = |node: u32| {
+            graph
+                .node_adjacency(node)
+                .iter()
+                .copied()
+                .filter(|&edge| !graph.edge(edge).deleted)
+                .collect::<Vec<_>>()
+        };
+        let node = (0..graph.node_count() as u32)
+            .find(|&node| graph.get_valid_node(node) == node && live(node).len() == 3)
+            .expect("T junction");
+        let edge = live(node)[0];
+        let key = ArmKey {
+            edge,
+            end: if graph.get_valid_node(graph.edge(edge).start_node) == node {
+                EdgeEnd::Start
+            } else {
+                EdgeEnd::End
+            },
+        };
+        let clip = |core: &SimCore| {
+            let arm = core.region_graph.edge(edge);
+            match key.end {
+                EdgeEnd::Start => arm.start_clip,
+                EdgeEnd::End => arm.end_clip,
+            }
+        };
+        // Lanes publish exactly the node piece's crossings, and only those.
+        let agree = |core: &SimCore| {
+            let piece = core.transit_network.roadbed.node_piece(node).unwrap();
+            let lanes = &core.transit_network.lane_system;
+            let mut marked: Vec<_> = lanes.node_lanes[&(node as usize)]
+                .iter()
+                .filter_map(|&lane| lanes.crosswalk_marking(lane))
+                .map(|marking| {
+                    let mut kerbs =
+                        [marking.start, marking.end].map(|p| p.to_array().map(f32::to_bits));
+                    kerbs.sort_unstable();
+                    (marking.edge_id, kerbs)
+                })
+                .collect();
+            marked.sort_unstable();
+            let mut built: Vec<_> = piece
+                .layout()
+                .arms
+                .iter()
+                .filter_map(|arm| {
+                    let mut kerbs = piece
+                        .crosswalk_kerbs(arm.key)?
+                        .map(|p| p.to_array().map(f32::to_bits));
+                    kerbs.sort_unstable();
+                    Some((arm.key.edge, kerbs))
+                })
+                .collect();
+            built.sort_unstable();
+            assert_eq!(marked, built);
+            piece.crosswalk_kerbs(key).is_some()
+        };
+        assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+        assert!(agree(&core));
+        let crossed = clip(&core);
+
+        core.set_crosswalk_override_internal(node, edge as i32, false);
+        core.precompute_road_mesh_data();
+        assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+        assert!(!agree(&core));
+        assert!(
+            (crossed - clip(&core) - 3.0).abs() < 1e-4,
+            "the mouth moves in 3 m"
+        );
+
+        core.set_crosswalk_override_internal(node, edge as i32, true);
+        core.precompute_road_mesh_data();
+        assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+        assert!(agree(&core));
+        assert!((clip(&core) - crossed).abs() < 1e-4);
     }
 
     fn finalize_network_render_for_test(core: &mut SimCore) {

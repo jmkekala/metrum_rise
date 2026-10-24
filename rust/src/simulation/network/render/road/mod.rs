@@ -59,13 +59,7 @@ impl RoadRenderer {
             terrain,
             &compiled_surface,
         );
-        standard_surface::emit_compiled_lane_markings(
-            &mut mesh,
-            graph,
-            lane_system,
-            roadbed,
-            &compiled_surface,
-        );
+        standard_surface::emit_compiled_lane_markings(&mut mesh, graph, roadbed, &compiled_surface);
         street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, &compiled_surface);
         road_signs::emit_road_signs(
             &mut mesh,
@@ -135,13 +129,7 @@ impl RoadRenderer {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         let marking_start = road_debug.then(Instant::now);
-        standard_surface::emit_compiled_lane_markings(
-            &mut mesh,
-            graph,
-            lane_system,
-            roadbed,
-            &compiled_surface,
-        );
+        standard_surface::emit_compiled_lane_markings(&mut mesh, graph, roadbed, &compiled_surface);
         let marking_ms = marking_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);

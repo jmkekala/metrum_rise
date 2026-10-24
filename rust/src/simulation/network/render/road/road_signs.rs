@@ -14,7 +14,7 @@ use super::standard_surface::CompiledSurfaceCoverage;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::lanes::{CrosswalkMarking, LaneSystem};
 use crate::simulation::network::roadbed::{
-    BandKind, RoadSection, RoadVec2, RoadbedSystem, visual_roadbed_half_width_m,
+    ArmKey, BandKind, EdgeEnd, RoadSection, RoadVec2, RoadbedSystem, visual_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::network::validate::{
@@ -22,6 +22,7 @@ use crate::simulation::network::validate::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Sign models in the renderer's model order; priority signs are deliberately absent.
@@ -923,6 +924,32 @@ fn place(
     }
 }
 
+// An edge's span sections with the crosswalk approach section of each end's node piece added
+// before or after them; the span's own sections when neither end has a crossing.
+fn crossing_sections<'a>(
+    graph: &RegionGraph,
+    roadbed: &'a RoadbedSystem,
+    edge_id: usize,
+    sections: &'a [RoadSection],
+) -> Cow<'a, [RoadSection]> {
+    let edge = graph.edge(edge_id);
+    let approach = |node: u32, end: EdgeEnd| {
+        roadbed
+            .node_piece(graph.get_valid_node(node))?
+            .crosswalk_approach(ArmKey { edge: edge_id, end })
+    };
+    let start = approach(edge.start_node, EdgeEnd::Start);
+    let end = approach(edge.end_node, EdgeEnd::End);
+    if start.is_none() && end.is_none() {
+        return Cow::Borrowed(sections);
+    }
+    let mut extended = Vec::with_capacity(sections.len() + 2);
+    extended.extend(start.cloned());
+    extended.extend_from_slice(sections);
+    extended.extend(end.cloned());
+    Cow::Owned(extended)
+}
+
 fn crossing_s(sections: &[RoadSection], marking: CrosswalkMarking) -> Option<f32> {
     let center = (marking.start + marking.end) * 0.5;
     let point = RoadVec2::new(f64::from(center.x), f64::from(center.z));
@@ -1119,15 +1146,25 @@ pub(super) fn emit_road_signs(
     let mut signs = Vec::with_capacity(coverage.edge_indices.len() * 12);
     let mut changed_limits = HashMap::with_capacity(coverage.node_ids.len());
     // Span sections run between the edge's two mouths; edges without a span are skipped.
+    // Zebras lie on node pieces, between the corners and the mouths (`ROAD-68-C`), so crossing
+    // signs stand on the span sections extended by each crossing node's section at the zebra's
+    // inner edge.
     let visible_edges: Vec<_> = edges
         .iter()
         .filter_map(|&edge_id| {
             let sections = roadbed.sections(edge_id)?;
-            (sections.len() >= 2).then_some((edge_id, sections))
+            (sections.len() >= 2).then(|| {
+                (
+                    edge_id,
+                    sections,
+                    crossing_sections(graph, roadbed, edge_id, sections),
+                )
+            })
         })
         .collect();
     for priority in 0..3 {
-        for &(edge_id, sections) in &visible_edges {
+        for (edge_id, sections, approach_sections) in &visible_edges {
+            let (edge_id, sections) = (*edge_id, *sections);
             let edge = graph.edge(edge_id);
             let visible = sections;
             let span = &stations[&edge_id];
@@ -1144,6 +1181,7 @@ pub(super) fn emit_road_signs(
                     else {
                         continue;
                     };
+                    let sections = &**approach_sections;
                     let Some(s) = crossing_s(sections, marking) else {
                         continue;
                     };

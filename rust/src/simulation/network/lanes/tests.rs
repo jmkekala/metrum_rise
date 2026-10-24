@@ -3,7 +3,7 @@
 //! Lane geometry and junction-connectivity regression tests.
 
 use super::super::graph::{Edge, RegionGraph};
-use super::super::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
+use super::super::roadbed::{BandKind, CURB_STEP_HEIGHT_M, RoadbedSystem};
 use super::super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use super::{LaneSystem, LaneType};
 use godot::prelude::*;
@@ -185,7 +185,12 @@ fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
     };
     let (live_geometry, live_length) = sidewalk(&lanes);
     let (loaded_geometry, loaded_length) = sidewalk(&loaded);
-    assert!(live_geometry.iter().all(|point| point.y != 0.0));
+    // Lifted: every point sits the curb step below the visible sidewalk top.
+    assert!(live_geometry.iter().all(|point| {
+        road_surface
+            .height_at(point.x, point.z)
+            .is_some_and(|top| (top - CURB_STEP_HEIGHT_M - point.y).abs() <= 1e-5)
+    }));
     assert_eq!(live_geometry, loaded_geometry);
     assert_eq!(live_length, loaded_length);
 }
@@ -493,11 +498,12 @@ fn curved_arm(graph: &mut RegionGraph, node: u32, heading: f32, radius_m: f32) -
 }
 
 #[test]
-#[ignore = "ROAD-68-F: pedestrian corner routes still follow the legacy corner path, not the layout corners the clips now end at"]
 fn sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk() {
     // TRAFFIC-04: where curved roads meet, the walk between the sidewalk ends of the two
     // through roads swung round a wide arc about the node, out over the verge: at a gentle
-    // bend between two curved roads, and along the straight side of a curved road's Y.
+    // bend between two curved roads, and along the straight side of a curved road's Y. Walks
+    // now follow the layout's sidewalk corners (`ROAD-68-C`), so every point and segment
+    // midpoint lies on the compiled sidewalk, except where a walk crosses a road on a zebra.
     let cases = [
         (PI - 0.23, None, "13 degree bend"),
         (PI, Some(PI + 0.65), "straight side of a Y"),
@@ -514,6 +520,9 @@ fn sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk() {
         }
         graph.rebuild_adjacency_list();
         graph.rebuild_intersection_clips();
+        let mut roadbed = RoadbedSystem::new(64.0);
+        roadbed.compile_dirty(&graph);
+        assert!(roadbed.failed_nodes().is_empty(), "{label}");
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
 
@@ -530,10 +539,15 @@ fn sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk() {
                 .min_by(|&a, &b| from_arm(p, a).total_cmp(&from_arm(p, b)))
                 .unwrap()
         };
-        // A sidewalk centreline runs half a sidewalk outside the asphalt; allow its width.
-        let limit = 3.5 + crate::config::SIDEWALK_WIDTH;
+        let node_lanes = &lanes.node_lanes[&(center as usize)];
+        let kerbs: Vec<Vector3> = node_lanes
+            .iter()
+            .filter_map(|&lane_id| lanes.crosswalk_marking(lane_id))
+            .flat_map(|marking| [marking.start, marking.end])
+            .collect();
+        let on_sidewalk = |p: Vector3| roadbed.band_at(p.x, p.z) == Some(BandKind::Sidewalk);
         let mut checked = 0;
-        for &lane_id in &lanes.node_lanes[&(center as usize)] {
+        for &lane_id in node_lanes {
             let lane = &lanes.lanes[lane_id];
             if lane.lane_type != LaneType::Foot || lanes.crosswalk(lane_id).is_some() {
                 continue;
@@ -546,12 +560,17 @@ fn sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk() {
                 continue;
             }
             checked += 1;
-            for &point in &lane.geometry {
-                let off = from_arm(point, nearest_arm(point));
-                assert!(
-                    off <= limit,
-                    "{label}: walking connector {lane_id} leaves the sidewalk at {point:?}, {off:.1} m from the road"
-                );
+            for pair in lane.geometry.windows(2) {
+                let [kerb_a, kerb_b] = [pair[0], pair[1]].map(|p| kerbs.contains(&p));
+                for point in [pair[0], (pair[0] + pair[1]) * 0.5] {
+                    if (point == pair[0] && kerb_a) || (point != pair[0] && kerb_a && kerb_b) {
+                        continue;
+                    }
+                    assert!(
+                        on_sidewalk(point),
+                        "{label}: walking connector {lane_id} leaves the sidewalk at {point:?}"
+                    );
+                }
             }
         }
         assert!(checked > 0, "{label}: no walk between the through roads");
@@ -683,8 +702,10 @@ fn test_crosswalk_counts() {
         crosswalk_lanes.len()
     }
 
-    assert_eq!(count_crosswalks_at(&lanes, &graph, n0 as usize), 1);
-    assert_eq!(count_crosswalks_at(&lanes, &graph, n1 as usize), 1);
+    // Crossings follow the junction layout's rule (D8): none at a terminal, whose sidewalk wraps
+    // its cap, or at a pass-through node, which has no layout; one per arm at junctions.
+    assert_eq!(count_crosswalks_at(&lanes, &graph, n0 as usize), 0);
+    assert_eq!(count_crosswalks_at(&lanes, &graph, n1 as usize), 0);
     assert_eq!(count_crosswalks_at(&lanes, &graph, n2 as usize), 3);
     assert_eq!(count_crosswalks_at(&lanes, &graph, n5 as usize), 4);
 }
@@ -1210,6 +1231,8 @@ fn lane_rebuild_frontier() -> (RegionGraph, usize, usize, usize) {
     let changed_edge = add_road_edge(&mut graph, center, east);
     let expanded_edge = add_road_edge(&mut graph, center, south);
     let preserved_edge = add_road_edge(&mut graph, south, farther_south);
+    // A bend crosses only where its node forces it (D8); keep one crossing at the centre.
+    graph.set_crosswalk_override(center, changed_edge, true);
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
     (graph, changed_edge, expanded_edge, preserved_edge)
@@ -1377,5 +1400,6 @@ fn test_incremental_rebuild_connection_lanes_exist_at_junction() {
     assert!(e0_lane_has_conns);
 }
 
+mod crossings;
 mod footpaths;
 mod rebuild_benchmark;

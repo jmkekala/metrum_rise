@@ -45,9 +45,13 @@ graph clips, queries answer from their triangles, and buildings place again; a 1
 0.017 ms. `ROAD-68-C` (junction layout and node pieces) is done, with rendered reference screenshots: bends,
 junctions and terminals render as node pieces built from their layouts, graph clips and the
 profile hard zone come from the layout mouths, and layout failures reject placements with
-reasons; a four-way node piece builds in 0.071 ms and a six-way in 0.127 ms. Tests that need
-later gates are disabled until then (34 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are
-open, and `roads.md` lists eleven open questions. Design,
+reasons; a four-way node piece builds in 0.071 ms and a six-way in 0.127 ms. Its follow-up
+(2026-10-24, user decisions D1 and D8) tightens curb returns to 3.5 m and moves the pedestrian
+crossings onto the layout: zebras sit right outside the curves, sidewalk corner walks follow the
+layout's sidewalk, and no zebra remains on a span. Tests that need later gates are disabled until
+then (32 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are open, and `roads.md` lists
+twelve open questions; open question 12 (walkers now change sides only on crossings) needs a
+decision before `road` merges. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

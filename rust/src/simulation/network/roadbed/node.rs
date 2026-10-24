@@ -30,8 +30,8 @@
 use super::arms::{CentrelinePosition, NodeArms};
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{
-    ArmInput, ArmKey, BoundaryBand, CoreVertexSource, EdgeEnd, JunctionLayout, LayoutError,
-    NodeKind, SectorBoundary, Side,
+    ArmInput, ArmKey, BoundaryBand, CoreVertexSource, Crosswalk, EdgeEnd, JunctionLayout,
+    LayoutError, NodeKind, SectorBoundary, Side,
 };
 use super::mesh::{CURB_FACE_GROUP, GROUPS, PieceMesh, RowLayout, push_section_row_at, row_slots};
 use super::profile::{Level, RoadProfile};
@@ -73,6 +73,8 @@ pub struct NodePiece {
     plane: JunctionEndpointProfilePlane,
     // Ascending arm key.
     mouths: Box<[(ArmKey, Arc<MouthSection>)]>,
+    // Section at each crossable arm's crosswalk inner edge, ascending arm key.
+    approaches: Box<[(ArmKey, RoadSection)]>,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
 }
@@ -120,6 +122,39 @@ impl NodePiece {
     pub fn surface_height_m(&self, xz: RoadVec2, level: Level) -> f32 {
         surface_height_m(&self.plane, xz, level)
     }
+
+    /// The section of crossable arm `key` at its crosswalk's inner edge, in its edge's forward
+    /// frame and span stations. With the arm's mouth section it bounds the zebra strip: the
+    /// straight approach that road furniture at the crossing stands beside.
+    pub fn crosswalk_approach(&self, key: ArmKey) -> Option<&RoadSection> {
+        self.approaches
+            .binary_search_by_key(&key, |(arm, _)| *arm)
+            .ok()
+            .map(|index| &self.approaches[index].1)
+    }
+
+    /// Kerb points of arm `key`'s zebra crossing on the piece's carriageway, right side first:
+    /// the layout's [`Crosswalk`] kerbs at `P(x, z)`. `None` when the arm has no crossing.
+    /// Pedestrian lanes publish the same points, through the same function.
+    pub fn crosswalk_kerbs(&self, key: ArmKey) -> Option<[Vector3; 2]> {
+        let arm = self.layout.arms.iter().find(|arm| arm.key == key)?;
+        Some(crossing_kerbs(&self.plane, arm.crosswalk.as_ref()?))
+    }
+}
+
+/// A crossing's kerb points on the node plane, right side first: `(x, P(x, z), z)` in `f32`. The
+/// one function both node pieces and pedestrian lanes publish crossings with.
+pub(super) fn crossing_kerbs(
+    plane: &JunctionEndpointProfilePlane,
+    crosswalk: &Crosswalk,
+) -> [Vector3; 2] {
+    crosswalk.kerbs.map(|kerb| {
+        Vector3::new(
+            kerb.x as f32,
+            surface_height_m(plane, kerb, Level::Ground),
+            kerb.y as f32,
+        )
+    })
 }
 
 fn mouth_of(mouths: &[(ArmKey, Arc<MouthSection>)], key: ArmKey) -> Option<&Arc<MouthSection>> {
@@ -138,6 +173,7 @@ pub(super) struct NodePlan {
     stations: Vec<f64>,
     // Ascending arm key, the arms' input order.
     mouths: Vec<(ArmKey, Arc<MouthSection>)>,
+    approaches: Vec<(ArmKey, RoadSection)>,
 }
 
 impl NodePlan {
@@ -194,12 +230,24 @@ pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePla
             Ok((arms.key(index), Arc::new(section)))
         })
         .collect::<Result<Vec<_>, NodeError>>()?;
+    let mut approaches: Vec<_> = layout
+        .arms
+        .iter()
+        .filter_map(|arm| {
+            let crosswalk = arm.crosswalk?;
+            let station_m = crosswalk.inner_station_m;
+            let (section, _) = section_at(graph, &arms, arm.input_index, station_m, &plane);
+            Some((arm.key, section))
+        })
+        .collect();
+    approaches.sort_unstable_by_key(|(key, _)| *key);
     Ok(Some(NodePlan {
         arms,
         layout,
         plane,
         stations,
         mouths,
+        approaches,
     }))
 }
 
@@ -226,6 +274,35 @@ fn mouth_section(
     plane: &JunctionEndpointProfilePlane,
 ) -> Result<MouthSection, NodeError> {
     let key = arms.key(index);
+    let (section, centre_height_m) = section_at(graph, arms, index, station_m, plane);
+    if (centre_height_m - f64::from(section.center_height_m)).abs() > MOUTH_PLANE_TOLERANCE_M {
+        return Err(NodeError::MouthOffPlane { arm: key });
+    }
+    let profile = RoadProfile::for_edge(graph.edge(key.edge));
+    let sign = lateral_sign(key.end);
+    let input = arms.input(index);
+    let xz = |lateral_m: f32| input.offset_point(station_m, sign * f64::from(lateral_m));
+    let row = RowLayout::new(&profile);
+    let mut vertices = Vec::with_capacity(row.stride());
+    push_section_row_at(&section, &row, xz, &mut vertices);
+    Ok(MouthSection {
+        section,
+        profile,
+        vertices: vertices.into_boxed_slice(),
+    })
+}
+
+// Arm `index`'s cross-section at `station_m`, in its edge's forward frame and span stations, on
+// the arm's offset curves with heights on the node plane; and the finalized centreline height
+// there.
+fn section_at(
+    graph: &RegionGraph,
+    arms: &NodeArms,
+    index: usize,
+    station_m: f64,
+    plane: &JunctionEndpointProfilePlane,
+) -> (RoadSection, f64) {
+    let key = arms.key(index);
     let edge = graph.edge(key.edge);
     let input = arms.input(index);
     let sign = lateral_sign(key.end);
@@ -233,9 +310,6 @@ fn mouth_section(
     let (position, centre_height_m) = arms.centreline_at(index, station_m);
     let center_xz = xz(0.0);
     let center_height_m = surface_height_m(plane, center_xz, Level::Ground);
-    if (centre_height_m - f64::from(center_height_m)).abs() > MOUTH_PLANE_TOLERANCE_M {
-        return Err(NodeError::MouthOffPlane { arm: key });
-    }
     let profile = RoadProfile::for_edge(edge);
     let lateral_xz = ((input.offset_point(station_m, 1.0) - center_xz) * sign).normalize();
     let section = RoadSection {
@@ -257,14 +331,7 @@ fn mouth_section(
             })
             .collect(),
     };
-    let row = RowLayout::new(&profile);
-    let mut vertices = Vec::with_capacity(row.stride());
-    push_section_row_at(&section, &row, xz, &mut vertices);
-    Ok(MouthSection {
-        section,
-        profile,
-        vertices: vertices.into_boxed_slice(),
-    })
+    (section, centre_height_m)
 }
 
 // The span station of a centreline position: the span model's cumulative 3-D length in `f32`.
@@ -611,6 +678,7 @@ pub(super) fn build_node_piece(
         layout: plan.layout,
         plane: plan.plane,
         mouths: plan.mouths.into_boxed_slice(),
+        approaches: plan.approaches.into_boxed_slice(),
         mesh: Arc::new(mesh),
         footprint,
     })

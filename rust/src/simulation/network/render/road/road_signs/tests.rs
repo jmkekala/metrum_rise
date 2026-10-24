@@ -72,12 +72,15 @@ fn junction_with_lanes(
         Vector3::new(-120.0, 0.0, 0.0),
         Vector3::new(0.0, 0.0, 120.0),
     ];
-    let (mut graph, mut lanes, surface, terrain) =
+    let (mut graph, mut lanes, mut surface, terrain) =
         fixture(&points, &[(0, 1, fwd, bkw), (2, 0, 1, 1), (0, 3, 1, 1)]);
-    // Keep one authoritative zebra, on edge 0. No crossing geometry is constructed by the test.
+    // Keep one authoritative zebra, on edge 0. No crossing geometry is constructed by the test:
+    // the crossing moves the junction's mouth on edge 0, so the roadbed is laid out again.
     graph.set_crosswalk_override(0, 0, true);
     graph.set_crosswalk_override(0, 1, false);
     graph.set_crosswalk_override(0, 2, false);
+    surface.clear();
+    surface.compile_dirty(&graph);
     lanes.rebuild(&mut graph);
     (graph, lanes, surface, terrain)
 }
@@ -109,7 +112,6 @@ fn bytes(signs: &[RoadSign]) -> Vec<u32> {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: crossing signs follow the lane crosswalks, which move to the layout crosswalk stations"]
 fn two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb() {
     let f = junction();
     let mesh = generate(&f);
@@ -283,14 +285,15 @@ fn signs_keep_two_metres_from_every_light_and_shift_away_from_junction() {
     };
     poles.heads.insert(PoleGrid::cell(sign.position), 0);
     poles.poles.push((sign.position, NO_LINK));
-    let sections = f.2.sections(0).unwrap();
+    // The zebra lies on the node piece: place on the span extended to the crosswalk.
+    let sections = crossing_sections(&f.0, &f.2, 0, f.2.sections(0).unwrap());
     let marking = f.1.node_lanes[&0]
         .iter()
         .find_map(|&lane| f.1.crosswalk_marking(lane))
         .unwrap();
-    let s = crossing_s(sections, marking).unwrap();
+    let s = crossing_s(&sections, marking).unwrap();
     let (shifted, shifted_s) = place(
-        sections,
+        &sections,
         &f.3,
         &poles,
         s,

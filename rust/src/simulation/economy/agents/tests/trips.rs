@@ -830,6 +830,16 @@ fn test_pedestrian_crosses_junction() {
         &mut zoning,
         &mut allocator,
     );
+    // Walkers cross on the junction's zebras (D8); a straight road has none.
+    network.add_road(
+        &mut graph,
+        vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 100.0)],
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     let home_asset = register_test_asset(

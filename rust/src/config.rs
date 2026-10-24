@@ -22,9 +22,10 @@ pub const ROAD_DECAL_RENDER_Z_BIAS_M: f32 = 0.04;
 pub const LANE_WIDTH: f32 = 3.5;
 /// Width of a single sidewalk in metres, applied on each side of the road.
 pub const SIDEWALK_WIDTH: f32 = 1.5;
-/// How far inside the junction mouth crosswalks are placed, in metres.
-/// 0.0 = flush with the clip boundary; positive values push crosswalks further into the road.
-pub const CROSSWALK_INSET: f32 = 4.0;
+/// How far beyond the junction clip road sidewalks stop at a node without a junction layout
+/// (pass-through pairs, footpath nodes, structure ends), leaving room for the walk round the
+/// node. Sidewalks at layout nodes end where the layout says (`roadbed::NodeWalkways`).
+pub const SIDEWALK_NODE_INSET: f32 = 4.0;
 /// Fine Z-bias (metres) applied to overlay meshes (e.g., zoning highlights) to prevent Z-fighting with the road mesh.
 pub const Z_FIGHT_BIAS: f32 = 0.001;
 

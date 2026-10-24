@@ -406,6 +406,47 @@ fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_rep
 }
 
 #[test]
+fn pedestrian_route_the_layout_no_longer_has_is_dropped_and_its_walker_replans() {
+    let (mut graph, mut network) = fixture();
+    // The saving build crossed the bend at the origin; the loading one does not.
+    let bend = graph.get_valid_node(2);
+    graph.set_crosswalk_override(bend, 1, true);
+    network.lane_system.rebuild(&mut graph);
+    let lanes = &network.lane_system;
+    let crossing = lanes.node_lanes[&(bend as usize)]
+        .iter()
+        .copied()
+        .filter(|&id| lanes.crosswalk(id).is_some())
+        .min()
+        .expect("forced crossing");
+    let mut agents = AgentSystem::new();
+    let walker = add_agent(&mut agents, crossing, &graph, lanes);
+
+    let allocator = BuildingAllocator::new();
+    let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
+    save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
+    tx.commit().unwrap();
+    let mut restored = load_agents(&conn, 0.0).unwrap();
+    graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    for node in 0..graph.node_count() as u32 {
+        for edge in graph.node_adjacency(node).to_vec() {
+            graph.restore_crosswalk_override(node, edge, None);
+        }
+    }
+    let mut new_network = TransitNetwork::new();
+    new_network.lane_system.rebuild(&mut graph);
+    restore_lane_references(&conn, &mut restored, &graph, &mut new_network).unwrap();
+
+    assert_eq!(restored.current_lane_id[walker], usize::MAX);
+    assert_eq!(restored.transit[walker], TRANSIT_NETWORK);
+}
+
+#[test]
 fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     let (graph, network) = fixture();
     let mut allocator = BuildingAllocator::new();

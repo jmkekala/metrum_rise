@@ -3,7 +3,7 @@
 //! Lane geometry construction and authoritative agent position sampling.
 
 use super::super::graph::Edge;
-use super::super::types::TransitType;
+use super::super::roadbed::RoadVec2;
 use super::{Lane, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
@@ -45,10 +45,25 @@ fn trim_from_front(geom: &[Vector3], dist: f32) -> Vec<Vector3> {
     vec![*geom.last().unwrap()]
 }
 
-/// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
-///
-/// `end_insets` trims that many metres more from the edge's start and end than its junction
-/// clips do; footpaths use it to stop at the sidewalk of the roads they meet.
+/// Where a lane stops at one end of its edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LaneEnd {
+    /// This many metres beyond the edge's junction clip, measured along the lane. Footpaths use
+    /// it to stop at the sidewalk of the roads they meet, and road sidewalks at nodes without a
+    /// junction layout to keep room for their corner routes.
+    Inset(f32),
+    /// Exactly at `point`, which lies `station_m` horizontal metres along the edge's centreline
+    /// from the node: a road sidewalk's end in its node's junction layout (`NodeWalkways`).
+    Layout {
+        /// Horizontal centreline distance of the end from the node.
+        station_m: f64,
+        /// The end point.
+        point: Vector3,
+    },
+}
+
+/// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and
+/// `edge_lane_indices`. `ends` says where the lane stops at the edge's start and end.
 #[allow(clippy::too_many_arguments)]
 pub fn build_one_lane(
     lanes: &mut Vec<Lane>,
@@ -60,7 +75,7 @@ pub fn build_one_lane(
     lane_idx: i8,
     lane_type: LaneType,
     lane_offset: f32,
-    end_insets: (f32, f32),
+    ends: [LaneEnd; 2],
 ) {
     let pts = &edge.physical_geometry;
     let mut geometry = Vec::with_capacity(pts.len());
@@ -107,23 +122,22 @@ pub fn build_one_lane(
     let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
     geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
 
-    // Road sidewalks stop at the crosswalk mouth, while vehicle lanes stop at the asphalt
-    // junction throat. This keeps the physical sidewalk endpoint identical to the first/last
-    // point of every pedestrian connector and prevents walkers from passing the zebra before
-    // returning to it.
-    let junction_inset = if lane_type == LaneType::Foot && edge.primary_type == TransitType::Road {
-        config::CROSSWALK_INSET
-    } else {
-        0.0
-    };
-    let start_clip = edge.start_clip + junction_inset + end_insets.0;
-    let end_clip = edge.end_clip + junction_inset + end_insets.1;
-    if start_clip > 0.0 {
-        geometry = trim_from_front(&geometry, start_clip);
+    // A layout end replaces every lane point at or short of its station with the layout's own
+    // point, so the lane ends exactly where the node's pedestrian connectors start. The points
+    // are still index-aligned with `pts` here.
+    if let [LaneEnd::Layout { .. }, _] | [_, LaneEnd::Layout { .. }] = ends {
+        geometry = cut_at_layout_ends(&geometry, pts, ends);
     }
-    if end_clip > 0.0 {
+    if let LaneEnd::Inset(inset) = ends[0]
+        && edge.start_clip + inset > 0.0
+    {
+        geometry = trim_from_front(&geometry, edge.start_clip + inset);
+    }
+    if let LaneEnd::Inset(inset) = ends[1]
+        && edge.end_clip + inset > 0.0
+    {
         geometry.reverse();
-        geometry = trim_from_front(&geometry, end_clip);
+        geometry = trim_from_front(&geometry, edge.end_clip + inset);
         geometry.reverse();
     }
 
@@ -157,6 +171,52 @@ pub fn build_one_lane(
     });
     lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
     edge_lane_indices.push(new_lane_id);
+}
+
+// Keeps the lane points strictly beyond each layout end's station and puts the layout point in
+// front of them. `geometry` is index-aligned with the centreline `pts`, whose horizontal
+// distance from each end is the layout's station measure. O(points).
+fn cut_at_layout_ends(geometry: &[Vector3], pts: &[Vector3], ends: [LaneEnd; 2]) -> Vec<Vector3> {
+    // The arms' station measure (`roadbed::NodeArms`).
+    let xz = |point: Vector3| RoadVec2::new(f64::from(point.x), f64::from(point.z));
+    let horizontal = |a: Vector3, b: Vector3| xz(a).distance(xz(b));
+    // First index, in walking order, whose station from the walk's first point exceeds
+    // `station_m`.
+    let beyond = |indices: &mut dyn Iterator<Item = usize>, station_m: f64| {
+        let mut walked_m = 0.0;
+        let mut previous: Option<usize> = None;
+        for index in indices {
+            if let Some(previous) = previous {
+                walked_m += horizontal(pts[previous], pts[index]);
+            }
+            if walked_m > station_m {
+                return Some(index);
+            }
+            previous = Some(index);
+        }
+        None
+    };
+    let count = geometry.len();
+    let (first, start_point) = match ends[0] {
+        LaneEnd::Layout { station_m, point } => (
+            beyond(&mut (0..count), station_m).unwrap_or(count),
+            Some(point),
+        ),
+        LaneEnd::Inset(_) => (0, None),
+    };
+    let (end, end_point) = match ends[1] {
+        LaneEnd::Layout { station_m, point } => (
+            beyond(&mut (0..count).rev(), station_m).map_or(0, |index| index + 1),
+            Some(point),
+        ),
+        LaneEnd::Inset(_) => (count, None),
+    };
+    let kept = geometry.get(first..end).unwrap_or_default();
+    let mut cut = Vec::with_capacity(kept.len() + 2);
+    cut.extend(start_point);
+    cut.extend_from_slice(kept);
+    cut.extend(end_point);
+    cut
 }
 
 /// Returns the half-width of the road asphalt based on the number of lanes.

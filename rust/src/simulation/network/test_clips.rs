@@ -244,13 +244,13 @@ mod tests {
 
         g.rebuild_intersection_clips();
 
-        // Right-angle curb returns of 6 m beyond the 3.5 m carriageway edge, plus the 3 m
+        // Right-angle curb returns of 3.5 m beyond the 3.5 m carriageway edge, plus the 3 m
         // crosswalk of a crossable arm (D1, D8).
         for (edge, at_start, mouth_m) in layout_mouths(&g, center) {
             let clip_m = clip(&g, edge, at_start);
             assert_eq!(clip_m, mouth_m);
             assert!(
-                (clip_m - 12.5).abs() <= 1.0e-4,
+                (clip_m - 10.0).abs() <= 1.0e-4,
                 "orthogonal junction edge {edge} clips at its layout mouth, got {clip_m:.3}"
             );
         }

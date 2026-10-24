@@ -255,7 +255,10 @@ boundary starts where its offset curve crosses the sector bisector instead of at
 **Mouth stations.** For each arm, the mouth station is the larger of `s_min` and the tangent
 stations of its concave corners, plus the crosswalk depth on crossable arms
 ([D8](#product-decisions)). Between a corner's tangent station and the mouth, the arm's band
-boundaries follow its offset curves. The mouth is the arm's full cross-section at that station:
+boundaries follow its offset curves. On a crossable arm that depth is the zebra strip, right
+outside the curb returns: its inner edge is the larger tangent station, where the curbs stop
+curving, its outer edge is the mouth, and its crossing line is the middle, with kerb points at
+the two carriageway edges. The mouth is the arm's full cross-section at that station:
 the node piece ends and the span begins there. When both ends of an edge reach the same station,
 the span is empty and the two node pieces share that mouth section.
 
@@ -271,12 +274,15 @@ above 6.
 
 **Products.** `JunctionLayout` stores:
 
-- per arm: the mouth station, tangent stations and crosswalk station
+- per arm: the mouth station, tangent stations and crosswalk strip (inner and crossing
+  stations, kerb points)
 - per sector: its kind, `R`, `C` and sampled boundary curves
 
 Graph clips (`start_clip` / `end_clip`), the profile solve's hard zone, crosswalk placement and
 pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
-`junction_profile_crossing_core_m` no longer compute setbacks of their own.
+`junction_profile_crossing_core_m` no longer compute setbacks of their own, and pedestrian lanes
+compute no crossing or corner geometry of their own
+([Pedestrian Junction Crossings](#pedestrian-junction-crossings)).
 
 ### Heights
 
@@ -489,14 +495,14 @@ These defaults apply unless the user overrides them:
 
 | ID | Decision | Default |
 | --- | --- | --- |
-| D1 | Curb-return radius | 6 m. The minimum is the raised width plus 0.5 m. The radius is reduced to fit; if the minimum does not fit, the edit is rejected. |
+| D1 | Curb-return radius | 3.5 m at the carriageway edge (user-confirmed 2026-10-24; was 6 m). The minimum is the raised width plus 0.5 m. The radius is reduced to fit; if the minimum does not fit, the edit is rejected. |
 | D2 | Terminal shape | Round cap; the curb and sidewalk wrap around the end. |
 | D3 | Preview modes | One mode, road and terrain together. The `ROAD-29` "Road only" mode is removed in `ROAD-68-E`. |
 | D4 | Width change on a straight side | A radial step at the node in `ROAD-68-C`; a linear taper along both approaches in `ROAD-68-F`. |
 | D5 | Footpath meeting a road junction | It joins the sidewalk ring at sidewalk height, with its end pinned there by the profile solve. Its ribbon ends at the sidewalk outer edge on shared vertices. |
 | D6 | Roads without sidewalks | Keep the current raised 0.75 m shoulder. |
 | D7 | Routing at commit | Confirmed by the user, 2026-10-23. Rebuild the CCH on an immutable graph snapshot as a scheduled job and adopt it at a fixed tick offset. Route queries issued meanwhile wait for adoption. If the job is late, the simulation blocks at the adoption tick, so results do not depend on machine speed. Revisit if the query backlog at adoption is too large at 100k buildings. |
-| D8 | Crosswalks | On crossable arms the mouth moves 3 m beyond the corner tangent station, and the crossing sits square on that straight approach. Sidewalk lanes end at its kerb points, as `ROAD-64` requires. |
+| D8 | Crosswalks | Right outside the curve (user-confirmed 2026-10-24). On crossable arms the mouth moves 3 m beyond the corner tangent station, and the 3 m zebra fills that straight approach: its inner edge is where the curb stops curving. The crossing is square to the road at the strip's middle, its kerb points at the two carriageway edges; sidewalk lanes end on that line, as `ROAD-64` requires. No zebra sits on a span. |
 
 ## Implementation plan (`ROAD-68`)
 
@@ -618,14 +624,13 @@ requires the merged node's piece before the merge.
 | `nodes::sim::editing::tests` | `undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology` | undo restores the exact pre-edit junction pieces and mesh |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_repairs_rejected_junction_before_publication` | a save from before `ROAD-68-C` re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration (moved from `ROAD-68-C`, [open question 8](#road-68-open-questions)) |
 
-`ROAD-68-F` (7):
+`ROAD-68-F` (5; 7 at the gate, two re-enabled by the
+[C follow-up](#tighter-corners-and-junction-crosswalks-follow-up)):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
 | `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | lights keep a span-end clearance; the terminal cap needs layout furniture stations (moved from `ROAD-68-C`) |
 | `simulation::save::tests` | `headlight_house_junction_full_load_compiles_with_terrain_earthwork` | node 1 joins a footpath to two roads (D5), so it has no node piece yet (moved from `ROAD-68-C`) |
-| `simulation::network::lanes::tests` | `sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk` | pedestrian corner routes follow the legacy corner path, not the layout corners the clips now end at (since `ROAD-68-C`) |
-| `simulation::network::render::road::road_signs::tests` | `two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb` | crossing signs follow the lane crosswalks, which move to the layout crosswalk stations (since `ROAD-68-C`) |
 | `nodes::sim::core::tests::zoning_buildability::cell_zoning::movement` | `node_move_into_paint_or_erased_occupied_claim_is_atomic`, `node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor` | node-move reservation check against moved pieces |
 | `nodes::simulation_node::tests::global_pool` | `bridge_entry_points_never_use_the_global_pool` | unchecked node moves leave a saved parcel over the moved road, so the load entry fails; every other entry point keeps to the shared pool (moved from `ROAD-68-B`) |
 
@@ -713,7 +718,8 @@ These need a user decision; work that does not depend on them continues.
    pinned physical knots through the resample; or let the solve add mouth knots to stable control.
 8. **Saves from before `ROAD-68-C` (`ROAD-68-C`).** Their clips come from the legacy setback rule
    (about 5.5 m at a right-angle T) and their profiles are pinned only that far, while layout mouths
-   sit at 9.5–16 m. On load most of their junctions fail the 1 mm mouth check, and the existing
+   sat at 9.5–16 m at the gate, and closer with the follow-up's 3.5 m radius (2.5 m closer at a right
+   angle). On load most of their junctions fail the 1 mm mouth check, and the existing
    load repair re-solves them after recomputing their clips: the Kuopio reference fixture loads,
    but about ten of its junction profiles change. Options: accept the load repair (current); re-pin the
    reference fixtures; or a save migration with `ROAD-68-E`'s load rebuild.
@@ -724,12 +730,13 @@ These need a user decision; work that does not depend on them continues.
    narrower arm's sidewalk a 12 cm face stands at the wider carriageway's edge and the outer chain
    runs along the step at raised level, which `ROAD-68-D` will see. Options: accept until
    `ROAD-68-F`'s taper (current); build explicit step faces and chain segments now.
-10. **Crossings before `ROAD-68-F`.** The layout's crossable rule (car-road arms with sidewalks at
-    junctions of three or more arms; bend arms only when the node forces a crossing) decides the
-    3 m mouth extension (D8). Pedestrian lanes still place crosswalks by the `ROAD-64` lane rule,
-    which also crosses one bend arm by default, against clips that now end at the layout mouths.
-    Two lane and sign tests are disabled for `ROAD-68-F`. Options: keep the layout rule and move
-    the lanes in `ROAD-68-F` (current); or match the lane rule's default bend crossing now.
+10. **Crossings before `ROAD-68-F` — resolved 2026-10-24: keep the layout rule and move the
+    lanes, including the bend rule (user decision).** The layout's crossable rule (car-road arms
+    with sidewalks at junctions of three or more arms; bend arms only when the node forces a
+    crossing; none where a node override removes it) now decides both the 3 m mouth extension and
+    the pedestrian lanes' crossings, which take the layout's zebra strip
+    ([C follow-up](#tighter-corners-and-junction-crosswalks-follow-up)). Nodes without a layout
+    have no crossing. The two disabled lane and sign tests pass again.
 11. **Publication while a node fails (`ROAD-68-C`, guardrail) — resolved 2026-10-24, option (b).**
     - **Before.** While any node failed to compile, `SimCore::precompute_road_mesh_data` and
       `road_tool_snapshot_from_core` held the last fully valid generation. The screen could keep a
@@ -746,6 +753,35 @@ These need a user decision; work that does not depend on them continues.
     - **Follow-up for `ROAD-68-E`.** Option (c): validate affected layouts in every operation
       that dirties nodes (undo, terrain sync, node moves), so a published gap can only come from
       a bug.
+
+12. **Walkers switch sides only on crossings (`ROAD-68-C` follow-up).**
+    - **The problem.** Under the D8 rule (open question 10), walkers cross only on junction arms
+      and forced bend arms, and wrap a road end round its cap. Unforced bends, pass-through
+      nodes and other nodes without a layout have no crossing. The legacy lane rule crossed one
+      arm at every degree-two node and road end, so a walker could change sides at every node,
+      and the walking planner relies on that. It routes on the road-node CCH, which has no
+      sidewalk sides, and its cost forecasts use a whole-network proof that every node lets every
+      arriving sidewalk reach every leaving one (`ConnectorTargets::complete` in
+      `agents/tick/planning/candidate/query.rs`).
+    - **Consequences.** One node without a crossing makes that proof false for the whole network.
+      Walk forecasts then quote per lane pair rather than per node context. A walk that must
+      change sides and whose node path reaches no crossing fails to plan. The street-grid
+      benchmark city has four corner bends, so its proof is now false. The economy benchmarks
+      were not re-run.
+    - **Evidence.** `test_pedestrian_crosses_junction` (a straight road, home and shop on opposite
+      sides) found no walk until its road got a junction.
+      `prepared_commute_queries_match_connector_paths_without_growing_storage` keeps its network
+      complete only with forced crossings at its two bends. Forced crossings at pass-through
+      nodes do nothing now, because those nodes have no layout.
+    - **Options.**
+      - (a) Accept (current), and later make the walking planner side-aware: sidewalk contexts in
+        the CCH, or a per-node proof.
+      - (b) Cross one arm of every bend by default, on its node piece right outside the curve;
+        lay pass-through nodes out where a crossing is forced.
+      - (c) Unmarked crossings at those nodes. This breaks `ROAD-64` (walkers cross only on drawn
+        zebras).
+    - **Before merging to `main`:** the user should decide, and the economy performance contract
+      should be re-run.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -900,7 +936,8 @@ its products into clips, the profile solve and node pieces. Construction follows
 - Bands beyond the carriageway edge match by position outward. A band on one side only tapers to
   zero width. Matched bands must agree in kind and level, or layout fails with `BandMismatch`;
   footpaths meeting roads (D5) arrive in `ROAD-68-F`.
-- Fitting bisects `R` in 20 steps between `R_min` and 6 m and keeps the largest radius that fits.
+- Fitting bisects `R` in 20 steps between `R_min` and `R` (D1: 3.5 m since the follow-up, 6 m at
+  the gate) and keeps the largest radius that fits.
 - The core loop check uses exact orientation predicates (`robust`, already built for Spade), so
   it agrees with the triangulation that consumes the loop.
 - Typed errors: `NoArms`, `NonFiniteNode`, `NonFinite`, `DuplicateArm`, `DegenerateArm`,
@@ -911,15 +948,15 @@ Layout constants:
 
 | Constant | Value | Reason |
 | --- | --- | --- |
-| `CURB_RETURN_RADIUS_M` | 6 m | D1 |
+| `CURB_RETURN_RADIUS_M` | 3.5 m (6 m at the gate) | D1, at the carriageway edge |
 | `CURB_RETURN_CLEARANCE_M` | 0.5 m | D1: `R_min` is the corner's raised width plus 0.5 m |
-| `CROSSWALK_DEPTH_M` | 3 m | D8; the crosswalk station is the middle of the depth |
+| `CROSSWALK_DEPTH_M` | 3 m | D8; the zebra strip, whose crossing line is the middle of the depth |
 | `MIN_MOUTH_STATION_M` (`s_min`) | 1 m | keeps every mouth off the node's lateral line, where round joins start |
 | `STRAIGHT_SECTOR_EPS_RAD` (`eps`) | 1° | covers the direction noise of a split straight road (f32 knots, below about 1e-3 rad anywhere in a 20 km world); a visually straight width change is a radial step (D4) |
 | `MIN_SECTOR_ANGLE_RAD` | 1° | consecutive arms closer than this fail with `DuplicateDirection` |
 | `MAX_SAMPLE_SEGMENT_M` | 0.5 m | longest sampled boundary segment |
 | `MAX_SAMPLE_ANGLE_RAD` | 10° | largest turn per boundary sample |
-| `RADIUS_BISECTION_STEPS` | 20 | resolves 6 m to 2 m to under 4 µm |
+| `RADIUS_BISECTION_STEPS` | 20 | resolves any range below 4 m to under 4 µm |
 | arm direction run | 1 m, at least 5 cm | as `validate.rs` measures it |
 
 Tests (`roadbed/layout/tests.rs`, 20):
@@ -1092,7 +1129,8 @@ Spec corrections in `ROAD-68-C`:
   junctions.
 - **Crossable arms** (D8) in this gate: car-road arms with sidewalks at junctions of three or more
   arms, bend arms only where the node forces a crossing, none where a node override removes it.
-  Pedestrian lanes still place crossings by the `ROAD-64` lane rule until `ROAD-68-F`.
+  At the gate, pedestrian lanes still placed crossings by the `ROAD-64` lane rule; the
+  [follow-up](#tighter-corners-and-junction-crosswalks-follow-up) moved them onto the layout.
 - **Nodes without pieces**: footpath nodes and footpaths meeting roads (D5), and bridge and tunnel
   terminals, keep the `ROAD-68-B` span ends until `ROAD-68-F`.
 
@@ -1147,6 +1185,173 @@ detail, so the mouth line is faintly visible. Lane lines end at the mouths. Terr
 or over roads in the terrain views until `ROAD-68-D`, and the preview stays empty until
 `ROAD-68-E`.
 
+#### Tighter corners and junction crosswalks (follow-up)
+
+**Status:** done 2026-10-24, after the user reviewed the gate's screenshots.
+
+The user made two decisions:
+
+- D1: the curb-return radius is 3.5 m at the carriageway edge.
+- D8: crossings sit right outside the curve. Open question 10 is resolved as "keep the layout
+  rule and move the lanes", including the bend rule.
+
+This pulls the crossings item of `ROAD-68-F` forward.
+
+**Layout.**
+
+- `CURB_RETURN_RADIUS_M` is 3.5 m. A right-angle corner of two-lane roads now has its tangent at
+  7 m and its mouth at 10 m; at the gate they were at 9.5 m and 12.5 m.
+- Each crossable arm carries a `Crosswalk`:
+  - `inner_station_m`: the larger tangent station, where the curbs stop curving
+  - `station_m`: the crossing line, the strip's middle
+  - `kerbs`: the two carriageway-edge points on that line, from `ArmInput::offset_point`
+- The strip's outer edge is the mouth.
+
+**Node pieces.**
+
+- `NodePiece::crosswalk_kerbs(key)` publishes the kerb points on the node plane through
+  `node::crossing_kerbs`. Lanes use the same function.
+- `NodePiece::crosswalk_approach(key)` is the arm's section at the strip's inner edge. Road signs
+  at a zebra stand on the span sections extended by it, so the sign for traffic leaving the
+  junction stands between the corner and the zebra.
+
+**Lanes (`roadbed/walkways.rs`, `lanes/pedestrian_junctions.rs`).**
+
+- The lane rebuild lays out the nodes it touches with `NodeWalkways::collect`. This is the same
+  graph-to-layout function node pieces use (`NodeArms::collect`, `NodeArms::layout`), so lanes
+  and pieces agree bitwise whichever of the lane rebuild and the roadbed compile runs first.
+  Nothing else changes order.
+- A full rebuild lays out every node on the shared pool. An incremental rebuild lays out only the
+  nodes of its closure.
+- Sidewalk lanes run on the profile's walkway centre: midway between the carriageway edge and the
+  sidewalk's outer edge, which is the old line for consistent edges.
+- At a layout node a sidewalk lane ends exactly on the layout point:
+  - the crossing line on a crossable arm
+  - otherwise the mouth
+- Crossings are the layout's strips. Corner routes follow the walkway centre around each sector,
+  and a road end's route wraps its cap.
+- Nodes without a layout have no crossing (no span zebras). There, neighbouring sidewalks join
+  straight, or round the node where the straight walk would cut into the asphalt.
+- `rounded_sidewalk_corner_path_xz` and the `cavalier_contours` dependency are removed.
+  `config::CROSSWALK_INSET` became `SIDEWALK_NODE_INSET`, used only at nodes without a layout.
+- Lane markings on spans no longer leave a crosswalk gap: the zebra is on the node piece.
+
+**Other changes.**
+
+- **Crossing toggles.** A crossing moves its arm's mouth, so `set_crosswalk_override_internal`
+  now re-lays the node out like an edit:
+  - recompute the clips
+  - re-pin the arms in the profile solve (every arm stable)
+  - mark the node's roadbed closure dirty
+  - rebuild its lanes
+  - record undo for every incident edge
+  A toggle whose layout fails is refused.
+- **Loading older saves.** A save from before this change holds pedestrian connectors the layout
+  no longer routes (crossings at bends, pass-through nodes and road ends). Loading omits them, and
+  walkers on them replan. Vehicle connectors must still match.
+
+**Consequence.** Walkers now change sides only on crossings ([open question
+12](#road-68-open-questions)).
+
+**Tests.** `two_way_zebra_has_two_opposite_right_hand_signs_at_the_kerb` and
+`sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk` pass again. The second now
+checks every walk point against the compiled sidewalk band, because its centreline-distance proxy
+fails inside an acute curb return. New tests:
+
+- `lanes::tests::crossings`, on T, four-way, six-way, 40° Y and forced 45° bend fixtures, flat and
+  at 2.5%:
+  - zebras fill the straight approach right outside the corners (inner edge at the tangent,
+    mouth 3 m out, strip on the carriageway), with no other markings
+  - lane kerb points are the node piece's, bitwise
+  - sidewalk lanes end on the crossing line, and both directions walk the marking's kerb segment
+  - corner walks stay on the sidewalk band
+  - full and local rebuilds repeat the hub's connectors bitwise
+- `pedestrian_route_the_layout_no_longer_has_is_dropped_and_its_walker_replans` (save load)
+- `toggling_a_crossing_moves_its_mouth_and_lanes_follow_the_node_piece` (`SimCore`): the clip
+  moves 3 m, and lanes publish exactly the node piece's crossings after each toggle
+
+Updated for the new rule:
+
+- `test_crosswalk_counts`: no crossing at a road end or a pass-through node
+- the clip fixture: mouth 10 m
+- the layout's shrink fixture: 9.5 m limit, `R` = 3 m
+- `incremental_rebuild_repairs_connectors_at_expanded_edge_far_end` (a forced bend crossing)
+- `test_pedestrian_crosses_junction` (now a T)
+- `prepared_commute_queries_match_connector_paths_without_growing_storage` (forced bend
+  crossings)
+- the height check in `incremental_lane_rebuild_is_lifted_without_the_renderer`
+- the sign-shift test (approach sections)
+
+`ROAD-68` ignores: D 25, E 2, F 5.
+
+**Checks** (fresh, on the follow-up sources):
+
+- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`): 1,806 passed, 0 failed, 185 ignored
+  (gate: 1,797, 0, 187).
+- Clippy (`--all-targets`) reports only the 59 legacy-tree warnings, and `cargo doc` reports no
+  missing docs.
+- `./run.sh --test` (isolated profile, no display) exits 0:
+  - the library suite as above, and `tests/growth_scenario.rs` with 4 passed
+  - the Godot bridge suites, with no script errors and `zoning_reference_test` passing (8 layouts)
+  - the same four scripts skipped (`ROAD-68-E` 3, `ROAD-68-F` 1); the Forward+ vegetation tests
+    need a display and did not run
+- `roadbed/` holds 6,136 production lines (gate: 5,784), under the 8,000 cap.
+
+**Benchmarks** (2026-10-24):
+
+- Build: release, with the gate's `roadbed_benchmark` binary as a control in the same session.
+- Machine: i9-12900K, pinned to the P-cores, `RAYON_NUM_THREADS=4`.
+- Method: Criterion defaults with 200 samples, under the exclusive timing lock with no build
+  running; the new binary ran twice.
+- Workload: the gate's fixtures, so the node pieces now carry 3.5 m corners.
+
+| Case | Gate (control) | Follow-up | Target |
+| --- | --- | --- | --- |
+| `roadbed_junction/build/t` | 41.22 µs | 28.11 / 28.35 µs | — |
+| `roadbed_junction/build/four_way` | 70.92 µs | 46.39 / 46.91 µs | 100 µs |
+| `roadbed_junction/build/six_way` | 126.54 µs | 81.37 / 81.51 µs | 300 µs |
+| `roadbed_junction/publish/t_closure` | 114.27 µs | 98.57 / 92.77 µs | — |
+
+The smaller radius cuts the corner samples. The crosswalk approach sections, one per crossable
+arm, cost less than that saves.
+
+**Lane rebuild locality.** `lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling` is
+a release test, run with `--ignored`. It holds a three-edge closure fixed and adds 0 to 100,000
+unrelated roads. The gate and follow-up binaries ran alternately, two rounds each, in the same
+session; the gate's first, cold round is discarded. The fixture's bend now has a forced crossing;
+at the gate it had the legacy degree-two crossing.
+
+| Background roads | Incremental median, gate | Incremental median, follow-up | Full-rebuild setup, gate | Full-rebuild setup, follow-up |
+| --- | --- | --- | --- | --- |
+| 0 | 0.0127 ms | 0.0214 ms | 0.30 ms | 0.29 ms |
+| 1,000 | 0.0130 ms | 0.0213 ms | 2.6 ms | 4.0 ms |
+| 10,000 | 0.0129 ms | 0.0203 ms | 26 ms | 39 ms |
+| 100,000 | 0.0134 ms | 0.0201 ms | 270 ms | 425 ms |
+
+- The local rebuild stays flat as the city grows. It costs about 8 µs more, because it now lays
+  out the closure's nodes; a closure is laid out sequentially, since dispatching a handful of
+  nodes to the pool costs more than laying them out.
+- A full rebuild lays out every node on the shared pool. That is about 0.8 µs per node: the
+  background roads add 200,000 terminals.
+
+```bash
+cargo bench --bench roadbed_benchmark --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY --bench --noplot roadbed_junction
+cargo test --release --lib --no-run
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $TEST_BINARY --ignored --nocapture \
+  --exact simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling
+```
+
+**Screenshots.** The [reference harness](#rendered-reference-screenshots) re-ran on the follow-up
+debug build (48 images, no fixture failures). The T, four-way and Y plan views show:
+
+- tighter corners
+- each zebra on the node piece's asphalt right outside the curb returns, ending at the mouth where
+  the span begins
+- no zebra on any span
+
+The 45° bend has no crossing, as the bend rule says.
+
 ### `ROAD-68-D` — footprint and terrain
 
 1. `roadbed/terrain.rs`: patch loops from outer chains, the grading envelope and patch selection.
@@ -1193,8 +1398,9 @@ Acceptance:
 - roads without sidewalks, and mixed widths and profiles, including the D4 taper
 - bridges: decks through the existing bridge renderer, and abutment cutouts
 - tunnels: portals; this covers `ROAD-61`
-- crossings: the layout supplies crosswalk stations and sidewalk corner curves, and
-  `lanes/pedestrian_junctions.rs` consumes them in place of `rounded_sidewalk_corner_path_xz`
+- crossings: done early, in the [`ROAD-68-C` follow-up](#tighter-corners-and-junction-crosswalks-follow-up)
+  (crossings and sidewalk corners from the layout; `rounded_sidewalk_corner_path_xz` removed).
+  Footpath nodes (D5) still need layouts, and with them crossings and corner walks of their own
 - lane markings at junctions, street lights and road signs
 - building sites, driveways and paving
 - zoning, agriculture and vegetation overlap queries
@@ -1300,38 +1506,44 @@ For the cross fixtures, set the cases to `flat_cross,sloped_cross` and use a fre
 
 ## Pedestrian Junction Crossings
 
-> **`ROAD-68`:** the sidewalk corner curve and crosswalk station used below come from the
-> [junction layout](#junction-layout). `rounded_sidewalk_corner_path_xz` is removed in
-> `ROAD-68-F`. Otherwise this contract is unchanged; the legacy lane audit measurements are archived.
+> **`ROAD-68`:** since the [`ROAD-68-C` follow-up](#tighter-corners-and-junction-crosswalks-follow-up),
+> the crossings and sidewalk corner curves below come from the [junction layout](#junction-layout)
+> (`roadbed::NodeWalkways`), and `rounded_sidewalk_corner_path_xz` is removed. Otherwise this
+> contract is unchanged; the legacy lane audit measurements are archived.
 
 One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:
 
-- an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`
+- an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`. Lanes take
+  the layout's crossable rule ([D8](#product-decisions)): junction arms, and bend arms only where
+  the node forces a crossing. A node without a layout has none ([open question
+  12](#road-68-open-questions))
+- the marking is the layout's zebra strip: its kerb points are the two carriageway-edge points on
+  the strip's crossing line, at the node plane's height, bitwise the node piece's
+  (`NodePiece::crosswalk_kerbs`)
 - the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
   segment stored by the marking
-- routes between adjacent arms follow the solved sidewalk perimeter and must not create direct
-  mouth-to-mouth chords through the junction carriageway; their centerlines use the same sampled
-  circular-arc / bounded-fillet policy as the compiled rounded sidewalk side joins, with straight
-  sidewalk approaches between the node mouth and crosswalk inset
+- routes between adjacent arms stay on the sidewalk and must not create direct mouth-to-mouth
+  chords through the junction carriageway. They run on the centre of the raised walkway, midway
+  between its carriageway-edge and outer boundary curves. From a sidewalk end they follow the
+  arm's offset curve back to the sector, then the midpoints of the sector's boundary samples,
+  then the next arm's offset curve out to its sidewalk end. A road end's route wraps its cap
 - every incoming sidewalk mouth has one precomputed route to each reachable outbound sidewalk
   mouth; ordinary edge routing selects the shortest route to an arm, while exact building access
   can select either sidewalk without falling back to a side-to-side lane reselection
-- physical road-sidewalk lanes terminate at the configured crosswalk inset, exactly matching the
-  first and last points of their junction connectors, so walkers cannot pass a zebra and backtrack
-- a corner route falls back to the node-centred arc only when the rounded route would cut into the
-  asphalt of either arm, judged against the arm centrelines (`TRAFFIC-04`). The old test compared
-  distance from the node with asphalt half-width plus half a sidewalk, which every straight or
-  gently bent sidewalk failed, and the arc it chose, of radius equal to the mouth distance, ran
-  walkers across the lawn on curved roads
+- physical road-sidewalk lanes run on the profile's walkway centre. At a node with a layout they
+  end exactly on the layout point: the crossing line of a crossable arm, and the mouth of any
+  other arm. Those are the first and last points of their junction connectors, so walkers cannot
+  pass a zebra and backtrack. At a node without a layout they stop
+  `config::SIDEWALK_NODE_INSET` beyond the clip
+- at a node without a layout, neighbouring sidewalks join by a straight walk, or by the
+  node-centred arc where that walk would cut into the asphalt of either arm, judged against the
+  arm centrelines (`TRAFFIC-04`). `ROAD-68-F` gives footpath nodes layouts
 - a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
   road or reattaching farther along the reverse sidewalk
-- degree-two junctions keep the deterministic single-crosswalk policy, while higher-degree
-  junctions may expose one crossing per eligible arm
-- a crossing is square to the road where it is drawn (`ROAD-64`): the midpoint of the two sidewalk
-  lane ends is projected onto the arm's physical edge, and both kerb points sit at that one station,
-  asphalt half-width either side along the local normal. Before, the two sidewalk lanes were trimmed
-  separately and could end at different stations, and the graph endpoint's normal was used, so
-  crossings on curved arms came out skewed. Pedestrian routes use the same kerb points
+- a crossing is square to the road where it is drawn (`ROAD-64`). Both kerb points, and the two
+  sidewalk ends they join, lie on one section line of the arm, at the strip's crossing station.
+  Before `ROAD-64` the sidewalk lanes were trimmed separately and the graph endpoint's normal was
+  used, so crossings on curved arms came out skewed
 
 Crossing availability and geometry must not be independently reconstructed by the renderer,
 selection queries, or agent movement.
@@ -1346,10 +1558,10 @@ never plan a route onto one; footpaths had been dead ends since pedestrians move
   pure function of the node's geometry, applied when lanes are built, so full and partial
   rebuilds agree. Where only footpaths meet, each stops 1 m short of the node.
 - Between two road arms, the footpath joins the sidewalk corner of that sector at its nearest
-  point and follows the corner to the sidewalk on either side; reaching the other side of the road
-  uses the arms' crosswalks as before. At a single road arm it joins both sidewalks directly.
-  Footpaths meeting only footpaths connect through the node.
-- Road arms, their crosswalks and the single-crosswalk rule at degree-two nodes are unchanged.
+  point and follows the corner to the sidewalk on either side. At a single road arm it joins both
+  sidewalks directly. Footpaths meeting only footpaths connect through the node.
+- A node with a footpath arm has no junction layout until `ROAD-68-F` (D5), so it has no crossing
+  and its corners are the straight or node-centred walks of a node without a layout.
 - The node records these pedestrian routes as turn rules keyed by the footpath edge, as sidewalk
   routes are keyed by lane index ±100. `RegionGraph::is_vehicle_turn_rule` tells both apart from
   player-set car turn rules, so neither puts a junction into car whitelist mode. Until this was
@@ -1848,6 +2060,9 @@ cosmetic: traffic ignores them.
   1.75 m before the crossing centre so it stands at the near edge of the stripes, out of the
   walking line (it stood in the middle of the crossing before).
   A one-way road gets E1-1 on the right and E1-2 on the left, both facing the legal approach.
+  Zebras lie on node pieces (`ROAD-68-C` follow-up), so signs stand on the span sections
+  extended by the node's section at the zebra's inner edge, where the curb stops curving; the
+  sign for traffic leaving the junction is held there, 1.5 m before the crossing centre.
 - **Speed limits (C32-30/40/50/60/80).** As in Finnish towns, where the limit is mostly set for an
   area, a sign stands only where it tells the driver something: for traffic turning into a street
   at a junction of three or more arms whose limit differs from another road arm there, or, as a

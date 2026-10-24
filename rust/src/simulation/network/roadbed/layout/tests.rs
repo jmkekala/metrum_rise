@@ -416,8 +416,19 @@ fn crossable_mouths_extend_three_metres_past_the_corner() {
         assert_near(tangent, TWO_LANE_HALF_M + CURB_RETURN_RADIUS_M, 1e-9);
         assert_eq!(plain_arm.mouth_station_m, tangent);
         assert_eq!(arm.mouth_station_m, tangent + CROSSWALK_DEPTH_M);
-        assert_eq!(arm.crosswalk_station_m, Some(tangent + 1.5));
-        assert_eq!(plain_arm.crosswalk_station_m, None);
+        let crosswalk = arm.crosswalk.unwrap();
+        assert_eq!(crosswalk.inner_station_m, tangent);
+        assert_eq!(crosswalk.station_m, tangent + 1.5);
+        let input = crossable.iter().find(|input| input.key == arm.key).unwrap();
+        let input = input.input();
+        assert_eq!(
+            crosswalk.kerbs,
+            [
+                input.offset_point(crosswalk.station_m, -TWO_LANE_HALF_M),
+                input.offset_point(crosswalk.station_m, TWO_LANE_HALF_M),
+            ]
+        );
+        assert_eq!(plain_arm.crosswalk, None);
     }
 }
 
@@ -437,18 +448,18 @@ fn arms_without_corners_use_the_minimum_mouth_station() {
 
 #[test]
 fn short_arms_shrink_the_corner_radius() {
-    // A straight cross puts every corner tangent at `la + R`, so a 10.5 m limit with a 3 m
-    // crosswalk leaves room for R = 4 m exactly.
+    // A straight cross puts every corner tangent at `la + R`, so a 9.5 m limit with a 3 m
+    // crosswalk leaves room for R = 3 m exactly.
     let node = RoadVec2::new(-300.0, 120.0);
     let mut arms = equal_arms(node, &[0.0, 90.0, 180.0, 270.0]);
-    arms.iter_mut().for_each(|arm| arm.max_station_m = 10.5);
+    arms.iter_mut().for_each(|arm| arm.max_station_m = 9.5);
     let layout = build_checked(node, &arms);
     for arm in &layout.arms {
         let corner = arm.left_corner.unwrap();
         assert!(corner.radius_m < CURB_RETURN_RADIUS_M);
-        assert_near(corner.radius_m, 4.0, 1e-5);
-        assert!(arm.mouth_station_m <= 10.5);
-        assert_near(arm.mouth_station_m, 10.5, 1e-5);
+        assert_near(corner.radius_m, 3.0, 1e-5);
+        assert!(arm.mouth_station_m <= 9.5);
+        assert_near(arm.mouth_station_m, 9.5, 1e-5);
     }
 }
 
