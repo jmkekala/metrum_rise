@@ -1179,9 +1179,10 @@ These need a user decision; work that does not depend on them continues.
     - **Cell lots, 6.4–7.8 ms, flat from 1,413 buildings.** Generating the cells along the
       changed roads' envelopes (bounding box plus 216 m) dominates; the commit thread is held by
       generation's serial candidate sort, indexing loop and footprint corners.
-    - **Render publication, 7.5–10.4 ms**, flat: the new lanes' lift (most of them lifted twice),
-      the rebuilt pieces' emission, every covered edge's lights and signs, copying the changed
-      chunks' kept runs and the payload certificate.
+    - **Render publication, 7.5–10.4 ms**, flat. In a perf profile of part 3's commits (2k and
+      10k) lifting lanes onto the surface is 53 % of its samples (`LaneSurfaceQuery::height_at`
+      45 %; most new lanes are lifted twice), growing vectors and their page faults 15 %, road
+      signs 10 %, piece surfaces 8 %, the payload certificate 5 %.
     - **Growing with the city, about 10 ms at 100k:** the agent passes (3.8 + 1.2 ms, `O(A / P)`
       and `O(A)`), the road-tool snapshot's graph clone (2.6 ms, `O(graph)`, `ROAD-68-E`'s
       context replacement) and the snapshot publish (3.6 ms: dropping the previous snapshot,
