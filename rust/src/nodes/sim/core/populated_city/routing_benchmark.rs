@@ -945,3 +945,149 @@ fn benchmark_populated_work_counts() {
     );
     eprintln!("work final {:?}", city.record());
 }
+
+// ROAD-68-G: one player road commit on a populated city, stage by stage. Tiers are residents
+// (`METRUM_COMMIT_TIERS`, default 0,1300,13000); 0 is the 1,300-resident street grid without
+// lots. Each sample extends a different row street 120 m east from the grid's east edge, which
+// changes a junction's degree and so the routing topology. City setup is never timed.
+#[test]
+#[ignore = "release ROAD-68-G commit breakdown; builds the requested cities outside timing"]
+fn benchmark_populated_commit_breakdown() {
+    let tiers: Vec<u32> = std::env::var("METRUM_COMMIT_TIERS")
+        .map(|value| value.split(',').map(|t| t.trim().parse().unwrap()).collect())
+        .unwrap_or_else(|_| vec![0, 1_300, 13_000]);
+    for residents in tiers {
+        let mut core = if residents == 0 {
+            super::street_grid(super::side_m_for(1_300)).0
+        } else {
+            PopulatedCity::build(residents).core
+        };
+        profile_commits(residents, &mut core);
+    }
+}
+
+fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
+    use crate::nodes::sim::core::frame::FRAME_DT_S;
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
+    use godot::prelude::Vector3;
+    use std::sync::RwLock;
+
+    core.transit_network
+        .rebuild_pathing_if_dirty(&mut core.region_graph);
+    if core.time.speed_multiplier <= 0.0 {
+        core.time.speed_multiplier = 1.0;
+    }
+    // Two ordinary frames: the flow fields are current and the second is the reference frame.
+    core.step_frame(FRAME_DT_S);
+    let reference = core.step_frame(FRAME_DT_S);
+    // The player's commit records undo and charges the treasury.
+    core.benchmark_mode = false;
+    let graph = &core.region_graph;
+    let (half_world, _) = core.heightmap.half_world_extents();
+    let live = |node: u32| {
+        (node as usize) < graph.node_adjacency_count()
+            && graph
+                .node_adjacency(node)
+                .iter()
+                .any(|&edge| !graph.edge(edge).deleted)
+    };
+    let east_x = (0..graph.node_count() as u32)
+        .filter(|&node| live(node) && graph.node(node).pos.x < half_world - 50.0)
+        .map(|node| graph.node(node).pos.x)
+        .fold(f32::MIN, f32::max);
+    // Row ends on the east edge without an edge continuing east (trunks run on to the border).
+    let mut ends: Vec<Vector3> = (0..graph.node_count() as u32)
+        .filter(|&node| live(node) && (graph.node(node).pos.x - east_x).abs() < 0.5)
+        .filter(|&node| {
+            graph.node_adjacency(node).iter().all(|&edge| {
+                let edge = graph.edge(edge);
+                edge.deleted
+                    || [edge.start_node, edge.end_node]
+                        .iter()
+                        .all(|&end| graph.node(end).pos.x < east_x + 1.0)
+            })
+        })
+        .map(|node| graph.node(node).pos)
+        .collect();
+    ends.sort_by(|a, b| a.z.abs().total_cmp(&b.z.abs()));
+    let header = serde_json::json!({
+        "residents": residents,
+        "buildings": core.allocator.buildings.len(),
+        "households": core.households.households.len(),
+        "agents": core.agents.len(),
+        "nodes": core.region_graph.node_count(),
+        "edges": core.region_graph.edge_count(),
+        "lanes": core.transit_network.lane_system.lanes.len(),
+        "reference_frame_ms": reference.pathing_ms + reference.agent_ms + reference.minute_ms,
+        "reference_pathing_ms": reference.pathing_ms,
+    });
+    eprintln!("COMMIT_CITY {header}");
+    let published = RwLock::new(road_tool_snapshot_from_core(core));
+    for (sample, start) in ends.into_iter().step_by(2).take(3).enumerate() {
+        let mut end = start + Vector3::new(120.0, 0.0, 0.0);
+        end.y = core.heightmap.sample_height_world(end.x, end.z);
+        let road_total = Instant::now();
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: vec![start, end],
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+            },
+            road_total,
+            Default::default(),
+        );
+        let commit_ms = road_total.elapsed().as_secs_f64() * 1e3;
+        assert!(
+            outcome.committed,
+            "commit {sample} rejected: {}",
+            outcome.rejection_reason
+        );
+        // The sim thread publishes the tool snapshot outside the core, dropping the previous.
+        let publish = Instant::now();
+        *published.write().unwrap() = outcome.road_snapshot;
+        let publish_ms = publish.elapsed().as_secs_f64() * 1e3;
+        let click_to_ack_ms = road_total.elapsed().as_secs_f64() * 1e3;
+        let m = &core.last_road_edit_metrics;
+        let stages = serde_json::json!({
+            "plan_ms": m.road_plan_ms, "undo_ms": m.undo_ms, "topology_ms": m.topology_ms,
+            "zoning_ms": m.zoning_ms, "add_ms": m.add_ms, "surface_ms": m.surface_ms,
+            "agent_invalidate_ms": m.agent_invalidate_ms,
+            "lanes_and_reattach_ms": m.lanes_and_reattach_ms, "buildings_ms": m.buildings_ms,
+            "routing_ms": m.routing_ms, "finalize_ms": m.finalize_ms, "mesh_ms": m.mesh_ms,
+            "snapshot_ms": m.snapshot_ms, "refined_state_ms": m.refined_state_ms,
+            "core_work_ms": m.core_work_ms, "dirty_edges": m.dirty_edges,
+        });
+        // The frame after the commit refreshes the flow fields on the new hierarchy.
+        let next = core.step_frame(FRAME_DT_S);
+        // Isolated costs, after the measured path: the snapshot's clones and the hierarchy.
+        let time = |run: &mut dyn FnMut()| {
+            let begin = Instant::now();
+            run();
+            begin.elapsed().as_secs_f64() * 1e3
+        };
+        let terrain_clone_ms = time(&mut || drop(black_box(core.heightmap.clone())));
+        let graph_clone_ms = time(&mut || drop(black_box(core.region_graph.clone())));
+        let roadbed_clone_ms =
+            time(&mut || drop(black_box(core.transit_network.roadbed.clone())));
+        let water_clone_ms = time(&mut || drop(black_box(core.watermap.clone())));
+        let zoning_snap_ms = time(&mut || {
+            drop(black_box(
+                core.zoning
+                    .cells
+                    .road_grid_snap(f64::from(core.config.zone_cell_m)),
+            ))
+        });
+        let cch_build_ms = time(&mut || drop(black_box(CchGraph::build(&core.region_graph))));
+        let record = serde_json::json!({
+            "residents": residents, "sample": sample, "commit_ms": commit_ms,
+            "publish_ms": publish_ms, "click_to_ack_ms": click_to_ack_ms, "stages": stages,
+            "next_frame_pathing_ms": next.pathing_ms, "next_frame_agent_ms": next.agent_ms,
+            "terrain_clone_ms": terrain_clone_ms, "graph_clone_ms": graph_clone_ms,
+            "roadbed_clone_ms": roadbed_clone_ms, "water_clone_ms": water_clone_ms,
+            "zoning_snap_ms": zoning_snap_ms, "cch_build_ms": cch_build_ms,
+        });
+        eprintln!("COMMIT_BREAKDOWN {record}");
+    }
+}

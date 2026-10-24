@@ -128,6 +128,9 @@ impl SimCore {
             Some(&edit_plan),
         );
         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
+        edit_metrics.undo_ms = road_add.stage_ms.undo_ms;
+        edit_metrics.topology_ms = road_add.stage_ms.topology_ms;
+        edit_metrics.zoning_ms = road_add.stage_ms.zoning_ms;
         let finalize_start = Instant::now();
         let mut surface_ms = 0.0;
         if road_add.committed {

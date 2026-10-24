@@ -54,6 +54,17 @@ pub(crate) struct RoadAddOutcome {
     pub(crate) build_cost: f64,
     /// Already adopted local geometry; absent when authoritative preparation must finalize it.
     pub(crate) finalized_geometry: Option<FinalizedRoadGeometry>,
+    /// Wall-clock milliseconds of the undo record, the topology mutation (graph, parcels and
+    /// adopted plan) and the cell-lot marks, for the commit breakdown (`ROAD-68-G`).
+    pub(crate) stage_ms: RoadAddStageTimes,
+}
+
+/// Wall-clock cost of the stages of one accepted road addition.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RoadAddStageTimes {
+    pub(crate) undo_ms: f64,
+    pub(crate) topology_ms: f64,
+    pub(crate) zoning_ms: f64,
 }
 
 impl RoadAddOutcome {
@@ -62,6 +73,7 @@ impl RoadAddOutcome {
             committed: false,
             build_cost: 0.0,
             finalized_geometry: None,
+            stage_ms: RoadAddStageTimes::default(),
         }
     }
 }
@@ -1288,6 +1300,7 @@ impl SimCore {
         );
         let dt_topo_us = t_topo.elapsed().as_micros();
 
+        let t_zoning = Instant::now();
         let dirty = finalized_geometry
             .as_ref()
             .map(|geometry| &geometry.dirty_edges)
@@ -1301,6 +1314,7 @@ impl SimCore {
         self.transit_network
             .bulk_dirty_edges
             .extend(road_dirty_edges);
+        let zoning_ms = t_zoning.elapsed().as_secs_f64() * 1000.0;
 
         self.mark_local_network_render_dirty();
 
@@ -1311,6 +1325,11 @@ impl SimCore {
             committed: true,
             build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
             finalized_geometry,
+            stage_ms: RoadAddStageTimes {
+                undo_ms: dt_undo_ms as f64 / 1000.0,
+                topology_ms: dt_topo_us as f64 / 1000.0,
+                zoning_ms,
+            },
         }
     }
 
