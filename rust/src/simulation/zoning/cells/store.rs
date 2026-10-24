@@ -104,6 +104,31 @@ impl CellStore {
         result
     }
 
+    /// Test-only digests, independent of map order: the authority (frames, and every cell's
+    /// paint and lot claim) and the generated cache (valid cells and road frontages).
+    #[cfg(test)]
+    pub(crate) fn digests(&self) -> (u64, u64) {
+        use crate::debug::work::debug_hash;
+        let mut claims = Vec::new();
+        let mut valid = Vec::new();
+        for (&key, block) in &self.blocks {
+            valid.push((key, block.valid));
+            for offset in 0..BLOCK_CELLS {
+                if block.profiles[offset] != 0 || block.lots[offset] != 0 {
+                    claims.push((key.cell(offset), block.profiles[offset], block.lots[offset]));
+                }
+            }
+        }
+        claims.sort_unstable();
+        valid.sort_unstable();
+        let mut frontages: Vec<_> = self.frontages.iter().collect();
+        frontages.sort_unstable();
+        (
+            debug_hash(&(&self.frames, claims)),
+            debug_hash(&(valid, frontages)),
+        )
+    }
+
     /// Restores consecutive frame identities, rejecting duplicates and invalid serialized bases.
     pub(crate) fn restore_saved_frame(&mut self, grid: u64, frame: GridFrame) -> bool {
         if grid != self.frames.len() as u64 + 1

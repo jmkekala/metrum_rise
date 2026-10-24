@@ -1000,10 +1000,16 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     core.precompute_road_mesh_data();
     assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
     let published = RwLock::new(road_tool_snapshot_from_core(core));
+    // `METRUM_COMMIT_PHASES` logs the commit's cell-lot regions (`economy_phases`).
+    let phases = std::env::var_os("METRUM_COMMIT_PHASES").is_some();
     for (sample, start) in starts.into_iter().enumerate() {
+        crate::debug::Channel::EconomyPhases.set_enabled(phases);
+        profile_control("enable");
         let road_total = Instant::now();
         let outcome = commit_trunk_branch(core, start, road_total);
         let commit_ms = road_total.elapsed().as_secs_f64() * 1e3;
+        profile_control("disable");
+        crate::debug::Channel::EconomyPhases.set_enabled(false);
         assert!(
             outcome.committed,
             "commit {sample} rejected: {}",
@@ -1017,6 +1023,18 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         let published_chunks = core.pending_road_mesh_chunks.len();
         assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
         let click_to_ack_ms = road_total.elapsed().as_secs_f64() * 1e3;
+        // The commit's zoning products, to compare builds that must not change them: cell
+        // paint and lot claims, parcels in store order and the queued lot regions; and the
+        // generated cell cache, which a build may legitimately fill less.
+        let (claims, generated) = core.zoning.cells.digests();
+        let lots_digest = format!(
+            "{:016x}",
+            crate::debug::work::debug_hash(&(
+                claims,
+                core.zoning.parcels(),
+                core.zoning.saved_cell_lot_queue(),
+            ))
+        );
         let m = &core.last_road_edit_metrics;
         let stages = serde_json::json!({
             "plan_ms": m.road_plan_ms, "undo_ms": m.undo_ms, "topology_ms": m.topology_ms,
@@ -1079,6 +1097,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "roadbed_clone_ms": roadbed_clone_ms, "water_clone_ms": water_clone_ms,
             "zoning_snap_ms": zoning_snap_ms, "cch_build_ms": cch_build_ms,
             "lanes_off_surface": lanes_off_surface,
+            "lots_digest": lots_digest, "generated_digest": format!("{generated:016x}"),
         });
         eprintln!("COMMIT_BREAKDOWN {record}");
     }
