@@ -17,6 +17,11 @@ use std::collections::{HashMap, HashSet};
 
 const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
 
+// The edit-sized sets the per-agent tests below probe, up to once per path node of every agent
+// on the network. Only membership is read (iteration orders are sorted or tie-broken), so the
+// fixed fast hasher answers exactly as SipHash did, at a fraction of the cost per probe.
+type EditSet<T> = HashSet<T, foldhash::fast::FixedState>;
+
 /// Agent lane references keyed by their pre-rebuild lane id; see
 /// [`AgentSystem::capture_lane_identities`].
 pub(crate) struct AgentLaneIdentities(HashMap<usize, LaneIdentity>);
@@ -117,7 +122,7 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) {
         let input_edges = affected_edges;
-        let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
+        let affected_edges = edit_closure(graph, affected_edges);
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
         if traffic_debug {
@@ -206,7 +211,7 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) {
         let input_edges = affected_edges;
-        let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
+        let affected_edges = edit_closure(graph, affected_edges);
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
         let affected_nodes = collect_nodes_for_edges(&affected_edges, graph);
         let max_dist_sq = LANE_REATTACH_MAX_DIST_M * LANE_REATTACH_MAX_DIST_M;
@@ -534,11 +539,18 @@ impl AgentSystem {
     }
 }
 
+// The lane rebuild closure of `affected_edges` (`LaneSystem::incremental_rebuild_edge_closure`).
+fn edit_closure(graph: &RegionGraph, affected_edges: &HashSet<usize>) -> EditSet<usize> {
+    LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges)
+        .into_iter()
+        .collect()
+}
+
 fn collect_lane_ids_for_edges(
-    affected_edges: &HashSet<usize>,
+    affected_edges: &EditSet<usize>,
     lane_system: &LaneSystem,
-) -> HashSet<usize> {
-    let mut affected_lane_ids = HashSet::new();
+) -> EditSet<usize> {
+    let mut affected_lane_ids = EditSet::default();
     for &edge_id in affected_edges {
         if let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) {
             affected_lane_ids.extend(lane_ids);
@@ -547,8 +559,8 @@ fn collect_lane_ids_for_edges(
     affected_lane_ids
 }
 
-fn collect_nodes_for_edges(affected_edges: &HashSet<usize>, graph: &RegionGraph) -> HashSet<u32> {
-    let mut affected_nodes = HashSet::new();
+fn collect_nodes_for_edges(affected_edges: &EditSet<usize>, graph: &RegionGraph) -> EditSet<u32> {
+    let mut affected_nodes = EditSet::default();
     for &edge_id in affected_edges {
         let Some(edge) = graph.get_edge(edge_id) else {
             continue;
@@ -562,8 +574,8 @@ fn collect_nodes_for_edges(affected_edges: &HashSet<usize>, graph: &RegionGraph)
 fn log_road_edit_affected(
     phase: &str,
     input_edges: &HashSet<usize>,
-    closure_edges: &HashSet<usize>,
-    affected_lane_ids: &HashSet<usize>,
+    closure_edges: &EditSet<usize>,
+    affected_lane_ids: &EditSet<usize>,
     graph: &RegionGraph,
 ) {
     let affected_nodes = collect_nodes_for_edges(closure_edges, graph);
@@ -597,7 +609,7 @@ fn log_agent_route_clear_after_road_edit(agents: &AgentSystem, i: usize) {
     );
 }
 
-fn sorted_ids<T: Copy + Ord>(values: &HashSet<T>) -> Vec<T> {
+fn sorted_ids<T: Copy + Ord, S>(values: &HashSet<T, S>) -> Vec<T> {
     let mut ids: Vec<T> = values.iter().copied().collect();
     ids.sort_unstable();
     ids
@@ -606,9 +618,9 @@ fn sorted_ids<T: Copy + Ord>(values: &HashSet<T>) -> Vec<T> {
 fn agent_route_state_touches_road_edit(
     agents: &AgentSystem,
     i: usize,
-    affected_edges: &HashSet<usize>,
-    affected_nodes: &HashSet<u32>,
-    affected_lane_ids: &HashSet<usize>,
+    affected_edges: &EditSet<usize>,
+    affected_nodes: &EditSet<u32>,
+    affected_lane_ids: &EditSet<usize>,
     lane_system: &LaneSystem,
 ) -> bool {
     let current_edge = agents.agents.current_edge[i];
@@ -657,8 +669,8 @@ fn agent_route_state_touches_road_edit(
 
 fn lane_u32_touches_road_edit(
     lane_id: u32,
-    affected_edges: &HashSet<usize>,
-    affected_lane_ids: &HashSet<usize>,
+    affected_edges: &EditSet<usize>,
+    affected_lane_ids: &EditSet<usize>,
     lane_system: &LaneSystem,
 ) -> bool {
     if lane_id == u32::MAX {
@@ -674,8 +686,8 @@ fn lane_u32_touches_road_edit(
 
 fn lane_usize_touches_road_edit(
     lane_id: usize,
-    affected_edges: &HashSet<usize>,
-    affected_lane_ids: &HashSet<usize>,
+    affected_edges: &EditSet<usize>,
+    affected_lane_ids: &EditSet<usize>,
     lane_system: &LaneSystem,
 ) -> bool {
     if lane_id == usize::MAX || affected_lane_ids.contains(&lane_id) {
@@ -693,8 +705,8 @@ fn lane_usize_touches_road_edit(
 
 fn invalidated_lane_reattach_edge(
     lane: &Lane,
-    affected_edges: &HashSet<usize>,
-    affected_lane_ids: &HashSet<usize>,
+    affected_edges: &EditSet<usize>,
+    affected_lane_ids: &EditSet<usize>,
     lane_system: &LaneSystem,
 ) -> Option<usize> {
     if lane.edge_id != usize::MAX {
@@ -728,10 +740,10 @@ struct LaneReattachCandidate {
     dist_sq: f32,
 }
 
-fn best_reattach_lane(
+fn best_reattach_lane<S>(
     agent_pos: Vector2,
     desired_lane_type: LaneType,
-    affected_edges: &HashSet<usize>,
+    affected_edges: &HashSet<usize, S>,
     lane_system: &LaneSystem,
     graph: &RegionGraph,
     max_dist_sq: f32,
