@@ -2519,6 +2519,15 @@ Part 3 (2026-10-24, same branch, rebased on `road` at `27797b92`):
   families with one subdivision, removes 26; the apex adds 8). `ROAD-68-D` adds 167 in all.
 - **Entry points.** `terrain_cdt_window_build_inputs_with_roads`, `terrain_cdt_road_tile_loops`,
   `roadbed::terrain::terrain_loops` and `grading::road_loop_grading` keep their signatures.
+- **Open: terrain pinholes (blocks the gate's seam acceptance).** The reference screenshots
+  (`road_junction_reference_test.gd`, oblique views over the production terrain payloads) show
+  33 isolated sky-coloured pixels through the terrain in 12 of the 20 fixtures, flat and sloped,
+  and none in the pre-D set from the same harness; the part 2 tree shows 40 at the same points,
+  so they predate part 3's station rule and apex. Several recur at the same screen point across
+  fixtures, so a fixed tile or patch boundary or corner near the junction cracks (a T-vertex
+  between tiles, between a refined tile and a contributor-free filler tile, or between the
+  refined and the regular patch). Next: a mesh test that every terrain edge of the fixtures'
+  patch payloads is shared by two faces, lies on a road outer chain or on the world boundary.
 - **Open: the yard test** `cars_and_walkers_enter_and_exit_on_compiled_yards` (`ROAD-68-D`
   ignore). A diagnostic over its three missing samples finds two site-side cases, not the roadbed
   clip. Building 1 (patch (17, 17), tile x 64..128, z -128..-64): both samples (u = 0.1 and

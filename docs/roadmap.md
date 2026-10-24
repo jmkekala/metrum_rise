@@ -83,7 +83,8 @@ share one grading envelope, and edits stamp only the tiles their old and new pie
 seams on tile sides are exact in both tiles. 24 of its 25 disabled tests are re-enabled and 23
 pass; the recorded Kuopio replay and the hillside fixture predate `ROAD-68-C` and wait for
 `ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled (a site paving and
-foundation coverage gap, still open). Part 3 fixed the economy perf contract regression (a
+foundation coverage gap, still open). The reference screenshots show single-pixel terrain
+pinholes, new in `ROAD-68-D` (a seam crack; open, blocking). Part 3 fixed the economy perf contract regression (a
 quadratic orientation test in the grading pass, and building-site changes re-grading roads): every
 timing is back within the control's range with identical work counts. The sloped T's terrain
 stage meets its 2 ms target at 1.85–1.88 ms (open question 22, resolved). Span rows follow one
