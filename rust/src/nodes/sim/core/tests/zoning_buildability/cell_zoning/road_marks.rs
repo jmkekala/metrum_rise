@@ -124,7 +124,7 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
     assert_eq!(initial[0], initial[1]);
 
     let mut step = |name: &str, edit: &dyn Fn(&mut SimCore) -> bool| {
-        let outcomes = cores.each_mut().map(|core| edit(core));
+        let outcomes = cores.each_mut().map(edit);
         assert_eq!(outcomes[0], outcomes[1], "{name}: outcome");
         assert!(outcomes[0], "{name}: the edit must apply");
         let [narrow, full] = cores.each_mut().map(products);
