@@ -134,8 +134,6 @@ pub struct TransitNetwork {
     /// Edge IDs that were added or modified during the current bulk-load sequence.
     /// Drained by `finalize_bulk_load` to drive `rebuild_edges_incremental`.
     pub bulk_dirty_edges: HashSet<usize>,
-    // New/reprofiled roads, distinct from existing roads dirtied only by splitting.
-    profile_authored_edges: HashSet<usize>,
     road_edit_split_undo: Option<Vec<topology::RoadSplitDependentsUndo>>,
     recorded_road_splits: Option<Vec<road_edit::PlannedRoadSplit>>,
     /// Per-zone-type flow fields for O(1) agent routing. Rebuilt lazily when dirty.
@@ -189,7 +187,6 @@ impl TransitNetwork {
             lane_system: lanes::LaneSystem::new(),
             bulk_load: false,
             bulk_dirty_edges: HashSet::new(),
-            profile_authored_edges: HashSet::new(),
             road_edit_split_undo: None,
             recorded_road_splits: None,
             flow_fields: FlowFieldSystem::new(),
@@ -222,7 +219,6 @@ impl TransitNetwork {
         self.bulk_load = false;
         graph.rebuild_intersection_clips();
         let dirty = std::mem::take(&mut self.bulk_dirty_edges);
-        self.profile_authored_edges.clear();
         self.lane_system.rebuild_edges_incremental(graph, &dirty);
         allocator.rebuild_entrance_cache(graph, &self.lane_system);
         dirty
@@ -241,7 +237,6 @@ impl TransitNetwork {
         self.frontage_delay_elapsed_s = 0.0;
         self.frontage_delay_revision = self.frontage_delay_revision.wrapping_add(1);
         self.roadbed.clear();
-        self.profile_authored_edges.clear();
         zoning.clear();
         allocator.clear();
     }
@@ -361,7 +356,6 @@ impl TransitNetwork {
         self.mark_point_dirty(graph.node(start).pos);
         self.mark_point_dirty(graph.node(end).pos);
 
-        self.mark_road_profile_authored(edge_id);
         if self.bulk_load {
             self.bulk_dirty_edges.insert(edge_id);
         }
@@ -404,12 +398,7 @@ impl TransitNetwork {
             }
             // Clips come from the junction layouts, and the profile solve pins arms up to them.
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            let authored_edges = std::mem::take(&mut self.profile_authored_edges);
-            let profile_changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
-                &affected_nodes,
-                &affected_edges,
-                &authored_edges,
-            );
+            let profile_changed_edges = graph.finalize_junction_endpoint_profiles(&affected_nodes);
             affected_edges.extend(profile_changed_edges);
             zoning.mark_cell_lots_for_roads(graph, affected_edges.iter().copied());
             self.lane_system

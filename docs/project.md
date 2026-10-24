@@ -334,8 +334,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   commit within one frame. The game may break between gates `ROAD-68-A`–`H`. `ROAD-68-A`,
   `ROAD-68-B` and `ROAD-68-C` are done: roads render as span pieces between node pieces built from
   each junction's layout, queries answer from the rendered triangles and buildings place again.
-  Terrain is not yet clipped to the roads (`ROAD-68-D`). Tests that need later gates are disabled
-  until then.
+  Terrain is not yet clipped to the roads (`ROAD-68-D`). Pre-D work makes profiles, clips and
+  pieces independent of drawing order on flat ground (open questions 15 and 16). Tests that need
+  later gates are disabled until then.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
@@ -1092,6 +1093,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ROAD-68` pre-D (branch `road68-pre2`, in progress): the junction profile solve derives every physical profile from its control polyline and the final topology, never rewriting control or ranking roads by build order; junction layouts read control geometry; strokes pin only to carriageways. Flat reference junctions are bitwise independent of drawing order; slopes remain [open question 16](roads.md#road-68-open-questions). See [`roads.md`](roads.md#edit-order-independence-pre-d).
 - `ROAD-68-C` follow-up 2 (branch `road`): every degree-two node crosses once again, as the legacy rule did (user decision 2026-10-24, [open question 12](roads.md#road-68-open-questions)): a bend on its node piece right outside the curve, a pass-through node on its arm's span beside the node, with kerb points from the span's section row there. Walkers can change sides at every node, so the walking planner's whole-network proof holds again, on the street-grid benchmark city too. See [`roads.md`](roads.md#one-crossing-per-degree-two-node-follow-up-2).
 - `ROAD-68-C` follow-up (branch `road`): curb returns are 3.5 m (D1), and pedestrian crossings come from the junction layout: each zebra fills the 3 m straight approach right outside the curve on the node piece, sidewalk lanes end on its crossing line, corner walks follow the layout's sidewalk, and spans carry no zebras. Bends cross only where forced, so walkers change sides only on crossings ([open question 12](roads.md#road-68-open-questions)). See [`roads.md`](roads.md#tighter-corners-and-junction-crosswalks-follow-up).
 - `ROAD-68-C` (branch `road`): junctions, bends and road ends render again as node pieces built from their junction layouts: carriageway core, curbs, sidewalks and curb faces sharing exact mouth sections with the spans, heights on each node's solved plane. Graph clips and the profile solve's hard zone come from the layout mouths, obtuse corners between two- and four-lane arms fit by extending the wider arm backwards, and layout failures reject placements with reasons. A four-way node piece builds in 0.071 ms. See [`roads.md`](roads.md#road-68-c--junction-layout-and-node-pieces).

@@ -18,7 +18,7 @@ const CAPTURE_SIZE := Vector2i(1600, 1000)
 const CONVENTIONS := {
 	"axes": "x east (slope rises toward +x), z south (toward camera); junction at the origin",
 	"camera": "fixed: 30 m above the surface point under the junction, pitched 50 degrees down, looking toward -z, offset +z",
-	"y_junction": "stem runs along +x ending at the origin; branches leave the origin at +/-(angle/2) from +x",
+	"y_junction": "stem runs along +x ending at the origin; branches leave the origin at +/-(angle/2) from +x; drawn stem first, except y_25_branches_first",
 	"bend": "first road ends at the origin heading +x; second leaves at +45 degrees (toward +z)",
 	"lanes": "default 1 forward + 1 backward lane per road unless the fixture says otherwise",
 }
@@ -83,6 +83,9 @@ func _fixtures() -> Array[Dictionary]:
 			_road(Vector2(-arm, 0), Vector2.ZERO),
 			_road(Vector2.ZERO, Vector2.from_angle(half) * arm),
 			_road(Vector2.ZERO, Vector2.from_angle(-half) * arm)]})
+	# The same 25-degree Y drawn branches first: invariant 6 wants images identical to y_25's.
+	var y25: Array = result[2].roads
+	result.append({"name": "y_25_branches_first", "angle_deg": 25, "roads": [y25[1], y25[2], y25[0]]})
 	result.append({"name": "bend_45", "roads": [_road(Vector2(-arm, 0), Vector2.ZERO), _road(Vector2.ZERO, Vector2.from_angle(deg_to_rad(45.0)) * arm)]})
 	result.append({"name": "terminal", "roads": [_road(Vector2(-arm, 0), Vector2.ZERO)]})
 	result.append({"name": "t_mixed_4lane_through", "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0), 2), _road(Vector2(0, 0), Vector2(0, arm))]})

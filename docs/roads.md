@@ -288,8 +288,10 @@ compute no crossing or corner geometry of their own
 
 - `Bend` and `JunctionN` use their solved plane `P`. The profile finalizer pins each incident
   arm's physical profile to `P` on `[0, mouth station]` and blends back to the source grade outside
-  it, as today. A knot at the mouth station makes the pin exact there: an adapted arm takes it in
-  its control polyline, a stable one in its physical profile only. A `Terminal` gets a plane
+  it. A knot at the mouth station makes the pin exact there. Every physical profile is derived
+  afresh from its edge's control polyline and the pins at both of its ends; the finalizer never
+  rewrites control polylines, and its plane solve has no edit roles, so profiles depend only on
+  the final graph ([pre-D edit-order independence](#edit-order-independence-pre-d)). A `Terminal` gets a plane
   through its road end and its mouth centreline point, with the arm's end grade along that run and
   no crossfall; it is read from the solved profile, so the finalizer leaves terminals alone.
 - Every node-piece vertex is at `P(x, z) + level`. A curb face is a vertical quad between the
@@ -726,6 +728,10 @@ These need a user decision; work that does not depend on them continues.
    the control polyline and drops this end's knot; the node then fails with `MouthOffPlane`
    (`junction_profile_mismatch`). No fixture hits it. Options: accept the rejection (current); keep
    pinned physical knots through the resample; or let the solve add mouth knots to stable control.
+   **Pre-D (question 15):** the case no longer exists. Every solve derives an edge's physical
+   profile from its control polyline with the mouth knots of both ends' current pins, so no solve
+   can drop the other end's knot, and nothing distinguishes stable from adapted arms. `ROAD-68-E`
+   only needs to confirm it on the preview path.
 8. **Saves from before `ROAD-68-C` (`ROAD-68-C`) — decided 2026-10-24 (user): accept the load repair; regenerate
    the reference fixtures with `ROAD-68-E`'s load rebuild; no migration code.** Their clips come from the legacy setback rule
    (about 5.5 m at a right-angle T) and their profiles are pinned only that far, while layout mouths
@@ -815,13 +821,44 @@ These need a user decision; work that does not depend on them continues.
     - **Verification.** Check the proof on the perf-contract cities, then re-run the economy
       performance contract against a matched control.
 15. **Drawing-order dependence (`ROAD-68-C`) — decided 2026-10-24 (user): root-cause before
-    `ROAD-68-D`.**
+    `ROAD-68-D`. Fixed on flat ground pre-D; the slope remainder is question 16.**
     - **The symptom.** The Y reference fixtures render about one colour level differently at
       the junction core after follow-up 2.
     - **Likely cause.** Each Y is drawn stem first, so its node is briefly a bend, and the bend
       crossing's mouth knots may persist in the profile.
     - **Rule.** Invariant 6 requires that an edit history producing the same graph produces the
       same pieces. Fix the cause, and add an edit-order test.
+    - **Root cause.** Four history channels, found by committing the reference Y and T fixtures
+      in different orders through `SimCore::commit_road`
+      ([pre-D](#edit-order-independence-pre-d)): the finalizer wrote mouth knots, 2 m supports and
+      plane heights into the control polylines of newly drawn arms, and kept old physical knots on
+      existing ones; its corridor ranking gave existing roads a bonus, so a Y's plane tilted
+      towards whichever branch came first; junction layouts read the physical profile, so clips
+      depended on the previous solve's knots; and strokes took their heights from the highest
+      visible road triangle, so a branch drawn over a terminal cap climbed its 12 cm sidewalk.
+    - **Result.** All four are fixed. Flat T, 2+2 T and Y fixtures (25°, 40°, 60°) now produce
+      bitwise-identical graph profiles, clips, node pieces and spans in every tested order
+      (`road_edit_order::flat_junctions_do_not_depend_on_drawing_order`). On the 2.5% slope
+      they still differ, by question 16.
+16. **Strokes pinned to the pieces their edit rebuilds (pre-D, from question 15) — open.**
+    - **The problem.** A stroke's prepared profile pins to the visible carriageway it crosses,
+      so a road meets a road it crosses or joins at that road's height. Near the node it joins,
+      that carriageway belongs to the node piece and spans the edit itself rebuilds: a terminal
+      cap, a bend or a neighbouring branch, depending on drawing order. On flat ground those
+      heights equal the terrain bitwise. On a slope they are the node plane `P(x, z)` or a span's
+      interpolated profile in `f32`, which differ from the terrain sample by about one ulp.
+    - **Effect.** The authored control heights near the node differ by an ulp between drawing
+      orders, so strictly the graphs differ. In a symmetric Y the two corridors (stem with
+      either branch) then tie to rounding, and the tie decides which branch takes the plane's
+      authority and supports: a visible difference in the core's tilt.
+    - **Evidence.** `road_edit_order::sloped_junctions_do_not_depend_on_drawing_order` (ignored
+      until decided) fails on the T at index 1 and 5 of the through halves and on the Y at index 1
+      of each branch.
+    - **Options.** (a) Exclude the edit's own dirty closure (node pieces at the nodes it joins or
+      splits, and their incident spans) from stroke support; this needs the topology plan before
+      the profile preparation. (b) Accept: different stroke heights are a different graph.
+      (c) Pin strokes to the terrain within the node extent of nodes they join.
+    - **Current default.** Carriageway-only pins (pre-D); nothing else changed.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -1502,6 +1539,58 @@ differ only in the junction core: by at most one colour level in the plan views,
 oblique views in the pattern where the unclipped terrain shows through the core (`ROAD-68-D`).
 Each Y is drawn stem first, so its node is a bend, now with a crossing, before the branches
 arrive.
+
+#### Edit-order independence (pre-D)
+
+**Status:** in progress 2026-10-24 ([open question 15](#road-68-open-questions)); the D4 taper
+([open question 9](#road-68-open-questions)) is not started.
+
+**The rule.** Physical profiles, clips and pieces derive from the final topology and authored
+state only (invariant 6):
+
+- **Profile solve** (`graph/rebuild/junction_profiles.rs`). `finalize_junction_endpoint_profiles`
+  takes only the affected nodes. For every road edge touching them it derives the physical
+  profile from the control polyline: a knot at each pinned end's mouth (the clip), that end's
+  2 m supports where it needs a vertical curve, heights on the end's plane up to the mouth and
+  eased back over the blend zone. Pins at both ends are re-derived, the far end's from the same
+  plane solve of its arms. Control polylines are never rewritten, and the edit-role inputs
+  (adaptable and authored edges, stable incidents, the previous-plane path, the authored-edge
+  ledger in `TransitNetwork`) are gone.
+- **Corridor authority.** Ranked by geometry only: a corridor whose plane every other arm
+  already meets within the 5 cm support tolerance comes first (a fall-line road crossed by a
+  contour road keeps its grade, as the existing-road bonus achieved before), then the
+  straightest and flattest pair, then incident order. A junction's other arms take supports.
+- **Layout input** (`roadbed/arms.rs`). Arm knots are the control polyline's XZ, as the
+  [junction layout](#junction-layout) contract says, not the physical profile, so clips never
+  read the knots the solve inserts. Heights and span stations come from the physical profile at
+  the same horizontal station. Node kinds (`incident_direction`) and the pass-through crossing
+  fit use the control polyline too.
+- **Stroke preparation** (`road_edit/input.rs`). A stroke pins only to visible carriageways, never
+  to raised sidewalks, curbs or caps ([open question 16](#road-68-open-questions) covers the
+  remaining carriageway pins on slopes).
+
+**Tests.** `nodes::sim::core::tests::road_edit_order`: the reference T, 2+2 T and Y (25°, 40°,
+60°) fixtures, committed in two to four orders each through `SimCore::commit_road`; graph control
+and physical profiles, clips, node-piece and span triangles must be bitwise equal. Flat: passes
+(it failed before on every fixture). Sloped: ignored on question 16. The finalizer tests in
+`graph/rebuild/tests.rs` now assert unchanged control polylines and supports in the physical
+profile. `ROAD-68` ignores: D 26 (the sloped order test), E 2, F 5.
+
+**Consequences.** Every edge at an affected node re-derives its profile, so an existing arm takes
+its mouth knot the first time its node is solved, and removing a branch returns the remaining arms
+to their authored grade. The crossing toggle now re-pins its node (it passed no adaptable edges
+before, so the solve did nothing). Open question 7's failure cannot occur: both ends' mouth knots
+are re-derived on every solve.
+
+**Checks** (fresh, WIP sources):
+
+- Debug library suite (`RAYON_NUM_THREADS=4 METRUM_DEBUG=0`): 1,813 passed, 0 failed, 186 ignored
+  (follow-up 2: 1,812, 0, 185).
+- Clippy (`--all-targets`) reports only the 59 legacy-tree warnings, and `cargo doc` reports no
+  missing docs.
+- `roadbed/` holds about 6,504 production lines (follow-up 2: 6,479).
+- Not yet run: `./run.sh --test`, the `roadbed_benchmark` junction cases and the economy
+  performance contract.
 
 ### `ROAD-68-D` — footprint and terrain
 

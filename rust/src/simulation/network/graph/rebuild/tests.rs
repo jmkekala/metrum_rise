@@ -3,7 +3,8 @@
 //! Junction profile rebuild regression tests.
 
 use super::junction_profiles::{
-    JUNCTION_PROFILE_MOUTH_MAX_GRADE, JUNCTION_PROFILE_SOLVE_SAMPLE_M, JunctionEndpointProfilePlane,
+    EndpointPin, JUNCTION_PROFILE_MOUTH_MAX_GRADE, JUNCTION_PROFILE_SOLVE_SAMPLE_M,
+    JunctionEndpointProfilePlane,
 };
 use crate::simulation::network::graph::data::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
@@ -43,11 +44,7 @@ fn final_junction_profile_preserves_a_supported_hillside_corridor() {
             graph.add_edge(edge);
         }
         graph.rebuild_intersection_clips();
-        graph.finalize_junction_endpoint_profiles_for_edges(
-            &HashSet::from([center]),
-            &HashSet::from([0, 1, 2, 3]),
-            &HashSet::from([2, 3]),
-        );
+        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
         let plane = graph
             .solved_junction_endpoint_profile_plane(center)
             .unwrap();
@@ -79,9 +76,8 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
         graph.add_edge(edge);
     }
     let nodes = HashSet::from([center]);
-    let dirty_edges = HashSet::from([0, 1, 2]);
     graph.rebuild_intersection_clips();
-    graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &dirty_edges, &HashSet::from([2]));
+    graph.finalize_junction_endpoint_profiles(&nodes);
     let solved: Vec<_> = graph
         .edges()
         .iter()
@@ -99,7 +95,7 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
         .map(|edge| (edge.geometry.clone(), edge.physical_geometry.clone()))
         .collect();
     for _ in 0..3 {
-        graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &dirty_edges, &HashSet::new());
+        graph.finalize_junction_endpoint_profiles(&nodes);
         for (edge, (control, physical)) in graph.edges().iter().zip(&solved) {
             assert_eq!(&edge.geometry, control);
             assert_eq!(edge.physical_geometry.len(), physical.len());
@@ -120,17 +116,25 @@ fn repeated_junction_solve_does_not_import_hard_control_pins_into_physical_profi
         Vector3::new(12.02, 6.01, 0.0),
         Vector3::new(48.0, 24.0, 0.0),
     ]);
-    let plane = JunctionEndpointProfilePlane {
-        origin: Vector3::ZERO,
-        grade_x: 0.1,
-        grade_z: 0.0,
-    };
-    for _ in 0..2 {
+    let pin = EndpointPin {
+        plane: JunctionEndpointProfilePlane {
+            origin: Vector3::ZERO,
+            grade_x: 0.1,
+            grade_z: 0.0,
+        },
         // A hard zone, as a junction layout mouth station gives it.
-        let core = 1.75;
-        RegionGraph::apply_junction_profile_plane_to_edge(
-            &mut edge, true, plane, true, false, core, true, None,
-        );
+        hard_zone_m: 1.75,
+        force_supports: true,
+        half_edge: false,
+    };
+    let control = edge.geometry.clone();
+    for _ in 0..2 {
+        let derived = RegionGraph::pinned_physical_profile(&edge, [Some(pin), None]);
+        assert_eq!(edge.geometry, control, "control is never rewritten");
+        if edge.physical_geometry.len() > 3 {
+            assert_eq!(derived, edge.physical_geometry, "derivation is idempotent");
+        }
+        edge.physical_geometry = derived;
         let mut checked_support_seam = false;
         for span in edge.physical_geometry.windows(2) {
             let run = (span[1].x - span[0].x).hypot(span[1].z - span[0].z);
@@ -301,20 +305,22 @@ fn bend_profile_adapts_new_corner_without_rewriting_stable_edge() {
     north_edge.end_node = north;
     graph.add_edge(north_edge);
 
-    let stable_before = graph.edge(0).geometry.clone();
-    let changed_edges = graph
-        .solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &HashSet::from([1]));
+    let controls_before = [0, 1].map(|edge| graph.edge(edge).geometry.clone());
+    graph.rebuild_intersection_clips();
+    let changed_edges = graph.solve_junction_endpoint_profiles_for_nodes(&HashSet::from([center]));
 
     assert_eq!(
         changed_edges,
-        HashSet::from([1]),
-        "only the newly authored bend leg should be adapted"
+        HashSet::from([0, 1]),
+        "both bend legs take the mouth knots of their physical profiles"
     );
-    assert_eq!(
-        graph.edge(0).geometry,
-        stable_before,
-        "stable existing bend leg should not be rewritten"
-    );
+    for (edge, control) in controls_before.iter().enumerate() {
+        assert_eq!(
+            &graph.edge(edge).geometry,
+            control,
+            "the profile solve never rewrites control geometry"
+        );
+    }
     assert!(
         graph
             .edge(1)
@@ -327,8 +333,10 @@ fn bend_profile_adapts_new_corner_without_rewriting_stable_edge() {
     let plane = graph
         .junction_endpoint_profile_plane(center)
         .expect("adapted bend should keep exposing its fitted plane");
+    let mut visible_edge = graph.edge(1).clone();
+    visible_edge.geometry = visible_edge.physical_geometry.clone();
     let solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
-        graph.edge(1),
+        &visible_edge,
         true,
         JUNCTION_PROFILE_SOLVE_SAMPLE_M,
     )
@@ -336,7 +344,7 @@ fn bend_profile_adapts_new_corner_without_rewriting_stable_edge() {
     let delta_m = (solve_sample.y - plane.height_at_xz(solve_sample.x, solve_sample.z)).abs();
     assert!(
         delta_m <= 0.05,
-        "control geometry should bring the new bend leg to the horizontal platform at the solve sample: delta={delta_m:.6}"
+        "the physical profile should bring the new bend leg to the platform at the solve sample: delta={delta_m:.6}"
     );
 }
 
@@ -363,12 +371,8 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
 
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
-    let adaptable_edges = HashSet::from([0, 1]);
-    let changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
-        &HashSet::from([center]),
-        &adaptable_edges,
-        &adaptable_edges,
-    );
+    let controls_before = [0, 1].map(|edge| graph.edge(edge).geometry.clone());
+    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
 
     assert_eq!(changed_edges.len(), 2);
     let plane = graph
@@ -380,21 +384,16 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
         "a source-compatible grade adjustment should respect the cap, got {grade:.3}"
     );
 
-    let east_geometry = &graph.edge(0).geometry;
+    assert_eq!(
+        [0, 1].map(|edge| graph.edge(edge).geometry.clone()),
+        controls_before,
+        "the profile solve never rewrites control geometry"
+    );
     assert!(
-        east_geometry.len() >= 8,
+        graph.edge(0).physical_geometry.len() >= 8,
         "finalization should insert vertical-curve support vertices outside the crossing core"
     );
     let solve_sample_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(graph.edge(0).physical_length * 0.5);
-    let solve_sample =
-        RegionGraph::sample_edge_geometry_from_endpoint(graph.edge(0), true, solve_sample_m)
-            .expect("solve-distance support sample should exist");
-    let expected_y = plane.height_at_xz(solve_sample.x, solve_sample.z);
-    let solve_sample_delta_m = (solve_sample.y - expected_y).abs();
-    assert!(
-        solve_sample_delta_m <= 0.05,
-        "control geometry should keep the capped solve sample available for later profile solves: delta={solve_sample_delta_m:.6}"
-    );
 
     let mut visible_edge = graph.edge(0).clone();
     visible_edge.geometry = visible_edge.physical_geometry.clone();
@@ -430,36 +429,25 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
 
 #[test]
 fn conservative_profile_materializes_supports_for_visible_vertical_curve() {
-    let mut edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(80.0, 20.0, 0.0)]);
-    let plane = JunctionEndpointProfilePlane {
-        origin: Vector3::ZERO,
-        grade_x: 0.0,
-        grade_z: 0.0,
+    let edge = profile_test_edge(vec![Vector3::ZERO, Vector3::new(80.0, 20.0, 0.0)]);
+    let pin = EndpointPin {
+        plane: JunctionEndpointProfilePlane {
+            origin: Vector3::ZERO,
+            grade_x: 0.0,
+            grade_z: 0.0,
+        },
+        // A hard zone, as a junction layout mouth station gives it.
+        hard_zone_m: 1.75,
+        force_supports: false,
+        half_edge: false,
     };
 
-    // A hard zone, as a junction layout mouth station gives it.
-    let core = 1.75;
-    RegionGraph::apply_junction_profile_plane_to_edge(
-        &mut edge, true, plane, false, false, core, true, None,
-    );
-
-    assert!(
-        edge.geometry.len() >= 8,
-        "conservative profile adaptation should materialize support vertices when the visible mouth needs a vertical curve"
-    );
-    let control_solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
-        &edge,
-        true,
-        JUNCTION_PROFILE_SOLVE_SAMPLE_M,
-    )
-    .expect("control solve sample should exist");
-    assert!(
-        control_solve_sample.y.abs() <= 0.05,
-        "control geometry keeps the solve sample on the profile plane"
-    );
-
     let mut visible_edge = edge.clone();
-    visible_edge.geometry = visible_edge.physical_geometry.clone();
+    visible_edge.geometry = RegionGraph::pinned_physical_profile(&edge, [Some(pin), None]);
+    assert!(
+        visible_edge.geometry.len() >= 8,
+        "profile adaptation should materialize support vertices when the visible mouth needs a vertical curve"
+    );
     let visible_solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
         &visible_edge,
         true,
@@ -498,23 +486,25 @@ fn junction_profile_preserves_authority_corridor_when_branch_connects_from_hill(
 
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
-    let changed_edges = graph.solve_junction_endpoint_profiles_for_edges(
-        &HashSet::from([center]),
-        &HashSet::from([1, 2]),
-    );
+    graph.solve_junction_endpoint_profiles_for_nodes(&HashSet::from([center]));
 
-    assert_eq!(
-        changed_edges,
-        HashSet::from([2]),
-        "split through-road mouth should stay authoritative; only the branch adapts"
-    );
+    for edge in [0, 1] {
+        assert!(
+            graph
+                .edge(edge)
+                .physical_geometry
+                .iter()
+                .all(|point| point.y == 0.0),
+            "the flat through corridor keeps its grade; only the branch adapts"
+        );
+    }
     assert_eq!(
         graph.edge(1).geometry,
         vec![Vector3::ZERO, Vector3::new(48.0, 0.0, 0.0)],
-        "opposite split half of the existing corridor should not be regraded"
+        "the profile solve never rewrites control geometry"
     );
     assert!(
-        graph.edge(2).geometry.len() >= 8,
+        graph.edge(2).physical_geometry.len() >= 8,
         "branch adaptation should materialize a smooth support transition"
     );
 
@@ -526,16 +516,16 @@ fn junction_profile_preserves_authority_corridor_when_branch_connects_from_hill(
         "flat through corridor should keep the junction plane flat, got grade {:.6}",
         plane.grade()
     );
-    let solve_sample = RegionGraph::sample_edge_geometry_from_endpoint(
-        graph.edge(2),
-        true,
-        JUNCTION_PROFILE_SOLVE_SAMPLE_M,
-    )
-    .expect("branch solve-distance support should exist");
-    assert!(
-        (solve_sample.y - plane.height_at_xz(solve_sample.x, solve_sample.z)).abs() <= 0.05,
-        "branch solve sample should adapt to the authority corridor plane"
-    );
+    let branch = graph.edge(2);
+    for point in &branch.physical_geometry {
+        if point.z <= branch.start_clip {
+            assert_eq!(
+                point.y,
+                plane.height_at_xz(point.x, point.z),
+                "the branch lies on the authority corridor plane up to its mouth"
+            );
+        }
+    }
 }
 
 #[test]
@@ -572,11 +562,7 @@ fn pass_through_bridge_approach_profile_does_not_exceed_authored_grade_cap() {
     graph.rebuild_intersection_clips();
     let authored_profile = graph.edge(approach_idx).physical_geometry.clone();
 
-    graph.finalize_junction_endpoint_profiles_for_edges(
-        &HashSet::from([center, east]),
-        &HashSet::from([approach_idx]),
-        &HashSet::from([approach_idx]),
-    );
+    graph.finalize_junction_endpoint_profiles(&HashSet::from([center, east]));
 
     assert_eq!(
         graph.edge(approach_idx).physical_geometry,
@@ -657,14 +643,9 @@ fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
     graph.add_edge(opposite_edge);
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
-    let changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
-        &HashSet::from([center]),
-        &HashSet::from([3]),
-        &HashSet::from([3]),
-    );
-    assert_eq!(
-        changed_edges,
-        HashSet::from([2, 3]),
+    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
+    assert!(
+        changed_edges.contains(&2) && changed_edges.contains(&3),
         "both branch surfaces must meet the preserved primary corridor; unchanged control authority does not imply unchanged physical geometry"
     );
     for (edge_idx, before_geometry) in stable_before.into_iter().enumerate() {

@@ -82,16 +82,20 @@ fn prepare_road_input_points(
     prepare_road_input_points_with_support(raw_points, terrain, |_, _| None)
 }
 
-// Prepares road-tool input while using visible road surfaces as hard profile pins.
+// Prepares road-tool input while using visible carriageways as hard profile pins.
 //
 // This keeps snapped/intersection road connections continuous while open-terrain samples stay
-// near source terrain.
+// near source terrain. Only carriageways pin: a centreline joins the carriageway it meets and
+// never climbs onto the raised sidewalk, curb or cap of a piece the edit itself rebuilds, so
+// its profile does not depend on which roads were drawn first (`ROAD-68` open question 15).
 fn prepare_road_input_points_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
 ) -> (Vec<Vector3>, EdgeClass) {
-    prepare_road_input_points_with_support(raw_points, terrain, |x, z| roadbed.height_at(x, z))
+    prepare_road_input_points_with_support(raw_points, terrain, |x, z| {
+        roadbed.carriageway_height_at(x, z)
+    })
 }
 
 // Prepares road-tool input and, when extending a terminal, solves the old and new edge as

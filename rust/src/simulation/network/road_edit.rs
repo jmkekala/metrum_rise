@@ -207,29 +207,19 @@ impl RoadTopologyPlan {
 }
 
 impl TransitNetwork {
-    /// Records profile intent, separately from topology dirtiness, in the local edit ledger.
-    pub(crate) fn mark_road_profile_authored(&mut self, edge_idx: usize) {
-        self.profile_authored_edges.insert(edge_idx);
-    }
-
     /// Solves the same local junction/profile/clip scope for preview and unplanned commits.
     pub(crate) fn finalize_road_geometry(
         &mut self,
         graph: &mut RegionGraph,
     ) -> FinalizedRoadGeometry {
         let mut dirty_edges = std::mem::take(&mut self.bulk_dirty_edges);
-        let authored_edges = std::mem::take(&mut self.profile_authored_edges);
         let affected_nodes = self.bulk_surface_profile_nodes(graph, &dirty_edges);
         // XZ -> layout -> clips -> profile solve: the solve pins each arm up to its layout mouth.
         let start = Instant::now();
         graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
         let clips_us = start.elapsed().as_micros();
         let start = Instant::now();
-        dirty_edges.extend(graph.finalize_junction_endpoint_profiles_for_edges(
-            &affected_nodes,
-            &dirty_edges,
-            &authored_edges,
-        ));
+        dirty_edges.extend(graph.finalize_junction_endpoint_profiles(&affected_nodes));
         let profile_us = start.elapsed().as_micros();
         self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
         FinalizedRoadGeometry {
@@ -361,7 +351,6 @@ impl TransitNetwork {
             .collect();
         self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
         self.bulk_dirty_edges.clear();
-        self.profile_authored_edges.clear();
         Some(FinalizedRoadGeometry {
             dirty_edges,
             affected_nodes,

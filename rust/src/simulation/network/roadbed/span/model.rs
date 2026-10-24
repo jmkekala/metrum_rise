@@ -535,12 +535,13 @@ fn node_at(graph: &RegionGraph, edge: &Edge, end: EdgeEnd) -> u32 {
     })
 }
 
-// Direction away from the node, from the endpoint to the first distinct point.
+// Direction away from the node, from the endpoint to the first distinct point of the control
+// polyline: node kinds come from authored geometry, as the graph's profile solve takes them.
 pub(in crate::simulation::network::roadbed) fn incident_direction(
     edge: &Edge,
     end: EdgeEnd,
 ) -> Option<RoadVec2> {
-    let points = edge_points(edge);
+    let points = &edge.geometry;
     if points.len() < 2 {
         return None;
     }

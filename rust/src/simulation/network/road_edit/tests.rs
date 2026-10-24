@@ -79,7 +79,6 @@ impl Fixture {
             self.network
                 .mark_surface_dirty_from_sets(&HashSet::from([id]), &nodes);
             self.network.bulk_dirty_edges.insert(id);
-            self.network.mark_road_profile_authored(id);
         }
         self.network.add_road(
             &mut self.graph,
@@ -257,8 +256,6 @@ fn hillside_crossing_keeps_existing_corridor_authority_after_splits() {
                 );
             }
         }
-        assert!(cold.network.profile_authored_edges.is_empty());
-        assert!(planned.network.profile_authored_edges.is_empty());
     }
 }
 

@@ -7,6 +7,7 @@ mod building_site_terrain;
 mod commute_bounds;
 mod construction_throughput;
 pub(super) mod fields;
+mod road_edit_order;
 mod road_plan_scaling;
 mod road_terrain_plan;
 mod zoning_buildability;
@@ -661,11 +662,7 @@ fn failed_junction_publishes_a_gap_not_its_previous_mesh() {
         edge.physical_geometry = points;
     }
     core.region_graph
-        .finalize_junction_endpoint_profiles_for_edges(
-            &HashSet::from([center]),
-            &edge_ids.iter().copied().collect(),
-            &edge_ids.iter().copied().collect(),
-        );
+        .finalize_junction_endpoint_profiles(&HashSet::from([center]));
     // Steep planar roads alone are not a contradiction. Break the actual shared seam.
     core.region_graph
         .edge_mut(edge_ids[0])
@@ -738,7 +735,6 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
             .add_edge(test_road_edge(center, north, vec![center_pos, north_pos]));
 
     core.transit_network.bulk_dirty_edges.insert(new_edge);
-    core.transit_network.mark_road_profile_authored(new_edge);
     core.transit_network.roadbed.mark_edge_dirty(new_edge);
     core.transit_network.roadbed.mark_node_dirty(center);
     core.transit_network.roadbed.mark_node_dirty(north);

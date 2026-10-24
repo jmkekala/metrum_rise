@@ -47,7 +47,6 @@ impl TransitNetwork {
         &mut self,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
-        self.profile_authored_edges.clear();
         if let Some(journal) = self.road_edit_split_undo.take() {
             for undo in journal.into_iter().rev() {
                 allocator.restore_split_frontages(&undo.buildings);
@@ -1023,9 +1022,6 @@ pub fn split_edge(
     );
 
     network.mark_point_dirty(split_pos);
-    if network.profile_authored_edges.contains(&edge_id) {
-        network.mark_road_profile_authored(new_edge_id);
-    }
     if network.bulk_load {
         network.bulk_dirty_edges.insert(edge_id);
         network.bulk_dirty_edges.insert(new_edge_id);

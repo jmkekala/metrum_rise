@@ -675,13 +675,10 @@ fn process_validation_graph_intersections(
     network.bulk_load = true;
     network.recorded_road_splits = Some(Vec::new());
     network.bulk_dirty_edges.insert(new_edge_idx);
-    network.mark_road_profile_authored(new_edge_idx);
     // Terminal extensions already replaced the source edge's profile in the excerpt.
-    // Commit adds that edge to the bulk ledger too; omitting it re-solves sloped bends
-    // with a different set of pinned/adjustable endpoints than authoritative insertion.
+    // Commit adds that edge to the bulk ledger too, so both solve the same nodes.
     if let Some(edge_idx) = reprofiled_edge {
         network.bulk_dirty_edges.insert(edge_idx);
-        network.mark_road_profile_authored(edge_idx);
     }
     topology::process_intersections(
         &mut network,

@@ -4,9 +4,12 @@
 //! away from the node, the rule that decides which nodes get a layout, and the D8 rule that
 //! decides which arms cross ([`pass_through_crossings`] for nodes without one).
 //!
-//! An arm's knots are its edge's roadbed centreline points (the physical profile, else the
-//! control polyline; the polyline spans section) in world XZ, walked away from the node, with
-//! exact duplicates dropped. Stations are horizontal metres from the node. Each knot's lateral
+//! An arm's knots are its edge's control polyline points in world XZ, walked away from the node,
+//! with exact duplicates dropped: authored geometry only, so the layout, and the clips it sets,
+//! never read the knots the profile solve inserts into the physical profile (`ROAD-68`
+//! invariant 6). Stations are horizontal metres from the node. Heights and span stations come
+//! from the physical profile, the roadbed centreline spans section, which follows the same
+//! alignment with extra knots on its segments. Each knot's lateral
 //! axis is the span frame's: the centred secant at interior knots and the segment direction at
 //! the two ends, rotated a quarter turn to the left of the outward direction. Bands come from the
 //! edge's [`RoadProfile`]: for an arm leaving from its edge's start, the layout's left is the
@@ -40,6 +43,7 @@ pub(super) struct CentrelinePosition {
 struct ArmRecord {
     key: ArmKey,
     knots: Range<usize>,
+    centreline: Range<usize>,
     left: Range<usize>,
     left_core: usize,
     right: Range<usize>,
@@ -57,8 +61,9 @@ pub(crate) struct NodeArms {
     pub(super) position: RoadVec2,
     arms: Vec<ArmRecord>,
     knots: Vec<ArmKnot>,
-    // Per knot: its index into the edge's centreline points and its height there.
-    knot_points: Vec<(usize, f64)>,
+    // Per arm, its edge's physical centreline walked away from the node: horizontal station,
+    // index into the edge's centreline points, and height.
+    centreline: Vec<(f64, usize, f64)>,
     bands: Vec<ArmBand>,
 }
 
@@ -82,7 +87,7 @@ impl NodeArms {
             position: RoadVec2::new(f64::from(pos.x), f64::from(pos.z)),
             arms: Vec::with_capacity(incidents.len()),
             knots: Vec::new(),
-            knot_points: Vec::new(),
+            centreline: Vec::new(),
             bands: Vec::new(),
         };
         for (index, &(key, _)) in incidents.iter().enumerate() {
@@ -93,16 +98,9 @@ impl NodeArms {
     }
 
     fn push_arm(&mut self, key: ArmKey, edge: &Edge, crossable: bool) {
-        let points = edge_points(edge);
-        let last = points.len().saturating_sub(1);
         let knots_start = self.knots.len();
         let mut station_m = 0.0;
-        for walked in 0..points.len() {
-            let index = match key.end {
-                EdgeEnd::Start => walked,
-                EdgeEnd::End => last - walked,
-            };
-            let point = points[index];
+        for (_, point) in walk_away(&edge.geometry, key.end) {
             let mut position = RoadVec2::new(f64::from(point.x), f64::from(point.z));
             if self.knots.len() == knots_start {
                 position = self.position;
@@ -118,7 +116,18 @@ impl NodeArms {
                 lateral: RoadVec2::ZERO,
                 station_m,
             });
-            self.knot_points.push((index, f64::from(point.y)));
+        }
+        let centreline_start = self.centreline.len();
+        let mut centreline_m = 0.0;
+        let mut previous = None;
+        for (index, point) in walk_away(edge_points(edge), key.end) {
+            let position = RoadVec2::new(f64::from(point.x), f64::from(point.z));
+            if let Some(previous) = previous {
+                centreline_m += position.distance(previous);
+            }
+            previous = Some(position);
+            self.centreline
+                .push((centreline_m, index, f64::from(point.y)));
         }
         let knots = knots_start..self.knots.len();
         set_span_frame_laterals(&mut self.knots[knots.clone()]);
@@ -126,6 +135,7 @@ impl NodeArms {
         self.arms.push(ArmRecord {
             key,
             knots,
+            centreline: centreline_start..self.centreline.len(),
             left,
             left_core,
             right,
@@ -217,18 +227,20 @@ impl NodeArms {
         JunctionLayout::build(self.position, &inputs)
     }
 
-    /// Where station `station_m` of arm `index` lies on its edge's centreline points, and the
-    /// centreline height there, both by the segment rule of [`ArmInput::offset_point`].
+    /// Where horizontal station `station_m` of arm `index` lies on its edge's centreline points
+    /// (the physical profile), and the finalized centreline height there: the first segment that
+    /// reaches the station, interpolated linearly.
     pub(super) fn centreline_at(&self, index: usize, station_m: f64) -> (CentrelinePosition, f64) {
-        let arm = &self.arms[index];
-        let knots = &self.knots[arm.knots.clone()];
-        let points = &self.knot_points[arm.knots.clone()];
-        let segment = knots[1..]
-            .partition_point(|knot| knot.station_m < station_m)
-            .min(knots.len() - 2);
-        let t = (station_m - knots[segment].station_m)
-            / (knots[segment + 1].station_m - knots[segment].station_m);
-        let ((from, from_y), (to, to_y)) = (points[segment], points[segment + 1]);
+        let points = &self.centreline[self.arms[index].centreline.clone()];
+        let segment = points[1..]
+            .partition_point(|&(station, _, _)| station < station_m)
+            .min(points.len() - 2);
+        let ((from_m, from, from_y), (to_m, to, to_y)) = (points[segment], points[segment + 1]);
+        let t = if to_m > from_m {
+            (station_m - from_m) / (to_m - from_m)
+        } else {
+            0.0
+        };
         let height_m = from_y * (1.0 - t) + to_y * t;
         let position = if from < to {
             CentrelinePosition {
@@ -246,10 +258,22 @@ impl NodeArms {
         (position, height_m)
     }
 
-    /// Height of the node's own centreline point (its first knot).
+    /// Height of the node's own centreline point.
     pub(super) fn node_height_m(&self, index: usize) -> f64 {
-        self.knot_points[self.arms[index].knots.start].1
+        self.centreline[self.arms[index].centreline.start].2
     }
+}
+
+// An edge's points walked away from the node at `end`, with their indices.
+fn walk_away(points: &[Vector3], end: EdgeEnd) -> impl Iterator<Item = (usize, Vector3)> + '_ {
+    let last = points.len().saturating_sub(1);
+    (0..points.len()).map(move |walked| {
+        let index = match end {
+            EdgeEnd::Start => walked,
+            EdgeEnd::End => last - walked,
+        };
+        (index, points[index])
+    })
 }
 
 // Span-frame laterals: left of the centred secant at interior knots, of the first and last
@@ -365,7 +389,7 @@ fn degree_two_crossings(
     let pass_through = passes_through(&arms);
     let fits = |key: ArmKey| {
         !pass_through
-            || 0.5 * horizontal_length_m(edge_points(graph.edge(key.edge))) >= CROSSWALK_DEPTH_M
+            || 0.5 * horizontal_length_m(&graph.edge(key.edge).geometry) >= CROSSWALK_DEPTH_M
     };
     let angle = |(_, direction): (ArmKey, RoadVec2)| direction.y.atan2(direction.x);
     let first = match angle(arms[0])
@@ -395,8 +419,8 @@ fn has_sidewalks(graph: &RegionGraph, key: ArmKey) -> bool {
         && edge.allowed_types & TransitFlags::FOOT != 0
 }
 
-// Horizontal length of a centreline: the station measure of `NodeArms` (exact duplicates add
-// nothing).
+// Horizontal length of a control polyline: the station measure of `NodeArms` (exact duplicates
+// add nothing).
 fn horizontal_length_m(points: &[Vector3]) -> f64 {
     points
         .windows(2)

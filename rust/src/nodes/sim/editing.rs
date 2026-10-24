@@ -1364,7 +1364,6 @@ impl SimCore {
         self.transit_network
             .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
 
-        self.transit_network.mark_road_profile_authored(edge_idx);
         if self.transit_network.bulk_load {
             self.transit_network.bulk_dirty_edges.insert(edge_idx);
         } else {
@@ -1997,14 +1996,10 @@ impl SimCore {
         let nodes = HashSet::from([node]);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(&nodes);
-        // Every arm is stable: a crossing re-pins profiles, it never reshapes control geometry.
+        // A crossing moves the mouths, so the node's arms re-derive their profiles.
         let changed = self
             .region_graph
-            .finalize_junction_endpoint_profiles_for_edges(
-                &nodes,
-                &HashSet::new(),
-                &HashSet::new(),
-            );
+            .finalize_junction_endpoint_profiles(&nodes);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network
