@@ -1715,6 +1715,15 @@ mod tests {
         }
     }
 
+    // D5 (`ROAD-68` open question 14): footpath junctions keep the whole-network proof.
+    #[test]
+    fn walking_proof_holds_at_footpath_junctions() {
+        use crate::simulation::network::roadbed::fixtures::footpath_fixtures;
+        for (name, mut graph) in [false, true].into_iter().flat_map(footpath_fixtures) {
+            assert!(walking_proof(&mut graph), "{name}");
+        }
+    }
+
     #[test]
     fn prepared_commute_queries_match_connector_paths_without_growing_storage() {
         let mut graph = RegionGraph::new();

@@ -2058,7 +2058,6 @@ fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: node 1 joins a footpath to two roads (D5), so it has no node piece yet"]
 fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();
@@ -2079,9 +2078,22 @@ fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
             .pieces_in_bounds([f64::MIN, f64::MIN, f64::MAX, f64::MAX])
             .any(|(piece, _)| piece == crate::simulation::network::roadbed::PieceId::Node(1))
     );
+    // A save from before `ROAD-68-C` holds legacy clips and an unpinned footpath (D5), so the
+    // load repair re-solves node 1 (`ROAD-68` open question 8): profiles and clips change, the
+    // authored alignment only gains support knots.
     for (edge, saved) in graph.edges().iter().zip(&saved_edges) {
-        assert_eq!(edge.physical_geometry, saved.physical_geometry);
-        assert_eq!(edge.start_clip, saved.start_clip);
-        assert_eq!(edge.end_clip, saved.end_clip);
+        let xz = |points: &[Vector3]| -> Vec<(u32, u32)> {
+            points.iter().map(|p| (p.x.to_bits(), p.z.to_bits())).collect()
+        };
+        let mut loaded = xz(&edge.geometry).into_iter();
+        assert!(
+            xz(&saved.geometry)
+                .into_iter()
+                .all(|point| loaded.any(|kept| kept == point)),
+            "the authored alignment is kept"
+        );
     }
+    let footpath = graph.edge(1);
+    assert_eq!(footpath.primary_type, crate::simulation::network::types::TransitType::Foot);
+    assert!(footpath.start_clip > 0.0, "the footpath ends at its layout mouth");
 }

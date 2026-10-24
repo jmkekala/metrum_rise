@@ -197,74 +197,7 @@ fn node_pieces_are_watertight_and_meet_spans_on_shared_mouth_edges() {
         for (name, graph) in fixtures(sloped) {
             let roadbed = compiled(&graph);
             for piece in node_pieces(&roadbed, &graph) {
-                let mesh = piece.mesh();
-                let uses = edge_uses(mesh);
-                let chains = chain_edges(mesh);
-                let mut mouth_points = BTreeSet::new();
-                for (_, mouth) in piece.mouths() {
-                    mouth_points.extend(mouth.vertices.iter().map(|&point| bits(point)));
-                }
-                for (&(a, b), &count) in &uses {
-                    let at_mouth = piece.mouths().iter().any(|(_, mouth)| {
-                        let row: BTreeSet<_> = mouth.vertices.iter().map(|&p| bits(p)).collect();
-                        row.contains(&a) && row.contains(&b)
-                    });
-                    match count {
-                        2 => assert!(!chains.contains(&(a, b)), "{name}: shared chain edge"),
-                        1 => assert!(
-                            at_mouth || chains.contains(&(a, b)),
-                            "{name} node {}: open edge {a:?} {b:?}",
-                            piece.node()
-                        ),
-                        _ => panic!("{name} node {}: edge borders {count}", piece.node()),
-                    }
-                }
-                for chain in &chains {
-                    assert_eq!(uses.get(chain), Some(&1), "{name}: chain edge borders one");
-                }
-                // Every open mouth edge is an open mouth edge of the span there, bitwise.
-                for (key, mouth) in piece.mouths() {
-                    let Some(span) = span_of(&roadbed, *key) else {
-                        continue;
-                    };
-                    let shared = span_mouth(span, key.end);
-                    assert_eq!(
-                        shared.vertices, mouth.vertices,
-                        "{name}: span copies the mouth"
-                    );
-                    let span_uses = edge_uses(span.mesh());
-                    let row: BTreeSet<_> = mouth.vertices.iter().map(|&p| bits(p)).collect();
-                    for (edge, &count) in &uses {
-                        if count == 1 && row.contains(&edge.0) && row.contains(&edge.1) {
-                            let point = |b: PointBits| b.map(f64::from_bits);
-                            assert_eq!(
-                                span_uses.get(edge),
-                                Some(&1),
-                                "{name}: mouth edge {:?} {:?} of {key:?}, row {:?}",
-                                point(edge.0),
-                                point(edge.1),
-                                mouth.vertices
-                            );
-                        }
-                    }
-                }
-                // Curb faces look at the lower band: a step off the face lands on ground level.
-                for triangle in mesh.curb_face_triangles() {
-                    let [a, b, c] = triangle.map(|vertex| mesh.positions()[vertex as usize]);
-                    let normal = -(b - a).cross(c - a);
-                    let centroid = (a + b + c) / 3.0;
-                    let probe = RoadVec2::new(centroid.x, centroid.z)
-                        + RoadVec2::new(normal.x, normal.z).normalize() * 0.05;
-                    let ground = piece.surface_height_m(probe, Level::Ground);
-                    let height = roadbed
-                        .height_at(probe.x as f32, probe.y as f32)
-                        .expect("road beside a curb face");
-                    assert!(
-                        (height - ground).abs() < 0.02,
-                        "{name} node {}: curb face looks at {height} not ground {ground}",
-                        piece.node()
-                    );
-                }
+                check_watertight(&name, &roadbed, piece);
             }
         }
     }
@@ -356,6 +289,80 @@ fn width_changes_leave_no_slivers_stray_curb_faces_or_chain_steps() {
                 }
             }
         }
+    }
+}
+
+// Every edge of `piece` borders two triangles except its outer-chain and mouth edges, every open
+// mouth edge is an open mouth edge of the span there bitwise, and curb faces look at the lower
+// band.
+fn check_watertight(name: &str, roadbed: &RoadbedSystem, piece: &NodePiece) {
+    let mesh = piece.mesh();
+    let uses = edge_uses(mesh);
+    let chains = chain_edges(mesh);
+    let mut mouth_points = BTreeSet::new();
+    for (_, mouth) in piece.mouths() {
+        mouth_points.extend(mouth.vertices.iter().map(|&point| bits(point)));
+    }
+    for (&(a, b), &count) in &uses {
+        let at_mouth = piece.mouths().iter().any(|(_, mouth)| {
+            let row: BTreeSet<_> = mouth.vertices.iter().map(|&p| bits(p)).collect();
+            row.contains(&a) && row.contains(&b)
+        });
+        match count {
+            2 => assert!(!chains.contains(&(a, b)), "{name}: shared chain edge"),
+            1 => assert!(
+                at_mouth || chains.contains(&(a, b)),
+                "{name} node {}: open edge {a:?} {b:?}",
+                piece.node()
+            ),
+            _ => panic!("{name} node {}: edge borders {count}", piece.node()),
+        }
+    }
+    for chain in &chains {
+        assert_eq!(uses.get(chain), Some(&1), "{name}: chain edge borders one");
+    }
+    // Every open mouth edge is an open mouth edge of the span there, bitwise.
+    for (key, mouth) in piece.mouths() {
+        let Some(span) = span_of(roadbed, *key) else {
+            continue;
+        };
+        let shared = span_mouth(span, key.end);
+        assert_eq!(
+            shared.vertices, mouth.vertices,
+            "{name}: span copies the mouth"
+        );
+        let span_uses = edge_uses(span.mesh());
+        let row: BTreeSet<_> = mouth.vertices.iter().map(|&p| bits(p)).collect();
+        for (edge, &count) in &uses {
+            if count == 1 && row.contains(&edge.0) && row.contains(&edge.1) {
+                let point = |b: PointBits| b.map(f64::from_bits);
+                assert_eq!(
+                    span_uses.get(edge),
+                    Some(&1),
+                    "{name}: mouth edge {:?} {:?} of {key:?}, row {:?}",
+                    point(edge.0),
+                    point(edge.1),
+                    mouth.vertices
+                );
+            }
+        }
+    }
+    // Curb faces look at the lower band: a step off the face lands on ground level.
+    for triangle in mesh.curb_face_triangles() {
+        let [a, b, c] = triangle.map(|vertex| mesh.positions()[vertex as usize]);
+        let normal = -(b - a).cross(c - a);
+        let centroid = (a + b + c) / 3.0;
+        let probe = RoadVec2::new(centroid.x, centroid.z)
+            + RoadVec2::new(normal.x, normal.z).normalize() * 0.05;
+        let ground = piece.surface_height_m(probe, Level::Ground);
+        let height = roadbed
+            .height_at(probe.x as f32, probe.y as f32)
+            .expect("road beside a curb face");
+        assert!(
+            (height - ground).abs() < 0.02,
+            "{name} node {}: curb face looks at {height} not ground {ground}",
+            piece.node()
+        );
     }
 }
 
@@ -548,3 +555,5 @@ fn an_edit_rebuilds_only_its_closure() {
         assert_eq!(generation != &before[id], rebuilt, "{id:?}");
     }
 }
+
+mod footpaths;

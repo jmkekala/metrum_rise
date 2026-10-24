@@ -36,6 +36,7 @@ impl OwnedArm {
             },
             max_station_m: self.max_station_m,
             crossable: self.crossable,
+            attached: false,
         }
     }
 }
@@ -185,7 +186,10 @@ fn assert_invariants(layout: &JunctionLayout, arms: &[OwnedArm]) {
         assert!(arm.mouth_station_m <= input.max_station_m);
     }
     let core = &layout.core;
-    assert!(signed_area(core) > 0.0, "core loop runs counter-clockwise");
+    assert!(
+        signed_area(core, |vertex| vertex.position) > 0.0,
+        "core loop runs counter-clockwise"
+    );
     // An arm side's carriageway edge runs on its sector's first boundary.
     let edge_of = |arm: usize, side: Side| {
         let count = layout.arms.len();

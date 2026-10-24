@@ -54,10 +54,14 @@ outside the curve, and on a pass-through node's span beside the node, so walkers
 at every node again and the walking planner's whole-network proof holds. Pre-D work (2026-10-24,
 open questions 15 and 9): physical profiles, clips and pieces derive from the final graph only,
 so flat reference junctions no longer depend on drawing order (slopes remain open question 16),
-and straight width changes taper along both approaches (D4). Tests that need later
-gates are disabled until then (33 Rust tests, 4 Godot scripts). `ROAD-68-D`–`ROAD-68-H` are open,
-and `roads.md` lists sixteen open questions; open question 16 (strokes pinned to the pieces their
-edit rebuilds, on slopes) needs a decision. Design,
+and straight width changes taper along both approaches (D4). Footpaths meeting roads join the
+sidewalk ring at sidewalk height on shared vertices (D5, open question 14), footpath-only nodes
+lay out as ordinary arms, footpath lanes end at their layout mouths and join the corner walks,
+and a bend whose crossing does not fit on its first arm crosses on the other (open question 13).
+Tests that need later gates are disabled until then (32 Rust tests, 4 Godot scripts).
+`ROAD-68-D`–`ROAD-68-H` are open, and `roads.md` lists seventeen open questions; open question 16
+(strokes pinned to the pieces their edit rebuilds, on slopes) needs a decision, and open question
+17 (footpath attachment choices) records conservative defaults to confirm. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

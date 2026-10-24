@@ -9,6 +9,7 @@ use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use godot::prelude::Vector3;
+use std::collections::HashSet;
 
 /// Grade of the sloped fixtures along +X.
 pub(crate) const SLOPE: f32 = 0.025;
@@ -130,4 +131,78 @@ pub(crate) fn mixed_profiles(sloped: bool) -> RegionGraph {
     });
     graph.rebuild_intersection_clips();
     graph
+}
+
+/// Footpath width in the footpath fixtures.
+pub(crate) const FOOTPATH_M: f32 = 2.5;
+
+// A node at the origin with arms of `(angle in degrees, footpath)`, each ending at a terminal:
+// two-lane roads with sidewalks of 120 m and footpaths of 80 m. Even arms leave the hub from
+// their edge's start, odd ones from its end.
+fn footpath_star(arms: &[(f32, bool)], sloped: bool) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    let hub = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
+    for (index, &(angle_deg, footpath)) in arms.iter().enumerate() {
+        let length = if footpath { 80.0 } else { 120.0 };
+        let (sin, cos) = angle_deg.to_radians().sin_cos();
+        let far = graph.add_node(
+            point(cos * length, sin * length, sloped),
+            NodeType::Junction,
+        );
+        let (a, b) = if index % 2 == 0 {
+            (hub, far)
+        } else {
+            (far, hub)
+        };
+        let edge = connect(&mut graph, a, b, 7.0, sloped);
+        let edge = graph.edge_mut(edge);
+        if footpath {
+            edge.primary_type = TransitType::Foot;
+            edge.allowed_types = TransitFlags::FOOT;
+            edge.width = FOOTPATH_M;
+            edge.fwd_lanes = 0;
+        } else {
+            edge.fwd_lanes = 1;
+            edge.bkw_lanes = 1;
+        }
+    }
+    finalize(&mut graph);
+    graph
+}
+
+/// Computes the graph clips and runs the profile finalizer over every node and edge, as an edit
+/// does: attached footpaths are pinned to sidewalk height (D5).
+pub(crate) fn finalize(graph: &mut RegionGraph) {
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let nodes: HashSet<u32> = (0..graph.node_count() as u32).collect();
+    graph.finalize_junction_endpoint_profiles(&nodes);
+}
+
+/// Footpath junction fixtures at node 0 (D5), each with its name: a footpath in a T's corner and
+/// beside one of its arms, at a road end straight on and to the side, across a straight road,
+/// on both sides of a bend, and footpaths meeting only footpaths at degree one, two and three.
+pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
+    let road = |angle: f32| (angle, false);
+    let path = |angle: f32| (angle, true);
+    [
+        (
+            "t_corner",
+            vec![road(0.0), road(180.0), road(270.0), path(315.0)],
+        ),
+        (
+            "t_beside_arm",
+            vec![road(0.0), road(180.0), road(270.0), path(300.0)],
+        ),
+        ("road_end", vec![road(0.0), path(180.0)]),
+        ("road_end_side", vec![road(0.0), path(90.0)]),
+        ("through_road", vec![road(0.0), road(180.0), path(270.0)]),
+        ("bend", vec![road(0.0), road(90.0), path(45.0), path(225.0)]),
+        ("path_end", vec![path(0.0)]),
+        ("path_bend", vec![path(0.0), path(90.0)]),
+        ("path_t", vec![path(0.0), path(180.0), path(270.0)]),
+    ]
+    .into_iter()
+    .map(|(name, arms)| (format!("{name}/{sloped}"), footpath_star(&arms, sloped)))
+    .collect()
 }

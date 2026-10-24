@@ -547,7 +547,9 @@ fn a_bend_that_holds_its_crossing_on_neither_arm_is_rejected() {
         };
         assert_eq!(
             roadbed.node_error(HUB),
-            Some(NodeError::Layout(LayoutError::CornerDoesNotFit { arm: first })),
+            Some(NodeError::Layout(LayoutError::CornerDoesNotFit {
+                arm: first
+            })),
             "{sloped}"
         );
         let mut lanes = LaneSystem::new();

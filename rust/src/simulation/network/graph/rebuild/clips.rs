@@ -3,8 +3,9 @@
 //! Junction mouth clips from the junction layout (`ROAD-68-C`), and incident-edge collection.
 //!
 //! An edge's clip at a bend or junction node is its arm's mouth station in that node's layout:
-//! horizontal metres along the roadbed centreline from the node. Terminals, pass-through nodes
-//! and nodes whose layout fails (a placement rejection) keep a zero clip. Each layout is
+//! horizontal metres along the roadbed centreline from the node, footpaths included; a footpath
+//! attached to a road node (D5) is clipped at its mouth there, a road end included. Terminals,
+//! pass-through nodes and nodes whose layout fails (a placement rejection) keep a zero clip. Each layout is
 //! `O(degree * arm points)`; a full rebuild lays out every node on the shared pool.
 
 use super::super::data::{Edge, RegionGraph};
@@ -96,20 +97,25 @@ impl RegionGraph {
                     let Some(arms) = NodeArms::collect(self, node) else {
                         return Vec::new();
                     };
-                    match arms.layout() {
-                        Ok(layout) if layout.kind != NodeKind::Terminal => layout
-                            .arms
-                            .iter()
-                            .filter(|arm| {
-                                self.edges[arm.key.edge].primary_type == TransitType::Road
-                            })
-                            .map(|arm| {
-                                let at_start = arm.key.end == EdgeEnd::Start;
-                                ((arm.key.edge, at_start), arm.mouth_station_m as f32)
-                            })
-                            .collect(),
-                        _ => Vec::new(),
-                    }
+                    // Terminals keep a zero clip on their own arm, so lanes run onto the cap;
+                    // attached footpaths stop at their mouths at any road node.
+                    let Ok(layout) = arms.layout() else {
+                        return Vec::new();
+                    };
+                    let arms = layout
+                        .arms
+                        .iter()
+                        .filter(|_| layout.kind != NodeKind::Terminal)
+                        .map(|arm| (arm.key, arm.mouth_station_m));
+                    let attached = layout
+                        .attachments
+                        .iter()
+                        .map(|attachment| (attachment.key, attachment.mouth_station_m));
+                    arms.chain(attached)
+                        .map(|(key, mouth_m)| {
+                            ((key.edge, key.end == EdgeEnd::Start), mouth_m as f32)
+                        })
+                        .collect()
                 })
                 .collect()
         });
@@ -132,7 +138,9 @@ impl RegionGraph {
                 let Some(edge) = self.edges.get(edge_idx) else {
                     continue;
                 };
-                if edge.deleted || edge.primary_type != TransitType::Road {
+                if edge.deleted
+                    || !matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
+                {
                     continue;
                 }
                 let start_node = self.get_valid_node(edge.start_node);

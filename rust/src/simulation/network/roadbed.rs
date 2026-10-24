@@ -33,7 +33,7 @@ pub use layout::{
     NodeKind, SectorBoundary, SectorKind, SectorLayout, Side,
 };
 pub use mesh::{OuterChain, PieceMesh};
-pub(crate) use node::check_node;
+pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
 pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
@@ -41,7 +41,7 @@ pub use query::{LaneSurfaceQuery, PieceId};
 pub use section::{RoadBand, RoadSection};
 pub use span::{MouthSection, SpanPiece};
 pub use system::RoadbedSystem;
-pub(crate) use walkways::NodeWalkways;
+pub(crate) use walkways::{FootpathJoin, NodeWalkways, SidewalkEnd};
 
 /// Road chunk key `(x, z)` in the terrain-aligned render grid of a [`RoadbedSystem`].
 pub type SurfaceChunkKey = (i32, i32);

@@ -1743,6 +1743,14 @@ bump its explicit algorithm revision. Unknown or shared changed paths select eve
 documentation-only diffs skip runtime checks. Isolated phase runs always load their own snapshot,
 so selecting a different preceding phase cannot alter their inputs.
 
+**Matched road control (`ROAD-68` pre-D, 2026-10-24).** The integrated pre-D road changes
+(edit-order independence, the D4 taper and footpath junctions) ran the full contract against a
+control build of `8712b69f` on one pinned set of snapshots, A B B A on the P-cores with eight
+workers: identical work counts, the same seven work-count failures, and hour means within
+run-to-run spread (the control's baseline 30k moved 4.09–4.57 ms across two sessions that day).
+The cities hold no footpath and their walking proof holds. Commands and results are in
+[`roads.md`](roads.md#footpath-junctions-and-the-bend-crossing-fallback-pre-d).
+
 ### `ECON-13` economy tick baseline
 
 Closed 2026-10-12 and replaced by the [performance contract](#performance-contract-perf-01perf-05).

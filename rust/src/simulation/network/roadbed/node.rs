@@ -31,7 +31,7 @@ use super::arms::{CentrelinePosition, NodeArms};
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{
     ArmInput, ArmKey, BoundaryBand, CoreVertexSource, Crosswalk, EdgeEnd, JunctionLayout,
-    LayoutError, NodeKind, SectorBoundary, Side, for_each_run_station,
+    LayoutError, NodeKind, PathPoint, SectorBoundary, Side,
 };
 use super::mesh::{CURB_FACE_GROUP, GROUPS, PieceMesh, RowLayout, push_section_row_at, row_slots};
 use super::profile::{Level, RoadProfile};
@@ -209,16 +209,11 @@ pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePla
     for arm in &layout.arms {
         stations[arm.input_index] = arm.mouth_station_m;
     }
+    for attachment in &layout.attachments {
+        stations[attachment.input_index] = attachment.mouth_station_m;
+    }
     let plane = match layout.kind {
-        NodeKind::Terminal => {
-            let (_, height_m) = arms.centreline_at(0, stations[0]);
-            let mouth = arms.input(0).offset_point(stations[0], 0.0);
-            let (node_xz, node_y) = (arms.position, arms.node_height_m(0));
-            JunctionEndpointProfilePlane::terminal(
-                Vector3::new(node_xz.x as f32, node_y as f32, node_xz.y as f32),
-                Vector3::new(mouth.x as f32, height_m as f32, mouth.y as f32),
-            )
-        }
+        NodeKind::Terminal => layout_terminal_plane(&arms, &layout),
         NodeKind::Bend | NodeKind::Junction => {
             graph.solved_junction_endpoint_profile_plane(arms.node)
         }
@@ -249,6 +244,35 @@ pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePla
         mouths,
         approaches,
     }))
+}
+
+// A road end's plane: through the road end and its mouth centreline point, with the arm's end
+// grade along that run and no crossfall.
+fn layout_terminal_plane(
+    arms: &NodeArms,
+    layout: &JunctionLayout,
+) -> Option<JunctionEndpointProfilePlane> {
+    let (arm, station_m) = (layout.arms[0].input_index, layout.arms[0].mouth_station_m);
+    let (_, height_m) = arms.centreline_at(arm, station_m);
+    let mouth = arms.input(arm).offset_point(station_m, 0.0);
+    let (node_xz, node_y) = (arms.position, arms.node_height_m(arm));
+    JunctionEndpointProfilePlane::terminal(
+        Vector3::new(node_xz.x as f32, node_y as f32, node_xz.y as f32),
+        Vector3::new(mouth.x as f32, height_m as f32, mouth.y as f32),
+    )
+}
+
+/// The plane of the road end or footpath end at `node`, as its node piece uses it; `None` at any
+/// other node. The profile solve pins a road end's attached footpaths to it (D5).
+pub(crate) fn terminal_plane(
+    graph: &RegionGraph,
+    node: u32,
+) -> Option<JunctionEndpointProfilePlane> {
+    let arms = NodeArms::collect(graph, node)?;
+    let layout = arms.layout().ok()?;
+    (layout.kind == NodeKind::Terminal)
+        .then(|| layout_terminal_plane(&arms, &layout))
+        .flatten()
 }
 
 /// Checks that `node` lays out and its mouths sit on its plane, as its piece would need; nodes
@@ -309,7 +333,8 @@ fn section_at(
     let xz = |lateral_m: f32| input.offset_point(station_m, sign * f64::from(lateral_m));
     let (position, centre_height_m) = arms.centreline_at(index, station_m);
     let center_xz = xz(0.0);
-    let center_height_m = surface_height_m(plane, center_xz, Level::Ground);
+    let level = |level: Level| arms.level_at_node(index, level);
+    let center_height_m = surface_height_m(plane, center_xz, level(Level::Ground));
     let profile = RoadProfile::for_edge(edge);
     let lateral_xz = ((input.offset_point(station_m, 1.0) - center_xz) * sign).normalize();
     let section = RoadSection {
@@ -326,8 +351,8 @@ fn section_at(
                 kind: band.kind,
                 lateral_start_m: band.start_m,
                 lateral_end_m: band.end_m,
-                height_start_m: surface_height_m(plane, xz(band.start_m), band.level),
-                height_end_m: surface_height_m(plane, xz(band.end_m), band.level),
+                height_start_m: surface_height_m(plane, xz(band.start_m), level(band.level)),
+                height_end_m: surface_height_m(plane, xz(band.end_m), level(band.level)),
             })
             .collect(),
     };
@@ -381,18 +406,10 @@ pub(crate) struct NodeScratch {
     ring: Vec<u32>,
     outside: Vec<bool>,
     stack: Vec<FixedFaceHandle<InnerTag>>,
-    lines: Vec<LinePoint>,
+    lines: Vec<PathPoint>,
+    path: Vec<PathPoint>,
     sample_ids: Vec<u32>,
     footprint: Vec<(i32, i32)>,
-}
-
-// One point of a boundary's run along an arm side, from the sector to the mouth.
-#[derive(Clone, Copy)]
-struct LinePoint {
-    station_m: f64,
-    xz: RoadVec2,
-    // Index of the arm (input order) whose mouth this point is, with its layout offset.
-    mouth: Option<(usize, f64)>,
 }
 
 struct MeshBuilder<'a> {
@@ -421,11 +438,14 @@ impl MeshBuilder<'_> {
         self.vertex_at(RoadVec3::new(xz.x, y, xz.y))
     }
 
-    // The mouth section's own vertex at a layout offset and level on arm `arm` (input order).
+    // The mouth section's own vertex at a layout offset and level on arm `arm` (input order). An
+    // attached arm's single band stands at sidewalk height whatever its profile level.
     fn mouth_vertex(&mut self, arm: usize, offset_m: f64, level: Level) -> u32 {
         let mouth = &self.mouths[arm].1;
         let lateral = (lateral_sign(self.arms.key(arm).end) * offset_m) as f32;
-        let slot = row_slots(&mouth.profile).position(|slot| slot == (lateral, level));
+        let attached = self.arms.is_attached(arm);
+        let slot = row_slots(&mouth.profile)
+            .position(|slot| slot.0 == lateral && (attached || slot.1 == level));
         let point = slot.map(|slot| mouth.vertices[slot]);
         match point {
             Some(point) => self.vertex_at(point),
@@ -439,7 +459,7 @@ impl MeshBuilder<'_> {
         }
     }
 
-    fn line_vertex(&mut self, point: LinePoint, level: Level) -> u32 {
+    fn line_vertex(&mut self, point: PathPoint, level: Level) -> u32 {
         match point.mouth {
             Some((arm, offset_m)) => self.mouth_vertex(arm, offset_m, level),
             None => self.vertex(point.xz, level),
@@ -483,7 +503,7 @@ impl MeshBuilder<'_> {
     // `inner_left` says on which side of the run's direction the inner band lies.
     fn curb_run(
         &mut self,
-        points: impl Iterator<Item = LinePoint>,
+        points: impl Iterator<Item = PathPoint>,
         boundary: &SectorBoundary,
         inner_left: bool,
     ) {
@@ -510,7 +530,7 @@ impl MeshBuilder<'_> {
     }
 
     // Zips the strip between two runs ordered by station.
-    fn zip(&mut self, kind: BandKind, level: Level, inner: &[LinePoint], outer: &[LinePoint]) {
+    fn zip(&mut self, kind: BandKind, level: Level, inner: &[PathPoint], outer: &[PathPoint]) {
         let (mut i, mut j) = (0, 0);
         while i + 1 < inner.len() || j + 1 < outer.len() {
             let advance_inner = j + 1 == outer.len()
@@ -531,43 +551,6 @@ impl MeshBuilder<'_> {
     }
 }
 
-// The run of `boundary` along one side of arm `arm` (sorted index): its sector endpoint sample,
-// the knots and taper station strictly between, and the mouth, at the run's offsets (D4).
-fn push_side_run(
-    lines: &mut Vec<LinePoint>,
-    layout: &JunctionLayout,
-    input: &ArmInput<'_>,
-    arm: usize,
-    side: Side,
-    boundary: &SectorBoundary,
-) {
-    let samples = &layout.samples[boundary.samples.clone()];
-    let (station_m, start) = match side {
-        Side::Left => (boundary.from_station_m, samples[0]),
-        Side::Right => (boundary.to_station_m, samples[samples.len() - 1]),
-    };
-    let mouth_m = layout.arms[arm].mouth_station_m;
-    lines.push(LinePoint {
-        station_m,
-        xz: start,
-        mouth: None,
-    });
-    let taper_m = boundary.taper.map(|taper| taper.station_m);
-    for_each_run_station(input, station_m, mouth_m, taper_m, |station_m, _| {
-        lines.push(LinePoint {
-            station_m,
-            xz: boundary.run_point(input, side, station_m),
-            mouth: None,
-        });
-    });
-    let offset_m = boundary.run_offset_m(side, mouth_m);
-    lines.push(LinePoint {
-        station_m: mouth_m,
-        xz: input.offset_point(mouth_m, offset_m),
-        mouth: Some((layout.arms[arm].input_index, offset_m)),
-    });
-}
-
 /// Builds the piece of a planned node. Mouth vertices come from the plan's mouth sections; an
 /// edge whose two mouths coincide shares one section between both nodes
 /// ([`NodePlan::share_mouth`]).
@@ -582,6 +565,7 @@ pub(super) fn build_node_piece(
         outside,
         stack,
         lines,
+        path,
         sample_ids,
         footprint,
     } = scratch;
@@ -601,22 +585,28 @@ pub(super) fn build_node_piece(
             builder.vertex_at(vertex);
         }
     }
+    let inputs: Vec<ArmInput<'_>> = (0..plan.arms.len())
+        .map(|index| plan.arms.input(index))
+        .collect();
+    // The core's band: the carriageway, or a footpath where only footpaths meet.
+    let core_input = &inputs[layout.arms[0].input_index];
+    let core_kind = core_input.left.bands[core_input.left.core_bands - 1].kind;
     core_ring(&mut builder, &plan, ring);
-    if !fan_core(&mut builder, plan.arms.position, ring) {
-        triangulate_core(&mut builder, ring, outside, stack)?;
+    if !fan_core(&mut builder, plan.arms.position, ring, core_kind) {
+        triangulate_ring(&mut builder, ring, core_kind, outside, stack)?;
     }
-    let mut chains = Vec::with_capacity(layout.sectors.len());
+    let mut chains = Vec::with_capacity(layout.sectors.len() + layout.attachments.len());
     for (index, sector) in layout.sectors.iter().enumerate() {
         let boundaries = &layout.boundaries[sector.boundaries.clone()];
         sector_strips(&mut builder, layout, boundaries, sample_ids);
         // Arm sides: this sector's from-arm left side and to-arm right side.
         for (arm, side) in [(sector.from_arm, Side::Left), (sector.to_arm, Side::Right)] {
-            let input = plan.arms.input(layout.arms[arm].input_index);
+            let input = &inputs[layout.arms[arm].input_index];
             lines.clear();
             let mut runs = Vec::with_capacity(boundaries.len());
-            for boundary in boundaries {
+            for (j, boundary) in boundaries.iter().enumerate() {
                 let start = lines.len();
-                push_side_run(lines, layout, &input, arm, side, boundary);
+                layout.side_run(input, (arm, side), (boundary, j), lines);
                 runs.push(start..lines.len());
             }
             for (j, boundary) in boundaries.iter().enumerate() {
@@ -628,27 +618,31 @@ pub(super) fn build_node_piece(
                     builder.zip(outer.kind, outer.level, run, next);
                 }
             }
-            // Outer chain: back along the from-arm's outermost run, across the sector's
-            // outermost samples, out along the to-arm's.
-            let outermost = &boundaries[boundaries.len() - 1];
-            let level = outermost.inner.level;
-            let run = &lines[runs[runs.len() - 1].clone()];
-            let ids = run.iter().map(|&point| builder.line_vertex(point, level));
-            if side == Side::Left {
-                let mut chain: Vec<u32> = ids.collect();
-                chain.reverse();
-                chains.push(chain);
-            } else {
-                let ids: Vec<u32> = ids.collect();
-                let samples = &layout.samples[outermost.samples.clone()];
-                let across: Vec<u32> = samples
-                    .iter()
-                    .map(|&sample| builder.vertex(sample, level))
-                    .collect();
-                let chain = &mut chains[index];
-                chain.extend(across);
-                chain.extend(ids);
-            }
+        }
+        let level = boundaries[boundaries.len() - 1].inner.level;
+        layout.outer_path(&inputs, index, path);
+        outer_chains(
+            &mut builder,
+            layout,
+            &inputs,
+            (index, level),
+            path,
+            lines,
+            &mut chains,
+        );
+        for attachment in (0..layout.attachments.len())
+            .filter(|&attachment| layout.attachments[attachment].sector == index)
+        {
+            // Each attached arm's ribbon, from the outer boundary to its mouth at the boundary's
+            // level, on the boundary's own vertices; triangulated as the core is.
+            let input = &inputs[layout.attachments[attachment].input_index];
+            layout
+                .ribbon(input, attachment, path, lines)
+                .ok_or(NodeError::Triangulation)?;
+            ring.clear();
+            ring.extend(lines.iter().map(|&point| builder.line_vertex(point, level)));
+            let kind = input.left.bands[0].kind;
+            triangulate_ring(&mut builder, ring, kind, outside, stack)?;
         }
     }
     let outer_chains = chains
@@ -676,6 +670,54 @@ pub(super) fn build_node_piece(
         mesh: Arc::new(mesh),
         footprint,
     })
+}
+
+// The outer chains of sector `sector` along its outer path, at `level`: one from the from-arm's
+// mouth corner to the to-arm's, cut at each attached arm. Its right edge run ends a chain at its
+// mouth corner and its left edge run starts the next; the path between its two edge points lies
+// under its ribbon.
+fn outer_chains(
+    builder: &mut MeshBuilder<'_>,
+    layout: &JunctionLayout,
+    inputs: &[ArmInput<'_>],
+    (sector, level): (usize, Level),
+    path: &[PathPoint],
+    run: &mut Vec<PathPoint>,
+    chains: &mut Vec<Vec<u32>>,
+) {
+    let mut attached = (0..layout.attachments.len())
+        .filter(|&attachment| layout.attachments[attachment].sector == sector)
+        .peekable();
+    let mut chain = Vec::with_capacity(path.len());
+    let mut under: Option<RoadVec2> = None;
+    for &point in path {
+        if under.is_some_and(|left| point.xz != left) {
+            continue;
+        }
+        under = None;
+        chain.push(builder.line_vertex(point, level));
+        let Some(index) =
+            attached.next_if(|&index| layout.attachments[index].edges[0].point == point.xz)
+        else {
+            continue;
+        };
+        let input = &inputs[layout.attachments[index].input_index];
+        run.clear();
+        layout.attached_run(input, index, Side::Right, run);
+        chain.extend(
+            run[1..]
+                .iter()
+                .map(|&point| builder.line_vertex(point, level)),
+        );
+        chains.push(std::mem::take(&mut chain));
+        run.clear();
+        layout.attached_run(input, index, Side::Left, run);
+        // Out at the mouth corner and back to the left edge point, which the path supplies.
+        let back = run[1..].iter().rev();
+        chain.extend(back.map(|&point| builder.line_vertex(point, level)));
+        under = Some(layout.attachments[index].edges[1].point);
+    }
+    chains.push(chain);
 }
 
 // Strips between consecutive sector boundaries, sample pair by sample pair, and the curb faces
@@ -795,7 +837,7 @@ fn push_mouth_interior(
 // loop without the Delaunay incircle tests, whose exact fallback the cocircular corner samples
 // trigger on every flip. `O(n)`; returns false, emitting nothing, when the node does not see
 // the whole loop.
-fn fan_core(builder: &mut MeshBuilder<'_>, node: RoadVec2, ring: &[u32]) -> bool {
+fn fan_core(builder: &mut MeshBuilder<'_>, node: RoadVec2, ring: &[u32], kind: BandKind) -> bool {
     let coord = |point: RoadVec2| robust::Coord {
         x: point.x,
         y: point.y,
@@ -814,16 +856,18 @@ fn fan_core(builder: &mut MeshBuilder<'_>, node: RoadVec2, ring: &[u32]) -> bool
     let centre = builder.vertex(node, Level::Ground);
     for index in 0..ring.len() {
         let (a, b) = (ring[index], ring[(index + 1) % ring.len()]);
-        builder.groups[BandKind::Carriageway as usize].push([centre, a, b]);
+        builder.groups[kind as usize].push([centre, a, b]);
     }
     true
 }
 
-// Triangulates the core ring and keeps the faces the ring encloses: those not reachable from the
-// outer face without crossing a ring edge. `O(n log n)`.
-fn triangulate_core(
+// Triangulates a simple ring (the core, or an attached arm's ribbon) as band `kind` and keeps the
+// faces the ring encloses: those not reachable from the outer face without crossing a ring edge.
+// `O(n log n)`.
+fn triangulate_ring(
     builder: &mut MeshBuilder<'_>,
     ring: &[u32],
+    kind: BandKind,
     outside: &mut Vec<bool>,
     stack: &mut Vec<FixedFaceHandle<InnerTag>>,
 ) -> Result<(), NodeError> {
@@ -876,7 +920,7 @@ fn triangulate_core(
             continue;
         }
         let [a, b, c] = face.vertices().map(|vertex| ring[vertex.fix().index()]);
-        builder.top(BandKind::Carriageway, [a, b, c]);
+        builder.top(kind, [a, b, c]);
     }
     Ok(())
 }

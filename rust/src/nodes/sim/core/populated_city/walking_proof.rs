@@ -6,6 +6,7 @@
 
 use super::street_grid;
 use crate::simulation::economy::agents::tick::TripQueryScratch;
+use crate::simulation::network::types::TransitType;
 
 #[test]
 fn street_grid_walking_proof_holds_at_its_corner_bends() {
@@ -34,4 +35,26 @@ fn street_grid_walking_proof_holds_at_its_corner_bends() {
     let mut scratch = TripQueryScratch::default();
     scratch.prepare(&core.transit_network, graph);
     assert!(scratch.walking_proof_complete_for_test());
+}
+
+// `ROAD-68` open question 14: the proof on the economy performance-contract cities, from their
+// prepared snapshots (`METRUM_PERF_RESIDENTS`, `METRUM_PERF_CACHE`; `./run.sh --perf-contract
+// --prepare` writes them). Their street grids hold no footpath, so footpath junctions cannot
+// change it.
+#[test]
+#[ignore = "needs the prepared performance-contract snapshots"]
+fn perf_contract_city_walking_proof_holds() {
+    let residents = super::contract::residents();
+    let city = super::snapshot::load_snapshot(residents, &super::contract::cache_dir());
+    let graph = &city.core.region_graph;
+    let footpaths = graph
+        .edges()
+        .iter()
+        .filter(|edge| !edge.deleted && edge.primary_type == TransitType::Foot)
+        .count();
+    let mut scratch = TripQueryScratch::default();
+    scratch.prepare(&city.core.transit_network, graph);
+    let complete = scratch.walking_proof_complete_for_test();
+    eprintln!("WALKING_PROOF {residents} residents: complete {complete}, footpaths {footpaths}");
+    assert!(complete);
 }

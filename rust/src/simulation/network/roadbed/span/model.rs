@@ -584,6 +584,7 @@ fn endpoint_kind_and_tangent(
     }
     let mut count = 0usize;
     let mut first_two = [RoadVec2::ZERO; 2];
+    let mut first_types = [TransitType::Road; 2];
     let mut current = None;
     for &incident_idx in graph.node_adjacency(node_id) {
         let Some(incident) = graph.get_edge(incident_idx) else {
@@ -604,6 +605,7 @@ fn endpoint_kind_and_tangent(
         };
         if count < 2 {
             first_two[count] = direction;
+            first_types[count] = incident.primary_type;
         }
         if current.is_none() && incident_idx == edge_idx && side == end {
             current = Some(direction);
@@ -613,7 +615,10 @@ fn endpoint_kind_and_tangent(
     let kind = match count {
         0 => return (None, None),
         1 => NodeKind::Terminal,
-        2 if first_two[0].dot(first_two[1]) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD) => {
+        // A road end continued by a footpath is a layout node (D5, `arms::passes_through`).
+        2 if first_two[0].dot(first_two[1]) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD)
+            && first_types[0] == first_types[1] =>
+        {
             NodeKind::PassThrough
         }
         2 => NodeKind::Bend,

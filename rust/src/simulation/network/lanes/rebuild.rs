@@ -110,23 +110,42 @@ impl LaneSystem {
         if edge.deleted || edge.physical_geometry.len() < 2 {
             return;
         }
-        // A pure function of the junction geometry, so partial rebuilds trim footpaths alike.
-        let (start_inset, end_inset) = if edge.primary_type == TransitType::Foot {
-            footpath_end_insets(graph, edge_idx)
-        } else {
-            (0.0, 0.0)
+        let ends_at = [
+            (edge.start_node, EdgeEnd::Start),
+            (edge.end_node, EdgeEnd::End),
+        ];
+        let layout_end = |walk_end: super::super::roadbed::SidewalkEnd| {
+            let point = walk_end.point;
+            LaneEnd::Layout {
+                station_m: walk_end.station_m,
+                point: Vector3::new(point.x as f32, point.y as f32, point.z as f32),
+            }
         };
-        let insets = [LaneEnd::Inset(start_inset), LaneEnd::Inset(end_inset)];
+        let node_walkways = |node: u32| walkways.get(&graph.get_valid_node(node));
+        // A footpath ends at its mouth in its node's layout; elsewhere its trim is a pure
+        // function of the junction geometry, so partial rebuilds trim footpaths alike.
+        let insets = if edge.primary_type == TransitType::Foot {
+            let (start_inset, end_inset) = footpath_end_insets(graph, edge_idx);
+            let mut insets = [start_inset, end_inset].map(LaneEnd::Inset);
+            for (inset, (node, end)) in insets.iter_mut().zip(ends_at) {
+                let arm = ArmKey {
+                    edge: edge_idx,
+                    end,
+                };
+                if let Some(walk_end) = node_walkways(node).and_then(|ways| ways.footpath_end(arm))
+                {
+                    *inset = layout_end(walk_end);
+                }
+            }
+            insets
+        } else {
+            [LaneEnd::Inset(0.0); 2]
+        };
         // Road sidewalks end in their nodes' layouts; at a node without one they keep a fixed
         // inset beyond the clip, room for the walk round the node.
         let sidewalk_ends = |offset: f32| {
-            [
-                (edge.start_node, EdgeEnd::Start),
-                (edge.end_node, EdgeEnd::End),
-            ]
-            .map(|(node, end)| {
-                walkways
-                    .get(&graph.get_valid_node(node))
+            ends_at.map(|(node, end)| {
+                node_walkways(node)
                     .and_then(|walkways| {
                         let arm = ArmKey {
                             edge: edge_idx,
@@ -134,13 +153,7 @@ impl LaneSystem {
                         };
                         walkways.sidewalk_end(arm, offset > 0.0)
                     })
-                    .map_or(LaneEnd::Inset(config::SIDEWALK_NODE_INSET), |walk_end| {
-                        let point = walk_end.point;
-                        LaneEnd::Layout {
-                            station_m: walk_end.station_m,
-                            point: Vector3::new(point.x as f32, point.y as f32, point.z as f32),
-                        }
-                    })
+                    .map_or(LaneEnd::Inset(config::SIDEWALK_NODE_INSET), layout_end)
             })
         };
 

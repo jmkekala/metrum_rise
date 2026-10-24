@@ -77,6 +77,7 @@ impl Fixture {
                 right: side,
                 max_station_m: REACH_M,
                 crossable: true,
+                attached: false,
             })
             .collect()
     }

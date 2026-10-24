@@ -270,12 +270,14 @@ fn test_dedicated_footpath_centering() {
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
 
+    // Each dead end adds only its stationary turn-back connector.
+    let edge_lanes: Vec<_> = lanes.lanes.iter().filter(|lane| lane.edge_id == 0).collect();
     assert_eq!(
-        lanes.lanes.len(),
+        edge_lanes.len(),
         2,
         "Dedicated footpaths should have 2 bidirectional lanes"
     );
-    for lane in &lanes.lanes {
+    for lane in edge_lanes {
         assert_eq!(lane.lane_type, LaneType::Foot);
         assert_eq!(lane.lane_idx, 0);
         assert!((lane.geometry[0].z - 0.0).abs() < 0.1);

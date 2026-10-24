@@ -3,6 +3,7 @@
 //! Deterministic Bend and JunctionN endpoint-profile solving and support materialization.
 
 use super::super::data::{Edge, RegionGraph};
+use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, terminal_plane};
 use crate::simulation::network::types::{NodeType, TransitType};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
@@ -24,6 +25,15 @@ const JUNCTION_PROFILE_AUTHORITY_GRADE_SCORE_SCALE: f32 = 2.0;
 struct JunctionProfileIncident {
     edge_idx: usize,
     at_start: bool,
+}
+
+// The incidents of one node: those whose plane it solves (its roads, or its footpaths where only
+// footpaths meet), and the footpaths attached to a road node's sidewalk ring (D5), which are
+// pinned to the plane at sidewalk height.
+#[derive(Default)]
+struct NodeProfileIncidents {
+    plane: Vec<JunctionProfileIncident>,
+    attached: Vec<JunctionProfileIncident>,
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +109,14 @@ impl JunctionEndpointProfilePlane {
 
     pub(super) fn grade(&self) -> f32 {
         self.grade_x.hypot(self.grade_z)
+    }
+
+    // The same plane at sidewalk height: where attached footpaths are pinned (D5).
+    fn raised(self) -> Self {
+        Self {
+            origin: self.origin + Vector3::new(0.0, CURB_STEP_HEIGHT_M, 0.0),
+            ..self
+        }
     }
 
     fn grade_limited(
@@ -212,9 +230,20 @@ impl RegionGraph {
         node_ids.sort_unstable();
         // Per pinned end: its node's plane, and whether it must take vertical-curve supports.
         let mut pins: HashMap<(usize, bool), (JunctionEndpointProfilePlane, bool)> = HashMap::new();
+        // Road ends with attached footpaths: pinned once their roads' profiles are derived.
+        let mut road_ends = Vec::new();
         for node_id in node_ids {
-            let incidents = &incidents_by_node[&node_id];
-            if incidents.len() < 2 || self.junction_profile_incidents_form_pass_through(incidents) {
+            let NodeProfileIncidents {
+                plane: incidents,
+                attached,
+            } = &incidents_by_node[&node_id];
+            if incidents.len() == 1 && !attached.is_empty() {
+                road_ends.push(node_id);
+            }
+            if incidents.len() < 2
+                || (attached.is_empty()
+                    && self.junction_profile_incidents_form_pass_through(incidents))
+            {
                 continue;
             }
             let Some(solve) = self
@@ -231,9 +260,59 @@ impl RegionGraph {
                 let supports = preserve_authority && !solve.authority_incidents.contains(&key);
                 pins.insert(key, (solve.plane, supports));
             }
+            // Attached footpaths join the sidewalk ring: the plane at sidewalk height.
+            for incident in attached {
+                let key = (incident.edge_idx, incident.at_start);
+                pins.insert(key, (solve.plane.raised(), preserve_authority));
+            }
         }
 
+        // A road end's plane runs through its road's derived profile (`roadbed::terminal_plane`),
+        // so the footpaths attached there are derived after every other edge.
+        let at_road_end = |edge_idx: usize| {
+            road_ends.iter().any(|node| {
+                incidents_by_node[node]
+                    .attached
+                    .iter()
+                    .any(|incident| incident.edge_idx == edge_idx)
+            })
+        };
+        let (late, early): (Vec<usize>, Vec<usize>) =
+            edges.iter().partition(|&&edge_idx| at_road_end(edge_idx));
         let mut changed_edges = Vec::new();
+        for (phase, edges) in [early, late].iter().enumerate() {
+            if phase == 1 {
+                for node_id in &road_ends {
+                    let Some(plane) = terminal_plane(self, *node_id) else {
+                        continue;
+                    };
+                    for incident in &incidents_by_node[node_id].attached {
+                        pins.insert(
+                            (incident.edge_idx, incident.at_start),
+                            (plane.raised(), false),
+                        );
+                    }
+                }
+            }
+            self.derive_pinned_profiles(edges, &pins, &mut changed_edges);
+        }
+        for &edge_idx in &changed_edges {
+            let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
+                &self.edges[edge_idx],
+            );
+            self.edges[edge_idx].base_cost = cost;
+            self.edges[edge_idx].physical_length = length;
+        }
+        changed_edges.into_iter().collect()
+    }
+
+    // Derives the physical profile of each of `edges` from its control polyline and its end pins.
+    fn derive_pinned_profiles(
+        &mut self,
+        edges: &[usize],
+        pins: &HashMap<(usize, bool), (JunctionEndpointProfilePlane, bool)>,
+        changed_edges: &mut Vec<usize>,
+    ) {
         for &edge_idx in edges {
             let pin = |at_start: bool| {
                 pins.get(&(edge_idx, at_start))
@@ -251,18 +330,10 @@ impl RegionGraph {
                 changed_edges.push(edge_idx);
             }
         }
-        for &edge_idx in &changed_edges {
-            let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
-                &self.edges[edge_idx],
-            );
-            self.edges[edge_idx].base_cost = cost;
-            self.edges[edge_idx].physical_length = length;
-        }
-        changed_edges.into_iter().collect()
     }
 
-    // Whether the node at one end of an edge joins another road profile there, so a pin at the
-    // other end may use only half the edge and never overwrites that end's supports.
+    // Whether the node at one end of an edge joins another road or footpath profile there, so a
+    // pin at the other end may use only half the edge and never overwrites that end's supports.
     fn edge_end_is_shared(&self, edge_idx: usize, at_start: bool) -> bool {
         let edge = &self.edges[edge_idx];
         let node = self.get_valid_node(if at_start {
@@ -273,18 +344,28 @@ impl RegionGraph {
         self.node_adjacency(node)
             .iter()
             .filter(|&&id| {
-                !self.edges[id].deleted && self.edges[id].primary_type == TransitType::Road
+                let edge = &self.edges[id];
+                !edge.deleted && matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
             })
             .take(2)
             .count()
             == 2
     }
 
+    // Whether `node_id` has a live road edge: its plane is then its roads', and its footpaths
+    // are attached to them (D5).
+    fn has_road_arm(&self, node_id: u32) -> bool {
+        self.node_adjacency(node_id).iter().any(|&id| {
+            let edge = &self.edges[id];
+            !edge.deleted && edge.primary_type == TransitType::Road
+        })
+    }
+
     fn build_junction_profile_incidents(
         &self,
         affected_nodes: &HashSet<u32>,
-    ) -> HashMap<u32, Vec<JunctionProfileIncident>> {
-        let mut incidents_by_node: HashMap<u32, Vec<JunctionProfileIncident>> = HashMap::new();
+    ) -> HashMap<u32, NodeProfileIncidents> {
+        let mut incidents_by_node: HashMap<u32, NodeProfileIncidents> = HashMap::new();
 
         let candidate_edge_ids = self.surface_edges_touching_nodes(affected_nodes);
         for edge_idx in candidate_edge_ids {
@@ -292,7 +373,7 @@ impl RegionGraph {
                 continue;
             };
             if edge.deleted
-                || edge.primary_type != TransitType::Road
+                || !matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
                 || edge.geometry.len() < 2
                 || edge.start_node as usize >= self.nodes.len()
                 || edge.end_node as usize >= self.nodes.len()
@@ -309,20 +390,25 @@ impl RegionGraph {
                 if self.nodes[node_id as usize].node_type != NodeType::Junction {
                     continue;
                 }
-                incidents_by_node
-                    .entry(node_id)
-                    .or_default()
-                    .push(JunctionProfileIncident { edge_idx, at_start });
+                let incidents = incidents_by_node.entry(node_id).or_default();
+                let incident = JunctionProfileIncident { edge_idx, at_start };
+                if edge.primary_type == TransitType::Foot && self.has_road_arm(node_id) {
+                    incidents.attached.push(incident);
+                } else {
+                    incidents.plane.push(incident);
+                }
             }
         }
 
         for (&node_id, incidents) in incidents_by_node.iter_mut() {
-            incidents.sort_by(|a, b| {
-                self.junction_profile_incident_angle(node_id, *a)
-                    .total_cmp(&self.junction_profile_incident_angle(node_id, *b))
-                    .then(a.edge_idx.cmp(&b.edge_idx))
-                    .then(a.at_start.cmp(&b.at_start))
-            });
+            for list in [&mut incidents.plane, &mut incidents.attached] {
+                list.sort_by(|a, b| {
+                    self.junction_profile_incident_angle(node_id, *a)
+                        .total_cmp(&self.junction_profile_incident_angle(node_id, *b))
+                        .then(a.edge_idx.cmp(&b.edge_idx))
+                        .then(a.at_start.cmp(&b.at_start))
+                });
+            }
         }
         incidents_by_node
     }
@@ -359,10 +445,16 @@ impl RegionGraph {
         node_id: u32,
     ) -> Option<JunctionEndpointProfilePlane> {
         let origin = self.nodes.get(node_id as usize)?.pos;
+        // A node's plane is its roads', or its footpaths' where only footpaths meet.
+        let plane_type = if self.has_road_arm(node_id) {
+            TransitType::Road
+        } else {
+            TransitType::Foot
+        };
         let (mut xx, mut xz, mut zz, mut xy, mut zy) = (0.0_f64, 0.0, 0.0, 0.0, 0.0);
         for &edge_idx in self.node_adjacency(node_id) {
             let edge = &self.edges[edge_idx];
-            if edge.deleted || edge.primary_type != TransitType::Road {
+            if edge.deleted || edge.primary_type != plane_type {
                 continue;
             }
             let points = if edge.physical_geometry.len() >= 2 {
@@ -425,8 +517,11 @@ impl RegionGraph {
         }
         let affected_nodes = HashSet::from([node_id]);
         let incidents_by_node = self.build_junction_profile_incidents(&affected_nodes);
-        let incidents = incidents_by_node.get(&node_id)?;
-        if self.junction_profile_incidents_form_pass_through(incidents) {
+        let NodeProfileIncidents {
+            plane: incidents,
+            attached,
+        } = incidents_by_node.get(&node_id)?;
+        if attached.is_empty() && self.junction_profile_incidents_form_pass_through(incidents) {
             return None;
         }
         self.solve_bend_profile_solve(

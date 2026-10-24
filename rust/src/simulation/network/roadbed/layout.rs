@@ -185,6 +185,9 @@ pub struct ArmInput<'a> {
     pub max_station_m: f64,
     /// Whether the mouth carries a crosswalk (D8).
     pub crossable: bool,
+    /// Whether the arm bounds no sector and instead joins the outer boundary of the sector it
+    /// lies in: a footpath at a road node (D5).
+    pub attached: bool,
 }
 
 /// Degree class of a node.
@@ -262,6 +265,66 @@ pub struct Crosswalk {
     /// `o(station, -right edge)` and `o(station, left edge)`. The crossing is square to the
     /// arm's section frame there.
     pub kerbs: [RoadVec2; 2],
+}
+
+/// An attached arm (D5): its ribbon ends on the outer boundary of the sector it lies in, on
+/// shared vertices, and its mouth lies beyond that.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attachment {
+    /// Arm identity.
+    pub key: ArmKey,
+    /// Index of the arm in the slice passed to [`JunctionLayout::build`].
+    pub input_index: usize,
+    /// Unit direction over the first metre of the centreline.
+    pub direction: RoadVec2,
+    /// Direction angle in `[0, 2 pi)`.
+    pub angle_rad: f64,
+    /// Index of the sector it lies in.
+    pub sector: usize,
+    /// Station of its mouth section: `MIN_MOUTH_STATION_M` beyond its farther edge point.
+    pub mouth_station_m: f64,
+    /// Where its right and left edges meet the sector's outer boundary.
+    pub edges: [AttachedEdge; 2],
+}
+
+/// Where one edge of an attached arm meets its sector's outer boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttachedEdge {
+    /// Signed lateral offset of the edge on the attached arm.
+    pub offset_m: f64,
+    /// Station on the attached arm of the meeting point.
+    pub station_m: f64,
+    /// The meeting point: a vertex of the outer boundary, copied by both pieces of geometry.
+    pub point: RoadVec2,
+    /// Where on the boundary the point lies.
+    pub on: BoundaryPoint,
+}
+
+/// A point of a sector's outermost boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BoundaryPoint {
+    /// A sample, by index into [`JunctionLayout::samples`]; inserted into every boundary of the
+    /// sector at the same position, so the sector's strips stay quads.
+    Sample(usize),
+    /// A station on an arm side's run from the sector to the mouth, inserted into the runs of
+    /// every boundary beyond the carriageway edge.
+    Run {
+        /// Sorted arm index.
+        arm: usize,
+        /// Arm side.
+        side: Side,
+        /// Station on the arm.
+        station_m: f64,
+    },
+}
+
+/// One point of a boundary run or outer path, with its station on the arm it follows and, at a
+/// mouth corner, the arm (input order) and lateral offset of that corner.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PathPoint {
+    pub(super) station_m: f64,
+    pub(super) xz: RoadVec2,
+    pub(super) mouth: Option<(usize, f64)>,
 }
 
 /// A fitted curb-return corner.
@@ -427,6 +490,12 @@ pub enum LayoutError {
     },
     /// The carriageway core loop touches or crosses itself.
     CoreNotSimple,
+    /// An attached arm's edge does not meet its sector's outer boundary inside the node, or its
+    /// ribbon outline is not simple.
+    FootpathDoesNotJoin {
+        /// Offending arm.
+        arm: ArmKey,
+    },
 }
 
 impl SectorBoundary {
@@ -513,6 +582,8 @@ pub struct JunctionLayout {
     pub samples: Vec<RoadVec2>,
     /// Counter-clockwise carriageway core loop, without repeated consecutive vertices.
     pub core: Vec<CoreVertex>,
+    /// Attached arms in counter-clockwise order.
+    pub attachments: Vec<Attachment>,
 }
 
 impl ArmKnot {
@@ -568,7 +639,7 @@ impl ArmInput<'_> {
 
     // Knots strictly between two stations. Never the node's own knot: a run that leaves a
     // backward miter (station < 0) passes it on the same straight first segment.
-    fn knots_between(&self, from_m: f64, to_m: f64) -> Range<usize> {
+    pub(super) fn knots_between(&self, from_m: f64, to_m: f64) -> Range<usize> {
         let start = self
             .knots
             .partition_point(|knot| knot.station_m <= from_m)
@@ -665,17 +736,30 @@ impl JunctionLayout {
         if arms.is_empty() {
             return Err(LayoutError::NoArms);
         }
-        let mut sorted = sort_arms(node, arms)?;
+        let (mut sorted, attached): (Vec<_>, Vec<_>) = sort_arms(node, arms)?
+            .into_iter()
+            .partition(|arm| !arms[arm.input_index].attached);
+        if sorted.is_empty() {
+            return Err(LayoutError::NoArms);
+        }
         let (mut sectors, mut boundaries) = plan_sectors(node, arms, &sorted)?;
-        assign_mouths(arms, &mut sorted, &sectors, &boundaries)?;
-        let samples = sample_sectors(node, arms, &sorted, &mut sectors, &mut boundaries)?;
+        let mut attachments = attach_to_runs(arms, &sorted, &sectors, &boundaries, attached)?;
+        assign_mouths(arms, &mut sorted, &sectors, &boundaries, &attachments)?;
+        let samples = sample_sectors(
+            node,
+            arms,
+            &sorted,
+            &mut sectors,
+            &mut boundaries,
+            &mut attachments,
+        )?;
         let core = core_loop(arms, &sorted, &sectors, &boundaries, &samples)?;
         let kind = match sorted.len() {
             1 => NodeKind::Terminal,
             2 => NodeKind::Bend,
             _ => NodeKind::Junction,
         };
-        Ok(Self {
+        let mut layout = Self {
             node,
             kind,
             arms: sorted,
@@ -683,7 +767,196 @@ impl JunctionLayout {
             boundaries,
             samples,
             core,
-        })
+            attachments,
+        };
+        layout.finish_attachments(arms)?;
+        Ok(layout)
+    }
+
+    /// The run of `boundary` (the `index`-th of its sector) along `side` of arm `arm` (sorted
+    /// index), from the sector to the mouth, at the run's offsets (D4): its sector endpoint
+    /// sample, the knots and taper station strictly between, the attached edges' points on that
+    /// side beyond the carriageway edge, and the mouth corner.
+    pub(super) fn side_run(
+        &self,
+        input: &ArmInput<'_>,
+        (arm, side): (usize, Side),
+        (boundary, index): (&SectorBoundary, usize),
+        out: &mut Vec<PathPoint>,
+    ) {
+        let samples = &self.samples[boundary.samples.clone()];
+        let (station_m, start) = match side {
+            Side::Left => (boundary.from_station_m, samples[0]),
+            Side::Right => (boundary.to_station_m, samples[samples.len() - 1]),
+        };
+        let mouth_m = self.arms[arm].mouth_station_m;
+        let first = out.len();
+        out.push(PathPoint {
+            station_m,
+            xz: start,
+            mouth: None,
+        });
+        let point = |station_m: f64| PathPoint {
+            station_m,
+            xz: boundary.run_point(input, side, station_m),
+            mouth: None,
+        };
+        let taper_m = boundary.taper.map(|taper| taper.station_m);
+        for_each_run_station(input, station_m, mouth_m, taper_m, |station_m, _| {
+            out.push(point(station_m));
+        });
+        if index > 0 {
+            out.extend(self.run_points(arm, side).map(point));
+            out[first + 1..].sort_by(|a, b| a.station_m.total_cmp(&b.station_m));
+        }
+        let offset_m = boundary.run_offset_m(side, mouth_m);
+        out.push(PathPoint {
+            station_m: mouth_m,
+            xz: input.offset_point(mouth_m, offset_m),
+            mouth: Some((self.arms[arm].input_index, offset_m)),
+        });
+    }
+
+    // Stations of the attached edges that meet the outermost run of `side` of arm `arm`.
+    fn run_points(&self, arm: usize, side: Side) -> impl Iterator<Item = f64> + '_ {
+        self.attachments
+            .iter()
+            .flat_map(|attachment| attachment.edges)
+            .filter_map(move |edge| match edge.on {
+                BoundaryPoint::Run {
+                    arm: on_arm,
+                    side: on_side,
+                    station_m,
+                } if on_arm == arm && on_side == side => Some(station_m),
+                _ => None,
+            })
+    }
+
+    /// Sector `sector`'s outermost boundary from its from-arm's left mouth corner back along that
+    /// arm's run, across the sector's samples and out along its to-arm's right run to the mouth
+    /// corner, without repeated points: the outer chain's order, with the road on the left.
+    pub(super) fn outer_path(
+        &self,
+        arms: &[ArmInput<'_>],
+        sector: usize,
+        out: &mut Vec<PathPoint>,
+    ) {
+        let layout = &self.sectors[sector];
+        let index = layout.boundaries.len() - 1;
+        let outer = &self.boundaries[layout.boundaries.end - 1];
+        out.clear();
+        let from = (layout.from_arm, Side::Left);
+        self.side_run(
+            &arms[self.arms[from.0].input_index],
+            from,
+            (outer, index),
+            out,
+        );
+        out.reverse();
+        out.extend(
+            self.samples[outer.samples.clone()]
+                .iter()
+                .map(|&xz| PathPoint {
+                    station_m: 0.0,
+                    xz,
+                    mouth: None,
+                }),
+        );
+        let to = (layout.to_arm, Side::Right);
+        self.side_run(&arms[self.arms[to.0].input_index], to, (outer, index), out);
+        out.dedup_by(|next, previous| next.xz == previous.xz);
+    }
+
+    /// Attached arm `index`'s edge on `side`, from its boundary point out to its mouth corner.
+    pub(super) fn attached_run(
+        &self,
+        input: &ArmInput<'_>,
+        index: usize,
+        side: Side,
+        out: &mut Vec<PathPoint>,
+    ) {
+        let attachment = &self.attachments[index];
+        let edge = attachment.edges[usize::from(side == Side::Left)];
+        let mouth_m = attachment.mouth_station_m;
+        let point = |station_m: f64| PathPoint {
+            station_m,
+            xz: input.offset_point(station_m, edge.offset_m),
+            mouth: None,
+        };
+        out.push(PathPoint {
+            station_m: edge.station_m,
+            xz: edge.point,
+            mouth: None,
+        });
+        out.extend(
+            input.knots[input.knots_between(edge.station_m, mouth_m)]
+                .iter()
+                .map(|knot| point(knot.station_m)),
+        );
+        out.push(PathPoint {
+            mouth: Some((attachment.input_index, edge.offset_m)),
+            ..point(mouth_m)
+        });
+    }
+
+    /// The ribbon outline of attached arm `index`: from its right edge point along the outer
+    /// path (`path`, its sector's) to its left edge point, out along its left edge to the mouth,
+    /// and back along its right edge, and where the two points lie on the path. `None` when the
+    /// path does not hold both points in order.
+    pub(super) fn ribbon(
+        &self,
+        input: &ArmInput<'_>,
+        index: usize,
+        path: &[PathPoint],
+        out: &mut Vec<PathPoint>,
+    ) -> Option<(usize, usize)> {
+        let [right, left] = self.attachments[index].edges.map(|edge| edge.point);
+        let start = path.iter().position(|point| point.xz == right)?;
+        let end = start + path[start..].iter().position(|point| point.xz == left)?;
+        out.clear();
+        out.extend_from_slice(&path[start..=end]);
+        self.attached_run(input, index, Side::Left, out);
+        let turn = out.len();
+        self.attached_run(input, index, Side::Right, out);
+        out[turn..].reverse();
+        out.pop();
+        out.dedup_by(|next, previous| next.xz == previous.xz);
+        Some((start, end))
+    }
+
+    // Mouths of the attached arms, beyond their farther edge point; their ribbon outlines must
+    // be simple, and the ribbons of one sector must follow each other along its outer path.
+    fn finish_attachments(&mut self, arms: &[ArmInput<'_>]) -> Result<(), LayoutError> {
+        let (mut path, mut ring) = (Vec::new(), Vec::new());
+        let mut previous: Option<(usize, usize)> = None;
+        for index in 0..self.attachments.len() {
+            let attachment = &mut self.attachments[index];
+            let input = &arms[attachment.input_index];
+            let arm = attachment.key;
+            let reach_m = attachment.edges[0]
+                .station_m
+                .max(attachment.edges[1].station_m);
+            attachment.mouth_station_m = reach_m + MIN_MOUTH_STATION_M;
+            if attachment.mouth_station_m > input.max_station_m {
+                return Err(LayoutError::ArmTooShort { arm });
+            }
+            let sector = attachment.sector;
+            self.outer_path(arms, sector, &mut path);
+            let (start, end) = self
+                .ribbon(input, index, &path, &mut ring)
+                .ok_or(LayoutError::FootpathDoesNotJoin { arm })?;
+            if previous.is_some_and(|(at, left)| at == sector && start <= left) {
+                return Err(LayoutError::FootpathDoesNotJoin { arm });
+            }
+            previous = Some((sector, end));
+            let points: Vec<RoadVec2> = ring.iter().map(|point| point.xz).collect();
+            if !loop_is_simple(&points, &[0], |point| *point)
+                || signed_area(&points, |point| *point) == 0.0
+            {
+                return Err(LayoutError::FootpathDoesNotJoin { arm });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1105,18 +1378,100 @@ fn bisector_station(
     None
 }
 
-// Sets each arm's mouth and crosswalk stations and copies its corner tangents.
+// An attached edge not yet found on its sector's outermost samples.
+const UNPLACED: BoundaryPoint = BoundaryPoint::Sample(usize::MAX);
+
+// Places each attached arm in the sector it lies in and finds where its edges meet the
+// outermost runs of that sector's two arm sides (the right edge tries the from-arm first, the
+// left edge the to-arm). A run point lies at or beyond the run's sector station; edges that meet
+// neither run are left `UNPLACED` for the sector's samples.
+fn attach_to_runs(
+    arms: &[ArmInput<'_>],
+    sorted: &[ArmLayout],
+    sectors: &[SectorLayout],
+    boundaries: &[SectorBoundary],
+    attached: Vec<ArmLayout>,
+) -> Result<Vec<Attachment>, LayoutError> {
+    let attach = |arm: ArmLayout| {
+        let input = &arms[arm.input_index];
+        let sector = sectors
+            .iter()
+            .position(|sector| {
+                let into = (arm.angle_rad - sorted[sector.from_arm].angle_rad).rem_euclid(TAU);
+                into >= MIN_SECTOR_ANGLE_RAD && sector.angle_rad - into >= MIN_SECTOR_ANGLE_RAD
+            })
+            .ok_or(LayoutError::DuplicateDirection { arm: arm.key })?;
+        let layout = &sectors[sector];
+        let outer = &boundaries[layout.boundaries.end - 1];
+        let runs = [
+            (layout.from_arm, Side::Left, outer.from_station_m),
+            (layout.to_arm, Side::Right, outer.to_station_m),
+        ];
+        // The run is searched at its arm's own offset; its point is the run's own, tapered or not.
+        let edge = |offset_m: f64, order: [usize; 2]| {
+            let on_run = order.into_iter().find_map(|run| {
+                let (road_arm, side, from_m) = runs[run];
+                let road = &arms[sorted[road_arm].input_index];
+                let road_offset_m = outer.run_offset_m(side, outer.reach_m(side));
+                let found = forward_crossing(road, road_offset_m, input, offset_m)?;
+                (found.a_station >= from_m).then(|| AttachedEdge {
+                    offset_m,
+                    station_m: found.b_station,
+                    point: outer.run_point(road, side, found.a_station),
+                    on: BoundaryPoint::Run {
+                        arm: road_arm,
+                        side,
+                        station_m: found.a_station,
+                    },
+                })
+            });
+            on_run.unwrap_or(AttachedEdge {
+                offset_m,
+                station_m: 0.0,
+                point: RoadVec2::ZERO,
+                on: UNPLACED,
+            })
+        };
+        let outer_m = |side: ArmSide<'_>| side.bands[side.bands.len() - 1].outer_m;
+        Ok(Attachment {
+            key: arm.key,
+            input_index: arm.input_index,
+            direction: arm.direction,
+            angle_rad: arm.angle_rad,
+            sector,
+            mouth_station_m: 0.0,
+            edges: [
+                edge(-outer_m(input.right), [0, 1]),
+                edge(outer_m(input.left), [1, 0]),
+            ],
+        })
+    };
+    attached.into_iter().map(attach).collect()
+}
+
+// Sets each arm's mouth and crosswalk stations and copies its corner tangents. An arm side that
+// an attached edge meets reaches `MIN_MOUTH_STATION_M` beyond that point.
 fn assign_mouths(
     arms: &[ArmInput<'_>],
     sorted: &mut [ArmLayout],
     sectors: &[SectorLayout],
     boundaries: &[SectorBoundary],
+    attachments: &[Attachment],
 ) -> Result<(), LayoutError> {
     let count = sorted.len();
     for (index, arm) in sorted.iter_mut().enumerate() {
         let input = &arms[arm.input_index];
         let left = &sectors[index];
         let right = &sectors[(index + count - 1) % count];
+        let attached_m = attachments
+            .iter()
+            .flat_map(|attachment| attachment.edges)
+            .filter_map(|edge| match edge.on {
+                BoundaryPoint::Run { arm, station_m, .. } if arm == index => {
+                    Some(station_m + MIN_MOUTH_STATION_M)
+                }
+                _ => None,
+            });
         let reach_m = boundaries[left.boundaries.clone()]
             .iter()
             .map(|boundary| boundary.reach_m(Side::Left))
@@ -1125,6 +1480,7 @@ fn assign_mouths(
                     .iter()
                     .map(|boundary| boundary.reach_m(Side::Right)),
             )
+            .chain(attached_m)
             .fold(MIN_MOUTH_STATION_M, f64::max);
         arm.mouth_station_m = reach_m + input.crosswalk_depth();
         if arm.mouth_station_m > input.max_station_m {
@@ -1211,17 +1567,20 @@ impl PolarCurve {
     }
 }
 
-// Samples every sector boundary with one sample count per sector.
+// Samples every sector boundary with one sample count per sector. Attached edges that met no
+// run meet the sector's outermost samples: each meeting point is inserted there, and the same
+// fraction of the same segment into every other boundary of the sector.
 fn sample_sectors(
     node: RoadVec2,
     arms: &[ArmInput<'_>],
     sorted: &[ArmLayout],
     sectors: &mut [SectorLayout],
     boundaries: &mut [SectorBoundary],
+    attachments: &mut [Attachment],
 ) -> Result<Vec<RoadVec2>, LayoutError> {
     let half_turn = sorted.len() == 1;
     let mut samples = Vec::new();
-    for sector in sectors.iter_mut() {
+    for (sector_index, sector) in sectors.iter_mut().enumerate() {
         let a = &arms[sorted[sector.from_arm].input_index];
         let b = &arms[sorted[sector.to_arm].input_index];
         let centre = sector.corner.map_or(node, |corner| corner.centre);
@@ -1244,14 +1603,82 @@ fn sample_sectors(
             }
             segments = segments.max(curve.segment_count());
         }
-        sector.samples_per_boundary = segments + 1;
-        for boundary in &mut boundaries[range] {
+        // (segment, fraction, attachment, edge, attached station), in boundary order.
+        let mut inserts = Vec::new();
+        let mut outer = Vec::new();
+        for (attachment, layout) in attachments.iter().enumerate() {
+            for (edge, placed) in layout.edges.iter().enumerate() {
+                if layout.sector != sector_index || placed.on != UNPLACED {
+                    continue;
+                }
+                if outer.is_empty() {
+                    curve(&boundaries[range.end - 1]).emit(segments, &mut outer);
+                }
+                let input = &arms[layout.input_index];
+                let (segment, u, station_m) = polyline_crossing(input, placed.offset_m, &outer)
+                    .ok_or(LayoutError::FootpathDoesNotJoin { arm: layout.key })?;
+                inserts.push((segment, u, attachment, edge, station_m));
+            }
+        }
+        inserts.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        sector.samples_per_boundary = segments + 1 + inserts.len();
+        let outermost = range.end - 1;
+        for (index, boundary) in boundaries[range.clone()].iter_mut().enumerate() {
             let start = samples.len();
             curve(boundary).emit(segments, &mut samples);
+            if inserts.is_empty() {
+                boundary.samples = start..samples.len();
+                continue;
+            }
+            let emitted = samples.split_off(start);
+            let mut next = inserts.iter().peekable();
+            for (i, &sample) in emitted.iter().enumerate() {
+                samples.push(sample);
+                while let Some(&(_, u, attachment, edge, station_m)) =
+                    next.next_if(|insert| insert.0 == i)
+                {
+                    let point = lerp(sample, emitted[i + 1], u);
+                    if range.start + index == outermost {
+                        let placed = &mut attachments[attachment].edges[edge];
+                        placed.station_m = station_m;
+                        placed.point = point;
+                        placed.on = BoundaryPoint::Sample(samples.len());
+                    }
+                    samples.push(point);
+                }
+            }
             boundary.samples = start..samples.len();
         }
     }
     Ok(samples)
+}
+
+// The first point, by station along `arm`'s offset curve at `offset_m`, at which that curve
+// crosses the polyline `points`: its segment there, the fraction along it and the station.
+fn polyline_crossing(
+    arm: &ArmInput<'_>,
+    offset_m: f64,
+    points: &[RoadVec2],
+) -> Option<(usize, f64, f64)> {
+    let mut best: Option<(usize, f64, f64)> = None;
+    for pair in arm.knots[..=arm.segments_below(arm.max_station_m)].windows(2) {
+        let (p0, p1) = (pair[0].offset(offset_m), pair[1].offset(offset_m));
+        for (segment, edge) in points.windows(2).enumerate() {
+            let Some((t, u)) = segment_crossing(p0, p1, edge[0], edge[1]) else {
+                continue;
+            };
+            let station_m = lerp_scalar(pair[0].station_m, pair[1].station_m, t);
+            if station_m <= arm.max_station_m
+                && best.is_none_or(|(_, _, best_m)| station_m < best_m)
+            {
+                best = Some((segment, u, station_m));
+            }
+        }
+        if best.is_some() {
+            break;
+        }
+    }
+    best
 }
 
 // In a straight sector's miter, a boundary with equal offsets on both arms meets in one point.
@@ -1331,7 +1758,9 @@ fn core_loop(
     if core.len() > 1 && core[0].position == core[core.len() - 1].position {
         core.pop();
     }
-    if loop_is_simple(&core, &pieces) && signed_area(&core) > 0.0 {
+    if loop_is_simple(&core, &pieces, |vertex| vertex.position)
+        && signed_area(&core, |vertex| vertex.position) > 0.0
+    {
         Ok(core)
     } else {
         Err(LayoutError::CoreNotSimple)
@@ -1369,12 +1798,12 @@ impl Bounds {
 
 // No two non-adjacent segments share a point and no consecutive pair folds back on itself.
 // Segment pairs are tested only between pieces whose bounds overlap.
-fn loop_is_simple(core: &[CoreVertex], pieces: &[usize]) -> bool {
-    let count = core.len();
+fn loop_is_simple<T>(points: &[T], pieces: &[usize], position: impl Fn(&T) -> RoadVec2) -> bool {
+    let count = points.len();
     if count < 3 {
         return false;
     }
-    let point = |vertex: usize| core[vertex % count].position;
+    let point = |vertex: usize| position(&points[vertex % count]);
     let segment_bounds = |segment: usize| Bounds::of(point(segment), point(segment + 1));
     let piece_segments = |piece: usize| {
         let start = pieces[piece].min(count);
@@ -1471,10 +1900,11 @@ fn line_crossing(p0: RoadVec2, p1: RoadVec2, q0: RoadVec2, q1: RoadVec2) -> Opti
 }
 
 // Shoelace area, relative to the first vertex to keep world coordinates out of the products.
-fn signed_area(core: &[CoreVertex]) -> f64 {
-    let origin = core[0].position;
-    core.windows(2)
-        .map(|pair| (pair[0].position - origin).perp_dot(pair[1].position - origin))
+fn signed_area<T>(points: &[T], position: impl Fn(&T) -> RoadVec2) -> f64 {
+    let origin = position(&points[0]);
+    points
+        .windows(2)
+        .map(|pair| (position(&pair[0]) - origin).perp_dot(position(&pair[1]) - origin))
         .sum::<f64>()
         * 0.5
 }

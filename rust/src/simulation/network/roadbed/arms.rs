@@ -21,7 +21,7 @@ use super::layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, CROSSWALK_DEPTH_M, EdgeEnd, JunctionLayout,
     LayoutError,
 };
-use super::profile::RoadProfile;
+use super::profile::{Level, RoadProfile};
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -50,6 +50,7 @@ struct ArmRecord {
     right_core: usize,
     max_station_m: f64,
     crossable: bool,
+    attached: bool,
 }
 
 /// The arms of one node, owning the knot and band buffers their [`ArmInput`]s borrow.
@@ -72,21 +73,27 @@ pub(crate) struct NodeArms {
 
 impl NodeArms {
     /// Arms of `node`, or `None` when the node has no layout in this gate: merged into another
-    /// node, no surface arm, a pass-through pair (its spans share one bisected section), a
-    /// footpath arm (D5 and footpath-only nodes arrive in `ROAD-68-F`), or a bridge or tunnel
-    /// terminal.
+    /// node, no surface arm, a pass-through pair (its spans share one bisected section), or a
+    /// bridge or tunnel terminal. At a node with a road arm, footpath arms are attached (D5):
+    /// they bound no sector and join the sidewalk ring; where only footpaths meet, they are
+    /// ordinary arms. The crossing rule counts road arms only.
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
         let incidents = node_incidents(graph, node)?;
         // Bridge and tunnel ends own their terminals until their portals and abutments
         // (`ROAD-68-F`).
         let structure_end = matches!(incidents.as_slice(), [(key, _)]
             if graph.edge(key.edge).class != EdgeClass::Standard);
-        if incidents.is_empty() || passes_through(&incidents) || structure_end {
+        if incidents.is_empty() || passes_through(graph, &incidents) || structure_end {
             return None;
         }
         let pos = graph.node(node).pos;
-        let degree_two = match incidents[..] {
-            [a, b] => Some(degree_two_crossings(graph, node, [a, b])),
+        // Input indices of the road arms, which alone cross and, at a road node, bound sectors.
+        let roads: Vec<usize> = (0..incidents.len())
+            .filter(|&index| is_road(graph, incidents[index].0))
+            .collect();
+        let road_incidents: Vec<_> = roads.iter().map(|&index| incidents[index]).collect();
+        let degree_two = match road_incidents[..] {
+            [a, b] => Some(degree_two_crossings(graph, node, [a, b], false)),
             _ => None,
         };
         let mut arms = Self {
@@ -96,19 +103,24 @@ impl NodeArms {
             knots: Vec::new(),
             centreline: Vec::new(),
             bands: Vec::new(),
-            crossing_fallback: degree_two.as_ref().and_then(|crossings| crossings.fallback),
+            crossing_fallback: degree_two
+                .as_ref()
+                .and_then(|crossings| crossings.fallback)
+                .map(|pair| pair.map(|road| roads[road])),
         };
         for (index, &(key, _)) in incidents.iter().enumerate() {
-            let crossable = match &degree_two {
-                Some(crossings) => crossings.crosses[index],
-                None => junction_arm_crosses(graph, node, &incidents, index),
-            };
-            arms.push_arm(key, graph.edge(key.edge), crossable);
+            let road = roads.iter().position(|&input| input == index);
+            let crossable = road.is_some_and(|road| match &degree_two {
+                Some(crossings) => crossings.crosses[road],
+                None => junction_arm_crosses(graph, node, &road_incidents, road),
+            });
+            let attached = road.is_none() && !roads.is_empty();
+            arms.push_arm(key, graph.edge(key.edge), crossable, attached);
         }
         Some(arms)
     }
 
-    fn push_arm(&mut self, key: ArmKey, edge: &Edge, crossable: bool) {
+    fn push_arm(&mut self, key: ArmKey, edge: &Edge, crossable: bool, attached: bool) {
         let knots_start = self.knots.len();
         let mut station_m = 0.0;
         for (_, point) in walk_away(&edge.geometry, key.end) {
@@ -153,6 +165,7 @@ impl NodeArms {
             right_core,
             max_station_m: 0.5 * station_m,
             crossable,
+            attached,
         });
     }
 
@@ -229,6 +242,23 @@ impl NodeArms {
             },
             max_station_m: arm.max_station_m,
             crossable: arm.crossable,
+            attached: arm.attached,
+        }
+    }
+
+    /// Whether arm `index` is a footpath attached to a road node's sidewalk ring (D5), whose
+    /// node-piece ribbon and mouth stand at sidewalk height.
+    pub(super) fn is_attached(&self, index: usize) -> bool {
+        self.arms[index].attached
+    }
+
+    /// The level arm `index`'s band of `level` stands at in the node: an attached footpath at
+    /// sidewalk height (D5), any other band at its own.
+    pub(super) fn level_at_node(&self, index: usize, level: Level) -> Level {
+        if self.arms[index].attached {
+            Level::Raised
+        } else {
+            level
         }
     }
 
@@ -238,7 +268,10 @@ impl NodeArms {
     /// (D8, `ROAD-68` open question 13). Node pieces, clips and lanes all lay out through here.
     pub(crate) fn layout(&self) -> Result<JunctionLayout, LayoutError> {
         let mut inputs: Vec<_> = (0..self.len()).map(|index| self.input(index)).collect();
-        match (JunctionLayout::build(self.position, &inputs), self.crossing_fallback) {
+        match (
+            JunctionLayout::build(self.position, &inputs),
+            self.crossing_fallback,
+        ) {
             (Err(error), Some([from, to])) => {
                 inputs[from].crossable = false;
                 inputs[to].crossable = true;
@@ -312,7 +345,7 @@ fn set_span_frame_laterals(knots: &mut [ArmKnot]) {
 }
 
 // The live surface edge ends at `node`, sorted by key, each with its direction away from the
-// node; `None` for a node merged into another or one with a footpath arm (D5, `ROAD-68-F`).
+// node; `None` for a node merged into another.
 fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec2)>> {
     if graph.get_valid_node(node) != node || node as usize >= graph.node_adjacency_count() {
         return None;
@@ -333,9 +366,6 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
             continue;
         };
         if let Some(direction) = incident_direction(edge, end) {
-            if edge.primary_type == TransitType::Foot {
-                return None;
-            }
             incidents.push((
                 ArmKey {
                     edge: edge_idx,
@@ -350,10 +380,13 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
     Some(incidents)
 }
 
-// A pass-through pair: two arms close enough to opposite that their spans share one bisected
-// section and the node has no layout.
-fn passes_through(incidents: &[(ArmKey, RoadVec2)]) -> bool {
-    matches!(incidents, [(_, a), (_, b)] if a.dot(*b) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD))
+// A pass-through pair: two arms of one kind, road or footpath, close enough to opposite that
+// their spans share one bisected section and the node has no layout. A footpath continuing a
+// road end attaches to its cap instead (D5).
+fn passes_through(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
+    matches!(incidents, [(a, da), (b, db)]
+        if da.dot(*db) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD)
+            && is_road(graph, *a) == is_road(graph, *b))
 }
 
 /// The two road arms of a pass-through node, each with whether it carries the node's
@@ -366,8 +399,8 @@ pub(super) fn pass_through_crossings(
     let [a, b] = incidents[..] else {
         return None;
     };
-    passes_through(&incidents).then(|| {
-        let crosses = degree_two_crossings(graph, node, [a, b]).crosses;
+    passes_through(graph, &incidents).then(|| {
+        let crosses = degree_two_crossings(graph, node, [a, b], true).crosses;
         [(a.0, crosses[0]), (b.0, crosses[1])]
     })
 }
@@ -402,17 +435,18 @@ struct DegreeTwoCrossings {
 // of `true` always crosses, `false` never does, and without an override an arm crosses only if
 // no earlier arm did. So a node has exactly one crossing by default, on its first arm, and an
 // override of `false` there moves it to the other arm. A pass-through crossing lies on its arm's
-// span, so that arm must hold the strip within the half of its edge the far node leaves it
-// (`JunctionLayout` gives each end at most half), or it does not cross. A bend's default crossing
-// that its layout cannot hold moves to the other arm when that arm has no override
-// ([`NodeArms::layout`]).
+// span (`span_owned`: a pass-through node, which has no layout), so that arm must hold the strip
+// within the half of its edge the far node leaves it (`JunctionLayout` gives each end at most
+// half), or it does not cross. A default crossing on a layout that cannot hold it moves to the
+// other arm when that arm has no override ([`NodeArms::layout`]).
 fn degree_two_crossings(
     graph: &RegionGraph,
     node: u32,
     arms: [(ArmKey, RoadVec2); 2],
+    span_owned: bool,
 ) -> DegreeTwoCrossings {
     let overrides = &graph.node(node).crosswalk_overrides;
-    let pass_through = passes_through(&arms);
+    let pass_through = span_owned;
     let fits = |key: ArmKey| {
         !pass_through
             || 0.5 * horizontal_length_m(&graph.edge(key.edge).geometry) >= CROSSWALK_DEPTH_M
@@ -446,6 +480,10 @@ fn degree_two_crossings(
         .map(|from| [from, 1 - from])
         .filter(|&[_, to]| !pass_through && !crosses[to] && eligible(to) && free(to));
     DegreeTwoCrossings { crosses, fallback }
+}
+
+fn is_road(graph: &RegionGraph, key: ArmKey) -> bool {
+    graph.edge(key.edge).primary_type == TransitType::Road
 }
 
 fn has_sidewalks(graph: &RegionGraph, key: ArmKey) -> bool {

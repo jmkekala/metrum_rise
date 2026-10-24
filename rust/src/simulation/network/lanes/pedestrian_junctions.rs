@@ -4,7 +4,10 @@
 //!
 //! At a node with a junction layout, crossings and sidewalk corner routes come from the layout
 //! (`roadbed::NodeWalkways`): a crossing on each crossable arm, square to the road on its crossing line,
-//! and a corner route along the sidewalk around every sector between two arms with sidewalks.
+//! and a corner route along the sidewalk around every sector between two arms with sidewalks. A
+//! footpath ends at its layout mouth and joins the corner route of the sector it lies in at its
+//! nearest point (D5); footpaths meeting only footpaths, or roads without sidewalks, meet at the
+//! node.
 //! A pass-through node's crossing (one by default, D8) lies on its arm's span and comes from the
 //! span's section there, through the same walkways. At nodes without a layout (pass-through
 //! pairs, footpath nodes, structure ends and failed layouts) neighbouring sidewalks join by a
@@ -12,7 +15,7 @@
 //! only pass-through nodes have crossings there.
 
 use super::super::graph::RegionGraph;
-use super::super::roadbed::{ArmKey, EdgeEnd, NodeWalkways, RoadVec3};
+use super::super::roadbed::{ArmKey, EdgeEnd, FootpathJoin, NodeWalkways, RoadVec3};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{build_cum_dist, road_half_width};
 use super::{CrosswalkMarking, Lane, LaneCrosswalk, LaneSuccessors, LaneType};
@@ -83,6 +86,19 @@ fn push_distinct_point(points: &mut Vec<Vector3>, point: Vector3) {
     {
         points.push(point);
     }
+}
+
+// Ends a route exactly on `point`, a lane's end: it replaces a last point within the connection
+// epsilon instead of being dropped as a repeat of it.
+fn push_end_point(points: &mut Vec<Vector3>, point: Vector3) {
+    if points
+        .last()
+        .is_some_and(|last| last.distance_squared_to(point) <= CONNECTION_POINT_EPSILON_M.powi(2))
+        && points.len() > 1
+    {
+        points.pop();
+    }
+    points.push(point);
 }
 
 fn planar_distance(a: Vector3, b: Vector3) -> f32 {
@@ -219,7 +235,7 @@ fn layout_corner_route(
     for &p in points.iter().skip(1).take(points.len().saturating_sub(2)) {
         push_distinct_point(&mut route, point(p));
     }
-    push_distinct_point(&mut route, end.mouth_world_pos);
+    push_end_point(&mut route, end.mouth_world_pos);
     route
 }
 
@@ -326,7 +342,9 @@ pub(super) fn footpath_end_insets(graph: &RegionGraph, edge_idx: usize) -> (f32,
 
 // Steps between footpath mouth `path` and the walkways it meets: the sidewalk corner on each side
 // of it between two road arms, the two sidewalks of a single road arm, or, where only footpaths
-// meet, every later footpath through the node.
+// meet, every later footpath through the node. At a layout node the corner is the layout's corner
+// route of the footpath's sector, which at a road end wraps the cap to both sidewalks.
+#[allow(clippy::too_many_arguments)]
 fn append_footpath_steps(
     steps: &mut Vec<PedestrianStep>,
     outgoing_steps: &mut [Vec<usize>],
@@ -335,6 +353,7 @@ fn append_footpath_steps(
     path: usize,
     road_mouth_count: usize,
     node_pos: Vector3,
+    walkways: Option<&NodeWalkways>,
 ) {
     let mut both_ways = |steps: &mut Vec<PedestrianStep>, target: usize, route: Vec<Vector3>| {
         let reversed = route.iter().rev().copied().collect();
@@ -342,7 +361,24 @@ fn append_footpath_steps(
         append_pedestrian_step(steps, outgoing_steps, target, path, reversed, None);
     };
     let from = mouths[path].mouth_world_pos;
+    let layout = walkways.filter(|walkways| walkways.has_layout());
+    if let Some(join) = layout.and_then(|walkways| walkways.footpath_join(mouths[path].arm)) {
+        let mouth_at = |arm: ArmKey, left: bool| {
+            mouths[..road_mouth_count].iter().position(|mouth| {
+                mouth.arm == arm && (mouth.positive_lateral == (arm.end == EdgeEnd::Start)) == left
+            })
+        };
+        let corner = &join.corner;
+        if let (Some(start), Some(end)) = (mouth_at(corner.from, true), mouth_at(corner.to, false))
+        {
+            let [to_start, to_end] = layout_join_routes(mouths, from, (start, end), &join);
+            both_ways(steps, start, to_start);
+            both_ways(steps, end, to_end);
+        }
+        return;
+    }
     match arms {
+        _ if layout.is_some() && !arms.is_empty() => {}
         [] => {
             for (other, mouth) in mouths.iter().enumerate().skip(path + 1) {
                 debug_assert!(other >= road_mouth_count);
@@ -379,25 +415,66 @@ fn append_footpath_steps(
                 arms[(i + 1) % arms.len()].clockwise_mouth,
             );
             let corner = node_corner_route(&mouths[start], &mouths[end], node_pos);
-            let Some((segment, joint)) = nearest_point_on_polyline_xz(&corner, from) else {
-                return;
-            };
-            let mut to_start = Vec::with_capacity(segment + 3);
-            let mut to_end = Vec::with_capacity(corner.len() - segment + 2);
-            for point in [from, joint] {
-                push_distinct_point(&mut to_start, point);
-                push_distinct_point(&mut to_end, point);
-            }
-            for &point in corner[..=segment].iter().rev() {
-                push_distinct_point(&mut to_start, point);
-            }
-            for &point in &corner[segment + 1..] {
-                push_distinct_point(&mut to_end, point);
-            }
-            both_ways(steps, start, to_start);
-            both_ways(steps, end, to_end);
+            join_corner(&mut both_ways, steps, from, (start, end), &corner);
         }
     }
+}
+
+// An attached footpath's two routes from its end `from` (D5): in along its centreline to where it
+// meets its sector's corner route (`join`), then along the route to each of its two sidewalk
+// mouths, which the lanes end on exactly.
+fn layout_join_routes(
+    mouths: &[SidewalkMouth],
+    from: Vector3,
+    (start, end): (usize, usize),
+    join: &FootpathJoin<'_>,
+) -> [Vec<Vector3>; 2] {
+    let point = |p: RoadVec3| Vector3::new(p.x as f32, p.y as f32, p.z as f32);
+    let points = join.corner.points;
+    // The route's interior points are the corner's own; its two ends the lanes'.
+    let mut to_start = Vec::with_capacity(join.segment + 3);
+    let mut to_end = Vec::with_capacity(points.len() - join.segment + 2);
+    for route in [&mut to_start, &mut to_end] {
+        push_distinct_point(route, from);
+        push_distinct_point(route, point(join.point));
+    }
+    for &p in points[1..=join.segment].iter().rev() {
+        push_distinct_point(&mut to_start, point(p));
+    }
+    push_end_point(&mut to_start, mouths[start].mouth_world_pos);
+    for &p in &points[join.segment + 1..points.len() - 1] {
+        push_distinct_point(&mut to_end, point(p));
+    }
+    push_end_point(&mut to_end, mouths[end].mouth_world_pos);
+    [to_start, to_end]
+}
+
+// Joins a footpath end `from` to a corner route at its nearest point, and follows the route both
+// ways to its two sidewalk mouths.
+fn join_corner(
+    both_ways: &mut impl FnMut(&mut Vec<PedestrianStep>, usize, Vec<Vector3>),
+    steps: &mut Vec<PedestrianStep>,
+    from: Vector3,
+    (start, end): (usize, usize),
+    corner: &[Vector3],
+) {
+    let Some((segment, joint)) = nearest_point_on_polyline_xz(corner, from) else {
+        return;
+    };
+    let mut to_start = Vec::with_capacity(segment + 3);
+    let mut to_end = Vec::with_capacity(corner.len() - segment + 2);
+    for point in [from, joint] {
+        push_distinct_point(&mut to_start, point);
+        push_distinct_point(&mut to_end, point);
+    }
+    for &point in corner[..=segment].iter().rev() {
+        push_distinct_point(&mut to_start, point);
+    }
+    for &point in &corner[segment + 1..] {
+        push_distinct_point(&mut to_end, point);
+    }
+    both_ways(steps, start, to_start);
+    both_ways(steps, end, to_end);
 }
 
 // The segment index and planar-nearest point of `polyline` to `point`, with the height
@@ -868,7 +945,8 @@ pub(crate) fn build_pedestrian_connections_at_node(
     for key in to_remove {
         graph.nodes[node_id].lane_connections.remove(&key);
     }
-    if num_mouths < 2 {
+    // A footpath's dead end keeps its walkers' turn back: the stationary connector below.
+    if num_mouths == 0 {
         return;
     }
 
@@ -936,6 +1014,7 @@ pub(crate) fn build_pedestrian_connections_at_node(
             path_mouth,
             road_mouth_count,
             node_pos,
+            walkways,
         );
     }
 

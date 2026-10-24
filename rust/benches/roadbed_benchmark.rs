@@ -10,13 +10,14 @@
 //! Junction cases (`roadbed_junction`) build one node piece from the graph: arms, layout, plane,
 //! mouth sections, core CDT, strips, curb faces, chains, grid and footprint. Arms are 100 m
 //! two-lane roads with sidewalks and crosswalks, 12 m knots, on a 2.5% slope. Targets: a
-//! four-way in 0.1 ms and a six-way in 0.3 ms. `publish/t_closure` marks a T's node dirty and
+//! four-way in 0.1 ms and a six-way in 0.3 ms. `build/t_footpath` adds an 80 m footpath in one
+//! of the T's corners, at sidewalk height (D5). `publish/t_closure` marks a T's node dirty and
 //! compiles its closure: the node piece and its three incident spans.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::Vector3;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
-use metrum_rise::simulation::network::roadbed::RoadbedSystem;
+use metrum_rise::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, RoadbedSystem};
 use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
@@ -260,13 +261,31 @@ fn bench_roadbed_junction(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(2));
     group.measurement_time(Duration::from_secs(4));
     let roadbed = RoadbedSystem::new(RENDER_CHUNK_SPAN_M);
-    let cases: [(&str, &[f32]); 3] = [
-        ("t", &[0.0, 180.0, 270.0]),
-        ("four_way", &[0.0, 90.0, 180.0, 270.0]),
-        ("six_way", &[0.0, 60.0, 120.0, 180.0, 240.0, 300.0]),
+    // The T with a footpath leaving its south-east corner, pinned at sidewalk height.
+    let mut t_footpath = junction(&[0.0, 180.0, 270.0]);
+    let (sin, cos) = 315_f32.to_radians().sin_cos();
+    let points = (0..=4)
+        .map(|i| {
+            let (x, z) = (cos * 20.0 * i as f32, sin * 20.0 * i as f32);
+            Vector3::new(x, SLOPE * x + CURB_STEP_HEIGHT_M, z)
+        })
+        .collect();
+    let far = t_footpath.add_node(
+        Vector3::new(cos * 80.0, 0.0, sin * 80.0),
+        NodeType::Junction,
+    );
+    t_footpath.add_edge(footpath(edge_through(0, far, points)));
+    t_footpath.rebuild_intersection_clips();
+    let cases = [
+        ("t", junction(&[0.0, 180.0, 270.0])),
+        ("four_way", junction(&[0.0, 90.0, 180.0, 270.0])),
+        (
+            "six_way",
+            junction(&[0.0, 60.0, 120.0, 180.0, 240.0, 300.0]),
+        ),
+        ("t_footpath", t_footpath),
     ];
-    for (name, angles) in cases {
-        let graph = junction(angles);
+    for (name, graph) in cases {
         let piece = roadbed.build_node_piece(&graph, 0).expect("node builds");
         assert!(piece.expect("node has a piece").mesh().top_triangle_count() > 0);
         group.bench_function(BenchmarkId::new("build", name), |b| {
