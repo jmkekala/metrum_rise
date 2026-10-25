@@ -90,15 +90,6 @@ pub struct RoadProfile {
 impl RoadProfile {
     /// The profile of an edge at its full carriageway width.
     pub fn for_edge(edge: &Edge) -> Self {
-        Self::with_carriageway_half_width(edge, None)
-    }
-
-    /// The profile of an edge with its carriageway half-width overridden, as width-change tapers
-    /// do; the override is floored at half a lane. Footpaths ignore it.
-    pub(crate) fn with_carriageway_half_width(
-        edge: &Edge,
-        carriageway_half_width_override_m: Option<f32>,
-    ) -> Self {
         let mut profile = Self {
             bands: [ProfileBand {
                 kind: BandKind::Carriageway,
@@ -124,9 +115,8 @@ impl RoadProfile {
             return profile;
         }
 
-        let half_carriageway = carriageway_half_width_override_m
-            .unwrap_or_else(|| edge.width.max(config::LANE_WIDTH) * 0.5)
-            .max(config::LANE_WIDTH * 0.5);
+        let half_carriageway =
+            (edge.width.max(config::LANE_WIDTH) * 0.5).max(config::LANE_WIDTH * 0.5);
         let (sidewalk_total, curb_width) = if edge.allowed_types & TransitFlags::FOOT != 0 {
             let total = config::SIDEWALK_WIDTH;
             (total, CURB_BAND_WIDTH_M.min(total))

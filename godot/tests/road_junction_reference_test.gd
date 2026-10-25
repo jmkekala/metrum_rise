@@ -21,6 +21,7 @@ const CONVENTIONS := {
 	"y_junction": "stem runs along +x ending at the origin; branches leave the origin at +/-(angle/2) from +x; drawn stem first, except y_25_branches_first",
 	"bend": "first road ends at the origin heading +x; second leaves at +45 degrees (toward +z)",
 	"lanes": "default 1 forward + 1 backward lane per road unless the fixture says otherwise; 0 lanes is a 2 m footpath",
+	"structures": "bridge_* and tunnel_* set the edge at class_at to class 1 (bridge) or 2 (tunnel) after the commits and render without terrain",
 }
 var _failures := 0
 var _records: Array[Dictionary] = []
@@ -91,6 +92,15 @@ func _fixtures() -> Array[Dictionary]:
 	result.append({"name": "t_mixed_4lane_through", "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0), 2), _road(Vector2(0, 0), Vector2(0, arm))]})
 	# A footpath (no lanes) 30 degrees off the T's side road: it meets that arm's sidewalk, so the arm's mouth moves out and its zebra stays at the corner (D5, ROAD-68 open question 17).
 	result.append({"name": "t_footpath_beside_arm", "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm)), _road(Vector2.ZERO, Vector2.from_angle(deg_to_rad(120.0)) * 60.0, 0)]})
+	# ROAD-68-F part 2: a bridge deck and a tunnel road piece as a T's side road (node piece) and as
+	# the continuation of a road end (pass-through span mouth), made structures with set_edge_class.
+	# Their terrain patches fail at the open chain end the abutment or portal will close
+	# (TERRAIN-07), so they render without terrain.
+	for structure in [["bridge", 1], ["tunnel", 2]]:
+		result.append({"name": "%s_t" % structure[0], "class_at": Vector2(0, arm * 0.5), "class": structure[1], "terrain": false,
+			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
+		result.append({"name": "%s_continuation" % structure[0], "class_at": Vector2(arm * 0.5, 0), "class": structure[1], "terrain": false,
+			"roads": [_road(Vector2(-arm, 0), Vector2.ZERO), _road(Vector2.ZERO, Vector2(arm, 0))]})
 	return result
 
 func _surface(point: Vector2) -> Vector3:
@@ -169,6 +179,13 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 	for road: Dictionary in fixture.roads:
 		if not await _commit(road):
 			return
+	if fixture.has("class_at"):
+		var edge: int = simulation.get_hovered_edge(fixture.class_at.x, fixture.class_at.y)
+		_expect(edge >= 0, "%s: an edge at %s" % [label, fixture.class_at])
+		simulation.set_edge_class(edge, fixture["class"])
+		_expect(simulation.get_edge_class(edge) == fixture["class"], "%s: edge %d takes class %d" % [label, edge, fixture["class"]])
+		for frame in range(4):
+			await process_frame
 	var state: Dictionary = simulation.get_road_benchmark_state()
 	var viewport := SubViewport.new()
 	viewport.size = CAPTURE_SIZE
@@ -210,7 +227,7 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 	scene.add_child(road.road_mesh_root)
 	var road_chunks: int = road._road_chunk_instances.size()
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
-	var terrain := await _terrain_node()
+	var terrain: Node3D = await _terrain_node() if fixture.get("terrain", true) else Node3D.new()
 	scene.add_child(terrain)
 	var sky_colour := Color(0.62, 0.74, 0.88)
 	var grey := Color(0.5, 0.5, 0.5)

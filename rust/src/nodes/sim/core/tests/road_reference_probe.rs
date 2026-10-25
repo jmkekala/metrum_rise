@@ -90,6 +90,11 @@ fn reference_junction_products_match_the_probe() {
 // (`y_25_branches_first`, `y_25`, `y_40`, `y_60` and `bend_45`, the same products), because that
 // stroke no longer re-solves the road it extends. Flat fixtures and the other sloped ones hash as
 // before.
+// Re-recorded by `ROAD-68-F` part 2: `y_25`'s lanes alone change, flat and sloped. Its second
+// stroke leaves a 167.5 degree bend whose arm without the crossing ends its corner 0.77 m out,
+// inside `s_min`; the minimum run beyond a corner moves that mouth to 1.77 m (was 1 m), and the
+// lanes that commit builds keep their ids in the final Y. Its graph, pieces, layouts, walkways and
+// queries are unchanged, as is every other entry.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -135,7 +140,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0xba1a4d470645c172,
             0x5789c0832814c8bf,
-            0xf61905e7e4330552,
+            0xf6c329b7c5e27393,
             0x39761dd71a7b771a,
         ],
     ),
@@ -255,7 +260,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0xf76f10dd4d7cc118,
             0xa3871c95fed3ed6d,
-            0x0869224101f68ae6,
+            0x146f19541c5c34cd,
             0x3bf1995fc2861986,
         ],
     ),

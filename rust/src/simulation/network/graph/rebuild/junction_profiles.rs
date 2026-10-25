@@ -4,8 +4,8 @@
 
 use super::super::data::{Edge, RegionGraph};
 use crate::simulation::network::roadbed::{
-    CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, directions_pass_through, incident_direction,
-    terminal_plane,
+    CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, directions_pass_through, edges_pass_through,
+    incident_direction, terminal_plane,
 };
 use crate::simulation::network::types::{NodeType, TransitType};
 use godot::prelude::{Vector2, Vector3};
@@ -586,8 +586,18 @@ impl RegionGraph {
         limit_mode: JunctionProfileLimitMode,
     ) -> NodeSolve {
         let incidents = &node.plane;
-        let pass_through = match incidents[..] {
+        let straight = match incidents[..] {
             [a, b] => directions_pass_through(a.direction, b.direction),
+            _ => false,
+        };
+        // A straight pair of one profile shares its span sections; of two profiles it has a
+        // layout and takes its corridor plane, as a pass-through pair with attached footpaths
+        // does (`edges_pass_through`).
+        let pass_through = match incidents[..] {
+            [a, b] => edges_pass_through(
+                (&self.edges[a.edge_idx], a.direction),
+                (&self.edges[b.edge_idx], b.direction),
+            ),
             _ => false,
         };
         if incidents.len() < 2 || (pass_through && node.attached.is_empty()) {
@@ -599,7 +609,7 @@ impl RegionGraph {
         let Some(samples) = self.junction_profile_incident_samples(origin, incidents) else {
             return NodeSolve::NoPlane;
         };
-        let bend = incidents.len() == 2 && !pass_through;
+        let bend = incidents.len() == 2 && !straight;
         let authority = if bend {
             None
         } else {

@@ -10,15 +10,13 @@ use glam::DVec2;
 
 // Whether a piece's top triangles overlap a polygon with positive area.
 fn piece_covers(mesh: &PieceMesh, polygon: &PolygonFootprint) -> bool {
-    mesh.triangles()[..mesh.top_triangle_count()]
-        .iter()
-        .any(|triangle| {
-            let points = triangle.map(|vertex| {
-                let point = mesh.positions()[vertex as usize];
-                [point.x, point.z]
-            });
-            polygon.overlaps_precise_points(&points)
-        })
+    let bounds = [polygon.min.x, polygon.min.y, polygon.max.x, polygon.max.y].map(f64::from);
+    mesh.any_top_triangle_in_bounds(bounds, |triangle| {
+        let points = mesh
+            .triangle_points(triangle)
+            .map(|point| [point.x, point.z]);
+        polygon.overlaps_precise_points(&points)
+    })
 }
 
 impl ZoningSystem {

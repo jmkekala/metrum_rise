@@ -476,54 +476,6 @@ fn an_edit_rebuilds_only_its_closure_and_chunks_accumulate() {
     assert_eq!(occupied, covered);
 }
 
-fn carriageway_half_width(section: &RoadSection) -> f32 {
-    section
-        .bands
-        .iter()
-        .filter(|band| band.kind == BandKind::Carriageway)
-        .map(|band| band.lateral_start_m.abs().max(band.lateral_end_m.abs()))
-        .fold(0.0, f32::max)
-}
-
-// Node pieces own width changes at bends and junctions (`ROAD-68-C`); the taper remains where two
-// spans meet at a pass-through node.
-#[test]
-fn pass_through_width_change_sections_taper_wider_endpoint() {
-    let mut graph = RegionGraph::new();
-    let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 2.0), NodeType::Junction);
-    let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
-    let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
-    graph.add_edge(road_edge(
-        n0,
-        n1,
-        vec![Vector3::new(-25.0, 0.0, 2.0), Vector3::ZERO],
-        7.0,
-    ));
-    let wide = graph.add_edge(road_edge(
-        n1,
-        n2,
-        vec![Vector3::ZERO, Vector3::new(25.0, 0.0, 0.0)],
-        14.0,
-    ));
-    let mut scratch = SpanScratch::default();
-    let SpanScratch {
-        points, cumulative, ..
-    } = &mut scratch;
-    let model = SpanModel::new(&graph, wide, points, cumulative, [None, None]).unwrap();
-    let first = model.section_at(0.0);
-    let after_taper = model.section_at(20.0);
-    assert!(
-        carriageway_half_width(&first) <= 3.75,
-        "wide angled endpoint starts at the narrow carriageway width: {}",
-        carriageway_half_width(&first)
-    );
-    assert!(
-        carriageway_half_width(&after_taper) >= 6.5,
-        "wide angled endpoint returns to full width after the taper: {}",
-        carriageway_half_width(&after_taper)
-    );
-}
-
 #[test]
 fn shallow_pass_through_spans_share_one_cross_section_axis() {
     let mut graph = RegionGraph::new();

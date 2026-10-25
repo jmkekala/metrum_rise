@@ -239,6 +239,15 @@ fn road_edges(core: &mut SimCore) -> (RoadEdges, FacePoints) {
 }
 
 fn open_road_edges(core: &mut SimCore) -> Vec<String> {
+    open_road_edges_where(core, |_, _, _| false)
+}
+
+// As `open_road_edges`, without the single-face edges `exempt` admits by their layer (0 road, 1
+// sidewalk, 2 curb, 3 raised step, 4 concrete) and two world points (x, y, z).
+pub(super) fn open_road_edges_where(
+    core: &mut SimCore,
+    exempt: impl Fn(i32, (f64, f64, f64), (f64, f64, f64)) -> bool,
+) -> Vec<String> {
     let (edges, thirds) = road_edges(core);
     let roadbed = &core.transit_network.roadbed;
     let mut problems = Vec::new();
@@ -249,6 +258,9 @@ fn open_road_edges(core: &mut SimCore) -> Vec<String> {
         let [a, b] = [p, q].map(|k| (f64::from_bits(k.0), f64::from(f32::from_bits(k.2)), f64::from_bits(k.1)));
         if users.len() > 2 {
             problems.push(format!("edge {a:?}-{b:?} shared by {} faces", users.len()));
+            continue;
+        }
+        if exempt(users[0].1.0, a, b) {
             continue;
         }
         let (dx, dz) = (b.0 - a.0, b.2 - a.2);

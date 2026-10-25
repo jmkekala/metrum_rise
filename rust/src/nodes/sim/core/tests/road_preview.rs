@@ -560,6 +560,63 @@ fn preview_chunks_with_crossings_and_signs_are_the_committed_chunks() {
     }
 }
 
+// `ROAD-68-F` part 2: a two-lane road end continued straight by a four-lane road is a layout
+// with D4 tapers (two profiles share no pass-through mouth row): the stroke's preview, with the
+// node's one crossing, publishes its chunks bitwise.
+#[test]
+fn a_widening_continuation_previews_its_committed_chunks() {
+    let on = [Vector2::new(ARM_M, 0.0), Vector2::new(2.0 * ARM_M, 0.0)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH], &[0], sloped);
+        let points = stroke(&core, on);
+        let mut context = context(&mut core);
+        let surface_generation = context.view.surface_generation;
+        let preview = Arc::new(context.preview_road(RoadPreviewRequest {
+            surface_generation,
+            points: points.clone(),
+            fwd_lanes: 2,
+            bkw_lanes: 2,
+            snap_to_existing_roads: true,
+        }));
+        let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+        let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points,
+                fwd_lanes: 2,
+                bkw_lanes: 2,
+                snap_to_existing_roads: true,
+                preview: Some(Arc::clone(&preview)),
+            },
+            std::time::Instant::now(),
+            Default::default(),
+        );
+        assert!(outcome.committed, "{}", outcome.rejection);
+        assert!(core.last_road_edit_metrics.preview_plan_reused);
+        let graph = &core.region_graph;
+        let node = (0..graph.node_count() as u32)
+            .find(|&node| {
+                let pos = graph.node(node).pos;
+                graph.get_valid_node(node) == node && (pos.x, pos.z) == (ARM_M, 0.0)
+            })
+            .expect("the joined road end");
+        let piece = core.transit_network.roadbed.node_piece(node);
+        assert!(
+            piece.is_some_and(|piece| piece.layout().boundaries.iter().any(|b| b.taper.is_some())),
+            "sloped {sloped}: the widening is a node piece with a D4 taper"
+        );
+        for chunk in &pieces.changed_chunks {
+            assert_eq!(
+                chunks.get(chunk).map(|mesh| format!("{mesh:?}")),
+                core.published_road_mesh_chunks
+                    .get(chunk)
+                    .map(|mesh| format!("{mesh:?}")),
+                "sloped {sloped}: chunk {chunk:?} is published as previewed"
+            );
+        }
+    }
+}
+
 #[test]
 fn save_and_load_reproduce_the_pieces_bitwise() {
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];

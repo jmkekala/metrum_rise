@@ -377,17 +377,26 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
 }
 
 /// Whether two arm directions away from one node ([`incident_direction`]) are close enough to
-/// opposite that their spans share one bisected section: the pass-through rule of node layouts,
-/// span ends and the profile solve.
+/// opposite to be one straight line: the straight-pair test of node layouts, span ends and the
+/// profile solve, which [`edges_pass_through`] completes.
 pub(crate) fn directions_pass_through(a: RoadVec2, b: RoadVec2) -> bool {
     a.dot(b) <= f64::from(-PASS_THROUGH_DOT_THRESHOLD)
 }
 
-// A pass-through pair: two arms of one kind, road or footpath, whose directions pass through, so
-// the node has no layout. A footpath continuing a road end attaches to its cap instead (D5).
+/// Whether the two arms of a degree-two node pass through, so their spans share one bisected
+/// mouth section and the node has no layout: their directions pass through and their edges have
+/// one profile. A road continued by a footpath attaches it to its cap (D5), and one continued by
+/// a road of another profile (width, sidewalks or shoulders) is laid out, its straight sectors
+/// tapering (D4; `ROAD-68-F` part 2): spans of different profiles share no mouth row. The one
+/// pass-through rule of node layouts, span ends and the profile solve.
+pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> bool {
+    directions_pass_through(a.1, b.1) && RoadProfile::for_edge(a.0) == RoadProfile::for_edge(b.0)
+}
+
+// A pass-through pair ([`edges_pass_through`]), so the node has no layout.
 fn passes_through(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
     matches!(incidents, [(a, da), (b, db)]
-        if directions_pass_through(*da, *db) && is_road(graph, *a) == is_road(graph, *b))
+        if edges_pass_through((graph.edge(a.edge), *da), (graph.edge(b.edge), *db)))
 }
 
 /// The two road arms of a pass-through node, each with whether it carries the node's

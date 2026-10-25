@@ -273,10 +273,7 @@ impl RoadbedSystem {
         mut visit: impl FnMut(&PieceMesh, usize) -> bool,
     ) -> bool {
         self.any_piece_in_bounds(bounds_xz, |_, mesh| {
-            let top = mesh.top_triangle_count();
-            mesh.grid()
-                .items_in_bounds(bounds_xz)
-                .any(|item| (item as usize) < top && visit(mesh, item as usize))
+            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| visit(mesh, triangle))
         })
     }
 

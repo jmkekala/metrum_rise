@@ -106,6 +106,23 @@ impl PieceMesh {
         &self.grid
     }
 
+    /// Visits the top triangles whose cells of the piece's query grid touch the XZ bounds
+    /// `[min_x, min_z, max_x, max_z]`, by index, until `visit` returns true; returns whether it
+    /// did. The one triangle walk of every roadbed overlap query (`ROAD-68-F` part 2): the
+    /// roadbed's own, and the zoning, field and vegetation tests against a piece or the published
+    /// roadbed. A triangle may be visited once per cell it shares with the bounds; cost follows
+    /// the touched cells.
+    pub fn any_top_triangle_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        mut visit: impl FnMut(usize) -> bool,
+    ) -> bool {
+        let top = self.top_triangle_count();
+        self.grid
+            .items_in_bounds(bounds_xz)
+            .any(|item| (item as usize) < top && visit(item as usize))
+    }
+
     fn group(&self, group: usize) -> &[[u32; 3]] {
         &self.triangles[self.group_starts[group] as usize..self.group_starts[group + 1] as usize]
     }

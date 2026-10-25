@@ -458,7 +458,7 @@ fn cdt_bridge_omitted_tie_in_source_does_not_promote_grade_compliant_faces() {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: tunnel portal boundaries require walls where widened samples cannot tie in; portal sources arrive with the tunnel family"]
+#[ignore = "TERRAIN-07: tunnel portal boundaries require walls where widened samples cannot tie in; portals are part of the terrain surface rewrite (moved from ROAD-68-F)"]
 fn cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall() {
     let source = test_tunnel_span_boundary_source(1, 0);
     let input = high_delta_omitted_tie_in_input(source);

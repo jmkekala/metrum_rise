@@ -23,7 +23,7 @@ mod system;
 mod terrain;
 mod walkways;
 
-pub(crate) use arms::{NodeArms, directions_pass_through};
+pub(crate) use arms::{NodeArms, directions_pass_through, edges_pass_through};
 pub(crate) use geometry::{
     RoadSurfaceTriangleQueryIndex, ray_xz_interval_for_bounds, road_ray_triangle_intersection_t,
     triangulate_constrained_rings_xz,

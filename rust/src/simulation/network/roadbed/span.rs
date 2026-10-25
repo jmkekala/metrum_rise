@@ -3,10 +3,9 @@
 //! Span pieces: the existing section model between an edge's two mouth stations.
 //!
 //! The product rules are the legacy section model, unchanged: stations at the physical knots,
-//! class steps of 8 / 12 / 10 m, a 2 m cadence through profile transitions and width tapers,
-//! protected samples, the width-change taper at degree-two width-change nodes, a section frame
-//! from centered secants with exact mouth directions, the junction profile-plane blend, and the
-//! bisected shared axis at pass-through nodes. A span runs between the mouth sections its two
+//! class steps of 8 / 12 / 10 m, a 2 m cadence through profile transitions, protected samples,
+//! a section frame from centered secants with exact mouth directions, the junction profile-plane
+//! blend, and the bisected shared axis at pass-through nodes. A span runs between the mouth sections its two
 //! node pieces evaluated; an end without a node piece (a pass-through node) evaluates its own at
 //! the graph clip.
 //!

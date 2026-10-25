@@ -203,9 +203,15 @@ compiler may special-case them.
 
 ### Junction layout
 
-A layout is built for every node except degree-two pass-through nodes (the existing
-`directions_are_pass_through` rule). Those own no node piece; their spans meet at one bisected
-cross-section, as today, and their crossing lies on a span ([D8](#product-decisions)).
+A layout is built for every node except degree-two pass-through nodes: two arms whose directions
+are close enough to opposite (the existing `directions_pass_through` rule) and whose edges have
+one profile (`arms::edges_pass_through`, the one rule of layouts, span ends and the profile
+solve). Those own no node piece; their spans meet at one bisected cross-section, as today, and
+their crossing lies on a span ([D8](#product-decisions)). A straight pair of two profiles (a width
+change, or a road with sidewalks continued by one without) has a layout since `ROAD-68-F` part 2:
+spans of different profiles share no mouth row, so its straight sectors taper (D4) and it crosses
+once, as a bend does. The span model's own width-change taper, which only such pairs reached, is
+removed.
 
 **Arms.** Each incident live edge end becomes an arm with:
 
@@ -260,7 +266,9 @@ node otherwise, so the arms meet in a miter point rather than a rounding-sized a
 offsets tapers. Each such boundary meets the sector at the mean of its two arms' offsets, so the
 join is that of equal widths, and runs linearly in station to each arm's own offset at the taper
 station on both approaches. The taper takes half the legacy span taper on each arm
-(`clamp(3 * width change, 12 m, 28 m)`, the span model's `WIDTH_CHANGE_TAPER_*` rule), shortened
+(`clamp(3 * width change, 12 m, 28 m)`, the removed span taper's `WIDTH_CHANGE_TAPER_*` rule;
+a change of the bands beyond the carriageway alone, such as sidewalks against shoulders, has no
+width change and takes the 12 m minimum), shortened
 to what both arms hold beside their crosswalks; shorter than the 12 m minimum, layout fails with
 `ArmTooShort`. Mouths lie at or beyond the taper station, so spans start at full width and copy
 their mouth sections as before. `SectorBoundary::run_offset_m` is the one function node pieces,
@@ -275,7 +283,12 @@ curving, its outer edge is the mouth, and its crossing line is the middle, with 
 the two carriageway edges. The mouth is the arm's full cross-section at that station:
 the node piece ends and the span begins there. An attached footpath that meets an arm side moves
 only that arm's mouth, to `s_min` beyond the meeting point where that is farther; the zebra stays
-right outside the curb returns ([open question 17](#road-68-open-questions)). When both ends of an edge reach the same station,
+right outside the curb returns ([open question 17](#road-68-open-questions)). Every run from
+where a boundary reaches its arm's own offset (its corner's tangent station, a taper station, or
+where it leaves a round join) out to the mouth is empty or at least `s_min` long: where one would
+be shorter, the mouth moves `s_min` beyond the farthest reach (`ROAD-68-F` part 2). Without it, an
+arm without a crossing whose two corners end a hair apart, as on a T of roads without sidewalks,
+left a sliver between the nearer corner and the mouth. When both ends of an edge reach the same station,
 the span is empty and the two node pieces share that mouth section.
 
 **Footpath arms (D5).** At a node with a road arm, footpath arms are *attached*: they bound no
@@ -383,10 +396,10 @@ compute no crossing or corner geometry of their own
 **Span piece.** Sections are placed at the physical knots, at the refinement stations, and at the
 two mouth sections (copied). Each band is one quad strip, with curb faces along both carriageway
 edges. One station rule places them (`ROAD-68-D`): the fixed stations are the protected ones
-(span ends, mouths, crossings, the profile range and the ends of its fades, the width tapers)
-and the knots outside their 0.125 m clearance; each interval between consecutive fixed stations
-is divided evenly at its step, 2 m inside a profile fade or a taper and the class step (8, 12 or
-10 m) elsewhere. Cadence rows and class rows no longer start from different origins, so no two
+(span ends, mouths, crossings, the profile range and the ends of its fades) and the knots
+outside their 0.125 m clearance; each interval between consecutive fixed stations is divided
+evenly at its step, 2 m inside a profile fade and the class step (8, 12 or 10 m) elsewhere
+(the width tapers left with the span taper, `ROAD-68-F` part 2). Cadence rows and class rows no longer start from different origins, so no two
 rows fall a few millimetres apart before a knot.
 
 **Other node kinds.**
@@ -395,8 +408,12 @@ rows fall a few millimetres apart before a knot.
 - `Terminal` is a one-arm junction with a round cap ([D2](#product-decisions)). The cap's apex
   sample is its start turned a quarter exactly, not a polar sample, so an axis-aligned arm's
   apex lies on its axis.
-- Bridges and tunnels use the same pieces, with class-specific terrain handling in
-  [`ROAD-68-F`](#road-68-f--remaining-families).
+- Bridges and tunnels use the same pieces: their spans are decks and road pieces like any span,
+  and where they meet a road at a junction or bend they are arms of its node piece. A bridge or
+  tunnel end without a continuation has no node piece; its span ends on its mouth row, which the
+  abutment or portal closes. Their terrain side (abutment and portal cutouts, wall seams) is
+  `TERRAIN-07`'s ([T14](terrain.md#terrain-07-open-questions);
+  [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)).
 
 **`PieceMesh`.** A piece's mesh holds:
 
@@ -566,8 +583,10 @@ The road side is rewritten:
   building-site change refreshes only site ownership: it moves no road and no height. Patch
   margins grade in parallel; the largest margin is order-free, so it is the same on any worker
   count.
-- **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts keep the
-  existing rules ([`ROAD-68-F`](#road-68-f--remaining-families)).
+- **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts belong to
+  the terrain surface rewrite `TERRAIN-07` (user, 2026-10-25; its wall seams,
+  [T14](terrain.md#terrain-07-open-questions)); on the legacy terrain a road edit that joins a
+  structure is rejected with `roadbed_chain_open_end` (open question 19).
 - **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
   terrain edits.
 
@@ -839,7 +858,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; the terrain stage's budget and part 2 (open questions) are open |
-| `ROAD-68-F` | in progress (part 1 done 2026-10-25) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met) |
+| `ROAD-68-F` | in progress (parts 1 and 2, 2026-10-25) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk); abutments, portals and sites moved to `TERRAIN-07` |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
@@ -959,7 +978,7 @@ their terrain step; two stay off):
 | `nodes::sim::core::tests::road_edit_order` | `sloped_mid_span_meetings_do_not_depend_on_drawing_order` | by the crossing rule a mid-span meeting takes the first-drawn road's height (`a_mid_span_meeting_lies_on_the_first_drawn_road` asserts it); on the sloped cross the two roads' profiles differ there by an ulp ([open question 30](#road-68-open-questions); part 2) |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | recorded stroke `kuopio_05` attempt 14, accepted by the legacy compiler, is refused today: node 5 fails `MouthOffPlane` (edge 0, end), a profile-solve defect; the strokes are recorded input ([open question 8](#road-68-open-questions); moved from `ROAD-68-D`) |
 
-`TERRAIN-07` (2, split off by `ROAD-68-E` part 2 round 2): the user's rewrite of the terrain
+`TERRAIN-07` (3: two split off by `ROAD-68-E` part 2 round 2, one by `ROAD-68-F` part 2): the user's rewrite of the terrain
 surface core makes the exact CDT cut, refined patches and site paving partition legacy, so these
 terrain-pipeline assertions are not kept passing on it:
 
@@ -967,18 +986,17 @@ terrain-pipeline assertions are not kept passing on it:
 | --- | --- | --- |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_terrain_builds_clean` | patch count and refined CDT patches of the regenerated Kuopio reference (passes today) |
 | `nodes::sim::core::tests::zoning_buildability` | `hillside_houses_terrain_builds_clean` | refined CDT patches after the hillside houses; the fixture's node 2 also fails `MouthOffPlane` on legacy clips ([open question 8](#road-68-open-questions)) |
+| `simulation::terrain::cdt::tests::builder` | `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` | tunnel portal boundaries require walls where widened samples cannot tie in; portals are part of the terrain rewrite (relabelled from `ROAD-68-F` by its part 2, with abutments, building sites, driveways and paving) |
 
-`ROAD-68-F` (1; 7 at the gate, two re-enabled by the
+`ROAD-68-F` (0; 7 at the gate, two re-enabled by the
 [C follow-up](#tighter-corners-and-junction-crosswalks-follow-up), one by the
 [footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d) and one by
 [`ROAD-68-F` part 1](#markings-lights-and-signs-from-the-layout-road-68-f-part-1-2026-10-25)
 (`a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb`), one added by
 `ROAD-68-D`; the two node-move tests and `bridge_entry_points_never_use_the_global_pool` were
-relabelled `ROAD-68-E`, which owns open question 2, and pass since `ROAD-68-E` part 2):
-
-| Module | Tests | Reason |
-| --- | --- | --- |
-| `simulation::terrain::cdt::tests::builder` | `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` | tunnel portal boundaries require walls where widened samples cannot tie in; `RoadBoundary` carries only grounded or structure support, and portal sources arrive with the tunnel family (from `ROAD-68-D`) |
+relabelled `ROAD-68-E`, which owns open question 2, and pass since `ROAD-68-E` part 2; the
+tunnel portal CDT test, added by `ROAD-68-D`, was relabelled `TERRAIN-07` by
+[`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)). None is left.
 
 The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
 support target) pass on span sections and were re-enabled in `ROAD-68-B`.
@@ -1363,11 +1381,27 @@ These need a user decision; work that does not depend on them continues.
       lanes end, and the mouth (fixture `t_beside_arm_shallow`, 20° off the arm); the join then
       walks in along the sidewalk to that lane end. The centreline runs from beyond the sector's
       outer boundary into the core between the two mouths, so it always meets the walk.
-    - **Sectors without a sidewalk.** A footpath in a sector bounded by a road side without a
-      sidewalk (a car-only road or shoulder) has no corner route to join, so it reaches only the
-      other footpaths there, and the walking proof is withdrawn on such a network. The legacy rule
-      joined it to the corner between the nearest sidewalk arms, across the car-only road. No
-      fixture or perf city has one.
+    - **Sectors without a sidewalk (open; `ROAD-68-F` part 2).** A footpath in a sector bounded by
+      a road side without a sidewalk (a car-only road or shoulder) has no corner route to join, so
+      it reaches only the other footpaths there, and the walking proof is withdrawn on such a
+      network. The legacy rule joined it to the corner between the nearest sidewalk arms, across
+      the car-only road. No fixture or perf city has one.
+      - **Evidence (2026-10-25).** The proof (`ConnectorTargets::prove_complete`) requires foot
+        lanes both ways on every live edge, car-only ones included, so a single road without
+        sidewalks withdraws it on its whole network whatever its junctions do
+        (`a_road_without_sidewalks_withdraws_the_walking_proof`: the reference T keeps it, the same
+        T with a side road without sidewalks loses it). No road tool authors such a road today
+        (strokes always carry sidewalks); saves may hold them.
+      - **Options.** (a) keep: the footpath joins only the footpaths there; (b) the legacy join
+        across the car-only road to the nearest sidewalk corner, an unmarked crossing walkers take
+        without a zebra, against question 12's rule that walkers switch sides only on crossings;
+        (c) reject such a footpath (`FootpathDoesNotJoin`); (d) let a road without sidewalks carry
+        walkers on its shoulder (foot lanes on the shoulders, joined at its nodes), which the proof
+        would then need, so it could hold on networks with such roads.
+      - **Recommendation.** (d) if roads without sidewalks become authorable; until then (a). No
+        option keeps the walking proof exact on a network with a road without sidewalks, since the
+        road alone withdraws it, so it is not taken under the delegation and stays open for the
+        user.
 18. **Grading envelope cap (`ROAD-68-D`) — decided 2026-10-24 (user): the probed reach, capped at
     the 64 m tile halo.** Each ray is probed until the 1:2 tie-in meets the terrain, at most
     `GRADING_ENVELOPE_MAX_MARGIN_M`.
@@ -1392,6 +1426,14 @@ These need a user decision; work that does not depend on them continues.
     - **`TERRAIN-07` (2026-10-25):** superseded there: inside and outside come from the pieces' top
       triangles, so an open end flips no region ([T3](terrain.md#terrain-07-open-questions));
       abutments and portals in [T14](terrain.md#terrain-07-open-questions).
+    - **Until `TERRAIN-07` (measured by `ROAD-68-F` part 2, 2026-10-25).** Abutments and portals
+      moved to `TERRAIN-07`, so the error stands on the legacy terrain: a bridge or tunnel stroke
+      that joins a grounded road is rejected at the commit (`render_geometry_invalid
+      roadbed_chain_open_end`; a stroke from the T's road end rising 8 m, flat and sloped), so
+      structures cannot be built from a road in play until then. A free-standing structure commits
+      (`structural_road_plans_adopt_with_and_without_terrain_cutouts`), and the class change
+      (`set_edge_class_internal`) compiles only the closure's pieces, not the terrain, so it
+      accepts the same open ends; its terrain patches then fail to build.
     - **The case.** Bridge and tunnel spans publish no terrain chains (no mid-span clipping), and
       their terminals have no node piece, so a grounded chain that meets one ends inside a tile's
       rectangle. A failed node publishes as a gap (question 11) and leaves the same open ends.
@@ -3977,15 +4019,18 @@ plan and `ROAD-68-F` part 1) before the post-rebase checks below. Questions 11 (
 
 - footpaths: footpath-only nodes, and footpaths meeting roads ([D5](#product-decisions)): done
   early, [pre-D](#footpath-junctions-and-the-bend-crossing-fallback-pre-d)
-- roads without sidewalks, and mixed widths and profiles, including the D4 taper
-- bridges: decks through the existing bridge renderer, and abutment cutouts
-- tunnels: portals; this covers `ROAD-61`
+- roads without sidewalks, and mixed widths and profiles, including the D4 taper: done in
+  [part 2](#remaining-families-road-68-f-part-2-2026-10-25)
+- bridges: decks through the existing bridge renderer (part 2); abutment cutouts moved to
+  [`TERRAIN-07`](roadmap.md) (user, 2026-10-25)
+- tunnels: road pieces inside the bore (part 2); portals, the terrain side of `ROAD-61`, moved to
+  `TERRAIN-07`
 - crossings: done early, in the [`ROAD-68-C` follow-up](#tighter-corners-and-junction-crosswalks-follow-up)
   (crossings and sidewalk corners from the layout; `rounded_sidewalk_corner_path_xz` removed).
   Footpath nodes have layouts, crossings and corner joins since the pre-D footpath junctions
 - lane markings at junctions, street lights and road signs
-- building sites, driveways and paving
-- zoning, agriculture and vegetation overlap queries
+- building sites, driveways and paving: moved to `TERRAIN-07`
+- zoning, agriculture and vegetation overlap queries: part 2
 
 Acceptance:
 
@@ -4077,6 +4122,96 @@ gate F starts now, in parallel with gate E part 2's last items, because gate E's
   integration 4 passed; every Godot bridge suite passes with no SCRIPT ERROR, none skipped.
   `ROAD-68-F` ignores left: the tunnel portal boundary test, whose terrain side moves to
   [`TERRAIN-07`](roadmap.md) with bridge abutments, building sites, driveways and paving.
+
+#### Remaining families (`ROAD-68-F` part 2, 2026-10-25)
+
+Scope after [`TERRAIN-07`](roadmap.md) (user, 2026-10-25): this part keeps roads without
+sidewalks, mixed profiles, bridge decks, tunnel road pieces and the overlap queries; abutment and
+portal cutouts (the terrain side of `ROAD-61`), building sites, driveways and paving are
+`TERRAIN-07`'s.
+
+- **Fixtures (tests first).** `roadbed/node/tests/families.rs`, flat and on the 2.5% slope:
+  roads without sidewalks (`rural_t`, `rural_four_way`, `rural_y_40`, `rural_bend_90`,
+  `rural_bend_150`, `rural_side_road`, `rural_through_road`, `rural_wide_t`, `rural_bend_mixed`),
+  mixed profiles across straight sectors (`band_step`, `band_width_step`, `band_four_way`, both
+  steps again with the changing arm curving away, and the straight degree-two changes
+  `band_pass_through`, `width_pass_through`, `width_bridge_pass_through`), and bridges and tunnels
+  (`bridge_t`, `bridge_bend`, `bridge_pass_through`, `bridge_rural_t`, `tunnel_t`, `tunnel_bend`,
+  `tunnel_pass_through`; structures climb or descend 6 m over their arm). Each fixture compiles
+  without a failed node; every span is watertight; every node piece is watertight against its
+  spans on shared mouth edges, on its plane bitwise, and free of slivers, stray curb faces and
+  chain steps (the `ROAD-68-C` and D4 checks, now helpers); only car roads with sidewalks cross
+  (D8); a structure end without a continuation has no node piece; a pass-through pair shares
+  one mouth row. All 48 are product-probe entries. On the reference harness
+  (`nodes::sim::core::tests::road_families`): a bridge and a tunnel as a T's side road (node
+  piece) and as a road end's continuation (span mouth), made by `set_edge_class_internal`, and a
+  T with its side road or all three roads without sidewalks: the published road chunks, bridge
+  concrete included, are watertight by `ROAD-68-D`'s chunk check, except the structure's free-end
+  row and the concrete underside's two ends, which the abutment or portal closes (`TERRAIN-07`).
+- **Roads without sidewalks (D6).** Layouts, outer chains and the crossing rule hold as specified;
+  no arm without sidewalks crosses. One defect: on a T of such roads the side arm's two corners
+  end 6.7e-7 m apart (the arm direction's f32 noise), and with no crossing strip the mouth sat on
+  the farther corner, leaving a sliver run on the other side (core and shoulder strips). Fixed by
+  the minimum run ([mouth stations](#junction-layout)): every run from its reach to the mouth is
+  empty or at least `s_min`. It changes the stem of the footpath-only `path_t` (the same shape)
+  and a near-straight bend's arm without a crossing (167.5 degrees: corner 0.77 m out, mouth 1 m,
+  now 1.77 m), which only `y_25`'s intermediate state has. No road tool authors a road without
+  sidewalks (strokes always carry them); saves may. Open question 17's item on footpaths in such
+  sectors stays open: one road without sidewalks withdraws the walking proof on its network
+  whatever its junctions do (question 17).
+- **Mixed widths and profiles.** The D4 taper on curved arms and band-only changes passes the
+  taper checks on the new fixtures. A band-only change (sidewalks against shoulders) has no
+  carriageway width change and takes the 12 m minimum taper; its boundaries are compared bitwise,
+  which is exact because both profiles come from one function. Defect found: a straight
+  degree-two node where a road with sidewalks continues into one without was a pass-through,
+  whose two spans evaluate rows of 8 and 6 vertices, so the node left a hole; a straight width
+  change at a bridge (the span taper skipped structures) was the same. A pass-through now needs
+  one profile (`arms::edges_pass_through`, used by layouts, span ends and the profile solve, which
+  takes the corridor plane for such a pair, as for a pass-through with attached footpaths); any
+  other straight pair is laid out with D4 tapers and one crossing. The span model's legacy width
+  taper only ever ran at those pairs, so it is removed (with its section cadence and its test,
+  `pass_through_width_change_sections_taper_wider_endpoint`; `width_pass_through` covers the
+  case); no other probe entry changes.
+- **Bridge decks.** A bridge is a span piece and, where it meets a road at a junction or bend, an
+  arm of its node piece; the existing renderer (`standard_surface/bridge.rs`) emits its concrete
+  underside and piers from the span's sections, unchanged. Its ends meet grounded roads at a node
+  piece (`bridge_t`, `bridge_bend`) or a shared span mouth (`bridge_pass_through`), watertight.
+  Found: a bridge stroke that joins a road is rejected at the commit with `render_geometry_invalid
+  roadbed_chain_open_end` (open question 19), so bridges cannot be built from a road in play until
+  `TERRAIN-07` closes those chains; the renderer also leaves the deck's sides open between the
+  deck edge and the slab (no fascia), visible from the side.
+- **Tunnel road pieces.** Tunnels use the same pieces with full decks inside the bore; the legacy
+  visible-range clipping does not return, since the portal and its terrain cut are `TERRAIN-07`'s.
+  `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` is relabelled `TERRAIN-07`.
+- **Overlap queries.** One triangle walk (`PieceMesh::any_top_triangle_in_bounds`, through the
+  piece's own query grid) serves every overlap query: the roadbed's own
+  (`any_top_triangle_in_bounds`, `any_band_near_disc`, which fields and cells use when they are
+  placed or generated), zoning's test of a piece against painted cells (`piece_covers`) and the
+  field test of a piece (`FieldClearance::overlaps_road_piece`, now the fields in the piece's
+  chunks against the piece's triangles in each field's bounds, `O(fields there * their cells'
+  triangles)`, instead of every top triangle against the field index). So fields and cells are
+  refused on a road piece, junction corners and caps included, in both directions, on the
+  existing indices. Vegetation: a plant's position never lies on a road piece (its footprint's
+  centre sample is a roadbed query) and trees keep 3 m from walkways by the disc query; an exact
+  test of the whole sampled footprint was tried and dropped, since the canopy's 6 m footprint is
+  a relief footprint and would keep trees 6 m off footpaths, against the tested 3 m rule
+  (`vegetation_footpath_clearance_catches_gaps_between_footprint_samples`).
+  `overlap_walk_visits_every_triangle_a_rectangle_meets` checks the walk on every family piece.
+- **Probe re-records (attributed in the tables).** Node probe: the 48 family entries are new and
+  `path_t` changes (the minimum run); nothing else. Reference probe: `y_25`'s lanes only (the
+  lanes its 167.5 degree intermediate bend builds keep their ids in the final Y).
+- **Size.** `roadbed/` production lines 7,798 against 7,972 on `road` `0eabfe36` (-174): the span
+  model loses 199 lines with its taper (and `RoadProfile` its width override, 10); the minimum
+  run (13), the pass-through rule (9) and the triangle walk (17) are mostly doc comments.
+- **Gate run** (fresh, 2026-10-25, the part's final sources, `DISPLAY` and `WAYLAND_DISPLAY`
+  unset): `./run.sh --test` exits 0. Debug library suite 1,908 passed, 0 failed, 165 ignored;
+  integration 4 passed; every Godot bridge suite passes with no SCRIPT ERROR, none skipped but
+  the display-only shader-global probe and rendered vegetation tests. Clippy `--all-targets`:
+  the baseline's 59 warnings, none new; `cargo doc`: no missing docs. `ROAD-68-F` ignores left:
+  none (the tunnel portal test is `TERRAIN-07`'s).
+- **Not run.** No benchmark: the changes remove the span taper's work, add `O(boundaries)` per
+  arm to the mouths and two profile builds per degree-two node, and narrow the field and cell
+  tests to the piece grid.
 
 ### `ROAD-68-G` — commit consequences inside one frame
 

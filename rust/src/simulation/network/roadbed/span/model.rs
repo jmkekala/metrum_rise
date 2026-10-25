@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The legacy section model of one edge: stations, frame, plane blend, width taper and section
-//! evaluation, ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules
-//! except the station rule, which `ROAD-68-D` makes one constructive subdivision.
+//! The legacy section model of one edge: stations, frame, plane blend and section evaluation,
+//! ported from `surface/edge/{sections,polyline,profile}.rs` with unchanged rules except the
+//! station rule, which `ROAD-68-D` makes one constructive subdivision, and the width-change
+//! taper, which `ROAD-68-F` part 2 leaves to node pieces (a pass-through pair has one profile).
 
-use super::super::arms::{directions_pass_through, pass_through_crossings};
+use super::super::arms::{edges_pass_through, pass_through_crossings};
 use super::super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::super::mesh::{RowLayout, push_section_row};
 use super::super::profile::RoadProfile;
 use super::super::{RoadBand, RoadSection, RoadVec2, RoadVec3};
 use super::MouthSection;
-use crate::config;
 use crate::simulation::network::graph::rebuild::{
     JUNCTION_PROFILE_BLEND_ZONE_M, JunctionEndpointProfilePlane,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+use crate::simulation::network::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
 
 // Station and direction tolerance of the section model.
@@ -28,17 +28,12 @@ const BRIDGE_SECTION_STEP_M: f32 = 12.0;
 const TUNNEL_SECTION_STEP_M: f32 = 10.0;
 const PROFILE_TRANSITION_SECTION_STEP_M: f32 = 2.0;
 const PROTECTED_SECTION_SAMPLE_CLEARANCE_M: f32 = 0.125;
-// The legacy width-change taper, which straight junction sectors share (D4): its length is
-// `clamp(width change * factor, min, max)`.
+// The legacy span width-change taper's length rule, which straight sectors keep (D4):
+// `clamp(width change * factor, min, max)`. Spans no longer taper: a pass-through pair has one
+// profile (`arms::edges_pass_through`), so every width change is a node's (`ROAD-68-F` part 2).
 pub(in crate::simulation::network::roadbed) const WIDTH_CHANGE_TAPER_MIN_M: f32 = 12.0;
 pub(in crate::simulation::network::roadbed) const WIDTH_CHANGE_TAPER_MAX_M: f32 = 28.0;
 pub(in crate::simulation::network::roadbed) const WIDTH_CHANGE_TAPER_WIDTH_FACTOR: f32 = 3.0;
-const WIDTH_CHANGE_TAPER_SECTION_STEP_M: f32 = 2.0;
-const WIDTH_CHANGE_TAPER_MAX_EDGE_FRACTION: f32 = 0.8;
-// Endpoint directions are measured away from the shared node. Straight width changes are near -1,
-// normal bends stay below this value, and overlapping same-side edges are rejected.
-const WIDTH_CHANGE_CORRIDOR_DOT_MAX: f64 = 0.25;
-const WIDTH_CHANGE_MIN_DELTA_M: f32 = 0.25;
 
 /// Reusable buffers for building spans; one per Rayon worker.
 #[derive(Default)]
@@ -57,18 +52,6 @@ enum NodeKind {
     PassThrough,
     Bend,
     JunctionN,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct EdgeWidthTaper {
-    target_carriageway_half_width_m: f32,
-    length_m: f32,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct EdgeWidthTapers {
-    start: Option<EdgeWidthTaper>,
-    end: Option<EdgeWidthTaper>,
 }
 
 // Span framing is continuous between the exact cross-sections at its two mouths.
@@ -120,7 +103,7 @@ pub(super) struct SpanModel<'a> {
     profile_range: Option<(f32, f32)>,
     start_plane: Option<JunctionEndpointProfilePlane>,
     end_plane: Option<JunctionEndpointProfilePlane>,
-    tapers: EdgeWidthTapers,
+    profile: RoadProfile,
     frame: SpanTangentFrame,
     start_pass_through: Option<RoadVec2>,
     end_pass_through: Option<RoadVec2>,
@@ -187,16 +170,6 @@ impl<'a> SpanModel<'a> {
             (start_mouth_m, end_mouth_m),
             total_length_m,
         );
-        // Node pieces own width changes at bends and junctions; the legacy taper remains only
-        // where two spans meet at a pass-through node.
-        let tapers = edge_width_tapers(
-            graph,
-            edge_idx,
-            edge,
-            total_length_m,
-            [start_kind, end_kind].map(|kind| kind == Some(NodeKind::PassThrough)),
-        );
-
         let mut start_tangent = sample_polyline(points, cumulative, start_mouth_m, None).1;
         let mut end_tangent = sample_polyline(points, cumulative, end_mouth_m, None).1;
         if start_mouth_m <= SAMPLE_EPSILON_M {
@@ -240,7 +213,7 @@ impl<'a> SpanModel<'a> {
             profile_range,
             start_plane,
             end_plane,
-            tapers,
+            profile: RoadProfile::for_edge(edge),
             frame: SpanTangentFrame {
                 start_s_m: start_mouth_m,
                 end_s_m: end_mouth_m,
@@ -316,7 +289,7 @@ impl<'a> SpanModel<'a> {
         let mut vertices = Vec::with_capacity(self.layout.stride());
         push_section_row(&section, &self.layout, &mut vertices);
         MouthSection {
-            profile: self.profile_at(s_m),
+            profile: self.profile,
             section,
             vertices: vertices.into_boxed_slice(),
         }
@@ -363,7 +336,7 @@ impl<'a> SpanModel<'a> {
             center_height_m,
             tangent_xz,
             lateral_xz,
-            bands: self.lateral_bands(s_m, center, lateral_xz, profile_blend),
+            bands: self.lateral_bands(center, lateral_xz, profile_blend),
         }
     }
 
@@ -374,21 +347,8 @@ impl<'a> SpanModel<'a> {
         out.retain(|&s_m| s_m > start_m + SAMPLE_EPSILON_M && s_m < end_m - SAMPLE_EPSILON_M);
     }
 
-    fn profile_at(&self, s_m: f32) -> RoadProfile {
-        RoadProfile::with_carriageway_half_width(
-            self.edge,
-            Some(section_carriageway_half_width(
-                self.edge,
-                self.total_length_m,
-                s_m,
-                self.tapers,
-            )),
-        )
-    }
-
     fn lateral_bands(
         &self,
-        s_m: f32,
         center: RoadVec3,
         lateral_xz: RoadVec2,
         profile_blend: Option<EdgeProfilePlaneBlend>,
@@ -405,7 +365,7 @@ impl<'a> SpanModel<'a> {
             });
             base_height_m + offset_m
         };
-        self.profile_at(s_m)
+        self.profile
             .bands()
             .iter()
             .map(|band| {
@@ -422,9 +382,9 @@ impl<'a> SpanModel<'a> {
     }
 
     // Stations by one constructive rule: fixed stations are the protected ones (span ends,
-    // mouths, crossings, the profile range, its fades and the width tapers) and the polyline
-    // knots outside their clearance; each interval between consecutive fixed stations is then
-    // divided evenly at its step, the cadence step inside a fade or taper and the class step
+    // mouths, crossings, the profile range and its fades) and the polyline knots outside their
+    // clearance; each interval between consecutive fixed stations is then divided evenly at its
+    // step, the cadence step inside a fade and the class step
     // elsewhere. No two rule families start from different origins, so rows never fall a few
     // millimetres apart before a knot. `O(F log F)` for `F` fixed stations plus the rows.
     fn section_sample_distances(&self, samples: &mut Vec<f32>, protected: &mut Vec<f32>) {
@@ -438,8 +398,8 @@ impl<'a> SpanModel<'a> {
         for distance_m in self.crossings_m.into_iter().flatten() {
             push_protected_section_sample(samples, protected, distance_m, total_length);
         }
-        // Cadence ranges `(start, end)`: the profile fades at each planed end and the tapers.
-        let mut cadence = [None; 4];
+        // Cadence ranges `(start, end)`: the profile fades at each planed end.
+        let mut cadence = [None; 2];
         if let Some((start_profile_s_m, end_profile_s_m)) = self.profile_range {
             let profile_fade_m = JUNCTION_PROFILE_BLEND_ZONE_M
                 .min((end_profile_s_m - start_profile_s_m).max(0.0) * 0.5);
@@ -455,14 +415,12 @@ impl<'a> SpanModel<'a> {
                 push_protected_section_sample(samples, protected, distance_m, total_length);
             }
         }
-        cadence[2] = self.tapers.start.map(|taper| (0.0, taper.length_m));
-        cadence[3] = self
-            .tapers
-            .end
-            .map(|taper| (total_length - taper.length_m, total_length));
         let cadence = cadence.map(|range| {
             range.map(|(start_m, end_m)| {
-                (start_m.clamp(0.0, total_length), end_m.clamp(0.0, total_length))
+                (
+                    start_m.clamp(0.0, total_length),
+                    end_m.clamp(0.0, total_length),
+                )
             })
         });
         for (start_m, end_m) in cadence.into_iter().flatten() {
@@ -483,12 +441,7 @@ impl<'a> SpanModel<'a> {
             EdgeClass::Tunnel => TUNNEL_SECTION_STEP_M,
         };
         // A range's ends are fixed stations, so each interval lies wholly inside or outside it.
-        let cadence_steps = [
-            PROFILE_TRANSITION_SECTION_STEP_M,
-            PROFILE_TRANSITION_SECTION_STEP_M,
-            WIDTH_CHANGE_TAPER_SECTION_STEP_M,
-            WIDTH_CHANGE_TAPER_SECTION_STEP_M,
-        ];
+        let cadence_steps = [PROFILE_TRANSITION_SECTION_STEP_M; 2];
         let fixed = samples.len();
         for index in 1..fixed {
             let (start_m, end_m) = (samples[index - 1], samples[index]);
@@ -579,7 +532,7 @@ fn endpoint_kind_and_tangent(
     }
     let mut count = 0usize;
     let mut first_two = [RoadVec2::ZERO; 2];
-    let mut first_types = [TransitType::Road; 2];
+    let mut first_edges = [edge; 2];
     let mut current = None;
     for &incident_idx in graph.node_adjacency(node_id) {
         let Some(incident) = graph.get_edge(incident_idx) else {
@@ -600,7 +553,7 @@ fn endpoint_kind_and_tangent(
         };
         if count < 2 {
             first_two[count] = direction;
-            first_types[count] = incident.primary_type;
+            first_edges[count] = incident;
         }
         if current.is_none() && incident_idx == edge_idx && side == end {
             current = Some(direction);
@@ -610,9 +563,12 @@ fn endpoint_kind_and_tangent(
     let kind = match count {
         0 => return (None, None),
         1 => NodeKind::Terminal,
-        // A road end continued by a footpath is a layout node (D5, `arms::passes_through`).
-        2 if directions_pass_through(first_two[0], first_two[1])
-            && first_types[0] == first_types[1] =>
+        // A road end continued by a footpath or a road of another profile is a layout node
+        // (`arms::edges_pass_through`).
+        2 if edges_pass_through(
+            (first_edges[0], first_two[0]),
+            (first_edges[1], first_two[1]),
+        ) =>
         {
             NodeKind::PassThrough
         }
@@ -726,161 +682,6 @@ fn edge_profile_blend_for_section(
 fn smootherstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-fn edge_width_tapers(
-    graph: &RegionGraph,
-    edge_idx: usize,
-    edge: &Edge,
-    total_length_m: f32,
-    [start_passes, end_passes]: [bool; 2],
-) -> EdgeWidthTapers {
-    if !edge_supports_width_change_taper(edge) || total_length_m <= SAMPLE_EPSILON_M {
-        return EdgeWidthTapers::default();
-    }
-    let taper = |passes: bool, node: u32| {
-        passes
-            .then(|| {
-                edge_endpoint_width_taper(
-                    graph,
-                    edge_idx,
-                    edge,
-                    graph.get_valid_node(node),
-                    total_length_m,
-                )
-            })
-            .flatten()
-    };
-    EdgeWidthTapers {
-        start: taper(start_passes, edge.start_node),
-        end: taper(end_passes, edge.end_node),
-    }
-}
-
-fn edge_endpoint_width_taper(
-    graph: &RegionGraph,
-    edge_idx: usize,
-    edge: &Edge,
-    node_id: u32,
-    total_length_m: f32,
-) -> Option<EdgeWidthTaper> {
-    let current_direction = edge_endpoint_direction_away_from_node(graph, edge, node_id)?;
-    let mut road_incident_count = 0usize;
-    let mut other_edge_idx = None;
-    for &incident_edge_idx in graph.node_adjacency(node_id) {
-        if incident_edge_idx >= graph.edge_count() {
-            continue;
-        }
-        let incident_edge = graph.edge(incident_edge_idx);
-        if !edge_supports_width_change_taper(incident_edge)
-            || !edge_is_incident_to_node(graph, incident_edge, node_id)
-        {
-            continue;
-        }
-        road_incident_count += 1;
-        if incident_edge_idx != edge_idx {
-            other_edge_idx = Some(incident_edge_idx);
-        }
-    }
-    if road_incident_count != 2 {
-        return None;
-    }
-
-    let other_edge = graph.edge(other_edge_idx?);
-    let other_direction = edge_endpoint_direction_away_from_node(graph, other_edge, node_id)?;
-    if current_direction.dot(other_direction) > WIDTH_CHANGE_CORRIDOR_DOT_MAX {
-        return None;
-    }
-
-    let full_half_width_m = base_carriageway_half_width(edge);
-    let target_half_width_m = base_carriageway_half_width(other_edge);
-    if full_half_width_m <= target_half_width_m + WIDTH_CHANGE_MIN_DELTA_M * 0.5 {
-        return None;
-    }
-
-    let width_delta_m = (full_half_width_m - target_half_width_m) * 2.0;
-    let requested_length_m = (width_delta_m * WIDTH_CHANGE_TAPER_WIDTH_FACTOR)
-        .clamp(WIDTH_CHANGE_TAPER_MIN_M, WIDTH_CHANGE_TAPER_MAX_M);
-    let max_length_m = total_length_m * WIDTH_CHANGE_TAPER_MAX_EDGE_FRACTION;
-    let length_m = requested_length_m.min(max_length_m);
-    (length_m > WIDTH_CHANGE_TAPER_SECTION_STEP_M).then_some(EdgeWidthTaper {
-        target_carriageway_half_width_m: target_half_width_m,
-        length_m,
-    })
-}
-
-fn edge_supports_width_change_taper(edge: &Edge) -> bool {
-    !edge.deleted
-        && edge.class == EdgeClass::Standard
-        && edge.primary_type == TransitType::Road
-        && edge.allowed_types & TransitFlags::CAR != 0
-}
-
-fn edge_is_incident_to_node(graph: &RegionGraph, edge: &Edge, node_id: u32) -> bool {
-    graph.get_valid_node(edge.start_node) == node_id
-        || graph.get_valid_node(edge.end_node) == node_id
-}
-
-fn edge_endpoint_direction_away_from_node(
-    graph: &RegionGraph,
-    edge: &Edge,
-    node_id: u32,
-) -> Option<RoadVec2> {
-    let points = edge_points(edge);
-    if points.len() < 2 {
-        return None;
-    }
-    let (from, to) = if graph.get_valid_node(edge.start_node) == node_id {
-        (points[0], points[1])
-    } else if graph.get_valid_node(edge.end_node) == node_id {
-        let last_idx = points.len() - 1;
-        (points[last_idx], points[last_idx - 1])
-    } else {
-        return None;
-    };
-    let delta_x = f64::from(to.x - from.x);
-    let delta_z = f64::from(to.z - from.z);
-    let length = (delta_x * delta_x + delta_z * delta_z).sqrt();
-    (length > f64::from(SAMPLE_EPSILON_M))
-        .then(|| RoadVec2::new(delta_x / length, delta_z / length))
-}
-
-fn section_carriageway_half_width(
-    edge: &Edge,
-    total_length_m: f32,
-    s_m: f32,
-    width_tapers: EdgeWidthTapers,
-) -> f32 {
-    let base_half_width_m = base_carriageway_half_width(edge);
-    let mut half_width_m = base_half_width_m;
-    if let Some(taper) = width_tapers.start {
-        half_width_m = half_width_m.min(tapered_carriageway_half_width(
-            base_half_width_m,
-            taper,
-            s_m,
-        ));
-    }
-    if let Some(taper) = width_tapers.end {
-        half_width_m = half_width_m.min(tapered_carriageway_half_width(
-            base_half_width_m,
-            taper,
-            total_length_m - s_m,
-        ));
-    }
-    half_width_m.max(config::LANE_WIDTH * 0.5)
-}
-
-fn tapered_carriageway_half_width(
-    base_half_width_m: f32,
-    taper: EdgeWidthTaper,
-    distance_from_node_m: f32,
-) -> f32 {
-    let blend = 1.0 - smootherstep((distance_from_node_m / taper.length_m).clamp(0.0, 1.0));
-    base_half_width_m + (taper.target_carriageway_half_width_m - base_half_width_m) * blend
-}
-
-fn base_carriageway_half_width(edge: &Edge) -> f32 {
-    edge.width.max(config::LANE_WIDTH) * 0.5
 }
 
 fn push_protected_section_sample(

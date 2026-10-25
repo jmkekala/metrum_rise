@@ -301,60 +301,55 @@ impl FieldClearanceIndex {
         if self.footprints.is_empty() {
             return false;
         }
+        self.any_field_in_bounds(min, max, |id, field| {
+            Some(id) != ignore && field.overlaps_points(points, min, max)
+        })
+    }
+
+    // Whether `test` holds for a field in the chunks the bounds touch. A multi-chunk field is
+    // tested only in its first chunk shared with the bounds, without a scratch set.
+    fn any_field_in_bounds(
+        &self,
+        min: Vector2,
+        max: Vector2,
+        mut test: impl FnMut(usize, &PolygonFootprint<'static>) -> bool,
+    ) -> bool {
         chunks(min, max).any(|key| {
             self.chunks.get(&key).is_some_and(|bucket| {
-                bucket.iter().any(|id| {
-                    Some(*id) != ignore
-                        && self.footprints.get(id).is_some_and(|field| {
-                            // Test a multi-chunk field only in its first shared chunk, without a scratch set.
-                            let first = chunks(
-                                Vector2::new(min.x.max(field.min.x), min.y.max(field.min.y)),
-                                Vector2::new(max.x.min(field.max.x), max.y.min(field.max.y)),
-                            )
-                            .next();
-                            first == Some(key) && field.overlaps_points(points, min, max)
-                        })
+                bucket.iter().any(|&id| {
+                    self.footprints.get(&id).is_some_and(|field| {
+                        let first = chunks(
+                            Vector2::new(min.x.max(field.min.x), min.y.max(field.min.y)),
+                            Vector2::new(max.x.min(field.max.x), max.y.min(field.max.y)),
+                        )
+                        .next();
+                        first == Some(key) && test(id, field)
+                    })
                 })
             })
         })
     }
 
     /// Whether the top surface of one road piece overlaps a committed field (`ROAD-68` open
-    /// question 1): the piece's bounds first, then its top triangles. O(fields in the touched
-    /// chunks * top triangles) when a field lies within the bounds, one bounds query otherwise.
+    /// question 1): the fields in the chunks the piece's bounds touch, then each field against
+    /// the piece's top triangles in the field's bounds, through the piece's query grid
+    /// ([`PieceMesh::any_top_triangle_in_bounds`]). O(fields in the touched chunks * triangles in
+    /// their grid cells); one chunk lookup per touched chunk when no field lies there.
     pub(crate) fn overlaps_road_piece(&self, mesh: &PieceMesh) -> bool {
         if self.footprints.is_empty() {
             return false;
         }
-        let [min_x, min_z, max_x, max_z] = mesh.bounds_xz().map(|value| value as f32);
-        let bounds = [
-            Vector2::new(min_x, min_z),
-            Vector2::new(max_x, min_z),
-            Vector2::new(max_x, max_z),
-            Vector2::new(min_x, max_z),
-        ];
-        if !self.overlaps_polygon(&bounds) {
-            return false;
-        }
-        mesh.triangles()[..mesh.top_triangle_count()]
-            .iter()
-            .any(|triangle| {
-                let points: [[f64; 2]; 3] = triangle.map(|vertex| {
-                    let point = mesh.positions()[vertex as usize];
-                    [point.x, point.z]
-                });
-                let (min, max) = points.iter().fold(
-                    (Vector2::splat(f32::INFINITY), Vector2::splat(f32::NEG_INFINITY)),
-                    |(min, max), point| {
-                        let point = Vector2::new(point[0] as f32, point[1] as f32);
-                        (
-                            Vector2::new(min.x.min(point.x), min.y.min(point.y)),
-                            Vector2::new(max.x.max(point.x), max.y.max(point.y)),
-                        )
-                    },
-                );
-                self.overlaps_points(&points, min, max, None)
-            })
+        let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
+        let (min, max) = precise_bounds([[min_x, min_z], [max_x, max_z]].into_iter());
+        self.any_field_in_bounds(min, max, |_, field| {
+            field.bounds_overlap(min, max)
+                && mesh.any_top_triangle_in_bounds(field.bounds_f64(), |triangle| {
+                    let points = mesh
+                        .triangle_points(triangle)
+                        .map(|point| [point.x, point.z]);
+                    field.overlaps_precise_points(&points)
+                })
+        })
     }
 
     /// Tests the full width of every candidate road segment against existing fields.

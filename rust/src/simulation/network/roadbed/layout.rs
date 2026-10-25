@@ -1434,7 +1434,11 @@ fn attach_to_runs(
 
 // Sets each arm's mouth and crosswalk stations and copies its corner tangents. The zebra stays
 // right outside the corners; an attached edge that meets an arm side moves only the mouth, to
-// `MIN_MOUTH_STATION_M` beyond that point (`ROAD-68` open question 17).
+// `MIN_MOUTH_STATION_M` beyond that point (`ROAD-68` open question 17). Every run from where a
+// boundary reaches its arm's own offset to the mouth is empty or at least `MIN_MOUTH_STATION_M`
+// long: where one would be shorter, the mouth moves that far beyond the farthest reach, so two
+// corners of an arm without a crossing that end a hair apart leave no sliver between the nearer
+// one and the mouth (`ROAD-68-F` part 2; a crossing's strip is already longer).
 fn assign_mouths(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(), LayoutError> {
     let (sectors, boundaries, attachments) =
         (&layout.sectors, &layout.boundaries, &layout.attachments);
@@ -1445,16 +1449,25 @@ fn assign_mouths(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(
         let right = &sectors[(index + count - 1) % count];
         let attached_m =
             run_meetings(attachments, index).map(|(_, station_m)| station_m + MIN_MOUTH_STATION_M);
-        let reach_m = boundaries[left.boundaries.clone()]
-            .iter()
-            .map(|boundary| boundary.reach_m(Side::Left))
-            .chain(
-                boundaries[right.boundaries.clone()]
-                    .iter()
-                    .map(|boundary| boundary.reach_m(Side::Right)),
-            )
-            .fold(MIN_MOUTH_STATION_M, f64::max);
-        arm.mouth_station_m = attached_m.fold(reach_m + input.crosswalk_depth(), f64::max);
+        let reaches = || {
+            boundaries[left.boundaries.clone()]
+                .iter()
+                .map(|boundary| boundary.reach_m(Side::Left))
+                .chain(
+                    boundaries[right.boundaries.clone()]
+                        .iter()
+                        .map(|boundary| boundary.reach_m(Side::Right)),
+                )
+        };
+        let reach_m = reaches().fold(MIN_MOUTH_STATION_M, f64::max);
+        let mouth_m = attached_m.fold(reach_m + input.crosswalk_depth(), f64::max);
+        let short_run =
+            reaches().any(|run_m| run_m < mouth_m && mouth_m - run_m < MIN_MOUTH_STATION_M);
+        arm.mouth_station_m = if short_run {
+            reaches().fold(f64::NEG_INFINITY, f64::max) + MIN_MOUTH_STATION_M
+        } else {
+            mouth_m
+        };
         if arm.mouth_station_m > input.max_station_m {
             return Err(LayoutError::ArmTooShort { arm: arm.key });
         }
