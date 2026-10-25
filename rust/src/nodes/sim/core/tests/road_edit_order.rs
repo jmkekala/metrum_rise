@@ -5,7 +5,7 @@
 //! reference junctions, committed stroke by stroke through `SimCore::commit_road` as the
 //! reference harness does, flat and on its 2.5% slope. A stroke reads no carriageway of a piece
 //! its edit rebuilds (open question 16); on the slope, terminal extensions and mid-span meetings
-//! still depend on drawing order (open question 29).
+//! still depend on drawing order (open question 30).
 
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
@@ -333,10 +333,10 @@ fn sloped_junctions_do_not_depend_on_drawing_order() {
 }
 
 // The rest of the sloped fixtures still depend on drawing order through two authored-state
-// rules (open question 29): a terminal extension re-solves the road it extends (every Y), and a
+// rules (open question 30): a terminal extension re-solves the road it extends (every Y), and a
 // mid-span meeting takes the first-drawn road's profile height (question 16's crossing rule).
 #[test]
-#[ignore = "ROAD-68-E: open question 29, terminal extensions and mid-span meetings depend on drawing order"]
+#[ignore = "ROAD-68-E: open question 30, terminal extensions and mid-span meetings depend on drawing order"]
 fn sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order() {
     y_junctions(true);
     splits_and_adjacent_junctions(true);

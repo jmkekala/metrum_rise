@@ -928,7 +928,7 @@ tests relabelled from `ROAD-68-F` below; four stay off):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
-| `nodes::sim::core::tests::road_edit_order` | `sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order` | the sloped Y, cross and pair fixtures split off the re-enabled test: terminal extensions and mid-span meetings still depend on drawing order ([open question 29](#road-68-open-questions); part 2) |
+| `nodes::sim::core::tests::road_edit_order` | `sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order` | the sloped Y, cross and pair fixtures split off the re-enabled test: terminal extensions and mid-span meetings still depend on drawing order ([open question 30](#road-68-open-questions); part 2) |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_repairs_rejected_junction_before_publication` | a save from before `ROAD-68-C` re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration (moved from `ROAD-68-C`, [open question 8](#road-68-open-questions)) |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | a recorded stroke fails node 5 (`node_piece_failed`) at `79e7a476` too; the recorded placements predate `ROAD-68-C` ([open question 8](#road-68-open-questions); moved from `ROAD-68-D`) |
 | `nodes::sim::core::tests::zoning_buildability` | `hillside_residential_sites_select_constructible_houses` | the recorded fixture predates `ROAD-68-C`: node 2 fails `MouthOffPlane` on its legacy clips, so its tiles report `roadbed_chain_open_end` ([open question 19](#road-68-open-questions)); clips recomputed as an edit does overlap the recorded parcels (`OverlapsExistingParcel`), so the fixture is regenerated with the load rebuild ([open question 8](#road-68-open-questions); added by `ROAD-68-D`) |
@@ -1255,7 +1255,7 @@ These need a user decision; work that does not depend on them continues.
       crossing exception on a road filled 1 m and more over a pit. The reference probe changes in
       `y_25/true` only (re-recorded with attribution). The sloped Y, cross and two-junction
       fixtures still depend on drawing order through two authored-state rules, which
-      [open question 29](#road-68-open-questions) records.
+      [open question 30](#road-68-open-questions) records.
 
 17. **Footpath attachment choices (pre-D, D5) — zebra placement decided 2026-10-24 (user): the
     zebra stays at the corner and only the mouth moves; done in the
@@ -1600,36 +1600,6 @@ These need a user decision; work that does not depend on them continues.
       labels and rebuild every tile a renumbered piece reaches (the whole trunk), which misses
       the budget for no geometric reason.
     - **Recommendation.** (a) now; (b) when the debug inspector needs edge ids again.
-29. **Drawing order on slopes after question 16 (`ROAD-68-E` part 2) — decided by the coordinator
-    under the user's delegation, 2026-10-25, for review: (a); not implemented yet.**
-    - **Evidence.** With question 16 implemented the sloped T fixtures are bitwise independent of
-      drawing order; the other sloped fixtures are not, through two rules that are not piece
-      reads. (1) *Terminal extensions.* A stroke from a road end is solved together with the road
-      it extends as one vertical corridor (`prepare_terminal_road_extension`), which rewrites that
-      road's control polyline. Every Y draws its second stroke from the first one's end, so the
-      order decides which two roads are solved together: on the 2.5% slope `y_25` in order
-      `[0, 2, 1]` differs from `[0, 1, 2]` by one ulp at index 5 of a branch, whose samples and
-      support are identical in both (one is the extension solve, the other a plain solve). (2)
-      *Mid-span meetings.* By question 16's crossing rule a stroke meets a road it splits mid-span
-      at that road's graph profile, so the road drawn first sets the meeting height: the cross's
-      junction differs by about 7 mm between orders, and the two-junction fixture's junction at
-      `(-30, 0)` by two ulps (side road first: its end at the terrain; through road first: the
-      through road's profile between two of its samples). The T at the origin agrees by chance.
-    - **Options.** (a) Drop the extension's combined re-solve: a stroke from a road end joins it
-      like any node, at the node's graph height, and the bend's plane solve keeps the joint
-      continuous; no stroke then rewrites another road's control polyline, joins at existing nodes
-      are order independent (the Y), and mid-span meetings stay question 16's authored-state rule,
-      which the sloped test then asserts directly for the cross and the pair. (b) Keep both as
-      authored-state rules: the sloped Y, cross and pair are different graphs in different orders
-      and leave the test. (c) Also make mid-span meetings order independent, by letting a stroke
-      that passes an existing road end re-height that node to its own profile, which edits the
-      other road.
-    - **Recommendation.** (a): it removes the last history channel at joins without changing the
-      user's crossing rule; (b) gives up invariant 6 for every Y, and (c) edits authored roads.
-    - **Status.** The fixtures stay asserted in
-      `sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order`, ignored with
-      `ROAD-68-E: open question 29`; (a) is the next step of `ROAD-68-E` part 2.
-
 29. **The commit's terrain at city scale (`ROAD-68-D` part 6) — open, target missed.**
     - **Evidence.** With the city's refined terrain built and `ROAD-68-E`'s chain rule, a T
       split's terrain validation (`surface`) takes 10-12 ms in open terrain and 55-73 ms beside
@@ -1659,6 +1629,35 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (d) now (local, output-preserving), then (a), measured with the commit
       breakdown at every tier, then (b).
 
+30. **Drawing order on slopes after question 16 (`ROAD-68-E` part 2) — decided by the coordinator
+    under the user's delegation, 2026-10-25, for review: (a); not implemented yet.**
+    - **Evidence.** With question 16 implemented the sloped T fixtures are bitwise independent of
+      drawing order; the other sloped fixtures are not, through two rules that are not piece
+      reads. (1) *Terminal extensions.* A stroke from a road end is solved together with the road
+      it extends as one vertical corridor (`prepare_terminal_road_extension`), which rewrites that
+      road's control polyline. Every Y draws its second stroke from the first one's end, so the
+      order decides which two roads are solved together: on the 2.5% slope `y_25` in order
+      `[0, 2, 1]` differs from `[0, 1, 2]` by one ulp at index 5 of a branch, whose samples and
+      support are identical in both (one is the extension solve, the other a plain solve). (2)
+      *Mid-span meetings.* By question 16's crossing rule a stroke meets a road it splits mid-span
+      at that road's graph profile, so the road drawn first sets the meeting height: the cross's
+      junction differs by about 7 mm between orders, and the two-junction fixture's junction at
+      `(-30, 0)` by two ulps (side road first: its end at the terrain; through road first: the
+      through road's profile between two of its samples). The T at the origin agrees by chance.
+    - **Options.** (a) Drop the extension's combined re-solve: a stroke from a road end joins it
+      like any node, at the node's graph height, and the bend's plane solve keeps the joint
+      continuous; no stroke then rewrites another road's control polyline, joins at existing nodes
+      are order independent (the Y), and mid-span meetings stay question 16's authored-state rule,
+      which the sloped test then asserts directly for the cross and the pair. (b) Keep both as
+      authored-state rules: the sloped Y, cross and pair are different graphs in different orders
+      and leave the test. (c) Also make mid-span meetings order independent, by letting a stroke
+      that passes an existing road end re-height that node to its own profile, which edits the
+      other road.
+    - **Recommendation.** (a): it removes the last history channel at joins without changing the
+      user's crossing rule; (b) gives up invariant 6 for every Y, and (c) edits authored roads.
+    - **Status.** The fixtures stay asserted in
+      `sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order`, ignored with
+      `ROAD-68-E: open question 30`; (a) is the next step of `ROAD-68-E` part 2.
 Spec corrections in `ROAD-68-A`:
 
 - The façade defines only what consumers use (`RoadbedSystem`, `BandKind`, `RoadSection`,
@@ -3641,7 +3640,7 @@ Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gat
 
 The user's decisions on open questions 1, 2, 7, 11 (c) and 16, on `road` `4b6bdb8d` (D final,
 G parts 1-6, E1 rounds 1-5). Questions 8 and 21 (b) and the rest of 11 (c) are open for the next
-round; question 29 is new.
+round; question 30 is new.
 
 - **Question 16.** `plan_road_edit` (`road_edit/support.rs`) is the one preparation and plan of a
   stroke for the commit, the preview and the editor's checks: a stroke reads no carriageway of a
@@ -3650,7 +3649,7 @@ round; question 29 is new.
   carriageway plans once; a join or crossing plans twice (stage timings below).
   `sloped_junctions_do_not_depend_on_drawing_order` runs again on the T fixtures and passes;
   `a_crossing_of_a_raised_road_meets_it_on_top` is new; the Y, cross and pair fixtures stay
-  asserted but ignored under [open question 29](#road-68-open-questions).
+  asserted but ignored under [open question 30](#road-68-open-questions).
 - **Question 1.** The commit tests the pieces it installs against fields and painted cells, for
   the land the edit newly covers, and rolls the staged edit back on an overlap; the field and cell
   corridor checks are gone from the commit and plan readiness, the parcel corridor check stays.
