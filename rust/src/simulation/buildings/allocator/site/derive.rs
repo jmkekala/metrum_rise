@@ -71,11 +71,11 @@ impl BuildingAllocator {
         }
         // Explicit whole-catalog reload: all buildings may have changed asset geometry.
         for idx in 0..self.building_sites.len() {
-            self.record_building_site_change(idx, self.site_dirty_bounds(idx));
+            self.record_building_site_change(idx, self.site_change(idx));
         }
         self.rebuild_building_site_clients(zone_cell_m);
         for idx in 0..self.building_sites.len() {
-            self.record_building_site_change(idx, self.site_dirty_bounds(idx));
+            self.record_building_site_change(idx, self.site_change(idx));
         }
         self.bump_building_ref_revision();
         self.entrances_dirty = true;

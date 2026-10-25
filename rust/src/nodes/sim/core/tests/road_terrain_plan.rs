@@ -578,6 +578,7 @@ fn kuopio_graded_census() {
         let census = crate::simulation::terrain::graded::tests::graded_census(
             &core.heightmap,
             &core.transit_network.roadbed,
+            &core.allocator,
             level,
         );
         eprintln!("GRADED_CENSUS {}", serde_json::json!({"fixture": "kuopio", "census": census}));
@@ -602,6 +603,7 @@ fn kuopio_pruned_bake_equals_every_seam() {
     let (_, second_pass) = crate::simulation::terrain::graded::tests::assert_exact_pruning(
         &core.heightmap,
         &core.transit_network.roadbed,
+        &core.allocator,
         &tiles,
         &gl0,
         "kuopio",
@@ -632,6 +634,7 @@ fn benchmark_kuopio_graded_edits() {
             &core.heightmap,
             before,
             &core.transit_network.roadbed,
+            &core.allocator,
             &core.last_road_terrain_changes,
         )
     };
@@ -719,6 +722,7 @@ fn benchmark_kuopio_graded_edits() {
         &core.heightmap,
         &before,
         &core.transit_network.roadbed,
+        &core.allocator,
         &changes,
     );
     record["edit"] = "remove_dead_end".into();
@@ -747,6 +751,46 @@ fn kuopio_wall_sites() {
             dump_site(terrain, roadbed, x, z, &path);
         }
     }
+}
+
+// `TERRAIN-07-C` (`T2` (c)): the conflict wall of the reference save (round 4's one site, where
+// two roads leave node 50 at the 1:3 limit and the lower one is walled up to 0.37 m) closes the
+// step at every walled seam point, sampled every 5 cm.
+#[test]
+fn kuopio_conflict_wall_closes_the_step() {
+    use crate::simulation::terrain::graded::{Level, TileKey, bake_tiles};
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    let site = [-16.3, 1182.8];
+    let (first, last) = (
+        TileKey::at(site[0] - 40.0, site[1] - 40.0),
+        TileKey::at(site[0] + 40.0, site[1] + 40.0),
+    );
+    let tiles: Vec<TileKey> = (first.x..=last.x)
+        .flat_map(|x| (first.z..=last.z).map(move |z| TileKey { x, z }))
+        .collect();
+    let mut payloads = Vec::new();
+    bake_tiles(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+        &tiles,
+        Level::Gl0,
+        &mut payloads,
+    )
+    .unwrap();
+    use crate::simulation::terrain::graded::site_tests::assert_walls_close_the_step;
+    let (walled, highest) = assert_walls_close_the_step(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+        &payloads,
+    );
+    assert!(
+        walled > 100 && (highest - 0.37).abs() < 0.01,
+        "{walled} walled samples, highest {highest}"
+    );
 }
 
 // The regenerated reference's refined terrain builds clean. The refined patches the roads reach:

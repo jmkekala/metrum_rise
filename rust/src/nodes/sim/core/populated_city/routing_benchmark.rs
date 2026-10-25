@@ -1014,9 +1014,13 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
     core.insert_refined_terrain_patch_cache_entries(refined);
     // `TERRAIN-07-A` `T2` and `T7`: the whole city's road tiles at `GL0`, outside timing.
+    // The census and every graded stage below read the sites through the chunk index, which
+    // is rebuilt only where a frame left it stale (its rebuild resets the vacancy order).
+    prepare_graded_sites(core);
     let census = crate::simulation::terrain::graded::tests::graded_census(
         &core.heightmap,
         &core.transit_network.roadbed,
+        &core.allocator,
         crate::simulation::terrain::graded::Level::Gl0,
     );
     eprintln!("GRADED_CENSUS {}", serde_json::json!({"residents": residents, "census": census}));
@@ -1144,6 +1148,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "lots_digest": lots_digest, "generated_digest": format!("{generated:016x}"),
         });
         eprintln!("COMMIT_BREAKDOWN {record}");
+        prepare_graded_sites(core);
         graded_tiles(residents, sample, core, &before_roadbed);
     }
     // After the timed commits: the road tool view's persistent cell copy (`ROAD-68` open
@@ -1171,6 +1176,57 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "copy_estimate_bytes": bytes + 24 * entries, "copy_resident_growth_bytes": grown,
             "copy_ms": copy_ms})
     );
+    graded_site_removal(residents, core);
+}
+
+// `TERRAIN-07-C`: the graded terrain stage of one building's removal in the city (site change
+// selection and the `GL0` bake, median of 7, `site_stage`), with every selected tile within the
+// cap and band of the removed site's bounds, whatever the size of the city around it.
+fn graded_site_removal(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
+    use crate::simulation::terrain::graded::{CAP_M, TileKey};
+    if core.allocator.buildings.is_empty() {
+        return;
+    }
+    let building_idx = core.allocator.buildings.len() / 2;
+    assert!(core.bulldoze_building(building_idx), "the building is removed");
+    core.publish_pending_building_site_changes();
+    prepare_graded_sites(core);
+    let changes = core.last_site_terrain_changes.clone();
+    assert!(!changes.is_empty(), "the removal records its site");
+    let mut record = crate::simulation::terrain::graded::site_tests::site_stage(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+        &changes,
+    );
+    // The bound: the cap and the `GL0` band past the removed site's bounds, plus the apron.
+    let reach = f64::from(CAP_M as f32) + 2.0 + 0.5 + 1.0;
+    let within = |key: &serde_json::Value| {
+        let (x, z) = (key[0].as_i64().unwrap() as i32, key[1].as_i64().unwrap() as i32);
+        changes.iter().any(|change| {
+            let b = change.bounds.map(f64::from);
+            let (first, last) = (
+                TileKey::at(b[0] - reach, b[1] - reach),
+                TileKey::at(b[2] + reach, b[3] + reach),
+            );
+            (first.x..=last.x).contains(&x) && (first.z..=last.z).contains(&z)
+        })
+    };
+    assert!(
+        record["tile_keys"].as_array().unwrap().iter().all(within),
+        "every selected tile lies within the removal's bound"
+    );
+    record["residents"] = residents.into();
+    record["buildings"] = core.allocator.buildings.len().into();
+    eprintln!("GRADED_SITE_REMOVAL {record}");
+}
+
+// The site chunk index the graded bakes read (`TERRAIN-07-C`), rebuilt only when stale.
+fn prepare_graded_sites(core: &mut crate::nodes::sim::core::state::SimCore) {
+    if !core.allocator.building_site_query_index_ready() {
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+    }
 }
 
 // `TERRAIN-07-A`: the graded terrain stage of the same commit on the same core, after it
@@ -1186,6 +1242,7 @@ fn graded_tiles(
         &core.heightmap,
         before,
         &core.transit_network.roadbed,
+        &core.allocator,
         &core.last_road_terrain_changes,
     );
     record["residents"] = residents.into();

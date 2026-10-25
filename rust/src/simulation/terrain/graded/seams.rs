@@ -11,6 +11,9 @@ use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem};
 pub enum SeamKind {
     /// One grounded outer-chain segment of the roadbed, road on its left.
     Road,
+    /// One side of a building site's support footprint at its support height, oriented
+    /// counter-clockwise (positive signed area in XZ), the pad on its left (`TERRAIN-07-C`).
+    Pad,
 }
 
 /// One seam segment in world metres `[x, height, z]`, its height linear along it.
@@ -50,31 +53,7 @@ impl Seam {
     /// The seam at the world XZ point `(x, z)`, in `f64` with exact clamps: the nearest point is
     /// `a` or `b` itself where the projection parameter leaves `[0, 1]`.
     pub(super) fn at(&self, x: f64, z: f64) -> SeamAt {
-        let [ax, ay, az] = self.a;
-        let [bx, by, bz] = self.b;
-        let (dx, dz) = (bx - ax, bz - az);
-        let len2 = dx * dx + dz * dz;
-        let (qx, qz, h, cross) = if len2 > 0.0 {
-            let t = ((x - ax) * dx + (z - az) * dz) / len2;
-            // `|(b - a) x (p - a)|`: over the length, the distance to the seam's line.
-            let cross = (dx * (z - az) - dz * (x - ax)).abs();
-            if t <= 0.0 {
-                (ax, az, ay, cross)
-            } else if t >= 1.0 {
-                (bx, bz, by, cross)
-            } else {
-                (ax + dx * t, az + dz * t, ay + (by - ay) * t, cross)
-            }
-        } else {
-            (ax, az, ay, 0.0)
-        };
-        let (ex, ez) = (x - qx, z - qz);
-        SeamAt {
-            distance: (ex * ex + ez * ez).sqrt(),
-            height: h,
-            cross,
-            len2,
-        }
+        segment_at(self.a, self.b, x, z)
     }
 
     /// [`Self::at`]'s distance and height at `N` points `(xs[l], z)` of one lattice row, the
@@ -109,6 +88,37 @@ impl Seam {
             }
         }
         (distance, height)
+    }
+}
+
+/// The segment from `a` to `b` (world `[x, height, z]`) at the world XZ point `(x, z)`, in
+/// `f64` with exact clamps: the nearest point is `a` or `b` itself where the projection
+/// parameter leaves `[0, 1]`. Seams and material edges share it, and with it the nearest order.
+pub(super) fn segment_at(a: [f64; 3], b: [f64; 3], x: f64, z: f64) -> SeamAt {
+    let [ax, ay, az] = a;
+    let [bx, by, bz] = b;
+    let (dx, dz) = (bx - ax, bz - az);
+    let len2 = dx * dx + dz * dz;
+    let (qx, qz, h, cross) = if len2 > 0.0 {
+        let t = ((x - ax) * dx + (z - az) * dz) / len2;
+        // `|(b - a) x (p - a)|`: over the length, the distance to the seam's line.
+        let cross = (dx * (z - az) - dz * (x - ax)).abs();
+        if t <= 0.0 {
+            (ax, az, ay, cross)
+        } else if t >= 1.0 {
+            (bx, bz, by, cross)
+        } else {
+            (ax + dx * t, az + dz * t, ay + (by - ay) * t, cross)
+        }
+    } else {
+        (ax, az, ay, 0.0)
+    };
+    let (ex, ez) = (x - qx, z - qz);
+    SeamAt {
+        distance: (ex * ex + ez * ez).sqrt(),
+        height: h,
+        cross,
+        len2,
     }
 }
 

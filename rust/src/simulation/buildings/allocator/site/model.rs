@@ -46,6 +46,20 @@ pub(crate) struct BuildingSiteClient {
     pub(crate) planting_world: Vec<Vec<Vector2>>,
 }
 
+/// One side of a site change for the graded terrain's dirty tiles (`TERRAIN-07-C`): the site
+/// before or after it, by the bounds of its lot, support footprint and surfaces
+/// (`[min_x, min_z, max_x, max_z]`, the legacy outbox's box) and its support height then. A
+/// placement records the new site, a removal the old one, a rebuild both. Every pad seam lies
+/// in the bounds at that height and every material edge in them, which is all the selection
+/// reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SiteChange {
+    /// XZ bounds of the lot, support footprint and surfaces.
+    pub bounds: [f32; 4],
+    /// Flat support height, metres.
+    pub support_height_m: f32,
+}
+
 /// Minimal immutable building-site data needed by asynchronous terrain jobs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BuildingSiteTerrainSnapshot {

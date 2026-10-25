@@ -3,9 +3,10 @@
 //! Spatial lookup and ray-query operations for derived building sites.
 
 use super::geometry::{point_in_polygon_slice, site_lot_center, update_site_plane_ray_hit};
-use super::model::BuildingSiteClient;
+use super::model::{BuildingSiteClient, SiteChange};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
 use godot::prelude::{Vector2, Vector3};
 
 // Covers the polygon test's `SITE_POINT_EPS_M` edge tolerance and the f32 rounding of lot
@@ -13,6 +14,8 @@ use godot::prelude::{Vector2, Vector3};
 const SITE_REACH_SLACK_M: f32 = 0.5;
 // Covers the rounding of contact offsets around a gathered centre, with a wide margin.
 const NEARBY_REACH_SLACK_M: f32 = 1.0;
+// Growth of a graded terrain rectangle before its f32 site query, metres.
+const SITE_RECT_SLACK_M: f64 = 0.01;
 
 /// Sites gathered around one point by [`BuildingAllocator::gather_nearby_sites`], each with the
 /// 512 m chunk it is indexed in. Fixed capacity, so gathering allocates nothing.
@@ -43,6 +46,44 @@ fn site_chunk_range(pos: Vector2, margin_m: f32) -> [i32; 4] {
         ((pos.y - margin_m) / chunk_size).floor() as i32,
         ((pos.y + margin_m) / chunk_size).floor() as i32,
     ]
+}
+
+/// The allocator's point-in-footprint predicate ([`BuildingSiteClient::contains_point`]) on a
+/// footprint's corners: inside, or within `SITE_POINT_EPS_M` of a side. The graded terrain's
+/// `Pad` class reads it (`TERRAIN-07-C`), so the pad is the allocator's footprint exactly.
+pub(crate) fn site_footprint_contains(footprint: &[Vector2], pos: Vector2) -> bool {
+    point_in_polygon_slice(pos, footprint)
+}
+
+// The graded terrain's sites (`TERRAIN-07-C`): the sites whose bounds meet a rectangle, through
+// the 512 m chunk index, with their footprints, support heights and surfaces in authored order.
+// No answer while the index is being rebuilt: the bake never scans every site.
+impl SiteSource for BuildingAllocator {
+    fn ready(&self) -> bool {
+        self.building_site_query_index_ready()
+    }
+
+    fn sites_in_bounds(&self, rect: [f64; 4], out: &mut SiteBuffer) {
+        // Grown past the f32 rounding of the rectangle: a site more only adds inputs.
+        let [min_x, min_z, max_x, max_z] = [
+            rect[0] - SITE_RECT_SLACK_M,
+            rect[1] - SITE_RECT_SLACK_M,
+            rect[2] + SITE_RECT_SLACK_M,
+            rect[3] + SITE_RECT_SLACK_M,
+        ]
+        .map(|value| value as f32);
+        self.visit_indexed_site_candidates_for_bounds(min_x, min_z, max_x, max_z, |idx| {
+            let Some(site) = self.building_sites.get(idx) else {
+                return;
+            };
+            if site.overlaps_bounds(min_x, min_z, max_x, max_z) {
+                out.push_site(&site.footprint_world, site.support_height_m);
+                for surface in &site.surfaces {
+                    out.push_surface(surface.material, &surface.vertices_world);
+                }
+            }
+        });
+    }
 }
 
 impl BuildingSiteClient {
@@ -140,6 +181,17 @@ impl BuildingAllocator {
         })
     }
 
+    /// The site's side of a change for the graded terrain ([`SiteChange`]): its
+    /// [`Self::site_dirty_bounds`] and support height now. Read before a change for the old
+    /// site and after it for the new one.
+    pub(crate) fn site_change(&self, building_idx: usize) -> Option<SiteChange> {
+        let bounds = self.site_dirty_bounds(building_idx)?;
+        Some(SiteChange {
+            bounds: bounds.into(),
+            support_height_m: self.building_sites[building_idx].support_height_m,
+        })
+    }
+
     /// Queues one site change's bounds in the terrain outbox. Boxes stay separate: a box
     /// merged over changes far apart would refresh every terrain patch between them
     /// (`SIM-02-K`). O(1) amortized.
@@ -152,14 +204,21 @@ impl BuildingAllocator {
         }
     }
 
-    /// Records terrain changes for every site and cell exclusions only for explicit sites.
-    /// Ordinary parcels own their cell claims; clearing occupancy already queues their local
-    /// frontage revalidation. Geometry work is bounded by edited sites, not their union's area.
+    /// Records terrain changes for every site and cell exclusions only for explicit sites:
+    /// the change's bounds in the legacy outbox and the whole [`SiteChange`] in the graded
+    /// terrain's (`TERRAIN-07-C`). Ordinary parcels own their cell claims; clearing occupancy
+    /// already queues their local frontage revalidation. Geometry work is bounded by edited
+    /// sites, not their union's area.
     pub(crate) fn record_building_site_change(
         &mut self,
         building_idx: usize,
-        bounds: Option<(f32, f32, f32, f32)>,
+        change: Option<SiteChange>,
     ) {
+        let bounds = change.map(|change| {
+            let [min_x, min_z, max_x, max_z] = change.bounds;
+            (min_x, min_z, max_x, max_z)
+        });
+        self.graded_site_changes.extend(change);
         self.accumulate_pending_site_dirty_bounds(bounds);
         if self.buildings.get(building_idx).is_some_and(|building| {
             building.parcel_id == 0

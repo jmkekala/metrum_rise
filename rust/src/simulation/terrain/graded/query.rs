@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Point and ray queries of the graded surface (`TERRAIN-07`), for roads; no consumer reads them
-//! until `TERRAIN-07-F`. Every query evaluates the same pointwise function as the bake, over
-//! every seam within the cap of the points it reads (no pruning, so no reach to compute), and
-//! answers from the `GL0` lattice the surface renders with: a point between lattice points lies
+//! Point and ray queries of the graded surface (`TERRAIN-07`), for roads and building sites; no
+//! consumer reads them until `TERRAIN-07-F`. Every query evaluates the same pointwise function as
+//! the bake, over every seam within the cap of the points it reads (no pruning, so no reach to
+//! compute), and answers from the `GL0` lattice the surface renders with: a point between lattice points lies
 //! on the `GL0` triangle under it, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)`
 //! diagonal. Allocation-free once the scratch is warm.
 
@@ -11,7 +11,9 @@ use super::coverage::covered_height_at;
 use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE};
 use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
 use super::seams::{Seam, SeamScratch, gather_road_seams};
+use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::tile::{Level, TILE_M, grown};
+use crate::assets::SiteSurfaceMaterial;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -30,6 +32,12 @@ pub enum GroundClass {
     Graded,
     /// Covered by a grounded road top triangle: the terrain is discarded there.
     Road,
+    /// Inside a building site's support footprint (the allocator's predicate), paved or not:
+    /// the terrain is the pad, at its support height.
+    Pad,
+    /// Outside every footprint, on a site surface (the frontage paving and aprons): the first
+    /// surface holding the point, in canonical site order and authored order.
+    Paved(SiteSurfaceMaterial),
 }
 
 /// Reused buffers of the queries.
@@ -39,17 +47,21 @@ pub struct QueryScratch {
     window: Vec<Seam>,
     base: BaseWindow,
     pieces: Vec<PieceId>,
+    sites: SiteBuffer,
 }
 
-/// The graded surface over a base heightmap and a roadbed: the read API every consumer moves
-/// to. Point queries cost one gather of the seams within the cap of the point, then `O(S)` per
-/// lattice point read (three for a height, twelve for a normal).
+/// The graded surface over a base heightmap, a roadbed and building sites: the read API every
+/// consumer moves to. Point queries cost one gather of the seams and sites within the cap of the
+/// point, then `O(S)` per lattice point read (three for a height, twelve for a normal).
 #[derive(Clone, Copy)]
 pub struct GradedSurface<'a> {
     /// The base heightmap (its source samples).
     pub terrain: &'a TerrainSystem,
     /// The roadbed whose grounded outer chains and top triangles grade the terrain.
     pub roadbed: &'a RoadbedSystem,
+    /// The building sites whose pads and surfaces grade and paint it; ready
+    /// ([`SiteSource::ready`]) while the surface is queried.
+    pub sites: &'a dyn SiteSource,
 }
 
 impl GradedSurface<'_> {
@@ -60,8 +72,8 @@ impl GradedSurface<'_> {
     }
 
     /// The graded ground the terrain renders: `GL0` values on the `GL0` triangle under the
-    /// point. Under a road it is the hidden inside-rule surface, so callers test
-    /// [`Self::mask_at`] first.
+    /// point; in a pad its support height. Under a road it is the hidden inside-rule surface,
+    /// so callers test [`Self::mask_at`] first.
     pub fn ground_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(0), scratch);
@@ -99,13 +111,20 @@ impl GradedSurface<'_> {
         normalized(normal)
     }
 
-    /// What the point is: road where a grounded road top triangle covers it, graded where the
-    /// graded value differs from the base, else natural.
+    /// What the point is, in this order: road where a grounded road top triangle covers it, pad
+    /// inside a site's support footprint, paved on a site surface, graded where the graded
+    /// value differs from the base, else natural.
     pub fn mask_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
         if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_some() {
             return GroundClass::Road;
         }
         self.prepare([x, z, x, z], scratch);
+        if scratch.sites.pad_at(x, z) != NO_SITE {
+            return GroundClass::Pad;
+        }
+        if let Some(material) = scratch.sites.material_at(x, z) {
+            return GroundClass::Paved(material);
+        }
         let base = scratch.base.at(x, z);
         let value = self.evaluate(x, z, base, None, scratch);
         if (value - base) as f32 != 0.0 {
@@ -155,7 +174,8 @@ impl GradedSurface<'_> {
             .map(|t| along(origin, direction, t))
     }
 
-    // Gathers the seams and base samples within the cap of `rect`.
+    // Gathers the seams, sites and base samples within the cap of `rect`: road seams in key
+    // order, then the pad seams.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
         gather_road_seams(
@@ -164,10 +184,13 @@ impl GradedSurface<'_> {
             &mut scratch.seams,
             &mut scratch.window,
         );
+        scratch.sites.gather(self.sites, window);
+        scratch.sites.push_pad_seams(&mut scratch.window);
         scratch.base.fill(self.terrain, window);
     }
 
-    // The graded value at a point of the prepared window, over every gathered seam.
+    // The graded value at a point of the prepared window, over every gathered seam, with its
+    // pad from the gathered sites.
     fn evaluate(
         &self,
         x: f64,
@@ -179,7 +202,9 @@ impl GradedSurface<'_> {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
         let all = (0..seams.len() as u32).map(Listed::unbounded);
-        evaluate(x, z, base, road, seams, all, band).height
+        let site = scratch.sites.pad_at(x, z);
+        let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
+        evaluate(x, z, base, road, pad, seams, all, band).height
     }
 
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake

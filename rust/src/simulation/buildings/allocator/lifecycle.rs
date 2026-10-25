@@ -5,7 +5,7 @@
 use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
+    BuildingAllocator, DemandSpawnPlacementRejection, SiteChange, baseline_private_zone_slot,
     resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
 };
 use crate::simulation::economy::agents::{AgentSystem, HouseholdAgeComposition};
@@ -427,8 +427,8 @@ impl BuildingAllocator {
         let b = &self.buildings[i];
         let b_parcel_id = b.parcel_id;
         let b_zone = b.zone_type;
-        let removed_site_bounds = self.site_dirty_bounds(i);
-        self.record_building_site_change(i, removed_site_bounds);
+        let removed_site = self.site_change(i);
+        self.record_building_site_change(i, removed_site);
         if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
             self.dirty_zones[zone_idx] = true;
         }
@@ -464,15 +464,15 @@ impl BuildingAllocator {
         self.buildings.swap_remove(i);
         crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
         self.remove_building_site_client(i);
-        if let Some(bounds) = removed_site_bounds {
+        if let Some(SiteChange { bounds, .. }) = removed_site {
             debug_log!(
                 "economy",
                 "building site removed by cleanup: building_idx={} bounds=({:.1},{:.1})-({:.1},{:.1})",
                 i,
-                bounds.0,
-                bounds.1,
-                bounds.2,
-                bounds.3
+                bounds[0],
+                bounds[1],
+                bounds[2],
+                bounds[3]
             );
         }
         self.mark_index_stale();
@@ -1363,10 +1363,10 @@ impl BuildingAllocator {
         );
         if building.front_gap_m != front_gap_m {
             building.front_gap_m = front_gap_m;
-            let old_bounds = self.site_dirty_bounds(building_idx);
+            let old_site = self.site_change(building_idx);
             self.rebuild_building_site_client(building_idx, zone_cell_m);
-            self.record_building_site_change(building_idx, old_bounds);
-            self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
+            self.record_building_site_change(building_idx, old_site);
+            self.record_building_site_change(building_idx, self.site_change(building_idx));
         }
         true
     }
@@ -1730,7 +1730,7 @@ impl BuildingAllocator {
         .into_iter()
         .filter_map(|asset| self.registry.get(asset)?.manifest.building.as_ref())
         .any(|data| data.yard_hedge.is_some() || !data.yard_planting.is_empty());
-        let old_site_bounds = self.site_dirty_bounds(building_idx);
+        let old_site = self.site_change(building_idx);
         let building = &mut self.buildings[building_idx];
         building.asset_id = target_asset_id.to_owned();
         building.level = target_level;
@@ -1750,8 +1750,8 @@ impl BuildingAllocator {
         let building = &self.buildings[building_idx];
         self.level_changes
             .record((building.parcel_id, building.build_generation));
-        self.record_building_site_change(building_idx, old_site_bounds);
-        self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
+        self.record_building_site_change(building_idx, old_site);
+        self.record_building_site_change(building_idx, self.site_change(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
         self.mark_index_stale();
@@ -1789,7 +1789,7 @@ impl BuildingAllocator {
         // A clean entrance cache follows the swap-remove below: each entrance is derived from
         // its own building, the network and the asset registry alone (`SIM-02-K`).
         let entrances_clean = !self.entrances_dirty && self.entrances.len() == self.buildings.len();
-        self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_change(building_idx));
         zoning.clear_parcel_occupancy(parcel_id);
 
         let last_idx = self.buildings.len().saturating_sub(1);

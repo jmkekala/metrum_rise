@@ -823,6 +823,13 @@ fn place_kuopio_yard(
 }
 
 fn kuopio_yard_fixture() -> SimCore {
+    let mut core = kuopio_yard_core();
+    assert!(settle_and_check_yards(&mut core) > 100);
+    core
+}
+
+// The Kuopio yards placed on the reference save, before any terrain is built.
+fn kuopio_yard_core() -> SimCore {
     let mut core = test_core();
     core.load_game_internal(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -851,8 +858,62 @@ fn kuopio_yard_fixture() -> SimCore {
     );
     assert_eq!(core.allocator.buildings.len(), 6);
     assert_eq!(core.zoning.parcels().len(), 8);
-    assert!(settle_and_check_yards(&mut core) > 100);
     core
+}
+
+// `TERRAIN-07-C`: the Kuopio yards as graded terrain clients. Their tiles bake without errors at
+// every level, each pad's samples hold its support height bitwise, and every lattice point
+// near the yards takes the material class the legacy paving partition gives it.
+#[test]
+fn kuopio_yards_bake_as_pads_with_the_partition_materials() {
+    let mut core = kuopio_yard_core();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    use crate::simulation::terrain::graded::site_tests::assert_allocator_sites_bake;
+    let (baked, pads, paved) = assert_allocator_sites_bake(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+    );
+    assert!(
+        baked > 0 && pads > 1_000 && paved > 1_000,
+        "{baked} tiles, {pads} pad and {paved} paved samples"
+    );
+}
+
+// `TERRAIN-07-C`: the graded terrain stage of each Kuopio yard placement on the reference save
+// (dirty tile selection from the placement's site change, then the `GL0` bake), on the hills.
+#[test]
+#[ignore = "controlled release timing: cargo test --release --lib benchmark_kuopio_yard_placements \
+            -- --ignored --nocapture"]
+fn benchmark_kuopio_yard_placements() {
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    for road in 0..KUOPIO_YARD_ROADS.len() {
+        for side in [-1.0, 1.0] {
+            if place_kuopio_yard(&mut core, road, side, &asset).is_err() {
+                continue;
+            }
+            core.allocator
+                .prepare_building_site_query_index(core.config.zone_cell_m);
+            let mut record = crate::simulation::terrain::graded::site_tests::site_stage(
+                &core.heightmap,
+                &core.transit_network.roadbed,
+                &core.allocator,
+                &core.last_site_terrain_changes,
+            );
+            record["road"] = road.into();
+            record["side"] = side.into();
+            record["sites"] = core.allocator.buildings.len().into();
+            eprintln!("GRADED_KUOPIO_YARD {record}");
+        }
+    }
 }
 
 #[test]

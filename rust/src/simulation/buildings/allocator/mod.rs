@@ -524,6 +524,9 @@ pub struct BuildingAllocator {
     /// one box per site change, never merged, so changes far apart refresh only the terrain
     /// patches each touches (`SIM-02-K`).
     pub(crate) building_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
+    /// The graded terrain's site-change outbox (`TERRAIN-07-C`), filled with the legacy one
+    /// above: one record per site before or after each change, with its support height.
+    pub(crate) graded_site_changes: Vec<SiteChange>,
     /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
     /// Keeping envelopes separate avoids treating untouched land between sites as edited.
     pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
@@ -540,6 +543,8 @@ pub struct BuildingAllocator {
 }
 
 pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, NearbySites};
+pub use site::SiteChange;
+pub(crate) use site::site_footprint_contains;
 
 /// Derived runtime binding from an asset-side `economy_profile` reference.
 #[derive(Clone, Copy, Debug, Default)]
@@ -913,6 +918,7 @@ impl BuildingAllocator {
             entrances: Vec::new(),
             building_sites: Vec::new(),
             building_site_dirty_bounds: Vec::new(),
+            graded_site_changes: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
             border_arrival: Default::default(),
@@ -1166,6 +1172,7 @@ impl BuildingAllocator {
         self.max_site_radius_m = 0.0;
         self.max_site_radius_count = 0;
         self.building_site_dirty_bounds.clear();
+        self.graded_site_changes.clear();
         self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;

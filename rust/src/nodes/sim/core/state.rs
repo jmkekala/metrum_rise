@@ -301,6 +301,9 @@ pub struct SimCore {
     /// The terrain changes of the last road install, kept for the graded terrain's dirty tile
     /// selection (`TERRAIN-07-A` measures it; `TERRAIN-07-E` consumes it).
     pub(crate) last_road_terrain_changes: crate::simulation::network::roadbed::TerrainChanges,
+    /// The site changes of the last publication of pending site changes, kept for the graded
+    /// terrain's dirty tile selection (`TERRAIN-07-C` measures it; `TERRAIN-07-E` consumes it).
+    pub(crate) last_site_terrain_changes: Vec<crate::simulation::buildings::allocator::SiteChange>,
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
@@ -447,6 +450,7 @@ impl SimCore {
             last_road_rejection: None,
             last_road_edit_metrics: Default::default(),
             last_road_terrain_changes: Default::default(),
+            last_site_terrain_changes: Vec::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
@@ -1854,8 +1858,14 @@ impl SimCore {
         }
     }
 
-    // The production sites, yards and cell-lot dirty marks of the pending site changes.
+    // The production sites, yards and cell-lot dirty marks of the pending site changes, and the
+    // graded terrain's site changes, which replace the last publication's.
     fn publish_pending_site_changes_but_terrain(&mut self) {
+        self.last_site_terrain_changes.clear();
+        std::mem::swap(
+            &mut self.last_site_terrain_changes,
+            &mut self.allocator.graded_site_changes,
+        );
         self.publish_pending_production_site_removals();
         crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         while let Some(bounds) = self.allocator.pop_pending_cell_site_dirty_bounds() {

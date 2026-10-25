@@ -16,6 +16,8 @@ use super::sample::{
     AxisStop, BaseGrid, BaseWindow, Listed, NO_SEAM, Value, evaluate, evaluate_lanes,
 };
 use super::seams::{Seam, SeamScratch, gather_road_seams};
+use super::sites::{NO_SITE, SiteBuffer, SiteSource};
+use super::walls::{WallFace, WallScratch, build_walls};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
@@ -97,6 +99,17 @@ impl Level {
             Self::Gl3 { .. } => 128,
         }
     }
+
+    /// Material edge row capacity of one slot (`T7`, `TERRAIN-07-C`): the proposed 256 at
+    /// `GL0`, 128 at `GL1` and 64 at `GL2`; `GL3` takes its lattice bound like its seams (each
+    /// lattice point names at most one edge).
+    pub fn edge_capacity(self) -> usize {
+        match self {
+            Self::Gl0 => 256,
+            Self::Gl1 | Self::Gl3 { .. } => 128,
+            Self::Gl2 => 64,
+        }
+    }
 }
 
 /// What a tile's values were baked from, compared exactly to adopt a preview's tile at commit:
@@ -110,6 +123,10 @@ pub struct TileInputs {
     pub triangles: Vec<[u64; 9]>,
     /// `((chunk x, chunk z), revision)` per 512 m chunk under the window, sorted.
     pub base_revisions: Vec<((i32, i32), u64)>,
+    /// The window's building sites in canonical order (`TERRAIN-07-C`): per site its
+    /// footprint corner count and corner bits, its support height's bits, its surface count and
+    /// per surface the material class, corner count and corner bits.
+    pub sites: Vec<u32>,
 }
 
 /// Measurements of one bake, for `T1`, `T2` and `T7`.
@@ -151,14 +168,21 @@ pub struct TilePayload {
     /// Per lattice point, rows along +z, points along +x: `delta` (graded minus base, metres),
     /// `sdf` (distance to the nearest road seam clamped to the band, negative under a road),
     /// the nearest road seam's index in [`Self::seams`] within the band or `-1`, and the
-    /// material word `16 (e + 1) + class` (0 until sites, `TERRAIN-07-C`).
+    /// material word `16 (e + 1) + class`: `class` the material class of the first site
+    /// surface holding the point (0 none, 1 asphalt, 2 concrete), `e` the nearest material
+    /// edge's index in [`Self::edges`] within the band, else `-1`.
     pub texels: Vec<[f32; 4]>,
     /// The road seams the texels name, tile-local `[ax, az, bx, bz]` (metres from the tile
     /// origin), road on the left, in key order.
     pub seams: Vec<[f32; 4]>,
-    /// Material edges likewise (empty until sites, `TERRAIN-07-C`).
+    /// The material edges the texels name, tile-local `[ax, az, bx, bz]`, the surface on the
+    /// left, in key order.
     pub edges: Vec<[f32; 4]>,
-    /// Whether any sample is graded, covered or within the band of a seam.
+    /// The conflict walls along the road seams in the tile (`T2` (c)), seam by seam in key
+    /// order, each seam's faces along it.
+    pub walls: Vec<WallFace>,
+    /// Whether any sample is graded, covered, in a pad, paved or within the band of a seam or
+    /// a material edge.
     pub graded: bool,
     /// What the tile was baked from.
     pub inputs: TileInputs,
@@ -180,6 +204,30 @@ pub enum BakeError {
         /// The level's capacity.
         capacity: usize,
     },
+    /// More material edges are named than the level's slot holds.
+    EdgeCapacity {
+        /// The tile.
+        tile: TileKey,
+        /// The level.
+        level: Level,
+        /// Edges named.
+        count: usize,
+        /// The level's capacity.
+        capacity: usize,
+    },
+    /// The site source cannot answer rectangle queries without a scan (its index is being
+    /// rebuilt): the caller prepares it and bakes again. Nothing is baked.
+    SitesUnavailable,
+}
+
+impl BakeError {
+    // The failing tile, for the lowest-tile rule; none before any tile is baked.
+    fn tile(&self) -> Option<TileKey> {
+        match *self {
+            Self::SeamCapacity { tile, .. } | Self::EdgeCapacity { tile, .. } => Some(tile),
+            Self::SitesUnavailable => None,
+        }
+    }
 }
 
 /// Per-worker bake buffers, reused across tiles.
@@ -205,6 +253,13 @@ pub(super) struct BakeScratch {
     nearest: Vec<u32>,
     row_of: Vec<u32>,
     lifted: Vec<Lifted>,
+    sites: SiteBuffer,
+    // Per lattice point: the canonical site whose footprint holds it, the material class, and
+    // the nearest material edge within the band with its distance.
+    pads: Vec<u32>,
+    classes: Vec<u8>,
+    edges_near: Vec<(u32, f64)>,
+    walls: WallScratch,
 }
 
 thread_local! {
@@ -213,17 +268,19 @@ thread_local! {
 }
 
 /// Bakes `tiles` at `level` into `out` (resized to one payload per tile, in tile order, its
-/// buffers reused), in parallel on the shared pool. Each tile reads only its own window, so the
-/// bytes do not depend on the batch, the order or the worker count. Returns the error of the
-/// lowest failing tile.
+/// buffers reused), in parallel on the shared pool, over the base, the roadbed's grounded
+/// roads and the building sites of `sites`. Each tile reads only its own window, so the bytes
+/// do not depend on the batch, the order or the worker count. Returns the error of the lowest
+/// failing tile.
 pub fn bake_tiles(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
     tiles: &[TileKey],
     level: Level,
     out: &mut Vec<TilePayload>,
 ) -> Result<(), BakeError> {
-    bake_tiles_with(terrain, roadbed, tiles, level, Evaluation::Lanes, out)
+    bake_tiles_with(terrain, roadbed, sites, tiles, level, Evaluation::Lanes, out)
 }
 
 /// How a bake evaluates its samples: the reference over every seam within the cap, or pruned,
@@ -244,23 +301,30 @@ const LANES: usize = 4;
 pub(super) fn bake_tiles_with(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
     tiles: &[TileKey],
     level: Level,
     evaluation: Evaluation,
     out: &mut Vec<TilePayload>,
 ) -> Result<(), BakeError> {
+    if !sites.ready() {
+        return Err(BakeError::SitesUnavailable);
+    }
     out.resize_with(tiles.len(), TilePayload::default);
+    let inputs = Inputs {
+        terrain,
+        roadbed,
+        sites,
+    };
     let failure = crate::thread_pools::install(|| {
         out.par_iter_mut()
             .zip(tiles.par_iter())
             .filter_map(|(payload, &tile)| {
                 SCRATCH.with_borrow_mut(|scratch| {
-                    bake_tile(terrain, roadbed, tile, level, evaluation, scratch, payload).err()
+                    bake_tile(&inputs, tile, level, evaluation, scratch, payload).err()
                 })
             })
-            .min_by_key(|error| match error {
-                BakeError::SeamCapacity { tile, .. } => *tile,
-            })
+            .min_by_key(BakeError::tile)
     });
     failure.map_or(Ok(()), Err)
 }
@@ -332,16 +396,23 @@ pub(super) fn window(rect: [f64; 4], band: f64) -> [f64; 4] {
     grown(rect, CAP_M.max(band) + WINDOW_PAD_M)
 }
 
+// What a bake reads.
+struct Inputs<'a, S> {
+    terrain: &'a TerrainSystem,
+    roadbed: &'a RoadbedSystem,
+    sites: &'a S,
+}
+
 // Bakes one tile with `evaluation`.
 fn bake_tile(
-    terrain: &TerrainSystem,
-    roadbed: &RoadbedSystem,
+    inputs: &Inputs<'_, impl SiteSource>,
     tile: TileKey,
     level: Level,
     evaluation: Evaluation,
     scratch: &mut BakeScratch,
     out: &mut TilePayload,
 ) -> Result<(), BakeError> {
+    let (terrain, roadbed) = (inputs.terrain, inputs.roadbed);
     let BakeScratch {
         seams: seam_scratch,
         window: seams,
@@ -360,6 +431,11 @@ fn bake_tile(
         nearest,
         row_of,
         lifted,
+        sites,
+        pads,
+        classes,
+        edges_near,
+        walls,
     } = scratch;
     let grid = BaseGrid::of(terrain);
     let band = level.band_m(grid.cell_m);
@@ -369,6 +445,11 @@ fn bake_tile(
     let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
     let window = window(rect, band);
     gather_road_seams(roadbed, window, seam_scratch, seams);
+    // Road seams first (indices `0..road_count`, in key order, the rows the texels name), then
+    // the sites' pad seams in key order.
+    let road_count = seams.len();
+    sites.gather(inputs.sites, window);
+    sites.push_pad_seams(seams);
     base.fill(terrain, window);
     let mut stats = BakeStats {
         window_seams: seams.len(),
@@ -389,6 +470,9 @@ fn bake_tile(
         road,
         Some(&mut out.inputs.triangles),
     );
+    sites.rasterize_pads(xs, zs, prune, pads);
+    sites.rasterize_classes(xs, zs, prune, classes);
+    sites.nearest_edges(xs, zs, band, prune, edges_near);
 
     // Sample every lattice point over pass 1's seams, a row's points in one bin together in
     // lanes. A ground sample left below its base is finished by pass 2; every other value is
@@ -426,7 +510,12 @@ fn bake_tile(
                 let height = road[row + i + lane];
                 (height > f32::NEG_INFINITY).then_some(height)
             };
-            if list.is_empty() && (0..run).all(|lane| covering(lane).is_none()) {
+            let pad = |lane: usize| {
+                let site = pads[row + i + lane];
+                (site != NO_SITE).then(|| sites.height(site))
+            };
+            let bare = |lane: usize| covering(lane).is_none() && pad(lane).is_none();
+            if list.is_empty() && (0..run).all(bare) {
                 // Nothing within reach or band and uncovered: `evaluate` returns the base itself,
                 // so the delta is zero and the distance the band, without reading the base.
                 for _ in 0..run {
@@ -444,12 +533,15 @@ fn bake_tile(
             });
             let roads: [Option<f32>; LANES] =
                 std::array::from_fn(|lane| covering(lane.min(run - 1)));
+            let pad_heights: [Option<f64>; LANES] =
+                std::array::from_fn(|lane| pad(lane.min(run - 1)));
             let values: [Value; LANES] = if run == 1 {
                 let value = evaluate(
                     points[0],
                     z,
                     bases[0],
                     roads[0],
+                    pad_heights[0],
                     seams,
                     list.iter().copied(),
                     band,
@@ -461,6 +553,7 @@ fn bake_tile(
                     z,
                     &bases,
                     &roads,
+                    &pad_heights,
                     seams,
                     list.iter().copied(),
                     band,
@@ -473,6 +566,7 @@ fn bake_tile(
                 let (in_band, near_seam) = (value.sdf < band, value.nearest_distance <= spacing);
                 if evaluation != Evaluation::Unpruned
                     && roads[lane].is_none()
+                    && pad_heights[lane].is_none()
                     && value.height < base_m
                 {
                     bin_floor[bin] = bin_floor[bin].min(value.height);
@@ -491,7 +585,7 @@ fn bake_tile(
                         stats.conflicts += 1;
                         stats.seam_conflicts += u32::from(near_seam);
                     }
-                    graded |= delta != 0.0 || in_band;
+                    graded |= delta != 0.0 || in_band || pad_heights[lane].is_some();
                 }
                 out.texels.push([delta, value.sdf as f32, -1.0, 0.0]);
                 nearest.push(value.nearest);
@@ -532,14 +626,64 @@ fn bake_tile(
         }
     }
 
+    // The edge row: the named material edges in key order, and each texel's material word.
+    let edges = sites.edges();
+    row_of.clear();
+    row_of.resize(edges.len(), NO_SEAM);
+    for &(named, _) in edges_near.iter() {
+        if named != NO_SITE {
+            row_of[named as usize] = 0;
+        }
+    }
+    out.edges.clear();
+    for (index, row) in row_of.iter_mut().enumerate() {
+        if *row != NO_SEAM {
+            *row = out.edges.len() as u32;
+            let [ax, az, bx, bz] = edges[index];
+            out.edges.push([
+                (ax - origin[0]) as f32,
+                (az - origin[1]) as f32,
+                (bx - origin[0]) as f32,
+                (bz - origin[1]) as f32,
+            ]);
+        }
+    }
+    let words = classes.iter().zip(edges_near.iter());
+    for (texel, (&class, &(named, _))) in out.texels.iter_mut().zip(words) {
+        let edge = if named == NO_SITE {
+            -1.0
+        } else {
+            row_of[named as usize] as f32
+        };
+        texel[3] = 16.0 * (edge + 1.0) + f32::from(class);
+    }
+    graded |= !out.edges.is_empty() || classes.iter().any(|&class| class != 0);
+
+    // Conflict walls along the road seams, from the seams and the finished samples.
+    let heights = |i: usize, j: usize| {
+        let delta = out.texels[j * xs.len() + i][0];
+        base.at_stops(&columns[i].1, &base.stop(1, zs[j])) + f64::from(delta)
+    };
+    build_walls(
+        seams,
+        road_count,
+        tile,
+        xs,
+        zs,
+        evaluation != Evaluation::Unpruned,
+        heights,
+        walls,
+        &mut out.walls,
+    );
+
     out.tile = tile;
     out.level = level;
     out.samples = [xs.len(), zs.len()];
-    out.edges.clear();
     out.graded = graded;
     out.stats = stats;
     out.inputs.seams.clear();
-    out.inputs.seams.extend(seams.iter().map(Seam::key));
+    out.inputs.seams.extend(seams[..road_count].iter().map(Seam::key));
+    sites.inputs(&mut out.inputs.sites);
     base_revisions(terrain, window, &mut out.inputs.base_revisions);
     let capacity = level.seam_capacity();
     if out.seams.len() > capacity {
@@ -547,6 +691,15 @@ fn bake_tile(
             tile,
             level,
             count: out.seams.len(),
+            capacity,
+        });
+    }
+    let capacity = level.edge_capacity();
+    if out.edges.len() > capacity {
+        return Err(BakeError::EdgeCapacity {
+            tile,
+            level,
+            count: out.edges.len(),
             capacity,
         });
     }

@@ -112,8 +112,20 @@ fn bake(
     level: Level,
     evaluation: Evaluation,
 ) -> Vec<TilePayload> {
+    bake_with(terrain, roadbed, &NoSites, tiles, level, evaluation)
+}
+
+pub(super) fn bake_with(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
+    tiles: &[TileKey],
+    level: Level,
+    evaluation: Evaluation,
+) -> Vec<TilePayload> {
     let mut out = Vec::new();
-    bake_tiles_with(terrain, roadbed, tiles, level, evaluation, &mut out).expect("tiles bake");
+    bake_tiles_with(terrain, roadbed, sites, tiles, level, evaluation, &mut out)
+        .expect("tiles bake");
     out
 }
 
@@ -136,6 +148,23 @@ fn assert_same(a: &TilePayload, b: &TilePayload, what: &str) {
         p.seams.iter().map(|r| r.map(f32::to_bits)).collect()
     };
     assert!(rows(a) == rows(b), "{what}: seam rows of {:?}", a.tile);
+    let edges = |p: &TilePayload| -> Vec<[u32; 4]> {
+        p.edges.iter().map(|r| r.map(f32::to_bits)).collect()
+    };
+    assert!(edges(a) == edges(b), "{what}: edge rows of {:?}", a.tile);
+    let walls = |p: &TilePayload| -> Vec<[u32; 8]> {
+        p.walls
+            .iter()
+            .map(|w| {
+                [w.a, w.b, w.bottom, w.top]
+                    .concat()
+                    .try_into()
+                    .map(|w: [f32; 8]| w.map(f32::to_bits))
+                    .expect("eight words")
+            })
+            .collect()
+    };
+    assert!(walls(a) == walls(b), "{what}: walls of {:?}", a.tile);
     assert_eq!(a.inputs, b.inputs, "{what}: inputs of {:?}", a.tile);
 }
 
@@ -164,13 +193,14 @@ fn conflict_fixtures() -> Vec<(&'static str, RegionGraph, TerrainSystem)> {
 pub(crate) fn assert_exact_pruning(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
     tiles: &[TileKey],
     gl0_reference: &[TileKey],
     name: &str,
 ) -> (u32, u32) {
     let (mut conflicts, mut second_pass) = (0, 0);
     for level in [Level::Gl0, Level::Gl2, Level::Gl3 { step: 2 }] {
-        let reference = bake(terrain, roadbed, tiles, level, Evaluation::Lanes);
+        let reference = bake_with(terrain, roadbed, sites, tiles, level, Evaluation::Lanes);
         conflicts += reference.iter().map(|p| p.stats.conflicts).sum::<u32>();
         second_pass += reference
             .iter()
@@ -180,8 +210,8 @@ pub(crate) fn assert_exact_pruning(
             Level::Gl0 => gl0_reference,
             _ => tiles,
         };
-        assert_lanes_equal_scalar(terrain, roadbed, tiles, level, &reference, name);
-        let full = bake(terrain, roadbed, full_tiles, level, Evaluation::Unpruned);
+        assert_lanes_equal_scalar(terrain, roadbed, sites, tiles, level, &reference, name);
+        let full = bake_with(terrain, roadbed, sites, full_tiles, level, Evaluation::Unpruned);
         for unpruned in &full {
             let pruned = reference
                 .iter()
@@ -191,7 +221,7 @@ pub(crate) fn assert_exact_pruning(
         }
         for workers in [1, 4, 8] {
             let batch = on_workers(workers, || {
-                bake(terrain, roadbed, tiles, level, Evaluation::Lanes)
+                bake_with(terrain, roadbed, sites, tiles, level, Evaluation::Lanes)
             });
             for (pruned, reference) in batch.iter().zip(&reference) {
                 assert_same(
@@ -203,12 +233,12 @@ pub(crate) fn assert_exact_pruning(
         }
         let mut reversed = tiles.to_vec();
         reversed.reverse();
-        let backwards = bake(terrain, roadbed, &reversed, level, Evaluation::Lanes);
+        let backwards = bake_with(terrain, roadbed, sites, &reversed, level, Evaluation::Lanes);
         for (pruned, reference) in backwards.iter().rev().zip(&reference) {
             assert_same(pruned, reference, &format!("{name} {level:?} reversed"));
         }
         for (index, &tile) in tiles.iter().enumerate() {
-            let alone = bake(terrain, roadbed, &[tile], level, Evaluation::Lanes);
+            let alone = bake_with(terrain, roadbed, sites, &[tile], level, Evaluation::Lanes);
             assert_same(
                 &alone[0],
                 &reference[index],
@@ -225,12 +255,13 @@ pub(crate) fn assert_exact_pruning(
 pub(crate) fn assert_lanes_equal_scalar(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
     tiles: &[TileKey],
     level: Level,
     lanes: &[TilePayload],
     name: &str,
 ) {
-    let scalar = bake(terrain, roadbed, tiles, level, Evaluation::Scalar);
+    let scalar = bake_with(terrain, roadbed, sites, tiles, level, Evaluation::Scalar);
     for (lanes, scalar) in lanes.iter().zip(&scalar) {
         assert_same(lanes, scalar, &format!("{name} {level:?} lanes"));
         assert_eq!(lanes.stats, scalar.stats, "{name} {level:?} lanes stats");
@@ -247,7 +278,7 @@ pub(crate) fn assert_lanes_equal_scalar_on_road_tiles(
 ) -> usize {
     let (_, tiles) = road_tiles(roadbed);
     let lanes = bake(terrain, roadbed, &tiles, level, Evaluation::Lanes);
-    assert_lanes_equal_scalar(terrain, roadbed, &tiles, level, &lanes, name);
+    assert_lanes_equal_scalar(terrain, roadbed, &NoSites, &tiles, level, &lanes, name);
     tiles.len()
 }
 
@@ -258,7 +289,7 @@ fn lanes_equal_one_point_at_a_time_on_every_fixture_and_level() {
         let roadbed = compiled(&graph);
         for level in LEVELS {
             let lanes = bake(&terrain, &roadbed, &tiles, level, Evaluation::Lanes);
-            assert_lanes_equal_scalar(&terrain, &roadbed, &tiles, level, &lanes, name);
+            assert_lanes_equal_scalar(&terrain, &roadbed, &NoSites, &tiles, level, &lanes, name);
         }
     }
 }
@@ -304,7 +335,7 @@ fn pruned_bake_equals_every_seam_in_any_batch_order_and_worker_count() {
         // Every seam within the cap at every sample: all 16 tiles at `GL2`, the two tiles at
         // the junction and between the conflicting roads at `GL0`.
         let gl0 = [TileKey { x: -1, z: -1 }, TileKey { x: 0, z: 0 }];
-        let (c, s) = assert_exact_pruning(&terrain, &roadbed, &tiles, &gl0, name);
+        let (c, s) = assert_exact_pruning(&terrain, &roadbed, &NoSites, &tiles, &gl0, name);
         conflicts += c;
         second_pass += s;
     }
@@ -443,6 +474,7 @@ fn gl0_triangles_pass_through_the_seam_height_across_straight_edges() {
     let surface = GradedSurface {
         terrain: &terrain,
         roadbed: &roadbed,
+        sites: &NoSites,
     };
     let mut scratch = QueryScratch::default();
     let (mut pieces, mut segments) = (Vec::new(), Vec::new());
@@ -486,7 +518,7 @@ fn the_graded_ground_never_lies_below_a_seam() {
         {
             let [x, h, z] = seam.a;
             let all = (0..seams.len() as u32).map(super::sample::Listed::unbounded);
-            let value = evaluate(x, z, base.at(x, z), None, &seams, all, 2.0);
+            let value = evaluate(x, z, base.at(x, z), None, None, &seams, all, 2.0);
             assert!(
                 value.height >= h,
                 "{name}: ground {} below seam {h}",
@@ -509,6 +541,7 @@ fn queries_answer_from_the_baked_lattice() {
         let surface = GradedSurface {
             terrain: &terrain,
             roadbed: &roadbed,
+            sites: &NoSites,
         };
         let mut scratch = QueryScratch::default();
         let tile = TileKey { x: -1, z: 0 };
@@ -586,6 +619,7 @@ fn road_changes_select_every_tile_they_alter() {
                 &terrain,
                 &roadbed,
                 &edited,
+                &NoSites,
                 &changes,
                 level,
                 &mut SelectScratch::default(),
@@ -623,7 +657,8 @@ fn benchmark_graded_tiles() {
             let mut totals = Vec::new();
             for run in 0..55 {
                 let start = Instant::now();
-                bake_tiles(&terrain, &roadbed, &tiles, level, &mut out).expect("tiles bake");
+                bake_tiles(&terrain, &roadbed, &NoSites, &tiles, level, &mut out)
+                    .expect("tiles bake");
                 if run >= 5 {
                     totals.push(start.elapsed().as_secs_f64() * 1e3);
                 }
@@ -635,6 +670,7 @@ fn benchmark_graded_tiles() {
                 bake_tiles_with(
                     &terrain,
                     &roadbed,
+                    &NoSites,
                     &[tile],
                     level,
                     Evaluation::Lanes,
@@ -684,6 +720,7 @@ fn benchmark_graded_point_queries() {
         let surface = GradedSurface {
             terrain: &terrain,
             roadbed: &roadbed,
+            sites: &NoSites,
         };
         let mut scratch = QueryScratch::default();
         let points: Vec<(f64, f64)> = (0..2_000)
@@ -717,7 +754,7 @@ fn benchmark_graded_point_queries() {
             surface.surface_height_at(x, z, &mut scratch)
         });
         time("mask", &mut |x, z| {
-            f64::from(surface.mask_at(x, z, &mut scratch) as u8)
+            f64::from(u8::from(surface.mask_at(x, z, &mut scratch) == GroundClass::Graded))
         });
         time("normal", &mut |x, z| {
             surface.normal_at(x, z, &mut scratch)[1]
@@ -789,12 +826,13 @@ fn benchmark_graded_tiles_locality() {
                 &terrain,
                 &roadbed,
                 &edited,
+                &NoSites,
                 &changes,
                 Level::Gl0,
                 &mut scratch,
                 &mut dirty,
             );
-            bake_tiles(&terrain, &edited, &dirty, Level::Gl0, &mut out).expect("bakes");
+            bake_tiles(&terrain, &edited, &NoSites, &dirty, Level::Gl0, &mut out).expect("bakes");
             if run >= 2 {
                 times.push(start.elapsed().as_secs_f64() * 1e3);
             }
@@ -832,6 +870,7 @@ pub(crate) fn graded_stage(
     terrain: &TerrainSystem,
     before: &RoadbedSystem,
     after: &RoadbedSystem,
+    sites: &impl SiteSource,
     changes: &crate::simulation::network::roadbed::TerrainChanges,
 ) -> serde_json::Value {
     let (mut tiles, mut payloads, mut scratch) = (Vec::new(), Vec::new(), SelectScratch::default());
@@ -842,22 +881,23 @@ pub(crate) fn graded_stage(
             terrain,
             before,
             after,
+            sites,
             changes,
             Level::Gl0,
             &mut scratch,
             &mut tiles,
         );
         let selected = begin.elapsed().as_secs_f64() * 1e3;
-        bake_tiles(terrain, after, &tiles, Level::Gl0, &mut payloads)
+        bake_tiles(terrain, after, sites, &tiles, Level::Gl0, &mut payloads)
             .expect("the edit's tiles bake");
         runs.push((begin.elapsed().as_secs_f64() * 1e3, selected));
     }
     runs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let (stage_ms, select_ms) = runs[3];
-    let changed_tiles = assert_selection_covers(terrain, before, after, changes, &tiles);
+    let changed_tiles = assert_selection_covers(terrain, before, after, sites, changes, &tiles);
     // T20 (a): an undo record keeps the tiles the edit replaces, one `GL0` slot (the texels with
     // apron and the rows at capacity, terrain.md "Data") per selected tile graded before it.
-    let replaced = bake(terrain, before, &tiles, Level::Gl0, Evaluation::Lanes);
+    let replaced = bake_with(terrain, before, sites, &tiles, Level::Gl0, Evaluation::Lanes);
     let replaced = replaced.iter().filter(|payload| payload.graded);
     let undo_bytes: usize = replaced
         .clone()
@@ -884,6 +924,8 @@ pub(crate) fn graded_stage(
         "listed_per_sample": stats.clone().map(|s| s.listed).sum::<u64>() as f64 / samples,
         "second_pass_share": stats.clone().map(|s| u64::from(s.second_pass_samples)).sum::<u64>() as f64 / samples,
         "row_seams_max": payloads.iter().map(|p| p.seams.len()).max(),
+        "row_edges_max": payloads.iter().map(|p| p.edges.len()).max(),
+        "wall_faces": payloads.iter().map(|p| p.walls.len()).sum::<usize>(),
         "conflicts": stats.clone().map(|s| s.conflicts).sum::<u32>(),
         "seam_conflicts": stats.map(|s| s.seam_conflicts).sum::<u32>(),
         "digest": format!("{:016x}", crate::debug::work::debug_hash(&bits)),
@@ -897,6 +939,7 @@ fn assert_selection_covers(
     terrain: &TerrainSystem,
     before: &RoadbedSystem,
     after: &RoadbedSystem,
+    sites: &impl SiteSource,
     changes: &crate::simulation::network::roadbed::TerrainChanges,
     selected: &[TileKey],
 ) -> usize {
@@ -931,8 +974,8 @@ fn assert_selection_covers(
     let tiles: Vec<TileKey> = (first.x..=last.x)
         .flat_map(|x| (first.z..=last.z).map(move |z| TileKey { x, z }))
         .collect();
-    let old = bake(terrain, before, &tiles, Level::Gl0, Evaluation::Lanes);
-    let new = bake(terrain, after, &tiles, Level::Gl0, Evaluation::Lanes);
+    let old = bake_with(terrain, before, sites, &tiles, Level::Gl0, Evaluation::Lanes);
+    let new = bake_with(terrain, after, sites, &tiles, Level::Gl0, Evaluation::Lanes);
     let mut changed = 0;
     for (old, new) in old.iter().zip(&new) {
         if texel_bits(old) != texel_bits(new) {
@@ -954,12 +997,14 @@ fn assert_selection_covers(
 pub(crate) fn graded_census(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
     level: Level,
 ) -> serde_json::Value {
     let (seams, tiles) = road_tiles(roadbed);
     let mut out = Vec::new();
     let (mut graded, mut conflicts, mut seam_conflicts) = (0usize, 0u64, 0u64);
     let (mut row_max, mut window_max, mut reach_max) = (0usize, 0usize, 0.0f64);
+    let (mut edge_max, mut wall_faces) = (0usize, 0usize);
     let (mut candidates, mut samples, mut reach_sum, mut window_sum) = (0u64, 0u64, 0.0, 0usize);
     let (mut second_samples, mut second_candidates, mut listed) = (0u64, 0u64, 0u64);
     // The tiles with the most second-pass samples, for the exactness test's Kuopio block.
@@ -967,7 +1012,7 @@ pub(crate) fn graded_census(
     let mut overflow = 0usize;
     let start = Instant::now();
     for batch in tiles.chunks(64) {
-        if let Err(error) = bake_tiles(terrain, roadbed, batch, level, &mut out) {
+        if let Err(error) = bake_tiles(terrain, roadbed, sites, batch, level, &mut out) {
             overflow += 1;
             eprintln!("graded census: {error:?}");
         }
@@ -977,6 +1022,8 @@ pub(crate) fn graded_census(
             conflicts += u64::from(stats.conflicts);
             seam_conflicts += u64::from(stats.seam_conflicts);
             row_max = row_max.max(payload.seams.len());
+            edge_max = edge_max.max(payload.edges.len());
+            wall_faces += payload.walls.len();
             window_max = window_max.max(stats.window_seams);
             reach_max = reach_max.max(stats.reach_max_m);
             reach_sum += stats.reach_sum_m;
@@ -994,7 +1041,8 @@ pub(crate) fn graded_census(
     serde_json::json!({
         "level": format!("{level:?}"), "seams": seams, "tiles": tiles.len(),
         "graded": graded, "conflicts": conflicts, "seam_conflicts": seam_conflicts,
-        "row_seams_max": row_max, "window_seams_max": window_max, "reach_max_m": reach_max,
+        "row_seams_max": row_max, "row_edges_max": edge_max, "wall_faces": wall_faces,
+        "window_seams_max": window_max, "reach_max_m": reach_max,
         "reach_mean_m": reach_sum / window_sum.max(1) as f64,
         "seams_per_sample": candidates as f64 / samples.max(1) as f64,
         "listed_per_sample": listed as f64 / samples.max(1) as f64,
@@ -1192,8 +1240,12 @@ pub(crate) fn dump_site(
         .flat_map(|tx| (first.z..=last.z).map(move |tz| TileKey { x: tx, z: tz }))
         .collect();
     let mut out = Vec::new();
-    bake_tiles(terrain, roadbed, &tiles, Level::Gl0, &mut out).expect("tiles bake");
-    let surface = GradedSurface { terrain, roadbed };
+    bake_tiles(terrain, roadbed, &NoSites, &tiles, Level::Gl0, &mut out).expect("tiles bake");
+    let surface = GradedSurface {
+        terrain,
+        roadbed,
+        sites: &NoSites,
+    };
     let mut scratch = QueryScratch::default();
     let mut samples = Vec::new();
     let (mut xs, mut zs) = (Vec::new(), Vec::new());

@@ -1924,7 +1924,7 @@ impl BuildingAllocator {
         self.push_building_site_client(building_idx, zone_cell_m);
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
-        self.record_building_site_change(building_idx, self.site_dirty_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_change(building_idx));
         self.record_building_changes([building_idx]);
         self.dirty = true;
         self.mark_index_stale();

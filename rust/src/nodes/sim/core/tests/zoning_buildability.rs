@@ -342,20 +342,21 @@ fn hillside_houses() -> SimCore {
     core
 }
 
-// The refined terrain patches after the hillside houses.
+// The graded terrain after the hillside houses (`TERRAIN-07-C`, re-pointed from the refined CDT
+// patches): every site's tiles bake without errors at every level, the pads hold their support
+// heights bitwise and the yards take the partition's materials.
 #[test]
-#[ignore = "TERRAIN-07: refined CDT patches of the legacy terrain pipeline"]
 fn hillside_houses_terrain_builds_clean() {
     let mut core = hillside_houses();
-    let patches = core.collect_refined_terrain_patch_build_inputs(2.0);
-    for patch in SimCore::build_refined_terrain_patch_cache_entries(patches) {
-        assert!(
-            crate::nodes::simulation_node::SimulationNode::cached_refined_cdt_failure_label(&patch)
-                .is_none(),
-            "terrain failed: {:?}",
-            crate::nodes::simulation_node::SimulationNode::cached_refined_cdt_failure_label(&patch)
-        );
-    }
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    use crate::simulation::terrain::graded::site_tests::assert_allocator_sites_bake;
+    let (baked, pads, _) = assert_allocator_sites_bake(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+    );
+    assert!(baked > 0 && pads > 1_000, "{baked} tiles, {pads} pad samples");
 }
 
 #[test]

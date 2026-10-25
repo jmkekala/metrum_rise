@@ -14,10 +14,12 @@ use crate::simulation::terrain::TerrainSystem;
 /// No seam index.
 pub(super) const NO_SEAM: u32 = u32::MAX;
 
-/// The class of a point, in the spec's order: a road top triangle covers it, or it is ground.
+/// The class of a point, in the spec's order: a road top triangle covers it, a site's support
+/// footprint holds it (`TERRAIN-07-C`), or it is ground.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Class {
     Road,
+    Pad,
     Ground,
 }
 
@@ -64,36 +66,41 @@ impl Listed {
 }
 
 /// Evaluates the graded terrain at the world point `(x, z)` with base `base`, `road` the
-/// highest covering road top triangle's height (`None` uncovered), from the candidate seams
-/// (into `seams`), until no later candidate can change the value or the nearest seam. Seams
-/// beyond the cap are left out. Only road seams name the nearest seam, within `band` metres.
-/// The value and the nearest-seam order are order-free, so the result does not depend on the
-/// candidates' order. One lane of [`evaluate_lanes`]. `O(candidates)`.
+/// highest covering road top triangle's height (`None` uncovered) and `pad` the support height
+/// of the first site footprint holding it (`None` outside every footprint), from the
+/// candidate seams (into `seams`), until no later candidate can change the value or the
+/// nearest seam. Seams beyond the cap are left out. Only road seams name the nearest seam,
+/// within `band` metres. The value and the nearest-seam order are order-free, so the result
+/// does not depend on the candidates' order. One lane of [`evaluate_lanes`]. `O(candidates)`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate(
     x: f64,
     z: f64,
     base: f64,
     road: Option<f32>,
+    pad: Option<f64>,
     seams: &[Seam],
     candidates: impl Iterator<Item = Listed>,
     band: f64,
 ) -> Value {
-    let [value] = evaluate_lanes(&[x], z, &[base], &[road], seams, candidates, band);
+    let [value] = evaluate_lanes(&[x], z, &[base], &[road], &[pad], seams, candidates, band);
     value
 }
 
-/// [`evaluate`] at `N` points `(xs[lane], z)` of one lattice row at once, with bases `bases`
-/// and covering road heights `roads`, over one candidate list. Each lane takes the candidates
-/// until its own early exit, and later ones no longer touch it, so every lane equals
-/// `evaluate` at its point bitwise, its cones and count included. Each candidate's seam is
+/// [`evaluate`] at `N` points `(xs[lane], z)` of one lattice row at once, with bases `bases`,
+/// covering road heights `roads` and pad heights `pads`, over one candidate list. Each lane takes
+/// the candidates until its own early exit, and later ones no longer touch it, so every lane
+/// equals `evaluate` at its point bitwise, its cones and count included. Each candidate's seam is
 /// evaluated for all lanes at once ([`Seam::at_lanes`]; one lane takes [`Seam::at`], the same
 /// bits), with the cone bounds updated by selects, so the arithmetic compiles to vector
 /// instructions. `O(candidates x N)`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate_lanes<const N: usize>(
     xs: &[f64; N],
     z: f64,
     bases: &[f64; N],
     roads: &[Option<f32>; N],
+    pads: &[Option<f64>; N],
     seams: &[Seam],
     candidates: impl Iterator<Item = Listed>,
     band: f64,
@@ -102,9 +109,11 @@ pub(super) fn evaluate_lanes<const N: usize>(
     // Per lane the nearest road seam within the band: index, distance and height.
     let mut nearest = [None::<(u32, f64, f64)>; N];
     let (mut live, mut evaluated) = ([true; N], [0u32; N]);
-    // A ground lane's base; a covered lane's value reads only the nearest road seam.
-    let ground: [Option<f64>; N] =
-        std::array::from_fn(|lane| roads[lane].is_none().then_some(bases[lane]));
+    // A ground lane's base; a covered or pad lane's value reads only the nearest road seam (the
+    // inside rule, or nothing: a pad is its support height).
+    let ground: [Option<f64>; N] = std::array::from_fn(|lane| {
+        (roads[lane].is_none() && pads[lane].is_none()).then_some(bases[lane])
+    });
     for Listed {
         index,
         distance,
@@ -186,6 +195,7 @@ pub(super) fn evaluate_lanes<const N: usize>(
         value(
             bases[lane],
             roads[lane],
+            pads[lane],
             cones,
             nearest[lane],
             evaluated[lane],
@@ -211,26 +221,27 @@ fn nearer(
 }
 
 // A sample's value from its evaluated cones and nearest road seam within the band (`(index,
-// distance, height)`): the inside rule where a road covers it, the overlap rule elsewhere.
+// distance, height)`): the inside rule where a road covers it, the support height in a pad,
+// the overlap rule elsewhere.
 fn value(
     base: f64,
     road: Option<f32>,
+    pad: Option<f64>,
     cones: Cones,
     nearest: Option<(u32, f64, f64)>,
     evaluated: u32,
     band: f64,
 ) -> Value {
-    let class = if road.is_some() {
-        Class::Road
-    } else {
-        Class::Ground
-    };
-    let height = match (class, road) {
-        (Class::Road, Some(road)) => match nearest.filter(|&(_, d, _)| d < INSIDE_REACH_M) {
-            Some((_, d, h)) => inside(base, h, d),
-            None => inside_deep(base, f64::from(road)),
-        },
-        _ => cones.ground(base),
+    let (class, height) = match (road, pad) {
+        (Some(road), _) => (
+            Class::Road,
+            match nearest.filter(|&(_, d, _)| d < INSIDE_REACH_M) {
+                Some((_, d, h)) => inside(base, h, d),
+                None => inside_deep(base, f64::from(road)),
+            },
+        ),
+        (None, Some(pad)) => (Class::Pad, pad),
+        (None, None) => (Class::Ground, cones.ground(base)),
     };
     let distance = nearest.map_or(band, |(_, d, _)| d);
     Value {

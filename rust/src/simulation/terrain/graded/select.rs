@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Dirty tile selection (`TERRAIN-07`): the tiles a road change or a base edit can alter, from
-//! the changed seams' own reaches, so cost follows the edit and never the city.
+//! Dirty tile selection (`TERRAIN-07`): the tiles a road change, a site change or a base edit
+//! can alter, from the changed seams' own reaches, so cost follows the edit and never the city.
 
 use super::grade::{CAP_M, TIE_IN_SLOPE, lift_reach};
 use super::prune::{BinGrid, bin_side, box_distance};
 use super::sample::{BaseGrid, BaseWindow};
 use super::seams::{Seam, road_seam};
+use super::sites::{SiteBuffer, SiteSource, box_seam};
 use super::tile::{Level, TileKey, grown, lattice, meets, window};
+use crate::simulation::buildings::allocator::SiteChange;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
@@ -34,6 +36,8 @@ struct CandidateScratch {
     bins: BinGrid,
     xs: Vec<f64>,
     zs: Vec<f64>,
+    sites: SiteBuffer,
+    pads: Vec<Seam>,
     // The candidate's lattice rectangle.
     rect: [f64; 4],
 }
@@ -47,19 +51,21 @@ thread_local! {
 /// - every tile where a changed segment may be listed by either pass of the bake's pruning:
 ///   pass 1 by the bake's own bin test (its cone may bind a bin's base, or it lies within the
 ///   band), pass 2 where its lower bound may rise above the tile's floor, the lowest
-///   `h + k D` over the window's seams before and after the change (`D` the distance from a
-///   seam's box to the lattice), which lies under every first-pass ground below the base; so a
-///   removed seam counts;
+///   `h + k D` over the window's seams before and after the change, the sites' pad seams
+///   among them (`D` the distance from a seam's box to the lattice), which lies under every
+///   first-pass ground below the base; so a removed seam counts;
 /// - every tile whose lattice meets a changed piece and whose covering top triangles differ
 ///   between the two roadbeds (coverage and the road surface under the deep inside rule), so a
 ///   split trunk's far half, rebuilt bit for bit, marks nothing.
 ///
 /// A superset is safe: rebaking an unaffected tile reproduces its bits. `O(changed segments x
 /// tiles within the cap of each)` plus one window per candidate tile, in parallel.
+#[allow(clippy::too_many_arguments)]
 pub fn dirty_tiles_for_road_changes(
     terrain: &TerrainSystem,
     before: &RoadbedSystem,
     after: &RoadbedSystem,
+    sites: &impl SiteSource,
     changes: &TerrainChanges,
     level: Level,
     scratch: &mut SelectScratch,
@@ -93,8 +99,78 @@ pub fn dirty_tiles_for_road_changes(
             .par_iter()
             .map(|&tile| {
                 CANDIDATE.with_borrow_mut(|candidate| {
-                    reached(terrain, after, changed, tile, level, &grid, candidate)
+                    reached(terrain, after, sites, changed, tile, level, &grid, candidate)
                         || covering_triangles_changed(before, after, pieces, candidate)
+                })
+            })
+            .collect_into_vec(&mut scratch.dirty);
+    });
+    out.extend(
+        scratch
+            .candidates
+            .iter()
+            .zip(&scratch.dirty)
+            .filter_map(|(&tile, &dirty)| dirty.then_some(tile)),
+    );
+}
+
+/// The tiles at `level` whose bake the site changes `changes` can alter (`TERRAIN-07-C`), sorted
+/// and unique, into `out`; `sites` holds the sites after the changes, `roadbed` the roads:
+/// - every tile whose lattice lies within the band of a change's bounds: the `Pad` class, the
+///   material class and the nearest material edge change only there;
+/// - every tile where a changed site's pad seams may be listed by either pass of the bake's
+///   pruning, as for a changed road segment, each change standing for its pad seams as one seam
+///   spanning its bounds at its support height ([`box_seam`]): the passes' tests read a seam's
+///   box and height range only, and every pad seam's box lies in the bounds, so a tile one of
+///   them may change passes too.
+///
+/// A placement passes the new site, a removal the old one, a rebuild both. A superset is safe.
+/// `O(changes x tiles within the cap of each)` plus one window per candidate tile, in
+/// parallel.
+#[allow(clippy::too_many_arguments)]
+pub fn dirty_tiles_for_site_changes(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
+    changes: &[SiteChange],
+    level: Level,
+    scratch: &mut SelectScratch,
+    out: &mut Vec<TileKey>,
+) {
+    out.clear();
+    let grid = BaseGrid::of(terrain);
+    let band = level.band_m(grid.cell_m);
+    let apron = level.spacing_m(grid.cell_m);
+    scratch.changed.clear();
+    scratch.changed.extend(changes.iter().map(|change| {
+        box_seam(
+            change.bounds.map(f64::from),
+            f64::from(change.support_height_m),
+        )
+    }));
+    scratch.candidates.clear();
+    for seam in &scratch.changed {
+        push_tiles(
+            grown(seam.box_xz(), CAP_M.max(band) + apron),
+            &mut scratch.candidates,
+        );
+    }
+    sort_unique(&mut scratch.candidates);
+    let changed = &scratch.changed;
+    crate::thread_pools::install(|| {
+        scratch
+            .candidates
+            .par_iter()
+            .map(|&tile| {
+                CANDIDATE.with_borrow_mut(|candidate| {
+                    lattice(terrain, tile, level, &mut candidate.xs, &mut candidate.zs);
+                    let (xs, zs) = (&candidate.xs, &candidate.zs);
+                    let rect = grown(
+                        [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]],
+                        band + PIECE_PAD_M,
+                    );
+                    changed.iter().any(|seam| meets(seam.box_xz(), rect))
+                        || reached(terrain, roadbed, sites, changed, tile, level, &grid, candidate)
                 })
             })
             .collect_into_vec(&mut scratch.dirty);
@@ -190,13 +266,17 @@ pub fn dirty_tiles_for_base_change(
 
 // Whether a changed seam may change a value of the tile's lattice: the bake's pass 1 lists it
 // in a bin of the tile, or its lower bound may rise above the tile's floor, the lowest
-// `h_lo + k D` over the window's seams of both roadbeds (`after`'s and the changed ones): at a
-// sample whose first-pass ground lies below the base that ground is at least the upper bound
-// `U >= h + k d` of some seam there, so pass 2 lists no seam whose lower bound stays below the
-// floor. `O(window seams + changed seams x blocks)`.
+// `h_lo + k D` over the window's seams before and after the change (`roadbed`'s and the sites'
+// pad seams, which hold one side of the change, and the changed ones): at a sample whose
+// first-pass ground lies below the base that ground is at least the upper bound `U >= h + k d`
+// of some seam there, so pass 2 lists no seam whose lower bound stays below the floor. A site
+// source that cannot answer leaves the floor at `-inf`, which reaches every changed seam.
+// `O(window seams + changed seams x blocks)`.
+#[allow(clippy::too_many_arguments)]
 fn reached(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
     changed: &[Seam],
     tile: TileKey,
     level: Level,
@@ -223,6 +303,16 @@ fn reached(
     roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b]| {
         floor = floor.min(lowest(&road_seam(a, b)));
     });
+    scratch.pads.clear();
+    if sites.ready() {
+        scratch.sites.gather(sites, window);
+        scratch.sites.push_pad_seams(&mut scratch.pads);
+        for seam in &scratch.pads {
+            floor = floor.min(lowest(seam));
+        }
+    } else {
+        floor = f64::NEG_INFINITY;
+    }
     for seam in changed.iter().filter(in_window) {
         floor = floor.min(lowest(seam));
     }
