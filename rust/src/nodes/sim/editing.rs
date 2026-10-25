@@ -1908,8 +1908,9 @@ impl SimCore {
     // it, compiles the closure of `edges`, `nodes` and the edges `apply` returns into a scratch
     // roadbed, and puts the graph back from a local checkpoint of `edges` and `nodes`, which must
     // cover every record `apply` changes. `Ok` with that checkpoint, the edit's undo record, when
-    // the closure compiles and keeps clear of fields and painted cells; nothing outside the graph
-    // has changed either way. O(local records + closure pieces).
+    // the closure compiles, keeps clear of fields and painted cells and steepens no profile past
+    // the 1:3 maximum grade; nothing outside the graph has changed either way. O(local records +
+    // closure pieces).
     fn try_graph_edit(
         &mut self,
         edges: &HashSet<usize>,
@@ -1919,11 +1920,72 @@ impl SimCore {
         let checkpoint = self
             .region_graph
             .capture_undo_for_local_topology(edges.clone(), nodes.clone());
+        let grades_before: std::collections::HashMap<usize, f32> = edges
+            .iter()
+            .filter(|&&edge| edge < self.region_graph.edge_count())
+            .map(|&edge| (edge, self.edge_grade(edge)))
+            .collect();
         let changed = apply(self);
         let dirty: HashSet<usize> = edges.iter().copied().chain(changed).collect();
-        let refusal = self.closure_refusal(&dirty, nodes);
+        let refusal = self
+            .closure_refusal(&dirty, nodes)
+            .or_else(|| self.steepened_profile(&dirty, &grades_before));
         self.region_graph.restore_undo_delta_local(&checkpoint);
         refusal.map_or(Ok(checkpoint), Err)
+    }
+
+    // The grade of one edge's profile by the one grade (`grade::steepest_grade`); zero
+    // without a graded segment.
+    fn edge_grade(&self, edge: usize) -> f32 {
+        crate::simulation::network::grade::steepest_grade(
+            crate::simulation::network::validate::centreline(self.region_graph.edge(edge)),
+        )
+        .map_or(0.0, |steepest| steepest.grade)
+    }
+
+    // The first of `edges`, in id order, whose profile a node edit made illegally steep
+    // (`ROAD-68` open question 37): above the 1:3 maximum and steeper than `before` held it. A
+    // profile already that steep is the existing road's, so editing beside it stays possible.
+    // O(points on `edges`).
+    fn steepened_profile(
+        &self,
+        edges: &HashSet<usize>,
+        before: &std::collections::HashMap<usize, f32>,
+    ) -> Option<RoadRejection> {
+        use crate::simulation::network::validate::{
+            RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, validate_edge,
+        };
+        let graph = &self.region_graph;
+        let mut edges: Vec<usize> = edges
+            .iter()
+            .copied()
+            .filter(|&edge| edge < graph.edge_count())
+            .collect();
+        edges.sort_unstable();
+        let limits = RoadGeometryLimits::default();
+        let mut found = Vec::new();
+        edges.into_iter().find_map(|edge| {
+            found.clear();
+            validate_edge(graph, edge, &limits, &mut found);
+            let old = before.get(&edge).copied().unwrap_or(-1.0);
+            found.iter().find_map(|violation| match *violation {
+                RoadGeometryViolation::Grade {
+                    measured,
+                    limit,
+                    tier: RoadGeometryTier::Illegal,
+                    ..
+                } if measured > old => Some(RoadRejection::new(
+                    "road_too_steep",
+                    format!(
+                        "edge {edge} would climb at {:.0}%, steeper than the {:.0}% (1:3) \
+                         maximum grade",
+                        measured * 100.0,
+                        limit * 100.0
+                    ),
+                )),
+                _ => None,
+            })
+        })
     }
 
     // Why the pieces of a node-dirtying edit cannot publish (`ROAD-68` open questions 2 and

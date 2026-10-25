@@ -219,7 +219,8 @@ fn hillside_crossing_keeps_existing_corridor_authority_after_splits() {
             for x in 0..256 {
                 fixture
                     .terrain
-                    .set_height(x, z, x as f32 * 0.6 / HEIGHT_SCALE);
+                    // 30%: within the 1:3 maximum grade (`ROAD-68` open question 37).
+                    .set_height(x, z, x as f32 * 0.3 / HEIGHT_SCALE);
             }
         }
     }

@@ -866,7 +866,73 @@ impl RegionGraph {
                 };
             }
         }
+        Self::build_within_grade(&mut points, &blends);
         points
+    }
+
+    // Builds the blends of a derived profile steeper than 33% within 33%, or else within the 1:3
+    // maximum, where their ends allow it (`ROAD-68` open question 37): a blend that eases an arm
+    // onto a flatter plane can climb faster than either. Only the points each pinned end blends
+    // (past its mouth knot, up to its blend end) move, to the heights nearest their blended ones
+    // (`grade::construct_within_grade`); the plane stretches and the control polyline beyond the
+    // blends stay, so a steep control (a terrain sync, a saved legacy profile) is not this
+    // solve's to rebuild. A profile within 33% is left as it is; one whose blend ends force a
+    // steeper grade is left for placement to refuse (`road_too_steep`). O(points).
+    fn build_within_grade(points: &mut [Vector3], blends: &[Option<(EndpointPin, f32)>; 2]) {
+        use crate::simulation::network::grade::{
+            ROAD_GRADE_BUILT, ROAD_GRADE_MAX, construct_within_grade, grade_envelope,
+            steepest_grade,
+        };
+        if points.len() < 3
+            || blends.iter().all(Option::is_none)
+            || steepest_grade(points).is_none_or(|steepest| steepest.grade <= ROAD_GRADE_BUILT)
+        {
+            return;
+        }
+        let runs: Vec<f32> = points
+            .windows(2)
+            .map(|pair| Self::edge_profile_point_distance_m(pair[0], pair[1]))
+            .collect();
+        // The stretch of each end its blend moves, measured as the blend above measures it: past
+        // the mouth knot, which `ensure_profile_support` reuses within its 1 cm, up to the blend's
+        // end.
+        let blended_m = blends.map(|blend| {
+            blend.map(|(pin, blend_end_m)| {
+                (pin.hard_zone_m + JUNCTION_PROFILE_SUPPORT_EPS_M, blend_end_m)
+            })
+        });
+        let from = [true, false].map(|at_start| Self::profile_endpoint_distances(points, at_start));
+        let bounds: Vec<(f32, f32)> = points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let blended = |end: usize| {
+                    blended_m[end].is_some_and(|(held_m, end_m)| {
+                        from[end][index] > held_m && from[end][index] < end_m
+                    })
+                };
+                let held = index == 0 || index + 1 == points.len() || !(blended(0) || blended(1));
+                if held {
+                    (point.y, point.y)
+                } else {
+                    (f32::NEG_INFINITY, f32::INFINITY)
+                }
+            })
+            .collect();
+        let Some((max_grade, envelope)) = [ROAD_GRADE_BUILT, ROAD_GRADE_MAX]
+            .into_iter()
+            .find_map(|grade| {
+                let mut envelope = bounds.clone();
+                grade_envelope(&mut envelope, &runs, grade).then_some((grade, envelope))
+            })
+        else {
+            return;
+        };
+        let mut heights: Vec<f32> = points.iter().map(|point| point.y).collect();
+        construct_within_grade(&mut heights, &envelope, &runs, max_grade);
+        for (point, height) in points.iter_mut().zip(heights) {
+            point.y = height;
+        }
     }
 
     fn endpoint_profile_support_delta_m(

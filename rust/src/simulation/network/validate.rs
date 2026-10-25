@@ -8,18 +8,15 @@
 //! rather than changing the alignment at the node. Road and foot edges are checked; other
 //! transit modes have different design constraints and are excluded.
 
+use super::grade::{ROAD_GRADE_MAX, ROAD_GRADE_WARNING, steepest_grade};
 use super::graph::{Edge, RegionGraph};
 use super::roadbed::visual_roadbed_half_width_m;
 use super::types::{EdgeClass, TransitType};
 use godot::prelude::Vector3;
 use rayon::prelude::*;
 
-// Ordinary-street design target supplied by the road validator specification.
-const STANDARD_DESIGN_GRADE: f32 = 0.10;
 // Bridge/tunnel design target supplied by the road validator specification.
 const STRUCTURAL_DESIGN_GRADE: f32 = 0.06;
-// Matches ROAD_PROFILE_MAX_GRADE, without the solver's terrain-slope relaxation.
-const ILLEGAL_GRADE: f32 = 0.16;
 // Matches ROAD_PROFILE_MAX_GRADE_CHANGE_PER_M in surface/edge/input.rs.
 const DESIGN_GRADE_CHANGE_PER_M: f32 = 0.018;
 // Hard vertical-curvature bound: the specification's 0.05 with the ~20% leeway placement allows
@@ -102,15 +99,15 @@ impl Default for RoadGeometryLimits {
     fn default() -> Self {
         Self {
             standard_grade: RoadGeometryThreshold {
-                illegal: ILLEGAL_GRADE,
-                design: STANDARD_DESIGN_GRADE,
+                illegal: ROAD_GRADE_MAX,
+                design: ROAD_GRADE_WARNING,
             },
             bridge_grade: RoadGeometryThreshold {
-                illegal: ILLEGAL_GRADE,
+                illegal: ROAD_GRADE_MAX,
                 design: STRUCTURAL_DESIGN_GRADE,
             },
             tunnel_grade: RoadGeometryThreshold {
-                illegal: ILLEGAL_GRADE,
+                illegal: ROAD_GRADE_MAX,
                 design: STRUCTURAL_DESIGN_GRADE,
             },
             grade_change_per_m: RoadGeometryThreshold {
@@ -279,15 +276,11 @@ pub fn validate_edge(
     if !is_road(edge) {
         return;
     }
-    let mut worst_grade = (0.0, 0.0);
     let mut worst_change = (0.0, 0.0);
     let points = centreline(edge);
     let half_width_m = visual_roadbed_half_width_m(edge);
     let smallest_radius = smallest_turning_radius(points, RADIUS_WINDOW_HALF_WIDTHS * half_width_m);
-    visit_grades(points, |station, length, grade, change| {
-        if grade.abs() > worst_grade.0 {
-            worst_grade = (grade.abs(), station + 0.5 * length);
-        }
+    visit_grades(points, |station, _, _, change| {
         if change > worst_change.0 {
             worst_change = (change, station);
         }
@@ -297,11 +290,13 @@ pub fn validate_edge(
         EdgeClass::Bridge => &limits.bridge_grade,
         EdgeClass::Tunnel => &limits.tunnel_grade,
     };
-    if let Some((limit, tier)) = upper_violation(worst_grade.0, grade_bounds) {
+    if let Some(steepest) = steepest_grade(points)
+        && let Some((limit, tier)) = upper_violation(steepest.grade, grade_bounds)
+    {
         output.push(RoadGeometryViolation::Grade {
             edge_id,
-            station_m: worst_grade.1,
-            measured: worst_grade.0,
+            station_m: steepest.station_m + 0.5 * steepest.length_m,
+            measured: steepest.grade,
             limit,
             tier,
         });

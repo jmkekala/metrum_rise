@@ -778,6 +778,50 @@ fn large_paved_yards_remain_flat_over_hills_and_depressions() {
     }
 }
 
+// The roads the Kuopio yard tests build on, by place rather than edge id, so a re-recorded or
+// replaced reference save keeps them (`ROAD-68` open question 38): each road's midpoint and
+// direction on the network recorded 2026-09-08, whose edges 3, 9, 15 and 18 they were.
+const KUOPIO_YARD_ROADS: [([f32; 2], [f32; 2]); 4] = [
+    ([68.694, -106.08], [-0.8815, 0.4722]),
+    ([558.77, 196.18], [-0.4818, 0.8763]),
+    ([390.827, -398.329], [-0.042, -0.9991]),
+    ([67.467, -979.44], [0.0579, -0.9983]),
+];
+
+// The live road whose midpoint lies nearest yard road `road`, and the side of it that `side` of
+// the recorded road is: flipped where the edge runs the other way. Test-only linear scan.
+fn kuopio_yard_edge(core: &SimCore, road: usize, side: f32) -> (usize, f32) {
+    let ([x, z], [dx, dz]) = KUOPIO_YARD_ROADS[road];
+    let graph = &core.region_graph;
+    let midpoint = |id: usize| BuildingAllocator::sample_pos_on_edge(graph, id, 0.5);
+    let edge = (0..graph.edge_count())
+        .filter(|&id| {
+            let edge = graph.edge(id);
+            !edge.deleted && edge.primary_type == TransitType::Road
+        })
+        .min_by(|&a, &b| {
+            let target = Vector2::new(x, z);
+            midpoint(a)
+                .distance_to(target)
+                .total_cmp(&midpoint(b).distance_to(target))
+        })
+        .unwrap();
+    let tangent = BuildingAllocator::sample_tangent_on_edge(graph, edge, 0.5);
+    let along = tangent.dot(Vector2::new(dx, dz));
+    (edge, if along < 0.0 { -side } else { side })
+}
+
+// Places a yard beside yard road `road` (`KUOPIO_YARD_ROADS`), on its recorded `side`.
+fn place_kuopio_yard(
+    core: &mut SimCore,
+    road: usize,
+    side: f32,
+    asset: &str,
+) -> Result<usize, crate::simulation::buildings::allocator::DemandSpawnPlacementRejection> {
+    let (edge, side) = kuopio_yard_edge(core, road, side);
+    place_yard(core, edge, side, asset)
+}
+
 fn kuopio_yard_fixture() -> SimCore {
     let mut core = test_core();
     core.load_game_internal(concat!(
@@ -788,24 +832,24 @@ fn kuopio_yard_fixture() -> SimCore {
     core.precompute_road_mesh_data();
     let asset = register_yard(&mut core);
     let mut rejected = Vec::new();
-    for edge in [3, 9, 15, 18] {
+    for road in 0..KUOPIO_YARD_ROADS.len() {
         for side in [-1.0, 1.0] {
-            if let Err(reason) = place_yard(&mut core, edge, side, &asset) {
-                rejected.push((edge, side, reason));
+            if let Err(reason) = place_kuopio_yard(&mut core, road, side, &asset) {
+                rejected.push((road, side, reason));
             }
         }
     }
     use crate::simulation::buildings::allocator::DemandSpawnPlacementRejection::SiteSupportTieInInvalid;
+    // The third road's yards stood beside a four-way 29 m above the ground in the network
+    // recorded 2026-09-08; on the re-recorded network it lies on the ground and takes both.
     assert_eq!(
         rejected,
         vec![
-            (9, 1.0, SiteSupportTieInInvalid),
-            (15, -1.0, SiteSupportTieInInvalid),
-            (15, 1.0, SiteSupportTieInInvalid),
-            (18, 1.0, SiteSupportTieInInvalid)
+            (1, 1.0, SiteSupportTieInInvalid),
+            (3, 1.0, SiteSupportTieInInvalid)
         ]
     );
-    assert_eq!(core.allocator.buildings.len(), 4);
+    assert_eq!(core.allocator.buildings.len(), 6);
     assert_eq!(core.zoning.parcels().len(), 8);
     assert!(settle_and_check_yards(&mut core) > 100);
     core
@@ -1395,7 +1439,7 @@ fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns()
         .registry
         .register("test", manifest, String::new());
     assert_eq!(yard_hedge_count(&core), 0);
-    let building = place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let building = place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
     let laid = yard_hedge_count(&core);
     // Most of a 20 m x 20 m lot's 80 m perimeter, less its gaps and anything the site rejects.
     assert!(laid > 40, "laid {laid}");
@@ -1486,7 +1530,7 @@ fn a_house_reaching_its_back_line_lays_every_planned_module() {
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
     // Every planned module is laid: none is refused on the house's own lawn. A joined corner
     // runs a row on by half the hedge's width, which can add one module per end.
     let lengths: Vec<f32> = rows
@@ -1545,14 +1589,14 @@ fn spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo() 
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    let first = place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let first = place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
     let first_plants = yard_planting(&core);
     let trees = first_plants
         .iter()
         .filter(|plant| plant.species < 2)
         .count();
     assert!(trees > 0 && first_plants.len() > trees, "{first_plants:?}");
-    let second = place_yard(&mut core, 9, -1.0, &asset).unwrap();
+    let second = place_kuopio_yard(&mut core, 1, -1.0, &asset).unwrap();
     let both = yard_planting(&core);
     // The same asset grows a different yard: compare each yard's plants in its own lot frame.
     let local = |building: usize,
@@ -1632,7 +1676,7 @@ fn a_flower_bed_grows_drifts_of_flowers_that_keep_their_room() {
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    place_kuopio_yard(&mut core, 0, -1.0, &asset).unwrap();
     let plants = yard_planting(&core);
     // Flower variants are bush pins 16 to 21: the six flowers past the hedges.
     assert!(plants.len() >= 10, "{plants:?}");
@@ -1684,9 +1728,9 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
     core.allocator
         .registry
         .register("test", manifest, String::new());
-    // Edge 3's yards are graded up to 2.7 m below the heightmap under their hedges.
+    // The first yard road's yards are graded up to 2.7 m below the heightmap under their hedges.
     for side in [-1.0, 1.0] {
-        place_yard(&mut core, 3, side, &asset).unwrap();
+        place_kuopio_yard(&mut core, 0, side, &asset).unwrap();
     }
     settle_and_check_yards(&mut core);
     let (mut min, mut max) = (Vector2::splat(f32::MAX), Vector2::splat(f32::MIN));

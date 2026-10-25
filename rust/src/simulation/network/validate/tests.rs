@@ -74,22 +74,25 @@ fn flat_straight_road_has_no_violations() {
     assert!(audit_graph(&graph, &RoadGeometryLimits::default()).is_empty());
 }
 
+// The 1:3 maximum and the 16% warning (`ROAD-68` open question 37).
 #[test]
-fn thirty_percent_ramp_is_illegal_grade() {
-    let (graph, id) = ramp(30.0);
+fn forty_percent_ramp_is_illegal_grade() {
+    let (graph, id) = ramp(40.0);
     let out = edge_violations(&graph, id);
     assert!(matches!(out.as_slice(), [RoadGeometryViolation::Grade {
-        edge_id, measured, limit: ILLEGAL_GRADE, tier: RoadGeometryTier::Illegal, ..
-    }] if *edge_id == id && (*measured - 0.30).abs() < 1e-6));
+        edge_id, measured, limit: ROAD_GRADE_MAX, tier: RoadGeometryTier::Illegal, ..
+    }] if *edge_id == id && (*measured - 0.40).abs() < 1e-6));
 }
 
 #[test]
-fn twelve_percent_standard_ramp_is_design_grade() {
-    let (graph, id) = ramp(12.0);
+fn twenty_percent_standard_ramp_is_design_grade() {
+    let (graph, id) = ramp(20.0);
     let out = edge_violations(&graph, id);
     assert!(matches!(out.as_slice(), [RoadGeometryViolation::Grade {
-        measured, limit: STANDARD_DESIGN_GRADE, tier: RoadGeometryTier::Design, ..
-    }] if (*measured - 0.12).abs() < 1e-6));
+        measured, limit: ROAD_GRADE_WARNING, tier: RoadGeometryTier::Design, ..
+    }] if (*measured - 0.20).abs() < 1e-6));
+    let (graph, id) = ramp(12.0);
+    assert!(edge_violations(&graph, id).is_empty());
 }
 
 #[test]
@@ -171,11 +174,11 @@ fn structural_classes_use_six_percent_design_grade() {
                 ..
             }]
         ));
-        graph.edge_mut(id).physical_geometry[1].y = 30.0;
+        graph.edge_mut(id).physical_geometry[1].y = 40.0;
         assert!(matches!(
             edge_violations(&graph, id).as_slice(),
             [RoadGeometryViolation::Grade {
-                limit: ILLEGAL_GRADE,
+                limit: ROAD_GRADE_MAX,
                 tier: RoadGeometryTier::Illegal,
                 ..
             }]
@@ -236,7 +239,7 @@ fn radius_design_limit_converts_metres_per_second_to_kmh() {
 
 #[test]
 fn physical_profile_is_checked_with_empty_profile_control_fallback() {
-    let (mut graph, id) = ramp(30.0);
+    let (mut graph, id) = ramp(40.0);
     graph.edge_mut(id).geometry[1].y = 0.0;
     assert!(matches!(
         edge_violations(&graph, id).as_slice(),
@@ -247,7 +250,7 @@ fn physical_profile_is_checked_with_empty_profile_control_fallback() {
     ));
     graph.edge_mut(id).physical_geometry.clear();
     assert!(edge_violations(&graph, id).is_empty());
-    graph.edge_mut(id).geometry[1].y = 30.0;
+    graph.edge_mut(id).geometry[1].y = 40.0;
     assert!(matches!(
         edge_violations(&graph, id).as_slice(),
         [RoadGeometryViolation::Grade { .. }]
@@ -263,7 +266,7 @@ fn short_segments_are_skipped_and_break_adjacent_comparisons() {
         Vector3::new(0.01, 100.0, 0.0),
     ]);
     assert!(edge_violations(&graph, id).is_empty());
-    let (graph, id) = single_edge(vec![Vector3::ZERO, Vector3::new(0.05, 0.015, 0.0)]);
+    let (graph, id) = single_edge(vec![Vector3::ZERO, Vector3::new(0.05, 0.02, 0.0)]);
     assert!(matches!(
         edge_violations(&graph, id).as_slice(),
         [RoadGeometryViolation::Grade {
@@ -425,7 +428,11 @@ fn limits_are_customizable_and_threshold_equality_is_clean() {
     ));
     assert_eq!(
         upper_violation(0.16, &RoadGeometryLimits::default().standard_grade),
-        Some((0.10, RoadGeometryTier::Design))
+        None
+    );
+    assert_eq!(
+        upper_violation(0.17, &RoadGeometryLimits::default().standard_grade),
+        Some((ROAD_GRADE_WARNING, RoadGeometryTier::Design))
     );
     assert_eq!(
         lower_violation(

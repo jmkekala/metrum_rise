@@ -217,6 +217,14 @@ fn validation_detail(
             "the road check had no result for this stroke yet".to_owned(),
             None,
         ),
+        "road_too_steep" => (
+            format!(
+                "the road would climb at {:.0}%, steeper than the {:.0}% (1:3) maximum grade",
+                validation.geometry_measured * 100.0,
+                validation.geometry_limit * 100.0
+            ),
+            None,
+        ),
         "road_commit_rejected" => (
             "the simulation refused this stroke earlier; see that commit report".to_owned(),
             None,
@@ -288,6 +296,8 @@ mod tests {
             invalid_reason: "bridge_clearance",
             max_grade: 0.0,
             allowed_grade: 0.0,
+            warning_reason: "",
+            warning_limit: 0.0,
             offending_span_start_m: 0.0,
             offending_span_end_m: 0.0,
             offending_span_run_m: 0.0,

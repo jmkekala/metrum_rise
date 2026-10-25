@@ -7,15 +7,19 @@
 
 use super::*;
 
-// Illegal checks placement refuses. Grade and grade change wait for the hill policy
-// (`docs/roads.md`): the profile solver still follows the terrain, so refusing them would refuse
-// every steep hillside and every road over bumpy ground. A sharp corner where two roads meet end
-// to end is a street corner the bend piece rounds, so a direction kink stays a design warning.
+// Illegal checks placement refuses. Grade above the 1:3 maximum is refused (`ROAD-68` open
+// question 37); grade change waits for the hill policy (`docs/roads.md`): the profile solver
+// still follows bumpy ground, so refusing it would refuse ordinary roads over it. A sharp corner
+// where two roads meet end to end is a street corner the bend piece rounds, so a direction kink
+// stays a design warning.
 fn refused(violation: &RoadGeometryViolation) -> bool {
     use RoadGeometryViolation::*;
     matches!(
         violation,
-        HorizontalRadius {
+        Grade {
+            tier: RoadGeometryTier::Illegal,
+            ..
+        } | HorizontalRadius {
             tier: RoadGeometryTier::Illegal,
             ..
         } | JunctionArmAngle {
@@ -42,13 +46,17 @@ fn worse_than(after: &RoadGeometryViolation, before: &[RoadGeometryViolation]) -
 }
 
 /// The first geometry `after` refuses that the edit adds: any on the edit's own `edges` (the
-/// drawn road's pieces), and at `nodes`, each paired with its id in `before` when it existed
-/// there, only where that node was not already as bad. Deterministic: edges, then nodes, each in
-/// the given order, the validator's check order within each. O(points on `edges` + local
+/// drawn road's pieces); an illegal grade on `rederived`, the other edges whose profiles the
+/// edit derives (the arms its node planes re-pin), each paired with the edge of `before` it
+/// came from, only where that profile is steeper than before; and at `nodes`, each paired with
+/// its id in `before` when it existed there, only where that node was not already as bad.
+/// Deterministic: edges, re-derived edges, then nodes, each in the given order, the validator's
+/// check order within each. O(points on `edges` and `rederived` and their sources + local
 /// incidence of `nodes`).
 pub fn edit_violation(
     after: &RegionGraph,
     edges: &[usize],
+    rederived: &[(usize, Option<usize>)],
     nodes: &[(u32, Option<u32>)],
     before: &RegionGraph,
     limits: &RoadGeometryLimits,
@@ -57,6 +65,20 @@ pub fn edit_violation(
     for &edge in edges {
         validate_edge(after, edge, limits, &mut found);
         if let Some(violation) = found.drain(..).find(refused) {
+            return Some(violation);
+        }
+    }
+    for &(edge, source) in rederived {
+        validate_edge(after, edge, limits, &mut found);
+        // A profile that was already as steep is the existing road's, not this edit's.
+        let old = source.and_then(|source| steepest_grade(centreline(before.edge(source))));
+        if let Some(violation) = found.drain(..).find(|violation| {
+            matches!(violation, RoadGeometryViolation::Grade {
+                measured,
+                tier: RoadGeometryTier::Illegal,
+                ..
+            } if old.is_none_or(|old| *measured > old.grade))
+        }) {
             return Some(violation);
         }
     }

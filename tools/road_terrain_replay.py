@@ -178,6 +178,21 @@ def verify_source_terrain(world, config, source):
         raise ValueError("reference/source terrain samples differ")
 
 
+def pin_reference(manifest_path, reference, world):
+    """Pin a re-recorded or replaced reference save (ROAD-68 open question 38): its hash and
+    live edge count, after checking that it holds the manifest's source terrain."""
+    manifest = json.loads(Path(manifest_path).read_text())
+    with sqlite3.connect(Path(reference).resolve().as_uri() + "?mode=ro", uri=True) as db:
+        live_edges = db.execute("SELECT count(*) FROM network_edges").fetchone()[0]
+        source = db.execute("SELECT height_blob_f32_le FROM terrain_state").fetchone()[0]
+    verify_source_terrain(world, manifest["world_config"], source)
+    if hashlib.sha256(source).hexdigest() != manifest["source_terrain_sha256"]:
+        raise ValueError("reference terrain differs from the pinned source terrain")
+    manifest["reference_save_sha256"] = sha256(reference)
+    manifest["reference_live_edges"] = live_edges
+    return manifest
+
+
 def profile_metrics(points):
     if len(points) < 2 or any(len(p) != 4 or any(not isinstance(v, (float, int)) or not math.isfinite(v) for v in p) for p in points):
         raise ValueError("profile must contain finite [x,y,z,source_y] samples")
@@ -277,10 +292,17 @@ def main():
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--import-log", type=Path)
     action.add_argument("--report", type=Path)
+    action.add_argument("--pin-reference", action="store_true",
+                        help="re-pin --map's hash and live edge count into the manifest --output")
     parser.add_argument("--map", type=Path, default=DEFAULT_FIXTURE / "kuopio-terrain-map.sqlite")
     parser.add_argument("--world", type=Path, default=DEFAULT_WORLD)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.pin_reference:
+        manifest = pin_reference(args.output, args.map, args.world)
+        args.output.write_text(json.dumps(manifest, indent=2, allow_nan=False) + "\n")
+        print(f"Pinned {manifest['reference_save_sha256']}, {manifest['reference_live_edges']} live edges")
+        return 0
     if args.output.exists():
         parser.error("output already exists; choose a new path")
     result = (import_manifest(args.import_log, args.map, args.world) if args.import_log

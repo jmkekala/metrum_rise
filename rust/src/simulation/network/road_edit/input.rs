@@ -9,6 +9,9 @@ use super::support::{RebuiltPieces, StrokeSupport};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::types::TransitType;
+use crate::simulation::network::grade::{
+    ROAD_GRADE_BUILT, ROAD_GRADE_MAX, ROAD_GRADE_WARNING, construct_within_grade, grade_envelope,
+};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
@@ -20,7 +23,13 @@ const ROAD_PROFILE_SMOOTH_WEIGHT: f32 = 0.22;
 const ROAD_PROFILE_TERRAIN_WEIGHT: f32 = 0.30;
 const ROAD_PROFILE_MAX_GRADE_CHANGE_PER_M: f32 = 0.018;
 pub(super) const PREVIEW_CLEARANCE_M: f32 = 1.0;
-pub(super) const ROAD_PROFILE_MAX_GRADE: f32 = 0.16;
+// The solve's design grade, which it relaxes span by span towards the ground's slope, up to the
+// hard maximum (`ROAD-68` open question 37).
+pub(super) const ROAD_PROFILE_MAX_GRADE: f32 = ROAD_GRADE_WARNING;
+// The source-delta limit (`placements.json`'s `max_abs_source_delta_m`): an unpinned profile
+// sample keeps within this of the ground under it, so the hard maximum grade is met by cut or
+// fill only this deep, and a stroke that cannot keep both is refused (open question 37).
+const ROAD_PROFILE_MAX_SOURCE_DELTA_M: f32 = 5.0;
 
 /// Solved road-tool geometry plus optional profile edits to an existing terminal edge.
 #[derive(Clone, Debug)]
@@ -31,6 +40,11 @@ pub(crate) struct PreparedRoadInput {
     pub(crate) class: EdgeClass,
     /// True when endpoint proximity to existing graph nodes is treated as an authored snap.
     pub(crate) endpoint_snap_enabled: bool,
+    /// The least maximum grade a standard profile can keep under the stroke's pins and the
+    /// source-delta limit, when that exceeds the hard maximum (`ROAD-68` open question 37):
+    /// the stroke is refused as `road_too_steep`. `None` when the solve constructed the profile
+    /// within the maximum.
+    pub(crate) forced_grade: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -38,6 +52,8 @@ struct RoadVerticalProfileSample {
     x: f32,
     z: f32,
     target_y: f32,
+    // The source terrain under the sample, which the source-delta limit measures from.
+    ground_y: f32,
     y: f32,
     pinned: bool,
 }
@@ -50,7 +66,7 @@ struct RoadVerticalProfileSample {
 fn prepare_road_input_points(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
-) -> (Vec<Vector3>, EdgeClass) {
+) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
     prepare_road_input_points_with_support(raw_points, terrain, |_, _| None, [None; 2])
 }
 
@@ -65,7 +81,7 @@ fn prepare_road_input_points_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     support: &mut StrokeSupport,
-) -> (Vec<Vector3>, EdgeClass) {
+) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
     let end_heights = [support.end_height(0), support.end_height(1)];
     prepare_road_input_points_with_support(
         raw_points,
@@ -85,7 +101,7 @@ fn prepare_snapped_road_input_to_visible_surface(
     graph: &RegionGraph,
     support: &mut StrokeSupport,
 ) -> PreparedRoadInput {
-    let (mut points, mut class) =
+    let (mut points, mut class, forced_grade) =
         prepare_road_input_points_to_visible_surface(raw_points, terrain, support);
     snap_road_endpoints_to_existing_nodes(&mut points, graph);
     if class == EdgeClass::Standard && is_terminal_bridge_transition(&points, terrain, graph)
@@ -97,6 +113,7 @@ fn prepare_snapped_road_input_to_visible_surface(
         points,
         class,
         endpoint_snap_enabled: true,
+        forced_grade: forced_grade.filter(|_| class == EdgeClass::Standard),
     }
 }
 
@@ -143,11 +160,12 @@ pub(super) fn prepare_road_input_excluding(
         return (prepared, support.into_read());
     }
 
-    let (points, class) = prepare_road_input_points(raw_points, terrain);
+    let (points, class, forced_grade) = prepare_road_input_points(raw_points, terrain);
     let prepared = PreparedRoadInput {
         points,
         class,
         endpoint_snap_enabled: false,
+        forced_grade,
     };
     (prepared, Vec::new())
 }
@@ -176,10 +194,10 @@ fn prepare_road_input_points_with_support(
     terrain: &TerrainSystem,
     mut visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
     end_heights: [Option<f32>; 2],
-) -> (Vec<Vector3>, EdgeClass) {
+) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
     let simplified_points = simplify_road_alignment_points(raw_points);
     if simplified_points.len() < 2 {
-        return (simplified_points, EdgeClass::Standard);
+        return (simplified_points, EdgeClass::Standard, None);
     }
 
     let mut endpoint_above_clearance = false;
@@ -207,7 +225,7 @@ fn prepare_road_input_points_with_support(
     };
 
     if class != EdgeClass::Standard {
-        return (simplified_points, class);
+        return (simplified_points, class, None);
     }
 
     let mut samples = build_standard_road_profile_samples(
@@ -223,13 +241,13 @@ fn prepare_road_input_points_with_support(
             sample.y = height_m;
         }
     }
-    solve_standard_road_profile(&mut samples);
+    let forced_grade = solve_standard_road_profile(&mut samples);
     let prepared_points = samples
         .into_iter()
         .map(|sample| Vector3::new(sample.x, sample.y, sample.z))
         .collect();
 
-    (prepared_points, EdgeClass::Standard)
+    (prepared_points, EdgeClass::Standard, forced_grade)
 }
 
 fn terminal_incident_surface_edge(
@@ -403,6 +421,7 @@ fn push_standard_road_profile_sample(
         x,
         z,
         target_y,
+        ground_y: terrain.sample_height_world(x, z) * config::HEIGHT_SCALE,
         y: target_y,
         pinned: pinned || visible_support_found,
     });
@@ -423,7 +442,40 @@ fn road_profile_support_height(
     )
 }
 
-fn solve_standard_road_profile(samples: &mut [RoadVerticalProfileSample]) {
+// Solves a standard road's heights through its samples and returns the least maximum grade its
+// constraints force, when that exceeds the hard maximum. The pinned samples (the ends and the
+// carriageways the stroke meets) and the source-delta limit bound where the profile may lie; when
+// a profile within 33% (else within the 1:3 maximum) exists there, the solve constructs one: the
+// smoothing solve below, then the nearest heights inside those bounds (`ROAD-68` open question
+// 37).
+fn solve_standard_road_profile(samples: &mut [RoadVerticalProfileSample]) -> Option<f32> {
+    let runs: Vec<f32> = samples
+        .windows(2)
+        .map(|span| profile_sample_run_m(span[0], span[1]))
+        .collect();
+    // Built within 33% where the constraints allow it, else within the 1:3 maximum.
+    let Some((max_grade, envelope)) = [ROAD_GRADE_BUILT, ROAD_GRADE_MAX]
+        .into_iter()
+        .find_map(|grade| {
+            let mut envelope = profile_height_bounds(samples, &runs, grade);
+            grade_envelope(&mut envelope, &runs, grade).then_some((grade, envelope))
+        })
+    else {
+        let bounds = profile_height_bounds(samples, &runs, ROAD_GRADE_MAX);
+        let forced_grade = least_profile_grade(samples, &bounds);
+        solve_smooth_road_profile(samples, ROAD_GRADE_MAX);
+        return Some(forced_grade);
+    };
+    solve_smooth_road_profile(samples, max_grade);
+    let mut heights: Vec<f32> = samples.iter().map(|sample| sample.y).collect();
+    construct_within_grade(&mut heights, &envelope, &runs, max_grade);
+    for (sample, height) in samples.iter_mut().zip(heights) {
+        sample.y = height;
+    }
+    None
+}
+
+fn solve_smooth_road_profile(samples: &mut [RoadVerticalProfileSample], max_grade: f32) {
     if samples.len() <= 2 {
         return;
     }
@@ -432,14 +484,13 @@ fn solve_standard_road_profile(samples: &mut [RoadVerticalProfileSample]) {
     // a feasible source-supported envelope at EACH interval: equal-height pins can
     // still surround a hill or valley that a uniform design-grade clamp would erase.
     // Local bounds also avoid lending one steep section's allowance to the entire
-    // road. Compute once in O(P); the fixed-pass smoothing/curvature solve stays O(P).
+    // road. Each span relaxes only up to `max_grade`, so steeper ground is cut or
+    // filled. Compute once in O(P); the fixed-pass smoothing/curvature solve stays O(P).
     let grade_limits: Vec<_> = samples
         .windows(2)
         .map(|span| {
-            ROAD_PROFILE_MAX_GRADE.max(
-                (span[1].target_y - span[0].target_y).abs()
-                    / profile_sample_run_m(span[0], span[1]),
-            )
+            ((span[1].target_y - span[0].target_y).abs() / profile_sample_run_m(span[0], span[1]))
+                .clamp(ROAD_PROFILE_MAX_GRADE, max_grade)
         })
         .collect();
     let mut previous_y = vec![0.0; samples.len()];
@@ -530,6 +581,88 @@ fn enforce_road_profile_curvature(samples: &mut [RoadVerticalProfileSample]) {
     }
 }
 
+// The source-delta band at `ground` widened by `excess` below and above, as `f32` reads it:
+// each bound steps one ulp inwards where the rounded sum's offset would read beyond it.
+fn source_band(ground: f32, (below, above): (f32, f32)) -> (f32, f32) {
+    let (reach_below, reach_above) = (
+        ROAD_PROFILE_MAX_SOURCE_DELTA_M + below,
+        ROAD_PROFILE_MAX_SOURCE_DELTA_M + above,
+    );
+    let mut low = ground - reach_below;
+    if ground - low > reach_below {
+        low = low.next_up();
+    }
+    let mut high = ground + reach_above;
+    if high - ground > reach_above {
+        high = high.next_down();
+    }
+    (low, high)
+}
+
+// Every sample's height bounds for a profile within `max_grade`: a pinned sample at its target,
+// any other within the source-delta limit of the ground. A pin further off the ground than the
+// limit (a joined road end on an embankment) widens its neighbours' band by its excess, shrinking
+// at `max_grade` with the distance from it, so a profile may leave it at that grade and only the
+// ground between the pins can force a steeper one. Two passes carry the nearest pins' excess.
+// O(P).
+fn profile_height_bounds(
+    samples: &[RoadVerticalProfileSample],
+    runs: &[f32],
+    max_grade: f32,
+) -> Vec<(f32, f32)> {
+    let count = samples.len();
+    let mut excess = vec![(0.0_f32, 0.0_f32); count];
+    for backward in [false, true] {
+        // The excess below and above the band the nearest pin on this side leaves here.
+        let mut carried = (0.0_f32, 0.0_f32);
+        for step in 0..count {
+            let index = if backward { count - 1 - step } else { step };
+            if step > 0 {
+                let run = runs[if backward { index } else { index - 1 }];
+                carried = (
+                    (carried.0 - max_grade * run).max(0.0),
+                    (carried.1 - max_grade * run).max(0.0),
+                );
+            }
+            let sample = &samples[index];
+            if sample.pinned {
+                carried = (
+                    (sample.ground_y - ROAD_PROFILE_MAX_SOURCE_DELTA_M - sample.target_y).max(0.0),
+                    (sample.target_y - sample.ground_y - ROAD_PROFILE_MAX_SOURCE_DELTA_M).max(0.0),
+                );
+            }
+            let widest = &mut excess[index];
+            *widest = (widest.0.max(carried.0), widest.1.max(carried.1));
+        }
+    }
+    samples
+        .iter()
+        .zip(excess)
+        .map(|(sample, excess)| {
+            if sample.pinned {
+                (sample.target_y, sample.target_y)
+            } else {
+                source_band(sample.ground_y, excess)
+            }
+        })
+        .collect()
+}
+
+// The least maximum grade of any profile through the samples' height bounds: each pair of
+// samples needs at least the height their bounds keep apart over the run between them, and on a
+// chain the largest such pair decides it. O(P^2); only a stroke its constraints refuse takes it.
+fn least_profile_grade(samples: &[RoadVerticalProfileSample], bounds: &[(f32, f32)]) -> f32 {
+    let mut least = 0.0_f32;
+    for (first, &(a_low, a_high)) in bounds.iter().enumerate() {
+        let mut run_m = 0.0;
+        for (pair, &(b_low, b_high)) in samples[first..].windows(2).zip(&bounds[first + 1..]) {
+            run_m += profile_sample_run_m(pair[0], pair[1]);
+            least = least.max((b_low - a_high).max(a_low - b_high) / run_m);
+        }
+    }
+    least
+}
+
 fn profile_sample_run_m(a: RoadVerticalProfileSample, b: RoadVerticalProfileSample) -> f32 {
     ((b.x - a.x).hypot(b.z - a.z)).max(f32::EPSILON)
 }
@@ -555,11 +688,13 @@ mod tests {
             let mut samples: Vec<_> = (-10_i32..=10)
                 .map(|i| {
                     let x = i as f32 * 6.0;
-                    let y = sign * 0.004 * x * x;
+                    // Up to 30% at the ends, within the 1:3 maximum (`ROAD-68` question 37).
+                    let y = sign * 0.0025 * x * x;
                     RoadVerticalProfileSample {
                         x,
                         z: 0.0,
                         target_y: y,
+                        ground_y: y,
                         y,
                         pinned: i.abs() == 10,
                     }

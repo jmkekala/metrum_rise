@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Road placement validation: stroke length, profile grade and clearance, endpoint snapping,
-//! same-node connections and the `ROAD-54` edit geometry limits on the bounded post-edit graph
-//! excerpt that also yields the shared [`RoadTopologyPlan`].
+//! same-node connections and the `ROAD-54` edit geometry limits, the 1:3 maximum grade among
+//! them, on the bounded post-edit graph excerpt that also yields the shared
+//! [`RoadTopologyPlan`].
 
 use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
@@ -16,7 +17,10 @@ use crate::simulation::network::roadbed::{
     LayoutError, NodeError, check_node, preview_candidate_roadbed_half_width_m,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
-use crate::simulation::network::validate::{RoadGeometryLimits, RoadGeometryViolation};
+use crate::simulation::network::grade::{ROAD_GRADE_MAX, SteepestGrade, steepest_grade};
+use crate::simulation::network::validate::{
+    RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
+};
 use crate::simulation::network::{
     TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
 };
@@ -32,6 +36,9 @@ const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
+const PREVIEW_TOO_STEEP_REASON: &str = "road_too_steep";
+// The road tool's warning for a grade above its class's design tier, which it does not refuse.
+const PREVIEW_STEEP_WARNING: &str = "road_steep";
 const PREVIEW_TIGHT_CURVE_REASON: &str = "road_tight_curve";
 const PREVIEW_JUNCTION_ANGLE_REASON: &str = "junction_arm_angle";
 const PREVIEW_JUNCTION_DEGREE_REASON: &str = "junction_degree";
@@ -43,7 +50,7 @@ const PREVIEW_JUNCTION_PROFILE_REASON: &str = "junction_profile_mismatch";
 const PREVIEW_JUNCTION_LAYOUT_REASON: &str = "junction_layout_invalid";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
-// Degenerate profile steps shorter than this carry no grade.
+// Degenerate profile steps shorter than this add no length.
 const SAMPLE_EPSILON_M: f32 = 0.001;
 
 struct ValidationGraph {
@@ -65,10 +72,17 @@ pub(crate) struct RoadPreviewValidation {
     pub(crate) is_valid: bool,
     /// Stable reason key for invalid strokes, or an empty string when valid.
     pub(crate) invalid_reason: &'static str,
-    /// Largest centerline grade seen in the prepared profile.
+    /// The steepest grade (`grade::steepest_grade`) of the profiles the edit builds: the
+    /// drawn road's finalized pieces and every profile it re-derives steeper than before, or,
+    /// in the hover check and a refused stroke, the prepared profile's.
     pub(crate) max_grade: f32,
     /// Standard-road profile-solver grade target retained for diagnostics.
     pub(crate) allowed_grade: f32,
+    /// `road_steep` when `max_grade` exceeds its road class's design grade (`ROAD-54`; 16% for
+    /// streets): shown by the road tool, never refused. Empty otherwise.
+    pub(crate) warning_reason: &'static str,
+    /// The design grade `max_grade` exceeds, or zero without a warning.
+    pub(crate) warning_limit: f32,
     /// Start station of the steepest measured span, in meters along the road.
     pub(crate) offending_span_start_m: f32,
     /// End station of the steepest measured span, in meters along the road.
@@ -109,8 +123,9 @@ pub(crate) struct RoadPreviewValidation {
     pub(crate) clearance_m: f32,
     /// Required bridge/tunnel clearance at the sampled validation point.
     pub(crate) required_clearance_m: f32,
-    /// Measured value of the geometry check that refused the road (`ROAD-54`): grade change per
-    /// metre, curve radius in metres, junction arm angle in degrees or junction arm count.
+    /// Measured value of the geometry check that refused the road (`ROAD-54`): grade, grade
+    /// change per metre, curve radius in metres, junction arm angle in degrees or junction arm
+    /// count.
     pub(crate) geometry_measured: f32,
     /// The limit that measurement broke, in the same unit.
     pub(crate) geometry_limit: f32,
@@ -124,6 +139,8 @@ impl RoadPreviewValidation {
             invalid_reason: PREVIEW_VALID_REASON,
             max_grade,
             allowed_grade: ROAD_PROFILE_MAX_GRADE,
+            warning_reason: "",
+            warning_limit: 0.0,
             offending_span_start_m: 0.0,
             offending_span_end_m: 0.0,
             offending_span_run_m: 0.0,
@@ -164,12 +181,7 @@ pub(crate) fn validate_road_candidate_fast(
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
 ) -> RoadPreviewValidation {
-    let mut validation = profile_validation(
-        prepared_input.class,
-        &prepared_input.points,
-        terrain,
-        true,
-    );
+    let mut validation = profile_validation(prepared_input, terrain, true);
     record_endpoint_height_debug(&mut validation, &prepared_input.points, terrain);
     let (start_existing, end_existing) = record_endpoint_snap_debug(
         &mut validation,
@@ -196,8 +208,7 @@ pub(crate) fn validate_road_edit(
     terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
-    let new_edge_validation =
-        profile_validation(prepared_input.class, &prepared_input.points, terrain, false);
+    let new_edge_validation = profile_validation(prepared_input, terrain, false);
     if stroke_too_short(&prepared_input.points) {
         return (
             new_edge_validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON),
@@ -208,6 +219,7 @@ pub(crate) fn validate_road_edit(
         prepared_input,
         fwd_lanes,
         bkw_lanes,
+        terrain,
         existing_graph,
         new_edge_validation,
     )
@@ -224,15 +236,15 @@ fn stroke_too_short(points: &[Vector3]) -> bool {
     points.len() < 2 || length_m < PREVIEW_MIN_ENDPOINT_SEGMENT_M
 }
 
-// Steepest prepared span and bridge / tunnel clearance of one profile. With `require_length`
-// (the fast editor check) a stroke below the minimum length is also refused; the full check
-// applies that rule once, to the validation corridor.
+// Steepest prepared span, the grade the stroke's constraints force and bridge / tunnel clearance
+// of one profile. With `require_length` (the fast editor check) a stroke below the minimum length
+// is also refused; the full check applies that rule once, to the validation corridor.
 fn profile_validation(
-    edge_class: EdgeClass,
-    prepared_points: &[Vector3],
+    prepared_input: &PreparedRoadInput,
     terrain: &TerrainSystem,
     require_length: bool,
 ) -> RoadPreviewValidation {
+    let (edge_class, prepared_points) = (prepared_input.class, &prepared_input.points[..]);
     if prepared_points.len() < 2 && !require_length {
         return RoadPreviewValidation::valid(0.0);
     }
@@ -241,37 +253,18 @@ fn profile_validation(
     if prepared_points.len() < 2 {
         return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
     }
-
-    let mut station_m = 0.0;
-    for pair in prepared_points.windows(2) {
-        let run = (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z);
-        if run <= SAMPLE_EPSILON_M {
-            continue;
-        }
-        let next_station_m = station_m + run;
-        let grade = (pair[1].y - pair[0].y).abs() / run;
-        if grade > validation.max_grade {
-            validation.max_grade = grade;
-            validation.offending_span_start_m = station_m;
-            validation.offending_span_end_m = next_station_m;
-            validation.offending_span_run_m = run;
-            validation.offending_span_height_delta_m = pair[1].y - pair[0].y;
-            validation.offending_span_start_height_m = pair[0].y;
-            validation.offending_span_end_height_m = pair[1].y;
-            validation.offending_span_start_terrain_height_m =
-                terrain_height_m(terrain, pair[0].x, pair[0].z);
-            validation.offending_span_end_terrain_height_m =
-                terrain_height_m(terrain, pair[1].x, pair[1].z);
-            validation.offending_span_start_support_delta_m =
-                pair[0].y - validation.offending_span_start_terrain_height_m;
-            validation.offending_span_end_support_delta_m =
-                pair[1].y - validation.offending_span_end_terrain_height_m;
-        }
-        station_m = next_station_m;
+    if let Some(steepest) = steepest_grade(prepared_points) {
+        record_steepest_span(&mut validation, prepared_points, steepest, terrain);
     }
 
     if require_length && stroke_too_short(prepared_points) {
         return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+    }
+    if let Some(forced_grade) = prepared_input.forced_grade {
+        let mut validation = validation.with_invalid_reason(PREVIEW_TOO_STEEP_REASON);
+        validation.geometry_measured = forced_grade;
+        validation.geometry_limit = ROAD_GRADE_MAX;
+        return validation;
     }
     if edge_class == EdgeClass::Bridge
         && bridge_profile_is_ground_transition(prepared_points, terrain)
@@ -307,6 +300,29 @@ fn profile_validation(
     }
 
     validation
+}
+
+// Records the steepest segment of `points` as the validation's grade and offending span.
+fn record_steepest_span(
+    validation: &mut RoadPreviewValidation,
+    points: &[Vector3],
+    steepest: SteepestGrade,
+    terrain: &TerrainSystem,
+) {
+    let (a, b) = (points[steepest.segment], points[steepest.segment + 1]);
+    validation.max_grade = steepest.grade;
+    validation.offending_span_start_m = steepest.station_m;
+    validation.offending_span_end_m = steepest.station_m + steepest.length_m;
+    validation.offending_span_run_m = (b.x - a.x).hypot(b.z - a.z);
+    validation.offending_span_height_delta_m = b.y - a.y;
+    validation.offending_span_start_height_m = a.y;
+    validation.offending_span_end_height_m = b.y;
+    validation.offending_span_start_terrain_height_m = terrain_height_m(terrain, a.x, a.z);
+    validation.offending_span_end_terrain_height_m = terrain_height_m(terrain, b.x, b.z);
+    validation.offending_span_start_support_delta_m =
+        a.y - validation.offending_span_start_terrain_height_m;
+    validation.offending_span_end_support_delta_m =
+        b.y - validation.offending_span_end_terrain_height_m;
 }
 
 fn bridge_profile_is_ground_transition(
@@ -364,6 +380,7 @@ fn validate_against_graph(
     prepared_input: &PreparedRoadInput,
     fwd_lanes: u8,
     bkw_lanes: u8,
+    terrain: &TerrainSystem,
     existing_graph: &RegionGraph,
     mut validation: RoadPreviewValidation,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
@@ -416,11 +433,18 @@ fn validate_against_graph(
             None,
         );
     }
+    let (stroke, rederived) = edit_profiles(
+        &validation_graph,
+        new_edge_idx,
+        &splits,
+        &required_edge_ids,
+        &source_edge_ids,
+    );
     if let Some(refused) = edit_geometry_violation(
         &validation_graph,
         existing_graph,
-        new_edge_idx,
-        &splits,
+        &stroke,
+        &rederived,
         &source_node_ids,
     ) {
         return (refuse_geometry(validation, &refused), None);
@@ -428,6 +452,14 @@ fn validate_against_graph(
     if let Some(reason) = junction_rejection(&validation_graph, &finalized.affected_nodes) {
         return (validation.with_invalid_reason(reason), None);
     }
+    record_edit_grade(
+        &mut validation,
+        &validation_graph,
+        existing_graph,
+        &stroke,
+        &rederived,
+        terrain,
+    );
 
     let topology_plan = RoadTopologyPlan::capture(
         &validation_graph,
@@ -801,24 +833,48 @@ fn endpoint_existing_node(
     existing_graph.find_node_within(point, config::SNAP_TOLERANCE)
 }
 
-// The illegal geometry this edit adds (`validate::edit_violation`). The drawn road is the
-// inserted edge and every piece split off it; pieces split off existing roads are theirs.
-// Its endpoints are judged against what the same nodes were before. O(stroke points +
-// splits + endpoint incidence).
-fn edit_geometry_violation(
+// The profiles the edit derives: the drawn road (the inserted edge and every piece split off it),
+// and the other surface edges it re-derives, each with the existing edge it came from (pieces
+// split off an existing road come from that road). The re-derived edges in ascending local ids.
+// O((required edges + splits) * stroke pieces).
+fn edit_profiles(
     validation_graph: &RegionGraph,
-    existing_graph: &RegionGraph,
     new_edge_idx: usize,
     splits: &[PlannedRoadSplit],
-    source_node_ids: &HashMap<u32, u32>,
-) -> Option<RoadGeometryViolation> {
+    required_edge_ids: &[usize],
+    source_edge_ids: &HashMap<usize, usize>,
+) -> (Vec<usize>, Vec<(usize, Option<usize>)>) {
     let mut stroke = vec![new_edge_idx];
+    let mut source_of: HashMap<usize, usize> = source_edge_ids
+        .iter()
+        .map(|(&source, &local)| (local, source))
+        .collect();
     for split in splits {
         if stroke.contains(&split.edge_id) {
             stroke.push(split.new_edge_id);
+        } else if let Some(&source) = source_of.get(&split.edge_id) {
+            source_of.insert(split.new_edge_id, source);
         }
     }
     stroke.retain(|&id| !validation_graph.edge(id).deleted);
+    let rederived = required_edge_ids
+        .iter()
+        .filter(|id| !stroke.contains(id))
+        .map(|&id| (id, source_of.get(&id).copied()))
+        .collect();
+    (stroke, rederived)
+}
+
+// The illegal geometry this edit adds (`validate::edit_violation`) on the drawn road `stroke`
+// and the profiles it re-derives. Its endpoints are judged against what the same nodes were
+// before. O(stroke points + re-derived points + endpoint incidence).
+fn edit_geometry_violation(
+    validation_graph: &RegionGraph,
+    existing_graph: &RegionGraph,
+    stroke: &[usize],
+    rederived: &[(usize, Option<usize>)],
+    source_node_ids: &HashMap<u32, u32>,
+) -> Option<RoadGeometryViolation> {
     let source_of: HashMap<u32, u32> = source_node_ids
         .iter()
         .map(|(&source, &local)| (local, source))
@@ -838,11 +894,62 @@ fn edit_geometry_violation(
     nodes.dedup();
     crate::simulation::network::validate::edit_violation(
         validation_graph,
-        &stroke,
+        stroke,
+        rederived,
         &nodes,
         existing_graph,
         &RoadGeometryLimits::default(),
     )
+}
+
+// Records the steepest profile the edit builds as the validation's grade: the drawn road's
+// pieces and each re-derived profile steeper than it was, by the one grade
+// (`grade::steepest_grade`). Above its class's design tier it is the road tool's warning.
+// O(stroke points + re-derived points and their sources).
+fn record_edit_grade(
+    validation: &mut RoadPreviewValidation,
+    validation_graph: &RegionGraph,
+    existing_graph: &RegionGraph,
+    stroke: &[usize],
+    rederived: &[(usize, Option<usize>)],
+    terrain: &TerrainSystem,
+) {
+    let limits = RoadGeometryLimits::default();
+    let before = |source: Option<usize>| {
+        source
+            .and_then(|source| steepest_grade(centreline(existing_graph.edge(source))))
+            .map_or(-1.0, |steepest| steepest.grade)
+    };
+    let mut steepest: Option<(usize, SteepestGrade)> = None;
+    let edges = stroke
+        .iter()
+        .map(|&id| (id, -1.0))
+        .chain(rederived.iter().map(|&(id, source)| (id, before(source))));
+    for (id, old_grade) in edges {
+        let Some(grade) = steepest_grade(centreline(validation_graph.edge(id))) else {
+            continue;
+        };
+        if grade.grade > old_grade && steepest.is_none_or(|(_, worst)| grade.grade > worst.grade) {
+            steepest = Some((id, grade));
+        }
+    }
+    let Some((id, grade)) = steepest else {
+        return;
+    };
+    record_steepest_span(validation, centreline(validation_graph.edge(id)), grade, terrain);
+    let mut found = Vec::new();
+    validate_edge(validation_graph, id, &limits, &mut found);
+    if let Some(&RoadGeometryViolation::Grade {
+        limit,
+        tier: RoadGeometryTier::Design,
+        ..
+    }) = found
+        .iter()
+        .find(|violation| matches!(violation, RoadGeometryViolation::Grade { .. }))
+    {
+        validation.warning_reason = PREVIEW_STEEP_WARNING;
+        validation.warning_limit = limit;
+    }
 }
 
 // The first node, in id order, whose junction layout or mouth heights fail (`ROAD-68-C`). The
@@ -871,6 +978,9 @@ fn refuse_geometry(
 ) -> RoadPreviewValidation {
     use RoadGeometryViolation::*;
     let (reason, measured, limit) = match *violation {
+        Grade {
+            measured, limit, ..
+        } => (PREVIEW_TOO_STEEP_REASON, measured, limit),
         GradeChange {
             measured, limit, ..
         } => (PREVIEW_GRADE_CHANGE_REASON, measured, limit),
@@ -887,7 +997,7 @@ fn refuse_geometry(
             measured as f32,
             limit as f32,
         ),
-        Grade { .. } | DirectionKink { .. } => (PREVIEW_SURFACE_GEOMETRY_REASON, 0.0, 0.0),
+        DirectionKink { .. } => (PREVIEW_SURFACE_GEOMETRY_REASON, 0.0, 0.0),
     };
     let mut validation = validation.with_invalid_reason(reason);
     validation.geometry_measured = measured;

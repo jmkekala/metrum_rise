@@ -529,6 +529,13 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 			build_cost,
 			snap_str,
 		]
+		# A grade above the design tier is shown, not refused (ROAD-68 question 37).
+		if String(preview.get("warning_reason", "")) == "road_steep":
+			_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
+			_info_label.text += "  steep %.0f%% (design %.0f%%)" % [
+				float(preview.get("max_grade", 0.0)) * 100.0,
+				float(preview.get("warning_limit", 0.0)) * 100.0,
+			]
 		var state: String = plan_state if not plan_state.is_empty() else preview.get("plan_state", "")
 		if not state.is_empty() and state != "ready":
 			_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
@@ -567,6 +574,11 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Road overlaps existing zoning parcels"
 		"road_grade_change":
 			return "Road bends too sharply up or down"
+		"road_too_steep":
+			return "Road too steep: %.0f%%, at most %.0f%%" % [
+				float(preview.get("geometry_measured", 0.0)) * 100.0,
+				float(preview.get("geometry_limit", 0.0)) * 100.0,
+			]
 		"road_tight_curve":
 			return "Curve too tight: radius %.1f m, needs %.1f m" % [
 				float(preview.get("geometry_measured", 0.0)),

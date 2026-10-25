@@ -10,6 +10,7 @@
 //! **Never modify [`graph::RegionGraph`] directly from outside this module.**
 
 use godot::prelude::*;
+pub(crate) mod grade;
 pub mod graph;
 pub mod render;
 pub mod roadbed;

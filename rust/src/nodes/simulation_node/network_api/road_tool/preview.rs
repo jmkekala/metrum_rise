@@ -531,6 +531,8 @@ impl SimulationNode {
             invalid_reason: "",
             max_grade: number("max_grade"),
             allowed_grade: number("allowed_grade"),
+            warning_reason: "",
+            warning_limit: number("warning_limit"),
             offending_span_start_m: number("offending_span_start_m"),
             offending_span_end_m: number("offending_span_end_m"),
             offending_span_run_m: number("offending_span_run_m"),
@@ -562,6 +564,8 @@ impl SimulationNode {
         dict.set("invalid_reason", validation.invalid_reason);
         dict.set("max_grade", validation.max_grade);
         dict.set("allowed_grade", validation.allowed_grade);
+        dict.set("warning_reason", validation.warning_reason);
+        dict.set("warning_limit", validation.warning_limit);
         dict.set("geometry_measured", validation.geometry_measured);
         dict.set("geometry_limit", validation.geometry_limit);
         dict.set("offending_span_start_m", validation.offending_span_start_m);
