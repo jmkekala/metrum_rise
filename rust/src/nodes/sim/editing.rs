@@ -16,12 +16,13 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, RoadExtensionReprofile, plan_road_edit,
     validate_road_candidate_fast, validate_road_edit,
 };
 use crate::simulation::network::roadbed::{
-    NodeArms, RoadbedDelta, RoadbedRestore, visual_roadbed_half_width_m,
+    RoadbedDelta, RoadbedRestore, visual_roadbed_half_width_m,
 };
 use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
@@ -121,7 +122,10 @@ impl SimCore {
             global_generation: self.terrain_payload_global_generation,
         };
         let roadbed = &self.transit_network.roadbed;
-        if let Some(overlap) = ReservedOverlap::first(self, roadbed.installed_pieces(&restore)) {
+        let before: Vec<_> = restore.replaced_pieces().collect();
+        if let Some(overlap) =
+            ReservedOverlap::first(self, roadbed.installed_pieces(&restore), &before)
+        {
             self.rollback_staged_road_edit(Some(&restore));
             let rejection = overlap.rejection();
             self.last_road_timing = format!("rejected={}", rejection.reason);
@@ -1018,13 +1022,33 @@ impl SimCore {
             }
         }
 
-        let mut affected_nodes = HashSet::new();
-        {
-            let edge = self.region_graph.edge_mut(edge_idx);
-            affected_nodes.insert(edge.start_node);
-            affected_nodes.insert(edge.end_node);
-            edge.class = class;
+        let edge = self.region_graph.edge(edge_idx);
+        let affected_nodes = HashSet::from([edge.start_node, edge.end_node]);
+        // A class whose pieces would not compile at either end, or would overlap fields or
+        // painted cells, is refused (`ROAD-68` open question 11 (c)).
+        let incident = affected_nodes
+            .iter()
+            .flat_map(|&node| {
+                let node = self.region_graph.get_valid_node(node);
+                self.region_graph.node_adjacency(node).iter().copied()
+            })
+            .filter(|&edge| !self.region_graph.edge(edge).deleted)
+            .chain([edge_idx])
+            .collect();
+        let tried = self.try_graph_edit(&incident, &affected_nodes, |core| {
+            core.region_graph.edge_mut(edge_idx).class = class;
+            HashSet::new()
+        });
+        if let Err(rejection) = tried {
+            debug_log!(
+                "road",
+                "edge_class_change_rejected edge={} reason={}",
+                edge_idx,
+                rejection.reason
+            );
+            return;
         }
+        self.region_graph.edge_mut(edge_idx).class = class;
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
         self.transit_network
@@ -1853,29 +1877,27 @@ impl SimCore {
                 );
             }
 
-            self.push_network_undo_for_local_topology(
-                affected_edges.clone(),
-                affected_nodes.clone(),
-            );
             // The moved pieces must compile and keep clear of fields and painted cells
-            // (`ROAD-68` open questions 2 and 11 (c)): try the move on the graph, compile its
-            // closure into a scratch roadbed and put the graph back before anything else sees it.
-            self.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
-            let refusal = self.closure_refusal(&affected_edges, &affected_nodes);
-            let checkpoint = self.undo_stack.back().and_then(|state| state.trans_graph.as_ref());
-            self.region_graph
-                .restore_undo_delta_local(checkpoint.expect("a node move has a graph checkpoint"));
-            if let Some(rejection) = refusal {
-                debug_log!(
-                    "road",
-                    "node_move_rejected node={} reason={} detail={}",
-                    node_id,
-                    rejection.reason,
-                    rejection.detail
-                );
-                self.undo_stack.pop_back();
-                return false;
-            }
+            // (`ROAD-68` open questions 2 and 11 (c)).
+            let tried = self.try_graph_edit(&affected_edges, &affected_nodes, |core| {
+                core.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
+                HashSet::new()
+            });
+            let checkpoint = match tried {
+                Ok(checkpoint) => checkpoint,
+                Err(rejection) => {
+                    debug_log!(
+                        "road",
+                        "node_move_rejected node={} reason={} detail={}",
+                        node_id,
+                        rejection.reason,
+                        rejection.detail
+                    );
+                    self.last_road_rejection = Some(rejection);
+                    return false;
+                }
+            };
+            self.push_network_undo_delta(checkpoint, None);
             // Invalidate both corridors; moving a node can leave its old cached cells behind.
             self.zoning
                 .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
@@ -1927,6 +1949,28 @@ impl SimCore {
         debug_assert!(changed.is_subset(affected_edges));
     }
 
+    // Tries a graph-only edit that dirties nodes (`ROAD-68` open questions 2 and 11 (c)): applies
+    // it, compiles the closure of `edges`, `nodes` and the edges `apply` returns into a scratch
+    // roadbed, and puts the graph back from a local checkpoint of `edges` and `nodes`, which must
+    // cover every record `apply` changes. `Ok` with that checkpoint, the edit's undo record, when
+    // the closure compiles and keeps clear of fields and painted cells; nothing outside the graph
+    // has changed either way. O(local records + closure pieces).
+    fn try_graph_edit(
+        &mut self,
+        edges: &HashSet<usize>,
+        nodes: &HashSet<u32>,
+        apply: impl FnOnce(&mut Self) -> HashSet<usize>,
+    ) -> Result<RegionGraphUndoDelta, RoadRejection> {
+        let checkpoint = self
+            .region_graph
+            .capture_undo_for_local_topology(edges.clone(), nodes.clone());
+        let changed = apply(self);
+        let dirty: HashSet<usize> = edges.iter().copied().chain(changed).collect();
+        let refusal = self.closure_refusal(&dirty, nodes);
+        self.region_graph.restore_undo_delta_local(&checkpoint);
+        refusal.map_or(Ok(checkpoint), Err)
+    }
+
     // Why the pieces of a node-dirtying edit cannot publish (`ROAD-68` open questions 2 and
     // 11 (c)): a node of the closure fails its layout or profile solve, or a piece overlaps a
     // field or painted cells. Compiles the closure of `edges` and `nodes` into an `O(1)` copy of
@@ -1941,7 +1985,7 @@ impl SimCore {
             scratch.mark_edge_dirty(edge);
         }
         for &node in nodes {
-            scratch.mark_node_dirty(node);
+            scratch.mark_node_dirty(self.region_graph.get_valid_node(node));
         }
         let delta = scratch.compile_delta(&self.region_graph);
         if let Some((node, error)) = delta.failed_nodes().next() {
@@ -1950,7 +1994,12 @@ impl SimCore {
                 format!("node {node} fails its junction layout or profile solve: {error:?}"),
             ));
         }
-        ReservedOverlap::first(self, delta.pieces().filter_map(|(_, mesh)| mesh))
+        let roadbed = &self.transit_network.roadbed;
+        let before: Vec<_> = delta
+            .pieces()
+            .filter_map(|(id, _)| roadbed.piece_mesh(id))
+            .collect();
+        ReservedOverlap::first(self, delta.pieces().filter_map(|(_, mesh)| mesh), &before)
             .map(ReservedOverlap::rejection)
     }
 
@@ -2100,29 +2149,14 @@ impl SimCore {
     ///
     /// A crossing moves its arm's mouth in the junction layout (D8), so the toggle re-lays the
     /// node out as a road edit does: clips, the profile solve that pins the arms up to them, the
-    /// node's roadbed closure and its lanes. A toggle whose layout fails is refused.
+    /// node's roadbed closure and its lanes. A toggle whose closure would not compile, or whose
+    /// pieces would overlap fields or painted cells, is refused.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
         if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return;
         }
         let node = self.region_graph.get_valid_node(node_id);
         let edge_id = edge_id as usize;
-        let previous = self
-            .region_graph
-            .node(node)
-            .crosswalk_overrides
-            .get(&edge_id)
-            .copied();
-        // The layout reads the overrides of the node's surviving id.
-        self.region_graph
-            .set_crosswalk_override(node, edge_id, enabled);
-        let lays_out = NodeArms::collect(&self.region_graph, node)
-            .is_none_or(|mut arms| arms.layout().is_ok());
-        self.region_graph
-            .restore_crosswalk_override(node, edge_id, previous);
-        if !lays_out {
-            return;
-        }
         let affected: HashSet<usize> = self
             .region_graph
             .node_adjacency(node)
@@ -2130,19 +2164,37 @@ impl SimCore {
             .copied()
             .filter(|&edge| !self.region_graph.edge(edge).deleted)
             .collect();
-        self.push_network_undo_for_local_topology(
-            affected.iter().copied().chain([edge_id]).collect(),
-            HashSet::from([node_id, node]),
-        );
-        self.region_graph
-            .set_crosswalk_override(node, edge_id, enabled);
+        let edges = affected.iter().copied().chain([edge_id]).collect();
+        // The layout reads the overrides of the node's surviving id. A toggle whose node no
+        // longer compiles, or whose moved mouths overlap reserved land, is refused (`ROAD-68`
+        // open question 11 (c)).
+        let toggle = |core: &mut Self| {
+            core.region_graph
+                .set_crosswalk_override(node, edge_id, enabled);
+            let nodes = HashSet::from([node]);
+            core.region_graph
+                .rebuild_intersection_clips_for_nodes(&nodes);
+            // A crossing moves the mouths, so the node's arms re-derive their profiles.
+            core.region_graph
+                .finalize_junction_endpoint_profiles(&nodes)
+        };
+        let checkpoint =
+            match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle) {
+                Ok(checkpoint) => checkpoint,
+                Err(rejection) => {
+                    debug_log!(
+                        "road",
+                        "crosswalk_override_rejected node={} edge={} reason={}",
+                        node,
+                        edge_id,
+                        rejection.reason
+                    );
+                    return;
+                }
+            };
+        self.push_network_undo_delta(checkpoint, None);
+        let changed = toggle(self);
         let nodes = HashSet::from([node]);
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(&nodes);
-        // A crossing moves the mouths, so the node's arms re-derive their profiles.
-        let changed = self
-            .region_graph
-            .finalize_junction_endpoint_profiles(&nodes);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &nodes);
         self.transit_network

@@ -568,23 +568,6 @@ impl RegionGraph {
             .insert(edge_id, enabled);
     }
 
-    /// Puts back a crossing override read before [`Self::set_crosswalk_override`]; `None`
-    /// removes it.
-    pub fn restore_crosswalk_override(
-        &mut self,
-        node_id: u32,
-        edge_id: usize,
-        previous: Option<bool>,
-    ) {
-        let Some(node) = self.nodes.get_mut(node_id as usize) else {
-            return;
-        };
-        match previous {
-            Some(enabled) => node.crosswalk_overrides.insert(edge_id, enabled),
-            None => node.crosswalk_overrides.remove(&edge_id),
-        };
-    }
-
     /// Returns a mutable iterator over all edge slots (including soft-deleted ones).
     pub fn edges_iter_mut(&mut self) -> impl Iterator<Item = &mut Edge> {
         self.edges.iter_mut()

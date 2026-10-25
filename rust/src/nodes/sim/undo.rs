@@ -125,7 +125,7 @@ impl SimCore {
         self.push_network_undo_delta(graph, (!zoning.is_empty()).then_some(zoning));
     }
 
-    fn push_network_undo_delta(
+    pub(crate) fn push_network_undo_delta(
         &mut self,
         graph: RegionGraphUndoDelta,
         zoning: Option<ZoningParcelRemovalUndo>,

@@ -188,20 +188,22 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
     step("T beside painted cells", &|core| {
         commit(core, (-H - 36.0, 0.0), (-H - 36.0, -70.0))
     });
-    // Painted grid junctions move 1 m, an edge T and an interior crossing, and the moves are
-    // undone.
-    step("grid node move", &|core| {
-        let node = node_at(core, H, 150.0);
-        core.move_network_node_internal(node as i32, point(core, H + 1.0, 150.0))
-    });
-    step("interior node move", &|core| {
-        let node = node_at(core, 0.0, -250.0);
-        core.move_network_node_internal(node as i32, point(core, 1.0, -250.0))
-    });
-    step("undo of the interior move", &|core| {
-        core.undo_action_internal()
-    });
-    step("undo of the grid node move", &|core| {
-        core.undo_action_internal()
-    });
+    // Painted grid junctions moved 1 m, an edge T and an interior crossing, would carry their
+    // roads onto painted lots, so both moves are refused (`ROAD-68` open question 2) and leave
+    // every product, and the undo history, as it was.
+    for (name, at, to) in [
+        ("grid node move", (H, 150.0), (H + 1.0, 150.0)),
+        ("interior node move", (0.0, -250.0), (1.0, -250.0)),
+    ] {
+        let before = cores.each_mut().map(|core| (products(core), core.undo_stack.len()));
+        for core in &mut cores {
+            let node = node_at(core, at.0, at.1);
+            let target = point(core, to.0, to.1);
+            assert!(!core.move_network_node_internal(node as i32, target), "{name}");
+            let reason = core.last_road_rejection.take().map(|rejection| rejection.reason);
+            assert_eq!(reason.as_deref(), Some("zoning_cell_overlap"), "{name}");
+        }
+        let after = cores.each_mut().map(|core| (products(core), core.undo_stack.len()));
+        assert_eq!(before, after, "{name}: a refused move changes nothing");
+    }
 }

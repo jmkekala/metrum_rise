@@ -172,6 +172,16 @@ pub struct RoadbedRestore {
     failures: Vec<(u32, Option<NodeError>, Option<NodeError>)>,
 }
 
+impl RoadbedRestore {
+    /// The pieces the install replaced, as they were published before it: what an edit's
+    /// reservation checks compare its new pieces with (`ROAD-68` open question 1).
+    pub fn replaced_pieces(&self) -> impl Iterator<Item = &PieceMesh> + '_ {
+        self.pieces
+            .iter()
+            .filter_map(|(_, old, _)| old.as_ref().map(PublishedPiece::mesh))
+    }
+}
+
 impl RoadbedSystem {
     /// Creates an empty roadbed whose render chunks span `chunk_span_m` metres from the origin.
     pub fn new(chunk_span_m: f32) -> Self {
@@ -476,6 +486,11 @@ impl RoadbedSystem {
             failures,
         };
         (changed.into_iter().collect(), restore)
+    }
+
+    /// The published mesh of one piece, if the owner has one.
+    pub fn piece_mesh(&self, id: PieceId) -> Option<&PieceMesh> {
+        self.pieces.get(&id).map(PublishedPiece::mesh)
     }
 
     /// The pieces an install published, as this roadbed holds them while nothing rebuilt them

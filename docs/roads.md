@@ -603,8 +603,8 @@ graph replica. The view shares terrain and water until their own generations cha
 roadbed in `O(1)` and the published road chunks in `O(1)`, and takes its graph from the copy the
 command's routing rebuild made (commit, undo, road bulldoze); the replica follows by the records
 of the owners whose pieces the roadbed rebuilt. Sites, zoning and field reservations are not in
-the view yet: the parcel and field corridor checks run at the commit only (`ROAD-68-E` part 2,
-[open question 1](#road-68-open-questions), plans them from the preview's pieces). The terrain
+the view yet: the commit tests the pieces it installs against fields and painted cells, and its
+stroke corridor against parcels ([open questions 1 and 25](#road-68-open-questions)). The terrain
 inputs are a persistent map published with the view in `O(1)` (round 3): per render patch the
 refined cache entry, the assembly ledger, the site ownership and the building sites within the
 widest road query margin. The core notes every patch whose inputs may change (generation bumps,
@@ -637,8 +637,8 @@ paint frame under the bars differs). `ROAD-68-F` owns "lane markings at junction
 signs" and builds both from the layout's `Crosswalk` and arms for preview and commit alike (one
 function); no cheaper exact path exists now (lanes for the closure would need a lane-system
 replica), so payload equality stays open for those strokes
-([open question 26](#road-68-open-questions)). The parcel and field corridor checks run at the
-commit only ([open question 25](#road-68-open-questions)). The fingerprint is the road-tool surface
+([open question 26](#road-68-open-questions)). The field and cell checks of the preview's pieces
+and the parcel corridor check run at the commit only ([open question 25](#road-68-open-questions)). The fingerprint is the road-tool surface
 generation, the roadbed generation and the source and visual terrain generations: the roadbed
 generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
 generation was added.
@@ -665,6 +665,8 @@ workers bake them; Godot stages them with `road_terrain_preview.gd` beside the r
 - If the fingerprint is still current, the simulation installs the preview's pieces and terrain
   patches without recompiling, then applies the topology mutation (graph, lanes, zoning, parcels).
 - If it is stale, the simulation recompiles locally and synchronously.
+- Either way the pieces it installs must keep clear of committed fields and painted cells, or the
+  staged edit rolls back ([open question 1](#road-68-open-questions)).
 
 Godot keeps showing the preview until the committed generation is acknowledged, then swaps road and
 terrain atomically, so no frame shows neither.
@@ -969,8 +971,29 @@ These need a user decision; work that does not depend on them continues.
    plan readiness, so a junction corner may overlap painted cells until `ROAD-68-E`/`ROAD-68-F`
    restore the check from preview pieces. Options: accept on the branch (current), or block commits
    that touch reserved cells near nodes.
+   **Implemented in `ROAD-68-E` part 2 (2026-10-25), at the commit.** The commit tests the pieces
+   it installs, which are the preview's own when it adopts them and its local compile otherwise,
+   against committed fields and painted cells (with their occupied grace claims) before it accepts
+   the edit: each piece's top triangles against the fields in its bounds and the reserved cells in
+   its bounds (`ReservedOverlap`, `FieldClearance::overlaps_road_piece`,
+   `ZoningSystem::cells_overlap_road_piece`); an overlap rolls the staged edit back with
+   `field_overlap` or `zoning_cell_overlap`. The field and cell corridor checks are gone from the
+   commit and from plan readiness (`RoadEditPlan::status`): a plan has no pieces to test, so a ready
+   plan is refused at the commit with the graph, undo history and roadbed unchanged. The parcel
+   corridor check stays. `a_field_in_a_junction_corner_refuses_the_road` (a field in a T's curb
+   return, clear of both roads' corridors) fails with the corridor checks and passes now. Still
+   open: the preview does not show the overlap before the click, because the view publishes no
+   field or cell index ([open question 25](#road-68-open-questions)).
 2. **Node moves over painted cells — decided 2026-10-24 (user): restore in `ROAD-68-E`**, with question 11's (c). The node-move reservation check compiled a local surface.
    It is removed until `ROAD-68-F`; node moves are currently unchecked against cell reservations.
+   **Implemented in `ROAD-68-E` part 2 (2026-10-25).** A node move tries the move on the graph,
+   compiles the moved closure into an `O(1)` copy of the published roadbed, puts the graph back from
+   the move's own undo checkpoint and refuses, with nothing else touched, when a node of the closure
+   fails its layout or profile solve or a piece overlaps a field or painted cells
+   (`SimCore::closure_refusal`, question 1's test); otherwise the move proceeds as before. Both
+   movement tests, `bridge_entry_points_never_use_the_global_pool` and `run.sh`'s
+   `zoning_cells_tool_test` run again (the global-pool test's save now settles the routing hold
+   first, `save_game_settled`: a harness change `ROAD-68-G`'s D7 required while the test was off).
 3. **Site CDT margin — decided 2026-10-24 (user): resolved by `ROAD-68-D`'s shared grading envelope.** Building-site loops used the legacy seam-vertex grading margin for their
    sample bounds. They now use the base local sample margin. Steep site tie-ins may sample less
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
@@ -1036,6 +1059,10 @@ These need a user decision; work that does not depend on them continues.
    profile from its control polyline with the mouth knots of both ends' current pins, so no solve
    can drop the other end's knot, and nothing distinguishes stable from adapted arms. `ROAD-68-E`
    only needs to confirm it on the preview path.
+   **Confirmed in `ROAD-68-E` part 2:** `a_far_junction_keeps_the_near_mouth_pinned_on_the_preview_path`
+   gives the trunk link east of a side road a junction at its far end in a preview; the near
+   junction is in the preview's closure and compiles, and the commit installs the preview's piece
+   with no failed node, flat and sloped. No code change.
 8. **Saves from before `ROAD-68-C` (`ROAD-68-C`) — decided 2026-10-24 (user): accept the load repair; regenerate
    the reference fixtures with `ROAD-68-E`'s load rebuild; no migration code.** Their clips come from the legacy setback rule
    (about 5.5 m at a right-angle T) and their profiles are pinned only that far, while layout mouths
@@ -1044,6 +1071,9 @@ These need a user decision; work that does not depend on them continues.
    load repair re-solves them after recomputing their clips: the Kuopio reference fixture loads,
    but about ten of its junction profiles change. Options: accept the load repair (current); re-pin the
    reference fixtures; or a save migration with `ROAD-68-E`'s load rebuild.
+   **Not yet done in `ROAD-68-E` part 2** (rotated before it): the Kuopio save, the
+   `placements.json` hash and the hillside fixture are still the pre-`ROAD-68-C` ones, and the three
+   tests listed under [`ROAD-68-E`](#road-68-a-disabled-tests) stay off.
 9. **Width steps on straight sectors (`ROAD-68-C`) — decided 2026-10-24 (user): build D4's taper at the start of
    `ROAD-68-D`.** D4's radial step has no face of its own. A
    straight sector between a narrower and a wider carriageway gets the generic strips, which are
@@ -1080,7 +1110,9 @@ These need a user decision; work that does not depend on them continues.
       hold test. It fails if the hold is restored.
     - **Follow-up for `ROAD-68-E`.** Option (c): validate affected layouts in every operation
       that dirties nodes (undo, terrain sync, node moves), so a published gap can only come from
-      a bug.
+      a bug. **Part 2 (2026-10-25):** node moves validate their closure before they apply
+      (question 2, `SimCore::closure_refusal`); undo, terrain sync, crosswalk overrides, edge class
+      changes and road bulldoze still publish a failed node as a gap.
 
 12. **Walkers switch sides only on crossings (`ROAD-68-C` follow-up) — resolved 2026-10-24: the
     user chose "keep the old behaviour".**
@@ -1195,6 +1227,26 @@ These need a user decision; work that does not depend on them continues.
       the profile preparation. (b) Accept: different stroke heights are a different graph.
       (c) Pin strokes to the terrain within the node extent of nodes they join.
     - **Current default.** Carriageway-only pins (pre-D); nothing else changed.
+    - **Implemented in `ROAD-68-E` part 2 (2026-10-25).** `plan_road_edit`
+      (`road_edit/support.rs`) prepares and plans the stroke, reads off the plan the pieces it
+      rebuilds (`RoadTopologyPlan::rebuilt_pieces`: the spans of its dirty source edges, the pieces
+      of its solved and merged source nodes, the source edges it splits and the nodes its ends
+      join) and, while the last preparation read the carriageway of such a piece, prepares and
+      plans again with those pieces excluded too. The exclusion only grows and every further pass
+      adds a piece the previous one read, so the passes end: one for a stroke over open terrain,
+      two for a join or crossing. Over an excluded span of an edge the stroke splits, a sample
+      takes that edge's physical profile height (pinned); a stroke end that joins a node takes the
+      node's graph height, so a raised road end is still joined and snapped (the join rule alone
+      would leave that end at the source terrain, up to the fill height below the node). The bridge
+      and tunnel classification reads the same support. The commit, the preview and the editor's
+      checks all plan through this function. `sloped_junctions_do_not_depend_on_drawing_order` runs
+      again on the T fixtures (through road first and last) and passes; before, the sloped test
+      failed on the Y at the first branch's samples beside the node (fresh run) and, by the
+      evidence above, on the T. `a_crossing_of_a_raised_road_meets_it_on_top` covers the
+      crossing exception on a road filled 1 m and more over a pit. The reference probe changes in
+      `y_25/true` only (re-recorded with attribution). The sloped Y, cross and two-junction
+      fixtures still depend on drawing order through two authored-state rules, which
+      [open question 29](#road-68-open-questions) records.
 
 17. **Footpath attachment choices (pre-D, D5) — zebra placement decided 2026-10-24 (user): the
     zebra stays at the corner and only the mouth moves; done in the
@@ -1328,6 +1380,9 @@ These need a user decision; work that does not depend on them continues.
       the pure-job deadlock is fixed and the new lanes are lifted on the pool again (done in
       part 5: median 19.3 ms before the rebase, about 13 ms expected with (c)). `ROAD-68-G`
       stays open until the commit fits a frame.
+    - **`ROAD-68-E` part 2 (2026-10-25):** option (b) is not started. The brief measures first
+      with gate G's harness once `ROAD-68-D` part 6 lets the 100k commit through; it has not
+      landed yet.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -1471,6 +1526,11 @@ These need a user decision; work that does not depend on them continues.
       view now, an `O(parcels)` copy per publication unless they become persistent.
     - **Recommendation.** (a): no stall, no city copy, and part 2 replaces it with exact planned
       checks. A refused click keeps its reason on the stroke until the pointer or the context moves.
+    - **Part 2 (2026-10-25).** Question 1 replaces the field and cell corridor checks at the
+      commit with checks of the installed pieces; the parcel corridor check stays at the commit.
+      The preview still learns of a field, cell or parcel overlap only from the refused click: a
+      per-pose check needs the field and cell indices in the view, which (c) describes and which
+      stays open until they are persistent.
 26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — open, target missed.**
     The preview's chunks equal the committed chunks bitwise only when the edit's closure has no
     crossing and no road sign: the renderer builds crosswalk paint and signs from lanes, and a
@@ -1531,6 +1591,35 @@ These need a user decision; work that does not depend on them continues.
       labels and rebuild every tile a renumbered piece reaches (the whole trunk), which misses
       the budget for no geometric reason.
     - **Recommendation.** (a) now; (b) when the debug inspector needs edge ids again.
+29. **Drawing order on slopes after question 16 (`ROAD-68-E` part 2) — decided by the coordinator
+    under the user's delegation, 2026-10-25, for review: (a); not implemented yet.**
+    - **Evidence.** With question 16 implemented the sloped T fixtures are bitwise independent of
+      drawing order; the other sloped fixtures are not, through two rules that are not piece
+      reads. (1) *Terminal extensions.* A stroke from a road end is solved together with the road
+      it extends as one vertical corridor (`prepare_terminal_road_extension`), which rewrites that
+      road's control polyline. Every Y draws its second stroke from the first one's end, so the
+      order decides which two roads are solved together: on the 2.5% slope `y_25` in order
+      `[0, 2, 1]` differs from `[0, 1, 2]` by one ulp at index 5 of a branch, whose samples and
+      support are identical in both (one is the extension solve, the other a plain solve). (2)
+      *Mid-span meetings.* By question 16's crossing rule a stroke meets a road it splits mid-span
+      at that road's graph profile, so the road drawn first sets the meeting height: the cross's
+      junction differs by about 7 mm between orders, and the two-junction fixture's junction at
+      `(-30, 0)` by two ulps (side road first: its end at the terrain; through road first: the
+      through road's profile between two of its samples). The T at the origin agrees by chance.
+    - **Options.** (a) Drop the extension's combined re-solve: a stroke from a road end joins it
+      like any node, at the node's graph height, and the bend's plane solve keeps the joint
+      continuous; no stroke then rewrites another road's control polyline, joins at existing nodes
+      are order independent (the Y), and mid-span meetings stay question 16's authored-state rule,
+      which the sloped test then asserts directly for the cross and the pair. (b) Keep both as
+      authored-state rules: the sloped Y, cross and pair are different graphs in different orders
+      and leave the test. (c) Also make mid-span meetings order independent, by letting a stroke
+      that passes an existing road end re-height that node to its own profile, which edits the
+      other road.
+    - **Recommendation.** (a): it removes the last history channel at joins without changing the
+      user's crossing rule; (b) gives up invariant 6 for every Y, and (c) edits authored roads.
+    - **Status.** The fixtures stay asserted in
+      `sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order`, ignored with
+      `ROAD-68-E: open question 29`; (a) is the next step of `ROAD-68-E` part 2.
 
 29. **The commit's terrain at city scale (`ROAD-68-D` part 6) — open, target missed.**
     - **Evidence.** With the city's refined terrain built and `ROAD-68-E`'s chain rule, a T

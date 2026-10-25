@@ -47,17 +47,25 @@ pub(crate) enum ReservedOverlap {
 }
 
 impl ReservedOverlap {
-    /// The first reservation the pieces overlap, piece by piece in order, fields before cells.
-    /// O(pieces * reservations in their bounds * top triangles); a piece with no reservation in
-    /// its bounds costs one bounds query each.
+    /// The first reservation the edit's new pieces newly cover, piece by piece in order, fields
+    /// before cells; `before` are the pieces the edit replaces. A painted cell is refused when a
+    /// new piece covers it and no replaced piece did ([`ZoningSystem::cells_newly_covered_by_road_piece`]);
+    /// fields when a new piece overlaps one and no replaced piece overlapped any. O(pieces *
+    /// reservations in their bounds * top triangles); a piece with no reservation in its bounds
+    /// costs one bounds query each.
+    ///
+    /// [`ZoningSystem::cells_newly_covered_by_road_piece`]: crate::simulation::zoning::ZoningSystem::cells_newly_covered_by_road_piece
     pub(crate) fn first<'a>(
         core: &SimCore,
         pieces: impl IntoIterator<Item = &'a PieceMesh>,
+        before: &[&PieceMesh],
     ) -> Option<Self> {
+        let fields = &core.allocator.field_clearance;
+        let fields_before = before.iter().any(|mesh| fields.overlaps_road_piece(mesh));
         pieces.into_iter().find_map(|mesh| {
-            if core.allocator.field_clearance.overlaps_road_piece(mesh) {
+            if !fields_before && fields.overlaps_road_piece(mesh) {
                 Some(Self::Field)
-            } else if core.zoning.cells_overlap_road_piece(mesh) {
+            } else if core.zoning.cells_newly_covered_by_road_piece(mesh, before) {
                 Some(Self::CellZoning)
             } else {
                 None
