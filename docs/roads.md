@@ -3221,14 +3221,29 @@ Round 4 (part 1, 2026-10-25, work in progress; rebased on `road` `e9fee678`, gat
   preview's graph replica with the CCH job instead of the commit's graph copy is not exact as
   things stand: previews mutate the replica every pose while the job builds, so the job would
   need its own copy anyway; a persistent graph ([open question 21](#road-68-open-questions) (c))
-  is the way to drop the copy.
+  is the way to drop the copy. Measured with this branch's commit breakdown (release, 8 workers,
+  P-cores, both locks, D2): on the 1,300-resident street grid (tier 0) the publication takes
+  0.020-0.048 ms (`publish_ms`) and the commit's snapshot 0.036-0.050 ms (`snapshot_ms`) over
+  three samples; the 100k tier rejects its first commit with `render_geometry_invalid` on
+  `e9fee678` (gate D part 6), so the 100k numbers need gate G's harness on `a4941bbf` (next
+  round). No same-session control: the freed views now drop on the pool, off the measured call.
 - **Stage timings (round 4).** `benchmark_road_preview_stages` as in part 1 (release, 4 workers,
   P-cores, both timing locks), C = round 3's binary (`7089b50f`), D1 = this round before the
-  rebase (`d78dc7cc`), C D1 D1 C in one session, ms p50 / p95: terrain on `sloped_t` 7.07 / 8.20
-  (C, both runs within 0.01) against 5.59-5.60 / 6.26-6.31 (D1), 11 against 8 patches; on
-  `sloped_branch` 8.27-8.35 / 9.12-9.15 against 6.20-6.27 / 7.13-7.15, 11 against 9 patches.
-  Plan, roadbed and chunks unchanged (0.22-0.25, 0.33-0.35, 0.25-0.27 ms p50). **The terrain
-  stage still misses its 3.0 ms budget (open).** A profile of what remains (rebased binary, flat):
+  rebase (`d78dc7cc`), D2 = this round on `road` `e9fee678` (`608027cb`), C D1 D2 D2 D1 C in one
+  session, ms p50 / p95:
+
+  | Stage (budget) | `sloped_t` C | D1 | D2 | `sloped_branch` C | D1 | D2 |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Edit plan (1.0) | 0.25 / 0.29 | 0.25 / 0.29 | 0.25 / 0.29-0.33 | 0.22 / 0.26 | 0.22 / 0.25-0.27 | 0.21-0.22 / 0.25-0.27 |
+  | Roadbed (0.5) | 0.34 / 0.38-0.39 | 0.34 / 0.38-0.39 | 0.34-0.37 / 0.37-0.45 | 0.35 / 0.37-0.38 | 0.35 / 0.38-0.41 | 0.35 / 0.38-0.45 |
+  | Road chunks (part of packing, 1.0) | 0.27 / 0.30-0.32 | 0.25 / 0.29-0.31 | 0.35-0.50 / 0.40-0.59 | 0.27-0.28 / 0.32-0.33 | 0.26-0.27 / 0.30-0.35 | 0.35-0.40 / 0.39-0.56 |
+  | Terrain patches, four workers (3.0) | 7.07-7.09 / 8.12-8.17 | 5.56-5.57 / 6.25-6.32 | 4.50-4.91 / 5.08-6.65 | 8.30-8.33 / 9.10-9.24 | 6.25-6.35 / 7.14-7.25 | 4.82-5.48 / 5.76-7.65 |
+  | Patches per pose | 11 | 8 | 8 | 11 | 9 | 9 |
+
+  D1 against C is this round's change alone; D2 adds gate D's final terrain code (its grading
+  computes a loop's orientation once) and part 5's chunk-line clipping and zebra paint frames,
+  which raise the chunk stage within its budget. The first D2 run of the session is the slower
+  one in each pair. **The terrain stage still misses its 3.0 ms budget (open).** A profile of what remains (rebased binary, flat):
   heightmap interpolation 7%, the tie-in widening test 6.4% and the footprint test 3.1% (linear
   in the tile's loop edges per sample, D's question 22 option (b)), grading rays 5%, the window
   ground-triangle index 2.7%, Spade and its predicates about 14%; the per-pose work is the
