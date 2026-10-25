@@ -1631,6 +1631,10 @@ These need a user decision; work that does not depend on them continues.
       the plan-excerpt fix of question 8 brings the 100k click → ack median from 80.0 to 21.3 ms
       (samples 1 and 2 no longer re-derive an unchanged far link); the third sample takes
       15.0-15.4 ms, the first two 130 and 21 ms. Target still missed, open.
+    - **Decided by the user, 2026-10-25: the preview does not show the lots it derives; they
+      appear at the commit.** The preview derives the commit's lots only so that the commit
+      can install them: it draws, uploads and publishes no cell or lot geometry, and its render
+      payload stays the road chunks and terrain patches it has today.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
