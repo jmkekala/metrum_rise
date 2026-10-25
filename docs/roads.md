@@ -3060,6 +3060,14 @@ Two causes, both fixed constructively; the patch-selection rule stays `ROAD-68-E
   its first sample built the edit's 512 m patches (64 tiles each) cold. It now builds every road
   patch once after the city (setup, untimed), which also checks that the whole city's terrain
   builds: at 100k it does now, and it failed on the 64 tiles above before.
+- **One site query per patch.** `road_terrain_tiles` asked the building index whether a site
+  lies near each tile it visited within the cap of a changed piece, a 512 m chunk candidate scan
+  and sort per visit, with tiles visited again for every piece reaching them (`ROAD-68-E`
+  round 5: the 30k commit's warm `surface` 71.5-73.5 ms against 62-63 ms before the chain
+  rule). Candidates are now deduplicated per patch, the sites overlapping their union are fetched
+  once (`append_building_site_bounds_for_world_bounds`; the preview's snapshot has the same) and
+  each candidate is tested against them with the same closed bounds overlap, so the stamped
+  tiles are unchanged.
 - **Open, not this part's family.** A clipped site loop counts as a road loop for the shared
   vertex height rule (`road_loop_edge_sources_are_building_site_only` sees the clip's unsourced
   edges), so the road-wins rule does not apply to it; making it a site loop also turns
