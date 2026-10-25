@@ -4302,7 +4302,10 @@ A's Kuopio acceptance is judged on the re-recorded reference
 - **Gate checks** (fresh, on the final round 3 code): `cargo clippy --all-targets` gives the
   59-warning baseline set exactly; the debug library suite inside `./run.sh --test` passes:
   1,928 passed, 0 failed, 170 ignored; the graded, roadbed and Kuopio exactness tests 77 passed,
-  7 ignored. The rest of `./run.sh --test` is in the handoff.
+  7 ignored. `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset, 20:46-21:09) passes: the
+  library suite above, the integration tests (4 passed) and every Godot bridge and asset test;
+  it still skips the rendered vegetation tests (they need a Forward+ display) and the shader
+  global probe (headless renderer).
 - **Lines** (production, tests excluded): `graded/` 2,684 (round 2: 2,419; `sample` +134 for the
   lanes, the shared value, the nearest-seam tie and the base stops, `tile` +70 for the lattice
   runs and the evaluation modes, `seams` +34 for `Seam::at_lanes`, `grade` +20, `prune` +5);
