@@ -1936,7 +1936,7 @@ impl SimCore {
                 &mut site_query_keys,
             );
         }
-        self.road_terrain_inputs.note(site_query_keys);
+        self.road_terrain_inputs.note_sites(site_query_keys);
         self.terrain_dirty = true;
     }
 }

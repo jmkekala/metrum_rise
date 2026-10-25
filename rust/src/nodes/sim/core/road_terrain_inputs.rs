@@ -7,7 +7,9 @@
 //!
 //! The core notes every patch whose inputs may have changed (generation bumps, ledger stamps
 //! and acknowledgements, cache inserts and removals, ownership refreshes, site changes) and
-//! rebuilds only those patches when it publishes; a world reset rebuilds every patch. A missed
+//! rebuilds only those patches when it publishes; a world reset rebuilds every patch. Only a
+//! patch noted for a site change queries the sites again: the other notes change the entry or
+//! the ledger, and the patch keeps its sites and site ownership. A missed
 //! note cannot change a commit: the commit compares its own sources with the preview's and
 //! builds its terrain itself on any difference. Docs: `docs/roads.md` "Preview, commit, undo
 //! and load".
@@ -33,8 +35,9 @@ pub(crate) struct RoadTerrainPatchInputs {
     /// decides it.
     pub(crate) site_owned: bool,
     /// The building sites within the widest road query margin of the patch, in building order;
-    /// a source filters them to its own query bounds.
-    pub(crate) sites: BuildingSiteTerrainSnapshot,
+    /// a source filters them to its own query bounds. Shared until a site near the patch
+    /// changes.
+    pub(crate) sites: Arc<BuildingSiteTerrainSnapshot>,
 }
 
 /// The terrain inputs of every render patch, shared by the road tool's view.
@@ -61,6 +64,8 @@ impl RoadTerrainInputs {
 pub(crate) struct RoadTerrainInputsLog {
     inputs: RoadTerrainInputs,
     changed: BTreeSet<(usize, usize)>,
+    // The noted patches whose sites may have changed too; a subset of `changed`.
+    sites_changed: BTreeSet<(usize, usize)>,
     all: bool,
 }
 
@@ -69,6 +74,7 @@ impl Default for RoadTerrainInputsLog {
         Self {
             inputs: RoadTerrainInputs::default(),
             changed: BTreeSet::new(),
+            sites_changed: BTreeSet::new(),
             all: true,
         }
     }
@@ -82,10 +88,21 @@ impl RoadTerrainInputsLog {
         }
     }
 
+    /// Notes patches whose building sites, and so every input, may have changed.
+    pub(crate) fn note_sites(&mut self, keys: impl IntoIterator<Item = (usize, usize)>) {
+        if !self.all {
+            for key in keys {
+                self.changed.insert(key);
+                self.sites_changed.insert(key);
+            }
+        }
+    }
+
     /// Notes that every patch may have changed (a world reset, a dense terrain restore).
     pub(crate) fn note_all(&mut self) {
         self.all = true;
         self.changed.clear();
+        self.sites_changed.clear();
     }
 
     /// The inputs as last rebuilt, in `O(1)`.
@@ -101,7 +118,8 @@ impl RoadTerrainInputsLog {
 
 impl SimCore {
     /// Rebuilds the noted patches' terrain inputs and returns the current inputs. `O(noted
-    /// patches * (log patches + sites near each))`; every patch after a reset.
+    /// patches * log patches + site-noted patches * sites near each)`; every patch after a
+    /// reset.
     pub(crate) fn refresh_road_terrain_inputs(&mut self) -> RoadTerrainInputs {
         let log = &mut self.road_terrain_inputs;
         let keys: Vec<(usize, usize)> = if log.all {
@@ -116,6 +134,7 @@ impl SimCore {
         } else {
             std::mem::take(&mut log.changed).into_iter().collect()
         };
+        let sites_changed = std::mem::take(&mut log.sites_changed);
         let all = std::mem::replace(&mut log.all, false);
         let global_generation = self.terrain_payload_global_generation;
         let stroke_active = self.terrain_stroke_active;
@@ -128,7 +147,14 @@ impl SimCore {
                 .prepare_building_site_query_index(self.config.zone_cell_m);
         }
         for key in keys {
-            let inputs = self.road_terrain_patch_inputs(key);
+            let kept = self
+                .road_terrain_inputs
+                .inputs
+                .patches
+                .get(&key)
+                .filter(|_| !all && !sites_changed.contains(&key))
+                .map(Arc::clone);
+            let inputs = self.road_terrain_patch_inputs(key, kept.as_deref());
             self.road_terrain_inputs
                 .inputs
                 .patches
@@ -144,8 +170,13 @@ impl SimCore {
     }
 
     // One patch's inputs: the same queries the commit's ownership refresh and source phase run,
-    // the sites widened to the largest margin a road edit can give the patch.
-    fn road_terrain_patch_inputs(&self, key: (usize, usize)) -> RoadTerrainPatchInputs {
+    // the sites widened to the largest margin a road edit can give the patch. With `kept`, the
+    // patch's sites did not change, so its sites and site ownership are kept.
+    fn road_terrain_patch_inputs(
+        &self,
+        key: (usize, usize),
+        kept: Option<&RoadTerrainPatchInputs>,
+    ) -> RoadTerrainPatchInputs {
         let step_m = ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
         let cache_key = SimulationNode::refined_patch_cache_key(key.0, key.1, step_m);
         let entry = self
@@ -158,14 +189,15 @@ impl SimCore {
         else {
             return RoadTerrainPatchInputs::default();
         };
-        let site_margin_m =
-            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(&self.heightmap, step_m);
-        let site_owned = self.allocator.has_building_site_for_world_bounds(
-            min_x - site_margin_m,
-            min_z - site_margin_m,
-            max_x + site_margin_m,
-            max_z + site_margin_m,
-        );
+        let ledger = self.refined_terrain_assembly_ledgers.get(&key).cloned();
+        if let Some(kept) = kept {
+            return RoadTerrainPatchInputs {
+                entry,
+                ledger,
+                site_owned: kept.site_owned,
+                sites: Arc::clone(&kept.sites),
+            };
+        }
         let widest_m = road_terrain_sites_margin_m(&self.heightmap);
         let sites = self.allocator.terrain_site_snapshot_for_world_bounds(
             min_x - widest_m,
@@ -173,11 +205,21 @@ impl SimCore {
             max_x + widest_m,
             max_z + widest_m,
         );
+        // The widest margin holds the local one, so the snapshot answers the ownership refresh's
+        // site test with the same overlap rule.
+        let site_margin_m =
+            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(&self.heightmap, step_m);
+        let site_owned = sites.has_site_for_world_bounds(
+            min_x - site_margin_m,
+            min_z - site_margin_m,
+            max_x + site_margin_m,
+            max_z + site_margin_m,
+        );
         RoadTerrainPatchInputs {
             entry,
-            ledger: self.refined_terrain_assembly_ledgers.get(&key).cloned(),
+            ledger,
             site_owned,
-            sites,
+            sites: Arc::new(sites),
         }
     }
 }
