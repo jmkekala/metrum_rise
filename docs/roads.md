@@ -690,7 +690,11 @@ the allocator copies on write) in `O(1)`, and since round 4 the whole zoning cel
 maps are persistent (`imbl`), so a copy is `O(1)` and shares every block until either side
 writes it; the preview runs the commit's own test on its installed and replaced pieces against
 the store's reserved cells, so it shows `field_overlap` or `zoning_cell_overlap` before the
-click. The terrain
+click. Since round 5 every lot derivation is one planner (`CellLotPlanner`: cell generation and
+lot claims on a cell store and lot queue it changes in place, against a parcel store it only
+reads, recording its parcel changes as the store calls they stand for) and one installer that
+makes those calls on the parcel store the plan read; the preview is to run the same planner on
+its own copies (question 21 (b)) and draws nothing of it (user decision). The terrain
 inputs are a persistent map published with the view in `O(1)` (round 3): per render patch the
 refined cache entry, the assembly ledger, the site ownership and the building sites within the
 widest road query margin. The core notes every patch whose inputs may change (generation bumps,
@@ -1723,6 +1727,17 @@ These need a user decision; work that does not depend on them continues.
       when the store's and the parcels' revisions are the preview's. The first commit beside a
       painted city spends its extra time in the commit's terrain validation, which
       `TERRAIN-07` replaces (same record). Target still missed, open.
+    - **`ROAD-68-E` part 2, round 5 (fresh, 2026-10-25 16:37-17:56 EET): the regression is
+      the persistent maps themselves; the lot derivation is one planner and one installer.**
+      A build whose view shares nothing is as slow as round 4's, and so are builds with the
+      store's values behind `Arc` and writes that read first (kept) and with generation's
+      temporary index in plain maps (dropped): copy-on-write is not the cost
+      ([round 5 record](#part-2-round-5-2026-10-25-branch-road68-e5-work-in-progress)). The
+      store design the preview's lot plan needs is [open question 32](#road-68-open-questions).
+      Every lot derivation now runs on `CellLotPlanner` and installs its recorded parcel calls
+      (`install_cell_lot_plan`), bitwise; the preview does not plan yet (it needs question 32,
+      the parcel view, the lot sizes and the explicit-site index in the view). Target still
+      missed, open.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -2144,6 +2159,29 @@ These need a user decision; work that does not depend on them continues.
       beyond 12 m (the narrow Y and the D4 tapers that part 2 lays out at straight profile
       changes). So the visible change above also covers those junctions; in the reference
       probe `y_25/true`'s lanes follow both part 2's minimum run and this sample.
+32. **The cell store the preview plans lots on (`ROAD-68-E` round 5, from question 21 (b)) —
+    open, not taken.** Round 4 made the zoning cell store persistent (`imbl` maps) so that the
+    road tool's view holds it in `O(1)` and the preview can plan lots on a copy. That store
+    makes the commit's `buildings` stage 0.3-1.7 ms slower at 10k-100k residents (round 5
+    record), and the cost is the persistent maps themselves, not their sharing: a build whose
+    view shares nothing is as slow, as are builds with the values behind `Arc` and every write
+    reading first, and with cell generation's temporary candidate index in plain maps. The
+    acceptance (`buildings` within the control's spread) cannot be relaxed.
+    - **Options.** (a) Keep the persistent store and find the operations that cost (a profile
+      of the commit's cell-lot windows, C against the persistent build, is the next step; the
+      reads are spread over generation's conflict and support passes and lot derivation, so a
+      large cut is not expected). (b) Keep the live store in plain maps, as before round 4, and
+      give the view a persistent copy brought up to date at each publication from the store's
+      own write journal (every block, chunk entry, frontage, curve source, frame and alignment
+      write records its key; the publication copies those entries, `O(changes × log n)`): an
+      exact derived copy, never stale, at twice the memory; the planner is one function
+      generic over the two map kinds, the preview plans on a copy of the view's store, and the
+      commit installs a matching plan by writing its changed entries into the live store,
+      otherwise plans on the live store itself. (c) Plain live store and no copy in the view:
+      the preview cannot plan lots, so question 21 (b) is not met.
+    - **Recommendation:** profile first (a, an hour); if no cut of about 1 ms is found, (b).
+      The parcel store needs the same kind of view for the preview's plan (it is a plain
+      store copied in `O(parcels)`), so (b)'s journal design would serve both.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
@@ -4757,6 +4795,71 @@ Part 2 of the round (question 21 (b) and the first-commit attribution):
   fewer), integration 4, every Godot script PASS (the hover assertion included), no SCRIPT
   ERROR; skipped only the display-only shader-global probe and the rendered vegetation tests.
   No `ROAD-68-E` ignore; four `TERRAIN-07`. `roadbed/` production lines 7,798, unchanged.
+
+#### Part 2, round 5 (2026-10-25, branch `road68-E5`, work in progress)
+
+Round 4's part 2 on `road` `ebe4381e` (documentation only, so the rebase is empty): the
+`buildings` regression first, then the first half of question 21 (b).
+
+- **The `buildings` regression, attributed (fresh, 16:37-17:26 EET).** Gate G's breakdown
+  (`benchmark_populated_commit_breakdown`, `METRUM_COMMIT_TIERS=0,10000,30000,100000`, release
+  library tests, 8 workers, P-cores, both timing locks, no restic), one session, order C E A B P
+  P B A E C: C = round 4's control (`096df250` with the sub-stage patch), E = round 4's part 2
+  (`76b4a7e1`, persistent store), A = E with the road tool's view holding an empty store (so
+  nothing shares the live store and nothing is copied on write), B = E with the store's blocks,
+  chunk entries and frontage lists behind `Arc` and every store write reading first
+  (`cf681907`), P = B with the lot planner below (`6f006989`). The first E run failed at
+  start-up (its binary's worktree had been removed; the coordinator restored it), so E has one
+  run. `buildings`, ms per sample (10k, 30k, 100k; samples 0 / 1 / 2):
+
+  | Run | 10k | 30k | 100k |
+  | --- | --- | --- | --- |
+  | C | 11.77 / 3.79 / 1.06, 12.12 / 4.12 / 1.05 | 7.76 / 2.57 / 1.53, 7.88 / 3.06 / 1.45 | 8.23 / 3.11 / 2.24, 8.90 / 3.36 / 2.33 |
+  | E | 12.53 / 4.70 / 1.35 | 9.47 / 3.12 / 2.00 | 10.39 / 3.72 / 2.62 |
+  | A | 12.47 / 4.42 / 1.17, 12.42 / 4.31 / 1.21 | 9.49 / 3.15 / 1.85, 9.20 / 3.43 / 1.83 | 9.81 / 3.74 / 2.49, 9.58 / 3.68 / 2.57 |
+  | B | 12.06 / 4.29 / 1.43, 11.90 / 4.39 / 1.14 | 9.60 / 2.77 / 1.77, 8.20 / 2.89 / 1.83 | 9.71 / 3.18 / 3.31, 9.26 / 3.35 / 2.46 |
+  | P | 12.47 / 4.35 / 1.43, 11.77 / 4.25 / 1.23 | 9.23 / 3.09 / 1.80, 8.76 / 3.06 / 1.76 | 9.45 / 3.59 / 2.61, 9.84 / 3.56 / 2.41 |
+
+  C against C: 0.01-0.67 ms. A, which shares nothing, is as slow as E: the regression is not
+  copy-on-write after publication but the persistent maps themselves, on paths the commit
+  takes whether or not the view holds the store. `Arc` values (B) change nothing measurable
+  (they stay: a shared path now copies pointers, not 656-byte blocks), and the planner split
+  (P) costs nothing beyond B. Every other stage moves within C against C; lot and generated
+  digests are equal in every tier and sample of all nine runs, and gate G's determinism (B,
+  P) shows no difference, `da3d23b6c8b63d20`. Preview stages (4 workers, C B P P B C): plan, roadbed and
+  terrain within C against C; road chunks +0.03-0.04 ms as in round 4 (a stage that runs no
+  changed code), within budget.
+- **Generation's temporary index in plain maps, measured and dropped (fresh, 17:34-17:56).**
+  Cell generation built its candidate index as a fresh `CellStore`, insert-heavy under `imbl`;
+  R = P with that index in plain hash maps (a shared block visitor, same visit order). Same
+  harness, C R R C: `buildings` per sample, C 11.31 / 3.83 / 1.00, 8.18 / 2.71 / 1.60,
+  8.55 / 3.15 / 2.47 and 10.68 / 3.98 / 1.27, 8.28 / 2.42 / 1.61, 8.36 / 3.16 / 2.05; R
+  13.00 / 4.72 / 1.16, 9.00 / 2.91 / 1.81, 9.27 / 3.37 / 3.02 and 12.01 / 4.46 / 1.27,
+  8.37 / 2.81 / 1.79, 9.73 / 3.34 / 3.11 (10k, 30k, 100k). No gain, so the change is not
+  kept; digests equal C's in every sample and determinism is `da3d23b6c8b63d20`. The cost is
+  the live store's own persistent reads and writes in generation and derivation; where
+  exactly is the next step's profile ([open question 32](#road-68-open-questions)).
+- **One lot planner and one installer (question 21 (b), first half).** Every lot derivation
+  (the commit, the `cell lots` queue, the tests' entries) runs on `CellLotPlanner`: cell
+  generation and lot claims on a cell store and lot queue it changes in place, against a parcel
+  store it only reads through `PlannedParcels`, which answers reads as the store would after
+  the plan's own retirements, reattachments and new lots and records each as the store call it
+  stands for (`insert_new`, `set_cell_lot`, `remove_local`, `replace_geometry`).
+  `ZoningSystem::install_cell_lot_plan` makes those calls in order on the store the plan read
+  and advances the overlay revision as the plan did. Generation reads only authored parcels,
+  which a plan never changes, so it reads the plan's base. Bitwise: lot and generated digests
+  equal C's in every sample (above), determinism unchanged, the narrow-marks digest test and
+  both probes pass, and a replay test (`a_planned_change_list_replays_to_the_directly_changed_store`)
+  checks the plan's reads against the directly changed store and every index and revision of
+  the replay. The commit plans on the live store, so the split changes no cost (P against B).
+- **Question 21 (b), second half: not started.** The preview's plan needs, besides question
+  32's store: a parcel view the planner can read off the simulation thread (the planner reads
+  through `PlannedParcels`; its base is the live `ParcelStore`, which a view copies in
+  `O(parcels)`), the lot sizes (`Arc`) and the explicit-site index in the view, the road edit's
+  lot marks (`mark_cell_lots_for_road_edit`) on the plan's copies, and the commit's install of a
+  plan whose base is still the live state (otherwise the commit plans itself). The test the
+  round's brief asks for (commits with and without a matching preview plan, lot, generated and
+  narrow-marks digests compared) comes with it.
 
 ### `ROAD-68-F` — remaining families
 

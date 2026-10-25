@@ -78,6 +78,7 @@ rust/src/simulation/zoning/profiles/{runtime,registry,authored,compile}.rs
 rust/src/simulation/zoning/parcels.rs
 rust/src/simulation/zoning/parcels/types.rs
 rust/src/simulation/zoning/parcels/store.rs
+rust/src/simulation/zoning/parcels/store/planned.rs
 rust/src/simulation/zoning/parcels/geometry.rs
 rust/src/simulation/zoning/parcels/geometry/{bounds,overlap,road_overlap,polyline,spatial}.rs
 rust/src/simulation/zoning/parcels/placement.rs
@@ -105,6 +106,8 @@ rust/src/simulation/zoning/parcels/placement/run/spacing.rs
 - `parcels.rs`: parcel module routing and public re-exports
 - `types.rs`: ids, parcel structs, projected geometry, placement errors
 - `store.rs`: stable parcel storage, chunk lookup, occupancy fields
+- `store/planned.rs`: the parcel store as a cell-lot plan sees it, and the replay of the plan's
+  recorded store calls (`ROAD-68` open question 21 (b))
 - `geometry.rs`: geometry helper routing
 - `geometry/bounds.rs`: parcel rectangle construction and world-bounds checks
 - `geometry/overlap.rs`: SAT rectangle, point, and stroke overlap checks
@@ -1152,7 +1155,16 @@ footprints from the allocator's existing profile/content/economy selector, cappe
 cells and the existing 80 m maximum frontage. Missing assets leave paint available for later growth.
 
 Proposals are generated in parallel, sorted by canonical frame/frontage address, then decreasing
-area/width/depth and road identity. Cell claims publish sequentially in that order. Supported
+area/width/depth and road identity. Cell claims publish sequentially in that order.
+Since `ROAD-68-E` round 5 one planner (`CellLotPlanner`) does all of it: cell generation and lot
+claims on a cell store and lot queue it changes in place, against a parcel store it only reads
+through `PlannedParcels`, which answers reads as the store would after the plan's own
+retirements, reattachments and new lots and records each as the store call it stands for. The
+installer (`ZoningSystem::install_cell_lot_plan`) makes those calls in order on the store the
+plan read and advances the overlay revision as the plan did, so the installed parcels equal
+making the calls directly (a replay test compares every index and revision). The commit, the
+`cell lots` queue and the tests' entries all plan and install this way; the road tool's preview
+is to plan on its own copies with the same planner (`roads.md` open question 21 (b)). Supported
 existing lots and occupied lots remain fixed. This is a specified deterministic allocation order,
 not a global packing search. An asset change retires an unsupported **empty** lot and lets the
 new catalog derive a replacement; it never moves an occupied footprint. Local paint, source-road
