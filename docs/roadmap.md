@@ -171,7 +171,11 @@ fixtures change). Open: question 21 (b) (lots from the preview need the whole ce
 persistent) and the slower first commit of a painted city (`surface`, unattributed).
 Round 4 (branch `road68-E4`, work in progress) rebases round 3 onto `ROAD-68-F` part 2: question
 31's sample also changes six of part 2's family probe entries (attributed with a build that
-reverts it), and gate G's determinism digest is unchanged.
+reverts it), and gate G's determinism digest is unchanged. Its part 2 makes the zoning cell
+store persistent and shares it with the road tool's view (question 21 (b)'s first step; the
+user decided the preview never shows the lots it derives); outputs are bitwise unchanged, but
+the commit's `buildings` stage is 0.3-2.0 ms slower (open, not ready to land). The first commit
+beside a painted city spends its extra time in the legacy terrain validation (`TERRAIN-07`).
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.

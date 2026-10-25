@@ -686,10 +686,11 @@ command's routing rebuild made (commit, undo, road bulldoze); the replica follow
 of the owners whose pieces the roadbed rebuilt. The commit tests the pieces it installs against
 fields and painted cells, and its stroke corridor against parcels ([open questions 1 and
 25](#road-68-open-questions)); since part 2 round 3 the view shares the field index (an `Arc`
-the allocator copies on write) and the cell reservations (a persistent index the cell store
-keeps beside its blocks, `CellReservations`) in `O(1)`, and the preview runs the commit's own
-test on its installed and replaced pieces, so it shows `field_overlap` or `zoning_cell_overlap`
-before the click. The terrain
+the allocator copies on write) in `O(1)`, and since round 4 the whole zoning cell store, whose
+maps are persistent (`imbl`), so a copy is `O(1)` and shares every block until either side
+writes it; the preview runs the commit's own test on its installed and replaced pieces against
+the store's reserved cells, so it shows `field_overlap` or `zoning_cell_overlap` before the
+click. The terrain
 inputs are a persistent map published with the view in `O(1)` (round 3): per render patch the
 refined cache entry, the assembly ledger, the site ownership and the building sites within the
 widest road query margin. The core notes every patch whose inputs may change (generation bumps,
@@ -1705,6 +1706,23 @@ These need a user decision; work that does not depend on them continues.
       appear at the commit.** The preview derives the commit's lots only so that the commit
       can install them: it draws, uploads and publishes no cell or lot geometry, and its render
       payload stays the road chunks and terrain patches it has today.
+    - **`ROAD-68-E` part 2, round 4 (fresh, 2026-10-25 14:28-15:00 EET): the cell store is
+      persistent; the lots are not derived in the preview yet.** The store's maps are `imbl`
+      maps on the same hasher (frames an `imbl` vector), so the road tool's view holds the
+      whole store in `O(1)` and round 3's mirror index is gone (question 25). Lot and generated
+      digests are unchanged in every sample, and so is gate G's determinism digest. Measured
+      with gate G's breakdown against `road` at round 4's part 1 (`096df250`), the commit's
+      `buildings` stage (entrances and cell lots) is 0.3-2.0 ms slower in 8 of 9 tier samples
+      (C against C: 0.06-0.71 ms), medians 3.90 / 4.83, 3.30 / 3.38 and 3.24 / 3.94 ms at 10k,
+      30k and 100k ([round 4 record](#part-2-round-4-2026-10-25-branch-road68-e4-work-in-progress)).
+      Open: the regression (to attribute first: copy-on-write after each publication, since
+      the view holds the previous store and a block entry carries its whole 656-byte block,
+      against `imbl`'s lookups; an unshared lot regeneration is not slower), then the site
+      index and lot sizes in the view, a lot plan the preview derives on its store copy
+      against its edited replica and installed roadbed, and the commit's install of that plan
+      when the store's and the parcels' revisions are the preview's. The first commit beside a
+      painted city spends its extra time in the commit's terrain validation, which
+      `TERRAIN-07` replaces (same record). Target still missed, open.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -1887,6 +1905,11 @@ These need a user decision; work that does not depend on them continues.
       Lag: a redevelopment grace claim that ends in a simulation tick shrinks the reservations
       without a publication, so until the next one the preview may refuse what the commit
       accepts (never the reverse). Parcels keep the commit's corridor check.
+    - **Part 2, round 4 (2026-10-25).** The cell store itself is persistent now (question 21
+      (b)), so the view holds the store, and round 3's mirror index (`CellReservations`, kept
+      beside the blocks in `set_profile` and `assign_lot`) is removed: the commit and the
+      preview test the store's own reserved masks (`CellStore::visit_reserved_footprints_in_bounds`),
+      one index instead of two. The same refusal tests pass; the lag above is unchanged.
 26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — closed 2026-10-25 by
     `ROAD-68-F` part 1: met, bitwise.** The preview's chunks equalled the committed chunks only
     when the edit's closure had no crossing and no road sign: the renderer built crosswalk paint
@@ -4649,6 +4672,91 @@ Part 1 of the round: round 3 rebased onto `road` `4dc466fc` (`ROAD-68-F` part 2'
   is intermittent and not reproduced, so its cause is open. The assertion now reports the
   validation's reason, so the next occurrence names it. Profiles deleted, imports restored.
 - **Size.** `roadbed/` production lines 7,798, as `ROAD-68-F` part 2 (round 3 changed none).
+
+Part 2 of the round (question 21 (b) and the first-commit attribution):
+
+- **Persistent cell store.** `CellStore`'s maps (`frame_ids`, `blocks`, `chunks`, `frontages`,
+  `curve_sources`) are `imbl` hash maps on the same fixed hasher and `frames` an `imbl` vector,
+  behind the same API, so a copy of the store is `O(1)` (bar the edits' stale-chunk list) and
+  shares every block until either side writes it. The road tool's view holds the store
+  instead of round 3's mirror index, which is removed with its test; `ReservedOverlap::first`
+  reads the store's own reserved masks in the commit and the preview. Lot sizes and the
+  explicit-site index are not in the view yet: nothing reads them until the preview derives
+  lots. The user decided (question 21) that the preview never shows the lots it derives; the
+  preview's payload stays road chunks and terrain patches.
+- **Commit sub-stages.** `surface` is split into the roadbed install (compile or preview install
+  and the undo capture), the field and cell overlap test and the terrain validation
+  (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_terrain_ms` in `RoadEditMetrics` and
+  gate G's breakdown).
+- **Timing (fresh, 14:28-15:00 EET).** Release library tests, P-cores, both timing locks, no
+  restic. P = `road` `4dc466fc` (before round 3), C = `road68-E4` `096df250` (part 1, the
+  control), each with only the sub-stage patch; E = this part's code. Preview stages (`benchmark_road_preview_stages`, 4 workers, P C E E
+  C P), ms p50 / p95:
+
+  | Stage (budget) | `sloped_t` P | `sloped_t` C | `sloped_t` E | `sloped_branch` P | `sloped_branch` C | `sloped_branch` E |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Edit plan (1.0) | 0.435-0.439 / 0.553-0.554 | 0.467-0.474 / 0.546-0.549 | 0.469-0.470 / 0.526-0.531 | 0.364-0.411 / 0.473-0.482 | 0.404-0.408 / 0.456-0.460 | 0.403-0.404 / 0.455-0.461 |
+  | Roadbed (0.5) | 0.298-0.306 / 0.362-0.368 | 0.322-0.326 / 0.361-0.367 | 0.325-0.326 / 0.363-0.373 | 0.310-0.323 / 0.376-0.378 | 0.324-0.326 / 0.370-0.379 | 0.318-0.322 / 0.373-0.377 |
+  | Road chunks (1.0) | 0.413-0.418 / 0.483-0.501 | 0.374-0.376 / 0.444-0.446 | 0.403-0.405 / 0.457-0.468 | 0.406-0.415 / 0.481-0.493 | 0.357-0.360 / 0.415-0.432 | 0.399-0.402 / 0.456-0.459 |
+  | Terrain patches (3.0) | 4.39-4.41 / 4.98-5.00 | 4.62-4.67 / 5.23 | 4.64-4.66 / 5.20-5.27 | 4.60-4.71 / 5.58-5.68 | 4.84-4.88 / 5.81-5.88 | 4.88-4.92 / 5.92-5.99 |
+
+  With question 31's code (P to C) the plan rises up to 0.04 ms (round 3's 2-ring excerpt),
+  the roadbed stage 0.01-0.02 ms and the terrain stage 0.21-0.25 ms; round 3 measured no
+  terrain change before question 31's sample, so that rise follows the new planes on the
+  orbiting poses (not split by a build). The road chunk stage runs no changed code; its
+  0.03-0.05 ms between builds is a build-to-build difference (C against C: 0.002 ms). E
+  against C: no stage beyond C against C but the road chunks. Every stage but terrain (question
+  29, `TERRAIN-07`) is within budget at p95.
+- **Commit breakdown (same session).** `benchmark_populated_commit_breakdown`,
+  `METRUM_COMMIT_TIERS=0,10000,30000,100000`, 8 workers, P C E E C P, three samples per tier
+  and run; medians of the six samples, ms, P / C / E:
+
+  | Stage | 0 | 10k | 30k | 100k |
+  | --- | --- | --- | --- | --- |
+  | click → ack | 14.54 / 12.74 / 12.83 | 27.83 / 21.22 / 21.96 | 73.65 / 67.26 / 67.31 | 78.40 / 22.01 / 22.78 |
+  | plan | 0.32 / 0.35 / 0.35 | 0.39 / 0.40 / 0.41 | 0.38 / 0.47 / 0.47 | 0.43 / 0.51 / 0.53 |
+  | `surface` | 11.64 / 10.37 / 10.39 | 18.12 / 15.17 / 14.88 | 63.22 / 60.03 / 60.34 | 65.28 / 11.06 / 11.17 |
+  | of which roadbed install | 0.56 / 0.44 / 0.43 | 0.96 / 0.62 / 0.64 | 0.84 / 0.65 / 0.65 | 0.85 / 0.72 / 0.59 |
+  | of which overlap test | 0.00 / 0.00 / 0.00 | 0.04 / 0.02 / 0.03 | 0.03 / 0.01 / 0.01 | 0.04 / 0.01 / 0.02 |
+  | of which terrain validation | 11.08 / 9.92 / 9.95 | 17.11 / 14.52 / 14.21 | 62.35 / 59.36 / 59.67 | 64.39 / 10.33 / 10.56 |
+  | `buildings` (entrances, cell lots) | 0.00 | 4.57 / 3.90 / 4.83 | 4.16 / 3.30 / 3.38 | 4.85 / 3.24 / 3.94 |
+  | `mesh` | 2.27 / 1.77 / 1.69 | 3.55 / 0.86 / 0.88 | 3.62 / 1.49 / 1.32 | 2.53 / 2.05 / 2.08 |
+  | tool snapshot | 0.03 / 0.03 / 0.03 | 0.28 / 0.24 / 0.26 | 0.86 / 0.77 / 0.69 | 2.80 / 2.72 / 2.74 |
+
+  Lot and generated-cell digests are equal across all six runs in every tier and sample;
+  determinism (C and E, 14:28-14:29): no difference, `da3d23b6c8b63d20`.
+- **Sample 0's `surface` rise (round 3), attributed to the sub-stage.** P against C, each run:
+  at 10k the terrain validation takes 77.4 / 77.9 against 97.9 / 95.5 ms, the roadbed install
+  1.4 / 1.4 against 1.3 / 1.4 and the overlap test 0.09-0.12 against 0.09; at 30k 77.4 / 68.6
+  against 96.8 / 137.6 ms of terrain validation, at 100k 71.7 / 69.6 against 81.0 / 82.0, on
+  open terrain 11.2 / 10.7 against 13.8 / 13.9, with the install and overlap test unchanged.
+  The whole rise is the commit's legacy terrain validation (`validate_staged_road_terrain`,
+  refined patches over the same 6 dirty edges), which `TERRAIN-07` replaces; per the round's
+  brief it is recorded here and not pursued. Samples 1 and 2 stay far below P (round 3's
+  excerpt fix).
+- **The persistent store's cost, open.** In 8 of 9 tier samples both E runs take longer in
+  `buildings` than both C runs, by 0.3-2.0 ms (per sample, C / E: 10k 10.7, 11.4 / 12.7, 12.7,
+  4.1, 3.7 / 5.0, 4.7 and 1.1, 1.0 / 1.6, 1.3; 30k 7.9, 7.7 / 9.6, 9.3 and 1.5, 1.5 / 2.2, 2.0;
+  100k 9.3, 8.6 / 10.0, 10.0, 3.2, 3.3 / 4.2, 3.7 and 2.3, 2.2 / 2.7, 2.8; 30k's second sample
+  overlaps), beyond C against C (0.06-0.71 ms); the overlap test moves by
+  0.01-0.03 ms and the tool snapshot not at all. An unshared regeneration
+  (`benchmark_populated_cell_preparation`, 10k, A P P A on the shared timing lock beside other
+  work, so an indication only) was not slower (p50 3.29, 2.17 against 2.03, 1.84 ms), which
+  points at copy-on-write: the view holds the previous store, so the commit's first write to
+  each block copies its map path, and a block entry carries the whole block (656 bytes), a
+  chunk entry its block list. Not attributed by a build yet; the mitigations to measure are
+  shared blocks (`Arc<CellBlock>`, so a path copy moves pointers and a write copies one block)
+  and the same for chunk entries. Until then this part regresses the commit and is not ready
+  to land.
+- **Tests and checks.** Targeted debug suites on this part (13:26): zoning 129 / 0 / 12
+  ignored, save 41 / 0 / 3, road preview 14 / 0 / 2, zoning buildability 28 / 0 / 1, fields
+  15 / 0 / 2, editing 26 / 0, narrow-marks digest passes, both probes give part 1's products.
+- **Gate checks on this part's tree (fresh, 15:01-15:43).** Clippy `--all-targets`: the
+  baseline's 59-warning set, none new. `./run.sh --test` (same conditions as part 1): exit 0,
+  debug library 1,912 passed / 0 failed / 164 ignored (the removed mirror-index test is the one
+  fewer), integration 4, every Godot script PASS (the hover assertion included), no SCRIPT
+  ERROR; skipped only the display-only shader-global probe and the rendered vegetation tests.
+  No `ROAD-68-E` ignore; four `TERRAIN-07`. `roadbed/` production lines 7,798, unchanged.
 
 ### `ROAD-68-F` — remaining families
 
