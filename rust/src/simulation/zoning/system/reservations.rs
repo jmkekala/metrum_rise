@@ -7,7 +7,6 @@ use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
 use crate::simulation::zoning::cells::{CellBounds, road_contact_interior};
 use glam::DVec2;
-use godot::prelude::Vector3;
 
 impl ZoningSystem {
     /// Tests arbitrary (including concave) field/site footprints against both zoning workflows.
@@ -21,9 +20,12 @@ impl ZoningSystem {
     }
 
     /// Tests a proposed road corridor against painted cells and occupied grace claims locally.
+    /// Edits test the pieces they install instead ([`Self::cells_overlap_road_piece`]); tests
+    /// use the corridor to show what the pieces reach beyond it.
+    #[cfg(test)]
     pub(crate) fn cells_overlap_road_corridor(
         &self,
-        points: &[Vector3],
+        points: &[godot::prelude::Vector3],
         half_width_m: f32,
     ) -> bool {
         if !self.cells.has_reservations() {
