@@ -157,7 +157,7 @@ impl SimCore {
                     road_mesh_generation: self.road_mesh_lane_generation,
                     terrain_inputs,
                     fields: Arc::clone(&self.allocator.field_clearance),
-                    cell_reservations: self.zoning.cells.reservations().clone(),
+                    cells: self.zoning.cells.clone(),
                     surface_generation: self.road_tool_surface_generation,
                 };
                 (view, replica)

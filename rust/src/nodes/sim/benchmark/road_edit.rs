@@ -26,6 +26,11 @@ pub(crate) struct RoadEditMetrics {
     // Finalization includes the agent/lane, building, and routing child stages, but not surface_ms.
     pub(crate) finalize_ms: f64,
     pub(crate) surface_ms: f64,
+    // Children of surface_ms: roadbed compile or preview install with the undo capture, the
+    // field and cell overlap test, and the terrain validation and its cache install.
+    pub(crate) surface_roadbed_ms: f64,
+    pub(crate) surface_overlap_ms: f64,
+    pub(crate) surface_terrain_ms: f64,
     // Children of add_ms: undo record, topology mutation (graph and parcels), cell-lot marks.
     pub(crate) undo_ms: f64,
     pub(crate) topology_ms: f64,
@@ -61,6 +66,9 @@ impl RoadEditMetrics {
             terrain_plan_ms,
             finalize_ms,
             surface_ms,
+            surface_roadbed_ms,
+            surface_overlap_ms,
+            surface_terrain_ms,
             undo_ms,
             topology_ms,
             zoning_ms,

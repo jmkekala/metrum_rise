@@ -8,6 +8,7 @@ use crate::nodes::sim::core::{
     ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadPreviewTerrain, RoadRejection, ReservedOverlap,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
+use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
 use crate::simulation::buildings::allocator::{
@@ -86,7 +87,7 @@ impl SimCore {
     /// restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None)
+        self.validate_staged_road_render_installing(None, None, &mut Default::default())
             .is_some()
     }
 
@@ -94,12 +95,16 @@ impl SimCore {
     /// apply, and then its terrain entries when the commit's sources match the preview's
     /// (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells (`ROAD-68`
     /// open question 1). The undo record keeps what the install replaced. `Some(adopted)` when the
-    /// edit is accepted, telling whether the preview's terrain was installed.
+    /// edit is accepted, telling whether the preview's terrain was installed. `metrics` receives
+    /// the three sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`,
+    /// `surface_terrain_ms`).
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
         terrain: Option<&RoadPreviewTerrain>,
+        metrics: &mut RoadEditMetrics,
     ) -> Option<bool> {
+        let roadbed_start = Instant::now();
         let (patches, restore, installed) = self.publish_network_surface(false, delta);
         // What undo puts back: the entries before the edit, at the edit's generations.
         let step_m = crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
@@ -121,11 +126,14 @@ impl SimCore {
                 .collect(),
             global_generation: self.terrain_payload_global_generation,
         };
+        metrics.surface_roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
+        let overlap_start = Instant::now();
         let roadbed = &self.transit_network.roadbed;
         let before: Vec<_> = restore.replaced_pieces().collect();
-        if let Some(overlap) =
-            ReservedOverlap::first_in_core(self, roadbed.installed_pieces(&restore), &before)
-        {
+        let overlap =
+            ReservedOverlap::first_in_core(self, roadbed.installed_pieces(&restore), &before);
+        metrics.surface_overlap_ms = overlap_start.elapsed().as_secs_f64() * 1000.0;
+        if let Some(overlap) = overlap {
             self.rollback_staged_road_edit(Some(&restore));
             let rejection = overlap.rejection();
             self.last_road_timing = format!("rejected={}", rejection.reason);
@@ -137,6 +145,7 @@ impl SimCore {
             self.last_road_rejection = Some(rejection);
             return None;
         }
+        let terrain_start = Instant::now();
         let validation = match roadbed.failed_nodes().first() {
             None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
                 self,
@@ -148,6 +157,7 @@ impl SimCore {
                 roadbed.node_error(node)
             )),
         };
+        metrics.surface_terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
         match validation {
             Ok((entries, adopted)) => {
                 self.insert_refined_terrain_patch_cache_entries(entries);

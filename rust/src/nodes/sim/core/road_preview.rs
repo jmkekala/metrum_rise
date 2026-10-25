@@ -102,8 +102,9 @@ pub(crate) struct RoadToolQuerySnapshot {
     /// Committed field reservations, shared in `O(1)`: the preview tests its pieces against
     /// them as the commit does (`ROAD-68` open question 25).
     pub(crate) fields: Arc<crate::simulation::agriculture::FieldClearanceIndex>,
-    /// Reserved zoning cells, a persistent index shared in `O(1)` (open question 25).
-    pub(crate) cell_reservations: crate::simulation::zoning::cells::CellReservations,
+    /// The zoning cell store, a persistent copy shared in `O(1)`: the preview tests its pieces
+    /// against its reserved cells as the commit does (open questions 21 (b) and 25).
+    pub(crate) cells: crate::simulation::zoning::cells::CellStore,
     pub(crate) surface_generation: u64,
 }
 
@@ -159,7 +160,7 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         road_mesh_generation: core.road_mesh_lane_generation,
         terrain_inputs: core.road_terrain_inputs.current(),
         fields: Arc::clone(&core.allocator.field_clearance),
-        cell_reservations: core.zoning.cells.reservations().clone(),
+        cells: core.zoning.cells.clone(),
         surface_generation: core.road_tool_surface_generation,
     })
 }
@@ -341,7 +342,7 @@ impl RoadPreviewContext {
         let before: Vec<_> = restore.replaced_pieces().collect();
         let overlap = ReservedOverlap::first(
             &self.view.fields,
-            &self.view.cell_reservations,
+            &self.view.cells,
             roadbed.installed_pieces(&restore),
             &before,
         );

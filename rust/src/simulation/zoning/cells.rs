@@ -20,13 +20,18 @@ pub(crate) use lots::{CellFrontage, CellLot};
 pub(crate) use selection::{CellEdit, CellSelection, CellSelectionShape};
 pub(crate) use snapping::RoadGridSnap;
 pub(crate) use sources::CellCurveSource;
-pub(crate) use store::{CellReservations, CellStore, RoadCellAlignment};
+pub(crate) use store::{CellStore, RoadCellAlignment};
 
 use serde::{Deserialize, Serialize};
 
 // Cell keys and frames hash on every lookup of generation and lot derivation. The fixed hasher
 // is several times cheaper than SipHash; no caller depends on a map's iteration order.
 type CellMap<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
+
+// The store's maps, persistent (`imbl`) so that a copy of the whole store is `O(1)` and shares
+// every block until either side writes it (`ROAD-68` open question 21 (b)); same hasher.
+type StoreMap<K, V> =
+    imbl::GenericHashMap<K, V, foldhash::fast::FixedState, imbl::shared_ptr::DefaultSharedPtr>;
 
 /// Number of full square rows offered on each eligible road side.
 pub(crate) const CELL_DEPTH: usize = 6;

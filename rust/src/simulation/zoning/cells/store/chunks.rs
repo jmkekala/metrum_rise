@@ -155,7 +155,7 @@ impl CellStore {
 
     /// Full-world authoring/load operations may invalidate every viewed chunk explicitly.
     pub(crate) fn invalidate_all_generated_cells(&mut self) {
-        for entry in self.chunks.values_mut() {
+        for (_, entry) in self.chunks.iter_mut() {
             entry.generated = false;
             entry.dirty_bounds = None;
         }

@@ -1072,6 +1072,9 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         let stages = serde_json::json!({
             "plan_ms": m.road_plan_ms, "undo_ms": m.undo_ms, "topology_ms": m.topology_ms,
             "zoning_ms": m.zoning_ms, "add_ms": m.add_ms, "surface_ms": m.surface_ms,
+            "surface_roadbed_ms": m.surface_roadbed_ms,
+            "surface_overlap_ms": m.surface_overlap_ms,
+            "surface_terrain_ms": m.surface_terrain_ms,
             "agent_invalidate_ms": m.agent_invalidate_ms,
             "lanes_and_reattach_ms": m.lanes_and_reattach_ms, "buildings_ms": m.buildings_ms,
             "routing_ms": m.routing_ms, "finalize_ms": m.finalize_ms, "mesh_ms": m.mesh_ms,
