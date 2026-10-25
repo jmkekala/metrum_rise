@@ -121,6 +121,11 @@ impl SiteBuffer {
         self.edges.clear();
     }
 
+    /// Whether no site was gathered.
+    pub(super) fn is_empty(&self) -> bool {
+        self.sites.is_empty()
+    }
+
     /// Gathers the sites meeting `rect` from a ready `source` in canonical order, with their
     /// edges. `O(sites log sites + edges log edges)`.
     pub(super) fn gather(&mut self, source: &(impl SiteSource + ?Sized), rect: [f64; 4]) {

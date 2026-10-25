@@ -470,9 +470,17 @@ fn bake_tile(
         road,
         Some(&mut out.inputs.triangles),
     );
-    sites.rasterize_pads(xs, zs, prune, pads);
-    sites.rasterize_classes(xs, zs, prune, classes);
-    sites.nearest_edges(xs, zs, band, prune, edges_near);
+    // Without sites every lattice point is outside pads and surfaces: the rasters stay empty,
+    // which reads as no pad, class 0 and no edge.
+    if sites.is_empty() {
+        pads.clear();
+        classes.clear();
+        edges_near.clear();
+    } else {
+        sites.rasterize_pads(xs, zs, prune, pads);
+        sites.rasterize_classes(xs, zs, prune, classes);
+        sites.nearest_edges(xs, zs, band, prune, edges_near);
+    }
 
     // Sample every lattice point over pass 1's seams, a row's points in one bin together in
     // lanes. A ground sample left below its base is finished by pass 2; every other value is
@@ -511,7 +519,7 @@ fn bake_tile(
                 (height > f32::NEG_INFINITY).then_some(height)
             };
             let pad = |lane: usize| {
-                let site = pads[row + i + lane];
+                let site = pads.get(row + i + lane).copied().unwrap_or(NO_SITE);
                 (site != NO_SITE).then(|| sites.height(site))
             };
             let bare = |lane: usize| covering(lane).is_none() && pad(lane).is_none();

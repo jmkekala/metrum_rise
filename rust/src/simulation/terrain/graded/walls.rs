@@ -52,10 +52,48 @@ struct WallVertex {
 /// Reused buffers of [`build_walls`].
 #[derive(Default)]
 pub(super) struct WallScratch {
-    setters: Vec<u32>,
+    setters: Vec<Setter>,
+    // Per block of the tile: its road seams' box and lowest height, then its setters (CSR).
+    blocks: Vec<([f64; 4], f64)>,
+    block_starts: Vec<u32>,
+    block_setters: Vec<u32>,
     pairs: Vec<u32>,
     params: Vec<f64>,
     vertices: Vec<WallVertex>,
+}
+
+// A seam that may set `L` over a road seam in the tile: its index, box and highest point.
+#[derive(Clone, Copy, Debug)]
+struct Setter {
+    index: u32,
+    area: [f64; 4],
+    high: f64,
+}
+
+impl Setter {
+    // Whether its cone can rise above `floor` anywhere in `over` (`h_hi - k D > floor`).
+    fn rises(&self, over: [f64; 4], floor: f64) -> bool {
+        self.high - TIE_IN_SLOPE * box_distance(self.area, over) > floor - SETTER_SLACK_M
+    }
+}
+
+// Blocks per tile side for the setter lists, 16 m each.
+const BLOCKS: usize = 4;
+
+const EMPTY: [f64; 4] = [
+    f64::INFINITY,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::NEG_INFINITY,
+];
+
+fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
 }
 
 /// Builds the walls of `tile` into `out`: along every road seam (`seams[..road_count]`, key
@@ -66,9 +104,10 @@ pub(super) struct WallScratch {
 /// joins two consecutive vertices of which one is walled. `heights(i, j)` is the finished
 /// sample at lattice point `(i, j)` (the base plus the packed delta). Pruned, a seam is only
 /// evaluated against the seams whose cone can rise above it at all (`h'_hi - k D > h_lo`,
-/// `D` between their boxes), which leaves every walled `L` as it is: the others' lower bounds
-/// stay below the seam. `O(window seams + road seams in the tile x their setters + crossings
-/// of the walled seams x setters)`.
+/// `D` between their boxes), found through the tile's road seams and then 16 m blocks of them,
+/// which leaves every walled `L` as it is: the others' lower bounds stay below the seam.
+/// `O(window seams x (1 + blocks) + road seams in the tile x their block's setters + crossings
+/// of the seams with setters x setters)`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_walls(
     seams: &[Seam],
@@ -88,51 +127,74 @@ pub(super) fn build_walls(
         let area = seam.box_xz();
         area[0] <= rect[2] && rect[0] <= area[2] && area[1] <= rect[3] && rect[1] <= area[3]
     };
-    // The lowest road seam in the tile and the box of them all: no seam whose cone stays below
-    // it over that box can wall any of them.
-    let (mut low, mut area) = (
-        f64::INFINITY,
-        [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ],
-    );
-    for seam in seams[..road_count].iter().filter(|seam| in_tile(seam)) {
+    // The block of a road seam: the one holding its box's centre, clamped to the tile.
+    let block_of = |seam: &Seam| {
         let b = seam.box_xz();
-        low = low.min(seam.height_range().0);
-        area = [
-            area[0].min(b[0]),
-            area[1].min(b[1]),
-            area[2].max(b[2]),
-            area[3].max(b[3]),
-        ];
+        let cell = |centre: f64, low: f64| {
+            ((((centre - low) / (TILE_M / BLOCKS as f64)).floor()).max(0.0) as usize)
+                .min(BLOCKS - 1)
+        };
+        cell(0.5 * (b[1] + b[3]), rect[1]) * BLOCKS + cell(0.5 * (b[0] + b[2]), rect[0])
+    };
+    // Each block's road seams' box and lowest height, and the tile's: no seam whose cone stays
+    // below them over that box can wall any of them.
+    scratch.blocks.clear();
+    scratch
+        .blocks
+        .resize(BLOCKS * BLOCKS, (EMPTY, f64::INFINITY));
+    let (mut area, mut low) = (EMPTY, f64::INFINITY);
+    for seam in seams[..road_count].iter().filter(|seam| in_tile(seam)) {
+        let block = &mut scratch.blocks[block_of(seam)];
+        let h_lo = seam.height_range().0;
+        *block = (union(block.0, seam.box_xz()), block.1.min(h_lo));
+        (area, low) = (union(area, seam.box_xz()), low.min(h_lo));
     }
     if low == f64::INFINITY {
         return;
     }
-    let rises = |setter: &Seam, over: [f64; 4], floor: f64| {
-        setter.height_range().1 - TIE_IN_SLOPE * box_distance(setter.box_xz(), over)
-            > floor - SETTER_SLACK_M
+    let setter = |index: usize| Setter {
+        index: index as u32,
+        area: seams[index].box_xz(),
+        high: seams[index].height_range().1,
     };
     scratch.setters.clear();
     scratch.setters.extend(
-        (0..seams.len() as u32).filter(|&index| !prune || rises(&seams[index as usize], area, low)),
+        (0..seams.len())
+            .map(setter)
+            .filter(|setter| !prune || setter.rises(area, low)),
     );
+    scratch.block_starts.clear();
+    scratch.block_setters.clear();
+    for &(block_area, block_low) in &scratch.blocks {
+        scratch
+            .block_starts
+            .push(scratch.block_setters.len() as u32);
+        if block_low == f64::INFINITY {
+            continue;
+        }
+        scratch.block_setters.extend(
+            (0..scratch.setters.len() as u32)
+                .filter(|&k| !prune || scratch.setters[k as usize].rises(block_area, block_low)),
+        );
+    }
+    scratch
+        .block_starts
+        .push(scratch.block_setters.len() as u32);
     for index in 0..road_count {
         let seam = &seams[index];
         if !in_tile(seam) {
             continue;
         }
+        let block = block_of(seam);
+        let listed = &scratch.block_setters
+            [scratch.block_starts[block] as usize..scratch.block_starts[block + 1] as usize];
+        let (own, own_low) = (seam.box_xz(), seam.height_range().0);
         scratch.pairs.clear();
-        scratch
-            .pairs
-            .extend(scratch.setters.iter().copied().filter(|&other| {
-                other as usize != index
-                    && (!prune
-                        || rises(&seams[other as usize], seam.box_xz(), seam.height_range().0))
-            }));
+        scratch.pairs.extend(listed.iter().filter_map(|&k| {
+            let setter = scratch.setters[k as usize];
+            (setter.index as usize != index && (!prune || setter.rises(own, own_low)))
+                .then_some(setter.index)
+        }));
         if scratch.pairs.is_empty() {
             continue;
         }
@@ -150,19 +212,26 @@ pub(super) fn build_walls(
                 .filter(|at| at.distance <= CAP_M)
                 .map(|at| at.height - TIE_IN_SLOPE * at.distance)
                 .fold(f64::NEG_INFINITY, f64::max);
-            let surface = surface_at(xs, zs, &heights, x, z);
             let walled = lower > h;
             scratch.vertices.push(WallVertex {
                 x,
                 z,
                 bottom: h,
-                top: if walled {
-                    lower.max(surface)
-                } else {
-                    h.max(surface)
-                },
+                top: lower,
                 walled,
             });
+        }
+        if !scratch.vertices.iter().any(|v| v.walled) {
+            continue;
+        }
+        // The tops, against the lattice surface, only along seams with a wall.
+        for v in scratch.vertices.iter_mut() {
+            let surface = surface_at(xs, zs, &heights, v.x, v.z);
+            v.top = if v.walled {
+                v.top.max(surface)
+            } else {
+                v.bottom.max(surface)
+            };
         }
         for pair in scratch.vertices.windows(2) {
             let [v, w] = [pair[0], pair[1]];
