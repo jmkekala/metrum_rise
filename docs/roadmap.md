@@ -153,11 +153,19 @@ profiles instead of leaving sloped junctions failed, and roll back if one still 
 bulldoze is tried and refused when a node fails; undo checks its restored closure in debug
 builds; the Kuopio reference save is regenerated with the load rebuild (question 8), and its
 load test and the hillside houses run again (their refined-terrain halves are ignored under
-`TERRAIN-07`). Open: the recorded Kuopio replay (`kuopio_05` attempt 14 fails `MouthOffPlane`, a
-solve defect), the hillside fixture's legacy clips (its parcels must be regenerated), question 25
-(c) and 21 (b) (both need the cell reservations in the road tool's view), and 6-9 ms that round 1
-added to the commit's `surface` stage beside a painted city (not the reservation checks;
-unattributed).
+`TERRAIN-07`). Round 3 (branch `road68-E3`, work in progress): the recorded Kuopio strokes
+commit again (`kuopio_05` attempt 14's `MouthOffPlane` was the edit plan's excerpt holding one
+ring of incidence, so a far node lost its pin; the terrain spike's 8% street-grid T failed the
+same way, and flat ones committed far profiles without their pins; the excerpt now holds the
+solve's 2-ring, which changes gate G's determinism digest and takes the 100k commit's
+click-to-acknowledgement median from 80 to 21 ms), the hillside fixture is regenerated with
+the load rebuild (same parcel ids and frontage points), the mid-span order test is replaced by
+question 30's rule, and the preview shows field and painted-cell overlaps before the click with
+the commit's own test (question 25 (c): the field index and a persistent cell-reservation index
+are shared with the view in `O(1)`). Open: question 31 (three recorded Kuopio profiles leave
+the ground by 5.08-5.76 m beside steep junctions, over the fixture's 5 m limit), question 21 (b)
+(lots from the preview need the whole cell store persistent), and 6-9 ms that round 1 added to
+the commit's `surface` stage beside a painted city (not the reservation checks; unattributed).
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.
@@ -169,7 +177,7 @@ field and roadbed overlap queries; abutments, portals and sites moved to `TERRAI
 bridge or tunnel stroke from a road is rejected until it lands (open question 19).
 Tests that need later gates are disabled until then (5 Rust tests, 3 of them `TERRAIN-07`, no
 `ROAD-68-F` one, no Godot script).
-`ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty-one open questions (1-30 and 35); open question 16 (strokes pinned to the
+`ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty-two open questions (1-31 and 35); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
@@ -180,7 +188,8 @@ frame is an open miss since terrain is in the preview), 28 (debug
 face sources name tile-local chain runs) and 35 (worn zebra bars, kept as designed) are decided
 by the coordinator for review, 26 (preview payloads with crossings or signs) is met by
 `ROAD-68-F` part 1; 30 (drawing
-order on slopes) is decided (a) for review: joins are built, mid-span meetings are open. Design,
+order on slopes) is decided (a) for review: joins are order independent and mid-span meetings
+follow the first-drawn road, as tested; 31 (recorded profiles beyond the 5 m limit) is open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

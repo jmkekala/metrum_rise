@@ -294,9 +294,10 @@ fn an_8_percent_slope_under_a_flat_t_leaves_every_node_built() {
 }
 
 // The terrain spike's `city_grid_t`: closed 96 m blocks, then a T split between two of the
-// grid's streets at the origin, on the reference harness's slope steepened to 8%. The split
-// re-derives the grid edges at the crossings beside it, whose far crossings the plan's excerpt
-// held without all their arms, so one failed `MouthOffPlane` (`ROAD-68` open question 8).
+// grid's streets at the origin, flat and on the reference harness's slope steepened to 8%. The
+// split re-derives the grid edges at the crossings beside it, whose far crossings the plan's
+// excerpt held without all their arms: on the slope one failed `MouthOffPlane`, and flat their
+// profiles lacked the far pins a fresh solve gives (`ROAD-68` open question 8).
 #[test]
 fn a_street_grid_t_split_on_an_8_percent_slope_commits() {
     let strokes: [Stroke; 6] = [
@@ -307,19 +308,21 @@ fn a_street_grid_t_split_on_an_8_percent_slope_commits() {
         ([Vector2::new(96.0, -150.0), Vector2::new(96.0, 150.0)], 1),
         ([Vector2::ZERO, Vector2::new(0.0, 96.0)], 1),
     ];
-    let core = committed_with(512.0, &strokes, &[0, 1, 2, 3, 4, 5], |core| {
-        core.slope_terrain_internal(
-            Vector2::ZERO,
-            256.0,
-            Vector2::new(-128.0, 0.0),
-            0.0,
-            Vector2::new(128.0, 0.0),
-            20.48,
-            1.0,
-        );
-    });
-    assert!(core.transit_network.roadbed.failed_nodes().is_empty());
-    assert_profiles_fresh("street grid", &core);
+    for rise_m in [0.0, 20.48] {
+        let core = committed_with(512.0, &strokes, &[0, 1, 2, 3, 4, 5], |core| {
+            core.slope_terrain_internal(
+                Vector2::ZERO,
+                256.0,
+                Vector2::new(-128.0, 0.0),
+                0.0,
+                Vector2::new(128.0, 0.0),
+                rise_m,
+                1.0,
+            );
+        });
+        assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+        assert_profiles_fresh(&format!("street grid, rise {rise_m} m"), &core);
+    }
 }
 
 fn assert_order_independent(name: &str, strokes: &[Stroke], orders: &[&[usize]], sloped: bool) {

@@ -368,7 +368,10 @@ compute no crossing or corner geometry of their own
   control polyline it changed: road edits (both ends of each dirty edge), the crossing toggle, the
   load repair, and, since the pre-D review, node moves (the moved node and its arms' far nodes)
   and road removals (the removed edge's two ends), which rebuilt clips without re-solving
-  before.
+  before. A road edit plan solves on a local excerpt of the graph, which must hold that 2-ring:
+  every edge near the stroke and two rings of incidence around them, and a plan whose affected
+  nodes or the far nodes of the edges they re-derive lack an arm in the excerpt is refused
+  (`ROAD-68-E` part 2 round 3; with one ring a far node lost its pin, open question 8).
 - A `Terminal` gets a plane through its road end and its mouth centreline point, with the arm's
   end grade along that run and no crossfall; it is read from the solved profile, so the finalizer
   leaves terminals alone.
@@ -643,9 +646,13 @@ As built (`ROAD-68-E` part 1): the context is the published view plus the previe
 graph replica. The view shares terrain and water until their own generations change, the
 roadbed in `O(1)` and the published road chunks in `O(1)`, and takes its graph from the copy the
 command's routing rebuild made (commit, undo, road bulldoze); the replica follows by the records
-of the owners whose pieces the roadbed rebuilt. Sites, zoning and field reservations are not in
-the view yet: the commit tests the pieces it installs against fields and painted cells, and its
-stroke corridor against parcels ([open questions 1 and 25](#road-68-open-questions)). The terrain
+of the owners whose pieces the roadbed rebuilt. The commit tests the pieces it installs against
+fields and painted cells, and its stroke corridor against parcels ([open questions 1 and
+25](#road-68-open-questions)); since part 2 round 3 the view shares the field index (an `Arc`
+the allocator copies on write) and the cell reservations (a persistent index the cell store
+keeps beside its blocks, `CellReservations`) in `O(1)`, and the preview runs the commit's own
+test on its installed and replaced pieces, so it shows `field_overlap` or `zoning_cell_overlap`
+before the click. The terrain
 inputs are a persistent map published with the view in `O(1)` (round 3): per render patch the
 refined cache entry, the assembly ledger, the site ownership and the building sites within the
 widest road query margin. The core notes every patch whose inputs may change (generation bumps,
@@ -968,24 +975,26 @@ terrain patch, open question 23); none stays disabled under `ROAD-68-D`.
 
 `ROAD-68-E` (5 at the gate; part 1 re-enabled
 `undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology`, and part 2
-`sloped_junctions_do_not_depend_on_drawing_order`, which now covers the T and Y fixtures, and the three
-tests relabelled from `ROAD-68-F` below; part 2 round 2 the Kuopio saved reference, rewritten as
-`kuopio_saved_reference_loads_as_saved` on the regenerated save, and the hillside houses without
-their terrain step; two stay off):
+`sloped_junctions_do_not_depend_on_drawing_order`, which now covers the T, Y and end-to-end
+fixtures, and the three tests relabelled from `ROAD-68-F` below; part 2 round 2 the Kuopio saved
+reference, rewritten as `kuopio_saved_reference_loads_as_saved` on the regenerated save, and the
+hillside houses without their terrain step; round 3 the recorded Kuopio strokes, as
+`kuopio_recorded_strokes_commit_with_every_node_solved`, and removed the mid-span order test,
+which [open question 30](#road-68-open-questions)'s rule test replaces; one stays off):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
-| `nodes::sim::core::tests::road_edit_order` | `sloped_mid_span_meetings_do_not_depend_on_drawing_order` | by the crossing rule a mid-span meeting takes the first-drawn road's height (`a_mid_span_meeting_lies_on_the_first_drawn_road` asserts it); on the sloped cross the two roads' profiles differ there by an ulp ([open question 30](#road-68-open-questions); part 2) |
-| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | recorded stroke `kuopio_05` attempt 14, accepted by the legacy compiler, is refused today: node 5 fails `MouthOffPlane` (edge 0, end), a profile-solve defect; the strokes are recorded input ([open question 8](#road-68-open-questions); moved from `ROAD-68-D`) |
+| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_preserve_quality_limits` | three recorded profiles leave the source terrain by 5.08-5.76 m beside steep junctions, over the fixture's 5 m limit ([open question 31](#road-68-open-questions); the recorded replay's road half, split in round 3) |
 
-`TERRAIN-07` (3: two split off by `ROAD-68-E` part 2 round 2, one by `ROAD-68-F` part 2): the user's rewrite of the terrain
-surface core makes the exact CDT cut, refined patches and site paving partition legacy, so these
-terrain-pipeline assertions are not kept passing on it:
+`TERRAIN-07` (4: two split off by `ROAD-68-E` part 2 round 2, one by round 3, one by `ROAD-68-F`
+part 2): the user's rewrite of the terrain surface core makes the exact CDT cut, refined patches
+and site paving partition legacy, so these terrain-pipeline assertions are not kept passing on it:
 
 | Module | Tests | Reason |
 | --- | --- | --- |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_terrain_builds_clean` | patch count and refined CDT patches of the regenerated Kuopio reference (passes today) |
-| `nodes::sim::core::tests::zoning_buildability` | `hillside_houses_terrain_builds_clean` | refined CDT patches after the hillside houses; the fixture's node 2 also fails `MouthOffPlane` on legacy clips ([open question 8](#road-68-open-questions)) |
+| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_terrain_builds_clean` | exported and tile seams, window bounds and CDT constraints after every recorded Kuopio stroke (passes today) |
+| `nodes::sim::core::tests::zoning_buildability` | `hillside_houses_terrain_builds_clean` | refined CDT patches after the hillside houses on the regenerated fixture (passes today) |
 | `simulation::terrain::cdt::tests::builder` | `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` | tunnel portal boundaries require walls where widened samples cannot tie in; portals are part of the terrain rewrite (relabelled from `ROAD-68-F` by its part 2, with abutments, building sites, driveways and paving) |
 
 `ROAD-68-F` (0; 7 at the gate, two re-enabled by the
@@ -1165,6 +1174,44 @@ These need a user decision; work that does not depend on them continues.
      `TERRAIN-07`. Re-solving the clips and profiles as the load does makes the roads overlap the
      recorded parcels (`OverlapsExistingParcel`), so regenerating the fixture means regenerating
      its parcels, which renumbers the lots the test names; not done.
+   **`ROAD-68-E` part 2, round 3 (2026-10-25): the recorded placements run and the hillside
+   fixture is regenerated.**
+   - **The `MouthOffPlane` of `kuopio_05` attempt 14: a plan-excerpt defect.** The stroke ends
+     on attempt 11's road east of attempt 12's T, more than 100 m from attempt 13's T (node 5).
+     The solve re-derives every edge at the T it splits, including the link to node 5, and pins
+     that link's far end from node 5's own solve ([Heights](#heights), "Scope and cost"). The
+     plan solves on a local excerpt that held one ring of incidence around the edges near the
+     stroke, so node 5 had only the link: one plane incident, no pin, and the committed link
+     left node 5's plane, which then failed its mouths. The live graph's solve was right; only
+     plans (commit and preview) were wrong. Fix: the excerpt takes two rings of incidence, and a
+     plan whose affected nodes or their edges' far nodes lack an arm in the excerpt is refused
+     (`validate_against_graph`). The terrain spike's `city_grid_t` (closed 96 m blocks, a T split
+     between two streets, 8% slope) failed the same way (`node_piece_failed node=15`) and
+     commits now (`a_street_grid_t_split_on_an_8_percent_slope_commits`, fails with one ring).
+     Where no node failed, one-ring plans still committed profiles a fresh solve would not
+     give (the same grid flat: edge 9 without its far pin), so the fix changes outcomes: gate
+     G's determinism digest moves from `6252b7ba71c5a6f1` to `da3d23b6c8b63d20` by this fix alone,
+     and a commit beside the painted city no longer rebuilds an unchanged far link
+     ([round 3 record](#part-2-round-3-2026-10-25-branch-road68-e3-work-in-progress)).
+   - **Recorded placements.** The replay is split: `kuopio_recorded_strokes_commit_with_every_node_solved`
+     (every recorded stroke commits, no node fails, 158 profiles; failed before the fix at
+     `kuopio_05` attempt 14) runs; the fixture's quality limits
+     (`kuopio_recorded_profiles_preserve_quality_limits`) stay ignored under
+     [open question 31](#road-68-open-questions), which the attempt-14 failure hid; the patch
+     seam, window and CDT assertions moved to `kuopio_recorded_terrain_builds_clean`, ignored
+     under `TERRAIN-07` (passes today).
+   - **Hillside fixture.** Regenerated with the load rebuild, no migration code: the legacy
+     fixture's roads were loaded as before and passed through `rebuild_loaded_graph_runtime`
+     (node 2 rejected, re-clipped and re-solved: clips 6.29 m to 11.80 / 11.81 / 8.56 m, every
+     physical profile re-derived), and each parcel was re-authored on the same edge and side at
+     the same frontage point: the point its legacy `t` named on the legacy profile, as a `t` on
+     the regenerated profile (all sixteen move by 0 m in plan; `t` changes in the fourth
+     decimal because the physical length grew by up to 0.05 m). Parcel ids are unchanged, so the
+     family house still lands on parcel 7. The fixture now stores each edge's control polyline
+     and physical profile (`points`, `physical`) and the regenerated clips; the loader takes
+     them as a save holds them and checks every node builds. The source grid and nodes are
+     byte-identical. `hillside_residential_sites_select_constructible_houses` passes, and so
+     does the `TERRAIN-07` half (`hillside_houses_terrain_builds_clean`, still ignored there).
 9. **Width steps on straight sectors (`ROAD-68-C`) — decided 2026-10-24 (user): build D4's taper at the start of
    `ROAD-68-D`.** D4's radial step has no face of its own. A
    straight sector between a narrower and a wider carriageway gets the generic strips, which are
@@ -1222,6 +1269,12 @@ These need a user decision; work that does not depend on them continues.
         The removal itself still rebuilds adjacency for the whole graph (`O(edges)`).
       - *Undo.* Undo restores a state that compiled when it was published, so it is not refused:
         debug builds compile the restored closure and assert no node fails.
+      - *Round 3 (2026-10-25), the terrain spike's `t_cutfill`.* The `TERRAIN-07` spike (branch
+        `road68-Bspike`, on `359406c1`, before round 2) saw a T drawn on flat ground lose its
+        junction piece when the ground was then sloped 8% under it. On this branch the edit
+        stands with every node built and freshly solved profiles
+        (`an_8_percent_slope_under_a_flat_t_leaves_every_node_built`); with round 2's re-solve
+        removed it fails, so round 2's terrain-sync fix is what the spike was missing.
 
 12. **Walkers switch sides only on crossings (`ROAD-68-C` follow-up) — resolved 2026-10-24: the
     user chose "keep the old behaviour".**
@@ -1559,6 +1612,25 @@ These need a user decision; work that does not depend on them continues.
       part 7) still dominates every miss, and the lots are 3-5 ms of `buildings`, so option (b)
       alone cannot bring the commit under 16.7 ms; it is not started this round (it needs the
       zoning cell store in the road tool's view, as question 25 (c) does). Target missed, open.
+    - **`ROAD-68-E` part 2, round 3 (2026-10-25): (b) not started; what it needs.** The view
+      now holds the cell reservations (question 25 (c)), but lot derivation reads far more than
+      the reserved masks: `SimCore::regenerate_cell_lot_regions` generates cells
+      (`prepare_generated_cells`, the store's valid masks, frontages, curve sources, road
+      alignments and chunk completeness) and derives lots (`derive_cell_lots`, the lot claims
+      and parcels) on the post-edit graph and roadbed, tests footprints against building sites
+      (`cell_site_blocked`, the allocator's site index), takes the catalog's lot sizes, and then
+      reattaches occupants (`sync_cell_lot_attachments`, the allocator). A preview that derives
+      the commit's lots therefore needs the whole cell store persistent (its `CellMap`s as
+      `imbl` maps, so the view shares it and the preview generates on a copy-on-write copy),
+      the site index and lot sizes in the view, and an install step that swaps the derived
+      blocks, frontages and claims in when the store's revision is the preview's. Lot
+      generation is the commit's own hot path (`ROAD-68-G` part 3), so the persistent store
+      needs its own same-session comparison first. Not done this round; the `buildings` stage
+      (entrances and lots) is 2.6-4.1 ms of the misses. Fresh (11:12-11:33, gate G's harness,
+      C = `road` `0eabfe36`, C E E C; [round 3 record](#part-2-round-3-2026-10-25-branch-road68-e3-work-in-progress)):
+      the plan-excerpt fix of question 8 brings the 100k click → ack median from 80.0 to 21.3 ms
+      (samples 1 and 2 no longer re-derive an unchanged far link); the third sample takes
+      15.0-15.4 ms, the first two 130 and 21 ms. Target still missed, open.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -1722,6 +1794,25 @@ These need a user decision; work that does not depend on them continues.
       change, published in `O(1)`), leaving lot generation's maps as they are; then the preview
       reports `field_overlap` or `zoning_cell_overlap` before the click with the commit's own
       function, and question 21 (b) builds on the same view.
+    - **Part 2, round 3 (2026-10-25): (c) for fields and cells, done.** The cell store mirrors
+      every block's reserved mask into `CellReservations` (an `imbl` map per 512 m chunk of
+      reserved blocks and their frames) where paint and lot claims change it (`set_profile`,
+      `assign_lot`, `clear`): `O(chunks the block reaches * log blocks)` per changed block, none
+      when a claim lands on painted cells. The allocator holds the field index as an `Arc`,
+      written through `field_clearance_mut` (copied once after a publication shared it,
+      `O(fields)`; a swap removal touches it only when either building holds a field). The view
+      takes both in `O(1)`; a paint publishes the view (unchanged roads publish in `O(1)`), as
+      field commits already did. `ReservedOverlap::first` takes the two indices, and the
+      preview calls it on the pieces its delta installs and replaces, as the commit does, and
+      turns an overlap into the stroke's invalid reason, which the road tool shows ("Road
+      overlaps a farm field", "Road overlaps painted zoning cells") without submitting the
+      click. The cell test reads the index in both, so the same function on the same data
+      decides; `the_reservation_index_follows_paint_erase_and_undo` checks the index visits the
+      store's reserved cells exactly. The field and painted-cell refusal tests now assert the
+      preview's reason before the commit's, and that both accept once the land is released.
+      Lag: a redevelopment grace claim that ends in a simulation tick shrinks the reservations
+      without a publication, so until the next one the preview may refuse what the commit
+      accepts (never the reverse). Parcels keep the commit's corridor check.
 26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — closed 2026-10-25 by
     `ROAD-68-F` part 1: met, bitwise.** The preview's chunks equalled the committed chunks only
     when the edit's closure had no crossing and no road sign: the renderer built crosswalk paint
@@ -1819,9 +1910,16 @@ These need a user decision; work that does not depend on them continues.
       their first-wins order: a pre-sized set with an integer hasher, or sorted keys).
     - **Recommendation.** (d) now (local, output-preserving), then (a), measured with the commit
       breakdown at every tier, then (b).
+    - **`ROAD-68-E` part 2 round 3 (2026-10-25).** Part of the cost beside the city was not the
+      terrain's: the edit plan's one-ring excerpt re-derived, wrongly, a far link the edit does
+      not change (question 8), whose pieces and terrain the commit then rebuilt. With the
+      excerpt fixed, `surface` at 100k takes 10.4-10.7 ms instead of 66-67 ms in the harness's
+      second sample and 6.9-7.4 instead of 11.4-11.7 ms in the third; the first sample (the
+      city's first commit) is unchanged or slower (82-85 against 73-74 ms) and still misses.
 30. **Drawing order on slopes after question 16 (`ROAD-68-E` part 2) — decided by the coordinator
     under the user's delegation, 2026-10-25, for review: (a); joins implemented, mid-span
-    meetings follow the crossing rule exactly (round 2).**
+    meetings follow the crossing rule exactly (round 2), and the order test asserts that rule
+    (round 3).**
     - **Evidence.** With question 16 implemented the sloped T fixtures are bitwise independent of
       drawing order; the other sloped fixtures are not, through two rules that are not piece
       reads. (1) *Terminal extensions.* A stroke from a road end is solved together with the road
@@ -1884,6 +1982,46 @@ These need a user decision; work that does not depend on them continues.
       `sloped_mid_span_meetings_do_not_depend_on_drawing_order` stays ignored with that reason.
       Only option (c), re-heighting the first road, would make the orders equal, and it edits an
       authored road.
+    - **Round 3: the test follows the decision (coordinator under the user's delegation,
+      2026-10-25, for review).** Question 16 makes the first-drawn road set a crossing's height
+      (authored state), and round 2 built exactly that, so the ignored order-independence test
+      for mid-span meetings is removed instead of kept waiting: on the slope the cross and the
+      two-junction fixture are asserted by the rule, the meeting on the first road's profile, in
+      every order (`a_mid_span_meeting_lies_on_the_first_drawn_road`), and flat they stay in the
+      order test. The joins stay order independent and are asserted so on the slope: the T and Y
+      fixtures and, new, end-to-end joins (a road drawn as two strokes meeting straight on, a
+      pass-through node, or bending 34 degrees, either stroke first;
+      `sloped_junctions_do_not_depend_on_drawing_order`, also flat).
+31. **Recorded Kuopio profiles beyond the 5 m source-delta limit (`ROAD-68-E` part 2 round 3) —
+    open, target missed.**
+    - **Evidence.** With `kuopio_05` attempt 14 fixed (question 8), the recorded replay's fixed
+      quality gates (offset from the source terrain at most 5 m, grade at most 1.0, pitch change
+      at most 30 degrees per knot, as the rendered replay checks) fail on three profiles:
+      `kuopio_03` attempts 7 and 8, edge 2, 5.76 m (grade 0.41); `kuopio_07` attempt 20, edge 0,
+      5.08 m (grade 0.51). Both lie beside a junction on steep ground. `kuopio_03` attempt 7
+      ends a 2+2 stroke on a road climbing about 38% near the node: the plane, fitted to the
+      arms' control points 12 m out (the "Heights" sample), has that grade, and the 24.4 m mouth
+      station of the wide T holds it beyond where the hill flattens, so the pinned profile rises
+      to 4 m above the ground at the mouth and 5.76 m in the 32 m blend. `kuopio_07` attempt 20
+      crosses a road climbing up to 35% (its terrain-following control) with a contour road;
+      neither corridor fits the other's samples, the straighter tie goes to the flatter corridor
+      (3% plane), and the steep road is held to it over its 15.85 m mouth station, 5.08 m over
+      the ground 28 m out. The limits pass on the legacy setbacks (about 5.5 m); the gate C
+      mouths and the plane rules are what changed. Since gate C the attempt-14 failure stopped
+      the replay before these checks.
+    - **Options.** (a) Sample each arm for the plane at its mouth station rather than at 12 m
+      (the plane then meets every authority arm's control profile where its pin ends, and the
+      blend starts from the control height); it changes every sloped junction's plane, so the
+      probe and the sloped digests are re-recorded. (b) Rank a corridor whose plane keeps every
+      arm within the source-delta limit before the flatter one (rule 3 of the ranking), so the
+      steep road keeps its grade at a fall-line crossing. (c) Accept and re-baseline the
+      fixture's limit, which relaxes a recorded acceptance target and needs the user.
+    - **Recommendation.** Measure (a) and (b) on the recorded replay, the reference probe and
+      the sloped fixtures before deciding: (a) addresses `kuopio_03` (an authority arm held past
+      the hill's knee), not `kuopio_07`, where the steep road is a non-authority arm and only (b)
+      changes which road keeps its grade (with the fall-line corridor the contour road, 57
+      degrees off it, would take about 16% across its 15.85 m mouth, about 2.6 m). The quality
+      test stays ignored under this question until then.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, for review: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
@@ -4014,6 +4152,103 @@ plan and `ROAD-68-F` part 1) before the post-rebase checks below. Questions 11 (
 - **Not done this round:** a C F F C re-measure of the commit (stopped for the rebase; one C F
   pair only, above), questions 25 (c) and 21 (b), the recorded Kuopio replay's `MouthOffPlane`
   and the hillside fixture's parcels.
+
+#### Part 2, round 3 (2026-10-25, branch `road68-E3`, work in progress)
+
+On `road` `0eabfe36` (round 2 landed as work in progress). Question 8's recorded replay and
+hillside fixture, question 30's order test and question 25 (c) are done; question 21 (b) is not
+started and the new question 31 is open, so the gate's final commit waits.
+
+- **Plan excerpt (question 8).** `kuopio_05` attempt 14's `MouthOffPlane` was the edit plan's
+  local excerpt holding one ring of incidence: the solve re-derives every edge at the nodes the
+  edit touches and pins each one's far end from the far node's own solve, which needs all of
+  that node's arms. The excerpt now takes two rings and a plan whose pinned nodes lack an arm is
+  refused (details under the question; [Heights](#heights) "Scope and cost" states the 2-ring).
+  The terrain spike's `city_grid_t` on 8% failed the same way. Both new tests fail with one
+  ring. The product probe, the narrow-marks digest test and every reference fixture are
+  unchanged: their excerpts already held the 2-ring.
+- **Terrain spike, `t_cutfill` (question 11 (c)).** Confirmed fixed by round 2's terrain-sync
+  re-solve (`an_8_percent_slope_under_a_flat_t_leaves_every_node_built`, fails without it).
+- **Hillside fixture (question 8).** Regenerated with the load rebuild; parcels keep their ids
+  and frontage points (details under the question).
+- **Question 30.** The ignored mid-span order test is replaced by the decided rule; the slope's
+  order test gains end-to-end joins (details under the question).
+- **Question 25 (c).** The view shares the field index and a persistent cell-reservation index
+  in `O(1)`; the preview runs `ReservedOverlap::first`, the commit's own test, and the road tool
+  shows the refusal before the click (details under the question).
+- **Question 31 (new, open).** The recorded replay's quality limits fail on three profiles
+  beside steep junctions (5.08-5.76 m over the ground against 5 m); evidence and options under
+  the question. Its test stays ignored under that question.
+- **Question 21 (b).** Not started: the preview would need the whole cell store persistent
+  (details under the question).
+- **Tests.** New: `kuopio_recorded_strokes_commit_with_every_node_solved` (the recorded replay's
+  road half; failed before at `kuopio_05` attempt 14), `a_street_grid_t_split_on_an_8_percent_slope_commits`
+  (failed before: node 15 `MouthOffPlane`), `an_8_percent_slope_under_a_flat_t_leaves_every_node_built`
+  (fails without round 2's re-solve), `the_reservation_index_follows_paint_erase_and_undo`; the
+  three reservation refusal tests now assert the preview's reason first (by construction it was
+  empty before: the preview had no overlap test). Split: `kuopio_recorded_profiles_preserve_quality_limits`
+  (question 31) and `kuopio_recorded_terrain_builds_clean` (`TERRAIN-07`). Removed:
+  `sloped_mid_span_meetings_do_not_depend_on_drawing_order` (question 30).
+- **Size.** `roadbed/` production lines 7,972, unchanged (this round's code is in the edit plan,
+  the cell store, the allocator's field index and the road tool's view and preview).
+- **Preview stage timings (fresh, 11:11 EET).** `benchmark_road_preview_stages` as in part 1
+  (release, 4 workers, P-cores, both timing locks), C = `road` `0eabfe36` (the same-session
+  control), E = this round's release build; C E E C, ms p50 / p95:
+
+  | Stage (budget) | `sloped_t` C | `sloped_t` E | `sloped_branch` C | `sloped_branch` E |
+  | --- | --- | --- | --- | --- |
+  | Edit plan (1.0) | 0.447-0.463 / 0.523-0.552 | 0.467-0.468 / 0.551-0.560 | 0.384-0.394 / 0.460-0.479 | 0.399-0.406 / 0.470-0.486 |
+  | Roadbed (0.5) | 0.305-0.317 / 0.358-0.376 | 0.321-0.322 / 0.370-0.377 | 0.310-0.315 / 0.362-0.373 | 0.313-0.321 / 0.372-0.378 |
+  | Road chunks (1.0) | 0.354-0.361 / 0.423-0.432 | 0.371-0.374 / 0.446-0.448 | 0.340-0.350 / 0.396-0.424 | 0.359 / 0.428-0.429 |
+  | Terrain patches (3.0) | 4.39-4.42 / 4.94-5.05 | 4.39-4.41 / 4.92-4.94 | 4.65-4.78 / 5.61-5.73 | 4.58-4.68 / 5.56-5.57 |
+
+  The plan rises 0.005-0.02 ms (the excerpt's second ring) and the roadbed stage 0.005-0.015 ms
+  (the preview's reservation test, which on these fixtures finds no reservation); every stage
+  but terrain (question 29) stays within budget at p95.
+- **Commit breakdown (fresh, 11:12-11:33 EET).** Gate G's
+  `benchmark_populated_commit_breakdown`, `METRUM_COMMIT_TIERS=0,10000,30000,100000`, release,
+  8 workers, P-cores, both timing locks, C and E as above, C E E C, three samples per tier and
+  run. Lot and generated-cell digests equal C's in all 24 sample pairs. Medians of the six
+  samples, ms, C / E:
+
+  | Stage | 0 | 10k | 30k | 100k |
+  | --- | --- | --- | --- | --- |
+  | click → ack | 14.8 / 12.7 | 27.7 / 20.9 | 72.4 / 66.1 | 80.0 / 21.3 |
+  | plan | 0.33 / 0.34 | 0.37 / 0.39 | 0.41 / 0.42 | 0.41 / 0.47 |
+  | roadbed and terrain (`surface`) | 11.5 / 10.1 | 18.4 / 14.7 | 62.6 / 60.0 | 66.7 / 10.5 |
+  | entrances and cell lots (`buildings`) | 0.00 | 4.40 / 4.07 | 4.14 / 2.56 | 5.28 / 3.21 |
+  | render publication (`mesh`) | 2.23 / 1.87 | 3.37 / 0.86 | 3.13 / 1.27 | 2.16 / 2.04 |
+  | dirty edges | 4 / 3 | 4 / 3 | 4 / 3 | 4 / 3 |
+
+  Per sample at 100k, click → ack: C 121.2 / 79.7 / 22.3 and 119.1 / 80.2 / 22.6, E 131.8 /
+  21.2 / 15.4 and 129.9 / 21.3 / 15.0. In samples 1 and 2 (the edits beside the grid) the
+  one-ring plan re-derived a far link the edit does not change (it lost its far pin, a
+  different profile, so a dirty edge), and that link's pieces and terrain were most of the
+  `surface` stage beside the painted city (100k sample 1: 66-67 ms against 10.4-10.7 ms).
+  Sample 0, the city's first commit (6 dirty edges in both), is slower in E: `surface` 82-97
+  against 69-83 ms at 10k, 90-138 against 69-71 at 30k, 82-85 against 73-74 at 100k; not
+  attributed yet (the edges the plan now pins at both ends carry their far supports, which
+  one-ring plans dropped, and so may grade more road loop; to measure). The 100k commit's third
+  sample (15.0-15.4 ms) is the first under 16.7 ms on `road`; the median (21.3 ms) still misses.
+- **Determinism (fresh, 11:11-11:12 EET).** Gate G's `road68g_commit_determinism` (release,
+  P-cores, both timing locks; workers 1 / 3 / 8, late rebuild at 1 and 8 workers, save in the
+  hold): no difference in any variant, on the control and on this round. The reference digest
+  changes from `6252b7ba71c5a6f1` (control) to `da3d23b6c8b63d20`, entirely by the plan-excerpt
+  fix: this round's build with only `road_edit/validation.rs` put back to one ring gives
+  `6252b7ba71c5a6f1` again (11:55). The one-ring plans left profiles a fresh solve would not
+  give even on flat ground (the flat street grid's edge 9 lacked its far pin; the test fails
+  with one ring), so the populated city's road edits now commit different, correct profiles.
+  The reservation index, the shared field index and the preview's test change no output.
+- **Clippy** `--all-targets` (fresh, before the last test-only change): the identical 59-warning
+  set (file, message) as the baseline.
+- **`./run.sh --test` (fresh, 11:32-11:50 EET, DISPLAY and WAYLAND_DISPLAY unset, run lock,
+  shared timing lock, build slot):** exit 0. Debug lib 1,908 passed / 0 failed / 165 ignored
+  (475 s); integration 4 passed; every Godot script PASS, no SCRIPT ERROR; skipped only the
+  display-only shader-global probe and rendered vegetation tests. Profile deleted, imports
+  restored. Ignores tagged for later gates: 1 `ROAD-68-E` (question 31), 3 `TERRAIN-07`,
+  1 `ROAD-68-F`.
+- **Not done this round:** question 21 (b) and question 31 (open), the first-sample `surface`
+  rise above (to attribute), and the Godot stream with this library.
 
 ### `ROAD-68-F` — remaining families
 
