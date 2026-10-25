@@ -3224,8 +3224,10 @@ Terminology:
 
 ### Purpose and status
 
-**Specification adopted by the user (2026-10-25); of its gates only `TERRAIN-07-B` (road skirts
-and bridge fascias) is built so far.** `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
+**Specification adopted by the user (2026-10-25); of its gates `TERRAIN-07-B` (road skirts and
+bridge fascias) is built, and `TERRAIN-07-A` (the grading core and queries, roads only) is
+implemented beside the legacy path, in `simulation/terrain/graded/`, read by no consumer yet.**
+`TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
 grading and footprint distance layer per 64 m tile near roads and sites, an exact seam mask in the
@@ -3366,7 +3368,7 @@ zoning overlays, building render probes, placement) read only the query API.
    the preview's staging; nothing is saved, and Rust keeps no baked tile at rest. There are no
    stage caches beyond that: a seam index, slope bound or tile cache needs a measurement that
    shows the need.
-3. **Deterministic.** `max`, `min`, `clamp` and the midpoint are exact; ties between seams are broken
+3. **Deterministic.** `max`, `min` and `clamp` are exact; ties between seams are broken
    by a total order with exact comparisons; per-tile lists are sorted by canonical keys. Output is
    bitwise independent of the Rayon worker count, tile order, batch composition, hash order and
    any edit history that produces the same inputs.
@@ -3473,7 +3475,8 @@ sample is bitwise the base (a half-float delta between 16 m and 32 m rounds to 1
 **Rows.** Per tile and level: the road seams the texels name, tile-local `[ax, az, bx, bz]`
 (`f32`, metres from the tile origin), sorted by key; then the material edges likewise. Proposed
 capacities, to be confirmed by measured maxima ([T7](#terrain-07-open-questions)): 512 seams and
-256 edges at `GL0`, 256/128 at `GL1`, 128/64 at `GL2`, 32/16 at `GL3`.
+256 edges at `GL0`, 512/128 at `GL1`, 256/64 at `GL2`, 128/16 at `GL3` (seams from the
+`TERRAIN-07-A` maxima, edges until `TERRAIN-07-C` measures them).
 
 **Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, and
 the tile's inputs (the sorted seam keys and heights, the bits of the road top triangles the
@@ -3517,9 +3520,13 @@ For a world point `p`, in `f64`:
 4. **Class**, in this order: `Road` when a road top triangle covers `p` (the roadbed's coverage
    predicate); `Pad` when `p` lies in a site's support footprint (the allocator's predicate);
    `Ground` otherwise.
-5. **Ground.** `g = clamp(b, L, U)` when `L <= U`, else the conflict midpoint `(L + U) / 2`
-   ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions)). Both branches agree at
-   `L = U`, so `g` is continuous, and `max`, `min` and the midpoint make it order-free.
+5. **Ground.** `g = clamp(b, L, U)` when `L <= U`, else `L`: in a conflict the highest lower
+   bound wins, so the upper road's embankment stands and a retaining wall closes the step at the
+   lower road ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions), decided by the
+   user 2026-10-25). Equivalently `g = max(L, min(b, U))`. Both branches agree at `L = U`, so `g`
+   is continuous, and `max` and `min` make it order-free. At a seam its own cone gives
+   `L >= h >= U`, so `g >= h` there, and `g = h` exactly outside a conflict: the graded ground
+   never lies below a road or pad edge, and walls only rise from seams.
 6. **Pad.** `g` is the site's support height, exactly.
 7. **Road (inside rule).** With `s*` the nearest road seam and depth `σ = d_s*`: on a cut
    (`b >= h_s*`), `g = h_s* - kσ`; on a fill, `g = h_s* + k min(σ, σ_max)` with `σ_max = 0.5√2 m`,
@@ -3548,24 +3555,25 @@ The cone uses the seam height at the nearest point, not `max over q of h(q) - k 
 seam. For a seam of grade `γ` the true bound is tighter by at most `d γ²`: 0.13 m at 20 m from an 8%
 road, none on level roads. That is accepted (proposed) for its simplicity, as in the spike.
 
-**Exact pruning.** A seam may be skipped at `p` only when its interval at `p` contains
-`[min(b(p), H_lo), max(b(p), H_hi)]`, where `H_lo` and `H_hi` bound the heights of every seam in
-`S(p)`. That suffices because `g`, and `L` and `U` where they conflict, lie in that range. Per
-tile, with `H_lo` and `H_hi` taken over the window's seams, `h_lo` and `h_hi` the seam's own
-height range, `b_lo` and `b_hi` the base range over the cells under the seam and `Σ` a Lipschitz
-bound of the base over the window (the largest cell gradient), seam `s` has the reach
+**Exact pruning.** A seam may be skipped at `p` when its lower bound is at most
+`min(b(p), H_lo)` and its upper bound at least `b(p)`, where `H_lo` bounds the heights of every
+seam in `S(p)` from below. That suffices because `g = max(L, min(b, U))` and `U >= H_lo` over the
+other seams: such a seam changes neither term (`TERRAIN-07-A`, after T2's decision; in a conflict
+only lower bounds decide, so the midpoint rule's fourth term is gone). Per tile, with `H_lo`
+taken over the window's seams, `h_lo` and `h_hi` the seam's own height range, `b_lo` and `b_hi`
+the base range over the cells under the seam and `Σ` a Lipschitz bound of the base over the
+window (the largest cell gradient), seam `s` has the reach
 
 ```text
 r(s, tile) = min(C, max( (h_hi - b_lo) / (k - Σ), (b_hi - h_lo) / (k - Σ),
-                         (h_hi - H_lo) / k,       (H_hi - h_lo) / k,  0 ))   (C when Σ >= k)
+                         (h_hi - H_lo) / k,  0 ))   (C when Σ >= k)
 ```
 
 and is binned by its box grown by `max(r, B)` in 4 m bins. The first two terms are the spike's
-Lipschitz reach. The last two are what conflicts need: without them a seam whose cone holds the
-base can still move the midpoint. Any valid bound gives the same bits, so the slope may come
-from the tile's own window. On flat ground the extra terms are small; on slopes they grow with the
-height spread of the window's roads (about 10 m of reach on 2.5%, 30 m on 8%), so they must be
-measured ([T1](#terrain-07-open-questions)).
+Lipschitz reach. The third is what conflicts need: without it a seam whose cone holds the base
+can still set a conflict's `L`. Any valid bound gives the same bits, so the slope may come from
+the tile's own window. On flat ground the third term is small; on slopes it grows with the height
+of the window's roads above its lowest, so it must be measured ([T1](#terrain-07-open-questions)).
 
 ### Inside and outside from the roadbed's top triangles
 
@@ -3717,9 +3725,13 @@ to point).
   segment), with the window's seam heights widened by every changed segment, so the bound holds
   before and after the change and a removed segment counts. `3C` did not contain every affected
   tile's window (a tile within `C` of the segment, 64 m wide, with a window of `C` beyond it,
-  reaches `3C` plus the apron), and per-tile windows are tighter. Tiles whose lattice meets a
-  changed piece's bounds are dirty too: coverage and the road surface under the deep inside rule
-  change only there, also where no chain changed.
+  reaches `3C` plus the apron), and per-tile windows are tighter. A tile whose lattice meets a
+  changed piece's bounds is dirty too when the grounded top triangles that can cover its lattice
+  differ between the roadbeds before and after the change (pieces published in both with the same
+  mesh skipped, the others' triangles compared as sorted bits): coverage and the road surface
+  under the deep inside rule change only there, also where no chain changed, and a split trunk's
+  far half, rebuilt bit for bit, marks nothing. The selection therefore reads both roadbeds; the
+  preview and the commit hold the one before the edit (`O(1)` snapshots).
 - **Preview.** `preview_road` selects the dirty tiles from the preview roadbed's changes and bakes
   the resident ones at their current level, synchronously on the shared pool, with their inputs.
   Godot uploads them into free slots and swaps the instances to them (and the cells' meshes where a
@@ -3818,7 +3830,7 @@ measure them against this budget; the budget is not relaxed to fit.
 | TD4 | Tie-in slope | 1:2 (`k = 0.5`) for roads and pads, the legacy `MAX_TERRAIN_TIE_IN_SLOPE_RATIO` | proposed |
 | TD5 | Cap | 64 m, the legacy envelope cap (`roads.md` question 18, decided by the user for the CDT 2026-10-24) | proposed |
 | TD6 | Skirt depth | 0.5 m near, deeper with distance ([T5](#terrain-07-open-questions)) | decided by the user 2026-10-25 ([T5](#terrain-07-open-questions)) |
-| TD7 | Overlap rule | `clamp(base, L, U)`; `(L + U) / 2` where `L > U` | decided by the user 2026-10-25 ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions); T2's later choice open) |
+| TD7 | Overlap rule | `clamp(base, L, U)`; `L` where `L > U` (a retaining wall at the lower road) | decided by the user 2026-10-25 ([T1](#terrain-07-open-questions); [T2](#terrain-07-open-questions) (c)) |
 | TD8 | Tile | 64 m, aligned to the world origin | decided by the user 2026-10-25 ([T17](#terrain-07-open-questions)) |
 | TD9 | Footprint distance band | `max(2 m, 3 × spacing)`: 2 m at `GL0` | proposed |
 | TD10 | Levels | `GL0`-`GL3` to 256 m, 512 m, 2 km and the cull distance | decided by the user 2026-10-25 ([T5](#terrain-07-open-questions); distances tuned in `TERRAIN-07-D`) |
@@ -3841,7 +3853,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 
 | Gate | Status | Scope |
 | --- | --- | --- |
-| `TERRAIN-07-A` | open | Grading core and queries in Rust, roads only, beside the legacy path |
+| `TERRAIN-07-A` | round 1 2026-10-25 (branch `terrain07-A`; [record](#terrain-07-a-record)): acceptance passed on the midpoint rule; the rerun on the TD7 rule and `./run.sh --test` are pending | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
@@ -3883,6 +3895,136 @@ Acceptance:
   [T7](#terrain-07-open-questions) and [T8](#terrain-07-open-questions): reach and seams per sample
   with the conflict terms; conflict samples within one texel of a road seam on the populated
   fixtures and Kuopio; the largest seam and edge counts per tile and level; point-query cost
+
+#### `TERRAIN-07-A` record
+
+Round 1, 2026-10-25, on branch `terrain07-A` (from `road` at `4dc466fc`); fresh runs on that
+branch, kept apart from the spike's historical numbers above. Acceptance passed on the midpoint
+rule; T2's decision changed the rule afterwards (below), and its reruns are pending.
+
+**What landed.**
+
+- `simulation/terrain/graded.rs` (router) with `seams`, `grade`, `coverage`, `sample`, `tile`,
+  `select` and `query` in `simulation/terrain/graded/`: the pointwise function for `Road` and
+  `Ground` with exact pruning (4 m bins, the four-term reach per tile window), the four level
+  lattices with apron (`GL3`: the tile's sides, the base step lines between them and the step line
+  beyond each side), packing into RGBAF texels and seam rows (the material word is 0 until
+  `TERRAIN-07-C`), the payload inputs (seam keys, the visited top triangles' bits, the base
+  revisions of the 512 m chunks under the window), the typed `BakeError::SeamCapacity`, dirty tile
+  selection for road changes and base edits, and the queries `base_height_at`,
+  `ground_height_at`, `surface_height_at`, `normal_at`, `mask_at`, `raycast_surface` and
+  `raycast_base` on `GradedSurface`. Bakes run on the shared pool with one scratch per worker;
+  nothing is cached and no consumer reads any of it.
+- Roadbed accessors (no new geometry): `grounded_seams_in_bounds` (sorted by key) and its unsorted
+  visitor, `grounded_pieces_in_bounds`, `for_each_grounded_top_triangle_in_bounds`, and
+  `top_triangle_height_at` (the predicate `height_at` uses); `TerrainChanges::segments`, the
+  changed grounded chain segments themselves. `SimCore` keeps the last install's terrain changes
+  for the benchmark (`TERRAIN-07-E` consumes them).
+- Corrections recorded at their rules: the inside rule's depth limit
+  ([the grading function](#the-grading-function), item 7), coverage from grounded pieces only
+  ([inside and outside](#inside-and-outside-from-the-roadbeds-top-triangles)), dirty tiles per
+  candidate tile with a covering-triangle comparison for changed pieces
+  ([preview, commit, undo and load](#preview-commit-undo-and-load)), the payload's triangle inputs,
+  the `GL0` triangulation and normal the queries define for `TERRAIN-07-D`
+  ([queries](#queries-for-consumers)), and the row capacities ([data](#data), `T7`).
+- Lines (production, tests excluded): `graded/` 1,880 (`graded.rs` 27, `coverage` 104, `grade`
+  114, `query` 529, `sample` 218, `seams` 135, `select` 245, `tile` 508); tests 712 more. Roadbed
+  +111/−7 (`query.rs` +86, `terrain.rs` +20/−6, `system.rs` +11/−1, of which 8 are the test-only
+  `remove_piece_for_test`). The queries' ray march is the largest part.
+
+**Acceptance (debug library tests, `simulation::terrain::graded`).**
+
+- `overlap_rule_is_order_free_and_continuous`: permutations bitwise equal, the clamp returns the
+  base bitwise, no jump where `L = U`.
+- `pruned_bake_equals_every_seam_in_any_batch_order_and_worker_count`: on `t_slope`,
+  `conflict_8` (two roads 30 m apart and 12 m apart in height on an 8% slope; 15,708 conflict
+  samples at `GL0`) and `t_mound`, at `GL0` and `GL2`: texels, rows and inputs of 16-tile batches
+  on 1, 4 and 8 workers, in reverse order and one tile at a time are bitwise equal, and equal to
+  the evaluation over every seam within the cap on all 16 tiles at `GL2` and on the junction and
+  conflict tiles at `GL0` (the full `GL0` reference over 16 tiles is too slow for the debug suite).
+- `borders_and_levels_share_their_samples_bitwise`: every lattice point shared by tiles, aprons
+  and the four levels (`GL3` at step 2) has the same delta and, clamped to the `GL0` band, the same
+  footprint distance, on all seven fixtures.
+- `coverage_equals_the_roadbed_height_query_at_every_lattice_point`: every level, every fixture.
+- `a_missing_node_piece_uncovers_its_gap_and_flips_no_other_region`: only samples within 1 m (two
+  texels) of the dropped node piece change side, all from covered to uncovered.
+- `gl0_triangles_pass_through_the_seam_height_across_straight_edges`: a level road on an 8%
+  cross slope (cut and fill): the `GL0` surface at points along the outer chains is within
+  1e-4 m of the seam height (the `f32` delta).
+- `queries_answer_from_the_baked_lattice`, `road_changes_select_every_tile_they_alter` (every
+  tile whose bits change is selected, fewer than all).
+- Terrain stage: below.
+
+**Benchmarks.** Release library tests, `RAYON_NUM_THREADS=4`, `taskset -c 0,2,4,6,8,10,12,14`,
+both locks, 2026-10-25 14:19-14:25, binary sha256 `b4f7479e82c0…` from `ffc8e537` (the final
+commit changes only `GL1`'s capacity constant and docs); commands as in
+[measurement](#measurement-and-acceptance) plus `benchmark_graded_point_queries`,
+`benchmark_graded_tiles_locality` and `kuopio_graded_census`. Logs under `$ARTIFACTS`.
+
+- **Populated commits** (`graded_tiles` row of `benchmark_populated_commit_breakdown`: selection
+  from the commit's terrain changes and the roadbed before it, then the `GL0` bake, median of 7,
+  after the exact cut's own commit on the same core; `surface_ms` is that commit's exact cut):
+
+  | Residents | stage ms (samples 0, 1, 2) | of which selection | tiles | exact cut `surface_ms` |
+  | --- | --- | --- | --- | --- |
+  | 0 | 2.11, 2.48, 2.13 | 0.41-0.57 | 7, 12, 11 | 15.2-16.9 |
+  | 2k | 2.23, 2.11, 1.66 | 0.44-0.75 | 9, 9, 9 | 14.2-97.3 |
+  | 10k | 2.40, 1.89, 1.96 | 0.35-0.60 | 7, 9, 11 | 22.5-107.7 |
+  | 30k | 1.94, 1.78, 1.69 | 0.44-0.60 | 6, 9, 6 | 67.5-90.8 |
+  | 100k | 2.25, 2.03, 1.55 | 0.32-0.70 | 9, 12, 9 | 15.7-92.8 |
+
+  Every edit is within 3.0 ms, with no trend from 0 to 100k. The first build (`3d80660c`, same
+  session) selected every tile meeting a changed piece's bounds: 17-49 tiles and 1.96-5.58 ms,
+  because a split trunk's far half is a new piece with the old geometry; the covering-triangle
+  comparison removed them.
+- **Locality** (`benchmark_graded_tiles_locality`: a fixed T at the origin, its node piece dropped,
+  with a street grid from 400 m growing from 3 to 4,707 edges and 7 to 7,112 pieces): the same 4
+  tiles with bitwise equal texels at every size; stage p50 0.49, 0.60, 0.82 and 0.72 ms. The step
+  after the smallest map is the roadbed's piece walk switching from listing every piece to the
+  32 m cells; setup is not timed.
+- **Reference fixtures** (`benchmark_graded_tiles`, 16 tiles, p50 of 50): `GL0` 0.99-2.16 ms on
+  the road fixtures (8-12 graded tiles; one tile on one thread p50 0.16-0.45 ms, max 0.62-1.63),
+  `conflict_8` 5.43 ms; `GL1` 0.53-0.73, `GL2` 0.43-0.55, `GL3` 0.51-0.82 ms. Same-binary control,
+  the exact cut's T bench: 1.89 ms.
+- **Point queries** (`benchmark_graded_point_queries`, 2,000 points near the junction, one
+  thread): `base_height_at` 0.04-0.11 µs, `mask_at` 4.0-7.5, `surface_height_at` 4.9-9.6,
+  `ground_height_at` 6.9-12.5, `normal_at` 12.6-24.7 µs ([T8](#terrain-07-open-questions)).
+
+**Rule change after these measurements.** The user decided T2 on 2026-10-25 (retaining walls at
+the lower road; the conflict takes `L`), after the runs above, which used the midpoint rule
+(`ffc8e537`). The final commit carries the new rule and the reach without its fourth term; its
+debug tests (above, plus `the_graded_ground_never_lies_below_a_seam`) pass on it, but the
+timings, the T1/T7 figures and the wall census are not yet rerun on it (the handoff's first
+step). The populated stage should not move: its reach comes from the base terms (at most
+0.24 m), and the dropped term only shrinks reaches.
+
+**Measurements for the open questions** (midpoint-rule build).
+
+- **T1** (reach and seams per sample with the conflict terms): reference fixtures mean reach
+  0.2-4.6 m, max 0.2-8.7 m, 0.28-0.86 candidate seams per `GL0` sample; `conflict_8` mean 22.3 m,
+  max 25.0 m, 10.6 per sample. Populated commits: reach at most 0.24 m, 0.76-1.43 per sample.
+  Kuopio (every road tile of the reference save): the reach reaches the cap and a `GL0` sample has
+  57 candidate seams, about 5.4 ms per tile on one worker (517 tiles in 0.70 s on four), so a hilly
+  edit misses the 3.0 ms stage ([T18](#terrain-07-open-questions), open).
+- **T2** (conflict samples, before the decision): none in the populated city (flat) at any tier.
+  Kuopio `GL0`: 78,191 conflict samples in 216 graded tiles, 1,023 of them within one texel
+  (0.5 m) of a road seam; `GL1` 20,520 and 527 within 1 m. Decided since: (c), walls. The wall
+  census (`wall_sites`: road seams sampled every 0.5 m, the samples with `g > h`, their total
+  length, the height histogram and maximum, and the five worst sites by wall height with their
+  pieces, height difference, distance, each edge's wall and sample count) runs in the populated
+  benchmark (`GRADED_WALLS`) and in `kuopio_wall_sites`, which with `METRUM_CONFLICT_DUMP_DIR` also
+  writes each site's `GL0` samples, seams and top triangles for renders; its results are in the
+  handoff when they ran.
+- **T7** (largest seam rows per tile): `GL0` 86 on the reference fixtures, 245 in the 100k city,
+  233 on Kuopio; `GL1` 88 and 221 (Kuopio); `GL2` 120 (reference fixtures; not measured at city
+  scale); `GL3` at step 2: 37. Windows hold up to 808 seams in the city and 1,165 on Kuopio. The
+  capacities are now at least twice these ([data](#data)); edges arrive with `TERRAIN-07-C`. The
+  larger rows grow the [memory table](#data)'s `GL3` pool from about 83 MB to about 150 MB (its
+  rows then outweigh its texels); `TERRAIN-07-D` sizes the pools, and T7 (b), a shared row buffer,
+  fits `GL3` best.
+- **T8** (point-query cost): above. One gather of the seams within the cap dominates, then every
+  gathered seam per lattice point; at 10 µs a query, per-agent per-frame use does not scale
+  ([T19](#terrain-07-open-questions), open).
 
 #### `TERRAIN-07-B` — road skirts in the piece mesh
 
@@ -4000,6 +4142,12 @@ outer edge; previewed chunks with skirts equal the committed chunks
    that joins a road is rejected with `roadbed_chain_open_end`), the structure's free-end row and
    the bridge slab's two ends; a portal opens the terrain over the bore (the terrain side of
    `ROAD-61`).
+5. Conflict walls ([T2](#terrain-07-open-questions)): wall faces along seams where the graded
+   ground stands above the seam, from the seam up to `g`, built by terrain from the seams and the
+   graded samples. The roadbed takes no terrain height. Rendered in `TERRAIN-07-D`.
+
+Conflict-wall acceptance: walls close the step at every walled seam (no gap between the seam and
+the ground), checked on the Kuopio worst sites ([`TERRAIN-07-A` record](#terrain-07-a-record)).
 
 Structure-end acceptance: a bridge and a tunnel drawn from a road in play commit and undo; their
 ends are watertight by the `road_families` chunk check without its free-end exception; the
@@ -4143,8 +4291,9 @@ profile or `xvfb-run`. The idle frame uses the idle-frame matrix
 
 **Decided by the user, 2026-10-25: every recommendation below is adopted.** Where a
 recommendation hangs a later choice on a measurement (T2, T5, T6, T7, T8), the gate it names
-measures it and the recommendation's condition decides; T2's choice between (a) and (b) after
-`TERRAIN-07-A`'s counts stays the user's. New questions continue from T18.
+measures it and the recommendation's condition decides; T2 was decided by the user on
+2026-10-25: (c), retaining walls at the lower road. New questions continue from T18; T18 and T19
+(`TERRAIN-07-A`) are open.
 
 1. **T1. Exact locality of the overlap rule.**
    - **Evidence.** The spike's reach `dev / (1/2 - s)` bounds where a seam's cone excludes the base.
@@ -4172,6 +4321,14 @@ measures it and the recommendation's condition decides; T2's choice between (a) 
      there automatically (needs `SeamKind::Wall`, [T14](#terrain-07-open-questions)).
    - **Recommendation.** (a) in `TERRAIN-07-A` with the counts on the populated fixtures and
      Kuopio; then the user chooses between (a) and (b), with (c) as later product work.
+   - User, 2026-10-25: wants to see the midpoint at the worst Kuopio conflicts before choosing;
+     leans to (c) retaining walls, with (b) rejection as the last resort.
+   - **Decided by the user, 2026-10-25: (c) retaining walls at the lower road** (wall placement
+     option 2 of three shown: midpoint walls at both roads, the lower road, under the upper road);
+     the conflict takes `L` ([the grading function](#the-grading-function), item 5; TD7). A wall
+     stands along a seam wherever the graded ground just outside it is above the seam
+     (`g > h`), its face from the seam's height up to `g`; `TERRAIN-07-A` measures them, gate
+     `TERRAIN-07-C` builds them.
 3. **T3. Where inside and outside come from.**
    - **Evidence.** The spike's sign came from the nearest seam and a flood fill; with one node piece
      missing (`t_cutfill`) it discarded the ground south of the road and drew grass over the north
@@ -4283,6 +4440,38 @@ measures it and the recommendation's condition decides; T2's choice between (a) 
       102 m), which change the spike's measured unit. (d) Skirts between cells instead of nesting.
     - **Recommendation.** (a): the unit measured in the spike and used by the CDT and road chunk
       grids; every current world satisfies it.
+
+18. **T18. Grading cost on hilly terrain.**
+    - **Evidence** (`TERRAIN-07-A`, [record](#terrain-07-a-record)). On Kuopio every road tile's
+      reach reaches the 64 m cap and a `GL0` sample has 57 candidate seams: about 5.4 ms per tile
+      on one worker, against 0.16-0.45 ms on the reference fixtures and 0.76-1.43 candidates per
+      sample in the (flat) populated city, so an edit's 6-12 tiles would take roughly 8-16 ms on
+      four workers (midpoint-rule build). The conflict terms caused it: on hills the window's roads
+      lie at heights many metres apart. T2's decision dropped `(H_hi - h_lo) / k`; the remaining
+      `(h_hi - H_lo) / k` still grows with the height of a window's roads above its lowest, so
+      Kuopio must be re-measured first. The populated acceptance (flat)
+      passes; a hilly city misses the 3.0 ms stage. Open, not relaxed.
+    - **Options.** (a) Two-pass exact pruning per tile: bin by the base terms first; a sample whose
+      cones hold the base is exact already (`g = b`), and only a sample where a cone binds needs
+      the seams that can move a conflict, whose reach takes the tile's largest first-pass `L` and
+      smallest `U` instead of the window's seam heights (with the `L` rule, only the largest `L` is
+      needed). Exact by the same argument as the
+      [pruning rule](#the-grading-function), never looser. (b) T1 (b), superposition: exact with
+      the base terms alone, but a different overlap rule (TD7 is the user's). (c) Coarser texels
+      or fewer tiles: no, the budget is not relaxed.
+    - **Recommendation.** (a), measured on Kuopio in the next `TERRAIN-07-A` round; (b) goes back
+      to the user only if (a) misses.
+19. **T19. Point queries for per-agent use.**
+    - **Evidence** (`TERRAIN-07-A`). `ground_height_at` costs 6.9-12.5 µs, `normal_at`
+      12.6-24.7 µs, `mask_at` 4.0-7.5 µs on one thread: one gather of every seam within the cap
+      (the piece walk and a sort of 200-800 seams), then every gathered seam per lattice point
+      read. Pedestrians off lane and vehicle contacts query every rendered agent each frame
+      ([T8](#terrain-07-open-questions)); 10,000 such queries would take about 100 ms.
+    - **Options.** (a) Prune the queries exactly with the bake's reach over the point's own small
+      window, plus the gather variant for clustered points. (b) T8 (b), a persistent seam index,
+      a derived cache (invariant 2). (c) Answer from resident tiles: Rust keeps none (invariant 2).
+    - **Recommendation.** (a) in `TERRAIN-07-F`, measured against the consumers' loads; (b) only
+      with a measurement that (a) misses.
 
 #### Superseded `ROAD-68` questions
 

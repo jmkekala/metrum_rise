@@ -120,9 +120,9 @@ pub struct BakeStats {
     pub reach_max_m: f64,
     /// Candidate seams over every sample (the bins' list lengths).
     pub candidates: u64,
-    /// Ground samples whose cones conflict (`L > U`).
+    /// Ground samples whose cones conflict (`L > U`, where the ground takes `L`).
     pub conflicts: u32,
-    /// Conflict samples within one lattice spacing of a road seam (`T2`).
+    /// Conflict samples within one lattice spacing of a road seam.
     pub seam_conflicts: u32,
 }
 
@@ -326,12 +326,9 @@ fn bake_tile(
 
     // Reach per seam, then the seams in each 4 m bin over the lattice (CSR).
     let slope = scratch.base.slope();
-    let window_seams = seams
+    let window_low = seams
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |range, seam| {
-            let (lo, hi) = seam.height_range();
-            (range.0.min(lo), range.1.max(hi))
-        });
+        .fold(f64::INFINITY, |low, seam| low.min(seam.height_range().0));
     let bins = [0, 1].map(|axis| (((rect[axis + 2] - rect[axis]) / BIN_M).ceil() as usize).max(1));
     let bin_of = |axis: usize, value: f64| {
         (((value - rect[axis]) / BIN_M).floor().max(0.0) as usize).min(bins[axis] - 1)
@@ -344,7 +341,7 @@ fn bake_tile(
             let reach = reach(&ReachBounds {
                 seam: seam.height_range(),
                 base_under: scratch.base.range(seam.box_xz()),
-                window_seams,
+                window_low,
                 slope,
             });
             stats.reach_sum_m += reach;

@@ -1019,6 +1019,12 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         crate::simulation::terrain::graded::Level::Gl0,
     );
     eprintln!("GRADED_CENSUS {}", serde_json::json!({"residents": residents, "census": census}));
+    let walls = crate::simulation::terrain::graded::tests::wall_sites(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        5,
+    );
+    eprintln!("GRADED_WALLS {}", serde_json::json!({"residents": residents, "walls": walls}));
     // `METRUM_COMMIT_PHASES` logs the commit's cell-lot regions (`economy_phases`).
     let phases = std::env::var_os("METRUM_COMMIT_PHASES").is_some();
     for (sample, start) in starts.into_iter().enumerate() {

@@ -583,6 +583,28 @@ fn kuopio_graded_census() {
     }
 }
 
+// `TERRAIN-07-A` `T2` (c): the conflict walls on Kuopio and the five worst sites by wall height.
+// With `METRUM_CONFLICT_DUMP_DIR` set, each site's graded samples, seams and top triangles are
+// written there as `site-<rank>.json` for renders.
+#[test]
+#[ignore = "TERRAIN-07-A census: cargo test --release --lib kuopio_wall_sites -- --ignored --nocapture"]
+fn kuopio_wall_sites() {
+    use crate::simulation::terrain::graded::tests::{dump_site, wall_sites};
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    let (terrain, roadbed) = (&core.heightmap, &core.transit_network.roadbed);
+    let sites = wall_sites(terrain, roadbed, 5);
+    eprintln!("GRADED_WALLS {}", serde_json::json!({"fixture": "kuopio", "walls": sites}));
+    if let Some(dir) = std::env::var_os("METRUM_CONFLICT_DUMP_DIR") {
+        for (rank, site) in sites["sites"].as_array().unwrap().iter().enumerate() {
+            let (x, z) = (site["x"].as_f64().unwrap(), site["z"].as_f64().unwrap());
+            let path = std::path::Path::new(&dir).join(format!("site-{}.json", rank + 1));
+            dump_site(terrain, roadbed, x, z, &path);
+        }
+    }
+}
+
 // The regenerated reference's refined terrain builds clean. The refined patches the roads reach:
 // 27 on the legacy save as recorded before `ROAD-68-C`, 28 on the regenerated one.
 #[test]

@@ -43,8 +43,9 @@ thread_local! {
 /// The tiles at `level` whose bake a road change from `before` to `after` can alter, sorted
 /// and unique, into `out`:
 /// - every tile within a changed segment's band or its reach over that tile, the reach computed
-///   as the tile's bake computes it but with the window's seam heights widened by every changed
-///   segment, so it bounds the reach before and after the change and a removed seam counts;
+///   as the tile's bake computes it but with the window's lowest seam height taken over every
+///   changed segment too, so it bounds the reach before and after the change and a removed seam
+///   counts;
 /// - every tile whose lattice meets a changed piece and whose covering top triangles differ
 ///   between the two roadbeds (coverage and the road surface under the deep inside rule), so a
 ///   split trunk's far half, rebuilt bit for bit, marks nothing.
@@ -184,7 +185,8 @@ pub fn dirty_tiles_for_base_change(
 }
 
 // Whether a changed seam can reach the tile's lattice: its box grown by the band or by its
-// reach over the tile's window, with the window's seam heights including every changed seam.
+// reach over the tile's window, with the window's lowest seam height including every changed
+// seam.
 fn reached(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
@@ -208,13 +210,12 @@ fn reached(
     if !changed.iter().any(|seam| in_window(&seam)) {
         return false;
     }
-    let mut heights = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut widen = |(lo, hi): (f64, f64)| heights = (heights.0.min(lo), heights.1.max(hi));
+    let mut window_low = f64::INFINITY;
     roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b]| {
-        widen((a.y.min(b.y), a.y.max(b.y)));
+        window_low = window_low.min(a.y).min(b.y);
     });
     for seam in changed.iter().filter(in_window) {
-        widen(seam.height_range());
+        window_low = window_low.min(seam.height_range().0);
     }
     scratch.base.fill(terrain, window);
     let slope = scratch.base.slope();
@@ -222,7 +223,7 @@ fn reached(
         let reach = reach(&ReachBounds {
             seam: seam.height_range(),
             base_under: scratch.base.range(seam.box_xz()),
-            window_seams: heights,
+            window_low,
             slope,
         });
         meets(grown(seam.box_xz(), reach.max(band)), rect)

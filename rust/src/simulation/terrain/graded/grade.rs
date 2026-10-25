@@ -2,6 +2,11 @@
 
 //! The grading rules (`TERRAIN-07`): tie-in cones, the overlap rule, the inside rule under a
 //! road, and the exact pruning reach that bounds where a seam can change a value.
+//!
+//! The overlap rule (`TD7`, the user's `T2` decision) is `g = max(L, min(b, U))`: the base
+//! clamped into `[L, U]`, and `L` where the cones conflict, so the upper road's embankment wins
+//! and the lower road gets a retaining wall. At a seam its own cone gives `L >= h >= U`, so the
+//! graded ground never lies below a seam.
 
 /// Tie-in slope ratio `k` of every seam kind: 1:2.
 pub const TIE_IN_SLOPE: f64 = 0.5;
@@ -45,14 +50,15 @@ impl Cones {
     }
 }
 
-/// The overlap rule: the base clamped into `[lower, upper]`, or the conflict midpoint where
-/// `lower > upper` (two seams closer than 1:2 allows). Both branches agree at `lower = upper`,
-/// so the result is continuous, and it is the base itself, bitwise, where nothing binds.
+/// The overlap rule: the base clamped into `[lower, upper]`, or the highest lower bound where
+/// `lower > upper` (two seams closer than 1:2 allows: the upper one's embankment wins, a wall
+/// stands at the lower one). Both branches agree at `lower = upper`, so the result is
+/// continuous, and it is the base itself, bitwise, where nothing binds.
 pub fn overlap(base: f64, lower: f64, upper: f64) -> f64 {
     if lower <= upper {
         base.clamp(lower, upper)
     } else {
-        0.5 * (lower + upper)
+        lower
     }
 }
 
@@ -79,20 +85,21 @@ pub(super) fn inside_deep(base: f64, road: f64) -> f64 {
 }
 
 /// What bounds one seam's reach over a window: the seam's own height range, the base range
-/// over the cells under it, the height range of every seam in the window and a Lipschitz bound
+/// over the cells under it, the lowest height of every seam in the window and a Lipschitz bound
 /// of the base over the window (its largest cell gradient).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ReachBounds {
     pub(super) seam: (f64, f64),
     pub(super) base_under: (f64, f64),
-    pub(super) window_seams: (f64, f64),
+    pub(super) window_low: f64,
     pub(super) slope: f64,
 }
 
-/// The exact pruning reach: beyond it the seam's cone holds `[min(b, H_lo), max(b, H_hi)]` at
-/// every point of the window, so skipping it leaves every value bitwise equal. The first two
-/// terms bound where the cone can bind the base, the last two where it can move a conflict
-/// midpoint. The cap where the base is as steep as the cone. `O(1)`.
+/// The exact pruning reach: beyond it the seam's cone has `h - k d <= min(b, H_lo)` and
+/// `h + k d >= b` at every point of the window, so skipping it leaves `g = max(L, min(b, U))`
+/// bitwise equal (`U >= H_lo` over the other seams). The first two terms bound where the cone
+/// can bind the base, the third where its lower bound can set a conflict's `L`; in a conflict
+/// only lower bounds decide. The cap where the base is as steep as the cone. `O(1)`.
 pub(super) fn reach(bounds: &ReachBounds) -> f64 {
     let k = TIE_IN_SLOPE;
     if bounds.slope >= k {
@@ -100,12 +107,10 @@ pub(super) fn reach(bounds: &ReachBounds) -> f64 {
     }
     let (h_lo, h_hi) = bounds.seam;
     let (b_lo, b_hi) = bounds.base_under;
-    let (w_lo, w_hi) = bounds.window_seams;
     let reach = [
         (h_hi - b_lo) / (k - bounds.slope),
         (b_hi - h_lo) / (k - bounds.slope),
-        (h_hi - w_lo) / k,
-        (w_hi - h_lo) / k,
+        (h_hi - bounds.window_low) / k,
     ]
     .into_iter()
     .fold(0.0, f64::max);
@@ -127,7 +132,8 @@ mod tests {
     #[test]
     fn overlap_rule_is_order_free_and_continuous() {
         // Two seams 10 m apart at heights 0 and 10, a point midway on base 3: the cones
-        // conflict and the midpoint is 5, in either order and in every permutation of more.
+        // conflict and the upper seam's lower bound, 7.5, wins, in either order and in every
+        // permutation of more.
         let cones = [
             (0.0, 5.0),
             (10.0, 5.0),
@@ -136,7 +142,7 @@ mod tests {
             (-2.0, 12.0),
         ];
         let expected = bounds(&cones).ground(3.0);
-        assert_eq!(bounds(&cones[..2]).ground(3.0), 5.0);
+        assert_eq!(bounds(&cones[..2]).ground(3.0), 7.5);
         let mut order: Vec<usize> = (0..cones.len()).collect();
         // Every rotation and its reversal.
         for _ in 0..cones.len() {
@@ -186,15 +192,24 @@ mod tests {
         let flat = ReachBounds {
             seam: (1.0, 1.0),
             base_under: (1.0, 1.0),
-            window_seams: (1.0, 1.0),
+            window_low: 1.0,
             slope: 0.0,
         };
         assert!(reach(&flat) < 1.0e-3);
-        let spread = ReachBounds {
-            window_seams: (0.0, 6.0),
+        // A seam 5 m above the window's lowest can set a conflict's `L` within 10 m; a lower
+        // seam's upper bound never decides one.
+        let above = ReachBounds {
+            seam: (6.0, 6.0),
+            base_under: (6.0, 6.0),
             ..flat
         };
-        assert!((reach(&spread) - 10.0).abs() < 1.0e-3);
+        assert!((reach(&above) - 10.0).abs() < 1.0e-3);
+        let below = ReachBounds {
+            window_low: -5.0,
+            seam: (1.0, 1.0),
+            ..flat
+        };
+        assert!((reach(&below) - 12.0).abs() < 1.0e-3);
         let steep = ReachBounds { slope: 0.5, ..flat };
         assert_eq!(reach(&steep), CAP_M);
     }

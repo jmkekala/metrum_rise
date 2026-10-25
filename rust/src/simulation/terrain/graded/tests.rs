@@ -348,6 +348,46 @@ fn gl0_triangles_pass_through_the_seam_height_across_straight_edges() {
     assert!(worst < 1.0e-4, "graded ground misses the seam by {worst} m");
 }
 
+// TD7 (`T2` (c)): at every seam vertex the graded ground is at least the seam height, exactly
+// the seam height outside a conflict, and above it (a wall) only in one.
+#[test]
+fn the_graded_ground_never_lies_below_a_seam() {
+    use super::sample::evaluate;
+    use super::seams::{SeamScratch, gather_road_seams};
+    let mut walls = 0;
+    for (name, graph, terrain) in fixtures() {
+        let roadbed = compiled(&graph);
+        let (mut scratch, mut seams) = (SeamScratch::default(), Vec::new());
+        gather_road_seams(
+            &roadbed,
+            [-200.0, -200.0, 200.0, 200.0],
+            &mut scratch,
+            &mut seams,
+        );
+        let mut base = super::sample::BaseWindow::default();
+        base.fill(&terrain, [-200.0, -200.0, 200.0, 200.0]);
+        for seam in seams
+            .iter()
+            .filter(|s| s.a[0].abs() < 100.0 && s.a[2].abs() < 100.0)
+        {
+            let [x, h, z] = seam.a;
+            let all = 0..seams.len() as u32;
+            let value = evaluate(x, z, base.at(x, z), None, &seams, all, 2.0);
+            assert!(
+                value.height >= h,
+                "{name}: ground {} below seam {h}",
+                value.height
+            );
+            if value.conflict {
+                walls += usize::from(value.height > h);
+            } else {
+                assert_eq!(value.height.to_bits(), h.to_bits(), "{name}: ({x}, {z})");
+            }
+        }
+    }
+    assert!(walls > 0, "the conflict fixture walls its lower road");
+}
+
 #[test]
 fn queries_answer_from_the_baked_lattice() {
     for (name, graph, terrain) in fixtures() {
@@ -665,21 +705,7 @@ pub(crate) fn graded_census(
     roadbed: &RoadbedSystem,
     level: Level,
 ) -> serde_json::Value {
-    let (mut pieces, mut segments) = (Vec::new(), Vec::new());
-    roadbed.grounded_seams_in_bounds([-1.0e7, -1.0e7, 1.0e7, 1.0e7], &mut pieces, &mut segments);
-    let mut tiles = Vec::new();
-    for [a, b] in &segments {
-        let grow = CAP_M + 1.0;
-        let first = TileKey::at(a.x.min(b.x) - grow, a.z.min(b.z) - grow);
-        let last = TileKey::at(a.x.max(b.x) + grow, a.z.max(b.z) + grow);
-        for x in first.x..=last.x {
-            for z in first.z..=last.z {
-                tiles.push(TileKey { x, z });
-            }
-        }
-    }
-    tiles.sort_unstable();
-    tiles.dedup();
+    let (seams, tiles) = road_tiles(roadbed);
     let mut out = Vec::new();
     let (mut graded, mut conflicts, mut seam_conflicts) = (0usize, 0u64, 0u64);
     let (mut row_max, mut window_max, mut reach_max) = (0usize, 0usize, 0.0f64);
@@ -703,10 +729,243 @@ pub(crate) fn graded_census(
         }
     }
     serde_json::json!({
-        "level": format!("{level:?}"), "seams": segments.len(), "tiles": tiles.len(),
+        "level": format!("{level:?}"), "seams": seams, "tiles": tiles.len(),
         "graded": graded, "conflicts": conflicts, "seam_conflicts": seam_conflicts,
         "row_seams_max": row_max, "window_seams_max": window_max, "reach_max_m": reach_max,
         "seams_per_sample": candidates as f64 / samples.max(1) as f64,
         "capacity_errors": overflow, "bake_s": start.elapsed().as_secs_f64(),
     })
+}
+
+// The tiles within the cap of a grounded road seam, sorted.
+fn road_tiles(roadbed: &RoadbedSystem) -> (usize, Vec<TileKey>) {
+    let (mut pieces, mut segments) = (Vec::new(), Vec::new());
+    roadbed.grounded_seams_in_bounds([-1.0e7, -1.0e7, 1.0e7, 1.0e7], &mut pieces, &mut segments);
+    let mut tiles = Vec::new();
+    for [a, b] in &segments {
+        let grow = CAP_M + 1.0;
+        let first = TileKey::at(a.x.min(b.x) - grow, a.z.min(b.z) - grow);
+        let last = TileKey::at(a.x.max(b.x) + grow, a.z.max(b.z) + grow);
+        for x in first.x..=last.x {
+            for z in first.z..=last.z {
+                tiles.push(TileKey { x, z });
+            }
+        }
+    }
+    tiles.sort_unstable();
+    tiles.dedup();
+    (segments.len(), tiles)
+}
+
+// One seam sample where the graded ground stands above the seam: where, the wall's height and
+// length, and the seam's piece and the piece of the seam that sets `L` there.
+struct WallSample {
+    x: f64,
+    z: f64,
+    height: f64,
+    length: f64,
+    near: PieceId,
+    other: PieceId,
+    height_difference: f64,
+    distance: f64,
+}
+
+// The wall samples of one tile: every road seam sampled every 0.5 m (each point counted in the
+// tile holding it), with `L` over every seam within the cap there.
+fn tile_walls(terrain: &TerrainSystem, roadbed: &RoadbedSystem, tile: TileKey) -> Vec<WallSample> {
+    use super::seams::{SeamScratch, gather_road_seams};
+    let band = Level::Gl0.band_m(f64::from(terrain.cell_size_m()));
+    let origin = tile.origin();
+    let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
+    let window = super::tile::window(rect, band);
+    let (mut scratch, mut seams, mut ids) = (SeamScratch::default(), Vec::new(), Vec::new());
+    gather_road_seams(roadbed, window, &mut scratch, &mut seams);
+    let mut owner = std::collections::BTreeMap::new();
+    roadbed.grounded_pieces_in_bounds(window, &mut ids);
+    for &id in &ids {
+        let mesh = roadbed.piece_mesh(id).expect("published");
+        for chain in mesh.outer_chains() {
+            for pair in chain.vertices().windows(2) {
+                let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                owner.insert([a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits), id);
+            }
+        }
+    }
+    let piece = |index: usize| owner[&seams[index].key()];
+    let mut walls = Vec::new();
+    for (index, seam) in seams.iter().enumerate() {
+        let length = (seam.b[0] - seam.a[0]).hypot(seam.b[2] - seam.a[2]);
+        let parts = (length / 0.5).ceil().max(1.0) as usize;
+        for part in 0..parts {
+            let t = (part as f64 + 0.5) / parts as f64;
+            let (x, z) = (
+                seam.a[0] + (seam.b[0] - seam.a[0]) * t,
+                seam.a[2] + (seam.b[2] - seam.a[2]) * t,
+            );
+            if TileKey::at(x, z) != tile {
+                continue;
+            }
+            let height = seam.at(x, z).height;
+            let (mut lower, mut setter) = (f64::NEG_INFINITY, index);
+            for (other, candidate) in seams.iter().enumerate() {
+                let at = candidate.at(x, z);
+                let bound = at.height - TIE_IN_SLOPE * at.distance;
+                if at.distance <= CAP_M && bound > lower {
+                    (lower, setter) = (bound, other);
+                }
+            }
+            if lower > height {
+                let at = seams[setter].at(x, z);
+                walls.push(WallSample {
+                    x,
+                    z,
+                    height: lower - height,
+                    length: length / parts as f64,
+                    near: piece(index),
+                    other: piece(setter),
+                    height_difference: at.height - height,
+                    distance: at.distance,
+                });
+            }
+        }
+    }
+    walls
+}
+
+/// Conflict walls (`T2` (c), the user's decision): the graded ground stands above a seam, by
+/// `g - h = L - h`, wherever another seam's lower bound passes over it. As JSON: the seam
+/// samples (every 0.5 m along every road seam) with a wall, the total wall length, a histogram
+/// and the largest wall height, and the `sites` worst sites by wall height, grouped by the two
+/// pieces (the walled seam's and the one setting `L`; a span is its edge): the worst sample's
+/// world x/z, the seams' height difference and the distance between them there, the largest wall
+/// at each piece's edge and the number of walled samples. Diagnostics, never timed.
+pub(crate) fn wall_sites(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    sites: usize,
+) -> serde_json::Value {
+    use rayon::prelude::*;
+    use std::collections::BTreeMap;
+    let (seams, tiles) = road_tiles(roadbed);
+    let walls: Vec<WallSample> = crate::thread_pools::install(|| {
+        tiles
+            .par_iter()
+            .map(|&tile| tile_walls(terrain, roadbed, tile))
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    let bins = [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, f64::INFINITY];
+    let mut histogram = [0usize; 7];
+    for wall in &walls {
+        histogram[bins.iter().position(|&top| wall.height <= top).unwrap()] += 1;
+    }
+    let mut grouped: BTreeMap<(PieceId, PieceId), (usize, usize, BTreeMap<PieceId, f64>)> =
+        BTreeMap::new();
+    for (index, wall) in walls.iter().enumerate() {
+        let pair = (wall.near.min(wall.other), wall.near.max(wall.other));
+        let site = grouped.entry(pair).or_insert((0, index, BTreeMap::new()));
+        site.0 += 1;
+        if wall.height > walls[site.1].height {
+            site.1 = index;
+        }
+        let edge = site.2.entry(wall.near).or_insert(0.0);
+        *edge = edge.max(wall.height);
+    }
+    let mut ranked: Vec<_> = grouped.into_iter().collect();
+    ranked.sort_by(|a, b| walls[b.1.1].height.total_cmp(&walls[a.1.1].height));
+    let rows: Vec<_> = ranked
+        .iter()
+        .take(sites)
+        .map(|((a, b), (samples, worst, edges))| {
+            let worst = &walls[*worst];
+            serde_json::json!({
+                "x": worst.x, "z": worst.z, "pieces": [format!("{a:?}"), format!("{b:?}")],
+                "wall_m": worst.height, "walled_piece": format!("{:?}", worst.near),
+                "height_difference_m": worst.height_difference, "distance_m": worst.distance,
+                "edge_walls_m": edges
+                    .iter()
+                    .map(|(piece, height)| (format!("{piece:?}"), *height))
+                    .collect::<BTreeMap<_, _>>(),
+                "walled_samples": samples,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "seams": seams, "tiles": tiles.len(), "walled_samples": walls.len(),
+        "wall_length_m": walls.iter().map(|w| w.length).sum::<f64>(),
+        "wall_max_m": walls.iter().map(|w| w.height).fold(0.0, f64::max),
+        "histogram_upto_m": bins.iter().map(|b| if b.is_finite() { b.to_string() } else { "more".into() }).zip(histogram).collect::<Vec<_>>(),
+        "sites": rows,
+    })
+}
+
+/// Writes one wall site's graded `GL0` samples for renders as JSON to `path`: every lattice
+/// point of the 64 m square centred on `(x, z)` with its base, delta and footprint distance, the
+/// road seams meeting the square and the grounded top triangles meeting it.
+pub(crate) fn dump_site(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    x: f64,
+    z: f64,
+    path: &std::path::Path,
+) {
+    let square = [x - 32.0, z - 32.0, x + 32.0, z + 32.0];
+    let (first, last) = (
+        TileKey::at(square[0], square[1]),
+        TileKey::at(square[2], square[3]),
+    );
+    let tiles: Vec<TileKey> = (first.x..=last.x)
+        .flat_map(|tx| (first.z..=last.z).map(move |tz| TileKey { x: tx, z: tz }))
+        .collect();
+    let mut out = Vec::new();
+    bake_tiles(terrain, roadbed, &tiles, Level::Gl0, &mut out).expect("tiles bake");
+    let surface = GradedSurface { terrain, roadbed };
+    let mut scratch = QueryScratch::default();
+    let mut samples = Vec::new();
+    let (mut xs, mut zs) = (Vec::new(), Vec::new());
+    for payload in &out {
+        lattice(terrain, payload.tile, Level::Gl0, &mut xs, &mut zs);
+        let origin = payload.tile.origin();
+        for (j, &pz) in zs.iter().enumerate() {
+            for (i, &px) in xs.iter().enumerate() {
+                // Each point once: the tile's own lattice, not its apron or far sides.
+                let own = px >= origin[0]
+                    && px < origin[0] + TILE_M
+                    && pz >= origin[1]
+                    && pz < origin[1] + TILE_M;
+                if own && px >= square[0] && px <= square[2] && pz >= square[1] && pz <= square[3] {
+                    let texel = payload.texels[j * xs.len() + i];
+                    samples.push([
+                        px,
+                        pz,
+                        surface.base_height_at(px, pz, &mut scratch),
+                        f64::from(texel[0]),
+                        f64::from(texel[1]),
+                    ]);
+                }
+            }
+        }
+    }
+    let (mut pieces, mut segments) = (Vec::new(), Vec::new());
+    roadbed.grounded_seams_in_bounds(square, &mut pieces, &mut segments);
+    let seams: Vec<[f64; 6]> = segments
+        .iter()
+        .map(|[a, b]| [a.x, a.y, a.z, b.x, b.y, b.z])
+        .collect();
+    let mut triangles = Vec::new();
+    roadbed.for_each_grounded_top_triangle_in_bounds(square, &mut pieces, |t| {
+        triangles.push(t.map(|p| [p.x, p.y, p.z]));
+    });
+    triangles.sort_by(|a, b| {
+        a.map(|p| p.map(f64::to_bits))
+            .cmp(&b.map(|p| p.map(f64::to_bits)))
+    });
+    triangles.dedup();
+    let json = serde_json::json!({
+        "centre": [x, z], "spacing_m": 0.5,
+        "samples_x_z_base_delta_sdf": samples, "seams_a_b": seams, "top_triangles": triangles,
+    });
+    std::fs::write(path, json.to_string()).expect("site dump written");
 }

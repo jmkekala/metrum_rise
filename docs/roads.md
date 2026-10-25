@@ -476,8 +476,13 @@ roadbed side stays as the contract terrain consumes:
   structure spans publish none
 - the pieces' top triangles and the point-in-triangle predicate `height_at` uses, which `TERRAIN-07`
   takes as the footprint's coverage (no loops, so an open end flips no region; question 19)
-- `take_terrain_changes`, extended in `TERRAIN-07-A` to return the changed grounded chain segments
-  themselves
+- `take_terrain_changes`, which since `TERRAIN-07-A` also returns the changed grounded chain
+  segments themselves (`TerrainChanges::segments`, endpoints with heights)
+- the accessors `TERRAIN-07-A` reads them through, in `roadbed/query.rs`, no new geometry:
+  `grounded_seams_in_bounds` (sorted by the bits of the start then the end) and its unsorted
+  visitor, `grounded_pieces_in_bounds`, `for_each_grounded_top_triangle_in_bounds` and
+  `top_triangle_height_at` (the predicate itself); bridge and tunnel spans are left out of both
+  seams and coverage
 - road skirts, one strip per grounded outer chain in the piece mesh (`TERRAIN-07-B`, built; see
   [pieces and meshes](#pieces-and-meshes))
 
