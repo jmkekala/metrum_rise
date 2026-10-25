@@ -520,7 +520,22 @@ The road side is rewritten:
   assembly ledger (`road_tile_dirty_at`, keyed by tile), so a later request rebuilds only those
   tiles and their neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
   it, from the same per-tile loops; while the roadbed is dirty it keeps its last road ownership.
-  Undo and rollback go through the same compile, so they follow.
+  Undo and rollback go through the same compile, so they follow. A world-scale road change (a
+  load, or a bulk road build such as the populated-city fixture's or the in-game benchmark
+  city's) refreshes every patch once with a new global payload generation
+  (`refresh_all_engineered_terrain_patch_state`), which takes and drops the terrain changes its
+  compiles recorded, so the next edit stamps and builds only its own terrain (`ROAD-68-D`
+  part 6; before, those changes waited for the first road commit, which then graded and built
+  every road patch of the city).
+- **Tile clip.** The CDT core clips each loop to its tile with its own clip (an integer overlay
+  for the components, the axis-aligned clip for exact intersection heights). Where a loop leaves
+  the tile and comes back elsewhere (a row street beside a cross street outside the tile), the
+  axis-aligned clip joins the two points with a run along the tile side, and the later side
+  clips cut such runs into zero-width rails out to the tile corners, at heights no road has.
+  Rail tips (a side vertex whose neighbours lie on the same side, with the boundary turning back
+  there) are removed exactly, so a clipped loop holds only footprint vertices and its
+  intersections with the tile sides; a loop without rails is unchanged (`ROAD-68-D` part 6,
+  `a_loop_reaching_past_a_tile_side_adds_no_vertex_off_its_footprint`).
 - **Ownership refresh.** A patch's road ownership is recomputed only while it is pending: a
   compile stamped it, or a terrain stroke changed heights within twice the envelope cap of it
   (its loops reach the cap beyond the tile, their rays the cap beyond the loops), or an undo that
@@ -3005,6 +3020,55 @@ decided by the coordinator under the user's delegation, 2026-10-24, for review.
 - **Product probes** unchanged: the roadbed is untouched (`roadbed/` 7,588 lines), and
   `reference_junction_products_match_the_probe` and the fixture probes pass without
   re-recording.
+
+Part 6 (2026-10-25, branch `road68-D6` on `road` with `ROAD-68-E` rounds 1-5): commits at city
+scale. `ROAD-68-G` part 5 found the populated-city breakdown's first commit (a T split of a west
+border trunk) rejected at 100k residents with `render_geometry_invalid`, and the commit's
+`surface` stage at 15-69 ms median with a first sample of 34 ms to 1.7 s growing with the city.
+Two causes, both fixed constructively; the patch-selection rule stays `ROAD-68-E`'s chain rule
+(round 4, [patch selection](#footprint-and-terrain)).
+
+- **The first commit inherited the city's terrain.** The roadbed records the bounds (and, since
+  `ROAD-68-E` round 4, the chain segments) of every piece a compile replaces until a road edit
+  takes them, and only the road edit's own terrain rebuild took them. A bulk road build (the
+  populated-city fixture, the in-game benchmark city) and a load compile every piece outside a
+  road edit, so the first commit afterwards stamped, graded and built every road patch of the
+  city: 6,503 piece bounds and 203 of 225 patches at 100k, 2.4 s of `surface` on the bare 100k
+  street grid. Fix: the world terrain refresh (`refresh_all_engineered_terrain_patch_state`,
+  run by a load and now by both bulk builds) takes and drops the pending changes and bumps the
+  global payload generation, since it refreshes every patch anyway. Test first:
+  `the_first_commit_builds_only_its_own_terrain_as_the_city_grows` (a bulk-built trunk with and
+  without five roads in other patches; the T commit must build the same patches): it built
+  `(0, 1)` alone and `(0, 1), (2, 0), (2, 1)` in the city before the fix.
+- **The rejection: zero-width rails from the tile clip.** With the 100k city's patches built,
+  64 tiles in 46 patches failed with `conflicting_road_boundary_height`, all at tile corners. In
+  each, the tile's road loop is a comb (rows every 50 m joined by a cross street west of the
+  tile) of which one row crosses the tile. The axis-aligned clip joined the rows along the tile's
+  west side, and the side clips cut those joins into zero-width rails from the row to the tile
+  corners, at a height of 0 that no road has; a building pad touching the tile corner at
+  sidewalk height (0.12) then met a "road" vertex at another height. At 100k the rows' outer
+  seams lie on 64 m tile lines (rows at `-3225 + 50 i`, seam `+7`; never at the lower tiers), so
+  pads touch tile corners there; elsewhere the rails stayed as degenerate constraints along tile
+  sides. Fix: rail tips are removed exactly after the axis-aligned clip ([tile
+  clip](#footprint-and-terrain)); loops without rails are unchanged, bit for bit. Test first:
+  `a_loop_reaching_past_a_tile_side_adds_no_vertex_off_its_footprint` (the comb and the pad in
+  tile `(0..64)²`): the clip returned the strip plus `(0, 0)` and `(0, 64)` at height 0, and
+  canonicalisation failed with the 100k error.
+- **The breakdown builds the city's terrain before the click** (harness change, test-only):
+  Godot requests and uploads the refined terrain of the road patches it shows long before a
+  click, so the commit finds them built; the breakdown acknowledged uploads it never built, so
+  its first sample built the edit's 512 m patches (64 tiles each) cold. It now builds every road
+  patch once after the city (setup, untimed), which also checks that the whole city's terrain
+  builds: at 100k it does now, and it failed on the 64 tiles above before.
+- **Open, not this part's family.** A clipped site loop counts as a road loop for the shared
+  vertex height rule (`road_loop_edge_sources_are_building_site_only` sees the clip's unsourced
+  edges), so the road-wins rule does not apply to it; making it a site loop also turns
+  disagreeing pads at a shared corner into conflicts, which pass today when one pad is clipped,
+  so it waits for a decision on adjacent pad heights. The Kuopio watertight check, the 72
+  zero-area f32 faces at kilometre coordinates and the truncated border patch's frame centre
+  (part 5) are unchanged: the 100k failure was neither.
+
+D6_RESULTS_PLACEHOLDER
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 

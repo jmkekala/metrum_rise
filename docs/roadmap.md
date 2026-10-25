@@ -84,8 +84,9 @@ control 41.8). Part 5 (2026-10-25) fixed a deadlock in pure jobs (a frame waited
 routing rebuild on a pool worker; the frame's caller now finishes it before entering the pool),
 put the new-lane lift and chunk seal back on the pool and made the cell road-overlap test exact
 without rounding: median 19.3 ms at 100k before the `ROAD-68-D` rebase (control 41.6). On
-`road` after `ROAD-68-D` the 100k commit is rejected and the commit's terrain validation costs
-15–69 ms, in the control too (`ROAD-68-D` part 6 owns both). Part 6 (2026-10-25) showed the
+`road` after `ROAD-68-D` the 100k commit was rejected and the commit's terrain validation cost
+15–69 ms, in the control too; `ROAD-68-D` part 6 fixes both (below). `ROAD-68-G` part 6
+(2026-10-25) showed the
 slowest, first sample is the larger edit beside the painted grid, not a cold start, and put its
 reattachment search, street lights and signs and retained frontage lines on the pool, bit for
 bit: 20.5 / 17.9 / 16.0 ms per sample at 100k before the rebase (control 23.4 / 19.2 / 13.7).
@@ -114,7 +115,12 @@ patch's frame and the shared filler/tile height function. Part 3 fixed the econo
 quadratic orientation test in the grading pass, and building-site changes re-grading roads): every
 timing is back within the control's range with identical work counts. The sloped T's terrain
 stage meets its 2 ms target at 1.85–1.88 ms (open question 22, resolved). Span rows follow one
-constructive station rule and terminal cap apexes are exact. `ROAD-68-E` part 1 is in progress on
+constructive station rule and terminal cap apexes are exact. Part 6 (branch `road68-D6`,
+2026-10-25) makes commits work at city scale: a load or bulk road build no longer leaves its
+compiles' terrain changes to the first commit (which then graded and built every road patch:
+203 of 225 at 100k), and the CDT's tile clip no longer leaves zero-width rails to the tile
+corners, whose made-up heights conflicted with building pads in 64 tiles of the 100k city
+(`render_geometry_invalid`). D6_ROADMAP_RESULTS `ROAD-68-E` part 1 is in progress on
 branch `road68-E1`, rebased on `ROAD-68-D`: the road tool previews synchronously on a versioned
 context (published view plus a graph replica, no per-command city copies), returns the changed
 road chunks exactly as the commit publishes them (crosswalk paint frames and road signs excepted
