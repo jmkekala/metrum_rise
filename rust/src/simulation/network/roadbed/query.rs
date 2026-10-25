@@ -342,8 +342,9 @@ impl RoadbedSystem {
 
     /// Visits the top triangles of the grounded pieces whose bounds touch the XZ bounds, whose
     /// piece grid cells touch them, in ascending piece order (`TERRAIN-07-A`): the footprint's
-    /// coverage, tested with [`Self::top_triangle_height_at`]. A triangle may be visited more
-    /// than once. `pieces` is the caller's scratch.
+    /// coverage, tested with [`Self::top_triangle_height_at`]. A piece inside the bounds has
+    /// every grid cell in them, so its top triangles are visited once each, in mesh order;
+    /// another piece's triangle may be visited more than once. `pieces` is the caller's scratch.
     pub fn for_each_grounded_top_triangle_in_bounds(
         &self,
         bounds_xz: [f64; 4],
@@ -353,6 +354,17 @@ impl RoadbedSystem {
         self.grounded_pieces_in_bounds(bounds_xz, pieces);
         for id in pieces.iter() {
             let mesh = self.pieces[id].mesh();
+            let piece = mesh.bounds_xz();
+            if bounds_xz[0] <= piece[0]
+                && bounds_xz[1] <= piece[1]
+                && piece[2] <= bounds_xz[2]
+                && piece[3] <= bounds_xz[3]
+            {
+                for triangle in 0..mesh.top_triangle_count() {
+                    visit(mesh.triangle_points(triangle));
+                }
+                continue;
+            }
             mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
                 visit(mesh.triangle_points(triangle));
                 false

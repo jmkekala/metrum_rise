@@ -10,9 +10,11 @@
 use super::coverage::rasterize;
 use super::grade::CAP_M;
 use super::prune::{
-    BinGrid, BinLists, Lifted, finish_second_pass, list_first_pass, list_second_pass,
+    BinGrid, BinLists, Lifted, bin_side, finish_second_pass, list_first_pass, list_second_pass,
 };
-use super::sample::{BaseGrid, BaseWindow, Listed, NO_SEAM, evaluate};
+use super::sample::{
+    AxisStop, BaseGrid, BaseWindow, Listed, NO_SEAM, Value, evaluate, evaluate_lanes,
+};
 use super::seams::{Seam, SeamScratch, gather_road_seams};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
@@ -188,6 +190,8 @@ pub(super) struct BakeScratch {
     base: BaseWindow,
     xs: Vec<f64>,
     zs: Vec<f64>,
+    // Per lattice column its bin column and base stop.
+    columns: Vec<(u32, AxisStop)>,
     // Each seam's first-pass bin range `[x0, x1, z0, z1]`, empty as `[1, 0, 1, 0]`.
     seam_bins: Vec<[u32; 4]>,
     bins: BinGrid,
@@ -219,15 +223,30 @@ pub fn bake_tiles(
     level: Level,
     out: &mut Vec<TilePayload>,
 ) -> Result<(), BakeError> {
-    bake_tiles_with(terrain, roadbed, tiles, level, true, out)
+    bake_tiles_with(terrain, roadbed, tiles, level, Evaluation::Lanes, out)
 }
+
+/// How a bake evaluates its samples: the reference over every seam within the cap, or pruned,
+/// one point at a time or a row's points in one bin together in lanes (the bake's own way).
+/// The three give the same bits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Evaluation {
+    Unpruned,
+    // The lanes' reference in the tests.
+    #[cfg(test)]
+    Scalar,
+    Lanes,
+}
+
+// Points per lane group: one bin row at `GL1` (4 m bins of 1 m), half of one at `GL0`.
+const LANES: usize = 4;
 
 pub(super) fn bake_tiles_with(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
     tiles: &[TileKey],
     level: Level,
-    prune: bool,
+    evaluation: Evaluation,
     out: &mut Vec<TilePayload>,
 ) -> Result<(), BakeError> {
     out.resize_with(tiles.len(), TilePayload::default);
@@ -236,7 +255,7 @@ pub(super) fn bake_tiles_with(
             .zip(tiles.par_iter())
             .filter_map(|(payload, &tile)| {
                 SCRATCH.with_borrow_mut(|scratch| {
-                    bake_tile(terrain, roadbed, tile, level, prune, scratch, payload).err()
+                    bake_tile(terrain, roadbed, tile, level, evaluation, scratch, payload).err()
                 })
             })
             .min_by_key(|error| match error {
@@ -313,14 +332,13 @@ pub(super) fn window(rect: [f64; 4], band: f64) -> [f64; 4] {
     grown(rect, CAP_M.max(band) + WINDOW_PAD_M)
 }
 
-// Bakes one tile. `prune` false evaluates every window seam at every sample: the reference the
-// pruned bake must equal bitwise.
+// Bakes one tile with `evaluation`.
 fn bake_tile(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
     tile: TileKey,
     level: Level,
-    prune: bool,
+    evaluation: Evaluation,
     scratch: &mut BakeScratch,
     out: &mut TilePayload,
 ) -> Result<(), BakeError> {
@@ -330,6 +348,7 @@ fn bake_tile(
         base,
         xs,
         zs,
+        columns,
         seam_bins,
         bins,
         bin_floor,
@@ -356,8 +375,9 @@ fn bake_tile(
         ..BakeStats::default()
     };
 
-    // Pass 1's seams in each 4 m bin over the lattice.
-    bins.fill(base, rect);
+    // Pass 1's seams in each bin over the lattice.
+    bins.fill(base, rect, bin_side(spacing));
+    let prune = evaluation != Evaluation::Unpruned;
     list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
     first.build(bins.len(), pairs);
 
@@ -370,8 +390,9 @@ fn bake_tile(
         Some(&mut out.inputs.triangles),
     );
 
-    // Sample every lattice point over pass 1's seams. A ground sample left below its base is
-    // finished by pass 2; every other value is final.
+    // Sample every lattice point over pass 1's seams, a row's points in one bin together in
+    // lanes. A ground sample left below its base is finished by pass 2; every other value is
+    // final.
     let count = xs.len() * zs.len();
     out.texels.clear();
     out.texels.reserve(count);
@@ -380,53 +401,102 @@ fn bake_tile(
     bin_floor.clear();
     bin_floor.resize(bins.len(), f64::INFINITY);
     let mut graded = false;
+    let lanes = if evaluation == Evaluation::Lanes {
+        LANES
+    } else {
+        1
+    };
+    columns.clear();
+    columns.extend(xs.iter().map(|&x| (bins.of(0, x), base.stop(0, x))));
     for (j, &z) in zs.iter().enumerate() {
-        for (i, &x) in xs.iter().enumerate() {
-            let bin = bins.at(x, z);
+        let (bin_row, row_stop) = (bins.of(1, z), base.stop(1, z));
+        let mut i = 0;
+        while i < xs.len() {
+            // The run of this row's points in the bin of point `i`, at most `lanes` long.
+            let bin_column = columns[i].0;
+            let bin = bins.index(bin_column, bin_row);
+            let mut run = 1;
+            while run < lanes && i + run < xs.len() && columns[i + run].0 == bin_column {
+                run += 1;
+            }
             let list = first.of(bin);
-            stats.listed += list.len() as u64;
-            let covering = road[j * xs.len() + i];
-            if list.is_empty() && covering == f32::NEG_INFINITY {
+            stats.listed += (list.len() * run) as u64;
+            let row = j * xs.len();
+            let covering = |lane: usize| {
+                let height = road[row + i + lane];
+                (height > f32::NEG_INFINITY).then_some(height)
+            };
+            if list.is_empty() && (0..run).all(|lane| covering(lane).is_none()) {
                 // Nothing within reach or band and uncovered: `evaluate` returns the base itself,
                 // so the delta is zero and the distance the band, without reading the base.
-                out.texels.push([0.0, band as f32, -1.0, 0.0]);
-                nearest.push(NO_SEAM);
+                for _ in 0..run {
+                    out.texels.push([0.0, band as f32, -1.0, 0.0]);
+                    nearest.push(NO_SEAM);
+                }
+                i += run;
                 continue;
             }
-            let base_m = base.at(x, z);
-            let value = evaluate(
-                x,
-                z,
-                base_m,
-                (covering > f32::NEG_INFINITY).then_some(covering),
-                seams,
-                list.iter().copied(),
-                band,
-            );
-            stats.candidates += u64::from(value.evaluated);
-            let delta = (value.height - base_m) as f32;
-            let (in_band, near_seam) = (value.sdf < band, value.nearest_distance <= spacing);
-            if prune && covering == f32::NEG_INFINITY && value.height < base_m {
-                bin_floor[bin] = bin_floor[bin].min(value.height);
-                lifted.push(Lifted {
-                    sample: out.texels.len() as u32,
-                    bin: bin as u32,
-                    x,
+            // Lanes past the run repeat its last point; their values are dropped.
+            let point = |lane: usize| xs[i + lane.min(run - 1)];
+            let points: [f64; LANES] = std::array::from_fn(point);
+            let bases: [f64; LANES] = std::array::from_fn(|lane| {
+                base.at_stops(&columns[i + lane.min(run - 1)].1, &row_stop)
+            });
+            let roads: [Option<f32>; LANES] =
+                std::array::from_fn(|lane| covering(lane.min(run - 1)));
+            let values: [Value; LANES] = if run == 1 {
+                let value = evaluate(
+                    points[0],
                     z,
-                    base: base_m,
-                    cones: value.cones,
-                    near_seam,
-                    in_band,
-                });
+                    bases[0],
+                    roads[0],
+                    seams,
+                    list.iter().copied(),
+                    band,
+                );
+                [value; LANES]
             } else {
-                if value.conflict {
-                    stats.conflicts += 1;
-                    stats.seam_conflicts += u32::from(near_seam);
+                evaluate_lanes(
+                    &points,
+                    z,
+                    &bases,
+                    &roads,
+                    seams,
+                    list.iter().copied(),
+                    band,
+                )
+            };
+            for lane in 0..run {
+                let (x, base_m, value) = (points[lane], bases[lane], values[lane]);
+                stats.candidates += u64::from(value.evaluated);
+                let delta = (value.height - base_m) as f32;
+                let (in_band, near_seam) = (value.sdf < band, value.nearest_distance <= spacing);
+                if evaluation != Evaluation::Unpruned
+                    && roads[lane].is_none()
+                    && value.height < base_m
+                {
+                    bin_floor[bin] = bin_floor[bin].min(value.height);
+                    lifted.push(Lifted {
+                        sample: out.texels.len() as u32,
+                        bin: bin as u32,
+                        x,
+                        z,
+                        base: base_m,
+                        cones: value.cones,
+                        near_seam,
+                        in_band,
+                    });
+                } else {
+                    if value.conflict {
+                        stats.conflicts += 1;
+                        stats.seam_conflicts += u32::from(near_seam);
+                    }
+                    graded |= delta != 0.0 || in_band;
                 }
-                graded |= delta != 0.0 || in_band;
+                out.texels.push([delta, value.sdf as f32, -1.0, 0.0]);
+                nearest.push(value.nearest);
             }
-            out.texels.push([delta, value.sdf as f32, -1.0, 0.0]);
-            nearest.push(value.nearest);
+            i += run;
         }
     }
     if !lifted.is_empty() {

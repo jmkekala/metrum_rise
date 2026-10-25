@@ -76,6 +76,40 @@ impl Seam {
             len2,
         }
     }
+
+    /// [`Self::at`]'s distance and height at `N` points `(xs[l], z)` of one lattice row, the
+    /// same operations per lane in the same order, so each lane equals `at` bitwise. The clamps
+    /// are selects rather than branches, so the lanes compile to vector instructions. `O(N)`.
+    pub(super) fn at_lanes<const N: usize>(&self, xs: &[f64; N], z: f64) -> ([f64; N], [f64; N]) {
+        let [ax, ay, az] = self.a;
+        let [bx, by, bz] = self.b;
+        let (dx, dz) = (bx - ax, bz - az);
+        let len2 = dx * dx + dz * dz;
+        let (mut distance, mut height) = ([0.0; N], [ay; N]);
+        if len2 > 0.0 {
+            for lane in 0..N {
+                let x = xs[lane];
+                let t = ((x - ax) * dx + (z - az) * dz) / len2;
+                let (mid_x, mid_z, mid_h) = (ax + dx * t, az + dz * t, ay + (by - ay) * t);
+                let (qx, qz, h) = if t <= 0.0 {
+                    (ax, az, ay)
+                } else if t >= 1.0 {
+                    (bx, bz, by)
+                } else {
+                    (mid_x, mid_z, mid_h)
+                };
+                let (ex, ez) = (x - qx, z - qz);
+                distance[lane] = (ex * ex + ez * ez).sqrt();
+                height[lane] = h;
+            }
+        } else {
+            for lane in 0..N {
+                let (ex, ez) = (xs[lane] - ax, z - az);
+                distance[lane] = (ex * ex + ez * ez).sqrt();
+            }
+        }
+        (distance, height)
+    }
 }
 
 /// One seam evaluated at a point.

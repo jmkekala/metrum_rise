@@ -6,8 +6,8 @@
 //! scaled to metres, and a sample's value is a function of its position, its coverage and the
 //! seams it is given, which the bake prunes exactly and the queries do not prune at all.
 
-use super::grade::{CAP_M, Cones, INSIDE_REACH_M, inside, inside_deep, settled};
-use super::seams::{Seam, SeamAt, SeamKind};
+use super::grade::{CAP_M, Cones, INSIDE_REACH_M, cone, inside, inside_deep, settled};
+use super::seams::{Seam, SeamKind};
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::terrain::TerrainSystem;
 
@@ -43,7 +43,8 @@ pub(super) struct Value {
 /// One candidate seam of a sample: its index, a lower bound of its distance from the sample,
 /// and the lowest and highest heights of it and every candidate after it, whose distance
 /// bounds are at least its own. The evaluation stops at the first candidate past which no seam
-/// can change the value (`settled`); with distance bound `0` it never stops.
+/// can change the value or the nearest seam (`settled`); with distance bound `0` it never
+/// stops.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Listed {
     pub(super) index: u32,
@@ -64,10 +65,10 @@ impl Listed {
 
 /// Evaluates the graded terrain at the world point `(x, z)` with base `base`, `road` the
 /// highest covering road top triangle's height (`None` uncovered), from the candidate seams
-/// (into `seams`), until no later candidate can change the cone bounds or the nearest seam.
-/// Seams beyond the cap are left out. Only road seams name the nearest seam, within `band`
-/// metres. The bounds and the nearest-seam order are order-free, so the result does not depend
-/// on the candidates' order. `O(candidates)`.
+/// (into `seams`), until no later candidate can change the value or the nearest seam. Seams
+/// beyond the cap are left out. Only road seams name the nearest seam, within `band` metres.
+/// The value and the nearest-seam order are order-free, so the result does not depend on the
+/// candidates' order. One lane of [`evaluate_lanes`]. `O(candidates)`.
 pub(super) fn evaluate(
     x: f64,
     z: f64,
@@ -77,46 +78,153 @@ pub(super) fn evaluate(
     candidates: impl Iterator<Item = Listed>,
     band: f64,
 ) -> Value {
-    let mut cones = Cones::NONE;
-    let mut nearest: Option<(u32, SeamAt)> = None;
-    let mut evaluated = 0;
+    let [value] = evaluate_lanes(&[x], z, &[base], &[road], seams, candidates, band);
+    value
+}
+
+/// [`evaluate`] at `N` points `(xs[lane], z)` of one lattice row at once, with bases `bases`
+/// and covering road heights `roads`, over one candidate list. Each lane takes the candidates
+/// until its own early exit, and later ones no longer touch it, so every lane equals
+/// `evaluate` at its point bitwise, its cones and count included. Each candidate's seam is
+/// evaluated for all lanes at once ([`Seam::at_lanes`]), with the cone bounds updated by
+/// selects, so the arithmetic compiles to vector instructions. `O(candidates x N)`.
+pub(super) fn evaluate_lanes<const N: usize>(
+    xs: &[f64; N],
+    z: f64,
+    bases: &[f64; N],
+    roads: &[Option<f32>; N],
+    seams: &[Seam],
+    candidates: impl Iterator<Item = Listed>,
+    band: f64,
+) -> [Value; N] {
+    let (mut lower, mut upper) = ([Cones::NONE.lower; N], [Cones::NONE.upper; N]);
+    // Per lane the nearest road seam within the band: index, distance and height.
+    let mut nearest = [None::<(u32, f64, f64)>; N];
+    let (mut live, mut evaluated) = ([true; N], [0u32; N]);
+    // A ground lane's base; a covered lane's value reads only the nearest road seam.
+    let ground: [Option<f64>; N] =
+        std::array::from_fn(|lane| roads[lane].is_none().then_some(bases[lane]));
     for Listed {
         index,
         distance,
         heights,
     } in candidates
     {
-        let nearest_distance = nearest.map_or(f64::INFINITY, |(_, at)| at.distance);
-        if settled(&cones, heights, distance, nearest_distance, band) {
+        let mut any = false;
+        for lane in 0..N {
+            if !live[lane] {
+                continue;
+            }
+            let cones = Cones {
+                lower: lower[lane],
+                upper: upper[lane],
+            };
+            let nearest_distance = nearest[lane].map_or(f64::INFINITY, |(_, d, _)| d);
+            live[lane] = !settled(
+                &cones,
+                ground[lane],
+                heights,
+                distance,
+                nearest_distance,
+                band,
+            );
+            evaluated[lane] += u32::from(live[lane]);
+            any |= live[lane];
+        }
+        if !any {
             break;
         }
-        evaluated += 1;
         let seam = &seams[index as usize];
-        let at = seam.at(x, z);
-        if at.distance > CAP_M {
+        let (distance, height) = seam.at_lanes(xs, z);
+        for lane in 0..N {
+            let take = live[lane] && distance[lane] <= CAP_M;
+            let (cone_lower, cone_upper) = cone(height[lane], distance[lane]);
+            lower[lane] = if take {
+                lower[lane].max(cone_lower)
+            } else {
+                lower[lane]
+            };
+            upper[lane] = if take {
+                upper[lane].min(cone_upper)
+            } else {
+                upper[lane]
+            };
+        }
+        if seam.kind != SeamKind::Road {
             continue;
         }
-        cones.add(at.height, at.distance);
-        if seam.kind == SeamKind::Road
-            && at.distance < band
-            && nearest.is_none_or(|(best, best_at)| at.nearer_than(index, &best_at, best))
-        {
-            nearest = Some((index, at));
+        for lane in 0..N {
+            if live[lane]
+                && distance[lane] <= CAP_M
+                && distance[lane] < band
+                && nearest[lane].is_none_or(|(best, best_distance, _)| {
+                    nearer(
+                        seams,
+                        (xs[lane], z),
+                        (index, distance[lane]),
+                        (best, best_distance),
+                    )
+                })
+            {
+                nearest[lane] = Some((index, distance[lane], height[lane]));
+            }
         }
     }
+    std::array::from_fn(|lane| {
+        let cones = Cones {
+            lower: lower[lane],
+            upper: upper[lane],
+        };
+        value(
+            bases[lane],
+            roads[lane],
+            cones,
+            nearest[lane],
+            evaluated[lane],
+            band,
+        )
+    })
+}
+
+// The nearest-seam order ([`SeamAt::nearer_than`]) between a candidate and the best so far, as
+// `(index, distance)`: by distance, and on a tie by the line distances from the scalar seam
+// evaluation, whose distances are the same bits.
+fn nearer(
+    seams: &[Seam],
+    (x, z): (f64, f64),
+    (index, distance): (u32, f64),
+    (best, best_distance): (u32, f64),
+) -> bool {
+    if distance != best_distance {
+        return distance < best_distance;
+    }
+    let at = seams[index as usize].at(x, z);
+    at.nearer_than(index, &seams[best as usize].at(x, z), best)
+}
+
+// A sample's value from its evaluated cones and nearest road seam within the band (`(index,
+// distance, height)`): the inside rule where a road covers it, the overlap rule elsewhere.
+fn value(
+    base: f64,
+    road: Option<f32>,
+    cones: Cones,
+    nearest: Option<(u32, f64, f64)>,
+    evaluated: u32,
+    band: f64,
+) -> Value {
     let class = if road.is_some() {
         Class::Road
     } else {
         Class::Ground
     };
     let height = match (class, road) {
-        (Class::Road, Some(road)) => match nearest.filter(|(_, at)| at.distance < INSIDE_REACH_M) {
-            Some((_, at)) => inside(base, at.height, at.distance),
+        (Class::Road, Some(road)) => match nearest.filter(|&(_, d, _)| d < INSIDE_REACH_M) {
+            Some((_, d, h)) => inside(base, h, d),
             None => inside_deep(base, f64::from(road)),
         },
         _ => cones.ground(base),
     };
-    let distance = nearest.map_or(band, |(_, at)| at.distance);
+    let distance = nearest.map_or(band, |(_, d, _)| d);
     Value {
         height,
         sdf: if class == Class::Road {
@@ -124,10 +232,10 @@ pub(super) fn evaluate(
         } else {
             distance
         },
-        nearest: nearest.map_or(NO_SEAM, |(index, _)| index),
+        nearest: nearest.map_or(NO_SEAM, |(index, ..)| index),
         conflict: class == Class::Ground && cones.lower > cones.upper,
         cones,
-        nearest_distance: nearest.map_or(f64::INFINITY, |(_, at)| at.distance),
+        nearest_distance: nearest.map_or(f64::INFINITY, |(_, d, _)| d),
         evaluated,
     }
 }
@@ -162,6 +270,16 @@ impl BaseGrid {
         let last = (self.grid(axis, max_m).ceil() as usize + 1).min(self.size[axis] - 1);
         (first, last)
     }
+}
+
+/// A world coordinate's place on one base axis: the samples on either side and the fractions
+/// towards each.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct AxisStop {
+    first: usize,
+    second: usize,
+    fraction: f64,
+    rest: f64,
 }
 
 /// The base samples, in metres, of the cells under a window: what one bake or query reads of
@@ -206,14 +324,30 @@ impl BaseWindow {
     /// The base `b(p)` at a world point inside the window: bilinear in `f64`, exactly the
     /// sample on a lattice point.
     pub(super) fn at(&self, x: f64, z: f64) -> f64 {
-        let (gx, gz) = (self.grid.grid(0, x), self.grid.grid(1, z));
-        let (x0, z0) = (gx.floor() as usize, gz.floor() as usize);
-        let (fx, fz) = (gx - x0 as f64, gz - z0 as f64);
-        let x1 = (x0 + 1).min(self.grid.size[0] - 1);
-        let z1 = (z0 + 1).min(self.grid.size[1] - 1);
-        let h0 = self.sample(x0, z0) * (1.0 - fx) + self.sample(x1, z0) * fx;
-        let h1 = self.sample(x0, z1) * (1.0 - fx) + self.sample(x1, z1) * fx;
-        h0 * (1.0 - fz) + h1 * fz
+        self.at_stops(&self.stop(0, x), &self.stop(1, z))
+    }
+
+    /// Where a world coordinate on `axis` lies between base samples, for [`Self::at_stops`]: a
+    /// lattice reuses one per column and one per row.
+    pub(super) fn stop(&self, axis: usize, value: f64) -> AxisStop {
+        let g = self.grid.grid(axis, value);
+        let first = g.floor() as usize;
+        let fraction = g - first as f64;
+        AxisStop {
+            first,
+            second: (first + 1).min(self.grid.size[axis] - 1),
+            fraction,
+            rest: 1.0 - fraction,
+        }
+    }
+
+    /// [`Self::at`] from the point's stops: the same operations, the same bits.
+    pub(super) fn at_stops(&self, x: &AxisStop, z: &AxisStop) -> f64 {
+        let h0 =
+            self.sample(x.first, z.first) * x.rest + self.sample(x.second, z.first) * x.fraction;
+        let h1 =
+            self.sample(x.first, z.second) * x.rest + self.sample(x.second, z.second) * x.fraction;
+        h0 * z.rest + h1 * z.fraction
     }
 
     /// Lowest and highest base over the cells meeting `rect` inside the window, which bound the
@@ -242,8 +376,8 @@ impl BaseWindow {
     /// The exact range of the bilinear base over `rect` inside the window. On each piece of
     /// `rect` within one cell the base is linear along either axis, so it is extreme at a corner
     /// of the piece: the range is over the corners of `rect`, the crossings of its sides with the
-    /// cell lines and the lattice points inside it. `O(points)`, at most 9 for a 4 m rectangle on
-    /// cells of 2 m or more.
+    /// cell lines and the lattice points inside it. `O(points)`: `(side / cell + 2)^2` at most,
+    /// 9 for a 4 m bin on cells of 2 m or more.
     pub(super) fn bilinear_range(&self, rect: [f64; 4]) -> (f64, f64) {
         let grid = &self.grid;
         let stops = |axis: usize, lo: f64, hi: f64| {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The two-pass exact pruning of the tile bake (`TERRAIN-07`, `T18` (a)): the seams each 4 m
-//! bin of a tile's lattice must evaluate.
+//! The two-pass exact pruning of the tile bake (`TERRAIN-07`, `T18` (a)): the seams each bin of
+//! a tile's lattice must evaluate, bins of `max(4 m, the level's spacing)`.
 //!
 //! Pass 1 lists in a bin the seams whose cone can bind the base there, over the bin's exact base
 //! range, and the seams within the band. Every other seam's cone holds the base at the bin's
@@ -17,16 +17,25 @@ use super::sample::{BaseWindow, Listed};
 use super::seams::Seam;
 use super::tile::{BakeStats, grown, meets};
 
-// Seam bin side over a tile's lattice, metres.
+// Smallest seam bin side over a tile's lattice, metres. A level whose spacing is wider bins at
+// its spacing: its band and reaches grow with the spacing, so finer bins would each list nearly
+// the same seams for one or two lattice points (`GL3`).
 const BIN_M: f64 = 4.0;
+
+/// The bin side at a level of lattice spacing `spacing_m`: `max(4 m, spacing)`. The bake and
+/// the selection bin alike.
+pub(super) fn bin_side(spacing_m: f64) -> f64 {
+    spacing_m.max(BIN_M)
+}
 // Bins per side of a block; a block is tested before its bins.
 const BLOCK: u32 = 4;
 
-/// The 4 m seam bins over a lattice rectangle, rows along +z, with the exact base range of each
-/// bin and of each block of 4 x 4 bins. Reused between tiles.
+/// The seam bins over a lattice rectangle, rows along +z, with the exact base range of each bin
+/// and of each block of 4 x 4 bins. Reused between tiles.
 #[derive(Clone, Debug, Default)]
 pub(super) struct BinGrid {
     rect: [f64; 4],
+    side: f64,
     count: [u32; 2],
     blocks: [u32; 2],
     base: Vec<(f64, f64)>,
@@ -35,12 +44,13 @@ pub(super) struct BinGrid {
 }
 
 impl BinGrid {
-    /// Bins over the lattice rectangle `rect` with the base ranges from `base`, which holds the
-    /// rectangle. `O(bins)`.
-    pub(super) fn fill(&mut self, base: &BaseWindow, rect: [f64; 4]) {
+    /// Bins of side `side` ([`bin_side`]) over the lattice rectangle `rect` with the base
+    /// ranges from `base`, which holds the rectangle. `O(bins)`.
+    pub(super) fn fill(&mut self, base: &BaseWindow, rect: [f64; 4], side: f64) {
         self.rect = rect;
+        self.side = side;
         self.count =
-            [0, 1].map(|axis| (((rect[axis + 2] - rect[axis]) / BIN_M).ceil() as u32).max(1));
+            [0, 1].map(|axis| (((rect[axis + 2] - rect[axis]) / side).ceil() as u32).max(1));
         self.blocks = self.count.map(|n| n.div_ceil(BLOCK));
         self.base.clear();
         for bz in 0..self.count[1] {
@@ -74,26 +84,21 @@ impl BinGrid {
         (bz * self.count[0] + bx) as usize
     }
 
-    /// The bin holding the lattice point `(x, z)`, clamped to the rectangle.
-    pub(super) fn at(&self, x: f64, z: f64) -> usize {
-        self.index(self.of(0, x), self.of(1, z))
-    }
-
-    // The bin holding a coordinate on `axis`, clamped to the rectangle.
-    fn of(&self, axis: usize, value: f64) -> u32 {
-        (((value - self.rect[axis]) / BIN_M).floor().max(0.0) as u32).min(self.count[axis] - 1)
+    /// The bin column or row (`axis` 0 or 1) holding a coordinate, clamped to the rectangle.
+    pub(super) fn of(&self, axis: usize, value: f64) -> u32 {
+        (((value - self.rect[axis]) / self.side).floor().max(0.0) as u32).min(self.count[axis] - 1)
     }
 
     // A bin's rectangle; the last bin of an axis may reach beyond the lattice.
     fn bounds(&self, bx: u32, bz: u32) -> [f64; 4] {
-        let x = self.rect[0] + f64::from(bx) * BIN_M;
-        let z = self.rect[1] + f64::from(bz) * BIN_M;
-        [x, z, x + BIN_M, z + BIN_M]
+        let x = self.rect[0] + f64::from(bx) * self.side;
+        let z = self.rect[1] + f64::from(bz) * self.side;
+        [x, z, x + self.side, z + self.side]
     }
 
     // The rectangle of the block holding bin `(bx, bz)`.
     fn block_bounds(&self, bx: u32, bz: u32) -> [f64; 4] {
-        let side = BIN_M * f64::from(BLOCK);
+        let side = self.side * f64::from(BLOCK);
         let x = self.rect[0] + f64::from(bx / BLOCK) * side;
         let z = self.rect[1] + f64::from(bz / BLOCK) * side;
         [x, z, x + side, z + side]

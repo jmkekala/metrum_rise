@@ -4,7 +4,7 @@
 //! the changed seams' own reaches, so cost follows the edit and never the city.
 
 use super::grade::{CAP_M, TIE_IN_SLOPE, lift_reach};
-use super::prune::{BinGrid, box_distance};
+use super::prune::{BinGrid, bin_side, box_distance};
 use super::sample::{BaseGrid, BaseWindow};
 use super::seams::{Seam, road_seam};
 use super::tile::{Level, TileKey, grown, lattice, meets, window};
@@ -227,7 +227,9 @@ fn reached(
         floor = floor.min(lowest(seam));
     }
     scratch.base.fill(terrain, window);
-    scratch.bins.fill(&scratch.base, rect);
+    scratch
+        .bins
+        .fill(&scratch.base, rect, bin_side(level.spacing_m(grid.cell_m)));
     let slope = scratch.base.slope();
     let (base, bins) = (&scratch.base, &scratch.bins);
     changed.iter().filter(in_window).any(|seam| {

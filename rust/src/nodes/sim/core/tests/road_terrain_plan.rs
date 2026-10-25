@@ -586,10 +586,12 @@ fn kuopio_graded_census() {
 
 // `TERRAIN-07-A` `T18` (a): the two-pass exact pruning on Kuopio's steepest road, the 4 x 4
 // tiles around edge 43 of the reference save (a dead end on a 1:2 side slope): pruned equals
-// unpruned bitwise in any batch, order and worker count, with second-pass samples.
+// unpruned bitwise in any batch, order and worker count, with second-pass samples; and the
+// lanes equal one point at a time on every road tile.
 #[test]
 fn kuopio_pruned_bake_equals_every_seam() {
-    use crate::simulation::terrain::graded::TileKey;
+    use crate::simulation::terrain::graded::tests::assert_lanes_equal_scalar_on_road_tiles;
+    use crate::simulation::terrain::graded::{Level, TileKey};
     let mut core = test_core();
     core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
     core.precompute_road_mesh_data();
@@ -605,6 +607,14 @@ fn kuopio_pruned_bake_equals_every_seam() {
         "kuopio",
     );
     assert!(second_pass > 0, "Kuopio's cuts need the second pass");
+    // The lanes against one point at a time on every Kuopio road tile.
+    let checked = assert_lanes_equal_scalar_on_road_tiles(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        Level::Gl0,
+        "kuopio",
+    );
+    assert!(checked > 500, "every Kuopio road tile: {checked}");
 }
 
 // `TERRAIN-07-A` `T18`: the graded terrain stage of Kuopio road edits against the 3.0 ms budget

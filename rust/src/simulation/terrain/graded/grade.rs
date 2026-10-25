@@ -41,14 +41,24 @@ impl Cones {
 
     /// Adds the cone of a seam at height `height`, `distance` from the point.
     pub(super) fn add(&mut self, height: f64, distance: f64) {
-        self.lower = self.lower.max(height - TIE_IN_SLOPE * distance);
-        self.upper = self.upper.min(height + TIE_IN_SLOPE * distance);
+        let (lower, upper) = cone(height, distance);
+        self.lower = self.lower.max(lower);
+        self.upper = self.upper.min(upper);
     }
 
     /// The overlap rule on these bounds.
     pub(super) fn ground(&self, base: f64) -> f64 {
         overlap(base, self.lower, self.upper)
     }
+}
+
+/// The cone interval `[h - k d, h + k d]` of a seam at height `height`, `distance` from a
+/// point.
+pub(super) fn cone(height: f64, distance: f64) -> (f64, f64) {
+    (
+        height - TIE_IN_SLOPE * distance,
+        height + TIE_IN_SLOPE * distance,
+    )
 }
 
 /// The overlap rule: the base clamped into `[lower, upper]`, or the highest lower bound where
@@ -142,13 +152,17 @@ pub(super) fn band_reach(band: f64) -> f64 {
 }
 
 /// The early exit of a sample's evaluation: whether no seam at least `distance` from the point
-/// with heights within `heights` (`(lowest, highest)`) can change the cone bounds `cones` or the
-/// nearest road seam (at `nearest`, `+inf` without one, within `band`), or lies within the cap:
-/// its lower bound stays at most `L`, its upper bound at least `U`, and it lies farther than the
-/// nearest seam or the band. The margin is a padded reach's, so rounding never stops early.
-/// `O(1)`.
+/// with heights within `heights` (`(lowest, highest)`) can change the sample's value or its
+/// nearest road seam (at `nearest`, `+inf` without one, within `band`), or every such seam lies
+/// beyond the cap. A covered sample (`base` `None`) reads only the nearest road seam (the inside
+/// rule). A ground sample's value is `g = max(L, min(b, U))` over `cones`: a seam whose lower
+/// bound stays below `g` and whose upper bound stays above `min(b, U)` leaves `min(b, U)` and
+/// `g` as they are, and the overlap rule then returns the same operand, bitwise; the bounds it
+/// would tighten are not part of the value. The margin is a padded reach's, so rounding never
+/// stops early. `O(1)`.
 pub(super) fn settled(
     cones: &Cones,
+    base: Option<f64>,
     heights: (f64, f64),
     distance: f64,
     nearest: f64,
@@ -156,10 +170,16 @@ pub(super) fn settled(
 ) -> bool {
     let k = TIE_IN_SLOPE;
     let farther = distance - REACH_SLACK_M;
-    farther > padded(CAP_M)
-        || (heights.1 - k * farther < cones.lower
-            && heights.0 + k * farther > cones.upper
-            && farther > nearest.min(band) * (1.0 + REACH_SLACK))
+    if farther > padded(CAP_M) {
+        return true;
+    }
+    if farther <= nearest.min(band) * (1.0 + REACH_SLACK) {
+        return false;
+    }
+    base.is_none_or(|base| {
+        let floor = base.min(cones.upper);
+        heights.1 - k * farther < cones.lower.max(floor) && heights.0 + k * farther > floor
+    })
 }
 
 /// Pass 1 of the exact pruning: whether a seam with heights `seam` may change a value at points
