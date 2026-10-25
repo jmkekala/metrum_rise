@@ -3225,8 +3225,8 @@ Terminology:
 ### Purpose and status
 
 **Specification adopted by the user (2026-10-25); of its gates `TERRAIN-07-B` (road skirts and
-bridge fascias) is built, and `TERRAIN-07-A` (the grading core and queries, roads only) is
-implemented beside the legacy path, in `simulation/terrain/graded/`, read by no consumer yet.**
+bridge fascias) and `TERRAIN-07-A` (the grading core and queries, roads only, beside the legacy
+path in `simulation/terrain/graded/`, read by no consumer yet) are done.**
 `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
@@ -3364,8 +3364,9 @@ zoning overlays, building render probes, placement) read only the query API.
    within the cap (or within the footprint distance band, where a coarse level's band is wider).
    The level only chooses the lattice and the band. No edit history, tile order, batch, residency
    or camera enters a value.
-2. **Tiles are a residency cache.** Baked tiles exist only as GPU slots, in-flight payloads and
-   the preview's staging; nothing is saved, and Rust keeps no baked tile at rest. There are no
+2. **Tiles are a residency cache.** Baked tiles exist only as GPU slots, in-flight payloads, the
+   preview's staging and the tiles an undo record keeps ([T20](#terrain-07-open-questions) (a));
+   nothing is saved, and Rust keeps no baked tile at rest outside an undo record. There are no
    stage caches beyond that: a seam index, slope bound or tile cache needs a measurement that
    shows the need.
 3. **Deterministic.** `max`, `min` and `clamp` are exact; ties between seams are broken
@@ -3800,7 +3801,10 @@ to point).
   benchmarks share, checks outside its timing that every `GL0` tile within the cap and band of the
   edit whose bits change is selected.
 - **Preview.** `preview_road` selects the dirty tiles from the preview roadbed's changes and bakes
-  the resident ones at their current level, synchronously on the shared pool, with their inputs.
+  the resident ones at their current level, synchronously on the shared pool, with their inputs;
+  a pose bakes only the tiles whose inputs differ from the last pose's staged tiles, so a drag
+  pays per pose for what the pose changed, never the whole edit ([T20](#terrain-07-open-questions)
+  (a)).
   Godot uploads them into free slots and swaps the instances to them (and the cells' meshes where a
   tile becomes graded or ungraded); cancel swaps back. This replaces the refined patches in the
   terrain half of the preview and `road_terrain_preview.gd`'s patch staging.
@@ -3809,9 +3813,13 @@ to point).
   Others are baked by the commit. The function is total, so no terrain validation can reject a
   road; only a representation error ([T7](#terrain-07-open-questions)) or a user decision on
   [T2](#terrain-07-open-questions) could.
-- **Undo.** The roadbed's undo swaps its pieces back (`ROAD-68-E`); their terrain changes select the
-  same tiles, which are baked again from the restored inputs, bitwise the pre-edit tiles, and
-  installed by a slot swap ([T9](#terrain-07-open-questions)).
+- **Undo.** The roadbed's undo swaps its pieces back (`ROAD-68-E`). The undo record keeps the
+  tiles the commit replaced, as the exact cut's record keeps the refined terrain entries it
+  replaced (`SimulationSnapshot::refined_terrain`), and undo swaps them back: no rebake
+  ([T20](#terrain-07-open-questions) (a), which takes [T9](#terrain-07-open-questions) (b));
+  redo swaps likewise. A kept tile is bitwise the rebake of the restored inputs (invariant 9);
+  `TERRAIN-07-E` tests that equality, and an input changed meanwhile outside the undo stack
+  would make a kept tile stale, which gate E must rule out or rebake.
 - **Load.** No terrain surface state is saved. Tiles are baked as residency requests them.
 - **Bitwise.** A preview tile equals the committed tile, a fresh bake of the same inputs, the tile
   after undo and redo, and the tile after save and load.
@@ -3858,12 +3866,12 @@ No stage scans the city.
 | Stage | Budget |
 | --- | --- |
 | Terrain stage per preview pose: selection, bake, pack, four workers | 3.0 ms ([`roads.md` stage budgets](roads.md#stage-budgets)), flat from 0 to 100k |
-| Terrain stage per commit, and per undo, four workers | 3.0 ms, flat from 0 to 100k |
+| Terrain stage per commit (the last pose's matching tiles adopted, the rest baked) and per undo (the kept tiles swapped back, no bake), four workers | 3.0 ms, flat from 0 to 100k ([T20](#terrain-07-open-questions) (a): no frame path bakes a whole edit; the pose row is the tiles changed since the last pose) |
 | Godot terrain install per pose, commit or undo | within `ROAD-68`'s 2.0 ms Godot stage and install; proposed share 1.0 ms |
 | Streaming installs | 1.0 ms of the main thread per frame |
 | Idle GPU frame | not above the exact cut's terrain in the same session, on the idle-frame matrix |
 | Load | not above the exact cut's load in the same session (Kuopio and the populated city) |
-| Memory | the pools of the [memory table](#data); Rust keeps no baked tile at rest |
+| Memory | the pools of the [memory table](#data), plus the undo records' kept tiles ([T20](#terrain-07-open-questions)); Rust keeps no other baked tile at rest |
 
 The spike's 1.64-2.52 ms per edit has none of: the conflict terms of the reach, coverage
 rasterization, sites, materials, the apron, the levels or packing. `TERRAIN-07-A`, `-C` and `-E`
@@ -3920,7 +3928,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 
 | Gate | Status | Scope |
 | --- | --- | --- |
-| `TERRAIN-07-A` | round 3 2026-10-25 (branch `terrain07-A`, work in progress; [record](#terrain-07-a-record)): `GL3` fixed, the populated edits all within 3.0 ms (worst 2.94 ms at 100k), 31 of 44 Kuopio edits within 3.0 ms (worst 5.30 ms, T18 open, T20 to the user); Kuopio is judged on the re-recorded reference (`roads.md` question 38); `./run.sh --test` see the record | Grading core and queries in Rust, roads only, beside the legacy path |
+| `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
@@ -3959,15 +3967,21 @@ Acceptance:
 - the terrain stage of the populated edits at 2k, 10k, 30k and 100k is at most 3.0 ms on four
   workers, and with the edited neighbourhood fixed it stays flat from 0 to 100k with bitwise
   equal local tiles
-- the terrain stage of every Kuopio edit of `benchmark_kuopio_graded_edits` is at most 3.0 ms on
-  four workers: each recorded stroke of `placements.json` on the source world, a T up a hillside
-  and a removal on the reference save; and `kuopio_12`'s strokes, replayed after every other case,
-  keep their tiles and bits. Added by the coordinator's ruling of 2026-10-25: the budget applies
-  to the game, and Kuopio is the hilly reference world; the populated city is flat, so its edits
-  hid the conflict terms' cost (T18). The budget is never relaxed. It is judged on the reference
-  network re-recorded with today's code under the 1:3 grade limit
-  ([`roads.md` open questions 37 and 38](roads.md#road-68-open-questions)); the old save's edits
-  are round 3's evidence.
+- Kuopio, the hilly reference world (added by the coordinator's ruling of 2026-10-25: the budget
+  applies to the game, and the populated city is flat, so its edits hid the conflict terms' cost,
+  T18), on the reference network re-recorded with today's code under the 1:3 grade limit
+  ([`roads.md` open questions 37 and 38](roads.md#road-68-open-questions); the old save's edits
+  are rounds 2 and 3's evidence): `kuopio_12`'s strokes, replayed after every other case, keep
+  their tiles and bits; and the full-edit terrain stage (selection plus the `GL0` bake) of every
+  edit of `benchmark_kuopio_graded_edits` on four workers (each recorded stroke of
+  `placements.json` on the source world, a T up a hillside and a removal on the reference save),
+  with the undo record's memory per edit, is recorded as evidence. Changed by
+  [T20](#terrain-07-open-questions) (a) (decided by the coordinator under the user's delegation,
+  2026-10-25 night, for review): no frame path bakes a whole edit (poses bake what changed since
+  the last pose, the commit adopts the last pose's tiles, undo swaps the kept tiles back), so the
+  3.0 ms acceptance of those frame paths on Kuopio moves to
+  [`TERRAIN-07-E`](#terrain-07-e--preview-commit-undo-and-load), which builds them; gate A builds
+  none. The budget is never relaxed.
 - recorded for [T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions),
   [T7](#terrain-07-open-questions) and [T8](#terrain-07-open-questions): reach and seams per sample
   with the conflict terms; conflict samples within one texel of a road seam on the populated
@@ -4311,6 +4325,100 @@ A's Kuopio acceptance is judged on the re-recorded reference
   runs and the evaluation modes, `seams` +34 for `Seam::at_lanes`, `grade` +20, `prune` +5);
   tests 1,229. Roadbed `query.rs` +14/−2 (the inside-piece triangle visit).
 
+**Round 4** (2026-10-25, branch `terrain07-A` rebased onto `road` at `d740a332`: the 1:3 grade
+limit and the re-recorded Kuopio reference, [`roads.md` open questions 37 and
+38](roads.md#road-68-open-questions); fresh runs on the new save, kept apart from rounds 2 and 3,
+whose Kuopio figures are the old save's). [T20](#terrain-07-open-questions) is decided (a) by the
+coordinator under the user's delegation (2026-10-25 night, for review): the full-edit bakes below
+are evidence, and the frame paths' 3.0 ms acceptance on Kuopio is `TERRAIN-07-E`'s.
+
+- **What changed.** No production code. The rebase gives the Kuopio edits benchmark `ROAD-68-K14`'s
+  stroke ends (each at the height the road tool picks there, `recorded_stroke_points`), so the
+  recorded strokes replay under the grade rule as the re-recording did. The hillside T and the
+  removal find their roads by place (`KUOPIO_HILLSIDE_T`, `KUOPIO_DEAD_END`: the old network's
+  midpoints, the T's start asserted on a vertex of the road found), and the T's ends take the road
+  tool's heights too. The re-recorded save keeps all 70 edges' ids and midpoints (checked against
+  the old save's `network_edge_geometry`, within 1 m), so the places resolve to edges 69 and 43
+  again, and the exactness block around the dead end (tiles x 0-3, z 16-19) is the same place.
+  `graded_stage` records the undo memory of T20 (a) outside its timing: `undo_tiles`, the dirty
+  tiles graded before the edit, and `undo_mb`, one `GL0` slot each (131² texels of 16 B plus rows
+  for 512 seams and 256 edges, 286,864 B).
+- **Exactness** (debug library tests, fresh, tree `7547abd8`): the graded, roadbed and Kuopio tests
+  77 passed, 0 failed, 11 ignored, among them `kuopio_pruned_bake_equals_every_seam` on the new save
+  (pruned equals unpruned bitwise at `GL0`, `GL2` and `GL3` in every batch, order and worker count,
+  with second-pass samples; the lanes equal one point at a time on all 517 road tiles) and every
+  round 1 acceptance test (borders and levels, coverage, the node gap, `GL0` through the seam
+  height).
+- **`timing.sh`** (release library tests, both locks, P-cores, four workers, 22:49-22:55, binary
+  sha256 `ddafa2e183cd` from `7547abd8`; load 10.1 at the start, the minute's average over the
+  builds that released the lock just before; restic absent at both ends; logs under `$ARTIFACTS`):
+  - **Kuopio census** (`kuopio_graded_census`): `GL0` 517 tiles in 0.154 s on one worker (0.30 ms
+    per tile; old save 0.221 s) and 0.050 s on four; 0.93 evaluated and 1.39 listed seams per sample
+    (old save 1.86 and 3.83), 1.1 % second-pass samples; 1,054 conflict samples, 52 of them within
+    one texel of a road seam; `GL1` 0.075 s on one worker; rows up to 207 (`GL0`) and 211 (`GL1`)
+    seams, windows up to 1,129; no capacity error.
+  - **Wall census** (`kuopio_wall_sites`, every seam, untimed): 24 walled samples, 11.9 m of wall,
+    highest 0.37 m (old save: 430, 182.9 m, 43.9 m); heights up to 0.01 / 0.1 / 0.5 m: 1, 4, 19,
+    none higher. One site (`GL0` dump `site-1.json` under `$ARTIFACTS`):
+
+    | Site | x, z | walled piece, setting piece | height difference | distance | wall | samples |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | 1 | -16.3, 1182.8 | `Span(44)`, `Span(41)` | 15.42 m | 30.10 m | 0.37 m | 24 |
+
+    The wall is exactly the setting seam's height minus `k` times the distance minus the walled
+    seam's (15.42 - 0.5 x 30.10 = 0.37). Both roads leave node 50 at the 1:3 maximum (steepest
+    0.330 and 0.329) in diverging directions, so 30 m apart they differ by more than the 1:2
+    tie-in allows: a real conflict, which TD7 walls at the lower road (`TERRAIN-07-C` builds it),
+    not a defect. The old save's five sites went with its legacy profiles.
+  - **Kuopio edits** (`benchmark_kuopio_graded_edits`, the full-edit stage: selection plus the `GL0`
+    bake, median of 7): median 2.11 ms, p90 3.73 ms, worst 6.70 ms (`kuopio_08` attempt 22, 10
+    tiles, 7.29 evaluated seams per sample); 33 of 44 within 3.0 ms (round 3, old save: 31). Over
+    3.0 ms: `kuopio_08` 22 (6.70), `kuopio_04` 10 (5.48, 11 tiles), `kuopio_06` 17 (4.24, 19),
+    `kuopio_11` 33 (3.97, 17), the dead end's removal (3.73, 12), `kuopio_10` 27 (3.70) and 26
+    (3.54), `kuopio_09` 24 (3.48), `kuopio_11` 31 (3.40), `kuopio_12` attempt 36 (3.39), `kuopio_03`
+    8 (3.07). The hillside T takes 2.73 ms (9 tiles). Selection 0.12-0.71 ms; 469 tiles over the 44
+    edits, 408 of which change bits. `kuopio_12`'s strokes after the other cases (64 background
+    edges) keep their tiles and digests, at 1.39-2.92 ms (alone 1.46-2.96). The steep tiles:
+    `kuopio_08` 22 2.49 ms per tile per worker, `kuopio_04` 10 1.84, `kuopio_10` 27 1.72, against
+    the census mean of 0.30 ms. Not every full edit fits 3.0 ms on the new save either, so T20 (a)
+    removes more than the undo rebake: no frame runs a full-edit bake.
+  - **Undo memory** (T20 (a), per entry at `GL0`): median 1.43 MB (5 tiles), p90 2.87 MB, worst
+    3.73 MB (13 tiles, `kuopio_11` attempt 33); the 14 first strokes on roadless ground keep
+    nothing; on the reference save the T keeps 2.01 MB and the removal 3.16 MB. Thirty entries,
+    the undo stack's limit, hold at most about 112 MB. Populated commits: 0.86-3.44 MB.
+  - **Populated commits** (`graded_tiles` rows; exact cut `surface_ms` the same-run control): 0:
+    1.87, 1.62, 1.46 ms (9, 10, 9 tiles; exact cut 6.2-20.0 ms); 2k: 2.45, 1.29, 1.51 (11, 7, 9;
+    14.4-95.4); 10k: 2.33, 1.49, 1.42 (11, 9, 9; 10.6-105.4); 30k: 2.22, 1.47, 1.02 (8, 8, 5;
+    12.3-107.9); 100k: 2.77, 1.45, 1.21 (13, 10, 7; 9.5-93.9). Every edit within 3.0 ms, no trend
+    from 0 to 100k; selection 0.37-0.87 ms; every edit's texel digest equals round 3's (the grade
+    rule changes no populated road). No walls and no conflict samples at any tier.
+  - **Locality** (`benchmark_graded_tiles_locality`): the same 4 tiles with bitwise equal texels at
+    3 to 4,707 edges, p50 0.46, 0.81, 0.82, 0.81 ms.
+  - **Reference fixtures** (16 tiles, p50 of 50): `GL0` 0.80-1.20 ms on the road fixtures,
+    `conflict_8` 1.53 ms; `GL1` 0.56-0.71, `GL2` 0.46-0.68, `GL3` 0.38-0.65 ms. Same-binary
+    control, the exact cut's T bench: 1.83 ms (round 3: 1.83 ms).
+  - **Point queries**: `base_height_at` 0.05-0.11 µs, `mask_at` 3.5-6.7, `surface_height_at`
+    4.3-8.6, `ground_height_at` 6.1-11.3, `normal_at` 10.9-21.3 µs (T19 unchanged).
+  - **Control** (round 3's binary `39b969a84ad7` on the new save, both locks, P-cores, 23:00, five
+    minutes after the session, load 2.3): the same census to the sample (`GL0` 0.155 s on one
+    worker, 0.050 s on four; 0.93 seams per sample) and fixtures `GL0` 0.83-1.22 ms, `conflict_8`
+    1.69 ms. The census's fall from 0.221 s to 0.154 s is the new save's, not code's.
+- **Gate checks** (fresh, on `7547abd8`): `cargo clippy --all-targets` gives the 59-warning
+  baseline set exactly (file and message compared). `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY
+  unset, 23:01-23:18) passes: the debug library suite 1,929 passed, 0 failed, 173 ignored; the
+  integration tests 4 passed; every Godot bridge and asset test; it still skips the rendered
+  vegetation tests (they need a Forward+ display) and the shader global probe (headless
+  renderer). Disabled tests unchanged: the four legacy-pipeline `TERRAIN-07` tests, `ROAD-68-K14`'s
+  two Kuopio quality tests (`roads.md` question 39), and the two manual census runners.
+- **Acceptance on the new save.** Exactness, borders and levels, coverage, the node gap and
+  `GL0` through the seam height pass (debug, above); the populated edits are within 3.0 ms from 0
+  to 100k with no trend; locality holds bitwise; `kuopio_12`'s strokes keep their tiles and bits
+  among the rest of the city; the Kuopio full-edit bakes and the undo memory are recorded for T20
+  (a), whose frame paths gate E accepts. Gate A is done.
+- **Lines**: production code unchanged since round 3 (`graded/` 2,684, roadbed `query.rs` +14/−2);
+  tests +94/−29 (`road_terrain_plan.rs` +79/−28: the replay heights, the places and their lookup;
+  `graded/tests.rs` +15/−1: the undo slots).
+
 #### `TERRAIN-07-B` — road skirts in the piece mesh
 
 1. `PieceMesh` gains a skirt layer: one strip per grounded outer chain, top vertices the chain's,
@@ -4482,7 +4590,9 @@ Acceptance:
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
    them by slot swap.
-2. Commit adoption by inputs, undo by rebake and slot swap, load by residency.
+2. Preview poses that bake only the tiles whose inputs changed since the last pose; commit
+   adoption of the last pose's tiles by inputs; undo and redo by swapping the kept tiles back
+   ([T20](#terrain-07-open-questions) (a)); load by residency.
 3. The commit's terrain validation is removed: no terrain failure can reject a road.
 
 Acceptance:
@@ -4491,6 +4601,12 @@ Acceptance:
   bitwise, in Rust tests over the T, Y, four-way, a split trunk and their sloped variants, and in
   `road_junction_preview_test.gd`
 - undo and redo restore bitwise; a commit with a stale context bakes and equals a fresh bake
+- the frame paths of [T20](#terrain-07-open-questions) (a) on Kuopio, moved here from gate A:
+  every stroke of `benchmark_kuopio_graded_edits` replayed as a drag, each pose's delta (the
+  tiles changed since the last pose), the commit's adoption and the rest's bake, and the undo
+  swap, each at most 3.0 ms on four workers; plus the removal's commit. Gate A builds none of
+  these paths and, under (a), no frame bakes a whole edit, so gate A records the full-edit bake
+  as evidence only. The budget is not relaxed: a pose delta over 3.0 ms goes to the user
 - the terrain stage per pose (`benchmark_road_preview_stages`, `sloped_t` and `sloped_branch`) and
   per commit (`benchmark_populated_commit_breakdown`, 0 to 100k) is at most 3.0 ms on four workers;
   the Godot install stays within its share; the idle-clock preview stream of
@@ -4536,7 +4652,9 @@ pass; line counts recorded; docs updated.
 
 **Targets.**
 
-- **Terrain stage.** At most 3.0 ms per preview pose, per commit and per undo on four workers, on
+- **Terrain stage.** At most 3.0 ms per preview pose (the tiles changed since the last pose), per
+  commit (adoption and the rest's bake) and per undo (the swap, [T20](#terrain-07-open-questions)
+  (a)) on four workers, on
   the reference fixtures and the populated city at 0, 2k, 10k, 30k and 100k residents.
 - **Locality.** With the edited neighbourhood fixed, grow remote roads, sites, parcels and agents
   from 0 to 100k: local tiles stay bitwise equal and their cost stays flat. Snapshot and setup
@@ -4577,8 +4695,9 @@ profile or `xvfb-run`. The idle frame uses the idle-frame matrix
 **Decided by the user, 2026-10-25: every recommendation below is adopted.** Where a
 recommendation hangs a later choice on a measurement (T2, T5, T6, T7, T8), the gate it names
 measures it and the recommendation's condition decides; T2 was decided by the user on
-2026-10-25: (c), retaining walls at the lower road. New questions continue from T21; T18, T19 and
-T20 (`TERRAIN-07-A`) are open.
+2026-10-25: (c), retaining walls at the lower road. New questions continue from T21; T18 and T19
+(`TERRAIN-07-A`) are open, and T20 is decided by the coordinator under the user's delegation
+(2026-10-25 night, for review).
 
 1. **T1. Exact locality of the overlap rule.**
    - **Evidence.** The spike's reach `dev / (1/2 - s)` bounds where a seam's cone excludes the base.
@@ -4669,6 +4788,10 @@ T20 (`TERRAIN-07-A`) are open.
    - **Options.** (a) Rebake from the restored inputs and swap slots. (b) Keep the replaced tiles in
      the undo record.
    - **Recommendation.** (a): no stored terrain state, bitwise by construction.
+   - **Superseded by [T20](#terrain-07-open-questions) (a)** (decided by the coordinator under
+     the user's delegation, 2026-10-25 night, for review): (b), the undo record keeps the replaced
+     tiles. On hills a full-edit rebake does not fit the 3.0 ms stage, and undo has no preview to
+     adopt from.
 10. **T10. Comparing with the exact cut.**
     - **Evidence.** The spike rendered both in one session, so each pair had the same roads, lights
       and camera; the exact cut still has to work while B is accepted.
@@ -4772,6 +4895,13 @@ T20 (`TERRAIN-07-A`) are open.
       selection). The steep tiles cost 1.51-1.66 ms per tile per worker against a 0.43 ms mean.
       Kuopio's acceptance is judged on the re-recorded reference (`roads.md` question 38), whose
       1:3 grade limit (question 37) removes the steepest replayed roads.
+    - **Round 4 (2026-10-25, the re-recorded save, no code change):** a Kuopio road tile takes
+      0.30 ms on one worker (0.93 evaluated seams per sample, against 1.86 on the old save), and
+      the full-edit bakes take a median 2.11 ms and at worst 6.70 ms on four workers, 33 of 44
+      within 3.0 ms ([record](#terrain-07-a-record)); the steep tiles cost 1.72-2.49 ms per tile
+      per worker. Under [T20](#terrain-07-open-questions) (a) the full-edit bake runs in no frame
+      and is gate A's evidence; the frame paths' 3.0 ms acceptance is gate E's. Still open, not
+      relaxed: the levers above are what remains if gate E's pose deltas miss.
 19. **T19. Point queries for per-agent use.**
     - **Evidence** (`TERRAIN-07-A`). `ground_height_at` costs 6.9-12.5 µs, `normal_at`
       12.6-24.7 µs, `mask_at` 4.0-7.5 µs on one thread: one gather of every seam within the cap
@@ -4785,7 +4915,7 @@ T20 (`TERRAIN-07-A`) are open.
       with a measurement that (a) misses.
 
 20. **T20. The edit size the 3.0 ms terrain stage covers on hills (`TERRAIN-07-A` round 3) —
-    open.**
+    decided by the coordinator under the user's delegation, 2026-10-25 night, for review: (a).**
     - **Evidence** ([record](#terrain-07-a-record), round 3). Every exact lever tried so far
       (rounds 2 and 3, T18) leaves 13 of the 44 Kuopio edits between 3.01 and 5.30 ms on four
       workers; the populated city's edits take 1.10-2.94 ms. The misses are edits of 8-19 dirty
@@ -4810,6 +4940,36 @@ T20 (`TERRAIN-07-A`) are open.
     - **Recommendation.** None: the coordinator's brief puts the choice between (a) and (b) to the
       user. Neither relaxes the 3.0 ms stage for the edits it covers; the exact levers stay open
       under T18 either way.
+    - **Decided by the coordinator under the user's delegation, 2026-10-25 night, for review:
+      (a).** Undo keeps the replaced tiles ([T9](#terrain-07-open-questions) (b)) and swaps them
+      back, so undo never rebakes; redo swaps likewise. The preview poses bake only the tiles
+      whose inputs changed since the last pose, and the commit adopts the last pose's matching
+      tiles ([preview, commit, undo and load](#preview-commit-undo-and-load)). So no frame path
+      runs a full-edit bake. Consequences:
+      - Gate A records the full-edit bake (selection plus the `GL0` bake of every dirty tile) of
+        each Kuopio edit as evidence, not as its acceptance; the frame-path acceptance (Kuopio
+        drag-pose deltas, commit adoption and the undo swap, each within 3.0 ms on four workers)
+        moves to [`TERRAIN-07-E`](#terrain-07-e--preview-commit-undo-and-load), which builds those
+        paths. Reason: gate A builds no frame path, and under (a) no frame runs the bake gate A
+        can measure, so the frame paths can only be measured where they are built.
+      - The 3.0 ms budget is unchanged. If gate E's pose deltas miss, that goes to the user.
+      - Memory: an undo entry keeps one `GL0` slot (131² texels of 16 B plus rows for 512 seams
+        and 256 material edges, 286,864 B) per dirty tile that was graded before the edit.
+        Measured on the re-recorded Kuopio save (`TERRAIN-07-A` round 4,
+        [record](#terrain-07-a-record), the 44 edits of `benchmark_kuopio_graded_edits`): median
+        1.43 MB per entry (5 tiles), p90 2.87 MB, worst 3.73 MB (13 tiles); 14 first strokes on
+        roadless ground keep nothing. The 30-entry undo stack (`SimCore`'s limit) holds at most
+        about 112 MB at the worst entry, about 43 MB at the median; the populated commits keep
+        0.86-3.44 MB. Thirty entries of up to 13 tiles exceed the `GL0` pool's 64 slots, so the
+        kept tiles live outside the resident pool (copies the swap uploads, within the Godot
+        install's share), as the exact cut's undo record keeps the refined terrain entries it
+        replaced (`SimulationSnapshot::refined_terrain`); `TERRAIN-07-D` and `-E` size them.
+      - Invariant 2 now lists the undo records' kept tiles. A kept tile equals the rebake of the
+        restored inputs (invariant 9) only while nothing outside the undo stack changed them;
+        gate E tests the equality and rules out, or rebakes, such a change.
+      - Round 4 (the re-recorded save, fresh): 33 of the 44 full-edit bakes are within 3.0 ms
+        (median 2.11 ms, worst 6.70 ms), so (a) removes more than the undo rebake: it also keeps
+        the commit's and the poses' frames off the full-edit bake.
 
 #### Superseded `ROAD-68` questions
 

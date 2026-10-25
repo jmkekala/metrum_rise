@@ -2347,6 +2347,13 @@ These need a user decision; work that does not depend on them continues.
       `kuopio_yard_fixture` places 6 houses instead of 4 and refuses the second and fourth roads'
       yards on side +1 as before; every `building_site_terrain` test passes. `TERRAIN-07-A`
       re-runs its Kuopio census and edits on this save.
+    - **Step 5 done (`TERRAIN-07-A` round 4, fresh).** The re-recorded save keeps all 70 edges'
+      ids and midpoints (within 1 m), so the hillside T and the dead end's removal, now found by
+      place (`KUOPIO_HILLSIDE_T`, `KUOPIO_DEAD_END`), resolve to edges 69 and 43 again. The wall
+      census falls from 430 walled samples (highest 43.9 m, on the saved edges 13, 14 and 40) to
+      24 (0.37 m, between edges 41 and 44, which leave node 50 at 1:3 in diverging directions:
+      a real TD7 conflict). Census, edits and the gate's acceptance:
+      [terrain.md, the gate A record](terrain.md#terrain-07-a-record).
 39. **Junction blends beside arms cut to the source-delta limit (`ROAD-68-K14`, from question 37)
     — decided by the coordinator under the user's delegation, 2026-10-25 night, for review: (a);
     not yet implemented.**
