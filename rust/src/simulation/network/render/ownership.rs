@@ -9,9 +9,9 @@ use std::ops::Range;
 /// Authoritative graph owner of a contiguous rendered triangle range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum NetworkMeshOwner {
-    /// A physical road span, including its markings and earthwork.
+    /// A physical road span, including its markings, skirts and bridge concrete.
     Edge(usize),
-    /// A junction, including its crosswalks and earthwork.
+    /// A junction, including its crosswalks and skirts.
     Node(u32),
 }
 
@@ -147,7 +147,7 @@ impl NetworkMeshData {
     }
 }
 
-// Layers in `owner_ranges` order: earthwork, curb, raised step, sidewalk, road, marking,
+// Layers in `owner_ranges` order: skirt, curb, raised step, sidewalk, road, marking,
 // concrete (the `MeshLayer` discriminants); only the road layer carries crossing frames.
 const LAYERS: usize = 7;
 const ROAD_LAYER: usize = 4;
@@ -164,7 +164,7 @@ fn owner_order(owner: NetworkMeshOwner) -> (u8, usize) {
 macro_rules! layer_buffers {
     ($mesh:expr, $layer:expr, $($ref:tt)+) => {
         match $layer {
-            0 => ($($ref)+ $mesh.earthwork_vertices, $($ref)+ $mesh.earthwork_normals, $($ref)+ $mesh.earthwork_uvs, $($ref)+ $mesh.earthwork_colors),
+            0 => ($($ref)+ $mesh.skirt_vertices, $($ref)+ $mesh.skirt_normals, $($ref)+ $mesh.skirt_uvs, $($ref)+ $mesh.skirt_colors),
             1 => ($($ref)+ $mesh.curb_vertices, $($ref)+ $mesh.curb_normals, $($ref)+ $mesh.curb_uvs, $($ref)+ $mesh.curb_colors),
             2 => ($($ref)+ $mesh.raised_step_vertices, $($ref)+ $mesh.raised_step_normals, $($ref)+ $mesh.raised_step_uvs, $($ref)+ $mesh.raised_step_colors),
             3 => ($($ref)+ $mesh.sidewalk_vertices, $($ref)+ $mesh.sidewalk_normals, $($ref)+ $mesh.sidewalk_uvs, $($ref)+ $mesh.sidewalk_colors),

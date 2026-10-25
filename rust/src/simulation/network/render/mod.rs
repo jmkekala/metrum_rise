@@ -26,14 +26,17 @@ struct NetworkMeshChunkPartition {
 /// Includes vertices, normals, UVs, and colors for multiple visual layers.
 #[derive(Debug)]
 pub struct NetworkMeshData {
-    /// Vertices for the road-owned earthwork layer.
-    pub earthwork_vertices: Vec<Vector3>,
-    /// Normals for the earthwork layer.
-    pub earthwork_normals: Vec<Vector3>,
-    /// UV coordinates for the earthwork layer.
-    pub earthwork_uvs: Vec<Vector2>,
-    /// Vertex colors for the earthwork layer.
-    pub earthwork_colors: Vec<Color>,
+    /// Vertices for the road skirts (`TERRAIN-07-B`): vertical strips hanging from the grounded
+    /// pieces' outer chains, drawn in the curb's stone with no shadow.
+    pub skirt_vertices: Vec<Vector3>,
+    /// Normals for the skirt layer, facing away from the road.
+    pub skirt_normals: Vec<Vector3>,
+    /// UV coordinates for the skirt layer: `y` is the bottom-vertex attribute, 1 on a skirt's
+    /// bottom vertex and 0 on its chain vertex (interpolated at chunk-line clip points), by
+    /// which the road shader deepens the bottoms with distance.
+    pub skirt_uvs: Vec<Vector2>,
+    /// Vertex colors for the skirt layer.
+    pub skirt_colors: Vec<Color>,
     /// Vertices for the curb / shoulder transition layer.
     pub curb_vertices: Vec<Vector3>,
     /// Normals for the curb / shoulder transition layer.
@@ -109,10 +112,10 @@ impl NetworkMeshData {
     /// Creates a new, empty network mesh data container.
     pub fn new() -> Self {
         Self {
-            earthwork_vertices: Vec::new(),
-            earthwork_normals: Vec::new(),
-            earthwork_uvs: Vec::new(),
-            earthwork_colors: Vec::new(),
+            skirt_vertices: Vec::new(),
+            skirt_normals: Vec::new(),
+            skirt_uvs: Vec::new(),
+            skirt_colors: Vec::new(),
             curb_vertices: Vec::new(),
             curb_normals: Vec::new(),
             curb_uvs: Vec::new(),
@@ -176,7 +179,7 @@ impl NetworkMeshData {
 
     /// Reports whether every material layer is empty.
     pub(crate) fn is_empty(&self) -> bool {
-        self.earthwork_vertices.is_empty()
+        self.skirt_vertices.is_empty()
             && self.curb_vertices.is_empty()
             && self.raised_step_vertices.is_empty()
             && self.sidewalk_vertices.is_empty()
@@ -223,10 +226,10 @@ impl NetworkMeshData {
         }
         [
             (
-                &self.earthwork_vertices,
-                &self.earthwork_normals,
-                &self.earthwork_uvs,
-                &self.earthwork_colors,
+                &self.skirt_vertices,
+                &self.skirt_normals,
+                &self.skirt_uvs,
+                &self.skirt_colors,
             ),
             (
                 &self.curb_vertices,
@@ -288,7 +291,7 @@ impl NetworkMeshData {
 
     /// Returns the total number of non-indexed vertices across all material layers.
     pub(crate) fn vertex_count(&self) -> usize {
-        self.earthwork_vertices.len()
+        self.skirt_vertices.len()
             + self.curb_vertices.len()
             + self.raised_step_vertices.len()
             + self.sidewalk_vertices.len()

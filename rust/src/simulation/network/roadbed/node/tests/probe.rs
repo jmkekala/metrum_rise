@@ -6,9 +6,12 @@
 //! the failure message.
 
 use super::*;
+use crate::simulation::network::roadbed::StripKind;
 use crate::simulation::network::roadbed::fixtures::{
-    ProductProbe, assert_probes, bend, footpath_fixtures, mixed_profiles, t_junction,
+    ProductProbe, assert_probes, assert_strip_probes, bend, footpath_fixtures, mixed_profiles,
+    t_junction,
 };
+use crate::simulation::network::types::EdgeClass;
 
 // Two junctions joined by a short link, as `neighbouring_junctions_on_a_short_edge_fit_or_report_
 // corner_does_not_fit` builds them: some fit, some report `CornerDoesNotFit`.
@@ -64,6 +67,71 @@ fn roadbed_fixture_products_match_the_probe() {
         .map(|(name, graph)| (name, ProductProbe::of_graph(&graph)))
         .collect();
     assert_probes(&actual, EXPECTED);
+    assert_strip_probes(&actual, EXPECTED_STRIPS);
+}
+
+// `TERRAIN-07-B`: every piece hangs its strips from its own outer chains. Node pieces and
+// standard spans stand on the terrain and hang skirts, bridges hang fascias and tunnels none.
+// Two triangles per chain segment; their top points are the chain's positions bitwise, their
+// bottoms the same points lowered by the strip's depth, and each faces away from the road (the
+// right of the chain).
+#[test]
+fn strips_hang_from_the_outer_chains_bitwise() {
+    let mut triangles = Vec::new();
+    for (name, graph) in probe_fixtures() {
+        let roadbed = compiled(&graph);
+        let world = [f64::MIN, f64::MIN, f64::MAX, f64::MAX];
+        for (id, _) in roadbed.pieces_in_bounds(world) {
+            let (mesh, kind) = match id {
+                PieceId::Span(edge) => (
+                    roadbed.span_piece(edge).unwrap().mesh(),
+                    match graph.edge(edge).class {
+                        EdgeClass::Standard => Some(StripKind::Skirt),
+                        EdgeClass::Bridge => Some(StripKind::Fascia),
+                        EdgeClass::Tunnel => None,
+                    },
+                ),
+                PieceId::Node(node) => (
+                    roadbed.node_piece(node).unwrap().mesh(),
+                    Some(StripKind::Skirt),
+                ),
+            };
+            assert_eq!(mesh.strip_kind(), kind, "{name} {id:?}");
+            triangles.clear();
+            mesh.for_each_strip_triangle(|points, bottoms| triangles.push((points, bottoms)));
+            let Some(kind) = kind else {
+                assert!(triangles.is_empty(), "{name} {id:?}");
+                continue;
+            };
+            let mut strip = triangles.iter();
+            for chain in mesh.outer_chains() {
+                for pair in chain.vertices().windows(2) {
+                    let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                    let below = |p: RoadVec3| RoadVec3::new(p.x, p.y - kind.depth_m(), p.z);
+                    let expected = [
+                        ([a, below(a), below(b)], [false, true, true]),
+                        ([a, below(b), b], [false, true, false]),
+                    ];
+                    for (points, bottoms) in expected {
+                        let (actual, flags) = strip.next().expect("two triangles per segment");
+                        assert_eq!(actual.map(bits), points.map(bits), "{name} {id:?}");
+                        assert_eq!(*flags, bottoms, "{name} {id:?}");
+                        assert_eq!(mesh.strip_bottom(pair[0]).map(bits), Some(bits(below(a))));
+                        // The visible normal `-(q - p) x (r - p)` lies right of the chain.
+                        let [p, q, r] = points;
+                        let normal = -(q - p).cross(r - p);
+                        let right = RoadVec3::new(b.z - a.z, 0.0, a.x - b.x);
+                        let length = right.length();
+                        assert!(
+                            length == 0.0 || normal.dot(right) > 0.0,
+                            "{name} {id:?}: a strip faces the road"
+                        );
+                    }
+                }
+            }
+            assert!(strip.next().is_none(), "{name} {id:?}: one strip per chain");
+        }
+    }
 }
 
 // Recorded at `79e7a476` (probe v2: errors by variant and values, layouts field by field) and
@@ -1782,4 +1850,150 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x87926626f99140ad,
         ],
     ),
+];
+
+// Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
+// top-surface hashes above are unchanged.
+const EXPECTED_STRIPS: &[(&str, u64)] = &[
+    ("t/false", 0x3a3196117e3f00f3),
+    ("four_way/false", 0x694f53237d5dd070),
+    ("five_way/false", 0xbd855df09fc104c9),
+    ("six_way/false", 0xd06d91b52b42d2ea),
+    ("y_25/false", 0x77d498d4b7c23609),
+    ("y_40/false", 0xcc1ad8c55c4b1d83),
+    ("y_60/false", 0x5d157a95ce429b3d),
+    ("bend_10/false", 0x454964b9141f7eb0),
+    ("bend_30/false", 0x1347185fe1f2d040),
+    ("bend_50/false", 0x834481f7fcdcd89e),
+    ("bend_70/false", 0x8627febafcef7e00),
+    ("bend_90/false", 0x93a2ae4d987f7846),
+    ("bend_110/false", 0xb686f120f886c200),
+    ("bend_130/false", 0xaa216dd22f845740),
+    ("bend_150/false", 0xf98f455a8a8d34fc),
+    ("bend_160/false", 0x924a6d01e80a5d8e),
+    ("mixed_40/false", 0xf30d9201a629d139),
+    ("mixed_60/false", 0x2c6d1fb14386c87d),
+    ("mixed_90/false", 0x2c44dad5db28eab7),
+    ("width_step/false", 0x0e0b8be43a70fca3),
+    ("width_four_way/false", 0x28c86ce98b0b1560),
+    ("width_bend/false", 0xdafd027cf349042e),
+    ("width_step_convex/false", 0xbe6a5c8cbff6bed9),
+    ("width_step_miter/false", 0x86ffbbc27fafb1a9),
+    ("straight_convex/false", 0x2cdcaa313b96628d),
+    ("width_step_curved/false", 0x4f2fc9706d3d0149),
+    ("t_corner/false", 0x58fcc8c3893ddbb8),
+    ("t_beside_arm/false", 0x981f6e58f57049b6),
+    ("t_beside_arm_shallow/false", 0x1693c23696144d0c),
+    ("road_end/false", 0x1e896c2b8f6e1180),
+    ("road_end_side/false", 0xe93e993aa12f9e6c),
+    ("road_end_both_sides/false", 0x44b4fc0de7e70cef),
+    ("through_road/false", 0x3e743e6a6e706f69),
+    ("bend/false", 0x9a1c3a1198d4b48a),
+    ("path_end/false", 0x534fbfb9ae7afa81),
+    ("path_bend/false", 0xc3707d0d4e545f7a),
+    ("path_t/false", 0x1bd24bb8b0a33fdb),
+    ("pass_through_north_south/false", 0xf250f1e394d6c257),
+    ("pass_through_south_north/false", 0x6bf47f9b50153147),
+    ("pass_through_bent/false", 0x7eaa93e7bed6f463),
+    ("t_junction/false", 0x1deed8b4b6144fcf),
+    ("mixed_profiles/false", 0xbe8a07d02b2bcfdf),
+    ("bend_15_120/false", 0xa94c7a07fb616e46),
+    ("rural_t/false", 0x1a30591260f5fc65),
+    ("rural_four_way/false", 0xe682cf22d5dcaeac),
+    ("rural_y_40/false", 0xdf75f8101826b055),
+    ("rural_bend_90/false", 0x7f52c835628dee88),
+    ("rural_bend_150/false", 0xf771fab92e82554c),
+    ("rural_side_road/false", 0x38adec74719be30d),
+    ("rural_through_road/false", 0x3ce5326ab8561a53),
+    ("rural_wide_t/false", 0xf95cc94cf03a6827),
+    ("rural_bend_mixed/false", 0x6eb822be6bbf2200),
+    ("band_step/false", 0x0a43b5d21c669c39),
+    ("band_width_step/false", 0x2269d4469f6d3031),
+    ("band_four_way/false", 0xa924a30d7cce27a4),
+    ("band_pass_through/false", 0x8bab719977233f20),
+    ("width_pass_through/false", 0xed996583094f5512),
+    ("width_bridge_pass_through/false", 0x760bd55d6dd62319),
+    ("bridge_t/false", 0x0189b6e4d4f6cf6b),
+    ("bridge_bend/false", 0x01385450b6cc4184),
+    ("bridge_pass_through/false", 0xdd45c04fcee8b31a),
+    ("bridge_rural_t/false", 0x28aaa08e8c474faf),
+    ("tunnel_t/false", 0xbe2aae88b0da0173),
+    ("tunnel_bend/false", 0xc032675147ecb8b3),
+    ("tunnel_pass_through/false", 0xc79d16581db4d58c),
+    ("band_step_curved/false", 0x37629ac5df89e879),
+    ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
+    ("t/true", 0x8e5e0a77ca65c074),
+    ("four_way/true", 0xb041eb300213983b),
+    ("five_way/true", 0xb83bbda1b7627fae),
+    ("six_way/true", 0x43c79827aaaf9977),
+    ("y_25/true", 0x45e956ad188e4793),
+    ("y_40/true", 0x60c6770b5d7fb8bd),
+    ("y_60/true", 0x4c844b6123f65e3f),
+    ("bend_10/true", 0xe85cc1400c6612e8),
+    ("bend_30/true", 0xdc607916d5240b54),
+    ("bend_50/true", 0xaaa36e92e23d4b36),
+    ("bend_70/true", 0x0f0d7aa790318a32),
+    ("bend_90/true", 0xcb014c2008c6a6cc),
+    ("bend_110/true", 0x17223cb4f3fe1edf),
+    ("bend_130/true", 0x16f1ce739940280b),
+    ("bend_150/true", 0x2e01da7d4d05dc1f),
+    ("bend_160/true", 0x531cef57fd8d8083),
+    ("mixed_40/true", 0x25f61e35da006bbe),
+    ("mixed_60/true", 0x6aa8aeb1d114ac6a),
+    ("mixed_90/true", 0xbd1387e3c204942e),
+    ("width_step/true", 0xe41dcc2e3458c740),
+    ("width_four_way/true", 0xf6ef6eb2e505bed3),
+    ("width_bend/true", 0xe5f2fea8feb96784),
+    ("width_step_convex/true", 0x76f1a02105e2860a),
+    ("width_step_miter/true", 0x829db9855f7020aa),
+    ("straight_convex/true", 0x8c6b662e2ffd5fc8),
+    ("width_step_curved/true", 0x2d854ac11e2299e7),
+    ("t_corner/true", 0x90723a04d52c7376),
+    ("t_beside_arm/true", 0x6902c4ba37a87f55),
+    ("t_beside_arm_shallow/true", 0x8934498c8e53253b),
+    ("road_end/true", 0xbaccf81bed76d036),
+    ("road_end_side/true", 0x593906a0889ee4c4),
+    ("road_end_both_sides/true", 0xca395558d7069530),
+    ("through_road/true", 0x6da947d4a9bf694c),
+    ("bend/true", 0x737fdac3a9d332a5),
+    ("path_end/true", 0x707032df8e2178a1),
+    ("path_bend/true", 0xbad3c7fc36956c52),
+    ("path_t/true", 0x3a722a8a8892de64),
+    ("pass_through_north_south/true", 0xb7fb3bda898b1659),
+    ("pass_through_south_north/true", 0x4d00bde0841481a1),
+    ("pass_through_bent/true", 0x11f7ac1b667b8c7e),
+    ("t_junction/true", 0xbf9842a3adcc264e),
+    ("mixed_profiles/true", 0x23be1356f9dacfe5),
+    ("bend_15_120/true", 0x4f5af8b174f39f2b),
+    ("rural_t/true", 0x998efb476023843d),
+    ("rural_four_way/true", 0x0440935ab1ca8a1c),
+    ("rural_y_40/true", 0xcc61581f9f866568),
+    ("rural_bend_90/true", 0x748c0d66d2ce55f5),
+    ("rural_bend_150/true", 0x74a071a20c0b16b5),
+    ("rural_side_road/true", 0x4642107ee438a967),
+    ("rural_through_road/true", 0x162c16246f46a3e6),
+    ("rural_wide_t/true", 0x461cf9e6b8a882fc),
+    ("rural_bend_mixed/true", 0x4c176a94cd8d54d1),
+    ("band_step/true", 0xa78be6b79a5d85ca),
+    ("band_width_step/true", 0x5cbfb099a1464442),
+    ("band_four_way/true", 0xa522d71baf1fd2a3),
+    ("band_pass_through/true", 0x4b2a4edda48c1540),
+    ("width_pass_through/true", 0x7f273f7e88ee3dae),
+    ("width_bridge_pass_through/true", 0x752c9b5039b7e2e2),
+    ("bridge_t/true", 0xccbb789074b25b1f),
+    ("bridge_bend/true", 0x1ade54608d8b4cb9),
+    ("bridge_pass_through/true", 0x431d850047ae1d72),
+    ("bridge_rural_t/true", 0xee3d2b1d4a7dd669),
+    ("tunnel_t/true", 0x9c9a82ee3bd6f8ed),
+    ("tunnel_bend/true", 0x8f58fc13a8005ca0),
+    ("tunnel_pass_through/true", 0xc43bfb5edf0a70c4),
+    ("band_step_curved/true", 0x023fc8a5bc92c4b7),
+    ("band_width_step_curved/true", 0x673bc994f267b9d6),
+    ("short_link_10", 0x0288e54ed509e89b),
+    ("short_link_13", 0xbc2702dd3de9027e),
+    ("short_link_16", 0xd36041e9065690f6),
+    ("short_link_20", 0x956ca798931c77f3),
+    ("short_link_25", 0x545a60317e3c77bf),
+    ("short_link_30", 0x5875266d8a2ea949),
+    ("short_link_40", 0xed90621b256b52af),
 ];

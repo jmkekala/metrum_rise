@@ -3,7 +3,8 @@
 ## Oblique reference renders of scripted road junctions through the production road chunk renderer.
 ## Set METRUM_ROAD_JUNCTION_REFERENCE_DIR for PNGs and manifest.json; use a real rendering device.
 ## Without it the test exits at once. Each fixture is rendered flat and on a 2.5% slope, in three views:
-## oblique (terrain), oblique_roads (terrain hidden, grey) and plan (top-down orthographic, 60 x 37.5 m).
+## oblique (terrain), oblique_roads (terrain hidden, grey) and plan (top-down orthographic, 60 x 37.5 m);
+## bridges add a fourth, side (the deck's side from 12 m, TERRAIN-07-B's fascias).
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -22,6 +23,7 @@ const CONVENTIONS := {
 	"bend": "first road ends at the origin heading +x; second leaves at +45 degrees (toward +z)",
 	"lanes": "default 1 forward + 1 backward lane per road unless the fixture says otherwise; 0 lanes is a 2 m footpath",
 	"structures": "bridge_* and tunnel_* set the edge at class_at to class 1 (bridge) or 2 (tunnel) after the commits and render without terrain",
+	"side": "bridge_* only: perspective, 40 degree fov, 1 m above the surface 12 m beside the bridge's middle, looking at its deck edge 0.3 m below the surface",
 }
 var _failures := 0
 var _records: Array[Dictionary] = []
@@ -97,10 +99,16 @@ func _fixtures() -> Array[Dictionary]:
 	# Their terrain patches fail at the open chain end the abutment or portal will close
 	# (TERRAIN-07), so they render without terrain.
 	for structure in [["bridge", 1], ["tunnel", 2]]:
-		result.append({"name": "%s_t" % structure[0], "class_at": Vector2(0, arm * 0.5), "class": structure[1], "terrain": false,
-			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
-		result.append({"name": "%s_continuation" % structure[0], "class_at": Vector2(arm * 0.5, 0), "class": structure[1], "terrain": false,
-			"roads": [_road(Vector2(-arm, 0), Vector2.ZERO), _road(Vector2.ZERO, Vector2(arm, 0))]})
+		var t := {"name": "%s_t" % structure[0], "class_at": Vector2(0, arm * 0.5), "class": structure[1], "terrain": false,
+			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]}
+		var continuation := {"name": "%s_continuation" % structure[0], "class_at": Vector2(arm * 0.5, 0), "class": structure[1], "terrain": false,
+			"roads": [_road(Vector2(-arm, 0), Vector2.ZERO), _road(Vector2.ZERO, Vector2(arm, 0))]}
+		if structure[0] == "bridge":
+			# The side view's eye and the deck point it looks at.
+			t["side"] = [Vector2(12.0, arm * 0.5), Vector2(0, arm * 0.5)]
+			continuation["side"] = [Vector2(arm * 0.5, 12.0), Vector2(arm * 0.5, 0)]
+		result.append(t)
+		result.append(continuation)
 	return result
 
 func _surface(point: Vector2) -> Vector3:
@@ -236,6 +244,8 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 		{"view": "oblique_roads", "terrain": false},
 		{"view": "plan", "terrain": false, "ortho": true},
 	]
+	if fixture.has("side"):
+		views.append({"view": "side", "terrain": false, "side": fixture.side})
 	var images: Array[Dictionary] = []
 	for view: Dictionary in views:
 		# Hiding terrain nodes is purely visual: it removes the coplanar z-fight over unclipped asphalt.
@@ -247,12 +257,19 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 			camera.size = PLAN_HEIGHT_M # keep-height: width = 37.5 * 1.6 = 60 m
 			camera.position = focus + Vector3(0.0, 100.0, 0.0)
 			camera.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+		var target := focus
+		var side: Array = view.get("side", [])
+		if not side.is_empty():
+			camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+			camera.fov = 40.0
+			target = _surface(side[1]) - Vector3(0.0, 0.3, 0.0)
+			camera.look_at_from_position(_surface(side[0]) + Vector3(0.0, 1.0, 0.0), target, Vector3.UP)
 		for frame in range(6):
 			await process_frame
 		await RenderingServer.frame_post_draw
 		var png := "%s_%s.png" % [label, view.view]
 		_expect(viewport.get_texture().get_image().save_png(_output.path_join(png)) == OK, "Reference image must save")
-		var pose := {"position": [camera.position.x, camera.position.y, camera.position.z], "pitch_deg": camera.rotation_degrees.x, "look_target": [focus.x, focus.y, focus.z]}
+		var pose := {"position": [camera.position.x, camera.position.y, camera.position.z], "pitch_deg": camera.rotation_degrees.x, "look_target": [target.x, target.y, target.z]}
 		if ortho:
 			pose["projection"] = "orthogonal"
 			pose["ortho_size_m"] = [PLAN_HEIGHT_M * float(CAPTURE_SIZE.x) / float(CAPTURE_SIZE.y), PLAN_HEIGHT_M]

@@ -27,10 +27,10 @@ pub(crate) mod street_lights;
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
 
-// Discriminants index `NetworkMeshData`'s seven layers. The earthwork layer (0) returns with
-// road-owned terrain patches in `ROAD-68-D`.
+// Discriminants index `NetworkMeshData`'s seven layers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
+    Skirt = 0,
     Curb = 1,
     RaisedStep = 2,
     Sidewalk = 3,
@@ -534,6 +534,12 @@ impl NetworkMeshData {
             self.road_crossings.extend_from_slice(&crossing);
         }
         let target = match layer {
+            MeshLayer::Skirt => (
+                &mut self.skirt_vertices,
+                &mut self.skirt_normals,
+                &mut self.skirt_uvs,
+                &mut self.skirt_colors,
+            ),
             MeshLayer::Curb => (
                 &mut self.curb_vertices,
                 &mut self.curb_normals,

@@ -228,7 +228,9 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
 /// profiles, node pieces (meshes, query grids, outer chains, mouth sections, crossings,
 /// approaches, and errors by their `Debug` text without punctuation or field names), layouts
 /// (every product field, see [`Fnv::layout`]), span pieces, node walkways, lanes with their
-/// crossings, and surface queries.
+/// crossings, and surface queries; and apart from them, the strips every piece hangs from its
+/// outer chains (`TERRAIN-07-B`), a layer of its own that the seven top-surface hashes never
+/// read, checked by [`assert_strip_probes`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductProbe {
     pub(crate) graph: u64,
@@ -238,6 +240,7 @@ pub(crate) struct ProductProbe {
     pub(crate) walkways: u64,
     pub(crate) lanes: u64,
     pub(crate) queries: u64,
+    pub(crate) strips: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -347,12 +350,23 @@ impl Fnv {
             .for_each(|value| self.f64(value));
         self.debug(mesh.grid());
     }
+
+    // A piece's strip layer: its kind, then every strip triangle's points and bottom flags.
+    fn strips(&mut self, mesh: &PieceMesh) {
+        self.debug(&mesh.strip_kind());
+        mesh.for_each_strip_triangle(|points, bottoms| {
+            points.into_iter().for_each(|point| self.road3(point));
+            bottoms
+                .into_iter()
+                .for_each(|bottom| self.word(u64::from(bottom)));
+        });
+    }
 }
 
 impl ProductProbe {
     /// Hashes `roadbed`'s published pieces over `graph`, the walkways of every node and `lanes`.
     pub(crate) fn of(graph: &RegionGraph, roadbed: &RoadbedSystem, lanes: &LaneSystem) -> Self {
-        let (mut edges, mut spans) = (Fnv::new(), Fnv::new());
+        let (mut edges, mut spans, mut strips) = (Fnv::new(), Fnv::new(), Fnv::new());
         for index in 0..graph.edge_count() {
             let Some(edge) = graph.get_edge(index).filter(|edge| !edge.deleted) else {
                 continue;
@@ -369,6 +383,8 @@ impl ProductProbe {
                 spans.debug(span.start_mouth());
                 spans.debug(span.end_mouth());
                 spans.debug(&[EdgeEnd::Start, EdgeEnd::End].map(|end| span.crossing_strip_m(end)));
+                strips.word(index as u64);
+                strips.strips(span.mesh());
             }
         }
         let (mut nodes, mut layouts, mut walks) = (Fnv::new(), Fnv::new(), Fnv::new());
@@ -385,6 +401,8 @@ impl ProductProbe {
                 }
                 layouts.word(u64::from(node));
                 layouts.layout(piece.layout());
+                strips.word(u64::from(node));
+                strips.strips(piece.mesh());
             }
             walks.word(u64::from(node));
             let Some(walkways) = NodeWalkways::collect(graph, node) else {
@@ -426,6 +444,7 @@ impl ProductProbe {
             walkways: walks.0,
             lanes: lane_hash(lanes),
             queries: query_hash(roadbed),
+            strips: strips.0,
         }
     }
 
@@ -522,6 +541,25 @@ fn lane_hash(lanes: &LaneSystem) -> u64 {
         }
     }
     hash.0
+}
+
+/// Asserts each named probe's strip hash against its recorded value, as [`assert_probes`] the
+/// other seven.
+pub(crate) fn assert_strip_probes(actual: &[(String, ProductProbe)], expected: &[(&str, u64)]) {
+    let table: Vec<String> = actual
+        .iter()
+        .map(|(name, p)| format!("(\"{name}\", {:#018x}),", p.strips))
+        .collect();
+    let matches = actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|((name, p), (want, hash))| name == want && p.strips == *hash);
+    assert!(
+        matches,
+        "strip probe changed; actual:\n{}",
+        table.join("\n")
+    );
 }
 
 /// Asserts each named probe against its recorded value; on any difference, prints the whole

@@ -3982,7 +3982,7 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             [
-                layer(|mesh| &mesh.earthwork_vertices),
+                layer(|mesh| &mesh.skirt_vertices),
                 layer(|mesh| &mesh.curb_vertices),
                 layer(|mesh| &mesh.raised_step_vertices),
                 layer(|mesh| &mesh.sidewalk_vertices),

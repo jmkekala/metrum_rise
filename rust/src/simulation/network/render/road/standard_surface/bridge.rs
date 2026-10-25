@@ -1,28 +1,33 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Bridge underside concrete and terrain-supported pier emission.
+//! Bridge concrete: the deck's fascias, the slab under the deck and the terrain-supported piers.
+//!
+//! The fascias are the span piece's strips (`TERRAIN-07-B`), from the deck's outer edges down to
+//! the slab's edges, and the slab spans between their bottom vertices row by row, so deck,
+//! fascias and slab share their vertices bitwise.
 
 use super::super::{
-    MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color,
-    push_triangle_preserving_winding_with_exact_normal, world_point,
+    MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color, push_triangle,
+    push_triangle_preserving_winding_with_exact_normal, render_point, world_point,
 };
 use super::coverage::CompiledSurfaceCoverage;
-use super::geometry::{emit_surface_quad, section_boundary_world_point, triangle_is_too_small};
+use super::geometry::{emit_chain_strips, triangle_is_too_small};
 use crate::config;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{RoadSection, RoadbedSystem};
+use crate::simulation::network::roadbed::{
+    BRIDGE_DECK_DEPTH_M, RoadSection, RoadVec3, RoadbedSystem, SpanPiece, StripKind,
+};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 
-const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
 const BRIDGE_PIER_GROUND_EMBED_M: f32 = 0.08;
 const BRIDGE_PIER_HALF_DEPTH_M: f32 = 0.55;
 const BRIDGE_PIER_HALF_WIDTH_M: f32 = 0.55;
 const BRIDGE_PIER_MIN_CLEARANCE_M: f32 = 1.0;
 const BRIDGE_PIER_SPACING_M: f32 = 28.0;
 
-/// Emits underside concrete and piers for every covered bridge edge that has a span piece.
+/// Emits fascias, the slab and piers for every covered bridge edge that has a span piece.
 pub(in crate::simulation::network::render::road) fn emit_bridge_structures(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
@@ -34,69 +39,55 @@ pub(in crate::simulation::network::render::road) fn emit_bridge_structures(
         if graph.edge(edge_idx).class != EdgeClass::Bridge {
             continue;
         }
-        let Some(sections) = roadbed.sections(edge_idx) else {
+        let Some(span) = roadbed.span_piece(edge_idx) else {
             continue;
         };
         mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
-        emit_compiled_bridge_concrete(mesh, terrain, sections);
+        emit_compiled_bridge_concrete(mesh, terrain, span);
     }
 }
 
 fn emit_compiled_bridge_concrete(
     mesh: &mut NetworkMeshData,
     terrain: &TerrainSystem,
-    sections: &[RoadSection],
+    span: &SpanPiece,
 ) {
+    let sections = span.sections();
     if sections.len() < 2 {
         return;
     }
+    let Some(rows) = span.strip_bottom_rows() else {
+        return;
+    };
+    debug_assert_eq!(span.mesh().strip_kind(), Some(StripKind::Fascia));
+    emit_chain_strips(mesh, span.mesh(), MeshLayer::Concrete, concrete_color());
 
-    for pair in sections.windows(2) {
-        let Some((left_a, right_a)) = outer_surface_bounds(&pair[0]) else {
-            continue;
-        };
-        let Some((left_b, right_b)) = outer_surface_bounds(&pair[1]) else {
-            continue;
-        };
-
-        let a_left = section_boundary_world_point(
-            &pair[0],
-            left_a.0,
-            left_a.1 - BRIDGE_CONCRETE_THICKNESS_M,
-        );
-        let a_right = section_boundary_world_point(
-            &pair[0],
-            right_a.0,
-            right_a.1 - BRIDGE_CONCRETE_THICKNESS_M,
-        );
-        let b_left = section_boundary_world_point(
-            &pair[1],
-            left_b.0,
-            left_b.1 - BRIDGE_CONCRETE_THICKNESS_M,
-        );
-        let b_right = section_boundary_world_point(
-            &pair[1],
-            right_b.0,
-            right_b.1 - BRIDGE_CONCRETE_THICKNESS_M,
-        );
-        if triangle_is_too_small(a_left, b_left, b_right)
-            && triangle_is_too_small(a_left, b_right, a_right)
-        {
-            continue;
+    // The slab: one quad per row pair between the fascias' bottom edges.
+    let mut previous: Option<(f32, [RoadVec3; 2])> = None;
+    for (section, [left, right]) in sections.iter().zip(rows) {
+        if let Some((s_m, [left_a, right_a])) = previous {
+            let quad = [left_a, left, right, right_a];
+            let uvs = [
+                Vector2::new(s_m, 0.0),
+                Vector2::new(section.s_m, 0.0),
+                Vector2::new(section.s_m, 1.0),
+                Vector2::new(s_m, 1.0),
+            ];
+            for corners in [[0, 1, 2], [0, 2, 3]] {
+                let triangle = corners.map(|corner| quad[corner]);
+                let [a, b, c] = triangle.map(render_point);
+                if !triangle_is_too_small(a, b, c) {
+                    push_triangle(
+                        mesh,
+                        MeshLayer::Concrete,
+                        triangle,
+                        corners.map(|corner| uvs[corner]),
+                        concrete_color(),
+                    );
+                }
+            }
         }
-
-        emit_surface_quad(
-            mesh,
-            MeshLayer::Concrete,
-            [a_left, b_left, b_right, a_right],
-            [
-                Vector2::new(pair[0].s_m, 0.0),
-                Vector2::new(pair[1].s_m, 0.0),
-                Vector2::new(pair[1].s_m, 1.0),
-                Vector2::new(pair[0].s_m, 1.0),
-            ],
-            concrete_color(),
-        );
+        previous = Some((section.s_m, [left, right]));
     }
 
     emit_compiled_bridge_piers(mesh, terrain, sections);
@@ -114,7 +105,7 @@ fn emit_compiled_bridge_piers(
             continue;
         }
 
-        let top_y = section.center_height_m - BRIDGE_CONCRETE_THICKNESS_M;
+        let top_y = section.center_height_m - BRIDGE_DECK_DEPTH_M as f32;
         let base_y = terrain
             .sample_visual_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
             * config::HEIGHT_SCALE
@@ -195,13 +186,4 @@ fn emit_bridge_pier_quad(mesh: &mut NetworkMeshData, vertices: [Vector3; 4], nor
             normal,
         );
     }
-}
-
-fn outer_surface_bounds(section: &RoadSection) -> Option<((f32, f32), (f32, f32))> {
-    let first_band = section.bands.first()?;
-    let last_band = section.bands.last()?;
-    Some((
-        (first_band.lateral_start_m, first_band.height_start_m),
-        (last_band.lateral_end_m, last_band.height_end_m),
-    ))
 }

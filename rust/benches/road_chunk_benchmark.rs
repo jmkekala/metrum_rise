@@ -330,7 +330,7 @@ fn mesh_map_shape(
 }
 
 fn mesh_vertex_count(mesh: &NetworkMeshData) -> usize {
-    mesh.earthwork_vertices.len()
+    mesh.skirt_vertices.len()
         + mesh.curb_vertices.len()
         + mesh.raised_step_vertices.len()
         + mesh.sidewalk_vertices.len()
@@ -349,12 +349,7 @@ fn hash_mesh(digest: &mut u64, mesh: &NetworkMeshData) {
         }};
     }
 
-    hash_layer!(
-        earthwork_vertices,
-        earthwork_normals,
-        earthwork_uvs,
-        earthwork_colors
-    );
+    hash_layer!(skirt_vertices, skirt_normals, skirt_uvs, skirt_colors);
     hash_layer!(curb_vertices, curb_normals, curb_uvs, curb_colors);
     hash_layer!(
         raised_step_vertices,

@@ -4,8 +4,9 @@
 //! production patch payloads, composed from CDT tiles, regular filler and site paving, edge-match
 //! across tile and patch boundaries. Every terrain edge is shared by exactly two faces with
 //! bitwise equal vertices, or it borders the road, a building site or the world edge. The
-//! published road chunks' surface layers edge-match the same way wherever road lies on both
-//! sides of an edge.
+//! published road chunks' surface layers edge-match the same way, and the road skirts
+//! (`TERRAIN-07-B`) close the footprint's edge: every outer edge of the top surface is a skirt's
+//! top edge, bitwise, and only the skirts' bottoms stay open.
 
 use super::SimCore;
 use super::road_edit_order::committed;
@@ -190,12 +191,14 @@ fn reference_junction_terrain_is_watertight() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// Interior edges of the published road chunks' surface layers that do not border exactly two
-// faces with bitwise equal world vertices (chunk-local f32 plus the chunk's frame centre, in f64).
-// Every published road chunk face edge in world coordinates, with its faces' (layer, chunk) and
-// the faces' points.
+// Every published road chunk face edge in world coordinates (chunk-local f32 plus the chunk's
+// frame centre, in f64), with its faces' (layer, chunk); and each face's points with their skirt
+// bottom attribute (UV `y`: 1 at a skirt's bottom, 0 on its chain, 0 in other layers).
 type RoadEdges = BTreeMap<(Key, Key), Vec<(usize, (i32, (i32, i32)))>>;
-type FacePoints = Vec<[(f64, f64, f32); 3]>;
+type FacePoints = Vec<([(f64, f64, f32); 3], [f32; 3])>;
+
+// The skirt layer's index in `road_edges`.
+const SKIRT_LAYER: i32 = 5;
 
 fn road_edges(core: &mut SimCore) -> (RoadEdges, FacePoints) {
     core.precompute_road_mesh_data();
@@ -210,21 +213,24 @@ fn road_edges(core: &mut SimCore) -> (RoadEdges, FacePoints) {
             f64::from(render_frame_centre(origin_x + chunk.0 as f32 * span, span)),
             f64::from(render_frame_centre(origin_z + chunk.1 as f32 * span, span)),
         );
-        for (layer, vertices) in [
-            &mesh.road_vertices,
-            &mesh.sidewalk_vertices,
-            &mesh.curb_vertices,
-            &mesh.raised_step_vertices,
-            &mesh.concrete_vertices,
+        for (layer, (vertices, uvs)) in [
+            (&mesh.road_vertices, &mesh.road_uvs),
+            (&mesh.sidewalk_vertices, &mesh.sidewalk_uvs),
+            (&mesh.curb_vertices, &mesh.curb_uvs),
+            (&mesh.raised_step_vertices, &mesh.raised_step_uvs),
+            (&mesh.concrete_vertices, &mesh.concrete_uvs),
+            (&mesh.skirt_vertices, &mesh.skirt_uvs),
         ]
         .into_iter()
         .enumerate()
         {
-            for face in vertices.as_chunks::<3>().0 {
+            let faces = vertices.as_chunks::<3>().0.iter();
+            for (face, uvs) in faces.zip(uvs.as_chunks::<3>().0) {
                 let points =
                     face.map(|v| (f64::from(v.x) + centre_x, f64::from(v.z) + centre_z, v.y));
+                let skirt = layer as i32 == SKIRT_LAYER;
                 let index = thirds.len();
-                thirds.push(points);
+                thirds.push((points, uvs.map(|uv| if skirt { uv.y } else { 0.0 })));
                 for (p, q) in [(0, 1), (1, 2), (2, 0)] {
                     let (p, q) = (key(points[p]), key(points[q]));
                     edges
@@ -243,7 +249,7 @@ fn open_road_edges(core: &mut SimCore) -> Vec<String> {
 }
 
 // As `open_road_edges`, without the single-face edges `exempt` admits by their layer (0 road, 1
-// sidewalk, 2 curb, 3 raised step, 4 concrete) and two world points (x, y, z).
+// sidewalk, 2 curb, 3 raised step, 4 concrete, 5 skirt) and two world points (x, y, z).
 pub(super) fn open_road_edges_where(
     core: &mut SimCore,
     exempt: impl Fn(i32, (f64, f64, f64), (f64, f64, f64)) -> bool,
@@ -260,27 +266,29 @@ pub(super) fn open_road_edges_where(
             problems.push(format!("edge {a:?}-{b:?} shared by {} faces", users.len()));
             continue;
         }
-        if exempt(users[0].1.0, a, b) {
+        let (face, (layer, _)) = users[0];
+        if exempt(layer, a, b) {
             continue;
         }
         let (dx, dz) = (b.0 - a.0, b.2 - a.2);
         let length = dx.hypot(dz);
-        // A vertical edge (curb face end) with one face is open; otherwise probe 5 mm across the
-        // edge on the side away from its face: no road there is the outer seam.
-        if length > 0.0 {
-            let third = thirds[users[0].0]
-                .iter()
-                .find(|point| key(**point) != *p && key(**point) != *q)
-                .unwrap();
-            let mut normal = (dz / length, -dx / length);
-            if normal.0 * (third.0 - a.0) + normal.1 * (third.1 - a.2) > 0.0 {
-                normal = (-normal.0, -normal.1);
-            }
-            let probe = (
-                (a.0 + b.0) * 0.5 + normal.0 * 0.005,
-                (a.2 + b.2) * 0.5 + normal.1 * 0.005,
-            );
-            if roadbed.band_at(probe.0 as f32, probe.1 as f32).is_none() {
+        // A skirt's bottom edge meets the ground below the road's edge: its two ends carry the
+        // bottom attribute (exactly 1 at strip vertices; clip points on the bottom edge
+        // interpolate it). Every other edge with one face is open, the top surface's outer edges
+        // included, which a skirt must close.
+        let (points, attributes) = &thirds[face];
+        let bottom =
+            |k: &Key| attributes[points.iter().position(|point| key(*point) == *k).unwrap()] > 0.5;
+        if layer == SKIRT_LAYER && length > 0.0 && bottom(p) && bottom(q) {
+            // It lies under the footprint's edge: road 5 mm to one side of it, none to the other.
+            let road_across = |side: f64| {
+                let (x, z) = (
+                    (a.0 + b.0) * 0.5 + side * 0.005 * dz / length,
+                    (a.2 + b.2) * 0.5 - side * 0.005 * dx / length,
+                );
+                roadbed.band_at(x as f32, z as f32).is_some()
+            };
+            if road_across(1.0) != road_across(-1.0) {
                 continue;
             }
         }

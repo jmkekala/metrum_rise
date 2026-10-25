@@ -297,7 +297,6 @@ func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, c
 	immediate.surface_end()
 
 static var _marking_mat: ShaderMaterial = null
-static var _earthwork_mat: StandardMaterial3D = null
 
 func update_main_mesh(expected_generation: int = -1, stage_only: bool = false) -> int:
 	if name != "RoadTool":
@@ -617,7 +616,14 @@ func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 	if typeof(certificate) != TYPE_BOOL:
 		return false
 	var rust_validated: bool = certificate
-	if not _append_road_surface(arr_mesh, chunk_data, "earthwork", _earthwork_mat, rust_validated):
+	# Road skirts (TERRAIN-07-B): the curb's stone, bottoms deepened with distance by the shader.
+	if not _append_road_surface(
+		arr_mesh,
+		chunk_data,
+		"skirt",
+		WorldMaterials.road_skirt_material(),
+		rust_validated
+	):
 		return false
 	if not _append_road_surface(
 		arr_mesh,
@@ -768,9 +774,3 @@ func _road_layer_is_finite(
 func _ensure_road_mesh_materials() -> void:
 	if _marking_mat == null:
 		_marking_mat = WorldMaterials.road_marking_material()
-	if _earthwork_mat == null:
-		_earthwork_mat = StandardMaterial3D.new()
-		_earthwork_mat.vertex_color_use_as_albedo = true
-		_earthwork_mat.roughness = 1.0
-		_earthwork_mat.metallic = 0.0
-		_earthwork_mat.cull_mode = BaseMaterial3D.CULL_BACK

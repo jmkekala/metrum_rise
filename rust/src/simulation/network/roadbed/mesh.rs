@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! `PieceMesh`: a piece's vertices, triangles grouped by band kind, curb faces, outer chains and
-//! triangle query grid, and the span mesh built from its sections.
+//! `PieceMesh`: a piece's vertices, triangles grouped by band kind, curb faces, outer chains,
+//! the strips hanging from them and the triangle query grid, and the span mesh built from its
+//! sections.
 //!
 //! Every triangle is wound so that `-(b - a) x (c - a)` is its visible normal, the renderer's
-//! convention: top triangles face up and curb faces face the carriageway.
+//! convention: top triangles face up, curb faces face the carriageway and strips face away from
+//! the road.
 
 use super::geometry::{SurfaceTriangleGrid, bounds_xz};
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
@@ -15,6 +17,43 @@ use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
 const BAND_GROUPS: usize = 8;
 pub(super) const CURB_FACE_GROUP: usize = BAND_GROUPS;
 pub(super) const GROUPS: usize = BAND_GROUPS + 1;
+
+/// Depth of a road skirt below its outer chain (`TERRAIN-07-B`, `docs/terrain.md` TD6): the near
+/// depth, which the road shader deepens with distance (T5).
+pub const SKIRT_DEPTH_M: f64 = 0.5;
+/// Depth of a bridge deck's concrete below the deck's outer edge: the fascia's height and the
+/// level of the concrete slab under the deck (`TERRAIN-07-B`).
+pub const BRIDGE_DECK_DEPTH_M: f64 = 0.35;
+
+/// The strips a piece hangs from its outer chains (`TERRAIN-07-B`): one vertical strip per chain,
+/// whose top vertices are the chain's own vertices and whose bottom vertices lie straight below
+/// them. A layer of its own beside the top surface and the curb faces; queries never see it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StripKind {
+    /// Road skirts, [`SKIRT_DEPTH_M`] deep, on every grounded piece (node pieces and standard
+    /// spans): they reach into the ground below the footprint's edge, so a terrain mesh that sags
+    /// below the edge leaves no gap under the road.
+    Skirt,
+    /// Bridge fascias, [`BRIDGE_DECK_DEPTH_M`] deep: a bridge span's deck sides, closed down to
+    /// the concrete slab, whose edges are the fascias' bottom vertices.
+    Fascia,
+}
+
+impl StripKind {
+    /// Metres from a strip's top vertex down to its bottom vertex.
+    pub fn depth_m(self) -> f64 {
+        match self {
+            Self::Skirt => SKIRT_DEPTH_M,
+            Self::Fascia => BRIDGE_DECK_DEPTH_M,
+        }
+    }
+
+    /// The bottom vertex below the strip's top vertex `top`: straight down by the depth. The one
+    /// function every strip and the bridge slab take their bottom vertices from.
+    pub fn bottom(self, top: RoadVec3) -> RoadVec3 {
+        RoadVec3::new(top.x, top.y - self.depth_m(), top.z)
+    }
+}
 
 /// Footprint boundary polyline: vertex indices into its piece's positions, ordered so the road
 /// lies on the left in XZ (the counter-clockwise quarter turn from +x towards +z), from one
@@ -41,6 +80,8 @@ pub struct PieceMesh {
     triangles: Vec<[u32; 3]>,
     group_starts: [u32; GROUPS + 1],
     outer_chains: Vec<OuterChain>,
+    // The strips below the outer chains; a tunnel's road piece has none.
+    strips: Option<StripKind>,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -95,6 +136,38 @@ impl PieceMesh {
     /// Footprint boundary chains.
     pub fn outer_chains(&self) -> &[OuterChain] {
         &self.outer_chains
+    }
+
+    /// The kind of strips hanging from the outer chains, `None` for a tunnel's road piece.
+    pub fn strip_kind(&self) -> Option<StripKind> {
+        self.strips
+    }
+
+    /// The strip's bottom vertex below outer-chain vertex `vertex` (an index into
+    /// [`Self::positions`]): the vertex moved straight down by the strip's depth. `None` without
+    /// strips.
+    pub fn strip_bottom(&self, vertex: u32) -> Option<RoadVec3> {
+        Some(self.strips?.bottom(self.positions[vertex as usize]))
+    }
+
+    /// Visits the strip triangles, chain by chain and segment by segment, two per chain segment:
+    /// each as its world points and, per point, whether it is a bottom vertex. The top points are
+    /// the chain's positions bitwise and the bottoms [`Self::strip_bottom`]'s. Each triangle is
+    /// wound so that `-(b - a) x (c - a)` faces away from the road, the right of the chain.
+    /// `O(chain vertices)`, without allocation.
+    pub fn for_each_strip_triangle(&self, mut visit: impl FnMut([RoadVec3; 3], [bool; 3])) {
+        let Some(kind) = self.strips else {
+            return;
+        };
+        for chain in &self.outer_chains {
+            for pair in chain.vertices.windows(2) {
+                let [a, b] = [pair[0], pair[1]].map(|vertex| self.positions[vertex as usize]);
+                // Down the chain's start, along the bottom, back up its end: the road lies left of
+                // the chain, so this order faces right, away from it.
+                visit([a, kind.bottom(a), kind.bottom(b)], [false, true, true]);
+                visit([a, kind.bottom(b), b], [false, true, false]);
+            }
+        }
     }
 
     /// XZ bounds `[min_x, min_z, max_x, max_z]` of every vertex.
@@ -296,12 +369,14 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
 }
 
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
-/// mouth sections. `O(sections * bands)`; allocates only the mesh.
+/// mouth sections, with `strips` below its two outer chains. `O(sections * bands)`; allocates
+/// only the mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
     start_mouth: &MouthSection,
     end_mouth: &MouthSection,
     layout: &RowLayout,
+    strips: Option<StripKind>,
 ) -> PieceMesh {
     let rows = sections.len();
     let stride = layout.stride();
@@ -379,12 +454,19 @@ pub(super) fn build_span_mesh(
                 .collect(),
         },
     ];
-    PieceMesh::new(positions, road_space, triangles, group_starts, outer_chains)
+    PieceMesh::new(
+        positions,
+        road_space,
+        triangles,
+        group_starts,
+        outer_chains,
+        strips,
+    )
 }
 
 impl PieceMesh {
-    /// Assembles a mesh from its triangle groups (band kinds in declaration order, then curb
-    /// faces).
+    /// Assembles a node piece's mesh from its triangle groups (band kinds in declaration order,
+    /// then curb faces). A node piece stands on the terrain, so its chains hang skirts.
     pub(super) fn from_groups(
         positions: Vec<RoadVec3>,
         road_space: Vec<[f32; 2]>,
@@ -397,7 +479,14 @@ impl PieceMesh {
             .into_iter()
             .map(|vertices| OuterChain { vertices })
             .collect();
-        Self::new(positions, road_space, triangles, group_starts, outer_chains)
+        Self::new(
+            positions,
+            road_space,
+            triangles,
+            group_starts,
+            outer_chains,
+            Some(StripKind::Skirt),
+        )
     }
 
     // Builds the bounds and top-triangle grid of grouped triangles.
@@ -407,6 +496,7 @@ impl PieceMesh {
         triangles: Vec<[u32; 3]>,
         group_starts: [u32; GROUPS + 1],
         outer_chains: Vec<OuterChain>,
+        strips: Option<StripKind>,
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
         let grid = SurfaceTriangleGrid::from_triangles(
@@ -422,6 +512,7 @@ impl PieceMesh {
             triangles,
             group_starts,
             outer_chains,
+            strips,
             grid,
         }
     }

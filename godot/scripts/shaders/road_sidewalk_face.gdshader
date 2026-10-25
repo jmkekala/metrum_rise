@@ -14,6 +14,16 @@ uniform float vertical_normal_strength = 0.25;
 uniform sampler2D detail_texture : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 granite_albedo = vec3(0.40, 0.395, 0.38);
 
+// Road skirts (TERRAIN-07-B, docs/terrain.md "Skirts"): the skirt material sets `skirt`, and its
+// UV.y is 1 on a skirt's bottom vertex, 0.5 m below the outer chain, and 0 on the chain (in
+// between at chunk-line clip points). Coarser terrain far away sags further below a road's edge,
+// so the bottom deepens with the camera distance, measured as terrain.gd measures patch LOD:
+// 0.5 m to 2 km, 2.5 m to 5 km, 5 m to 12 km and 10 m beyond (T5). A clip point moves in
+// proportion, so within one distance band a deepened strip stays planar; a point two chunks
+// share gets the same drop in both.
+uniform bool skirt = false;
+const float SKIRT_NEAR_DEPTH_M = 0.5;
+
 varying vec3 world_pos;
 varying vec3 world_normal;
 uniform float specular = 0.5;
@@ -22,8 +32,28 @@ uniform float specular = 0.5;
 #include "res://scripts/shaders/standard_light.gdshaderinc"
 #include "res://scripts/shaders/weather_rain.gdshaderinc"
 
+float skirt_depth_m(float distance_m) {
+	if (distance_m <= 2000.0) {
+		return SKIRT_NEAR_DEPTH_M;
+	}
+	if (distance_m <= 5000.0) {
+		return 2.5;
+	}
+	if (distance_m <= 12000.0) {
+		return 5.0;
+	}
+	return 10.0;
+}
+
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	if (skirt) {
+		// Road chunks are translated, never rotated or scaled: a model-space drop is a world one.
+		float camera_m = distance(world_pos, INV_VIEW_MATRIX[3].xyz);
+		float drop_m = (skirt_depth_m(camera_m) - SKIRT_NEAR_DEPTH_M) * UV.y;
+		VERTEX.y -= drop_m;
+		world_pos.y -= drop_m;
+	}
 	world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 }
 

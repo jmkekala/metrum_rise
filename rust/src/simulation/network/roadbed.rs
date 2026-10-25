@@ -33,7 +33,7 @@ pub use layout::{
     CoreVertexSource, Corner, CornerTangent, Crosswalk, EdgeEnd, JunctionLayout, LayoutError,
     NodeKind, SectorBoundary, SectorKind, SectorLayout, Side,
 };
-pub use mesh::{OuterChain, PieceMesh};
+pub use mesh::{BRIDGE_DECK_DEPTH_M, OuterChain, PieceMesh, SKIRT_DEPTH_M, StripKind};
 pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};

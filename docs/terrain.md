@@ -3224,8 +3224,8 @@ Terminology:
 
 ### Purpose and status
 
-**Specification adopted by the user (2026-10-25); nothing in this section is implemented
-yet.** `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
+**Specification adopted by the user (2026-10-25); of its gates only `TERRAIN-07-B` (road skirts
+and bridge fascias) is built so far.** `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
 grading and footprint distance layer per 64 m tile near roads and sites, an exact seam mask in the
@@ -3598,7 +3598,10 @@ facing away from the road, in the curb's concrete, casting no shadow (where the 
 skirt lies inside the ground). It goes through the chunk
 emission with the other piece layers, so the preview's skirt is the commit's. A vertex attribute
 marks the bottom vertices so the road shader can deepen them with distance
-([T5](#terrain-07-open-questions)). Pads need no skirt: the terrain is the pad.
+([T5](#terrain-07-open-questions)). Pads need no skirt: the terrain is the pad. Built in
+`TERRAIN-07-B`: the payload's skirt layer, UV `y` the bottom attribute, drawn with the curb-face
+shader's skirt variant, which measures the distance as `terrain.gd` measures patch LOD (camera
+to point).
 
 ### Sites, pads and paving
 
@@ -3819,7 +3822,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | Gate | Status | Scope |
 | --- | --- | --- |
 | `TERRAIN-07-A` | open | Grading core and queries in Rust, roads only, beside the legacy path |
-| `TERRAIN-07-B` | open | Road skirts in the piece mesh (roadbed; may run beside A) |
+| `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
@@ -3879,6 +3882,91 @@ outer edge; previewed chunks with skirts equal the committed chunks
 (`preview_chunks_with_crossings_and_signs_are_the_committed_chunks` and
 `road_junction_preview_test.gd`); payload packing stays within its 1.0 ms budget
 (`benchmark_road_preview_stages`); the `roadbed/` line count is recorded.
+
+**Gate record (2026-10-25, branch `terrain07-B`).**
+
+- **Strips in the piece mesh.** `PieceMesh` keeps the kind of strips its outer chains hang
+  (`StripKind`): `Skirt` on node pieces and standard spans, `Fascia` on bridge spans, none on
+  tunnels, set where the piece is built (`build_span_piece` from the edge class, as the span's
+  `grounded` flag; node pieces always, as `terrain_loops` and the terrain changes count them).
+  `PieceMesh::for_each_strip_triangle` constructs the strips from the chains: two triangles per
+  chain segment, top points the chain's positions bitwise, bottoms `StripKind::bottom` (straight
+  down by `SKIRT_DEPTH_M` 0.5 m or `BRIDGE_DECK_DEPTH_M` 0.35 m), wound to face away from the
+  road, with a bottom flag per point. Nothing else is stored, so a piece costs no memory for its
+  strips; there is no boolean, clip or repair, and queries never see strips (the piece grid holds
+  top triangles only).
+- **Chunk emission and shader.** Skirts go to payload layer 0, which was reserved for road-owned
+  earthwork and never written since `ROAD-68-A`, renamed `skirt` (Rust fields, the Godot
+  dictionary keys, the chunk renderer and its tests and benchmark): the curb colour, exact
+  normals, and UV `y` as the bottom-vertex attribute (1 at bottoms, 0 on the chain, interpolated
+  at chunk-line clip points). They pass the same chunk router and owner splice as every layer,
+  so a preview's skirts are its commit's. Godot draws the layer with
+  `WorldMaterials.road_skirt_material()`: the curb-face shader (`road_sidewalk_face.gdshader`)
+  with `skirt` set, whose vertex stage lowers a bottom by the T5 depth minus the 0.5 m it already
+  has (0.5 m to 2 km, 2.5 m to 5 km, 5 m to 12 km, 10 m beyond), with the camera distance measured
+  as `terrain.gd` measures patch LOD (camera to point; a patch measures to its centre, so a skirt
+  vertex can switch up to a patch half-diagonal before the patch under it: `TERRAIN-07-D` tunes
+  the distances). A clip point moves in proportion to its attribute, so within one distance band
+  a deepened strip stays planar, and a point two chunks share drops alike in both. Road chunks are shadow receivers only, so skirts
+  cast no shadow.
+- **Bridge fascias.** The bridge renderer emits a bridge span's fascias into the concrete layer and
+  the slab from their bottom vertices row by row (`SpanPiece::strip_bottom_rows`), instead of its
+  own `f32` section points: deck edge, fascia and slab share their vertices bitwise, mouth rows
+  included (a node mouth's corner lies on the arm's offset curve, not on the section's lateral
+  line, so the old slab ended a little off the deck there). The slab's payload changes (`f64`
+  points, no `f32` world rounding before the chunk frame, a fascia-shared edge); no probe holds
+  it. Piers are unchanged.
+- **Product probe.** The node probe's seven top-surface hashes are unchanged for all 141
+  entries (the strips are no part of the mesh the probe digests). Its new strip hash per
+  fixture (`EXPECTED_STRIPS`, recorded by this gate: every entry is new) digests each piece's
+  strip kind and every strip triangle's points and flags. The reference probe is unchanged.
+- **Tests.** `strips_hang_from_the_outer_chains_bitwise` (all 141 probe fixtures: the kind per
+  piece class, two triangles per chain segment, tops bitwise the chain positions, bottoms bitwise
+  lowered, facing away from the road). `reference_junction_road_chunks_are_watertight` reads the
+  skirt layer and is stricter: an edge with one face is open unless it is a skirt's bottom edge
+  (both ends flagged bottom) under the footprint's edge (road 5 mm to one side, none to the
+  other), so every outer edge of the top surface must be a skirt's top edge, bitwise (before, any
+  one-face edge with no road across passed). `structure_and_rural_road_chunks_are_watertight` no
+  longer exempts the whole concrete layer: only edges on a structure's free-end row, its mouth
+  rows' concrete and vertical edges (the slab's and fascias' ends and the grounded skirts' ends
+  there, which `TERRAIN-07-C`'s abutments and portals close) and a tunnel's sides (no strips;
+  its bore is the portals'). The preview-equals-commit tests compare whole chunks, skirts
+  included.
+- **Payload packing (fresh, 2026-10-25, 17:33-17:34 EET, no restic).** Release library tests,
+  `benchmark_road_preview_stages`, `RAYON_NUM_THREADS=4`, `taskset -c 0,2,4,6,8,10,12,14`, both
+  timing locks, C B B C C B B C in one session: C = `road` `6899d724` (this gate's base), B = the
+  gate's sources, both built in one worktree and target directory (identities in `$ARTIFACTS`).
+  Payload packing p50 ms, C runs / B runs: `sloped_t` 0.333, 0.334, 0.333, 0.332 / 0.385,
+  0.391, 0.391, 0.384; `sloped_branch` 0.328, 0.329, 0.331, 0.334 / 0.381, 0.392, 0.385, 0.388
+  (p95 at most 0.396 / 0.463). The stage grows by 0.055 ms (16-17%) with the skirts: 2,034 of
+  B's 9,845 payload vertices per pose are skirt vertices on `sloped_t` (C's 7,811 grow by 26%)
+  and 2,448 of 11,706 on `sloped_branch`, so a skirt vertex costs about 27 ns against C's 43 ns
+  per payload vertex. Within the 1.0 ms budget (0.39 ms). Plan and roadbed are within C's spread
+  (plan 0.467-0.472 / 0.467-0.471 and 0.407-0.412 / 0.407-0.418; roadbed 0.318-0.327 /
+  0.321-0.329 and 0.322-0.326 / 0.321-0.326). The legacy terrain stage, whose code B does not
+  change, sits up to 0.06 ms (1.3%) above C's range (4.591-4.610 / 4.606-4.671 and
+  4.826-4.846 / 4.870-4.903); not profiled, so not attributed under
+  [`roads.md` open question 36](roads.md#road-68-open-questions)'s rule; the stage is the exact
+  cut that `TERRAIN-07-G` deletes.
+- **Reference screenshots (fresh, 2026-10-25).** `road_junction_reference_test.gd` through
+  `screenshots-C.sh` (gamescope headless, isolated profile), before (`6899d724` with this gate's
+  test change only) and after: 28 records each, 88 PNG (bridges add a fourth view, `side`: the
+  deck's side from 12 m), both PASS with no SCRIPT ERROR, 0 pinholes. Every terrain (`oblique`)
+  view of a grounded fixture and every `plan` view is bitwise equal before and after: the exact
+  cut meets the chains, so the skirts stay inside the ground, with no z-fighting. The
+  terrain-hidden `oblique_roads` views show the skirts below the sidewalk edges (4,466-12,012
+  changed pixels per image), as do the structure fixtures, which render without terrain. The
+  bridges' `side` views show the fascia closing the deck side where the open slit was before.
+- **Gate run (fresh, 2026-10-25, the gate's sources, `DISPLAY` and `WAYLAND_DISPLAY` unset).**
+  `./run.sh --test` exits 0: debug library suite 1,914 passed, 0 failed, 164 ignored (one more
+  test than `ROAD-68-F` round 4); integration 4 passed; every Godot bridge suite passes with no
+  SCRIPT ERROR (`network_tool_chunk_renderer_test` and `road_junction_preview_test` among them),
+  none skipped but the display-only shader-global probe and rendered vegetation. Clippy
+  `--all-targets`: the baseline's 59 warnings, the same set, no missing docs. No
+  `TERRAIN-07-B` ignore exists; the four `TERRAIN-07` ignores are other gates'.
+- **Size.** `roadbed/` production lines 7,911 against 7,798 on `6899d724` (+113): the strip kind,
+  its depths and bottom function, the strip visitor and the slab rows, mostly doc comments
+  (`mesh.rs` +91 with the constructor calls reflowed, `span.rs` +26, `roadbed.rs` the exports).
 
 #### `TERRAIN-07-C` — sites, pads, paving and structure ends
 

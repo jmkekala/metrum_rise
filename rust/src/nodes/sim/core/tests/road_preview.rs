@@ -682,6 +682,8 @@ fn benchmark_road_preview_stages() {
             .collect();
         let mut stages = [(); 5].map(|()| Vec::new());
         let mut terrain_patches = 0;
+        // Payload vertices over the first repetition's poses, all layers and the skirts'.
+        let (mut payload_vertices, mut skirt_vertices) = (0, 0);
         for repetition in 0..60 {
             for points in &strokes {
                 let start = Instant::now();
@@ -697,6 +699,16 @@ fn benchmark_road_preview_stages() {
                     panic!("{name}: every pose previews its terrain: {terrain:?}");
                 };
                 terrain_patches = terrain_patches.max(terrain.patches.len());
+                if repetition == 0 {
+                    let chunks = preview
+                        .pieces
+                        .as_ref()
+                        .and_then(|pieces| pieces.chunks.as_ref());
+                    for mesh in chunks.into_iter().flat_map(|chunks| chunks.values()) {
+                        payload_vertices += mesh.vertex_count();
+                        skirt_vertices += mesh.skirt_vertices.len();
+                    }
+                }
                 if repetition >= 10 {
                     let times = preview.times;
                     for (samples, ms) in stages.iter_mut().zip([
@@ -727,9 +739,11 @@ fn benchmark_road_preview_stages() {
         assert!(context.apply(&publication));
         let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "road_preview_stages fixture={name} workers={} poses=8 samples={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} terrain_adopted={} edges={}",
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} terrain_adopted={} edges={}",
             crate::thread_pools::install(rayon::current_num_threads),
             8 * 50,
+            payload_vertices / 8,
+            skirt_vertices / 8,
             plan.0,
             plan.1,
             roadbed.0,

@@ -428,6 +428,12 @@ rows fall a few millimetres apart before a knot.
   counter-clockwise side in XZ, from +x towards +z), each running from one mouth corner to the
   next; `ROAD-68-D` reversed the span chains, which ran the other way, and tests the orientation
   numerically
+- the strips hanging from the outer chains (`TERRAIN-07-B`), a layer of their own: road skirts
+  0.5 m deep on grounded pieces (node pieces and standard spans), fascias 0.35 m deep on bridge
+  spans down to the concrete slab, none on tunnels. Each strip is two triangles per chain segment
+  whose top points are the chain's positions bitwise and whose bottoms lie straight below them,
+  facing away from the road; the mesh keeps only the strip kind and constructs the triangles
+  from the chains (`PieceMesh::for_each_strip_triangle`). Queries never see them
 - bounds
 - a per-piece triangle query grid, reusing the legacy `SurfaceTriangleGrid` design
 
@@ -435,7 +441,10 @@ Pieces are immutable and shared through `Arc`.
 
 **Watertightness.** Within a piece, every edge borders exactly two triangles, except outer-chain
 edges (which meet terrain) and mouth edges. Every mouth edge appears in exactly one span and one
-node piece, with bit-identical endpoints. Tests check both conditions on every fixture.
+node piece, with bit-identical endpoints. Tests check both conditions on every fixture. In the
+published chunks (`TERRAIN-07-B`) the strips close the outer-chain edges: each is a strip's top
+edge, the strips of two pieces share the vertical edge at their mouth corner, and only the skirts'
+bottoms, and a structure's ends and a tunnel's sides, stay open.
 
 ### Footprint and terrain
 
@@ -450,7 +459,8 @@ roadbed side stays as the contract terrain consumes:
   takes as the footprint's coverage (no loops, so an open end flips no region; question 19)
 - `take_terrain_changes`, extended in `TERRAIN-07-A` to return the changed grounded chain segments
   themselves
-- road skirts, one strip per outer chain in the piece mesh (`TERRAIN-07-B`)
+- road skirts, one strip per grounded outer chain in the piece mesh (`TERRAIN-07-B`, built; see
+  [pieces and meshes](#pieces-and-meshes))
 
 Everything else in this section (patch loops, holes, open ends, source tags, the grading envelope,
 seams on tile sides, watertight patches, pads in the patch frame, patch selection, tile clip,
@@ -632,7 +642,9 @@ and emits only the pieces built since the last publication, whose lanes alone ar
 new surface ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)). The Rust to
 Godot chunk payload stays byte-compatible, so Godot's committed-chunk renderer is unchanged apart
 from the chunk frame: `NetworkMeshData` layers, owner ranges, the generation and acknowledgement
-protocol, and removal tombstones.
+protocol, and removal tombstones. Layer 0, once reserved for road-owned earthwork, carries the
+road skirts since `TERRAIN-07-B` (`skirt_*` keys; UV `y` is the bottom-vertex attribute), and a
+bridge's fascias go with its concrete.
 
 ### Preview, commit, undo and load
 
@@ -4540,7 +4552,8 @@ portal cutouts (the terrain side of `ROAD-61`), building sites, driveways and pa
   Found: a bridge stroke that joins a road is rejected at the commit with `render_geometry_invalid
   roadbed_chain_open_end` (open question 19), so bridges cannot be built from a road in play until
   `TERRAIN-07` closes those chains; the renderer also leaves the deck's sides open between the
-  deck edge and the slab (no fascia), visible from the side.
+  deck edge and the slab (no fascia), visible from the side. Closed by `TERRAIN-07-B`'s fascias,
+  which the slab now shares its vertices with ([`terrain.md`](terrain.md#terrain-07-b--road-skirts-in-the-piece-mesh)).
 - **Tunnel road pieces.** Tunnels use the same pieces with full decks inside the bore; the legacy
   visible-range clipping does not return, since the portal and its terrain cut are `TERRAIN-07`'s.
   `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` is relabelled `TERRAIN-07`.

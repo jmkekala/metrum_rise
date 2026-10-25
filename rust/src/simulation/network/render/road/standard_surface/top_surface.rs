@@ -7,7 +7,8 @@
 //! sidewalk layer (road-space footpath colour on footpath edges), and curb faces to the
 //! raised-step layer. Node pieces use world UVs throughout, and their carriageway keeps
 //! `road_color`'s zero alpha: junction asphalt has no road space. The triangles are the pieces'
-//! own, so queries answer from what renders.
+//! own, so queries answer from what renders. Grounded pieces' skirts (`TERRAIN-07-B`) go to the
+//! skirt layer in the curb's colour; a bridge's fascias go with its concrete (`bridge.rs`).
 
 use super::super::{
     MeshLayer, NetworkMeshData, NetworkMeshOwner, curb_color, footpath_color, push_triangle,
@@ -15,9 +16,9 @@ use super::super::{
     road_space_color, sidewalk_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
-use super::geometry::triangle_is_too_small;
+use super::geometry::{emit_chain_strips, triangle_is_too_small};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadbedSystem};
+use crate::simulation::network::roadbed::{BandKind, PieceMesh, RoadbedSystem, StripKind};
 use crate::simulation::network::types::TransitType;
 use godot::prelude::{Color, Vector2};
 
@@ -78,6 +79,7 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             Uvs::RoadSpace,
             road_space_color(edge),
         );
+        emit_skirts(mesh, piece);
     }
     for &node in &coverage.node_ids {
         let Some(piece) = roadbed.node_piece(node) else {
@@ -112,6 +114,13 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
             Uvs::World,
             road_color(),
         );
+        emit_skirts(mesh, piece);
+    }
+}
+
+fn emit_skirts(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
+    if piece.strip_kind() == Some(StripKind::Skirt) {
+        emit_chain_strips(mesh, piece, MeshLayer::Skirt, curb_color());
     }
 }
 

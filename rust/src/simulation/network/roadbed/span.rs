@@ -28,11 +28,12 @@ pub(super) use model::{
 
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
-use super::mesh::{PieceMesh, build_span_mesh};
+use super::mesh::{PieceMesh, StripKind, build_span_mesh};
 use super::node::plan_node;
 use super::profile::RoadProfile;
 use super::{RoadSection, RoadVec3};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::EdgeClass;
 use godot::prelude::Vector3;
 use std::sync::Arc;
 
@@ -118,6 +119,24 @@ impl SpanPiece {
         }
     }
 
+    /// The strip bottoms below each section row's two outer vertices, negative lateral side
+    /// first, in row order (`TERRAIN-07-B`): on a bridge, the edges of the concrete slab under its
+    /// deck, which its fascias share. `None` without strips (a tunnel).
+    pub fn strip_bottom_rows(&self) -> Option<impl Iterator<Item = [RoadVec3; 2]> + '_> {
+        let kind = self.mesh.strip_kind()?;
+        let positions = self.mesh.positions();
+        // `build_span_mesh`'s chains: the first runs forward along slot 0, the second back along
+        // the last slot.
+        let [left, right] = [0, 1].map(|chain| self.mesh.outer_chains()[chain].vertices());
+        Some(
+            left.iter()
+                .zip(right.iter().rev())
+                .map(move |(&left, &right)| {
+                    [left, right].map(|vertex| kind.bottom(positions[vertex as usize]))
+                }),
+        )
+    }
+
     pub(super) fn shared_mesh(&self) -> &Arc<PieceMesh> {
         &self.mesh
     }
@@ -170,7 +189,15 @@ pub(crate) fn build_span_piece(
     sections.push(start_mouth.section.clone());
     sections.extend(stations.iter().map(|&s_m| model.section_at(s_m)));
     sections.push(end_mouth.section.clone());
-    let mesh = build_span_mesh(&sections, &start_mouth, &end_mouth, model.layout());
+    let edge = graph.edge(edge_idx);
+    // A standard edge's span stands on the terrain and hangs skirts; a bridge closes its deck's
+    // sides down to its slab; a tunnel's sides are its bore's (`TERRAIN-07-C`).
+    let strips = match edge.class {
+        EdgeClass::Standard => Some(StripKind::Skirt),
+        EdgeClass::Bridge => Some(StripKind::Fascia),
+        EdgeClass::Tunnel => None,
+    };
+    let mesh = build_span_mesh(&sections, &start_mouth, &end_mouth, model.layout(), strips);
     let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the
     // vertices `pass_through_crossing` evaluates for the lanes.
@@ -185,7 +212,6 @@ pub(crate) fn build_span_piece(
             crossing_kerbs_right_first([row[first], row[last]], end),
         ))
     });
-    let edge = graph.edge(edge_idx);
     Some(SpanPiece {
         edge_idx,
         nodes: [edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)),
@@ -193,7 +219,7 @@ pub(crate) fn build_span_piece(
         start_mouth,
         end_mouth,
         crossings,
-        grounded: edge.class == crate::simulation::network::types::EdgeClass::Standard,
+        grounded: edge.class == EdgeClass::Standard,
         mesh: Arc::new(mesh),
         footprint,
     })

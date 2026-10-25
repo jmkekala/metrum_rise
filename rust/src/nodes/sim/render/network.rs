@@ -167,20 +167,20 @@ impl SimCore {
             mesh_data.render_payload_validated(),
         );
         dict.set(
-            "earthwork_vertices",
-            PackedVector3Array::from_iter(mesh_data.earthwork_vertices.iter().copied()),
+            "skirt_vertices",
+            PackedVector3Array::from_iter(mesh_data.skirt_vertices.iter().copied()),
         );
         dict.set(
-            "earthwork_normals",
-            PackedVector3Array::from_iter(mesh_data.earthwork_normals.iter().copied()),
+            "skirt_normals",
+            PackedVector3Array::from_iter(mesh_data.skirt_normals.iter().copied()),
         );
         dict.set(
-            "earthwork_uvs",
-            PackedVector2Array::from_iter(mesh_data.earthwork_uvs.iter().copied()),
+            "skirt_uvs",
+            PackedVector2Array::from_iter(mesh_data.skirt_uvs.iter().copied()),
         );
         dict.set(
-            "earthwork_colors",
-            PackedColorArray::from_iter(mesh_data.earthwork_colors.iter().copied()),
+            "skirt_colors",
+            PackedColorArray::from_iter(mesh_data.skirt_colors.iter().copied()),
         );
         dict.set(
             "curb_vertices",

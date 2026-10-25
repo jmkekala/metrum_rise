@@ -314,7 +314,7 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 		if not committed.has(key) or chunk.get("removed", false):
 			continue
 		var names: Array[String] = ["road_crossings", "street_lights", "road_signs"]
-		for layer in ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]:
+		for layer in ["skirt", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]:
 			for field in ["vertices", "normals", "uvs", "colors"]:
 				names.append("%s_%s" % [layer, field])
 		for name in names:

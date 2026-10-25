@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Shared section projection and quad emission helpers for section-based road meshes.
+//! Shared section projection and quad emission helpers for section-based road meshes, and the
+//! emission of the strips a piece hangs from its outer chains.
 
-use super::super::{MeshLayer, NetworkMeshData, push_triangle, world_point};
-use crate::simulation::network::roadbed::RoadSection;
+use super::super::{
+    MeshLayer, NetworkMeshData, push_triangle, push_triangle_preserving_winding_with_exact_normal,
+    render_point, world_point,
+};
+use crate::simulation::network::roadbed::{PieceMesh, RoadSection};
 use godot::prelude::{Color, Vector2, Vector3};
 
 const BAND_EPSILON_M: f32 = 0.001;
@@ -81,4 +85,27 @@ pub(super) fn emit_surface_quad(
             color,
         );
     }
+}
+
+// Emits the piece's strips (`TERRAIN-07-B`: skirts, or a bridge's fascias) into `layer` as the
+// piece wound them, facing away from the road, with UV `y` 1 on bottom vertices and 0 on the
+// chain's: the skirt shader's bottom-vertex attribute. Only exactly degenerate triangles are
+// dropped (by the chunk router), so every strip edge meets its neighbour's.
+pub(super) fn emit_chain_strips(
+    mesh: &mut NetworkMeshData,
+    piece: &PieceMesh,
+    layer: MeshLayer,
+    color: Color,
+) {
+    piece.for_each_strip_triangle(|world, bottoms| {
+        let [a, b, c] = world.map(render_point);
+        push_triangle_preserving_winding_with_exact_normal(
+            mesh,
+            layer,
+            world,
+            bottoms.map(|bottom| Vector2::new(0.0, f32::from(u8::from(bottom)))),
+            color,
+            -((b - a).cross(c - a)),
+        );
+    });
 }

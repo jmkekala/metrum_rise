@@ -4,7 +4,7 @@
 extends SceneTree
 
 const LAYERS: Array[String] = [
-	"earthwork",
+	"skirt",
 	"curb",
 	"raised_step",
 	"sidewalk",
@@ -13,7 +13,7 @@ const LAYERS: Array[String] = [
 	"concrete",
 ]
 const LARGE_LAYER_VERTEX_COUNTS := {
-	"earthwork": 1200,
+	"skirt": 1200,
 	"curb": 1200,
 	"raised_step": 0,
 	"sidewalk": 1800,

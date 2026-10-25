@@ -51,6 +51,7 @@ static var _road_asphalt_material: ShaderMaterial
 static var _road_marking_material: ShaderMaterial
 static var _road_sidewalk_material: ShaderMaterial
 static var _road_sidewalk_face_material: ShaderMaterial
+static var _road_skirt_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
 static var _site_ground_material: ShaderMaterial
 static var _flat_terrain_material: ShaderMaterial
@@ -63,6 +64,7 @@ static func prewarm_road_materials() -> void:
 	road_marking_material()
 	road_sidewalk_material()
 	road_sidewalk_face_material()
+	road_skirt_material()
 	road_concrete_material()
 
 static func road_preview_material() -> ShaderMaterial:
@@ -99,23 +101,29 @@ static func road_sidewalk_material() -> ShaderMaterial:
 
 static func road_sidewalk_face_material() -> ShaderMaterial:
 	if _road_sidewalk_face_material == null:
-		_road_sidewalk_face_material = ShaderMaterial.new()
+		_road_sidewalk_face_material = _new_road_face_material()
 		_road_sidewalk_face_material.resource_name = "road_sidewalk_face_asphalt_04"
-		_road_sidewalk_face_material.shader = _load_shader(ROAD_FACE_SHADER)
-		_apply_pbr_textures(
-			_road_sidewalk_face_material,
-			SIDEWALK_ASPHALT_DIFF,
-			SIDEWALK_ASPHALT_NORMAL,
-			SIDEWALK_ASPHALT_ROUGH
-		)
-		_road_sidewalk_face_material.set_shader_parameter("uv_scale", Vector2(0.12, 0.12))
-		_road_sidewalk_face_material.set_shader_parameter("vertical_uv_scale", Vector2(0.12, 0.12))
-		_road_sidewalk_face_material.set_shader_parameter("vertical_normal_strength", 0.25)
-		_road_sidewalk_face_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
-		_road_sidewalk_face_material.set_shader_parameter(
-			"detail_texture", load_texture(ROAD_AGGREGATE_DETAIL)
-		)
 	return _road_sidewalk_face_material
+
+## Road skirts (TERRAIN-07-B): the curb faces' stone on the strips below the outer chains, with
+## the shader's distance rule deepening their bottom vertices (UV.y = 1).
+static func road_skirt_material() -> ShaderMaterial:
+	if _road_skirt_material == null:
+		_road_skirt_material = _new_road_face_material()
+		_road_skirt_material.resource_name = "road_skirt_asphalt_04"
+		_road_skirt_material.set_shader_parameter("skirt", true)
+	return _road_skirt_material
+
+static func _new_road_face_material() -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = _load_shader(ROAD_FACE_SHADER)
+	_apply_pbr_textures(material, SIDEWALK_ASPHALT_DIFF, SIDEWALK_ASPHALT_NORMAL, SIDEWALK_ASPHALT_ROUGH)
+	material.set_shader_parameter("uv_scale", Vector2(0.12, 0.12))
+	material.set_shader_parameter("vertical_uv_scale", Vector2(0.12, 0.12))
+	material.set_shader_parameter("vertical_normal_strength", 0.25)
+	material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
+	material.set_shader_parameter("detail_texture", load_texture(ROAD_AGGREGATE_DETAIL))
+	return material
 
 static func road_concrete_material() -> ShaderMaterial:
 	if _road_concrete_material == null:
