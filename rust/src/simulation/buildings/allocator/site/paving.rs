@@ -142,7 +142,7 @@ pub(crate) fn foundation_faces_in_frame(
         .map(|p| RoadVec3::new(f64::from(p.x), height, f64::from(p.y)))
         .collect();
     for triangle in triangulate_constrained_rings_xz(&[ring])? {
-        clip_triangle_to_rect(triangle, rect).fan(|face| {
+        clip_triangle_to_rect(triangle, rect, |face| {
             let mut local = face.map(|vertex| {
                 Vector3::new(
                     render_frame_local(vertex.point.x, centre.0),

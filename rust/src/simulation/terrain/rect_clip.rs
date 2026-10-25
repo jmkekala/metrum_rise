@@ -25,9 +25,9 @@ pub(crate) struct ClipVertex {
     edges: u8,
 }
 
-/// The part of a triangle inside a rectangle: a convex polygon of at most seven vertices.
+// The part of a triangle inside a rectangle: a convex polygon of at most seven vertices.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ClipPolygon {
+struct ClipPolygon {
     vertices: [ClipVertex; 8],
     len: usize,
 }
@@ -38,8 +38,8 @@ impl ClipPolygon {
         self.len += 1;
     }
 
-    /// Calls `emit` with each face of a fan over the polygon, skipping exactly degenerate ones.
-    pub(crate) fn fan(&self, mut emit: impl FnMut([ClipVertex; 3])) {
+    // Calls `emit` with each face of a fan over the polygon, skipping exactly degenerate ones.
+    fn fan(&self, mut emit: impl FnMut([ClipVertex; 3])) {
         for index in 1..self.len.saturating_sub(1) {
             let face = [0, index, index + 1].map(|corner| self.vertices[corner]);
             let [a, b, c] = face.map(|vertex| vertex.point);
@@ -50,18 +50,26 @@ impl ClipPolygon {
     }
 }
 
-/// The part of `triangle` inside `rect = [min_x, min_z, max_x, max_z]`.
-pub(crate) fn clip_triangle_to_rect(triangle: [DVec3; 3], rect: [f64; 4]) -> ClipPolygon {
-    let mut polygon = ClipPolygon::default();
+/// Calls `emit` with each face of a fan over the part of `triangle` inside
+/// `rect = [min_x, min_z, max_x, max_z]`, skipping exactly degenerate faces. The passes clip
+/// between two buffers in place, so no polygon is copied or returned by value: whether the
+/// optimiser removed such copies followed the crate's codegen-unit partition (`ROAD-68-F`).
+pub(crate) fn clip_triangle_to_rect(
+    triangle: [DVec3; 3],
+    rect: [f64; 4],
+    emit: impl FnMut([ClipVertex; 3]),
+) {
+    let mut polygons = [ClipPolygon::default(); 2];
     for index in 0..3 {
         let mut weights = [0.0; 3];
         weights[index] = 1.0;
-        polygon.push(ClipVertex {
+        polygons[0].push(ClipVertex {
             point: triangle[index],
             weights,
             edges: (1 << index) | (1 << ((index + 2) % 3)),
         });
     }
+    let mut current = 0;
     // x sides first: a run on no triangle edge then lies along an x side.
     for (axis_x, line, keep_low) in [
         (true, rect[0], false),
@@ -69,22 +77,30 @@ pub(crate) fn clip_triangle_to_rect(triangle: [DVec3; 3], rect: [f64; 4]) -> Cli
         (false, rect[1], false),
         (false, rect[3], true),
     ] {
-        polygon = clip(&polygon, axis_x, line, keep_low, triangle);
-        if polygon.len < 3 {
-            break;
+        let [even, odd] = &mut polygons;
+        let (polygon, kept) = if current == 0 {
+            (&*even, odd)
+        } else {
+            (&*odd, even)
+        };
+        clip(polygon, kept, axis_x, line, keep_low, triangle);
+        current ^= 1;
+        if polygons[current].len < 3 {
+            return;
         }
     }
-    polygon
+    polygons[current].fan(emit);
 }
 
-// Keeps the part of `polygon` on one side of a line.
+// Writes into `kept` the part of `polygon` on one side of a line.
 fn clip(
     polygon: &ClipPolygon,
+    kept: &mut ClipPolygon,
     axis_x: bool,
     line: f64,
     keep_low: bool,
     triangle: [DVec3; 3],
-) -> ClipPolygon {
+) {
     let coordinate = |vertex: &ClipVertex| {
         if axis_x {
             vertex.point.x
@@ -92,7 +108,7 @@ fn clip(
             vertex.point.z
         }
     };
-    let mut kept = ClipPolygon::default();
+    kept.len = 0;
     for index in 0..polygon.len {
         let a = polygon.vertices[index];
         let b = polygon.vertices[(index + 1) % polygon.len];
@@ -112,7 +128,6 @@ fn clip(
             });
         }
     }
-    kept
 }
 
 // Where triangle edge `edge` crosses a line, from the edge's lexicographically lower end.
@@ -185,7 +200,7 @@ mod tests {
                 [-1.0, 1.0, 1.0, 4.0],
                 [1.0, 1.0, 4.0, 4.0],
             ] {
-                clip_triangle_to_rect(triangle, rect).fan(|face| {
+                clip_triangle_to_rect(triangle, rect, |face| {
                     for (u, v) in [(0, 1), (1, 2), (2, 0)] {
                         let (u, v) = (key(face[u].point), key(face[v].point));
                         *edges.entry((u.min(v), u.max(v))).or_default() += 1;

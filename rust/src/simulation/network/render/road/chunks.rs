@@ -59,6 +59,10 @@ impl NetworkMeshChunkPartition {
 
     /// Calls `emit` with each target chunk's mesh and the triangle's part in it, in that chunk's
     /// frame: the triangle itself when its bounds lie in one chunk, else its clipped part, fanned.
+    // `#[inline]` compiles it in its caller's codegen unit: without it, whether this per-triangle
+    // router inlines into its one caller follows rustc's codegen-unit partition of the whole
+    // crate, and F part 2's unrelated code moved it out (+0.06 ms preview payload, `ROAD-68-F`).
+    #[inline]
     pub(super) fn route(
         &mut self,
         triangle: &WorldTriangle,
@@ -119,9 +123,8 @@ impl NetworkMeshChunkPartition {
                     self.axis_line(kx + 1, origin_x),
                     self.axis_line(kz + 1, origin_z),
                 ];
-                let polygon = clip_triangle_to_rect(triangle.points, rect);
                 let mesh = self.chunks.entry(chunk).or_default();
-                polygon.fan(|face| {
+                clip_triangle_to_rect(triangle.points, rect, |face| {
                     emit(
                         mesh,
                         face.map(|vertex| local(&vertex)),
