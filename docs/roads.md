@@ -3724,7 +3724,16 @@ and 21 (b), the rest of 11 (c) and question 30's mid-span meetings are open for 
   terrain 4.39-4.75 (C) against 4.53-4.79 (E), the open miss gate D part 6 owns. Not measured:
   the Godot stream with this library, and whether the first pass can stop before the profile
   solve (the rebuilt pieces need the solve's dirty edges today).
-RUNSH_PLACEHOLDER
+- **`./run.sh --test` (fresh, 07:08-07:24 EET, tree `08c13fc3` on `road` `3f24cff2`, DISPLAY and
+  WAYLAND_DISPLAY unset, run lock, shared timing lock, build slot):** exit 0. Debug lib 1,897
+  passed / 0 failed / 166 ignored (379 s); integration 4 passed; every Godot script PASS with no
+  SCRIPT ERROR, `zoning_cells_tool_test` included; `run.sh` skips no script any more (only the
+  display-only rendered tests stay outside it). Its tmpfs profile was deleted and
+  `godot/**/*.import` restored. Ignores tagged for later gates: 4 `ROAD-68-E` (questions 8 and
+  30), 2 `ROAD-68-F`.
+- **Not run this round:** question 21 (b)'s measurement with gate G's harness at 100k (`road`
+  only accepts the 100k commit since `3f24cff2`), the Godot stream with this library, and the
+  commit-time cost of the reservation checks at 100k (part of the same harness run).
 
 ### `ROAD-68-F` — remaining families
 
