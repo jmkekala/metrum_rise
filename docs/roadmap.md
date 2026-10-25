@@ -94,7 +94,9 @@ It still misses
 a frame (open question 21: snapshot publish and copy, which `ROAD-68-E`'s road-tool context
 owns, then the lots, publication and agent passes), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
-cities (open question 20).
+cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
+the city, whose 10k census needs fewer closure passes, and both scale within the limit per
+pass; re-baselining the two limits waits for the user.
 `ROAD-68-D` (terrain from the roadbed's outer chains) is done on branch `road68-D` (part 5,
 2026-10-25): every
 64 m CDT tile takes its road loops from its own halo rectangle of outer chains, holes come from

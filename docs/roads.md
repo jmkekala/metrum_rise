@@ -1541,7 +1541,8 @@ These need a user decision; work that does not depend on them continues.
     - **Options.** Keep the error until `ROAD-68-F`; or close a grounded chain across the mouth row
       it ends at (the exact boundary of the grounded footprint, but curb pairs share XZ with two
       heights, so the seam steps 12 cm at the curb).
-20. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution, open).** In one
+20. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution; attributed
+    2026-10-25: correct topology, no defect; the re-baseline waits for the user).** In one
     session the last pre-`ROAD-68` code (`d6c80f91`) and the `ROAD-68-G` base (`c59955e6` plus
     the gate's test-only harness) ran the economy performance contract A B B A, each on its own
     generated cities ([attribution](#attribution-of-the-perf-contract-rise-road-68-g)). Five of the
@@ -1558,6 +1559,23 @@ These need a user decision; work that does not depend on them continues.
     **Decided by the user, 2026-10-25: investigate first.** Find which supplier candidates the
     new lanes and walking connectors add or remove at each tier and fix the cause if it is a
     defect; re-baseline the two limits only if the counts follow correct road topology.
+    **Attributed 2026-10-25 ([supplier counts](#supplier-counts-on-road-68-cities-open-question-20-2026-10-25)):
+    no defect.** The lanes add or remove no supplier: both builds' cities have the same graph,
+    lane count and car component, every building keeps its door and lanes, and every route
+    quote and search succeeds. The counts follow the city, not the build: each build run on the
+    other's snapshot reproduces that snapshot's 10k searches. The 10k census of the `ROAD-68`
+    city needs a second closure pass in 6 of 24 hours against 20 (30 passes against 44), and
+    each pass repeats the staffing sweeps' searches; the 30k census takes two in every hour in
+    both. The cities differ because each build grew them for twelve days with its own quote
+    times, which follow the layout's longer junction clips (10 m mouths against the legacy
+    5.5 m setback). Per closure pass both cities scale within the 3.43× limit (searches 2.60×,
+    routes 3.22× on `ROAD-68` cities; 2.54× and 2.87× before). Recommended values (user
+    decision, not taken; the limits are unchanged): (a) recommended: divide each tier's
+    `supplier_searches` and `supplier_routes` by its census closure passes, a new work counter
+    the runner also reports, and keep the 1.2 × household-ratio limit; (b) keep raw counts with
+    per-counter factors of at least 1.46 (searches, 4.16×) and 1.81 (routes, 5.15×) of the
+    household ratio, which fit only the present cities; (c) keep the limits and list both
+    with the five known failures.
 
 21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement) — cell lots decided
     2026-10-24 (user): profile and speed up lot regeneration first; if it still does not fit,
@@ -5082,6 +5100,71 @@ RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 \
 - **Time does not follow the counts.** At baseline 30k, B does 9% more supplier routes than A
   and runs 6% faster. In the fiscal workload the counts match within 1% and B is 17–23% faster;
   that difference is code between `d6c80f91` and `c59955e6`, not work.
+
+#### Supplier counts on `ROAD-68` cities (open question 20, 2026-10-25)
+
+Fresh runs, no timing: release library tests of `d6c80f91` (control) and of `road` at
+`4710f59b`, each with the same test-only probe (one line per supplier search with every route
+quote it priced, per staffing operation, per census staffing row and per business-proof
+reduction; not committed), each generating its own baseline cities, eight workers. The probe
+leaves every count as it was: both builds reproduce the `ROAD-68-G` session exactly (10k
+22,712 searches and 393,202 routes against 15,394 and 261,289; 30k 62,900 and 1,232,340
+against 63,981 and 1,346,656).
+
+- **No reachability or routing defect.** Both builds' cities have the same graph (247 and 642
+  nodes, 446 and 1,201 edges), the same lane count (18,255 and 50,487), the same car speed
+  ceiling of the straight-line prune (13.9 m/s), identical edge costs and lengths, and one car
+  component holding every building. Every route quote found a route and every search found a
+  supplier in both builds, so no search goes on past an unreachable candidate. All 7,396
+  buildings of the 10k city keep their asset, door, edge and entrance lanes; at 30k, 20,278 of
+  20,359 parcels hold the same asset, each with the same door and lanes.
+- **What the roadbed changes.** The junction clips are the layout's mouth stations, 10 m at
+  the grid's junctions against the legacy 5.5 m setback, so each car lane is 9 m shorter and a
+  freight quote's frontage legs (door to lane end) shrink by up to 4.5 m each. In the first
+  hour at 10k, quotes for the same buyer and supplier differ by −1.6 to +1.3 s (5th to 95th
+  percentile, median 0.0 s), traffic included.
+- **Where the searches come from.** Almost every search is one local staffing operation of the
+  funding census (10k: 15,324 of 15,394; 30k: 61,550 of 63,981), and every closure pass runs
+  both staffing sweeps again, about 515 searches a pass at 10k. The control city's 10k census
+  takes a second closure pass in 20 of 24 hours (44 passes), the `ROAD-68` city's in 6 (30).
+  A second pass follows a business-customer proof that lowered a ceiling: at 10k one firm
+  (parcel 369) in 16 hours against 5, and parcel 5818 in 5 hours against none. At 30k both
+  cities take two passes every hour (48), driven by some 55 firms.
+- **The counts follow the city, not the build.** Each build ran on the other build's snapshot
+  (loaded without the fixture revision check; the snapshot files' SHA-256 sums were unchanged):
+
+  | Build, city | Searches 10k / 30k | Routes 10k / 30k | Closure passes |
+  | --- | --- | --- | --- |
+  | control, control | 22,712 / 62,900 | 393,202 / 1,232,340 | 44 / 48 |
+  | `ROAD-68`, control | 22,712 / 64,415 | 394,220 / 1,310,969 | 44 / 48 |
+  | control, `ROAD-68` | 15,398 / 65,510 | 260,430 / 1,417,045 | 30 / 48 |
+  | `ROAD-68`, `ROAD-68` | 15,394 / 63,981 | 261,289 / 1,346,656 | 30 / 48 |
+
+  Neither build's lanes move the 10k searches. At 30k a build on the other build's city does 2%
+  more searches and 5–6% more routes, in both directions. The cities differ because each build
+  grew them for twelve days with its own quote times: the 10k city's buildings are the same,
+  its firms' finances are not. At 30k the `ROAD-68` city also prices more routes per search
+  (21.0 against 19.6), with either build.
+- **Per closure pass both cities scale within the limit.** Searches per pass go from 516 to
+  1,310 (2.54×) on the control cities and from 513 to 1,333 (2.60×) on the `ROAD-68` cities;
+  routes per pass from 8,936 to 25,674 (2.87×) and from 8,710 to 28,055 (3.22×), against the
+  3.43× limit.
+
+The full contract then ran once per build with the unprobed release library tests (control
+`bd125930…`, `road` at `4710f59b` `5a10d2e7…`), each on its own cities, eight workers, without
+the exclusive timing lock, so its times are not acceptance:
+
+```bash
+RAYON_NUM_THREADS=8 python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS/<build>"
+```
+
+The control fails the five limits that predate `ROAD-68` and `road` the same five plus
+`supplier_searches` and `supplier_routes`, every count as in the probed runs.
+
+The counts therefore follow correct road topology through the economy's closure passes; there
+is nothing to fix in the roadbed, the lanes or the supplier search. The recommended re-baseline
+values are in [open question 20](#road-68-open-questions); the limits are unchanged until the
+user decides.
 
 #### Local commit publication (`ROAD-68-G` part 2, 2026-10-24)
 
