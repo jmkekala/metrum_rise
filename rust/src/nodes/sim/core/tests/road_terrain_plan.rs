@@ -748,3 +748,81 @@ fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
         }
     }
 }
+
+// A west border trunk and `background` roads in render patches 500 m and more east of it,
+// built in bulk and
+// finished with the world terrain refresh, as the populated-city fixture and the in-game
+// benchmark city build their roads (`ROAD-68-D` part 6).
+fn bulk_trunk_world(background: usize) -> SimCore {
+    let mut core = SimCore::new(WorldConfig::new(1536.0, 1536.0, 40.0, 10.0));
+    core.precompute_road_mesh_data();
+    core.transit_network.bulk_load = true;
+    let edge_x = core.heightmap.half_world_extents().0 - 1.0;
+    let mut add = |(x0, z0): (f32, f32), (x1, z1): (f32, f32)| {
+        let outcome = core.add_road_internal(
+            vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
+            1,
+            1,
+        );
+        assert!(outcome.committed, "{}", core.last_road_timing);
+    };
+    add((-edge_x, 0.0), (-300.0, 0.0));
+    for k in 0..background {
+        let z = -600.0 + 150.0 * k as f32;
+        add((300.0, z), (700.0, z));
+    }
+    let core_ref = &mut core;
+    core_ref
+        .transit_network
+        .finalize_bulk_load(&mut core_ref.region_graph, &mut core_ref.allocator);
+    core.fit_lanes_to_road_surface();
+    core.refresh_all_engineered_terrain_patch_state(
+        crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+    );
+    core
+}
+
+// The patches whose refined terrain one T-branch commit on the trunk built: every cache entry
+// it added or replaced.
+fn patches_built_by_trunk_branch(core: &mut SimCore) -> Vec<(usize, usize)> {
+    let entry = |key: &crate::nodes::sim::core::RefinedTerrainPatchCacheKey| (key.patch_x, key.patch_z);
+    let before: std::collections::BTreeMap<_, _> = core
+        .refined_terrain_patch_cache
+        .iter()
+        .map(|(key, patch)| (entry(key), std::sync::Arc::as_ptr(patch)))
+        .collect();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: vec![Vector3::new(-500.0, 0.0, 0.0), Vector3::new(-500.0, 0.0, 120.0)],
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    let mut built: Vec<(usize, usize)> = core
+        .refined_terrain_patch_cache
+        .iter()
+        .filter(|(key, patch)| before.get(&entry(key)) != Some(&std::sync::Arc::as_ptr(patch)))
+        .map(|(key, _)| entry(key))
+        .collect();
+    built.sort_unstable();
+    built
+}
+
+// The first commit after a world-scale road build validates only the terrain its own edit
+// changed: roads built elsewhere before it (bulk load, load) are the world refresh's, not the
+// commit's, so the patches it builds do not grow with the city (`ROAD-68-D` part 6). Before,
+// the roadbed kept every compile's changed piece bounds until a road edit took them, and the
+// first commit at 100k residents graded and built every road patch of the city.
+#[test]
+fn the_first_commit_builds_only_its_own_terrain_as_the_city_grows() {
+    let alone = patches_built_by_trunk_branch(&mut bulk_trunk_world(0));
+    let in_city = patches_built_by_trunk_branch(&mut bulk_trunk_world(5));
+    assert!(!alone.is_empty(), "the T must build the terrain around it");
+    assert_eq!(alone, in_city, "background roads must not add terrain to the commit");
+}

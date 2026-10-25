@@ -441,7 +441,12 @@ impl SimCore {
         inputs
     }
 
-    /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache.
+    /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache over
+    /// the whole world, after a world-scale road change (a load or a bulk road build). It
+    /// subsumes every terrain change the roadbed recorded since terrain last took them: those
+    /// are dropped and every patch payload takes a new generation, so the next road edit stamps
+    /// and builds only its own terrain (`ROAD-68-D` part 6). `O(patches)` plus the grading of
+    /// every patch with roads.
     pub(crate) fn refresh_all_engineered_terrain_patch_state(
         &mut self,
         render_step_m: f32,
@@ -449,6 +454,8 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
+        drop(self.transit_network.roadbed.take_changed_bounds());
+        self.bump_global_terrain_payload_generation();
         let patch_cols = self.heightmap.render_patch_cols();
         let patch_rows = self.heightmap.render_patch_rows();
         let mut patch_keys = Vec::with_capacity(patch_cols.saturating_mul(patch_rows));
