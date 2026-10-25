@@ -1434,7 +1434,8 @@ These need a user decision; work that does not depend on them continues.
       lanes end, and the mouth (fixture `t_beside_arm_shallow`, 20° off the arm); the join then
       walks in along the sidewalk to that lane end. The centreline runs from beyond the sector's
       outer boundary into the core between the two mouths, so it always meets the walk.
-    - **Sectors without a sidewalk (open; `ROAD-68-F` part 2).** A footpath in a sector bounded by
+    - **Sectors without a sidewalk (`ROAD-68-F` part 2; decided by the user, 2026-10-25: as is
+      until a tool can draw roads without sidewalks, then walkers on shoulders, option (d)).** A footpath in a sector bounded by
       a road side without a sidewalk (a car-only road or shoulder) has no corner route to join, so
       it reaches only the other footpaths there, and the walking proof is withdrawn on such a
       network. The legacy rule joined it to the corner between the nearest sidewalk arms, across
@@ -1511,6 +1512,9 @@ These need a user decision; work that does not depend on them continues.
     lanes and walking connectors `ROAD-68` builds on it. The limits are unchanged here. Options:
     find which supplier candidates the new lanes add or remove at each tier and fix the cause if
     it is a defect; or accept the new counts and re-baseline these two limits (user decision).
+    **Decided by the user, 2026-10-25: investigate first.** Find which supplier candidates the
+    new lanes and walking connectors add or remove at each tier and fix the cause if it is a
+    defect; re-baseline the two limits only if the counts follow correct road topology.
 
 21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement) — cell lots decided
     2026-10-24 (user): profile and speed up lot regeneration first; if it still does not fit,
@@ -1660,7 +1664,7 @@ These need a user decision; work that does not depend on them continues.
       followed by the tile CDTs; (d) accept a 2.5 ms budget for the T. (a) and (b) keep every
       output bitwise; (c) changes only scheduling.
 23. **Seams between meshes in different frames (`ROAD-68-D` part 4) — decided by the
-    coordinator under the user's delegation, 2026-10-24, for review: (a).** The yard test
+    coordinator under the user's delegation, 2026-10-24, confirmed by the user 2026-10-25: (a).** The yard test
     `cars_and_walkers_enter_and_exit_on_compiled_yards` samples exactly on the terrain/foundation
     seam (coordinator's decision of 2026-10-24: a seam point must be covered).
     - **`TERRAIN-07` (2026-10-25):** superseded for terrain: graded terrain shares no vertices with roads
@@ -1719,7 +1723,7 @@ These need a user decision; work that does not depend on them continues.
       patches](#footprint-and-terrain)); the reference fixtures do not need the shared height
       function, so it is not built.
 24. **Road surface pinholes on slopes (`ROAD-68-D` part 4) — decided by the coordinator under
-    the user's delegation, 2026-10-24, for review: (a), in `ROAD-68-D`; done in part 5.** With the terrain watertight,
+    the user's delegation, 2026-10-24, confirmed by the user 2026-10-25: (a), in `ROAD-68-D`; done in part 5.** With the terrain watertight,
     the reference screenshots keep 9 single sky pixels, all on the sloped fixtures and none on
     the flat ones (`pinholes.py`): 8 inside the carriageway (`t`, `four_way` and
     `t_footpath_beside_arm` at one screen point near the side arm's curb, three in a row on the
@@ -1769,7 +1773,7 @@ These need a user decision; work that does not depend on them continues.
       is clipped at it by the canonical rectangle clip, in the chunk's centre frame. The test
       passes on all 20 fixtures, flat and sloped.
 25. **Corridor checks in the synchronous preview (`ROAD-68-E` part 1) — decided by the coordinator
-    under the user's delegation, 2026-10-24, for review: option (a).**
+    under the user's delegation, 2026-10-24, confirmed by the user 2026-10-25: option (a).**
     - **Evidence.** The old hover path ran the parcel and field corridor checks under a per-pose
       `try_lock_core` (`road_candidate_dictionary_with_parcel_clearance`). The spec forbids
       per-pose core work ([Preview](#preview-commit-undo-and-load)), and the view holds no parcel
@@ -1834,7 +1838,7 @@ These need a user decision; work that does not depend on them continues.
     previewed chunk with the committed one for all 14 fixtures, crossings, lights and signs
     included ([`ROAD-68-F` part 1](#markings-lights-and-signs-from-the-layout-road-68-f-part-1-2026-10-25)).
 27. **Godot stage timings at the CPU's idle clock (`ROAD-68-E` part 1) — decided by the coordinator
-    under the user's delegation, 2026-10-25, for review: option (a).**
+    under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: option (a).**
     - **Evidence.** The headless stream test sleeps 16.7 ms between inputs; on an otherwise idle
       machine the P-cores then stay at the 800 MHz floor (0.77-0.9 GHz measured through the motion
       phases), and every preview stage runs about six times slower: Godot stage and install
@@ -1868,7 +1872,7 @@ These need a user decision; work that does not depend on them continues.
       - **Recommendation.** (a), then decide between (b) and (d) from the idle-clock stream on
         gate D part 6's terrain code; the 16.7 ms target is not relaxed.
 28. **Debug face sources name tile-local chain runs (`ROAD-68-E` round 4) — decided by the
-    coordinator under the user's delegation, 2026-10-25, for review: (a).**
+    coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** The CDT's `RoadBoundary` source named the graph piece, chain and segment of
       each boundary edge, and a tile's window fingerprint hashed them. A T that splits a 220 m
       trunk renumbers the far half (another edge's span, its chain segments shifted by the
@@ -1921,7 +1925,7 @@ These need a user decision; work that does not depend on them continues.
       second sample and 6.9-7.4 instead of 11.4-11.7 ms in the third; the first sample (the
       city's first commit) is unchanged or slower (82-85 against 73-74 ms) and still misses.
 30. **Drawing order on slopes after question 16 (`ROAD-68-E` part 2) — decided by the coordinator
-    under the user's delegation, 2026-10-25, for review: (a); joins implemented, mid-span
+    under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a); joins implemented, mid-span
     meetings follow the crossing rule exactly (round 2), and the order test asserts that rule
     (round 3).**
     - **Evidence.** With question 16 implemented the sloped T fixtures are bitwise independent of
@@ -1997,7 +2001,7 @@ These need a user decision; work that does not depend on them continues.
       pass-through node, or bending 34 degrees, either stroke first;
       `sloped_junctions_do_not_depend_on_drawing_order`, also flat).
 31. **Recorded Kuopio profiles beyond the 5 m source-delta limit (`ROAD-68-E` part 2 round 3) —
-    decided by the coordinator under the user's delegation, 2026-10-25, for review: (a), as the
+    decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a), as the
     plane sample at the mouth station where it lies beyond 12 m; done, the limits hold.**
     - **Evidence.** With `kuopio_05` attempt 14 fixed (question 8), the recorded replay's fixed
       quality gates (offset from the source terrain at most 5 m, grade at most 1.0, pitch change
@@ -2052,7 +2056,7 @@ These need a user decision; work that does not depend on them continues.
       changes). So the visible change above also covers those junctions; in the reference
       probe `y_25/true`'s lanes follow both part 2's minimum run and this sample.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
-    decided by the coordinator under the user's delegation, 2026-10-25, for review: (a).**
+    decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
       and patchy and were taken for z-fighting on the sloped node plane. They are the shader's
       studded-tyre wear (`fr_zebra_paint`): it thins the paint in the wheel paths, 0.9 m either
@@ -2070,7 +2074,7 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (a): it is the designed, photo-matched look, not a rendering defect;
       (b) if the user finds residential crossings too worn.
 36. **Timing comparisons that follow the codegen-unit partition (`ROAD-68-F` part 2 round 4) —
-    open.** Release builds split the crate into 16 codegen units; any added code (tests included,
+    decided by the user, 2026-10-25: (a); the build stays at 16 units.** Release builds split the crate into 16 codegen units; any added code (tests included,
     in the release test binary every benchmark runs from) can move unrelated functions between
     units and change what is inlined and which copies are elided, so a same-session A/B can show
     a stage regression with no change in work.
@@ -2091,6 +2095,11 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (b), measured first: the release test build time (2.5 min now) and the
       stage and commit timings against the 16-unit control; keep (a) for the code each gate
       owns. The legacy terrain CDT is `TERRAIN-07`'s and is not optimised under `ROAD-68`.
+    - **Decision (user, 2026-10-25): (a).** The build configuration stays as it is (no
+      `codegen-units` change). A stage regression against a same-session control counts as code
+      layout only when a profile shows identical work and the products are bitwise equal, as
+      round 4 showed; hot paths a gate owns are fixed structurally. The 0.23 ms in the legacy
+      terrain CDT is accepted as layout; `TERRAIN-07` deletes that code.
 
 Spec corrections in `ROAD-68-A`:
 
