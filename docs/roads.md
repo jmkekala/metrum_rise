@@ -1733,8 +1733,9 @@ These need a user decision; work that does not depend on them continues.
       store's values behind `Arc` and writes that read first (kept) and with generation's
       temporary index in plain maps (dropped): copy-on-write is not the cost
       ([round 5 record](#part-2-round-5-2026-10-25-branch-road68-e5-work-in-progress)). The
-      store design the preview's lot plan needs is [open question 32](#road-68-open-questions).
-      Every lot derivation now runs on `CellLotPlanner` and installs its recorded parcel calls
+      store design the preview's lot plan needs is [question 32](#road-68-open-questions),
+      decided by the user: profile first, then a plain live store with a journal-synced
+      persistent copy in the view if no ~1 ms cut is found. Every lot derivation now runs on `CellLotPlanner` and installs its recorded parcel calls
       (`install_cell_lot_plan`), bitwise; the preview does not plan yet (it needs question 32,
       the parcel view, the lot sizes and the explicit-site index in the view). Target still
       missed, open.
@@ -2160,7 +2161,7 @@ These need a user decision; work that does not depend on them continues.
       changes). So the visible change above also covers those junctions; in the reference
       probe `y_25/true`'s lanes follow both part 2's minimum run and this sample.
 32. **The cell store the preview plans lots on (`ROAD-68-E` round 5, from question 21 (b)) —
-    open, not taken.** Round 4 made the zoning cell store persistent (`imbl` maps) so that the
+    decided by the user, 2026-10-25: profile first; (b) if no ~1 ms cut is found.** Round 4 made the zoning cell store persistent (`imbl` maps) so that the
     road tool's view holds it in `O(1)` and the preview can plan lots on a copy. That store
     makes the commit's `buildings` stage 0.3-1.7 ms slower at 10k-100k residents (round 5
     record), and the cost is the persistent maps themselves, not their sharing: a build whose
@@ -2182,6 +2183,11 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation:** profile first (a, an hour); if no cut of about 1 ms is found, (b).
       The parcel store needs the same kind of view for the preview's plan (it is a plain
       store copied in `O(parcels)`), so (b)'s journal design would serve both.
+    - **Decided by the user, 2026-10-25: profile first; (b) if no ~1 ms cut is found** that
+      brings `buildings` within the control's spread: a plain live store, plus a persistent
+      copy in the view kept up to date from the store's write journal at each publication,
+      exact and never stale, at about twice the cell store's memory, with one generic planner.
+      Its measurement records the extra memory at 100k residents.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
@@ -4838,7 +4844,7 @@ Round 4's part 2 on `road` `ebe4381e` (documentation only, so the rebase is empt
   8.37 / 2.81 / 1.79, 9.73 / 3.34 / 3.11 (10k, 30k, 100k). No gain, so the change is not
   kept; digests equal C's in every sample and determinism is `da3d23b6c8b63d20`. The cost is
   the live store's own persistent reads and writes in generation and derivation; where
-  exactly is the next step's profile ([open question 32](#road-68-open-questions)).
+  exactly is the profile the user decided on first ([question 32](#road-68-open-questions)).
 - **One lot planner and one installer (question 21 (b), first half).** Every lot derivation
   (the commit, the `cell lots` queue, the tests' entries) runs on `CellLotPlanner`: cell
   generation and lot claims on a cell store and lot queue it changes in place, against a parcel

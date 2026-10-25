@@ -179,7 +179,8 @@ beside a painted city spends its extra time in the legacy terrain validation (`T
 Round 5 (branch `road68-E5`, work in progress) attributes that regression to the persistent
 maps themselves, not to copy-on-write (a view that shares nothing is as slow; `Arc` values,
 read-first writes and a plain-map generation index do not remove it), and leaves the store
-design the preview's lot plan needs to open question 32; every lot derivation now runs on one
+design the preview's lot plan needs to question 32 (user, 2026-10-25: profile first, then a
+plain live store with a journal-synced persistent copy in the view); every lot derivation runs on one
 planner and one installer, bitwise. Still not ready to land.
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
