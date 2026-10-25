@@ -19,6 +19,8 @@ mod envelope;
 #[cfg(test)]
 mod frame_budget;
 #[cfg(test)]
+mod load_check;
+#[cfg(test)]
 mod routing_benchmark;
 #[cfg(test)]
 mod snapshot;

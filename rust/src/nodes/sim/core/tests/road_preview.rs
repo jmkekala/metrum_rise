@@ -706,3 +706,35 @@ fn incremental_road_terrain_equals_a_fresh_build() {
         );
     }
 }
+
+// What one road edit's undo record keeps alive (`ROAD-68-E`), measured with heaptrack: with
+// `METRUM_UNDO_HEAP=forget` the record of the locality test's T on a sloped trunk of half length
+// `METRUM_UNDO_HEAP_TRUNK_M` (default 110 m) is leaked, otherwise dropped. The difference of the
+// two runs' leaked totals is the heap the record retains; an upper bound, as it also counts what
+// the record shares with the city.
+#[test]
+#[ignore = "heaptrack measurement: METRUM_UNDO_HEAP=forget|drop heaptrack $TEST_BINARY measure_undo_record_heap --exact --ignored"]
+fn measure_undo_record_heap() {
+    let half_m = std::env::var("METRUM_UNDO_HEAP_TRUNK_M").map_or(110.0, |value| {
+        value.parse().expect("a trunk half length in metres")
+    });
+    let trunk = ([Vector2::new(-half_m, 0.0), Vector2::new(half_m, 0.0)], 1);
+    let mut core = committed_on(1024.0, &[trunk], &[0], true);
+    core.benchmark_mode = false;
+    core.undo_stack.clear();
+    let points = stroke(&core, [Vector2::new(0.0, -80.0), Vector2::new(25.0, 0.0)]);
+    let preview = Arc::new(preview(&mut context(&mut core), &points));
+    commit(&mut core, &points, Some(preview));
+    assert!(core.last_road_edit_metrics.preview_terrain_adopted);
+    let record = core
+        .undo_stack
+        .pop_back()
+        .expect("the commit records its undo");
+    assert!(
+        record.roadbed.is_some() && record.refined_terrain.is_some(),
+        "the record holds the replaced pieces and terrain"
+    );
+    if std::env::var("METRUM_UNDO_HEAP").as_deref() == Ok("forget") {
+        std::mem::forget(record);
+    }
+}
