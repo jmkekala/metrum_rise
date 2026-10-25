@@ -599,8 +599,11 @@ fn benchmark_road_preview_stages() {
     }
 }
 
+// A patch and the tiles it re-assembles, `None` for the full patch.
+type PatchScope = ((usize, usize), Option<Vec<(i64, i64)>>);
+
 // The refined patches the preview built and the tiles each re-assembles.
-fn previewed_scope(preview: &RoadPreview) -> Vec<((usize, usize), Option<Vec<(i64, i64)>>)> {
+fn previewed_scope(preview: &RoadPreview) -> Vec<PatchScope> {
     let terrain = preview
         .pieces
         .as_ref()
