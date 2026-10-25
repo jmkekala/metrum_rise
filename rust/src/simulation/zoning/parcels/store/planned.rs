@@ -5,12 +5,12 @@
 //! Every change is recorded as the store call it stands for, so the installer makes exactly
 //! the same calls, in the same order, on the store the plan started from.
 
-use super::super::geometry::{chunks_for_aabb, rectangles_overlap_geometry};
+use super::super::geometry::{chunk_key, chunks_for_aabb, rectangles_overlap_geometry};
 use super::super::types::{ParcelGeometry, ParcelId, ZoningParcel};
 use super::ParcelStore;
 use crate::simulation::zoning::cells::CellLot;
 use godot::prelude::Vector2;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// One parcel-store call a cell-lot plan made, replayed by [`ParcelStore::apply_planned`].
 #[derive(Clone, Debug)]
@@ -33,12 +33,17 @@ pub(crate) enum PlannedParcelChange {
 }
 
 /// A read-only parcel store with one plan's changes on top. Reads answer as the store would
-/// after the recorded calls; nothing is written to the store itself. `O(log changes)` per
-/// read above the store's own query, and the changes are bounded by the plan's regions.
+/// after the recorded calls; nothing is written to the store itself. A read costs the store's
+/// own query plus `O(log changes)` per changed parcel in the queried chunks, so a plan over
+/// the whole city stays `O(changes log changes)`.
 pub(crate) struct PlannedParcels<'a> {
     base: &'a ParcelStore,
     // Parcels the plan changed, by id: retired (`None`), reattached or created.
     changed: BTreeMap<ParcelId, Option<ZoningParcel>>,
+    // The changed parcels by the store's 512 m chunk, under every chunk of each bounds they
+    // had in the plan; reads check the current parcel, so a retired id or a replaced
+    // geometry's old chunks answer nothing.
+    changed_chunks: BTreeSet<((i32, i32), ParcelId)>,
     next_id: u64,
     changes: Vec<PlannedParcelChange>,
 }
@@ -49,6 +54,7 @@ impl<'a> PlannedParcels<'a> {
         Self {
             base,
             changed: BTreeMap::new(),
+            changed_chunks: BTreeSet::new(),
             next_id: base.next_id,
             changes: Vec::new(),
         }
@@ -85,31 +91,57 @@ impl<'a> PlannedParcels<'a> {
                 visit(parcel);
             }
         });
-        for parcel in self.changed.values().flatten() {
-            let (pmin, pmax) = (parcel.aabb_min(), parcel.aabb_max());
-            if pmin.x <= max.x && pmin.y <= max.y && pmax.x >= min.x && pmax.y >= min.y {
-                visit(parcel);
-            }
-        }
+        let mut changed: Vec<_> = self.changed_in_bounds(min, max).collect();
+        changed.sort_unstable_by_key(|parcel| parcel.id());
+        changed.into_iter().for_each(visit);
     }
 
-    /// [`ParcelStore::overlaps_existing`] after the plan's changes.
+    /// [`ParcelStore::overlaps_existing`] after the plan's changes. An overlap implies that the
+    /// bounds meet, so only the changed parcels in the geometry's chunks are tested.
     pub(crate) fn overlaps_existing(&self, geometry: &ParcelGeometry) -> bool {
         self.base
             .overlaps_existing_unless(geometry, |id| self.changed.contains_key(&id))
             || self
-                .changed
-                .values()
-                .flatten()
+                .changed_in_bounds(geometry.aabb_min, geometry.aabb_max)
                 .any(|parcel| rectangles_overlap_geometry(geometry, parcel))
+    }
+
+    // The plan's present parcels whose bounds meet `[min, max]`, each once: from the first
+    // queried chunk its bounds meet, as the store's own visit.
+    fn changed_in_bounds(
+        &self,
+        min: Vector2,
+        max: Vector2,
+    ) -> impl Iterator<Item = &ZoningParcel> {
+        chunks_for_aabb(min, max).flat_map(move |chunk| {
+            let ids = (chunk, ParcelId::from_raw(0))..=(chunk, ParcelId::from_raw(u64::MAX));
+            self.changed_chunks
+                .range(ids)
+                .filter_map(move |&(_, id)| {
+                    let parcel = self.changed.get(&id)?.as_ref()?;
+                    let (pmin, pmax) = (parcel.aabb_min(), parcel.aabb_max());
+                    let meets =
+                        pmin.x <= max.x && pmin.y <= max.y && pmax.x >= min.x && pmax.y >= min.y;
+                    let first = chunk_key(Vector2::new(min.x.max(pmin.x), min.y.max(pmin.y)));
+                    (meets && first == chunk).then_some(parcel)
+                })
+        })
+    }
+
+    // Records `parcel` as the plan's version of its id, under every chunk of its bounds.
+    fn record(&mut self, parcel: ZoningParcel) {
+        let id = parcel.id();
+        for chunk in chunks_for_aabb(parcel.aabb_min(), parcel.aabb_max()) {
+            self.changed_chunks.insert((chunk, id));
+        }
+        self.changed.insert(id, Some(parcel));
     }
 
     /// [`ParcelStore::insert_new`] on the plan.
     pub(crate) fn insert_new(&mut self, geometry: ParcelGeometry, profile: u16) -> ParcelId {
         let id = ParcelId::from_raw(self.next_id);
         self.next_id = self.next_id.saturating_add(1).max(1);
-        self.changed
-            .insert(id, Some(ZoningParcel::new(id, geometry, profile)));
+        self.record(ZoningParcel::new(id, geometry, profile));
         self.changes.push(PlannedParcelChange::Insert {
             id,
             geometry,
@@ -122,7 +154,7 @@ impl<'a> PlannedParcels<'a> {
     pub(crate) fn set_cell_lot(&mut self, id: ParcelId, lot: CellLot) {
         if let Some(mut parcel) = self.get(id).cloned() {
             parcel.set_cell_lot(lot);
-            self.changed.insert(id, Some(parcel));
+            self.record(parcel);
             self.changes.push(PlannedParcelChange::SetCellLot(id, lot));
         }
     }
@@ -139,7 +171,7 @@ impl<'a> PlannedParcels<'a> {
     pub(crate) fn replace_geometry(&mut self, id: ParcelId, geometry: ParcelGeometry) {
         if let Some(mut parcel) = self.get(id).cloned() {
             parcel.replace_geometry(geometry);
-            self.changed.insert(id, Some(parcel));
+            self.record(parcel);
             self.changes
                 .push(PlannedParcelChange::ReplaceGeometry(id, geometry));
         }

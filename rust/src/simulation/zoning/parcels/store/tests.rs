@@ -311,3 +311,34 @@ fn a_planned_change_list_replays_to_the_directly_changed_store() {
     };
     assert_eq!(fields(&replayed), fields(&direct));
 }
+
+// A plan finds its changed parcels by their present bounds only: a parcel moved across a chunk
+// line is visited and overlapped where it now lies, once, and no longer where it was.
+#[test]
+fn a_plan_reads_its_changed_parcels_where_they_now_lie() {
+    let base = ParcelStore::default();
+    let mut direct = base.clone();
+    let mut planned = PlannedParcels::new(&base);
+    let moved = planned.insert_new(geometry(0, Vector2::new(495.0, 0.0)), 1);
+    assert_eq!(direct.insert_new(geometry(0, Vector2::new(495.0, 0.0)), 1), moved);
+    let there = geometry(0, Vector2::new(530.0, 0.0));
+    planned.replace_geometry(moved, there);
+    direct.replace_geometry(moved, there);
+    for (min, max) in [
+        (Vector2::new(480.0, -5.0), Vector2::new(508.0, 20.0)),
+        (Vector2::new(520.0, -5.0), Vector2::new(560.0, 20.0)),
+        (Vector2::new(480.0, -5.0), Vector2::new(1100.0, 20.0)),
+    ] {
+        let (mut seen, mut expected) = (Vec::new(), Vec::new());
+        planned.visit_in_bounds(min, max, |p| seen.push(p.id()));
+        direct.visit_in_bounds(min, max, |p| expected.push(p.id()));
+        assert_eq!(seen, expected);
+    }
+    for origin in [Vector2::new(497.0, 2.0), Vector2::new(533.0, 2.0)] {
+        let probe = geometry(9, origin);
+        assert_eq!(
+            planned.overlaps_existing(&probe),
+            direct.overlaps_existing(&probe)
+        );
+    }
+}
