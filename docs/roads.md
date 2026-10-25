@@ -866,7 +866,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; the terrain stage's budget and part 2 (open questions) are open |
-| `ROAD-68-F` | in progress (parts 1 and 2, 2026-10-25) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk); abutments, portals and sites moved to `TERRAIN-07` |
+| `ROAD-68-F` | done (2026-10-25, part 2 round 4) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk), and round 4 fixed the preview payload's codegen regression. Moved to `TERRAIN-07`: bridge abutments and tunnel portals (`TERRAIN-07-C`, with closing the grounded chains at structures, open question 19), building sites, driveways and paving (`TERRAIN-07-C`), bridge fascias (`TERRAIN-07-B`). Left open: question 17's item on footpaths in a sector without a sidewalk |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
@@ -2069,6 +2069,28 @@ These need a user decision; work that does not depend on them continues.
       (c) cap the wear so a bar keeps at least half its paint.
     - **Recommendation.** (a): it is the designed, photo-matched look, not a rendering defect;
       (b) if the user finds residential crossings too worn.
+36. **Timing comparisons that follow the codegen-unit partition (`ROAD-68-F` part 2 round 4) —
+    open.** Release builds split the crate into 16 codegen units; any added code (tests included,
+    in the release test binary every benchmark runs from) can move unrelated functions between
+    units and change what is inlined and which copies are elided, so a same-session A/B can show
+    a stage regression with no change in work.
+    - **Evidence (2026-10-25).** Three cases with equal products: part 1's 30k commit `surface`
+      (+7-8 ms; the site paving query's envelope fold out of line); round 3's preview payload
+      (+0.06 ms; the chunk router out of line and two more polygon copies in the triangle clip,
+      fixed structurally in round 4); round 4's rebase onto `096df250` (`ROAD-68-E` round 4): the
+      rebased fix's preview terrain stage is 0.23 ms (5%) above `road`'s, which shares every
+      terrain function with it; a profile puts it in the legacy terrain CDT's R-tree code
+      (`road_exterior_support_point` +2,100 samples per run, `source_sample_parameter_on_road_
+      constraint` +1,200, `rstar`'s bulk-load insertion sort +930, at 12 kHz).
+    - **Options.** (a) keep 16 units and fix each hot path found structurally, as round 4 did,
+      and attribute every unexplained stage change by profile; (b) build release with
+      `codegen-units = 1` (with or without thin LTO), so no added code moves another function's
+      inlining; release and test builds take longer and every gate's timing baseline moves once;
+      (c) accept a stage change only when it reproduces across two builds whose partition
+      differs (as round 4's Cx build did).
+    - **Recommendation.** (b), measured first: the release test build time (2.5 min now) and the
+      stage and commit timings against the 16-unit control; keep (a) for the code each gate
+      owns. The legacy terrain CDT is `TERRAIN-07`'s and is not optimised under `ROAD-68`.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -4362,6 +4384,14 @@ Acceptance:
 - deterministic street-light and sign placement
 - the building frontage tests are re-enabled
 
+Met (part 2 round 4, 2026-10-25): each family has its fixtures (the pre-D footpath junctions,
+part 2's 48 family fixtures and its family chunks on the reference harness); the crossing
+contract holds bitwise and lights and signs are placed from the pieces since part 1 (a preview
+publishes its chunks bitwise; `road68g_commit_determinism` is equal across worker counts and
+rebuild delays); no building frontage test is disabled (`ROAD-68-D` re-enabled the 13
+`building_site_terrain` frontage tests and the yard test, and none is ignored on the round 4
+tree). What moved to `TERRAIN-07` and what stays open is in the [gate table](#implementation-plan-road-68).
+
 #### Markings, lights and signs from the layout (`ROAD-68-F` part 1, 2026-10-25)
 
 Decision (coordinator under the user's delegation, 2026-10-25, for review): the markings part of
@@ -4525,13 +4555,21 @@ portal cutouts (the terrain side of `ROAD-61`), building sites, driveways and pa
 - **Size.** `roadbed/` production lines 7,798 against 7,972 on `road` `0eabfe36` (-174): the span
   model loses 199 lines with its taper (and `RoadProfile` its width override, 10); the minimum
   run (13), the pass-through rule (9) and the triangle walk (17) are mostly doc comments.
+  Round 4 changes no `roadbed/` line (7,798 on its rebased tree): its fix is in
+  `render/road/chunks.rs` (+3) and `terrain/rect_clip.rs` (+15, the second buffer).
 - **Gate run** (fresh, 2026-10-25, the part's final sources, `DISPLAY` and `WAYLAND_DISPLAY`
   unset): `./run.sh --test` exits 0. Debug library suite 1,908 passed, 0 failed, 165 ignored;
   integration 4 passed; every Godot bridge suite passes with no SCRIPT ERROR, none skipped but
   the display-only shader-global probe and rendered vegetation tests. Clippy `--all-targets`:
   the baseline's 59 warnings, none new; `cargo doc`: no missing docs. `ROAD-68-F` ignores left:
   none (the tunnel portal test is `TERRAIN-07`'s).
-- **Timing (fresh, 2026-10-25), regression open.** Release library tests, `taskset -c
+- **Gate run, round 4** (fresh, 2026-10-25, the fix rebased onto `096df250`, the code of
+  `931fbce7`; `road` moved by docs only since; `DISPLAY` and `WAYLAND_DISPLAY` unset): `./run.sh --test` exits 0. Debug library suite 1,913 passed, 0
+  failed, 164 ignored; integration 4 passed; every Godot bridge suite passes with no SCRIPT
+  ERROR, none skipped but the display-only shader-global probe and rendered vegetation tests.
+  Clippy `--all-targets`: the baseline's 59 warnings, the same set; `cargo doc`: no missing docs.
+  `ROAD-68-F` ignores left: none; no building frontage test is ignored.
+- **Timing (round 3, 2026-10-25): a payload regression.** Release library tests, `taskset -c
   0,2,4,6,8,10,12,14`, both timing locks, C F F C in one session (no restic running at start or
   end): C = `road` `8c6f89e7`, F = `8b2ad9eb` (this part), two binaries built from those
   sources in one target directory (identities in `$ARTIFACTS`). Native preview stages
@@ -4542,9 +4580,7 @@ portal cutouts (the terrain side of `ROAD-61`), building sites, driveways and pa
   4.720, 4.701; payload packing 0.336, 0.335 / 0.392, 0.389. **Payload packing is 0.06 ms
   (+16-18%) slower in F, against a C-against-C spread of 0.005 ms**; plan, roadbed and terrain
   are within the spread. Within the 1.0 ms payload budget, but beyond the gate rule, so gate F
-  stays open until the cause is found (candidates: the preview payload now packs the family
-  pieces' additional spans and node pieces; part 1 measured 0.349 / 0.338 ms for the same
-  fixtures). `road68g_commit_determinism`: reference digest `6252b7ba71c5a6f1` in C and F, every
+  stayed open until round 4 found the cause (below). `road68g_commit_determinism`: reference digest `6252b7ba71c5a6f1` in C and F, every
   difference null (the probe re-records of part 2 do not reach the populated fixture). Commit
   breakdown (`benchmark_populated_commit_breakdown`, tiers 0 / 10k / 30k / 100k, 8 workers,
   medians of three samples per run, C F F C): lots and generated digests equal in every run and
@@ -4554,6 +4590,71 @@ portal cutouts (the terrain side of `ROAD-61`), building sites, driveways and pa
   at 10k and 100k within the spread; the same 30k surface offset as part 1's note on the site
   paving query's inlining). Other stages (plan, add, lanes, mesh, buildings, finalize, snapshot)
   within the C-against-C spread at every tier.
+- **Cause of the payload regression (round 4, profiled 2026-10-25).** `perf record` (LBR call
+  graphs, `cpu_core` cycles, 12 kHz, the stages benchmark at 4 workers on the P-cores, C F F C with
+  round 3's binaries) puts the extra samples under `emit_piece_surfaces` (inclusive C 3,133 /
+  3,111, F 3,850 / 3,859; the expected 0.06 ms x 960 previews is about 690 samples), in the
+  per-triangle chunk routing whose sources part 2 did not touch (`render/road/chunks.rs`,
+  `terrain/rect_clip.rs`): F compiles `NetworkMeshChunkPartition::route` out of line (3,936
+  bytes; C inlines it into its only caller, `push_triangle_to_layer_with_crossing`), and
+  `clip_triangle_to_rect` copies its by-value 456-byte polygon passes with four `memcpy` calls
+  instead of two (libc samples under it: C 169, F 419; the unchanged function is 2,079 bytes in
+  C and 2,291 in F). Part 2's added code moved rustc's codegen-unit partition of the release
+  test binary, so the router's inlining and the clip's copy elision changed: the accident part 1
+  met in the site paving query. The work is the same:
+  a scratch digest of every payload buffer, light and sign of the stages fixtures' eight poses,
+  their commits and the three preview-equals-commit fixtures flat and sloped (32 digests) is
+  equal in C, F and the fix. Not the coordinator's lead: `edges_pass_through` is not on the
+  payload path, and over the whole benchmark `RoadProfile::for_edge` takes fewer samples in F
+  (23-36 per run) than C's per-section width-override profiles did (50-59).
+- **Fix (round 4).** `route` is `#[inline]`, so its one instantiation is compiled beside its
+  caller in that caller's codegen unit, and `clip_triangle_to_rect` clips between two buffers in
+  place and fans the result to a closure, so no polygon is returned or copied by value: neither
+  is left to the optimiser's view of the partition. No product changes: the 32 digests are equal
+  before and after; the in-place clip fans the by-value passes' faces bitwise on 400,000
+  generated triangle and rectangle pairs (260,531 faces, vertices on and off the lines); the
+  node and reference probes, the narrow-marks digest, the chunk watertightness tests and the
+  preview-equals-commit tests pass. Built on C's sources (Cx) the router is inlined and the clip
+  makes no copy as well, so the fix does not depend on the partition.
+- **Timing (fresh, round 4, 2026-10-25).** Release library tests, `taskset -c
+  0,2,4,6,8,10,12,14`, both timing locks, one session 15:02-15:24 EET (no restic at start or
+  end): C = `8c6f89e7` (round 3's binary), F' = the fix on `4dc466fc` (round 3's sources, before
+  this round's rebase onto `096df250`), Cx = C's sources plus the fix; identities in `$ARTIFACTS`.
+  Preview stages (4 workers), p50 ms, C1 C2 / F'1 F'2 / Cx1 Cx2: `sloped_t` payload 0.351, 0.357
+  / 0.349, 0.333 / 0.343, 0.342; plan 0.461, 0.460 / 0.459, 0.464 / 0.464, 0.455; roadbed 0.316,
+  0.317 / 0.320, 0.322 / 0.321, 0.316; terrain 4.447, 4.432 / 4.350, 4.301 / 4.331, 4.363.
+  `sloped_branch` payload 0.334, 0.347 / 0.326, 0.325 / 0.331, 0.334; plan 0.401, 0.409 / 0.406,
+  0.408 / 0.401, 0.407; roadbed 0.317, 0.324 / 0.323, 0.325 / 0.318, 0.324; terrain 4.687,
+  4.743 / 4.607, 4.598 / 4.624, 4.598. Payload packing is now at or below C on both fixtures
+  (C-against-C spread 0.006 and 0.013 ms). A second run of the same binaries in one
+  session (15:46-15:48 EET; C and F' alternated four times, Cx twice), p50 ranges, C / F' / Cx:
+  `sloped_t` plan 0.459-0.466 / 0.468-0.474 / 0.464-0.470, roadbed 0.313-0.324 / 0.324-0.331 /
+  0.322-0.325, payload 0.348-0.357 / 0.337-0.356 / 0.338-0.340, terrain 4.397-4.472 /
+  4.332-4.439 / 4.345-4.379; `sloped_branch` plan 0.405-0.409 / 0.406-0.419 / 0.403-0.407,
+  roadbed 0.320-0.326 / 0.323-0.329 / 0.322-0.325, payload 0.334-0.348 / 0.324-0.342 /
+  0.324-0.325, terrain 4.700-4.760 / 4.572-4.672 / 4.582-4.596. F''s medians differ from C's
+  by at most +0.008 ms (roadbed, `sloped_t`, against C's 0.011 ms spread) and +0.004 ms (plan,
+  against 0.007), so every preview stage is within C's spread or faster. Plan and roadbed sit
+  1-2.5% above C's median in both sessions, not attributed: Cx, with C's plan and roadbed
+  code, sits 0.003-0.005 ms above C on `sloped_t` too. On the rebased tree (the fix on
+  `road` `096df250`, Fr) against `096df250` itself (R: part 2 unfixed, with `ROAD-68-E` round 4),
+  in the same session (R Fr Fr R R Fr): payload `sloped_t` R 0.386-0.392 / Fr 0.337-0.348,
+  `sloped_branch` 0.381-0.393 / 0.331-0.360, so the fix holds there (and the scratch digests of
+  R and Fr are equal); plan and roadbed within R's range; terrain R 4.351-4.406 / Fr
+  4.583-4.629 and 4.647-4.654 / 4.799-4.902, 0.23 ms (5%) above R in code both share, a
+  partition accident in the legacy terrain CDT ([open question 36](#road-68-open-questions)).
+  `road68g_commit_determinism`: digest `6252b7ba71c5a6f1` in C and F', every difference null.
+  Commit breakdown (tiers 0 / 10k / 30k / 100k, 8 workers, medians of three samples, C1 C2 /
+  F'1 F'2): lots and generated digests equal in every run, tier and sample; `commit_ms` 15.99,
+  14.55 / 15.81, 14.18; 28.11, 28.98 / 27.73, 27.84; 94.55, 77.14 / 74.73, 72.37; 80.85, 79.15 /
+  77.61, 78.52; `surface` 12.54, 11.52 / 11.79, 11.12; 18.65, 18.88 / 18.37, 18.19; 70.41, 66.08
+  / 64.63, 63.08; 66.44, 66.75 / 64.50, 65.63. Round 3's 30k `surface` offset (F +1.1 to +2.7 ms)
+  does not reproduce: F' is at or below C at every tier. The breakdown does not separate the
+  roadbed install from the legacy terrain validation inside `surface` (the sub-stages come with
+  `ROAD-68-E` round 4 part 2), so the offset is not attributed between them here; the site paving
+  clip the validation runs is one of the two functions the fix changes. Other stages are within
+  the C-against-C spread or faster, except `mesh` at 0 (C 1.96, 2.22 / F' 2.45, 2.29 ms, one
+  spread above; faster than C at 10k, 30k and 100k).
 
 ### `ROAD-68-G` — commit consequences inside one frame
 

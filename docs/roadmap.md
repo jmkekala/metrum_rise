@@ -179,9 +179,16 @@ out with D4 tapers instead of a pass-through, and the span width taper is remove
 and tunnel road pieces at node pieces and span mouths, and one triangle walk for the zoning,
 field and roadbed overlap queries; abutments, portals and sites moved to `TERRAIN-07`, and a
 bridge or tunnel stroke from a road is rejected until it lands (open question 19).
+Round 4 (branch `road68-F4`, 2026-10-25) closes gate F: the 0.06 ms slower preview payload
+measured after part 2 was a codegen accident in the road chunk router (the same chunks bitwise;
+its inlining and the triangle clip's polygon copies followed the crate's codegen-unit
+partition), fixed by compiling the router beside its caller and clipping in place; payload,
+commit breakdown and determinism are at or below the control. After the rebase onto
+`096df250` the legacy terrain stage is 0.23 ms above `road`'s with the same terrain code, the
+same kind of accident (open question 36).
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`, no
 `ROAD-68-E` or `ROAD-68-F` one, no Godot script).
-`ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty-two open questions (1-31 and 35); open question 16 (strokes pinned to the
+`ROAD-68-E` and `-H` are open (`ROAD-68-F` is done), and `roads.md` lists thirty-three open questions (1-31, 35 and 36); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
@@ -194,7 +201,7 @@ by the coordinator for review, 26 (preview payloads with crossings or signs) is 
 `ROAD-68-F` part 1; 30 (drawing
 order on slopes) is decided (a) for review: joins are order independent and mid-span meetings
 follow the first-drawn road, as tested; 31 (recorded profiles beyond the 5 m limit) is decided
-for review and done. Design,
+for review and done; 36 (timing comparisons that follow the crate's codegen-unit partition) is open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 
