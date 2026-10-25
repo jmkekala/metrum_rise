@@ -4,12 +4,14 @@
 
 use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
+use crate::simulation::agriculture::FieldClearanceIndex;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
 };
 use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::zoning::{ZoningSystem, cells::CellReservations};
 use godot::prelude::Vector3;
 
 /// Immutable preparation and solved local graph delta against pinned road/source revisions.
@@ -50,22 +52,21 @@ impl ReservedOverlap {
     /// The first reservation the edit's new pieces newly cover, piece by piece in order, fields
     /// before cells; `before` are the pieces the edit replaces. A painted cell is refused when a
     /// new piece covers it and no replaced piece did ([`ZoningSystem::cells_newly_covered_by_road_piece`]);
-    /// fields when a new piece overlaps one and no replaced piece overlapped any. O(pieces *
-    /// reservations in their bounds * top triangles); a piece with no reservation in its bounds
-    /// costs one bounds query each.
-    ///
-    /// [`ZoningSystem::cells_newly_covered_by_road_piece`]: crate::simulation::zoning::ZoningSystem::cells_newly_covered_by_road_piece
+    /// fields when a new piece overlaps one and no replaced piece overlapped any. The commit
+    /// passes the live indices and the road tool's preview the view's copies of them (`ROAD-68`
+    /// open question 25). O(pieces * reservations in their bounds * top triangles); a piece with
+    /// no reservation in its bounds costs one bounds query each.
     pub(crate) fn first<'a>(
-        core: &SimCore,
+        fields: &FieldClearanceIndex,
+        cells: &CellReservations,
         pieces: impl IntoIterator<Item = &'a PieceMesh>,
         before: &[&PieceMesh],
     ) -> Option<Self> {
-        let fields = &core.allocator.field_clearance;
         let fields_before = before.iter().any(|mesh| fields.overlaps_road_piece(mesh));
         pieces.into_iter().find_map(|mesh| {
             if !fields_before && fields.overlaps_road_piece(mesh) {
                 Some(Self::Field)
-            } else if core.zoning.cells_newly_covered_by_road_piece(mesh, before) {
+            } else if ZoningSystem::cells_newly_covered_by_road_piece(cells, mesh, before) {
                 Some(Self::CellZoning)
             } else {
                 None
@@ -73,18 +74,35 @@ impl ReservedOverlap {
         })
     }
 
+    /// [`Self::first`] against the live core's fields and cells, as the commit checks.
+    pub(crate) fn first_in_core<'a>(
+        core: &SimCore,
+        pieces: impl IntoIterator<Item = &'a PieceMesh>,
+        before: &[&PieceMesh],
+    ) -> Option<Self> {
+        Self::first(
+            &core.allocator.field_clearance,
+            core.zoning.cells.reservations(),
+            pieces,
+            before,
+        )
+    }
+
+    /// The reason the commit reports and the preview shows for this overlap.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Field => "field_overlap",
+            Self::CellZoning => "zoning_cell_overlap",
+        }
+    }
+
     /// The commit's report of this overlap.
     pub(crate) fn rejection(self) -> RoadRejection {
-        match self {
-            Self::Field => RoadRejection::new(
-                "field_overlap",
-                "the road or its junctions overlap a farm field",
-            ),
-            Self::CellZoning => RoadRejection::new(
-                "zoning_cell_overlap",
-                "the road or its junctions overlap painted zoning cells",
-            ),
-        }
+        let detail = match self {
+            Self::Field => "the road or its junctions overlap a farm field",
+            Self::CellZoning => "the road or its junctions overlap painted zoning cells",
+        };
+        RoadRejection::new(self.reason(), detail)
     }
 }
 

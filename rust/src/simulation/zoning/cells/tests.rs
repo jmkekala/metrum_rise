@@ -381,6 +381,46 @@ fn stale_or_partially_invalid_selection_does_not_write_any_cells() {
     assert_eq!(store.profile(CellKey { grid, x: 0, y: 0 }), Some(0));
 }
 
+// The persistent reservation index the road tool's view shares (`ROAD-68-E`) visits the
+// store's reserved cells exactly, through paint, erase and undo, across 512 m chunk lines.
+#[test]
+fn the_reservation_index_follows_paint_erase_and_undo() {
+    let mut store = CellStore::default();
+    let grid = store.register_frame(GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap());
+    for x in -6..6 {
+        for y in -6..6 {
+            assert!(store.insert(CellKey { grid, x, y }));
+        }
+    }
+    let bounds = CellBounds {
+        min: DVec2::splat(-100.0),
+        max: DVec2::splat(100.0),
+    };
+    let visited = |store: &CellStore| {
+        let (mut live, mut index) = (Vec::new(), Vec::new());
+        store.visit_reserved_footprints_in_bounds(bounds, |key, corners| live.push((key, corners)));
+        store
+            .reservations()
+            .visit_footprints_in_bounds(bounds, |key, corners| index.push((key, corners)));
+        live.sort_by_key(|(key, _)| *key);
+        index.sort_by_key(|(key, _)| *key);
+        assert_eq!(live, index);
+        live.len()
+    };
+    let shape = CellSelectionShape::Brush { radius_m: 25.0 };
+    let path = [DVec2::ZERO, DVec2::new(-30.0, 20.0)];
+    let selection = store.select(shape, &path);
+    store.paint(&selection, 2).unwrap();
+    assert_eq!(visited(&store), selection.cells.len());
+    let erase = store.paint(&store.select(shape, &path[..1]), 0).unwrap();
+    assert!(visited(&store) < selection.cells.len());
+    assert!(store.undo_paint(&erase));
+    assert_eq!(visited(&store), selection.cells.len());
+    store.paint(&store.select(shape, &path), 0).unwrap();
+    assert_eq!(visited(&store), 0);
+    assert!(store.reservations().is_empty());
+}
+
 #[test]
 fn unpainted_cells_do_not_reserve_land_but_paint_does() {
     let (mut store, grid) = rectangular_cells(2, 2);

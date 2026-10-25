@@ -452,7 +452,7 @@ impl BuildingAllocator {
             zoning.remap_parcel_occupancy(self.buildings[last_idx].parcel_id, last_idx, i);
         }
 
-        self.field_clearance.remove_and_remap(i, last_idx);
+        self.remap_field_clearance(i, last_idx);
         self.record_production_site_removal(i, last_idx);
         self.queue_yard_removal(i);
         crate::debug::money::record_change(
@@ -1843,8 +1843,7 @@ impl BuildingAllocator {
             zoning.remap_parcel_occupancy(moved_building.parcel_id, last_idx, building_idx);
         }
 
-        self.field_clearance
-            .remove_and_remap(building_idx, last_idx);
+        self.remap_field_clearance(building_idx, last_idx);
         self.record_production_site_removal(building_idx, last_idx);
         self.queue_yard_removal(building_idx);
         crate::debug::money::record_change(

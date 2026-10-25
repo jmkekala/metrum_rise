@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use godot::prelude::Vector3;
 
-use super::road_edit_plan::RoadEditPlan;
+use super::road_edit_plan::{ReservedOverlap, RoadEditPlan};
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
 use super::state::{SimCore, road_terrain_tiles};
@@ -99,6 +99,11 @@ pub(crate) struct RoadToolQuerySnapshot {
     /// What road-touched refined terrain sources read besides the heightmap, per render patch;
     /// shared in `O(1)` (`ROAD-68-E`).
     pub(crate) terrain_inputs: RoadTerrainInputs,
+    /// Committed field reservations, shared in `O(1)`: the preview tests its pieces against
+    /// them as the commit does (`ROAD-68` open question 25).
+    pub(crate) fields: Arc<crate::simulation::agriculture::FieldClearanceIndex>,
+    /// Reserved zoning cells, a persistent index shared in `O(1)` (open question 25).
+    pub(crate) cell_reservations: crate::simulation::zoning::cells::CellReservations,
     pub(crate) surface_generation: u64,
 }
 
@@ -153,6 +158,8 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         road_mesh_chunks: Arc::clone(&core.published_road_mesh_chunks),
         road_mesh_generation: core.road_mesh_lane_generation,
         terrain_inputs: core.road_terrain_inputs.current(),
+        fields: Arc::clone(&core.allocator.field_clearance),
+        cell_reservations: core.zoning.cells.reservations().clone(),
         surface_generation: core.road_tool_surface_generation,
     })
 }
@@ -223,6 +230,9 @@ pub(crate) struct RoadPreviewPieces {
     /// empty. Sealed (render-validated) as the commit publishes them. `None` if the published
     /// chunks could not be spliced.
     pub(crate) chunks: Option<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
+    /// The field or painted cells the delta's pieces newly cover, by the commit's own test
+    /// against the view's indices (`ROAD-68` open question 25).
+    pub(crate) overlap: Option<ReservedOverlap>,
 }
 
 /// One synchronous road preview: the plan the click submits, the pieces the commit installs and
@@ -293,6 +303,11 @@ impl RoadPreviewContext {
             .is_valid
             .then(|| self.compile_plan_pieces(&plan, &mut times))
             .flatten();
+        // The commit would refuse the overlap; the preview shows it before the click.
+        let validation = match pieces.as_ref().and_then(|pieces| pieces.overlap) {
+            Some(overlap) => validation.with_invalid_reason(overlap.reason()),
+            None => validation,
+        };
         RoadPreview {
             plan,
             validation,
@@ -321,7 +336,15 @@ impl RoadPreviewContext {
         let mut roadbed = self.view.roadbed.snapshot();
         applied.mark_pieces(&mut roadbed);
         let delta = roadbed.compile_delta_with(&self.replica, &mut self.roadbed_scratch);
-        let (changed_chunks, _) = roadbed.install(&delta);
+        let (changed_chunks, restore) = roadbed.install(&delta);
+        // The commit's reservation test on the same installed and replaced pieces.
+        let before: Vec<_> = restore.replaced_pieces().collect();
+        let overlap = ReservedOverlap::first(
+            &self.view.fields,
+            &self.view.cell_reservations,
+            roadbed.installed_pieces(&restore),
+            &before,
+        );
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_start = Instant::now();
         let inputs = &self.view.terrain_inputs;
@@ -376,6 +399,7 @@ impl RoadPreviewContext {
             changed_chunks,
             terrain,
             chunks,
+            overlap,
         })
     }
 }

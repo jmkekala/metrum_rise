@@ -127,13 +127,13 @@ impl AgricultureSystem {
         restored_sites: Vec<FieldSite>,
         allocator: &mut BuildingAllocator,
     ) {
-        allocator.field_clearance.set(restored_building_idx, &[]);
+        allocator.field_clearance_mut().set(restored_building_idx, &[]);
         allocator
-            .field_clearance
+            .field_clearance_mut()
             .set(last_building_idx_before_remove, &[]);
         for site in &restored_sites {
             allocator
-                .field_clearance
+                .field_clearance_mut()
                 .set(site.building_idx, &site.polygon_world);
         }
         self.sites.retain(|site| {
@@ -168,7 +168,7 @@ impl AgricultureSystem {
             .sites
             .binary_search_by_key(&building_idx, |site| site.building_idx);
         let had_site = position.is_ok();
-        allocator.field_clearance.set(building_idx, &polygon_world);
+        allocator.field_clearance_mut().set(building_idx, &polygon_world);
         let site = FieldSite {
             building_idx,
             resource_id,
@@ -264,10 +264,10 @@ impl AgricultureSystem {
 
     /// Rebuilds cached building work-area scales from committed field sites.
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
-        allocator.field_clearance.clear();
+        allocator.field_clearance_mut().clear();
         for site in &self.sites {
             allocator
-                .field_clearance
+                .field_clearance_mut()
                 .set(site.building_idx, &site.polygon_world);
             allocator
                 .set_work_area_scale(site.building_idx, explicit_work_area_scale(site.area_m2));

@@ -555,6 +555,10 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			]
 		"water_requires_bridge":
 			return "Water crossing requires a bridge"
+		"field_overlap":
+			return "Road overlaps a farm field"
+		"zoning_cell_overlap":
+			return "Road overlaps painted zoning cells"
 		"surface_geometry_invalid":
 			return "Road surface compilation failed"
 		"terrain_clip_missing_outer_boundary_owner":

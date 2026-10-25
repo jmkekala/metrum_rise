@@ -230,6 +230,11 @@ impl FieldClearanceIndex {
         Some(footprint)
     }
 
+    /// Whether building `building_idx` holds a field here.
+    pub(crate) fn has_field(&self, building_idx: usize) -> bool {
+        self.footprints.contains_key(&building_idx)
+    }
+
     /// Removes a demolished field and rebinds a swap-moved owner's indexed footprint.
     pub(crate) fn remove_and_remap(&mut self, removed: usize, last: usize) {
         self.remove(removed);

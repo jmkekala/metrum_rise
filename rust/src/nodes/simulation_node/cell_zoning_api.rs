@@ -301,8 +301,20 @@ impl SimulationNode {
         let Some(preview) = decode_preview(cells.as_slice(), dependencies.as_slice()) else {
             return false;
         };
-        self.lock_core()
-            .apply_cell_selection_internal(&preview, profile)
+        let (applied, publication) = {
+            let mut core = self.lock_core();
+            let applied = core.apply_cell_selection_internal(&preview, profile);
+            // The road tool's preview tests its pieces against the painted cells it publishes
+            // (`ROAD-68` open question 25); unchanged roads publish in `O(1)`.
+            (
+                applied,
+                applied.then(|| core.publish_road_tool_view(None)).flatten(),
+            )
+        };
+        if let Some(publication) = publication {
+            self.road_tool.publish(publication);
+        }
+        applied
     }
 }
 

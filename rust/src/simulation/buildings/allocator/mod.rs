@@ -459,8 +459,10 @@ pub struct BuildingAllocator {
     /// Indexed buildings whose support equals [`Self::max_building_support_m`], so a kept
     /// index's removal lowers it only when it takes the last (`SIM-02-K`).
     pub(crate) max_building_support_count: usize,
-    /// Derived full-field reservations rebuilt from AgricultureSystem on load and undo.
-    pub(crate) field_clearance: FieldClearanceIndex,
+    /// Derived full-field reservations rebuilt from AgricultureSystem on load and undo; shared
+    /// with the road tool's view in `O(1)` (`ROAD-68-E`), so writers go through
+    /// [`Self::field_clearance_mut`].
+    pub(crate) field_clearance: std::sync::Arc<FieldClearanceIndex>,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
     /// Slot in progress on the simulation clock, set by SimCore; construction deadlines count
@@ -836,6 +838,20 @@ impl Default for BuildingAllocator {
 }
 
 impl BuildingAllocator {
+    /// The field reservations for writing: copied first while the road tool's view still
+    /// shares them (`O(fields)`, once per publication), in place otherwise.
+    pub(crate) fn field_clearance_mut(&mut self) -> &mut FieldClearanceIndex {
+        std::sync::Arc::make_mut(&mut self.field_clearance)
+    }
+
+    // A swap removal's field update: drops the removed building's field and rebinds the moved
+    // last building's, copying a shared index only when either holds a field.
+    fn remap_field_clearance(&mut self, removed: usize, last: usize) {
+        if self.field_clearance.has_field(removed) || self.field_clearance.has_field(last) {
+            self.field_clearance_mut().remove_and_remap(removed, last);
+        }
+    }
+
     fn record_production_site_removal(&mut self, removed: usize, last: usize) {
         if [removed, last].iter().any(|&idx| {
             self.registry
@@ -868,7 +884,7 @@ impl BuildingAllocator {
             building_chunk_bounds: None,
             max_building_support_m: f32::NEG_INFINITY,
             max_building_support_count: 0,
-            field_clearance: FieldClearanceIndex::default(),
+            field_clearance: Default::default(),
             pending_production_site_removals: Vec::new(),
             now_slot: 0,
             next_applicant_seed: 0,
@@ -1124,7 +1140,7 @@ impl BuildingAllocator {
         self.site_feasibility = placement::SiteFeasibilityCache::default();
         self.buildings.clear();
         self.building_handles.clear();
-        self.field_clearance.clear();
+        self.field_clearance_mut().clear();
         self.pending_production_site_removals.clear();
         self.pending_construction.clear();
         self.removal_requests.clear();

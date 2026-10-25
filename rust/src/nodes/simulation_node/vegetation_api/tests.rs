@@ -447,7 +447,7 @@ fn vegetation_clears_under_a_committed_field_and_returns_when_it_is_removed() {
     assert_eq!(before.len(), 12);
 
     // A farm's committed field, indexed the way agriculture indexes one on commit.
-    core.allocator.field_clearance.set(
+    core.allocator.field_clearance_mut().set(
         0,
         &[
             Vector2::new(-120.0, -20.0),
@@ -479,7 +479,7 @@ fn vegetation_clears_under_a_committed_field_and_returns_when_it_is_removed() {
 
     // Clearance is re-evaluated rather than destructive, so removing the field restores the
     // plant bit for bit, exactly as removing a road deck or a building pad does.
-    core.allocator.field_clearance.clear();
+    core.allocator.field_clearance_mut().clear();
     assert_eq!(scatter(&core, true), before);
 }
 

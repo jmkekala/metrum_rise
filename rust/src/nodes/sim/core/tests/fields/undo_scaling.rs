@@ -39,7 +39,7 @@ fn rejected_field_undo_reservation_scaling() {
                 },
                 1,
             ));
-            core.allocator.field_clearance.set(
+            core.allocator.field_clearance_mut().set(
                 index + 1,
                 &rectangle(
                     -8_000.0 + (index % 400) as f32 * 12.0,
@@ -55,7 +55,7 @@ fn rejected_field_undo_reservation_scaling() {
             let parcel = match blocker {
                 "field" => {
                     core.allocator
-                        .field_clearance
+                        .field_clearance_mut()
                         .set(usize::MAX, &rectangle(100.0, 40.0, 40.0, 20.0));
                     None
                 }
@@ -109,7 +109,7 @@ fn rejected_field_undo_reservation_scaling() {
                 })
             );
             match blocker {
-                "field" => core.allocator.field_clearance.set(usize::MAX, &[]),
+                "field" => core.allocator.field_clearance_mut().set(usize::MAX, &[]),
                 "parcel" => {
                     assert_eq!(
                         core.zoning

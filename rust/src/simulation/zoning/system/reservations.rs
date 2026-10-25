@@ -5,7 +5,7 @@
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
-use crate::simulation::zoning::cells::{CellBounds, road_contact_interior};
+use crate::simulation::zoning::cells::{CellBounds, CellReservations, road_contact_interior};
 use glam::DVec2;
 
 // Whether a piece's top triangles overlap a polygon with positive area.
@@ -63,19 +63,21 @@ impl ZoningSystem {
         self.cells_overlap_road_points(points.iter().map(|p| [p.x, p.z]))
     }
 
-    /// Whether the top surface of one road piece covers a reserved cell that none of `before`
-    /// covered (`ROAD-68` open question 1): each candidate cell in the piece's bounds against its
-    /// top triangles, then against the pieces the edit replaces. Cells are laid out against the
-    /// straight road corridors, so cells beside an existing junction corner or road end may
-    /// already lie under it; an edit is refused only for land it newly covers. Cells that only
-    /// touch the road along their frontage are not covered. O(candidate cells * top triangles of
-    /// the piece and of `before`), one bounds query when no cell is reserved near the piece.
+    /// Whether the top surface of one road piece covers a reserved cell of `cells` that none of
+    /// `before` covered (`ROAD-68` open question 1): each candidate cell in the piece's bounds
+    /// against its top triangles, then against the pieces the edit replaces. Cells are laid out
+    /// against the straight road corridors, so cells beside an existing junction corner or road
+    /// end may already lie under it; an edit is refused only for land it newly covers. Cells that
+    /// only touch the road along their frontage are not covered. The commit passes the live
+    /// store's index and the road tool's preview the view's copy, so both decide alike
+    /// (open question 25). O(candidate cells * top triangles of the piece and of `before`), one
+    /// bounds query when no cell is reserved near the piece.
     pub(crate) fn cells_newly_covered_by_road_piece(
-        &self,
+        cells: &CellReservations,
         mesh: &PieceMesh,
         before: &[&PieceMesh],
     ) -> bool {
-        if !self.cells.has_reservations() {
+        if cells.is_empty() {
             return false;
         }
         let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
@@ -83,10 +85,17 @@ impl ZoningSystem {
             min: DVec2::new(min_x, min_z),
             max: DVec2::new(max_x, max_z),
         };
-        self.reserved_cells_overlap(bounds, true, |corners| {
+        let mut covered = false;
+        cells.visit_footprints_in_bounds(bounds, |_, corners| {
+            if covered {
+                return;
+            }
+            let corners = road_contact_interior(&corners);
             let cell = PolygonFootprint::from_precise_points(corners.iter().map(|p| [p.x, p.y]));
-            piece_covers(mesh, &cell) && !before.iter().any(|old| piece_covers(old, &cell))
-        })
+            covered =
+                piece_covers(mesh, &cell) && !before.iter().any(|old| piece_covers(old, &cell));
+        });
+        covered
     }
 
     fn cells_overlap_road_points(&self, points: impl Iterator<Item = [f64; 2]> + Clone) -> bool {

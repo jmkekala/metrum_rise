@@ -147,7 +147,7 @@ fn measure_populated_road_plan_scaling(
         0
     };
     if fields {
-        core.allocator.field_clearance.set(
+        core.allocator.field_clearance_mut().set(
             0,
             &[
                 Vector2::new(100.0, 60.0),
@@ -193,7 +193,7 @@ fn measure_populated_road_plan_scaling(
             building.occupancy = 6;
             if fields {
                 let p = Vector2::new(building.center_x, building.center_y + 12.0);
-                core.allocator.field_clearance.set(
+                core.allocator.field_clearance_mut().set(
                     index + 4,
                     &[
                         p,

@@ -534,10 +534,26 @@ fn build_validation_graph(
     required_edge_ids.sort_unstable();
     required_edge_ids.dedup();
 
-    // Profile-solving nodes must already have complete incidence. A later read-only halo
-    // must not disguise an incomplete solve as a valid plan.
+    // Profile-solving nodes must already have complete incidence, and so must the far ends of
+    // the edges they re-derive, whose pins the solve reproduces from all their arms. A later
+    // read-only halo must not disguise an incomplete solve as a valid plan.
+    let mut pinned_nodes = HashSet::new();
+    for &node in &finalized.affected_nodes {
+        let node = validation_graph.get_valid_node(node);
+        pinned_nodes.insert(node);
+        if node as usize >= validation_graph.node_adjacency_count() {
+            continue;
+        }
+        for &edge_idx in validation_graph.node_adjacency(node) {
+            let edge = validation_graph.edge(edge_idx);
+            if !edge.deleted && is_surface_edge(edge) {
+                pinned_nodes.insert(validation_graph.get_valid_node(edge.start_node));
+                pinned_nodes.insert(validation_graph.get_valid_node(edge.end_node));
+            }
+        }
+    }
     if node_map.iter().any(|(&source, &local)| {
-        finalized.affected_nodes.contains(&local)
+        pinned_nodes.contains(&validation_graph.get_valid_node(local))
             && existing_graph
                 .node_adjacency(source)
                 .iter()
@@ -593,26 +609,32 @@ fn candidate_existing_edge_ids(
     edge_ids.sort_unstable();
     edge_ids.dedup();
 
+    // Two rings of incidence. The nodes of the roads the stroke reaches may solve their planes,
+    // which takes all their arms; the solve then re-derives every edge at those nodes, pinned at
+    // both ends, and a far end's plane is again a function of all its arms
+    // (`RegionGraph::finalize_junction_endpoint_profiles`), so the far nodes need theirs too.
     let mut incident_nodes = Vec::new();
-    for &edge_idx in &edge_ids {
-        if edge_idx >= existing_graph.edge_count() {
-            continue;
+    for _ in 0..2 {
+        incident_nodes.clear();
+        for &edge_idx in &edge_ids {
+            if edge_idx >= existing_graph.edge_count() {
+                continue;
+            }
+            let edge = existing_graph.edge(edge_idx);
+            if edge.deleted || !is_surface_edge(edge) {
+                continue;
+            }
+            incident_nodes.push(existing_graph.get_valid_node(edge.start_node));
+            incident_nodes.push(existing_graph.get_valid_node(edge.end_node));
         }
-        let edge = existing_graph.edge(edge_idx);
-        if edge.deleted || !is_surface_edge(edge) {
-            continue;
+        incident_nodes.sort_unstable();
+        incident_nodes.dedup();
+        for &node_id in &incident_nodes {
+            push_incident_validation_edges(existing_graph, node_id, &mut edge_ids);
         }
-        incident_nodes.push(existing_graph.get_valid_node(edge.start_node));
-        incident_nodes.push(existing_graph.get_valid_node(edge.end_node));
+        edge_ids.sort_unstable();
+        edge_ids.dedup();
     }
-    incident_nodes.sort_unstable();
-    incident_nodes.dedup();
-    for node_id in incident_nodes {
-        push_incident_validation_edges(existing_graph, node_id, &mut edge_ids);
-    }
-
-    edge_ids.sort_unstable();
-    edge_ids.dedup();
     edge_ids
 }
 

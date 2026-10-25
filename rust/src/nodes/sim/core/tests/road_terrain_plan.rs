@@ -258,15 +258,38 @@ fn commit_stroke(core: &mut SimCore, points: &[Vector3]) -> String {
     .rejection_reason
 }
 
+// The road tool's preview of `points` on the view the core publishes now: why the tool would
+// not submit it, empty when it would.
+fn preview_refusal(core: &mut SimCore, points: &[Vector3]) -> &'static str {
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    core.precompute_road_mesh_data();
+    core.refresh_road_terrain_inputs();
+    let view = road_tool_snapshot_from_core(core).expect("current roadbed");
+    let preview = RoadPreviewContext::capture(view).preview_road(RoadPreviewRequest {
+        surface_generation: core.road_tool_surface_generation,
+        points: points.to_vec(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+    });
+    if preview.validation.is_valid {
+        ""
+    } else {
+        preview.validation.invalid_reason
+    }
+}
+
 // Fields and painted cells are tested against the pieces the commit installs (`ROAD-68` open
 // question 1), so a plan stays ready and the commit refuses the edit, leaving the graph, the
-// roadbed and the undo history as they were.
+// roadbed and the undo history as they were. The preview runs the same test on the view's
+// indices and shows the refusal before the click (open question 25).
 fn assert_reservation_refuses(core: &mut SimCore, points: &[Vector3], reason: &str) {
     let before = (
         core.region_graph.edge_count(),
         core.undo_stack.len(),
         core.transit_network.roadbed.generation(),
     );
+    assert_eq!(preview_refusal(core, points), reason, "preview");
     assert_eq!(commit_stroke(core, points), reason);
     assert!(!core.transit_network.road_edit_is_staged());
     let after = (
@@ -294,9 +317,10 @@ fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
         godot::prelude::Vector2::new(10.0, -15.0),
         godot::prelude::Vector2::new(-10.0, -15.0),
     ];
-    core.allocator.field_clearance.set(0, &field);
+    core.allocator.field_clearance_mut().set(0, &field);
     assert_reservation_refuses(&mut core, &points, "field_overlap");
-    core.allocator.field_clearance.clear();
+    core.allocator.field_clearance_mut().clear();
+    assert_eq!(preview_refusal(&mut core, &points), "");
     assert_eq!(commit_stroke(&mut core, &points), "");
 }
 
@@ -326,7 +350,7 @@ fn a_field_in_a_junction_corner_refuses_the_road() {
     ];
     let mut core = test_core();
     commit_ready(&mut core, through);
-    core.allocator.field_clearance.set(0, &field);
+    core.allocator.field_clearance_mut().set(0, &field);
     assert!(
         !core
             .allocator
@@ -363,6 +387,7 @@ fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
     assert_reservation_refuses(&mut core, &points, "zoning_cell_overlap");
     let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
     core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
+    assert_eq!(preview_refusal(&mut core, &points), "");
     assert_eq!(commit_stroke(&mut core, &points), "");
 }
 
@@ -477,16 +502,16 @@ fn kuopio_saved_reference_terrain_builds_clean() {
     }
 }
 
-#[test]
-#[ignore = "ROAD-68-E: recorded stroke kuopio_05 attempt 14 fails node 5 with MouthOffPlane (edge 0, end): the profile solve leaves an arm off its plane (open question 8)"]
-fn kuopio_recorded_profiles_and_terrain_preserve_quality_limits() {
+// Replays every recorded Kuopio case on the source world, stroke by stroke through the commit,
+// and hands each committed stroke to `after_stroke`.
+fn replay_kuopio_recorded_cases(
+    mut after_stroke: impl FnMut(&str, &serde_json::Value, &mut SimCore),
+) {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../benchmarks/fixtures/kuopio-terrain/placements.json",
     )))
     .unwrap();
-    let mut failures = Vec::new();
-    let mut profile_count = 0;
     for case in manifest["cases"].as_array().unwrap() {
         let case_id = case["case_id"].as_str().unwrap();
         let mut core = test_core();
@@ -517,120 +542,160 @@ fn kuopio_recorded_profiles_and_terrain_preserve_quality_limits() {
                 stroke["fwd_lanes"].as_i64().unwrap() as i32,
                 stroke["bkw_lanes"].as_i64().unwrap() as i32,
             );
-            let cold = SimCore::build_refined_terrain_patch_cache_entries(inputs(&mut core));
-            let mut tile_heights = std::collections::BTreeMap::new();
-            for patch in &cold {
-                if let Some(buffers) = &patch.mesh_buffers {
-                    let mut exported_heights = HashMap::new();
-                    for point in &buffers.terrain_vertices {
-                        if let Some(previous) =
-                            exported_heights.insert((point.x.to_bits(), point.z.to_bits()), point.y)
-                        {
-                            assert!(
-                                (previous - point.y).abs() < 0.001,
-                                "{case_id} {} patch {:?}: exported seam at {point:?}, previous height {previous}",
-                                stroke["attempt"],
-                                patch.key
-                            );
-                        }
-                    }
-                    assert_eq!(
-                        buffers.omitted_pathological_terrain_faces, 0,
-                        "{case_id} attempt {} patch {:?}: terrain export removed faces",
-                        stroke["attempt"], patch.key
-                    );
-                }
-                for window in &patch.windows {
-                    let mesh = window.mesh_result.as_ref().unwrap();
-                    let bounds = window.cdt_patch;
-                    for vertex in &mesh.vertices {
-                        assert!(
-                            vertex.x >= bounds.min_x
-                                && vertex.x <= bounds.max_x
-                                && vertex.z >= bounds.min_z
-                                && vertex.z <= bounds.max_z,
-                            "{case_id} {}: vertex outside {:?}: {vertex:?}",
-                            stroke["attempt"],
-                            window.key
-                        );
-                        if vertex.x == bounds.min_x
-                            || vertex.x == bounds.max_x
-                            || vertex.z == bounds.min_z
-                            || vertex.z == bounds.max_z
-                        {
-                            let key = (
-                                (vertex.x * 1000.0).round() as i64,
-                                (vertex.z * 1000.0).round() as i64,
-                            );
-                            if let Some((previous, previous_window)) =
-                                tile_heights.insert(key, (vertex.height_m, window.key))
-                            {
-                                assert!(
-                                    (previous - vertex.height_m).abs() < 0.001,
-                                    "{case_id} {}: tile seam {key:?} height {previous} vs {} in {previous_window:?} and {:?}",
-                                    stroke["attempt"],
-                                    vertex.height_m,
-                                    window.key
-                                );
-                            }
-                        }
-                    }
-                    assert_eq!(
-                        mesh.stats.invalid_constraint_edges, 0,
-                        "{case_id} attempt {} window {:?}: {:?}",
-                        stroke["attempt"], window.key, mesh.invalid_constraint_samples
-                    );
-                    assert_eq!(
-                        mesh.stats.spade_missing_road_constraint_edges, 0,
-                        "{case_id} attempt {} window {:?}: {:?}",
-                        stroke["attempt"], window.key, mesh.unpreserved_road_constraint_samples
-                    );
-                }
-            }
-            // Same fixed quality gates as the rendered replay, across every live edge
-            // after each edit. Exercise the actual plan adoption, not just preparation.
-            for (edge_idx, edge) in core.region_graph.edges().iter().enumerate() {
-                if edge.deleted {
-                    continue;
-                }
-                profile_count += 1;
-                let mut offset = 0.0_f32;
-                let mut grade = 0.0_f32;
-                let mut pitch_change = 0.0_f32;
-                let mut last_pitch: Option<f32> = None;
-                for point in &edge.physical_geometry {
-                    let source = core.heightmap.sample_height_world(point.x, point.z)
-                        * crate::config::HEIGHT_SCALE;
-                    offset = offset.max((point.y - source).abs());
-                }
-                for span in edge.physical_geometry.windows(2) {
-                    let run = (span[1].x - span[0].x).hypot(span[1].z - span[0].z);
-                    let dy = span[1].y - span[0].y;
-                    if run == 0.0 {
-                        assert_eq!(dy, 0.0, "{case_id}: vertical road span {span:?}");
-                        continue;
-                    }
-                    grade = grade.max(dy.abs() / run);
-                    let pitch = dy.atan2(run).to_degrees();
-                    if let Some(previous) = last_pitch {
-                        pitch_change = pitch_change.max((pitch - previous).abs());
-                    }
-                    last_pitch = Some(pitch);
-                }
-                if offset > 5.0 || grade > 1.0 || pitch_change > 30.0 {
-                    failures.push(format!(
-                        "{case_id} attempt {} edge {edge_idx}: offset {offset}, grade {grade}, pitch change {pitch_change}",
-                        stroke["attempt"]
-                    ));
-                }
-            }
+            after_stroke(case_id, stroke, &mut core);
         }
     }
+}
+
+// Every recorded stroke commits and leaves every node solved. `kuopio_05` attempt 14 ends on a
+// road beyond the stroke's first ring of incidence: the solve re-derives the link from that
+// road's T to attempt 13's T and must pin it at the far T from all of that node's arms, which
+// the plan's excerpt lacked, so the far T failed `MouthOffPlane` (`ROAD-68` open question 8).
+#[test]
+fn kuopio_recorded_strokes_commit_with_every_node_solved() {
+    let mut profile_count = 0;
+    replay_kuopio_recorded_cases(|case_id, stroke, core| {
+        let roadbed = &core.transit_network.roadbed;
+        assert!(
+            roadbed.failed_nodes().is_empty(),
+            "{case_id} attempt {}: {:?}",
+            stroke["attempt"],
+            roadbed.failed_nodes()
+        );
+        profile_count += core
+            .region_graph
+            .edges()
+            .iter()
+            .filter(|edge| !edge.deleted)
+            .count();
+    });
     assert_eq!(
         profile_count, 158,
         "must exercise every recorded checkpoint"
     );
+}
+
+// The fixed quality gates of the rendered replay, across every live edge after each edit.
+#[test]
+#[ignore = "ROAD-68-E: open question 31, three recorded profiles leave the source terrain by 5.08-5.76 m beside steep junctions (limit 5 m)"]
+fn kuopio_recorded_profiles_preserve_quality_limits() {
+    let mut failures = Vec::new();
+    replay_kuopio_recorded_cases(|case_id, stroke, core| {
+        for (edge_idx, edge) in core.region_graph.edges().iter().enumerate() {
+            if edge.deleted {
+                continue;
+            }
+            let mut offset = 0.0_f32;
+            let mut grade = 0.0_f32;
+            let mut pitch_change = 0.0_f32;
+            let mut last_pitch: Option<f32> = None;
+            for point in &edge.physical_geometry {
+                let source = core.heightmap.sample_height_world(point.x, point.z)
+                    * crate::config::HEIGHT_SCALE;
+                offset = offset.max((point.y - source).abs());
+            }
+            for span in edge.physical_geometry.windows(2) {
+                let run = (span[1].x - span[0].x).hypot(span[1].z - span[0].z);
+                let dy = span[1].y - span[0].y;
+                if run == 0.0 {
+                    assert_eq!(dy, 0.0, "{case_id}: vertical road span {span:?}");
+                    continue;
+                }
+                grade = grade.max(dy.abs() / run);
+                let pitch = dy.atan2(run).to_degrees();
+                if let Some(previous) = last_pitch {
+                    pitch_change = pitch_change.max((pitch - previous).abs());
+                }
+                last_pitch = Some(pitch);
+            }
+            if offset > 5.0 || grade > 1.0 || pitch_change > 30.0 {
+                failures.push(format!(
+                    "{case_id} attempt {} edge {edge_idx}: offset {offset}, grade {grade}, pitch change {pitch_change}",
+                    stroke["attempt"]
+                ));
+            }
+        }
+    });
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// The refined terrain after each recorded stroke: exported seams, tile seams, window bounds and
+// the CDT's constraint edges.
+#[test]
+#[ignore = "TERRAIN-07: exported and tile seams, window bounds and CDT constraints of the legacy terrain pipeline"]
+fn kuopio_recorded_terrain_builds_clean() {
+    replay_kuopio_recorded_cases(|case_id, stroke, core| {
+        let cold = SimCore::build_refined_terrain_patch_cache_entries(inputs(core));
+        let mut tile_heights = std::collections::BTreeMap::new();
+        for patch in &cold {
+            if let Some(buffers) = &patch.mesh_buffers {
+                let mut exported_heights = HashMap::new();
+                for point in &buffers.terrain_vertices {
+                    if let Some(previous) =
+                        exported_heights.insert((point.x.to_bits(), point.z.to_bits()), point.y)
+                    {
+                        assert!(
+                            (previous - point.y).abs() < 0.001,
+                            "{case_id} {} patch {:?}: exported seam at {point:?}, previous height {previous}",
+                            stroke["attempt"],
+                            patch.key
+                        );
+                    }
+                }
+                assert_eq!(
+                    buffers.omitted_pathological_terrain_faces, 0,
+                    "{case_id} attempt {} patch {:?}: terrain export removed faces",
+                    stroke["attempt"], patch.key
+                );
+            }
+            for window in &patch.windows {
+                let mesh = window.mesh_result.as_ref().unwrap();
+                let bounds = window.cdt_patch;
+                for vertex in &mesh.vertices {
+                    assert!(
+                        vertex.x >= bounds.min_x
+                            && vertex.x <= bounds.max_x
+                            && vertex.z >= bounds.min_z
+                            && vertex.z <= bounds.max_z,
+                        "{case_id} {}: vertex outside {:?}: {vertex:?}",
+                        stroke["attempt"],
+                        window.key
+                    );
+                    if vertex.x == bounds.min_x
+                        || vertex.x == bounds.max_x
+                        || vertex.z == bounds.min_z
+                        || vertex.z == bounds.max_z
+                    {
+                        let key = (
+                            (vertex.x * 1000.0).round() as i64,
+                            (vertex.z * 1000.0).round() as i64,
+                        );
+                        if let Some((previous, previous_window)) =
+                            tile_heights.insert(key, (vertex.height_m, window.key))
+                        {
+                            assert!(
+                                (previous - vertex.height_m).abs() < 0.001,
+                                "{case_id} {}: tile seam {key:?} height {previous} vs {} in {previous_window:?} and {:?}",
+                                stroke["attempt"],
+                                vertex.height_m,
+                                window.key
+                            );
+                        }
+                    }
+                }
+                assert_eq!(
+                    mesh.stats.invalid_constraint_edges, 0,
+                    "{case_id} attempt {} window {:?}: {:?}",
+                    stroke["attempt"], window.key, mesh.invalid_constraint_samples
+                );
+                assert_eq!(
+                    mesh.stats.spade_missing_road_constraint_edges, 0,
+                    "{case_id} attempt {} window {:?}: {:?}",
+                    stroke["attempt"], window.key, mesh.unpreserved_road_constraint_samples
+                );
+            }
+        }
+    });
 }
 
 #[test]
@@ -894,3 +959,4 @@ fn the_first_commit_builds_only_its_own_terrain_as_the_city_grows() {
         "background roads must not add terrain to the commit"
     );
 }
+

@@ -4,9 +4,11 @@
 
 mod alignment;
 mod chunks;
+mod reservations;
 mod sources;
 
 pub(crate) use alignment::RoadCellAlignment;
+pub(crate) use reservations::CellReservations;
 
 use super::sources::{CellCurveSource, CurveSourceKey};
 use super::{
@@ -72,6 +74,8 @@ pub(crate) struct CellStore {
     frontages: CellMap<CellKey, Vec<CellRoadFrontage>>,
     curve_sources: CellMap<CurveSourceKey, Arc<CellCurveSource>>,
     road_alignments: imbl::HashMap<usize, RoadCellAlignment>,
+    // The reserved masks of `blocks`, persistent, for the road tool's view (`ROAD-68-E`).
+    reservations: CellReservations,
     painted_count: usize,
     claimed_count: usize,
     revision: u64,
@@ -177,6 +181,7 @@ impl CellStore {
         self.frontages.clear();
         self.curve_sources.clear();
         self.road_alignments.clear();
+        self.reservations = CellReservations::default();
         self.painted_count = 0;
         self.claimed_count = 0;
         self.bump_revision();
@@ -217,6 +222,23 @@ impl CellStore {
     /// Constant-time reservation presence, including fully erased occupied lots during grace.
     pub(crate) fn has_reservations(&self) -> bool {
         self.painted_count != 0 || self.claimed_count != 0
+    }
+
+    /// The reserved cells as a persistent index, which the road tool's view shares in `O(1)`.
+    pub(crate) fn reservations(&self) -> &CellReservations {
+        &self.reservations
+    }
+
+    // Mirrors block `key`'s reserved mask into the persistent index when `before` differs.
+    fn note_reservation(&mut self, key: BlockKey, before: u64) {
+        let Some(mask) = self.blocks.get(&key).map(|block| block.reserved) else {
+            return;
+        };
+        if mask != before
+            && let Some(frame) = self.frame(key.grid)
+        {
+            self.reservations.set(key, frame, mask);
+        }
     }
 
     /// Visits painted storage tiles during an explicit whole-catalog refresh, without sorting cells.
@@ -354,8 +376,10 @@ impl CellStore {
             }
             self.painted_count -= usize::from(block.profiles[key.offset()] != 0);
             self.painted_count += usize::from(profile != 0);
+            let before = block.reserved;
             block.profiles[key.offset()] = profile;
             block.refresh_reservation(key.offset());
+            self.note_reservation(key.block(), before);
             self.bump_revision();
             self.mark_cell_chunk_changed(key);
         }
@@ -372,8 +396,10 @@ impl CellStore {
             if let Some(block) = self.blocks.get_mut(&key.block()) {
                 self.claimed_count -= usize::from(block.lots[key.offset()] != 0);
                 self.claimed_count += usize::from(parcel_id != 0);
+                let before = block.reserved;
                 block.lots[key.offset()] = parcel_id;
                 block.refresh_reservation(key.offset());
+                self.note_reservation(key.block(), before);
             }
         }
         self.bump_revision();

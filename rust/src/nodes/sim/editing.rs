@@ -124,7 +124,7 @@ impl SimCore {
         let roadbed = &self.transit_network.roadbed;
         let before: Vec<_> = restore.replaced_pieces().collect();
         if let Some(overlap) =
-            ReservedOverlap::first(self, roadbed.installed_pieces(&restore), &before)
+            ReservedOverlap::first_in_core(self, roadbed.installed_pieces(&restore), &before)
         {
             self.rollback_staged_road_edit(Some(&restore));
             let rejection = overlap.rejection();
@@ -1947,7 +1947,7 @@ impl SimCore {
             .pieces()
             .filter_map(|(id, _)| roadbed.piece_mesh(id))
             .collect();
-        ReservedOverlap::first(self, delta.pieces().filter_map(|(_, mesh)| mesh), &before)
+        ReservedOverlap::first_in_core(self, delta.pieces().filter_map(|(_, mesh)| mesh), &before)
             .map(ReservedOverlap::rejection)
     }
 

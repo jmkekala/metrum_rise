@@ -284,19 +284,19 @@ fn fields_reject_roads_building_sites_parcels_and_other_fields() {
     core.zoning
         .remove_parcels_by_raw_ids(&HashSet::from([parcel.raw()]));
     core.allocator
-        .field_clearance
+        .field_clearance_mut()
         .set(100, &rectangle(100.0, 100.0, 20.0, 20.0));
     assert!(
         core.validate_field_polygon_internal(farm, &polygon)
             .unwrap_err()
             .contains("another field")
     );
-    core.allocator.field_clearance.clear();
+    core.allocator.field_clearance_mut().clear();
     core.commit_field_polygon_internal(farm, polygon.clone())
         .unwrap();
     // Save/load reconstruction restores the same placement reservation from authoritative sites.
     let restored = AgricultureSystem::from_sites(core.agriculture.sites().to_vec());
-    core.allocator.field_clearance.clear();
+    core.allocator.field_clearance_mut().clear();
     restored.apply_work_area_scales(&mut core.allocator);
     assert!(
         core.allocator
@@ -320,7 +320,7 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
         .preview_parcel_at(120.0, 8.0, 20.0, 20.0, &core.region_graph)
         .unwrap();
     core.allocator
-        .field_clearance
+        .field_clearance_mut()
         .set(100, &rectangle(100.0, 7.0, 60.0, 80.0));
     let preview = core
         .get_industry_building_placement_preview_internal(asset, 120.0, 8.0)

@@ -29,7 +29,9 @@ struct FixtureEdge {
     width: f32,
     start_clip: f32,
     end_clip: f32,
+    // Control polyline and physical profile, as a save holds them.
     points: Vec<[f32; 3]>,
+    physical: Vec<[f32; 3]>,
 }
 
 fn fixture() -> SimCore {
@@ -58,14 +60,14 @@ fn fixture() -> SimCore {
             id
         );
     }
-    for e in f.edges {
-        let points: Vec<_> = e
-            .points
+    let points = |points: &[[f32; 3]]| -> Vec<_> {
+        points
             .iter()
             .map(|p| Vector3::new(p[0], p[1], p[2]))
-            .collect();
-        let length = points.windows(2).map(|p| p[0].distance_to(p[1])).sum();
-        let edge = Edge {
+            .collect()
+    };
+    for e in f.edges {
+        let mut edge = Edge {
             start_node: e.start,
             end_node: e.end,
             width: e.width,
@@ -73,18 +75,26 @@ fn fixture() -> SimCore {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             fwd_lanes: 1,
             bkw_lanes: 1,
-            physical_length: length,
             start_clip: e.start_clip,
             end_clip: e.end_clip,
-            geometry: points.clone(),
-            physical_geometry: points,
+            geometry: points(&e.points),
+            physical_geometry: points(&e.physical),
             ..Default::default()
         };
+        (edge.base_cost, edge.physical_length) =
+            crate::simulation::pathing::cost::CostCalculator::calculate_costs(&edge);
         assert_eq!(core.region_graph.add_edge(edge), e.id);
         core.transit_network.roadbed.mark_edge_dirty(e.id);
     }
     core.region_graph.rebuild_adjacency_list();
     core.precompute_road_mesh_data();
+    // Regenerated with `ROAD-68-E`'s load rebuild (open question 8): every node builds as saved.
+    let roadbed = &core.transit_network.roadbed;
+    assert!(
+        roadbed.is_current() && roadbed.failed_nodes().is_empty(),
+        "{:?}",
+        roadbed.failed_nodes()
+    );
     for (id, edge, side, t, width, depth, profile) in f.parcels {
         core.zoning
             .restore_parcel_from_attachment(
@@ -332,10 +342,9 @@ fn hillside_houses() -> SimCore {
     core
 }
 
-// The fixture still holds legacy clips: node 2 fails `MouthOffPlane`, so its tiles report
-// `roadbed_chain_open_end` (`ROAD-68` open questions 8 and 19).
+// The refined terrain patches after the hillside houses.
 #[test]
-#[ignore = "TERRAIN-07: refined CDT patches of the legacy terrain pipeline; the fixture's node 2 also fails MouthOffPlane on legacy clips (open question 8)"]
+#[ignore = "TERRAIN-07: refined CDT patches of the legacy terrain pipeline"]
 fn hillside_houses_terrain_builds_clean() {
     let mut core = hillside_houses();
     let patches = core.collect_refined_terrain_patch_build_inputs(2.0);

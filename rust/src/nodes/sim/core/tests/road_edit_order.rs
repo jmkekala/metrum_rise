@@ -5,8 +5,9 @@
 //! reference junctions, committed stroke by stroke through `SimCore::commit_road` as the
 //! reference harness does, flat and on its 2.5% slope. A stroke reads no carriageway of a piece
 //! its edit rebuilds (open question 16) and joins a road end like any node (open question 30
-//! (a)); on the slope, a mid-span meeting takes the first-drawn road's height, the crossing rule
-//! (open questions 16 and 30), so those fixtures depend on drawing order by that rule alone.
+//! (a)), so T, Y and end-to-end joins are order independent on the slope too. A mid-span meeting
+//! takes the first-drawn road's height, the crossing rule (open questions 16 and 30), so on the
+//! slope the cross and the two-junction fixture are asserted by that rule in every order instead.
 
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
@@ -257,6 +258,70 @@ fn a_terrain_edit_beside_a_sloped_junction_leaves_no_failed_node() {
     assert_profiles_fresh("terrain edit", &core);
 }
 
+// The terrain spike's `t_cutfill`: a T drawn on flat ground, then the ground sloped 8% under it,
+// falling 10.24 m to the west and rising as far to the east of the junction. The edit re-grades
+// the roads and re-solves the junction (open question 11 (c)), so it stands with every node
+// built; before that re-solve the junction lost its piece.
+#[test]
+fn an_8_percent_slope_under_a_flat_t_leaves_every_node_built() {
+    let strokes = [
+        ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 1),
+        ([Vector2::ZERO, Vector2::new(0.0, ARM_M)], 1),
+    ];
+    let mut core = committed(&strokes, &[0, 1], false);
+    let terrain_before = core.heightmap.clone_visual_dense();
+    core.slope_terrain_internal(
+        Vector2::ZERO,
+        256.0,
+        Vector2::new(-128.0, 0.0),
+        -10.24,
+        Vector2::new(128.0, 0.0),
+        10.24,
+        1.0,
+    );
+    let roadbed = &core.transit_network.roadbed;
+    assert!(
+        roadbed.is_current() && roadbed.failed_nodes().is_empty(),
+        "failed nodes after the edit: {:?}",
+        roadbed.failed_nodes()
+    );
+    assert!(
+        core.heightmap.clone_visual_dense() != terrain_before,
+        "the edit was rolled back: {:?}",
+        core.last_road_rejection.as_ref().map(|r| &r.detail)
+    );
+    assert_profiles_fresh("terrain edit", &core);
+}
+
+// The terrain spike's `city_grid_t`: closed 96 m blocks, then a T split between two of the
+// grid's streets at the origin, on the reference harness's slope steepened to 8%. The split
+// re-derives the grid edges at the crossings beside it, whose far crossings the plan's excerpt
+// held without all their arms, so one failed `MouthOffPlane` (`ROAD-68` open question 8).
+#[test]
+fn a_street_grid_t_split_on_an_8_percent_slope_commits() {
+    let strokes: [Stroke; 6] = [
+        ([Vector2::new(-150.0, 0.0), Vector2::new(150.0, 0.0)], 1),
+        ([Vector2::new(-150.0, 96.0), Vector2::new(150.0, 96.0)], 1),
+        ([Vector2::new(-150.0, -96.0), Vector2::new(150.0, -96.0)], 1),
+        ([Vector2::new(-96.0, -150.0), Vector2::new(-96.0, 150.0)], 1),
+        ([Vector2::new(96.0, -150.0), Vector2::new(96.0, 150.0)], 1),
+        ([Vector2::ZERO, Vector2::new(0.0, 96.0)], 1),
+    ];
+    let core = committed_with(512.0, &strokes, &[0, 1, 2, 3, 4, 5], |core| {
+        core.slope_terrain_internal(
+            Vector2::ZERO,
+            256.0,
+            Vector2::new(-128.0, 0.0),
+            0.0,
+            Vector2::new(128.0, 0.0),
+            20.48,
+            1.0,
+        );
+    });
+    assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+    assert_profiles_fresh("street grid", &core);
+}
+
 fn assert_order_independent(name: &str, strokes: &[Stroke], orders: &[&[usize]], sloped: bool) {
     let reference = build(strokes, orders[0], sloped);
     for order in &orders[1..] {
@@ -324,6 +389,29 @@ fn splits_and_adjacent_junctions(sloped: bool) {
     );
 }
 
+// A road drawn as two strokes that meet end to end, straight on (a pass-through node) and bending
+// 34 degrees, in either order: the second stroke starts or ends at the first one's road end.
+fn end_to_end_joins(sloped: bool) {
+    for bend_deg in [0.0_f32, 34.0] {
+        let strokes = [
+            ([Vector2::new(-ARM_M, 0.0), Vector2::ZERO], 1),
+            (
+                [
+                    Vector2::ZERO,
+                    Vector2::from_angle(bend_deg.to_radians()) * ARM_M,
+                ],
+                1,
+            ),
+        ];
+        assert_order_independent(
+            &format!("end_to_end_{bend_deg}"),
+            &strokes,
+            &[&[0, 1], &[1, 0]],
+            sloped,
+        );
+    }
+}
+
 // The plain T and the T whose through road is 2+2 lanes, through road first and last.
 fn t_junctions(sloped: bool) {
     for through_lanes in [1, 2] {
@@ -347,28 +435,24 @@ fn t_junctions(sloped: bool) {
 fn flat_junctions_do_not_depend_on_drawing_order() {
     y_junctions(false);
     t_junctions(false);
+    end_to_end_joins(false);
     splits_and_adjacent_junctions(false);
 }
 
 // Open question 16: a stroke reads no piece its own edit rebuilds, so the through road of a T
 // drawn after its side road ignores the side road's cap and span, and the side road drawn
 // second meets the through road at its graph profile. Open question 30 (a): a stroke from a
-// road end joins it like any node, so every order of a Y solves its roads alike.
+// road end joins it like any node, so every order of a Y or an end-to-end join solves its roads
+// alike. Mid-span meetings follow the crossing rule instead, which
+// `a_mid_span_meeting_lies_on_the_first_drawn_road` asserts for every order of the sloped cross
+// and pair (open question 30: the two roads' profiles at the sloped cross's meeting differ by
+// an ulp, so only re-heighting the first road, which edits an authored road, would make the
+// orders equal).
 #[test]
 fn sloped_junctions_do_not_depend_on_drawing_order() {
     y_junctions(true);
     t_junctions(true);
-}
-
-// Mid-span meetings depend on drawing order by question 16's crossing rule alone: the road drawn
-// second meets the first at its graph profile, so the first sets the height
-// (`a_mid_span_meeting_lies_on_the_first_drawn_road`). On the slope the two roads' profiles at
-// the sloped cross's meeting differ by an ulp, so the orders differ there; only re-heighting the
-// first road (open question 30 (c), which edits an authored road) would make them equal.
-#[test]
-#[ignore = "ROAD-68-E: open question 30, by the crossing rule a mid-span meeting takes the first-drawn road's height; the sloped cross's two profiles differ there by an ulp"]
-fn sloped_mid_span_meetings_do_not_depend_on_drawing_order() {
-    splits_and_adjacent_junctions(true);
+    end_to_end_joins(true);
 }
 
 // The height a stroke meets at `at` on the graph it is drawn on: an existing node's graph
@@ -420,8 +504,8 @@ fn live_node(graph: &crate::simulation::network::graph::RegionGraph, node: u32) 
 // Open questions 16 and 30: a stroke meets a road it crosses or ends on mid-span at that road's
 // graph profile, and a road end it passes over at that node's height, so the road drawn first
 // sets the meeting's height and the road drawn second edits neither. The sloped cross and pair,
-// every order of the order test: each meeting node lies exactly on what the first-drawn road
-// had there before the second arrived.
+// in every order the flat test draws them: each meeting node lies exactly on what the
+// first-drawn road had there before the second arrived.
 #[test]
 fn a_mid_span_meeting_lies_on_the_first_drawn_road() {
     let cross: &[Stroke] = &[

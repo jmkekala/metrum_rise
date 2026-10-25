@@ -20,7 +20,7 @@ pub(crate) use lots::{CellFrontage, CellLot};
 pub(crate) use selection::{CellEdit, CellSelection, CellSelectionShape};
 pub(crate) use snapping::RoadGridSnap;
 pub(crate) use sources::CellCurveSource;
-pub(crate) use store::{CellStore, RoadCellAlignment};
+pub(crate) use store::{CellReservations, CellStore, RoadCellAlignment};
 
 use serde::{Deserialize, Serialize};
 

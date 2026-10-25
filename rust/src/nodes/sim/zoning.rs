@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn field_blocking_retains_canonical_cell_precision() {
         let mut allocator = BuildingAllocator::new();
-        allocator.field_clearance.set(
+        allocator.field_clearance_mut().set(
             0,
             &[
                 Vector2::new(100.0, 10.0),
