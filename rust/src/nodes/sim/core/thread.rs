@@ -77,7 +77,7 @@ fn finalize_network_render_products(core: &mut SimCore) -> Option<RoadToolPublic
         core.rebuild_network_surface_terrain_internal();
         core.precompute_road_mesh_data();
         core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        core.publish_road_tool_view(None)
+        core.publish_road_tool_view()
     })
 }
 

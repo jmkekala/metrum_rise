@@ -387,7 +387,7 @@ fn the_replica_follows_commits_and_undo() {
     core.benchmark_mode = false;
     let mut context = context(&mut core);
     // The initial capture was made outside the publisher; its first publication replaces it.
-    let first = core.publish_road_tool_view(None).expect("current roadbed");
+    let first = core.publish_road_tool_view().expect("current roadbed");
     assert!(context.apply(&first));
     let points = stroke(&core, side);
     let previewed = Arc::new(preview(&mut context, &points));
@@ -408,7 +408,7 @@ fn the_replica_follows_commits_and_undo() {
     core.rebuild_network_surface_terrain_internal();
     core.precompute_road_mesh_data();
     let publication = core
-        .publish_road_tool_view(None)
+        .publish_road_tool_view()
         .expect("undo leaves it current");
     assert!(context.apply(&publication));
     assert_eq!(context.replica.edge_count(), core.region_graph.edge_count());
@@ -675,7 +675,7 @@ fn benchmark_road_preview_stages() {
         let mut core = committed(&roads, &order, true);
         let mut context = context(&mut core);
         // Follow the publisher, so the commit below refreshes the context by records.
-        let first = core.publish_road_tool_view(None).expect("current roadbed");
+        let first = core.publish_road_tool_view().expect("current roadbed");
         assert!(context.apply(&first));
         let strokes: Vec<Vec<Vector3>> = (0..8)
             .map(|index| stroke(&core, [start, pose(index as f32 / 8.0)]))

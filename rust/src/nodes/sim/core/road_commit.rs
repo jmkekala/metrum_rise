@@ -248,12 +248,14 @@ impl SimCore {
         record_crash_phase_for_core(self, "add road tool snapshot");
         // D7 (`ROAD-68-G`): the hierarchy is rebuilt as a pure job on an immutable copy of the
         // graph and adopted a fixed number of frames later; route readers wait for it. That
-        // copy is the commit's one `O(city)` copy; the road tool's view shares it and its
-        // replica copies only the rebuilt owners' records (`ROAD-68-E`).
-        let routing_graph = road_add
-            .committed
-            .then(|| std::sync::Arc::new(self.region_graph.clone()));
-        let road_snapshot = self.publish_road_tool_view(routing_graph.clone());
+        // copy is the commit's one `O(city)` copy, made by the publication; the road tool's
+        // view shares it and its replica copies only the rebuilt owners' records (`ROAD-68-E`).
+        let (routing_graph, road_snapshot) = if road_add.committed {
+            let (graph, publication) = self.publish_committed_road_tool_view();
+            (Some(graph), publication)
+        } else {
+            (None, self.publish_road_tool_view())
+        };
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
         if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");

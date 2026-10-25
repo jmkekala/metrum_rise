@@ -86,22 +86,37 @@ impl SimCore {
     /// Publishes the road tool's view of the current generation once the roadbed matches the
     /// graph; `None` while it is dirty (the rebuilt owners keep accumulating).
     ///
-    /// `graph` is an immutable copy of the live graph the caller already made (the commit's
-    /// routing rebuild input), which the view shares; without one the view keeps its graph when
-    /// nothing changed and copies the live graph otherwise. Terrain and water are copied only
-    /// when their generations changed. Cost: `O(rebuilt owners' records)` plus those copies.
-    pub(crate) fn publish_road_tool_view(
+    /// The view keeps its graph when nothing changed, shares the copy an editor offered for its
+    /// routing rebuild ([`RoadToolPublisher::offer_graph`]) and copies the live graph otherwise.
+    /// Terrain and water are copied only when their generations changed. Cost:
+    /// `O(rebuilt owners' records + journaled cell entries * log entries)` plus those copies.
+    pub(crate) fn publish_road_tool_view(&mut self) -> Option<RoadToolPublication> {
+        self.publish_road_tool_view_with(false)
+    }
+
+    /// Publishes a committed edit's view with a fresh copy of the live graph, which the view
+    /// shares and the caller keeps as the routing rebuild's input (D7, `ROAD-68-G`): the
+    /// commit's one `O(city)` copy. Without a publication (a dirty roadbed) the copy is made
+    /// alone.
+    pub(crate) fn publish_committed_road_tool_view(
         &mut self,
-        graph: Option<Arc<RegionGraph>>,
-    ) -> Option<RoadToolPublication> {
-        let graph = graph.or_else(|| self.road_tool_publisher.offered_graph.take());
-        self.road_tool_publisher.offered_graph = None;
+    ) -> (Arc<RegionGraph>, Option<RoadToolPublication>) {
+        match self.publish_road_tool_view_with(true) {
+            Some(publication) => (Arc::clone(&publication.view.region_graph), Some(publication)),
+            None => (Arc::new(self.region_graph.clone()), None),
+        }
+    }
+
+    fn publish_road_tool_view_with(&mut self, copy_graph: bool) -> Option<RoadToolPublication> {
+        let offered = self.road_tool_publisher.offered_graph.take();
         if !self.transit_network.roadbed.is_current() {
             return None;
         }
+        // A committed edit's copy supersedes an offered one.
+        let offered = offered.filter(|_| !copy_graph);
         let terrain_inputs = self.refresh_road_terrain_inputs();
         #[cfg(debug_assertions)]
-        if let Some(graph) = &graph {
+        if let Some(graph) = &offered {
             assert_replica_matches(graph, &self.region_graph);
         }
         let rebuilt = self.transit_network.roadbed.take_rebuilt_owners();
@@ -119,61 +134,78 @@ impl SimCore {
         let (view, replica) = match &previous {
             Some(previous) if !rebuilt.all && previous.role_revision == role_revision => {
                 let graph_changed = !rebuilt.is_empty() || previous.graph_counts != graph_counts;
-                let replica = if graph_changed {
-                    let nodes = rebuilt.nodes.iter().copied().collect();
-                    let edges = rebuilt.edges.iter().copied().collect();
-                    let records = self
-                        .region_graph
-                        .capture_undo_for_local_topology(edges, nodes);
-                    ReplicaSync::Records(records)
-                } else {
-                    ReplicaSync::Unchanged
+                let terrain_changed = previous.terrain_generations != terrain_generations;
+                let water_changed = previous.water_generation != water_generation;
+                let copy_graph = copy_graph || (offered.is_none() && graph_changed);
+                let zoning_grid = self
+                    .zoning
+                    .cells
+                    .road_grid_snap(f64::from(self.config.zone_cell_m));
+                let (graph, roadbed) = (&self.region_graph, &self.transit_network.roadbed);
+                let (heightmap, watermap) = (&self.heightmap, &self.watermap);
+                let shared = || {
+                    let replica = if graph_changed {
+                        let nodes = rebuilt.nodes.iter().copied().collect();
+                        let edges = rebuilt.edges.iter().copied().collect();
+                        ReplicaSync::Records(graph.capture_undo_for_local_topology(edges, nodes))
+                    } else {
+                        ReplicaSync::Unchanged
+                    };
+                    let region_graph = match offered {
+                        Some(graph) => graph,
+                        None if copy_graph => Arc::new(graph.clone()),
+                        None => Arc::clone(&previous.view.region_graph),
+                    };
+                    let terrain = if terrain_changed {
+                        Arc::new(heightmap.clone())
+                    } else {
+                        Arc::clone(&previous.view.terrain)
+                    };
+                    let water = if water_changed {
+                        Arc::new(watermap.clone())
+                    } else {
+                        Arc::clone(&previous.view.water)
+                    };
+                    (replica, region_graph, Arc::new(roadbed.snapshot()), terrain, water)
                 };
-                let region_graph = match graph {
-                    Some(graph) => graph,
-                    None if graph_changed => Arc::new(self.region_graph.clone()),
-                    None => Arc::clone(&previous.view.region_graph),
-                };
-                let terrain = if previous.terrain_generations == terrain_generations {
-                    Arc::clone(&previous.view.terrain)
-                } else {
-                    Arc::new(self.heightmap.clone())
-                };
-                let water = if previous.water_generation == water_generation {
-                    Arc::clone(&previous.view.water)
-                } else {
-                    Arc::new(self.watermap.clone())
-                };
+                // The view's cell copy follows the live store's journal.
+                let mut cells = previous.view.cells.clone();
+                let live_cells = &mut self.zoning.cells;
+                let mut follow = || cells.follow(live_cells);
+                // A copy of city-sized state takes longer than the follow, which then runs
+                // beside it on the shared pool and costs the publication nothing (`ROAD-68-E`
+                // round 7). Neither side waits for a pure job. Without a copy both are short and
+                // run here, as entering the pool from outside it would cost more.
+                let ((replica, region_graph, roadbed, terrain, water), ()) =
+                    if copy_graph || terrain_changed || water_changed {
+                        crate::thread_pools::install(|| rayon::join(shared, follow))
+                    } else {
+                        (shared(), follow())
+                    };
+                // Debug tests check that the copy is exact at every publication.
+                #[cfg(all(test, debug_assertions))]
+                assert_eq!(cells.state_digest(), self.zoning.cells.state_digest());
                 let view = RoadToolQuerySnapshot {
-                    zoning_grid: self
-                        .zoning
-                        .cells
-                        .road_grid_snap(f64::from(self.config.zone_cell_m)),
+                    zoning_grid,
                     terrain,
                     region_graph,
-                    roadbed: Arc::new(self.transit_network.roadbed.snapshot()),
+                    roadbed,
                     water,
                     road_mesh_chunks: Arc::clone(&self.published_road_mesh_chunks),
                     road_mesh_generation: self.road_mesh_lane_generation,
                     terrain_inputs,
                     fields: Arc::clone(&self.allocator.field_clearance),
-                    cells: {
-                        let mut cells = previous.view.cells.clone();
-                        cells.follow(&mut self.zoning.cells);
-                        // Debug tests check that the copy is exact at every publication.
-                        #[cfg(all(test, debug_assertions))]
-                        assert_eq!(cells.state_digest(), self.zoning.cells.state_digest());
-                        cells
-                    },
+                    cells,
                     surface_generation: self.road_tool_surface_generation,
                 };
                 (view, replica)
             }
             _ => {
                 let mut view = road_tool_snapshot_from_core(self)?;
-                // The view took a whole copy of the cell store.
+                // The view took a whole copy of the cell store, and of the graph, which a
+                // committed edit's caller shares.
                 self.zoning.cells.clear_journal();
-                if let Some(graph) = graph {
+                if let Some(graph) = offered {
                     view.region_graph = graph;
                 }
                 (view, ReplicaSync::Replace)

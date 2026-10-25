@@ -157,7 +157,7 @@ fn starting_a_town(e: &mut Entries) -> SimCore {
     e.run("init", || {
         core.precompute_road_mesh_data();
         core.build_snapshot();
-        core.publish_road_tool_view(None).unwrap();
+        core.publish_road_tool_view().unwrap();
     });
     e.run("asset packs", || assets_installed(&mut core));
 

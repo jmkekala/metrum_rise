@@ -308,7 +308,7 @@ impl SimulationNode {
             // (`ROAD-68` open question 25); unchanged roads publish in `O(1)`.
             (
                 applied,
-                applied.then(|| core.publish_road_tool_view(None)).flatten(),
+                applied.then(|| core.publish_road_tool_view()).flatten(),
             )
         };
         if let Some(publication) = publication {

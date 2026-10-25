@@ -378,7 +378,7 @@ impl SimulationNode {
         let (snapshot, road_tool_publication) = {
             let mut core = self.lock_core();
             let snapshot = core.build_snapshot();
-            let road_tool_publication = core.publish_road_tool_view(None);
+            let road_tool_publication = core.publish_road_tool_view();
             (snapshot, road_tool_publication)
         };
         *self.snapshot.write().unwrap() = snapshot;
@@ -458,7 +458,7 @@ impl INode3D for SimulationNode {
         core.precompute_road_mesh_data();
         let initial_snapshot = core.build_snapshot();
         let road_tool = core
-            .publish_road_tool_view(None)
+            .publish_road_tool_view()
             .expect("the initial roadbed generation must be publishable");
         let road_tool = Arc::new(RoadToolShared::from_publication(road_tool));
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));

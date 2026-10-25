@@ -1000,7 +1000,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     // The game publishes the road tool's first view through the publisher at start-up, so every
     // commit below publishes incrementally from it, as a commit in the game does.
     let published = crate::nodes::sim::core::RoadToolShared::from_publication(
-        core.publish_road_tool_view(None).expect("the fixture roadbed is current"),
+        core.publish_road_tool_view().expect("the fixture roadbed is current"),
     );
     // Godot also requested and uploaded the refined terrain of the road patches it showed, so a
     // commit rebuilds only the tiles it changes. The fixture builds every road patch once here,
