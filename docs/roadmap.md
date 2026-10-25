@@ -85,7 +85,11 @@ routing rebuild on a pool worker; the frame's caller now finishes it before ente
 put the new-lane lift and chunk seal back on the pool and made the cell road-overlap test exact
 without rounding: median 19.3 ms at 100k before the `ROAD-68-D` rebase (control 41.6). On
 `road` after `ROAD-68-D` the 100k commit is rejected and the commit's terrain validation costs
-15–69 ms, in the control too (`ROAD-68-D` part 6 owns both). It still misses
+15–69 ms, in the control too (`ROAD-68-D` part 6 owns both). Part 6 (2026-10-25) showed the
+slowest, first sample is the larger edit beside the painted grid, not a cold start, and put its
+reattachment search, street lights and signs and retained frontage lines on the pool, bit for
+bit: 20.5 / 17.9 / 16.0 ms per sample at 100k before the rebase (control 23.4 / 19.2 / 13.7).
+It still misses
 a frame (open question 21: snapshot publish and copy, which `ROAD-68-E`'s road-tool context
 owns, then the lots, publication and agent passes), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`

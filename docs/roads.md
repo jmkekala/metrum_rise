@@ -1277,7 +1277,14 @@ These need a user decision; work that does not depend on them continues.
     / 12.4 / 12.9 ms at 0 / 2k / 10k / 30k. On `road` after `ROAD-68-D` (`e9fee678`) the 100k
     commit is rejected (`render_geometry_invalid`) and the commit's terrain validation takes 15
     to 69 ms (median) from 0 to 30k, in the control too; `ROAD-68-D` part 6 owns both, and the
-    gate is measured on `road` again once it lands. The acceptance (under 16.7 ms at 100k
+    gate is measured on `road` again once it lands. Part 6
+    ([commit stages, part 6](#commit-stages-part-6-road-68-g-2026-10-25)) found the first sample
+    to be the larger, grid-adjacent edit rather than a cold start, and put its reattachment
+    search, street lights and signs and retained frontage lines on the pool, bit for bit: before
+    the rebase, 20.5 / 17.9 / 16.0 ms at 100k against 23.4 / 19.2 / 13.7 ms (without the varying
+    snapshot publish 19.3 / 13.7 / 12.0 against 22.3 / 15.0 / 12.6). On `road` with
+    `ROAD-68-E1` the snapshot publish is below 0.7 ms, but the tool snapshot grew to 5–11 ms at
+    10k and 30k, in the control too (`ROAD-68-E1`'s). The acceptance (under 16.7 ms at 100k
     buildings) is still not met. At 100k, second sample (part 4; part 5 changes the publication
     to 3.3 ms and the lane lift as below):
     - **Snapshot publish, 4.2 ms**, and the **tool snapshot, 2.5 ms** (`ROAD-68-E`'s road-tool
@@ -3976,6 +3983,109 @@ kinds adds 24).
   options in question 21); an index of buildings by edge, so the repair and the entrance closure
   visit only the edit's buildings, and the agent lists of option (d); road signs without section
   clones; then question 21's (b) if the first sample still misses.
+
+#### Commit stages, part 6 (`ROAD-68-G`, 2026-10-25)
+
+**Why the first sample is the slowest: a larger edit, not a cold start.** A 100k profile of the
+pre-rebase change (perf, LBR, 15 kHz, perf enabled only during each commit, samples split per
+commit by time; profiled, not acceptance) puts the first commit's excess over the third, on the
+worker that runs the commit, in cell generation (+4.3 ms: two lot regions, because the first
+split's east half ends at the painted grid's west junction), the reattachment lane search
+(2.1 ms against none: the agents on the trunk into the grid, searched one after another), the
+render publication (+2.7 ms: the grid junction's pieces, their signs and lifts) and the lane
+rebuild (+1.0 ms: that junction's walkways and pedestrian connections). The tool snapshot costs
+the same in all three. A repeat check rules out cold caches and lazy indices: at 30k the first
+branch committed, undone and committed again costs the same each time (entrances 8.28 / 8.54 /
+7.84 ms, publication 6.80 / 8.47 / 6.50 ms), while the later branches cost 4.33 and 2.61 ms in
+entrances. Only `ROAD-68-D`'s commit validation is cold (1,782 ms first, 27 ms on the repeat),
+which part 6 of `ROAD-68-D` owns. So the first sample is made cheaper by making those stages
+cheaper, with no warm-up.
+
+**Changes** (each leaves every output as it was; the debug suite's checks below):
+
+- **Reattachment on the pool.** Each detached agent's best rebuilt lane reads only that agent's
+  position and the rebuilt lanes, so the shared pool searches them all
+  (`reattach_invalidated_lanes_for_edges`); the agents then move onto their lanes in agent order,
+  as the serial loop did. `O(A / P + detached × rebuilt lanes / P)`.
+- **Street lights and signs beside the piece surfaces.** Lights and signs read only the graph,
+  lanes, roadbed and terrain, and signs keep clear of the lights' world-space poles, so they are
+  placed (`place_street_lights`, `place_road_signs`) while the crosswalks, piece surfaces,
+  bridges and markings are emitted, then pushed after them in the order the serial passes pushed
+  them. One emitter (`emit_into`) now serves the whole-network mesh and the chunked publication.
+- **Crossing signs without copied sections.** `crossing_sections` returned the span's sections
+  with each crossing node's approach section added, cloning every section and its band vector.
+  It now returns a borrowed run (`SectionRun`: an optional section before the span, the span,
+  an optional one after) that `pose`, `place` and `crossing_s` walk as they walked the slice. The
+  run is in station order (a zebra's inner edge lies between its node and the span's mouth;
+  debug builds assert it), so its partition points equal the slice's.
+- **Retained frontage lines on the pool.** Cell generation's continuity candidates (one painted
+  frame holds nearly all of them, so its per-frame parallelism was serial in practice) now visit
+  the frame's frontage lines on the pool and collect their candidates in line order.
+- **Frame ids reused in the candidate index.** Sorted candidates come in runs of one frame, so
+  the index reuses the run's frame id instead of hashing the frame again. The candidate sort
+  itself is unchanged: its element type and comparator fix the unstable sort's order of equal
+  keys, which decides frontage and curve-source order, so it is not replaced.
+- **One pass for the repair and the fronting buildings.** The attachment repair's parallel test
+  of every building now also collects the buildings fronting the lane rebuild closure
+  (`repair_road_attachments_that_may_act`'s `also`). It tests their attachment before the
+  repair; a building the repair moves is among its visits either way, so the set the entrances
+  are derived for is the same, and one `O(B / P)` pass replaces two.
+
+**Not done** (open, question 21): an index of buildings by edge would make the repair visit only
+the edit's buildings, but the repair also visits every building that still may act from before
+(a persistent residue that a local visit would have to carry), and building attachments are
+written at about ten sites plus direct pushes from extraction, topology and save code, each of
+which would have to keep it; at 30k the repair costs 0.2 ms and the closure test 0.05 ms. The
+agents' per-edge lists and planned-route index (option (d)) are not built either.
+
+**Commit breakdown on `road` with `ROAD-68-E1`** (fresh, 2026-10-25, 04:28–04:31). Release
+library tests, one session, pinned to the P-cores, eight workers, both timing locks, no build or
+backup running: control `road` = `340270e5` (binary `c2c4fd37…`), change = this part rebased
+onto it (`cc192880`, binary `a3dba815…`). The 100k tier is still rejected on `road` until
+`ROAD-68-D` part 6 lands, so tiers 0 to 30k; medians of three samples, ms, control / change:
+
+| Stage | 0 | 2k | 10k | 30k |
+| --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 |
+| click → ack | 16.0 / 17.1 | 84.1 / 76.7 | 36.9 / 33.2 | 96.4 / 83.9 |
+| roadbed and terrain (`surface`) | 12.5 / 13.0 | 75.0 / 69.6 | 20.5 / 19.4 | 73.4 / 65.5 |
+| agents and lanes | 0.30 / 0.37 | 0.47 / 0.41 | 0.65 / 0.52 | 0.82 / 0.89 |
+| entrances (`buildings`) | 0.00 | 3.59 / 3.19 | 4.95 / 4.36 | 4.48 / 4.32 |
+| render publication (`mesh`) | 3.00 / 2.90 | 3.82 / 2.45 | 5.07 / 3.84 | 5.86 / 3.48 |
+| tool snapshot | 0.04 | 0.65 / 0.54 | 4.97 / 4.27 | 8.00 / 7.82 |
+| snapshot publish | 0.02 / 0.04 | 0.04 | 0.07 / 0.05 | 0.11 / 0.23 |
+| live lanes off the surface | 0.00 | 0.00 | 0.00 | 0.00 |
+
+Per sample at 2k the first commit's entrances take 14.3 / 9.7 ms and its publication 6.1 /
+5.1 ms. Both product digests equal the control's in all 12 samples. The `surface` stage is
+`ROAD-68-D`'s commit validation. With `ROAD-68-E1` the snapshot publish is below 0.7 ms in every
+sample, but the tool snapshot rose from 0.05 / 0.27 / 0.79 ms (part 5's rebased control, 2k /
+10k / 30k) to 0.65 / 4.97 / 8.00 ms in the control as well (10.8 ms in one 30k sample);
+`ROAD-68-E1` owns it (reported to the coordinator).
+
+**100k before the rebase** (same session, 04:31–04:38; evidence for this part's stages only, not
+acceptance): part 5's change binary (`e1d32537…`) against the same code with this part applied
+on `a1861cf2` (binary `172ab26b…`). Per sample, click → ack 23.4 / 20.5, 19.2 / 17.9 and 13.7 /
+16.0 ms; without the snapshot publish, which varies with the old snapshot it frees (1.1–4.3 ms in
+both, `ROAD-68-E1` changes it), the commit takes 22.3 / 19.3, 15.0 / 13.7 and 12.6 / 12.0 ms.
+In the first sample the agents and lanes take 3.84 / 2.11 ms and the publication 5.40 /
+3.93 ms. Both product digests equal in all three samples.
+
+**Determinism** (fresh, same session, `road68g_commit_determinism`, release, control and change
+on `road`): one and three workers, a rebuild delayed 400 ms at one and eight workers and a save
+inside the hold give identical hourly fingerprints (6) and saved tables (72) against the
+eight-worker reference; both print reference digest `6252b7ba71c5a6f1`, parts 2 to 5's.
+
+**Checks** (fresh, rebased `cc192880`): debug `cargo test --lib` 1,887 passed, 0 failed, 169
+ignored (it includes the narrow-marks digest test, the product probe, the publication splice's
+check against emitting every piece, the crossing runs' station-order assertion and the local
+entrance update's check against a full derivation); `./run.sh --test` passes with `DISPLAY` and
+`WAYLAND_DISPLAY` unset, skipping only `zoning_cells_tool_test` until `ROAD-68-F`; clippy adds no
+warning (the baseline's 59); `roadbed/` holds 7,831 production lines, unchanged by this part.
+
+- **Next.** Measure the 100k tier on `road` once `ROAD-68-D` part 6 lands; then, if a sample
+  still misses, question 21's (b), the tool snapshot's growth since `ROAD-68-E1`, and the
+  buildings-by-edge index and agent lists above.
 
 ### `ROAD-68-H` — acceptance and cleanup
 
