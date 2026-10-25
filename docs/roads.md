@@ -1739,6 +1739,14 @@ These need a user decision; work that does not depend on them continues.
       (`install_cell_lot_plan`), bitwise; the preview does not plan yet (it needs question 32,
       the parcel view, the lot sizes and the explicit-site index in the view). Target still
       missed, open.
+    - **`ROAD-68-E` part 2, round 6 (2026-10-25): question 32 built; the preview half paused
+      by the user.** The live cell store keeps plain maps again and the road tool's view a
+      journal-synced persistent copy, with one planner generic over both
+      ([question 32](#road-68-open-questions)). The user decided (question 33, 2026-10-25) that
+      no lots are planned per preview pose: 21 (b)'s preview half waits until the commit is
+      measured with `TERRAIN-07`'s terrain validation, and if the 100k commit then still
+      misses 16.7 ms, lot regeneration is deferred to a job adopted one frame after the commit,
+      as routing adoption is (D7). Target still missed, open.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -2192,6 +2200,25 @@ These need a user decision; work that does not depend on them continues.
       generation and over derivation, with no single ~1 ms cut
       ([round 5 record](#part-2-round-5-2026-10-25-branch-road68-e5-work-in-progress)); (b) is
       next.
+    - **Built (round 6, branch `road68-E6`):** @@Q32@@
+33. **Where the preview's lot plan runs (`ROAD-68-E` round 6, from question 21 (b)) — decided by
+    the user, 2026-10-25: no per-pose lot planning; question 21 (b)'s preview half is paused
+    until the commit is measured with `TERRAIN-07`; if it then misses, lot regeneration is
+    deferred one frame, as routing adoption is (D7).**
+    - **Evidence.** A preview plan does the commit's lot work: the marks on copies of the cell
+      store and queue, cell generation and lot derivation over every queued region. That is
+      the commit's `buildings` stage, several milliseconds per sample at 10k-100k residents
+      (round 5 and 6 records), against the preview's 7.5 ms per-pose stage total
+      ([stage budgets](#stage-budgets)), on every previewed pose.
+    - **Options.** (a) Plan synchronously on every pose. (b) Plan in a pure job per pose and
+      let the commit install a finished, matching plan. (c) Plan no lots in the preview; if
+      the commit still misses a frame once measured with `TERRAIN-07`'s terrain, defer lot
+      regeneration to a job adopted one frame after the commit, as routing adoption is (D7).
+    - **Decided by the user, 2026-10-25: (c).** The user's rule for question 21 was
+      conditional: speed up lot regeneration first, and plan in the preview only if the commit
+      still does not fit a frame. That cannot be judged until `TERRAIN-07` replaces the legacy
+      terrain validation, which takes 10-90 ms of today's commit. Per-pose plans, synchronous
+      or in jobs, are not the next step.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded

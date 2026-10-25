@@ -218,7 +218,7 @@ Tests that need later gates are disabled until then (6 Rust tests: 4 `TERRAIN-07
 recorded and saved Kuopio quality tests under open question 39, junction blends beside arms the
 grade rule cuts to the 5 m source-delta limit; no `ROAD-68-E` or `ROAD-68-F` one, no Godot
 script).
-`ROAD-68-E` and `-H` are open (`ROAD-68-F` is done), and `roads.md` lists thirty-seven open questions (1-32 and 35-39); open question 16 (strokes pinned to the
+`ROAD-68-E` and `-H` are open (`ROAD-68-F` is done), and `roads.md` lists thirty-eight open questions (1-33 and 35-39); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
