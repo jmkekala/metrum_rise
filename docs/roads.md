@@ -707,7 +707,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
-| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
+| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -1178,8 +1178,17 @@ These need a user decision; work that does not depend on them continues.
     part 3's marks (undo queued fewer regions), then lifted each new lane once, spliced into
     reserved buffers, invalidated cells without the lots' frontage reach and made the agent
     passes' set probes cheap, bit for bit: per sample at 100k the commit takes 28.3 / 21.8 /
-    18.3 ms (median 21.8; same-session control 41.8), at 2k 24.8 / 11.9 / 4.0 ms. The
-    acceptance (under 16.7 ms at 100k buildings) is still not met. At 100k, second sample:
+    18.3 ms (median 21.8; same-session control 41.8), at 2k 24.8 / 11.9 / 4.0 ms. Part 5
+    ([commit stages, part 5](#commit-stages-part-5-road-68-g-2026-10-25)) fixed the pure-job
+    deadlock (no pool worker waits for a pure job), put the new-lane lift and the chunk seal
+    back on the pool and made the cell road-overlap test exact without rounding: before the
+    `ROAD-68-D` rebase, 23.5 / 19.3 / 16.1 ms at 100k (median 19.3; control 41.6) and 4.5 / 9.0
+    / 12.4 / 12.9 ms at 0 / 2k / 10k / 30k. On `road` after `ROAD-68-D` (`e9fee678`) the 100k
+    commit is rejected (`render_geometry_invalid`) and the commit's terrain validation takes 15
+    to 69 ms (median) from 0 to 30k, in the control too; `ROAD-68-D` part 6 owns both, and the
+    gate is measured on `road` again once it lands. The acceptance (under 16.7 ms at 100k
+    buildings) is still not met. At 100k, second sample (part 4; part 5 changes the publication
+    to 3.3 ms and the lane lift as below):
     - **Snapshot publish, 4.2 ms**, and the **tool snapshot, 2.5 ms** (`ROAD-68-E`'s road-tool
       context). The publish drops the previous snapshot inside the view's write lock on the sim
       thread; dropping a warm, unshared copy of the live graph costs only 0.66 ms, so most of it
@@ -1188,9 +1197,9 @@ These need a user decision; work that does not depend on them continues.
       cloning every node's lane-connection map).
     - **Cell lots, 3.5–8.9 ms.** 43 % of generation is the per-footprint legality test against
       the roadbed (`cell_site_blocked`, parallel); the candidate index and sort stay serial.
-    - **Render publication, 4.7–9.8 ms**: street lights and signs for every covered edge (13 %),
-      piece surfaces (12 %), the new lanes' lift, serial again because a parallel lift exposed
-      a pure-job deadlock (2 ms at 100k; part 4 record).
+    - **Render publication, 4.7–9.8 ms** (3.3–5.1 ms in part 5): street lights and signs for
+      every covered edge (13 %), piece surfaces (12 %), the new lanes' lift (on the pool again
+      since part 5).
     - **Agent passes, 1.8–3.7 ms + 0.2 ms**, still `O(A / P)`.
     - **Options.** (a) Ruled out (`SIM-02-H`). (b) Derive the commit's lots from the preview's
       plan in `ROAD-68-E`, so the commit installs them (the user's fallback): removes 3.5–8.9 ms.
@@ -1203,7 +1212,8 @@ These need a user decision; work that does not depend on them continues.
       first, grid-adjacent sample still misses; (d) and (e) only if needed after both.
       Estimate from this breakdown: with (c) the median commit takes about 15 ms and the first
       sample about 25 ms; with (b) as well, about 10 and 16 ms, and about 2 ms less each once
-      the pure-job deadlock is fixed and the new lanes are lifted on the pool again. `ROAD-68-G`
+      the pure-job deadlock is fixed and the new lanes are lifted on the pool again (done in
+      part 5: median 19.3 ms before the rebase, about 13 ms expected with (c)). `ROAD-68-G`
       stays open until the commit fits a frame.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
@@ -3300,6 +3310,8 @@ never blocks a pool worker on work queued behind it") does not cover work stolen
 running job. Both steps are serial again; every other join already on those paths keeps the
 same hazard, which no run has shown before. Recorded for `ROAD-68-H` and the pure-job owner:
 take results outside the pool, or make a waiting taker help run the pool instead of blocking.
+Fixed in [part 5](#commit-stages-part-5-road-68-g-2026-10-25): results are taken outside the
+pool, and both steps are on the pool again.
 
 **The rest of the publication.** A 100k profile of the commit thread after the lift change: the
 splice copying the changed chunks' kept runs grew every layer's buffers run by run (17 % of the
@@ -3371,6 +3383,143 @@ workers, and a save inside the hold give identical hourly fingerprints (6) and s
 (72), in the control and in this part, and both reference runs print digest
 `6252b7ba71c5a6f1`, parts 2 and 3's.
 
+
+#### Commit stages, part 5 (`ROAD-68-G`, 2026-10-25)
+
+**No pool worker waits for a pure job.** The adoption frame took the routing rebuild with
+`PureJob::take` inside `step_frame`'s pool entry, and the sim thread's early wait (outside the
+core lock) was installed in the pool too, so a pool worker blocked on a condition variable while
+another worker ran the job. A worker waiting in a join runs whatever it steals, an injected frame
+among it, so the job that frame waits for, or a part of the job's own joins, can lie lower on
+that worker's own stack or on another waiting worker's; neither can then finish. That is what
+deadlocked the debug suite in part 4. The frame's caller now finishes the job before the frame
+enters the pool (`step_frame` waits on `cch_adoption_completion` first; the sim thread waits
+outside the core lock and the pool), so the adoption inside the pool finds the result ready; a
+taker outside every pool runs an unstarted job in the shared pool; and a wait on a shared-pool
+worker panics instead of blocking (`thread_pools::on_shared_worker`, set by the pool's start
+handler). The adoption frame's `adoption_ms` still includes the wait. Owner:
+[pure jobs](simulation.md#pure-jobs).
+
+- **Regression test** `the_adoption_wait_leaves_every_pool_worker_to_the_rebuild`: the rebuild
+  sleeps 100 ms, then needs every shared-pool worker (a broadcast) while the adoption frame
+  runs. With the old adoption (the new test and hook on `ded1fbd4`'s frame, thread and pure-job
+  code) it hit its 120 s watchdog in 3 of 3 runs; it passes in 0.2 s now. A unit test checks that
+  a shared-pool worker refuses to wait for a running job
+  (`a_shared_worker_never_waits_for_a_running_job`).
+- **New-lane lift and chunk seal on the pool again** (each lane and each chunk is independent,
+  so the output is the same): the debug suite passes with both, before and after the rebase
+  (below), with no hang.
+- **Determinism tests in private pools** run the whole simulation on one pool worker, whose
+  stack holds nothing else, so their waits stay safe; only shared-pool workers are refused.
+
+**Cell road overlap without rounding or margin.** The cell-site road test rounded each visited
+road triangle's bounds outward to f32, compared them with the footprint's f32 bounds, queried a
+footprint grown by 1 m and looked up each triangle's band kind. No f32 lies strictly between a
+value and its directed rounding, so `F < round_up(v)` exactly when `F < v` and
+`F > round_down(v)` when `F > v`: the same test on the f64 bounds, without rounding. Only
+triangles touching the footprint's f32 bounds can pass it, so the query needs no margin, and the
+kind is not read (`RoadbedSystem::any_top_triangle_points_in_bounds`). The same triangles reach
+the same overlay. The test was about a quarter of cell generation's samples in part 4's
+profile (2k and 100k commits) and is 7 % in this part's (100k).
+
+**Rebase onto `ROAD-68-D`** (`e9fee678`: centre chunk frames, chunk-line clips, uncut zebras,
+site pads in the terrain patch). No code conflicts; open question 21's text kept this branch's
+part 4 version beside D's questions 22 to 24. Fresh on the rebased tree: the publication splice
+still equals emitting every piece (its debug assertion runs on every spliced publication of the
+debug suite), the narrow-marks digest test, the product probe
+(`roadbed_fixture_products_match_the_probe`) and D's
+`reference_junction_road_chunks_are_watertight` and
+`reference_junction_road_and_terrain_share_seam_vertices` pass.
+
+**Commit breakdown before the rebase** (fresh, 2026-10-25, 02:57–03:08). Release library tests,
+one session, pinned to the P-cores, eight workers, both timing locks, no build or backup
+running: part 4's control (`27797b92` with the two test-only harness commits, binary
+`aa06a2a0…`) against this part on the same base (`a1861cf2`, binary `e1d32537…`). Medians of
+three samples, ms, control / change:
+
+| Stage | 0 | 2k | 10k | 30k | 100k |
+| --- | --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 | 76,109 / 2,220 / 4,283 |
+| click → ack | 9.91 / 4.51 | 28.7 / 8.95 | 34.7 / 12.4 | 34.6 / 12.9 | 41.6 / 19.3 |
+| roadbed and terrain (`surface`) | 0.59 / 0.45 | 0.35 / 0.57 | 0.51 / 0.50 | 0.64 / 0.57 | 0.68 / 0.67 |
+| agents: invalidation | 0.00 | 0.01 | 0.07 / 0.06 | 0.24 / 0.07 | 1.21 / 0.23 |
+| agents and lanes | 0.30 / 0.26 | 0.32 / 0.31 | 0.70 / 0.63 | 1.02 / 0.74 | 4.00 / 2.15 |
+| entrances (`buildings`) | 0.00 | 19.0 / 3.61 | 20.9 / 4.44 | 20.8 / 4.14 | 20.2 / 5.22 |
+| render publication (`mesh`) | 8.53 / 3.30 | 8.31 / 3.76 | 10.9 / 5.41 | 9.28 / 4.73 | 7.56 / 3.29 |
+| tool snapshot | 0.02 / 0.01 | 0.04 / 0.03 | 0.23 | 0.65 / 0.66 | 2.58 / 2.50 |
+| snapshot publish | 0.06 / 0.14 | 0.20 / 0.15 | 0.21 | 1.17 / 1.02 | 3.68 / 3.58 |
+| adoption latency | 1.01 / 0.70 | 0.70 / 0.89 | 2.63 / 2.71 | 15.8 / 16.2 | 185 / 191 |
+| CCH build alone | 1.36 / 0.90 | 2.28 / 2.48 | 14.4 / 14.3 | 51.2 / 52.4 | 298 / 302 |
+| live lanes off the surface | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+
+Per sample, click → ack at 100k is 55.1 / 23.5, 41.6 / 19.3 and 29.5 / 16.1 ms; at 2k 42.1 / 19.7,
+28.7 / 9.0 and 10.9 / 2.8 ms. Both product digests equal the control's in all 15 samples. Against
+part 4 (21.8 ms median at 100k) the lift and seal on the pool take the publication from 5.5 to
+3.3 ms; the overlap change is within the lots' sample spread (5.4 → 5.2 ms). The median at
+100k, 19.3 ms, still misses 16.7 ms by 2.6 ms; the snapshot publish and the tool snapshot,
+`ROAD-68-E`'s, are about 6 ms of it.
+
+**After the rebase the 100k commit is rejected, and the commit's terrain validation costs 15 to
+69 ms** (fresh, 03:38–03:48, same method: control `d9112c47` = `e9fee678` with the two harness
+commits, binary `60195992…`, against the rebased change `47432fb5`, binary `1b18d096…`). At
+100k the first commit (the trunk-branch split) is rejected with `render_geometry_invalid` in the
+control and in the change, so the harness stops there; the lower tiers run, with both product
+digests equal in all 12 samples:
+
+| Stage | 0 | 2k | 10k | 30k |
+| --- | --- | --- | --- | --- |
+| buildings / nodes / edges | 0 / 31 / 44 | 1,413 / 58 / 93 | 7,396 / 247 / 446 | 20,362 / 642 / 1,201 |
+| click → ack | 22.5 / 18.8 | 93.1 / 77.4 | 49.5 / 29.7 | 101 / 76.5 |
+| roadbed and terrain (`surface`) | 15.3 / 15.1 | 67.4 / 69.3 | 16.9 / 18.1 | 65.9 / 63.3 |
+| agents: invalidation | 0.00 / 0.01 | 0.02 / 0.03 | 0.08 / 0.09 | 0.27 / 0.13 |
+| agents and lanes | 0.30 / 0.31 | 0.55 / 0.48 | 0.74 / 0.70 | 1.30 / 0.98 |
+| entrances (`buildings`) | 0.00 | 17.0 / 3.52 | 20.7 / 4.74 | 20.6 / 4.71 |
+| render publication (`mesh`) | 6.40 / 2.93 | 7.44 / 3.30 | 9.46 / 4.67 | 9.29 / 4.42 |
+| tool snapshot | 0.02 | 0.05 / 0.06 | 0.27 / 0.25 | 0.79 / 0.71 |
+| snapshot publish | 0.10 / 0.07 | 0.20 / 0.22 | 0.55 / 0.57 | 1.64 / 1.42 |
+| adoption latency | 0.76 / 0.84 | 0.85 / 0.93 | 2.62 / 2.56 | 16.6 / 16.8 |
+| CCH build alone | 0.91 / 0.87 | 2.40 / 2.36 | 13.6 / 14.6 | 48.7 / 50.9 |
+| live lanes off the surface | 0.00 | 0.00 | 0.00 | 0.00 |
+
+Per sample, the first commit takes 33 / 171 / 697 / 1,744 ms at 0 / 2k / 10k / 30k (change),
+nearly all in `surface` (`validate_staged_road_render`: the roadbed and the commit's terrain
+validation, which `ROAD-68-D` now builds from the roadbed's outer chains). Before `ROAD-68-D`
+that stage took 0.4 to 0.7 ms. Without it (click → ack minus `surface`, median per tier) the
+commit takes 3.7 / 8.1 / 11.6 / 13.1 ms at 0 / 2k / 10k / 30k (control 7.2 / 25.7 / 32.6 / 34.7),
+as before the rebase (4.1 / 8.4 / 11.9 / 12.3, and 18.6 at 100k): entrances 3.5–4.7 against
+17–21 ms, publication 2.9–4.7 against 6.4–9.5 ms. The gate cannot be
+measured at 100k on `road` until `ROAD-68-D`'s commit validation is fixed (open question 21,
+reported to the coordinator).
+
+**Determinism** (fresh, rebased, same session, `road68g_commit_determinism`, release): against
+the eight-worker reference, one and three workers, a rebuild delayed 400 ms at one and eight
+workers, and a save inside the hold give identical hourly fingerprints (6) and saved tables (72)
+in the control and the change; both reference runs print digest `6252b7ba71c5a6f1`, parts 2 to
+4's.
+
+**Where the 100k commit goes now** (perf, LBR, 15 kHz, the three 100k commits of the
+pre-rebase change binary; profiled, not acceptance). On the commit thread, per commit: cell
+generation about 5 ms (its serial candidate sort, candidate copies and cell-key map inserts and
+growth), the tool snapshot's graph clone 2.4 ms, road signs 1.2 ms (cloning each crossing
+edge's sections with their band vectors, `crossing_sections`, and turning-radius hazards along
+the touched chains), the route-state test's share 1.2 ms, the attachment repair's share 0.9 ms,
+the splice 0.7 ms, piece surfaces 0.7 ms, the lane lift 0.5 ms. Across all threads the
+attachment repair (`repair_road_attachments_that_may_act`, a parallel test of every building,
+memory-bound on building and parcel records) has as many samples as the agents' route-state
+test: both are `O(city / P)` scans.
+
+**Checks** (fresh, rebased `47432fb5`): debug `cargo test --lib` 1,875 passed, 0 failed, 167
+ignored (1,844 / 0 / 188 before the rebase, with the lift and seal on the pool); `./run.sh --test`
+passes with `DISPLAY` and `WAYLAND_DISPLAY` unset, skipping `network_tool_chunk_renderer_test`,
+`road_junction_preview_test` and `road_preview_stream_test` until `ROAD-68-E` and
+`zoning_cells_tool_test` until `ROAD-68-F`; clippy adds no warning (the baseline's 59);
+`roadbed/` holds 7,418 production lines (`e9fee678`: 7,394; the triangle query without band
+kinds adds 24).
+
+- **Next.** `ROAD-68-E` round 2's publication and graph share (6.0–6.7 ms of the median, the
+  options in question 21); an index of buildings by edge, so the repair and the entrance closure
+  visit only the edit's buildings, and the agent lists of option (d); road signs without section
+  clones; then question 21's (b) if the first sample still misses.
 
 ### `ROAD-68-H` — acceptance and cleanup
 

@@ -80,7 +80,12 @@ commit marks the whole ring again, checked by a digest test over every edit kind
 each new lane once, spliced the publication into reserved buffers, invalidated cells without
 the lots' frontage reach and made the agent passes' set probes cheap, products and determinism
 digests bit for bit unchanged: median 21.8 ms at 100k (18.3–28.3 per sample; same-session
-control 41.8). It still misses
+control 41.8). Part 5 (2026-10-25) fixed a deadlock in pure jobs (a frame waited for the
+routing rebuild on a pool worker; the frame's caller now finishes it before entering the pool),
+put the new-lane lift and chunk seal back on the pool and made the cell road-overlap test exact
+without rounding: median 19.3 ms at 100k before the `ROAD-68-D` rebase (control 41.6). On
+`road` after `ROAD-68-D` the 100k commit is rejected and the commit's terrain validation costs
+15–69 ms, in the control too (`ROAD-68-D` part 6 owns both). It still misses
 a frame (open question 21: snapshot publish and copy, which `ROAD-68-E`'s road-tool context
 owns, then the lots, publication and agent passes), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
