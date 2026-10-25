@@ -366,15 +366,16 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   then.
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
-- **Graded terrain surface (`TERRAIN-07`, spec draft for review, 2026-10-25)**: the user adopted
+- **Graded terrain surface (`TERRAIN-07`, spec adopted 2026-10-25)**: the user adopted
   approach B for the terrain surface rewrite after the spike: the 10 m base heightmap plus a fine
   grading and footprint distance layer per 64 m tile near roads and sites, an exact seam mask in
   the shader and road skirts, at 0.5 m texels, replacing the exact CDT cut that misses the 3.0 ms
   terrain stage beside built-up blocks. The draft specifies a pointwise grading function (1:2
   cones, a 64 m cap, the overlap rule, coverage from the roadbed's top triangles), tiles as a GPU
   residency cache in four levels, pads as terrain, the consumers' query API, budgets and gates
-  `TERRAIN-07-A`-`G`, with open questions T1-T17. The legacy terrain surface sections moved to the
-  archive. See the [specification](terrain.md#graded-terrain-surface-terrain-07).
+  `TERRAIN-07-A`-`G`. The user adopted the recommendations of open questions T1-T17 and allows
+  the game to break while the rewrite is under way. The legacy terrain surface sections moved to
+  the archive. See the [specification](terrain.md#graded-terrain-surface-terrain-07).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.

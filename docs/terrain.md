@@ -3224,8 +3224,8 @@ Terminology:
 
 ### Purpose and status
 
-**Draft specification for the user's review (2026-10-25). Nothing in this section is
-implemented.** `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
+**Specification adopted by the user (2026-10-25); nothing in this section is implemented
+yet.** `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
 grading and footprint distance layer per 64 m tile near roads and sites, an exact seam mask in the
@@ -3239,11 +3239,16 @@ Decided by the user, 2026-10-25:
   weather and fields stay; they are re-pointed at the new height and mask functions
 - approach B, after the spike below
 - 0.5 m texels
+- the recommendations of [open questions T1-T17](#terrain-07-open-questions), as recorded there
+  (T14's owner corrected by the coordinator, see there)
+- the game may break while `TERRAIN-07` is implemented: it may be unplayable between gates, and
+  saves may become incompatible
 
-Everything else in this section is **proposed**: the product defaults marked so in
-[product decisions](#product-decisions), the gates, and every rule below that the user has
-not ruled on. Choices that need the user are [open questions T1-T17](#terrain-07-open-questions),
-each with evidence, options and a recommendation.
+The rest of this section, the gates, the rules and the product defaults still marked
+**proposed** in [product decisions](#product-decisions) (TD4, TD5 and TD9, the legacy values
+carried over), is the design the gates implement. A gate that finds a rule wrong fixes it here
+and records why; a choice that needs the user becomes a new open question from T18, with
+evidence, options and a recommendation.
 
 **Why.** The exact cut is correct, but it misses the 3.0 ms terrain stage at city density. A road
 commit beside built-up blocks re-grades the loops of all 64 tiles of every stamped patch,
@@ -3622,7 +3627,8 @@ marks the bottom vertices so the road shader can deepen them with distance
   paints), not a cut. They stay an overlay ([T15](#terrain-07-open-questions)).
 - **Retaining walls.** The exact cut promotes structural sources (tunnel portals, bridge abutments)
   to wall faces. B has none yet: `SeamKind::Wall` (no cone; the client builds its wall mesh from its
-  skirt grown to the graded height difference) is reserved for `ROAD-68-F`'s abutments and portals
+  skirt grown to the graded height difference) is reserved for the abutments and portals of
+  [`TERRAIN-07-C`](#terrain-07-c--sites-pads-paving-and-structure-ends)
   ([T14](#terrain-07-open-questions)). Ordinary grounded roads never get walls.
 
 ### LOD and distant tiles
@@ -3788,12 +3794,12 @@ measure them against this budget; the budget is not relaxed to fit.
 | TD3 | Texel (`GL0`) | 0.5 m | decided by the user 2026-10-25 |
 | TD4 | Tie-in slope | 1:2 (`k = 0.5`) for roads and pads, the legacy `MAX_TERRAIN_TIE_IN_SLOPE_RATIO` | proposed |
 | TD5 | Cap | 64 m, the legacy envelope cap (`roads.md` question 18, decided by the user for the CDT 2026-10-24) | proposed |
-| TD6 | Skirt depth | 0.5 m near, deeper with distance ([T5](#terrain-07-open-questions)) | proposed |
-| TD7 | Overlap rule | `clamp(base, L, U)`; `(L + U) / 2` where `L > U` | proposed ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions)) |
-| TD8 | Tile | 64 m, aligned to the world origin | proposed ([T17](#terrain-07-open-questions)) |
+| TD6 | Skirt depth | 0.5 m near, deeper with distance ([T5](#terrain-07-open-questions)) | decided by the user 2026-10-25 ([T5](#terrain-07-open-questions)) |
+| TD7 | Overlap rule | `clamp(base, L, U)`; `(L + U) / 2` where `L > U` | decided by the user 2026-10-25 ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions); T2's later choice open) |
+| TD8 | Tile | 64 m, aligned to the world origin | decided by the user 2026-10-25 ([T17](#terrain-07-open-questions)) |
 | TD9 | Footprint distance band | `max(2 m, 3 × spacing)`: 2 m at `GL0` | proposed |
-| TD10 | Levels | `GL0`-`GL3` to 256 m, 512 m, 2 km and the cull distance | proposed ([T5](#terrain-07-open-questions)) |
-| TD11 | Inside rule | cut `h - kσ`; fill `h + k min(σ, 0.35 m)` | proposed ([T4](#terrain-07-open-questions)) |
+| TD10 | Levels | `GL0`-`GL3` to 256 m, 512 m, 2 km and the cull distance | decided by the user 2026-10-25 ([T5](#terrain-07-open-questions); distances tuned in `TERRAIN-07-D`) |
+| TD11 | Inside rule | cut `h - kσ`; fill `h + k min(σ, 0.35 m)` | decided by the user 2026-10-25 ([T4](#terrain-07-open-questions)) |
 
 ### Implementation plan
 
@@ -3807,14 +3813,14 @@ Gates are sequential unless noted. Every gate ends with:
 
 A test that cannot pass until a later gate is marked `#[ignore = "TERRAIN-07-<gate>: <reason>"]`
 and listed under that gate; at `TERRAIN-07-G` none may remain. As under `ROAD-68`, the game may
-be unplayable between gates, and the exact cut stays buildable and renderable for comparison
+break between gates (user, 2026-10-25), and the exact cut stays buildable and renderable for comparison
 until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 
 | Gate | Status | Scope |
 | --- | --- | --- |
 | `TERRAIN-07-A` | open | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | open | Road skirts in the piece mesh (roadbed; may run beside A) |
-| `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients |
+| `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
@@ -3861,20 +3867,35 @@ Acceptance:
    0.5 m deep, with the bottom-vertex attribute.
 2. The chunk emission carries the layer; the road shader draws it and deepens the bottom vertices
    by the distance rule of [T5](#terrain-07-open-questions).
+3. Bridge fascias: `ROAD-68-F` part 2 found a bridge deck's sides open between the deck edge and
+   the concrete slab of `standard_surface/bridge.rs` (visible from the side). The piece closes them
+   with a side strip from the deck's outer edge down to the slab's top edge, from the same
+   sections, so the slab and the strip share their vertices.
 
-Acceptance: skirt tops are bitwise the chain vertices;
+Acceptance: skirt tops are bitwise the chain vertices; fascia strips are watertight against the
+deck edge and the slab (the `road_families` chunk check, extended);
 `reference_junction_road_chunks_are_watertight` covers the skirts' top edges against the sidewalk
 outer edge; previewed chunks with skirts equal the committed chunks
 (`preview_chunks_with_crossings_and_signs_are_the_committed_chunks` and
 `road_junction_preview_test.gd`); payload packing stays within its 1.0 ms budget
 (`benchmark_road_preview_stages`); the `roadbed/` line count is recorded.
 
-#### `TERRAIN-07-C` — sites, pads and paving
+#### `TERRAIN-07-C` — sites, pads, paving and structure ends
 
 1. Allocator accessors: the sites in a rectangle through the 512 m site chunks, with their support
    footprints, heights, predicate and surfaces, and the bounds of every site change.
 2. `Pad` seams and class, material classes and edges, and site change selection.
 3. `mask_at` reports `Pad` and `Paved`.
+4. Structure ends ([T14](#terrain-07-open-questions)): `SeamKind::Wall` at bridge abutments and
+   tunnel portals; the abutment or portal closes the grounded chains that end at a structure
+   ([`roads.md` question 19](roads.md#road-68-open-questions); on `road` a bridge or tunnel stroke
+   that joins a road is rejected with `roadbed_chain_open_end`), the structure's free-end row and
+   the bridge slab's two ends; a portal opens the terrain over the bore (the terrain side of
+   `ROAD-61`).
+
+Structure-end acceptance: a bridge and a tunnel drawn from a road in play commit and undo; their
+ends are watertight by the `road_families` chunk check without its free-end exception; the
+`TERRAIN-07`-labelled tunnel portal test is replaced by a wall test on the graded surface.
 
 Acceptance: samples inside a pad equal its support height bitwise; the material class equals the
 `SitePavingPartition` material at the lattice points of the Kuopio yard fixture and the frontage
@@ -4012,7 +4033,10 @@ profile or `xvfb-run`. The idle frame uses the idle-frame matrix
 
 ### `TERRAIN-07` open questions
 
-None is decided. Each records evidence, options and a recommendation for the user.
+**Decided by the user, 2026-10-25: every recommendation below is adopted.** Where a
+recommendation hangs a later choice on a measurement (T2, T5, T6, T7, T8), the gate it names
+measures it and the recommendation's condition decides; T2's choice between (a) and (b) after
+`TERRAIN-07-A`'s counts stays the user's. New questions continue from T18.
 
 1. **T1. Exact locality of the overlap rule.**
    - **Evidence.** The spike's reach `dev / (1/2 - s)` bounds where a seam's cone excludes the base.
@@ -4043,8 +4067,9 @@ None is decided. Each records evidence, options and a recommendation for the use
 3. **T3. Where inside and outside come from.**
    - **Evidence.** The spike's sign came from the nearest seam and a flood fill; with one node piece
      missing (`t_cutfill`) it discarded the ground south of the road and drew grass over the north
-     lanes. The exact cut fails loudly (`OpenEnd`), which also blocks bridges and tunnels until
-     `ROAD-68-F` ([`roads.md` question 19](roads.md#road-68-open-questions)).
+     lanes. The exact cut fails loudly (`OpenEnd`), which also rejects every bridge or tunnel that
+     joins a road (`roadbed_chain_open_end`, measured by `ROAD-68-F` part 2;
+     [`roads.md` question 19](roads.md#road-68-open-questions)).
    - **Options.** (a) Coverage by rasterizing the published top triangles with the roadbed's own
      predicate. (b) Keep `OpenEnd` as a typed error. (c) The spike's flood fill.
    - **Recommendation.** (a): pointwise, equal to the road query, local, no closed loops.
@@ -4121,11 +4146,17 @@ None is decided. Each records evidence, options and a recommendation for the use
       outside the lake stays dry. (b) Depth on the graded ground. (c) Grading stops at the shore.
     - **Recommendation.** (a) in `TERRAIN-07-F`; the rest under a water item.
 14. **T14. Structure ends and retaining walls.**
-    - **Evidence.** Bridge and tunnel spans publish no chains; their abutments and portals are
-      `ROAD-68-F` work. The exact cut builds retaining-wall faces for structural sources.
-    - **Options.** (a) `SeamKind::Wall` arrives with `ROAD-68-F`; until then structure ends are open
-      chains, which coverage handles. (b) Walls wherever cones conflict.
+    - **Evidence.** Bridge and tunnel spans publish no chains, and a structure end without a
+      continuation has no node piece (`ROAD-68-F` part 2). The exact cut builds retaining-wall
+      faces for structural sources.
+    - **Options.** (a) `SeamKind::Wall` arrives with the abutments and portals; until then
+      structure ends are open chains, which coverage handles. (b) Walls wherever cones conflict.
     - **Recommendation.** (a).
+    - **Decision (user, 2026-10-25): (a), in
+      [`TERRAIN-07-C`](#terrain-07-c--sites-pads-paving-and-structure-ends).** The draft named
+      `ROAD-68-F` as the owner, but the user's scope split of 2026-10-25 had moved abutments and
+      portals to `TERRAIN-07`, and `ROAD-68-F` part 2 built none; the coordinator corrected the
+      owner.
 15. **T15. Coal pits.**
     - **Options.** (a) Keep the overlay. (b) An excavation client: a lowered pad with a 1:1 seam.
     - **Recommendation.** (a); (b) is a product change for its own item.
