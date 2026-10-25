@@ -101,6 +101,25 @@ impl RoadbedSystem {
             .map(|(height_m, _)| height_m)
     }
 
+    /// Visits each piece with a carriageway triangle at a world XZ point, in piece order, with
+    /// the height of its highest one there: what [`Self::carriageway_height_at`] takes the
+    /// maximum of, for callers that must leave some pieces out (`ROAD-68` open question 16).
+    pub(crate) fn for_each_carriageway_top_at(
+        &self,
+        x: f32,
+        z: f32,
+        mut visit: impl FnMut(PieceId, f32),
+    ) {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if let Some((height_m, _)) =
+                top_at(&indexed.mesh, point, |kind| kind == BandKind::Carriageway)
+            {
+                visit(indexed.id, height_m);
+            }
+        }
+    }
+
     /// Band kind of the highest visible road triangle at a world XZ point.
     #[cfg(test)]
     pub(crate) fn band_at(&self, x: f32, z: f32) -> Option<BandKind> {

@@ -5,7 +5,8 @@
 
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::roadbed::RoadbedSystem;
+use super::support::{RebuiltPieces, StrokeSupport};
+use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
@@ -79,7 +80,7 @@ fn prepare_road_input_points(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
 ) -> (Vec<Vector3>, EdgeClass) {
-    prepare_road_input_points_with_support(raw_points, terrain, |_, _| None)
+    prepare_road_input_points_with_support(raw_points, terrain, |_, _| None, [None; 2])
 }
 
 // Prepares road-tool input while using visible carriageways as hard profile pins.
@@ -88,14 +89,19 @@ fn prepare_road_input_points(
 // near source terrain. Only carriageways pin: a centreline joins the carriageway it meets and
 // never climbs onto the raised sidewalk, curb or cap of a piece the edit itself rebuilds, so
 // its profile does not depend on which roads were drawn first (`ROAD-68` open question 15).
+// The carriageways of pieces the edit rebuilds do not pin at all (question 16, `StrokeSupport`).
 fn prepare_road_input_points_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
-    roadbed: &RoadbedSystem,
+    support: &mut StrokeSupport,
 ) -> (Vec<Vector3>, EdgeClass) {
-    prepare_road_input_points_with_support(raw_points, terrain, |x, z| {
-        roadbed.carriageway_height_at(x, z)
-    })
+    let end_heights = [support.end_height(0), support.end_height(1)];
+    prepare_road_input_points_with_support(
+        raw_points,
+        terrain,
+        |x, z| support.height_at(x, z),
+        end_heights,
+    )
 }
 
 // Prepares road-tool input and, when extending a terminal, solves the old and new edge as
@@ -104,10 +110,10 @@ fn prepare_road_input_with_extension_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
-    roadbed: &RoadbedSystem,
+    support: &mut StrokeSupport,
 ) -> PreparedRoadInput {
     let (mut points, mut class) =
-        prepare_road_input_points_to_visible_surface(raw_points, terrain, roadbed);
+        prepare_road_input_points_to_visible_surface(raw_points, terrain, support);
     snap_road_endpoints_to_existing_nodes(&mut points, graph);
     if class == EdgeClass::Standard
         && terminal_bridge_transition_endpoint(&points, terrain, graph).is_some()
@@ -145,7 +151,9 @@ fn prepare_road_input_with_extension_to_visible_surface(
     }
 }
 
-/// Prepares road-tool input with optional endpoint snapping to the existing road graph.
+/// Prepares road-tool input with optional endpoint snapping to the existing road graph, pinned
+/// to every visible carriageway: the first pass of [`super::plan_road_edit`], which the commit,
+/// the preview and the editor's checks use (`ROAD-68` open question 16).
 pub(crate) fn prepare_road_input_for_tool(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
@@ -153,20 +161,48 @@ pub(crate) fn prepare_road_input_for_tool(
     roadbed: &RoadbedSystem,
     snap_to_existing_roads: bool,
 ) -> PreparedRoadInput {
+    let excluded = RebuiltPieces::default();
+    prepare_road_input_excluding(
+        raw_points,
+        terrain,
+        graph,
+        roadbed,
+        snap_to_existing_roads,
+        &excluded,
+    )
+    .0
+}
+
+// As `prepare_road_input_for_tool`, reading no carriageway of the `excluded` pieces; also
+// returns the pieces whose carriageway the preparation read.
+pub(super) fn prepare_road_input_excluding(
+    raw_points: &[Vector3],
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    roadbed: &RoadbedSystem,
+    snap_to_existing_roads: bool,
+    excluded: &RebuiltPieces,
+) -> (PreparedRoadInput, Vec<PieceId>) {
     if snap_to_existing_roads {
-        return prepare_road_input_with_extension_to_visible_surface(
-            raw_points, terrain, graph, roadbed,
+        let mut support = StrokeSupport::new(roadbed, graph, excluded);
+        let prepared = prepare_road_input_with_extension_to_visible_surface(
+            raw_points,
+            terrain,
+            graph,
+            &mut support,
         );
+        return (prepared, support.into_read());
     }
 
     let (points, class) = prepare_road_input_points(raw_points, terrain);
-    PreparedRoadInput {
+    let prepared = PreparedRoadInput {
         validation_points: points.clone(),
         points,
         class,
         endpoint_snap_enabled: false,
         extension: None,
-    }
+    };
+    (prepared, Vec::new())
 }
 
 // Snaps prepared road endpoints to existing graph nodes using the same tolerance as commit.
@@ -186,10 +222,13 @@ fn snap_road_endpoints_to_existing_nodes(prepared_points: &mut [Vector3], graph:
     }
 }
 
+// `end_heights` replace the support at the first and last point: the graph height of a node
+// the stroke's end joins, when its pieces are excluded from the support.
 fn prepare_road_input_points_with_support(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     mut visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
+    end_heights: [Option<f32>; 2],
 ) -> (Vec<Vector3>, EdgeClass) {
     let simplified_points = simplify_road_alignment_points(raw_points);
     if simplified_points.len() < 2 {
@@ -199,14 +238,13 @@ fn prepare_road_input_points_with_support(
     let mut endpoint_above_clearance = false;
     let mut endpoint_below_clearance = false;
     let last_idx = simplified_points.len() - 1;
-    for (idx, point) in simplified_points.iter().enumerate() {
-        let support_h =
+    for (end, idx) in [0, last_idx].into_iter().enumerate() {
+        let point = simplified_points[idx];
+        let support_h = end_heights[end].unwrap_or_else(|| {
             road_profile_support_height(terrain, &mut visible_support_height_at, point.x, point.z)
-                .0;
+                .0
+        });
         let clearance_m = point.y - support_h;
-        if idx != 0 && idx != last_idx {
-            continue;
-        }
         if clearance_m > PREVIEW_CLEARANCE_M {
             endpoint_above_clearance = true;
         }
@@ -230,6 +268,14 @@ fn prepare_road_input_points_with_support(
         terrain,
         &mut visible_support_height_at,
     );
+    // The two ends are pinned already; a joined node's graph height replaces their support.
+    let last = samples.len().saturating_sub(1);
+    for (end, idx) in [0, last].into_iter().enumerate() {
+        if let (Some(height_m), Some(sample)) = (end_heights[end], samples.get_mut(idx)) {
+            sample.target_y = height_m;
+            sample.y = height_m;
+        }
+    }
     solve_standard_road_profile(&mut samples);
     let prepared_points = samples
         .into_iter()

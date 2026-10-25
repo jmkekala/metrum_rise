@@ -6,8 +6,7 @@ use super::road_preview::RoadPreviewRequest;
 use super::{RoadRejection, SimCore};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
-    PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, prepare_road_input_for_tool,
-    validate_road_edit,
+    PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
 };
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::terrain::TerrainSystem;
@@ -51,26 +50,22 @@ impl RoadEditPlan {
 
     /// Builds the local road solution from one generation's terrain, graph and roadbed: the
     /// live core's at commit, the road tool's context in a preview (`ROAD-68-E`), through the
-    /// same preparation and validation. O(stroke points + local excerpt records).
+    /// same preparation and validation, so the stroke reads no piece its edit rebuilds (`ROAD-68`
+    /// open question 16). O(passes * (stroke points + local excerpt records)), one or two passes.
     pub(crate) fn compile_from(
         terrain: &TerrainSystem,
         graph: &RegionGraph,
         roadbed: &RoadbedSystem,
         request: RoadPreviewRequest,
     ) -> Self {
-        let prepared = prepare_road_input_for_tool(
+        let (prepared, validation, topology) = plan_road_edit(
             &request.points,
-            terrain,
-            graph,
-            roadbed,
-            request.snap_to_existing_roads,
-        );
-        let (validation, topology) = validate_road_edit(
-            &prepared,
             request.fwd_lanes.clamp(0, 255) as u8,
             request.bkw_lanes.clamp(0, 255) as u8,
             terrain,
             graph,
+            roadbed,
+            request.snap_to_existing_roads,
         );
         Self::new(
             request,
@@ -262,7 +257,9 @@ impl RoadEditPlan {
 mod tests {
     use super::*;
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::road_edit::RoadExtensionReprofile;
+    use crate::simulation::network::road_edit::{
+        RoadExtensionReprofile, prepare_road_input_for_tool,
+    };
     use crate::simulation::network::roadbed::RoadbedSystem;
     use crate::simulation::terrain::TerrainSystem;
 

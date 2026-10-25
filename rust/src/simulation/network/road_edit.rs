@@ -3,7 +3,7 @@
 //! Bounded post-edit topology and profile products shared by preview and authoritative insertion.
 
 use super::graph::{Edge, RegionGraph};
-use super::roadbed::RoadbedSystem;
+use super::roadbed::{PieceId, RoadbedSystem};
 use super::types::NodeType;
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -13,11 +13,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 mod input;
+mod support;
 #[cfg(test)]
 mod tests;
 mod validation;
 
 pub(crate) use input::{PreparedRoadInput, RoadExtensionReprofile, prepare_road_input_for_tool};
+pub(crate) use support::{RebuiltPieces, plan_road_edit};
 pub(crate) use validation::{
     RoadPreviewValidation, validate_road_candidate_fast, validate_road_edit,
 };
@@ -76,6 +78,8 @@ pub(crate) struct RoadTopologyPlan {
     splits: Vec<PlannedRoadSplit>,
     dirty_edges: HashSet<usize>,
     affected_nodes: HashSet<u32>,
+    // Canonical local nodes at the stroke's first and last point.
+    stroke_ends: [u32; 2],
 }
 
 impl std::fmt::Debug for RoadTopologyPlan {
@@ -98,6 +102,7 @@ impl RoadTopologyPlan {
         source_edges: &HashMap<usize, usize>,
         finalized: FinalizedRoadGeometry,
         splits: Vec<PlannedRoadSplit>,
+        stroke_ends: [u32; 2],
     ) -> Option<Self> {
         let mut nodes = local
             .nodes()
@@ -184,7 +189,49 @@ impl RoadTopologyPlan {
             splits,
             dirty_edges,
             affected_nodes: finalized.affected_nodes,
+            stroke_ends: stroke_ends.map(|end| local.get_valid_node(end)),
         })
+    }
+
+    /// The live pieces this plan rebuilds, the ones [`AppliedRoadTopology::mark_pieces`] marks
+    /// (`ROAD-68` open question 16): the spans of its dirty source edges and the pieces of its
+    /// solved and merged source nodes, with the source edges it splits and the source nodes the
+    /// stroke's ends join. O(local records).
+    pub(crate) fn rebuilt_pieces(&self) -> RebuiltPieces {
+        let spans = self
+            .dirty_edges
+            .iter()
+            .filter_map(|&edge| self.edges[edge].source)
+            .map(PieceId::Span);
+        let nodes = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|&(id, node)| {
+                node.canonical != id as u32 || self.affected_nodes.contains(&(id as u32))
+            })
+            .filter_map(|(_, node)| node.source)
+            .map(PieceId::Node);
+        // A split half appended by the edit names its parent; the root is the live edge.
+        let source_root = |mut edge: usize| loop {
+            let planned = &self.edges[edge];
+            if planned.source.is_some() {
+                return planned.source;
+            }
+            edge = planned.split_parent?;
+        };
+        let crossed = self
+            .splits
+            .iter()
+            .filter_map(|split| source_root(split.edge_id))
+            .collect();
+        let joined_ends = self.stroke_ends.map(|end| {
+            self.nodes
+                .iter()
+                .filter(|node| node.canonical == end)
+                .find_map(|node| node.source)
+        });
+        RebuiltPieces::new(spans.chain(nodes).collect(), crossed, joined_ends)
     }
 
     /// Returns the bounded source records required by the existing undo journal.

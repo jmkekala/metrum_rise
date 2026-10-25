@@ -17,7 +17,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::network::road_edit::{
-    FinalizedRoadGeometry, RoadExtensionReprofile, prepare_road_input_for_tool,
+    FinalizedRoadGeometry, RoadExtensionReprofile, plan_road_edit,
     validate_road_candidate_fast, validate_road_edit,
 };
 use crate::simulation::network::roadbed::{
@@ -1112,13 +1112,16 @@ impl SimCore {
         let prepared_input = if let Some(prepared) = planned_input {
             prepared
         } else {
-            fresh_input = prepare_road_input_for_tool(
+            fresh_input = plan_road_edit(
                 &points,
+                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 &self.heightmap,
                 &self.region_graph,
                 &self.transit_network.roadbed,
                 snap_to_existing_roads,
-            );
+            )
+            .0;
             &fresh_input
         };
         let fixed_points = prepared_input.points.clone();

@@ -54,6 +54,8 @@ struct ValidationGraph {
     source_edge_ids: HashMap<usize, usize>,
     finalized: FinalizedRoadGeometry,
     splits: Vec<PlannedRoadSplit>,
+    // Local nodes at the stroke's first and last point.
+    stroke_ends: [u32; 2],
 }
 
 /// Machine-readable road-placement validation state shared by the UI and commit guard.
@@ -407,6 +409,7 @@ fn validate_against_graph(
         source_edge_ids,
         finalized,
         splits,
+        stroke_ends,
     }) = build_validation_graph(
         prepared_points,
         prepared_input.class,
@@ -451,6 +454,7 @@ fn validate_against_graph(
         &source_edge_ids,
         finalized,
         splits,
+        stroke_ends,
     );
     (validation, topology_plan)
 }
@@ -580,6 +584,7 @@ fn build_validation_graph(
         source_edge_ids: copied_edges,
         finalized,
         splits,
+        stroke_ends: [start_node, end_node],
     })
 }
 

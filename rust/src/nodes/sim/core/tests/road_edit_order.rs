@@ -3,8 +3,9 @@
 //! `ROAD-68` invariant 6 (open question 15): edit histories that produce the same graph produce
 //! the same graph profiles, clips and roadbed pieces, bitwise. The fixtures are the rendered
 //! reference junctions, committed stroke by stroke through `SimCore::commit_road` as the
-//! reference harness does, flat and on its 2.5% slope. On the slope a later stroke still pins
-//! to the carriageway heights of the pieces it rebuilds (open question 16).
+//! reference harness does, flat and on its 2.5% slope. A stroke reads no carriageway of a piece
+//! its edit rebuilds (open question 16); on the slope, terminal extensions and mid-span meetings
+//! still depend on drawing order (open question 29).
 
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
@@ -114,21 +115,38 @@ pub(super) fn committed_on(
     order: &[usize],
     sloped: bool,
 ) -> SimCore {
+    committed_with(world_m, strokes, order, |core| {
+        if sloped {
+            slope(core);
+        }
+    })
+}
+
+// The reference harness's 2.5% slope across the 256 m around the centre.
+fn slope(core: &mut SimCore) {
+    core.slope_terrain_internal(
+        Vector2::ZERO,
+        256.0,
+        Vector2::new(-128.0, 0.0),
+        0.0,
+        Vector2::new(128.0, 0.0),
+        6.4,
+        1.0,
+    );
+}
+
+// As `committed_on`, with the blank world's terrain shaped by `shape` first.
+fn committed_with(
+    world_m: f32,
+    strokes: &[Stroke],
+    order: &[usize],
+    shape: impl Fn(&mut SimCore),
+) -> SimCore {
     let mut core = test_core();
     core.create_blank_world_internal(world_m, world_m, 8.0, 128.0, 0.0)
         .expect("blank world");
     core.treasury.balance = 1.0e9;
-    if sloped {
-        core.slope_terrain_internal(
-            Vector2::ZERO,
-            256.0,
-            Vector2::new(-128.0, 0.0),
-            0.0,
-            Vector2::new(128.0, 0.0),
-            6.4,
-            1.0,
-        );
-    }
+    shape(&mut core);
     for &index in order {
         let surface = |core: &SimCore, point: Vector2| {
             Vector3::new(
@@ -306,10 +324,69 @@ fn flat_junctions_do_not_depend_on_drawing_order() {
     splits_and_adjacent_junctions(false);
 }
 
+// Open question 16: a stroke reads no piece its own edit rebuilds, so the through road of a T
+// drawn after its side road ignores the side road's cap and span, and the side road drawn
+// second meets the through road at its graph profile.
 #[test]
-#[ignore = "ROAD-68-E: open question 16, strokes pin to carriageways the edit rebuilds"]
 fn sloped_junctions_do_not_depend_on_drawing_order() {
-    y_junctions(true);
     t_junctions(true);
+}
+
+// The rest of the sloped fixtures still depend on drawing order through two authored-state
+// rules (open question 29): a terminal extension re-solves the road it extends (every Y), and a
+// mid-span meeting takes the first-drawn road's profile height (question 16's crossing rule).
+#[test]
+#[ignore = "ROAD-68-E: open question 29, terminal extensions and mid-span meetings depend on drawing order"]
+fn sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order() {
+    y_junctions(true);
     splits_and_adjacent_junctions(true);
+}
+
+// Open question 16's crossing exception: a road crossing a raised road mid-span meets it on top,
+// at the crossed road's graph profile, although the edit rebuilds the crossed span. The through
+// road crosses a 3 m pit on fill; the side road crosses it at the pit's centre.
+#[test]
+fn a_crossing_of_a_raised_road_meets_it_on_top() {
+    let centre = Vector2::new(20.0, 0.0);
+    let strokes = [
+        ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 1),
+        ([Vector2::new(centre.x, -ARM_M), Vector2::new(centre.x, ARM_M)], 1),
+    ];
+    let pit = |core: &mut SimCore| {
+        slope(core);
+        core.level_terrain_internal(centre, 14.0, -3.0, 1.0);
+    };
+    let through = committed_with(512.0, &strokes, &[0], pit);
+    let terrain_m =
+        through.heightmap.sample_height_world(centre.x, centre.y) * crate::config::HEIGHT_SCALE;
+    let graph = &through.region_graph;
+    let edge = (0..graph.edge_count())
+        .find(|&edge| !graph.edge(edge).deleted)
+        .unwrap();
+    let road_m = graph
+        .edge(edge)
+        .physical_geometry
+        .windows(2)
+        .find(|pair| pair[0].x <= centre.x && centre.x <= pair[1].x)
+        .map(|pair| pair[0].lerp(pair[1], (centre.x - pair[0].x) / (pair[1].x - pair[0].x)).y)
+        .unwrap();
+    assert!(
+        road_m > terrain_m + 1.0,
+        "the through road is not raised: road {road_m} m, terrain {terrain_m} m"
+    );
+    let crossed = committed_with(512.0, &strokes, &[0, 1], pit);
+    let graph = &crossed.region_graph;
+    let junction = (0..graph.node_count() as u32)
+        .map(|node| graph.get_valid_node(node))
+        .find(|&node| {
+            let pos = graph.node(node).pos;
+            (pos.x - centre.x).abs() < 0.5 && pos.z.abs() < 0.5
+        })
+        .expect("the side road crosses the through road at a junction");
+    assert_eq!(graph.node_adjacency(junction).len(), 4);
+    let junction_m = graph.node(junction).pos.y;
+    assert!(
+        (junction_m - road_m).abs() < 0.05,
+        "the crossing at {junction_m} m does not meet the raised road at {road_m} m"
+    );
 }

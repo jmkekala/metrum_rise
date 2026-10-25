@@ -4,7 +4,7 @@
 
 use super::super::super::*;
 use crate::nodes::sim::core::RoadCorridorClearance;
-use crate::simulation::network::road_edit::{prepare_road_input_for_tool, validate_road_edit};
+use crate::simulation::network::road_edit::plan_road_edit;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -98,19 +98,14 @@ impl SimulationNode {
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool.view.read().unwrap();
-            let prepared_input = prepare_road_input_for_tool(
+            let (prepared_input, validation, _) = plan_road_edit(
                 &points,
-                &query.terrain,
-                &query.region_graph,
-                &query.roadbed,
-                snap_to_existing_roads,
-            );
-            let (validation, _) = validate_road_edit(
-                &prepared_input,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 &query.terrain,
                 &query.region_graph,
+                &query.roadbed,
+                snap_to_existing_roads,
             );
             let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
                 prepared_input.class,

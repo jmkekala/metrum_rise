@@ -83,7 +83,10 @@ fn reference_junction_products_match_the_probe() {
 // the constructive span station rule changes the spans and queries of 18 junctions (and the lanes
 // of the 9 sloped ones; the terminal stubs keep theirs); the exact terminal cap apex then changes
 // the nodes, layouts, walkways, lanes and queries of all 20, never the spans. No change touches
-// the graph.
+// the graph. Re-recorded by `ROAD-68-E` part 2 (open question 16): only `y_25/true` changes, in
+// its graph and every piece product but the layouts, because its last branch no longer pins to
+// the carriageway of the first branch's span beside the node, which its edit rebuilds; the other
+// 19 hash as before.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -244,13 +247,13 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "y_25/true",
         [
-            0x492c242557246ae0,
-            0xeb48de63a453a57d,
+            0x338c9fadc8b3d2d4,
+            0x06e50c782d651e93,
             0x2658fc21c04f8df4,
-            0x39047e06f87a4af7,
-            0x2a14c62f690fc473,
-            0x1f77cd16cedd8a7c,
-            0xc845c8a690b0cb28,
+            0xd00e97ec380b6fa3,
+            0xc59f0c83ae4c8ca4,
+            0x289192eaf81a4598,
+            0xd1b92c822f0f5ad7,
         ],
     ),
     (
