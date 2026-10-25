@@ -146,13 +146,23 @@ the commit refuses pieces that newly cover fields or painted cells (no more corr
 them); node moves, crosswalk overrides and edge class changes are tried on a scratch roadbed and
 refused when a node fails or reserved land would be covered; a stroke from a road end joins it
 like any node instead of re-solving the road it extends (question 30 (a), decided under the
-delegation for review), so sloped Y junctions are order independent too. Questions 8 (fixture
-regeneration), 21 (b) (measurable now that `ROAD-68-D` part 6 landed), 11 (c) for undo, terrain
-sync and bulldoze, and question 30's mid-span meetings are next.
+delegation for review), so sloped Y junctions are order independent too. Round 2: a mid-span
+meeting lies exactly on the first-drawn road's graph profile (question 30; order independence
+there is not attainable under the crossing rule); terrain edits re-solve every junction's
+profiles instead of leaving sloped junctions failed, and roll back if one still fails; a road
+bulldoze is tried and refused when a node fails; undo checks its restored closure in debug
+builds; the Kuopio reference save is regenerated with the load rebuild (question 8), and its
+load test and the hillside houses run again (their refined-terrain halves are ignored under
+`TERRAIN-07`). Open: the recorded Kuopio replay (`kuopio_05` attempt 14 fails `MouthOffPlane`, a
+solve defect), the hillside fixture's legacy clips (its parcels must be regenerated), question 25
+(c) and 21 (b) (both need the cell reservations in the road tool's view), and 6-9 ms that round 1
+added to the commit's `surface` stage beside a painted city (not the reservation checks;
+unattributed).
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.
-Tests that need later gates are disabled until then (5 Rust tests, no Godot script).
+Tests that need later gates are disabled until then (5 Rust tests, 2 of them `TERRAIN-07`, no
+Godot script).
 `ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty-one open questions (1-30 and 35); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
