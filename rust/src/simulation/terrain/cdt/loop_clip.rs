@@ -147,7 +147,10 @@ pub(super) fn clip_loop_to_patch_components(
         .filter(|vertex| segment_height_at_sample(points, *vertex).is_some())
         .collect::<Vec<_>>();
     let overlay_shapes = overlay.overlay(OverlayRule::Intersect, FillRule::EvenOdd);
-    let axis_clipped = simplified_road_loop_in_patch(axis_clipped, Some(patch)).unwrap_or_default();
+    let axis_clipped = without_side_rails(
+        simplified_road_loop_in_patch(axis_clipped, Some(patch)).unwrap_or_default(),
+        patch,
+    );
     if overlay_shapes.len() == 1
         && axis_clipped.len() >= 3
         && signed_area(&axis_clipped).abs() > CDT_EPSILON_M * CDT_EPSILON_M
@@ -207,6 +210,50 @@ pub(super) fn clip_loop_to_patch_components(
         )
     });
     components
+}
+
+// The axis-aligned clip joins each point where a loop leaves the patch to the point where it
+// comes back with a straight run along the patch side (Sutherland-Hodgman). Where the loop's
+// footprint does not fill that run, the boundary later returns along the same side: a
+// zero-width rail that encloses nothing, out to the patch corners, whose vertices lie on no
+// footprint edge and take heights no road has (a row street beside a cross street outside the
+// tile, `ROAD-68-D` part 6). A vertex on a side whose neighbours lie on the same side, with the
+// boundary turning back there, is a rail tip; removing tips until none is left keeps the
+// enclosed region, and a loop without rails unchanged. Exact: the clip puts its side vertices
+// exactly on the side. `O(V)` plus the tips at the loop's start.
+fn without_side_rails(
+    points: Vec<TerrainCdtVertex>,
+    patch: TerrainCdtPatch,
+) -> Vec<TerrainCdtVertex> {
+    let turns_back_on_a_side = |a: TerrainCdtVertex, b: TerrainCdtVertex, c: TerrainCdtVertex| {
+        let on_x_side = (b.x == patch.min_x || b.x == patch.max_x) && a.x == b.x && c.x == b.x;
+        let on_z_side = (b.z == patch.min_z || b.z == patch.max_z) && a.z == b.z && c.z == b.z;
+        (on_x_side && (b.z - a.z) * (c.z - b.z) <= 0.0)
+            || (on_z_side && (b.x - a.x) * (c.x - b.x) <= 0.0)
+    };
+    let mut kept: Vec<TerrainCdtVertex> = Vec::with_capacity(points.len());
+    for point in points {
+        kept.push(point);
+        while kept.len() >= 3 {
+            let tip = kept.len() - 2;
+            if !turns_back_on_a_side(kept[tip - 1], kept[tip], kept[tip + 1]) {
+                break;
+            }
+            kept.remove(tip);
+        }
+    }
+    // The loop closes from its last vertex to its first; tips there turn back across the join.
+    while kept.len() >= 3 {
+        let last = kept.len() - 1;
+        if turns_back_on_a_side(kept[last - 1], kept[last], kept[0]) {
+            kept.pop();
+        } else if turns_back_on_a_side(kept[last], kept[0], kept[1]) {
+            kept.remove(0);
+        } else {
+            break;
+        }
+    }
+    kept
 }
 
 fn clipped_vertex_from_overlay(

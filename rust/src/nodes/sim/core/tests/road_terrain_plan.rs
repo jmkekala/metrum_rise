@@ -799,6 +799,7 @@ fn patches_built_by_trunk_branch(core: &mut SimCore) -> Vec<(usize, usize)> {
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
+            preview: None,
         },
         std::time::Instant::now(),
         Default::default(),

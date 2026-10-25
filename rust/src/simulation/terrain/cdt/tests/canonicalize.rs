@@ -630,3 +630,84 @@ fn cdt_classifies_overbudget_road_seam_faces_as_retaining_walls() {
         "retaining walls are explicit terrain tie-ins, not emitted road-footprint faces"
     );
 }
+
+// The 100k-resident commit rejection (`ROAD-68-D` part 6): a tile's road loop is a comb, row
+// streets every 50 m joined by a cross street west of the tile, of which only one row crosses
+// the tile; a building site's pad touches the tile corner beside that row. Clipping the loop
+// to the tile must give that row's strip alone. The axis-aligned clip bridged the rows along
+// the tile side, and the side clips cut those bridges into zero-width rails out to the tile
+// corners, at heights that belong to no road, which then conflicted with the pad corner
+// (`conflicting_road_boundary_height`).
+#[test]
+fn a_loop_reaching_past_a_tile_side_adds_no_vertex_off_its_footprint() {
+    let point = |x: f64, z: f64| TerrainCdtVertex::new(x, 0.12, z);
+    // Inside the 64 m halo around the tile (0..64)², footprint on the left: the cross street
+    // at x -53..-43 and rows at z -12..-2, 38..48 and 88..98 across the halo.
+    let comb = [
+        (-53.0, -64.0),
+        (-43.0, -64.0),
+        (-43.0, -12.0),
+        (128.0, -12.0),
+        (128.0, -2.0),
+        (-43.0, -2.0),
+        (-43.0, 38.0),
+        (128.0, 38.0),
+        (128.0, 48.0),
+        (-43.0, 48.0),
+        (-43.0, 88.0),
+        (128.0, 88.0),
+        (128.0, 98.0),
+        (-43.0, 98.0),
+        (-43.0, 128.0),
+        (-53.0, 128.0),
+        (-53.0, 98.0),
+        (-64.0, 98.0),
+        (-64.0, 88.0),
+        (-53.0, 88.0),
+        (-53.0, 48.0),
+        (-64.0, 48.0),
+        (-64.0, 38.0),
+        (-53.0, 38.0),
+        (-53.0, -2.0),
+        (-64.0, -2.0),
+        (-64.0, -12.0),
+        (-53.0, -12.0),
+    ]
+    .map(|(x, z)| point(x, z))
+    .to_vec();
+    // The halo's sides carry no source.
+    let along_halo = [0, 3, 7, 11, 14, 17, 21, 25];
+    let source = test_span_boundary_source(3, 0);
+    let source_edges = (0..comb.len())
+        .filter(|edge| !along_halo.contains(edge))
+        .map(|edge| TerrainCdtRoadLoopSourceEdge {
+            start: comb[edge],
+            end: comb[(edge + 1) % comb.len()],
+            source,
+        })
+        .collect();
+    let road = TerrainCdtRoadLoop::new_with_source_edges(3, 0, comb, source_edges);
+    let pad = sourced_road_loop(
+        9,
+        0,
+        [(-0.5, 0.0), (2.39, 0.0), (2.39, 5.54), (-0.5, 5.54)]
+            .map(|(x, z)| point(x, z))
+            .to_vec(),
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+            building_idx: 9,
+            local_loop_index: 0,
+            local_edge_index: 0,
+        },
+    );
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 64.0, 64.0, [0.0; 4]);
+
+    let strip = clip_loop_to_patch_components(&road.vertices, patch);
+    assert_eq!(strip.len(), 1);
+    assert!(
+        strip[0].iter().all(|vertex| vertex.z == 38.0 || vertex.z == 48.0),
+        "only the row strip lies in the tile: {:?}",
+        strip[0]
+    );
+    canonicalize_input(TerrainCdtInput::new(patch, vec![road, pad], Vec::new()))
+        .expect("the pad corner is no road vertex");
+}

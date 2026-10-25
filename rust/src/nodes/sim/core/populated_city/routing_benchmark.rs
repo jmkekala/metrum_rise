@@ -1001,6 +1001,17 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     let published = crate::nodes::sim::core::RoadToolShared::new(
         road_tool_snapshot_from_core(core).expect("the fixture roadbed is current"),
     );
+    // Godot also requested and uploaded the refined terrain of the road patches it showed, so a
+    // commit rebuilds only the tiles it changes. The fixture builds every road patch once here,
+    // which also checks that the whole city's terrain builds (`ROAD-68-D` part 6).
+    let patches: Vec<(usize, usize)> = (0..core.heightmap.render_patch_rows())
+        .flat_map(|z| (0..core.heightmap.render_patch_cols()).map(move |x| (x, z)))
+        .collect();
+    let (refined, _) = crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
+        core, &patches, None,
+    )
+    .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
+    core.insert_refined_terrain_patch_cache_entries(refined);
     // `METRUM_COMMIT_PHASES` logs the commit's cell-lot regions (`economy_phases`).
     let phases = std::env::var_os("METRUM_COMMIT_PHASES").is_some();
     for (sample, start) in starts.into_iter().enumerate() {

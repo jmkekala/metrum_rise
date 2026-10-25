@@ -454,7 +454,7 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
-        drop(self.transit_network.roadbed.take_changed_bounds());
+        drop(self.transit_network.roadbed.take_terrain_changes());
         self.bump_global_terrain_payload_generation();
         let patch_cols = self.heightmap.render_patch_cols();
         let patch_rows = self.heightmap.render_patch_rows();
