@@ -160,6 +160,58 @@ fn a_current_preview_is_what_the_commit_installs() {
     }
 }
 
+// Open question 7: an arm pinned at both ends keeps its first end's mouth knot when the other
+// end's solve adds supports. The trunk link east of a side road gains a junction at its far end
+// in a preview; the near junction is rebuilt and compiles there, and the commit installs the
+// preview's pieces with no failed node, flat and sloped.
+#[test]
+fn a_far_junction_keeps_the_near_mouth_pinned_on_the_preview_path() {
+    let near = ([Vector2::new(-30.0, 0.0), Vector2::new(-30.0, ARM_M)], 1);
+    let far = [Vector2::new(20.0, 0.0), Vector2::new(20.0, -ARM_M)];
+    for sloped in [false, true] {
+        let mut core = committed(&[THROUGH, near], &[0, 1], sloped);
+        let graph = &core.region_graph;
+        let near_node = (0..graph.node_count() as u32)
+            .map(|node| graph.get_valid_node(node))
+            .find(|&node| {
+                let pos = graph.node(node).pos;
+                (pos.x, pos.z) == (-30.0, 0.0)
+            })
+            .expect("the near junction");
+        let points = stroke(&core, far);
+        let mut context = context(&mut core);
+        let preview = Arc::new(preview(&mut context, &points));
+        assert!(
+            preview.validation.is_valid,
+            "{}",
+            preview.validation.invalid_reason
+        );
+        let compiled = preview.pieces.as_ref().expect("a valid stroke compiles");
+        assert_eq!(compiled.delta.failed_nodes().count(), 0, "sloped {sloped}");
+        assert!(
+            compiled
+                .delta
+                .pieces()
+                .any(|(id, mesh)| id == PieceId::Node(near_node) && mesh.is_some()),
+            "sloped {sloped}: the near junction is rebuilt with the link"
+        );
+        commit(&mut core, &points, Some(Arc::clone(&preview)));
+        assert!(core.last_road_edit_metrics.preview_plan_reused);
+        assert!(
+            core.transit_network.roadbed.failed_nodes().is_empty(),
+            "sloped {sloped}: {:?}",
+            core.transit_network.roadbed.failed_nodes()
+        );
+        let installed = piece_mesh(&core, PieceId::Node(near_node)).map(std::ptr::from_ref);
+        let previewed = compiled
+            .delta
+            .pieces()
+            .find(|(id, _)| *id == PieceId::Node(near_node))
+            .and_then(|(_, mesh)| mesh.map(std::ptr::from_ref));
+        assert_eq!(installed, previewed, "sloped {sloped}");
+    }
+}
+
 #[test]
 fn a_stale_preview_recompiles_to_a_fresh_commit() {
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];

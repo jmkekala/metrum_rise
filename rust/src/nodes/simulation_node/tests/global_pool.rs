@@ -33,7 +33,6 @@ const FARM: &str = "kenney:building.industrial.small_farm";
 const WAIT: Duration = Duration::from_secs(120);
 
 #[test]
-#[ignore = "ROAD-68-F: unchecked node moves leave a saved parcel over the road"]
 fn bridge_entry_points_never_use_the_global_pool() {
     let module = module_path!()
         .split_once("::")
@@ -77,7 +76,7 @@ fn bridge_entry_points_in_a_process_without_a_global_pool() {
     let mut entries = Entries::default();
     let mut town = starting_a_town(&mut entries);
     editing_a_town(&mut entries, &mut town);
-    loading_a_save(&mut entries, &town);
+    loading_a_save(&mut entries, &mut town);
     running_the_node_threads(&mut entries, town);
     new_worlds(&mut entries);
     a_benchmark_city(&mut entries);
@@ -333,10 +332,11 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
 }
 
 // `load_game`: the save replaces a fresh node's world, which then runs.
-fn loading_a_save(e: &mut Entries, core: &SimCore) {
+fn loading_a_save(e: &mut Entries, core: &mut SimCore) {
     let path = std::env::temp_dir().join(format!("metrum-code17-{}.sav", std::process::id()));
     let path = path.to_str().unwrap();
-    core.save_game_internal(path, None).unwrap();
+    // The edits above scheduled routing rebuilds (D7); a save installs them first, as the game's.
+    core.save_game_settled(path, None).unwrap();
     let mut loaded = new_core();
     assets_installed(&mut loaded);
     e.run("load", || {

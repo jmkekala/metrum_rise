@@ -59,7 +59,6 @@ fn unrelated_cell_paint_does_not_block_a_clear_bridge_terminal_move() {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: node-move reservation check against moved pieces"]
 fn node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor() {
     let mut core = test_core();
     for endpoints in [
@@ -137,7 +136,6 @@ fn fixture(angle: f64, occupied: bool, erased: bool) -> SimCore {
 }
 
 #[test]
-#[ignore = "ROAD-68-F: node-move reservation check against moved pieces"]
 fn node_move_into_paint_or_erased_occupied_claim_is_atomic() {
     for angle in [0.0_f64, 0.35] {
         for (occupied, erased) in [(false, false), (true, false), (true, true)] {

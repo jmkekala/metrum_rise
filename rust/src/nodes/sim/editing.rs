@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadPreviewTerrain, RoadRejection,
+    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadPreviewTerrain, RoadRejection, ReservedOverlap,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
@@ -91,7 +91,8 @@ impl SimCore {
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
     /// apply, and then its terrain entries when the commit's sources match the preview's
-    /// (`ROAD-68-E`). The undo record keeps what the install replaced. `Some(adopted)` when the
+    /// (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells (`ROAD-68`
+    /// open question 1). The undo record keeps what the install replaced. `Some(adopted)` when the
     /// edit is accepted, telling whether the preview's terrain was installed.
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
@@ -119,7 +120,20 @@ impl SimCore {
                 .collect(),
             global_generation: self.terrain_payload_global_generation,
         };
-        let validation = match self.transit_network.roadbed.failed_nodes().first() {
+        let roadbed = &self.transit_network.roadbed;
+        if let Some(overlap) = ReservedOverlap::first(self, roadbed.installed_pieces(&restore)) {
+            self.rollback_staged_road_edit(Some(&restore));
+            let rejection = overlap.rejection();
+            self.last_road_timing = format!("rejected={}", rejection.reason);
+            debug_log!(
+                "road",
+                "road_commit_rejected reason={} rollback=true",
+                rejection.reason
+            );
+            self.last_road_rejection = Some(rejection);
+            return None;
+        }
+        let validation = match roadbed.failed_nodes().first() {
             None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
                 self,
                 &patches,
@@ -1243,19 +1257,10 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
+        // Fields and painted cells are tested against the pieces the edit installs, in
+        // `validate_staged_road_render_installing` (`ROAD-68` open question 1).
         let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
         let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
-        if self
-            .zoning
-            .cells_overlap_road_corridor(&fixed_points, corridor_half_width_m)
-        {
-            self.last_road_timing = "rejected=zoning_cell_overlap".to_owned();
-            self.last_road_rejection = Some(RoadRejection::new(
-                "zoning_cell_overlap",
-                "the road or its junctions overlap painted zoning cells",
-            ));
-            return RoadAddOutcome::rejected();
-        }
         let overlapping_parcels = self
             .zoning
             .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
@@ -1278,20 +1283,6 @@ impl SimCore {
                         overlapping_parcels[0]
                     )),
             );
-            return RoadAddOutcome::rejected();
-        }
-
-        if self
-            .allocator
-            .field_clearance
-            .overlaps_road_corridor(&fixed_points, corridor_half_width_m)
-        {
-            self.last_road_timing = "rejected=field_overlap".to_owned();
-            self.last_road_rejection = Some(RoadRejection::from_validation(
-                "field_overlap",
-                &validation,
-                &fixed_points,
-            ));
             return RoadAddOutcome::rejected();
         }
 
@@ -1837,7 +1828,6 @@ impl SimCore {
             if old_pos == pos {
                 return false;
             }
-            // ROAD-68-F restores the cell-reservation check against the moved pieces.
             let mut affected_edges: HashSet<usize> = self
                 .region_graph
                 .node_adjacency(node_id)
@@ -1867,19 +1857,29 @@ impl SimCore {
                 affected_edges.clone(),
                 affected_nodes.clone(),
             );
+            // The moved pieces must compile and keep clear of fields and painted cells
+            // (`ROAD-68` open questions 2 and 11 (c)): try the move on the graph, compile its
+            // closure into a scratch roadbed and put the graph back before anything else sees it.
+            self.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
+            let refusal = self.closure_refusal(&affected_edges, &affected_nodes);
+            let checkpoint = self.undo_stack.back().and_then(|state| state.trans_graph.as_ref());
+            self.region_graph
+                .restore_undo_delta_local(checkpoint.expect("a node move has a graph checkpoint"));
+            if let Some(rejection) = refusal {
+                debug_log!(
+                    "road",
+                    "node_move_rejected node={} reason={} detail={}",
+                    node_id,
+                    rejection.reason,
+                    rejection.detail
+                );
+                self.undo_stack.pop_back();
+                return false;
+            }
             // Invalidate both corridors; moving a node can leave its old cached cells behind.
             self.zoning
                 .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
-            self.region_graph.move_node(node_id, pos);
-            self.region_graph
-                .rebuild_intersection_clips_for_nodes(&affected_nodes);
-            // Every edge the move deformed has both ends here, so the solve re-derives each
-            // profile whose pins the move can reach, from its control polyline (`ROAD-68`
-            // invariant 6); all of them are in the undo record and rebuilt below.
-            let changed = self
-                .region_graph
-                .finalize_junction_endpoint_profiles(&affected_nodes);
-            debug_assert!(changed.is_subset(&affected_edges));
+            self.apply_node_move(node_id, pos, &affected_edges, &affected_nodes);
             self.zoning
                 .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
             self.agents.invalidate_lane_ids_for_edges(
@@ -1905,6 +1905,53 @@ impl SimCore {
             return true;
         }
         false
+    }
+
+    // Moves a node on the graph alone: its position, the clips at the affected nodes and the
+    // profiles the move reaches. Every edge the move deformed has both ends among the affected
+    // nodes, so the solve re-derives each profile whose pins the move can reach, from its
+    // control polyline (`ROAD-68` invariant 6); all of them are in the undo record.
+    fn apply_node_move(
+        &mut self,
+        node_id: u32,
+        pos: Vector3,
+        affected_edges: &HashSet<usize>,
+        affected_nodes: &HashSet<u32>,
+    ) {
+        self.region_graph.move_node(node_id, pos);
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(affected_nodes);
+        let changed = self
+            .region_graph
+            .finalize_junction_endpoint_profiles(affected_nodes);
+        debug_assert!(changed.is_subset(affected_edges));
+    }
+
+    // Why the pieces of a node-dirtying edit cannot publish (`ROAD-68` open questions 2 and
+    // 11 (c)): a node of the closure fails its layout or profile solve, or a piece overlaps a
+    // field or painted cells. Compiles the closure of `edges` and `nodes` into an `O(1)` copy of
+    // the published roadbed, with the graph as it stands. O(closure pieces).
+    fn closure_refusal(
+        &self,
+        edges: &HashSet<usize>,
+        nodes: &HashSet<u32>,
+    ) -> Option<RoadRejection> {
+        let mut scratch = self.transit_network.roadbed.snapshot();
+        for &edge in edges {
+            scratch.mark_edge_dirty(edge);
+        }
+        for &node in nodes {
+            scratch.mark_node_dirty(node);
+        }
+        let delta = scratch.compile_delta(&self.region_graph);
+        if let Some((node, error)) = delta.failed_nodes().next() {
+            return Some(RoadRejection::new(
+                "node_piece_failed",
+                format!("node {node} fails its junction layout or profile solve: {error:?}"),
+            ));
+        }
+        ReservedOverlap::first(self, delta.pieces().filter_map(|(_, mesh)| mesh))
+            .map(ReservedOverlap::rejection)
     }
 
     /// Sets a lane connection rule at a junction node.

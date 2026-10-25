@@ -6,7 +6,7 @@
 //! Agriculture owns the saved polygons and updates the cache on commit, load, removal and undo.
 
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::{PieceMesh, RoadVec3, RoadbedSystem};
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::{fill_rule::FillRule, overlay_rule::OverlayRule};
 use i_overlay::float::single::SingleFloatOverlay;
@@ -317,6 +317,44 @@ impl FieldClearanceIndex {
                 })
             })
         })
+    }
+
+    /// Whether the top surface of one road piece overlaps a committed field (`ROAD-68` open
+    /// question 1): the piece's bounds first, then its top triangles. O(fields in the touched
+    /// chunks * top triangles) when a field lies within the bounds, one bounds query otherwise.
+    pub(crate) fn overlaps_road_piece(&self, mesh: &PieceMesh) -> bool {
+        if self.footprints.is_empty() {
+            return false;
+        }
+        let [min_x, min_z, max_x, max_z] = mesh.bounds_xz().map(|value| value as f32);
+        let bounds = [
+            Vector2::new(min_x, min_z),
+            Vector2::new(max_x, min_z),
+            Vector2::new(max_x, max_z),
+            Vector2::new(min_x, max_z),
+        ];
+        if !self.overlaps_polygon(&bounds) {
+            return false;
+        }
+        mesh.triangles()[..mesh.top_triangle_count()]
+            .iter()
+            .any(|triangle| {
+                let points: [[f64; 2]; 3] = triangle.map(|vertex| {
+                    let point = mesh.positions()[vertex as usize];
+                    [point.x, point.z]
+                });
+                let (min, max) = points.iter().fold(
+                    (Vector2::splat(f32::INFINITY), Vector2::splat(f32::NEG_INFINITY)),
+                    |(min, max), point| {
+                        let point = Vector2::new(point[0] as f32, point[1] as f32);
+                        (
+                            Vector2::new(min.x.min(point.x), min.y.min(point.y)),
+                            Vector2::new(max.x.max(point.x), max.y.max(point.y)),
+                        )
+                    },
+                );
+                self.overlaps_points(&points, min, max, None)
+            })
     }
 
     /// Tests the full width of every candidate road segment against existing fields.

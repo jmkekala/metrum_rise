@@ -478,6 +478,22 @@ impl RoadbedSystem {
         (changed.into_iter().collect(), restore)
     }
 
+    /// The pieces an install published, as this roadbed holds them while nothing rebuilt them
+    /// since: what an edit's reservation checks test (`ROAD-68` open question 1). O(installed
+    /// pieces * log pieces).
+    pub fn installed_pieces<'a>(
+        &'a self,
+        restore: &'a RoadbedRestore,
+    ) -> impl Iterator<Item = &'a PieceMesh> + 'a {
+        restore
+            .pieces
+            .iter()
+            .filter(|(_, _, published)| *published)
+            .filter_map(|(id, _, _)| self.pieces.get(id))
+            .filter(|piece| piece.build_generation == restore.installed_generation)
+            .map(PublishedPiece::mesh)
+    }
+
     /// True when every owner a restore covers still holds what its install published, so
     /// swapping the restore back equals recompiling the restored graph.
     pub fn can_restore(&self, restore: &RoadbedRestore) -> bool {

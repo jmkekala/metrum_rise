@@ -8,7 +8,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::{
     PreparedRoadInput, RoadPreviewValidation, RoadTopologyPlan, plan_road_edit,
 };
-use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
@@ -32,9 +32,52 @@ pub(crate) struct RoadEditPlan {
 #[derive(Clone, Copy)]
 enum FailedCheck {
     Validation(&'static str),
-    Fields,
-    CellZoning,
     Parcels { count: usize, first: u64 },
+}
+
+/// A committed field or painted zoning cell under an edit's road pieces (`ROAD-68` open
+/// question 1). The pieces are the ones the edit publishes, so junction corners and terminal
+/// caps count as well as the spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReservedOverlap {
+    /// A committed field reservation (`field_overlap`).
+    Field,
+    /// Painted zoning cells or their occupied grace claims (`zoning_cell_overlap`).
+    CellZoning,
+}
+
+impl ReservedOverlap {
+    /// The first reservation the pieces overlap, piece by piece in order, fields before cells.
+    /// O(pieces * reservations in their bounds * top triangles); a piece with no reservation in
+    /// its bounds costs one bounds query each.
+    pub(crate) fn first<'a>(
+        core: &SimCore,
+        pieces: impl IntoIterator<Item = &'a PieceMesh>,
+    ) -> Option<Self> {
+        pieces.into_iter().find_map(|mesh| {
+            if core.allocator.field_clearance.overlaps_road_piece(mesh) {
+                Some(Self::Field)
+            } else if core.zoning.cells_overlap_road_piece(mesh) {
+                Some(Self::CellZoning)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The commit's report of this overlap.
+    pub(crate) fn rejection(self) -> RoadRejection {
+        match self {
+            Self::Field => RoadRejection::new(
+                "field_overlap",
+                "the road or its junctions overlap a farm field",
+            ),
+            Self::CellZoning => RoadRejection::new(
+                "zoning_cell_overlap",
+                "the road or its junctions overlap painted zoning cells",
+            ),
+        }
+    }
 }
 
 impl RoadEditPlan {
@@ -87,8 +130,10 @@ impl RoadEditPlan {
         &self.prepared
     }
 
-    /// Readiness against the live core. Local water, field, parcel and cell queries repeat under
-    /// the commit lock, so changes in these independent systems cannot authorize an obsolete result.
+    /// Readiness against the live core. Local water and parcel queries repeat under the commit
+    /// lock, so changes in these independent systems cannot authorize an obsolete result. Fields
+    /// and painted cells are tested against the pieces the commit installs ([`ReservedOverlap`],
+    /// `ROAD-68` open question 1), which a plan alone does not have.
     pub(crate) fn status(&self, core: &SimCore) -> &'static str {
         if !self.validation.is_valid {
             return "invalid";
@@ -112,7 +157,7 @@ impl RoadEditPlan {
         "ready"
     }
 
-    // The first live-state check that refuses this road: water, fields, painted cells or parcels.
+    // The first live-state check that refuses this road: water or parcels.
     fn failed_check(&self, core: &SimCore) -> Option<FailedCheck> {
         let fwd = self.request.fwd_lanes.clamp(0, 255) as u8;
         let bkw = self.request.bkw_lanes.clamp(0, 255) as u8;
@@ -129,19 +174,6 @@ impl RoadEditPlan {
         }
         let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
         let half_width_m = width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH;
-        if core
-            .allocator
-            .field_clearance
-            .overlaps_road_corridor(&self.prepared.points, half_width_m)
-        {
-            return Some(FailedCheck::Fields);
-        }
-        if core
-            .zoning
-            .cells_overlap_road_corridor(&self.prepared.points, half_width_m)
-        {
-            return Some(FailedCheck::CellZoning);
-        }
         let parcels = core
             .zoning
             .parcel_ids_overlapping_road_corridor(&self.prepared.points, half_width_m);
@@ -167,13 +199,6 @@ impl RoadEditPlan {
                 FailedCheck::Validation(reason) => {
                     RoadRejection::from_validation(reason, validation, prepared)
                 }
-                FailedCheck::Fields => {
-                    RoadRejection::from_validation("field_overlap", validation, prepared)
-                }
-                FailedCheck::CellZoning => RoadRejection::new(
-                    "zoning_cell_overlap",
-                    "the road or its junctions overlap painted zoning cells",
-                ),
                 FailedCheck::Parcels { count, first } => {
                     RoadRejection::from_validation("parcel_overlap", validation, prepared)
                         .with_note(format!("{count} parcels, first {first}"))

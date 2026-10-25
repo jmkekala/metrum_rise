@@ -240,6 +240,44 @@ fn new_parcel_rejects_ready_plan_without_consuming_it() {
     assert_eq!(plan.status(&core), "ready");
 }
 
+// Commits one stroke through the player's path and returns its rejection reason, empty when
+// the stroke was committed.
+fn commit_stroke(core: &mut SimCore, points: &[Vector3]) -> String {
+    core.precompute_road_mesh_data();
+    core.commit_road(
+        RoadCommitRequest {
+            points: points.to_vec(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            preview: None,
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    )
+    .rejection_reason
+}
+
+// Fields and painted cells are tested against the pieces the commit installs (`ROAD-68` open
+// question 1), so a plan stays ready and the commit refuses the edit, leaving the graph, the
+// roadbed and the undo history as they were.
+fn assert_reservation_refuses(core: &mut SimCore, points: &[Vector3], reason: &str) {
+    let before = (
+        core.region_graph.edge_count(),
+        core.undo_stack.len(),
+        core.transit_network.roadbed.generation(),
+    );
+    assert_eq!(commit_stroke(core, points), reason);
+    assert!(!core.transit_network.road_edit_is_staged());
+    let after = (
+        core.region_graph.edge_count(),
+        core.undo_stack.len(),
+        core.transit_network.roadbed.generation(),
+    );
+    assert_eq!((after.0, after.1), (before.0, before.1));
+    assert!(core.transit_network.roadbed.failed_nodes().is_empty());
+}
+
 #[test]
 fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
     let mut core = test_core();
@@ -257,20 +295,45 @@ fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
         godot::prelude::Vector2::new(-10.0, -15.0),
     ];
     core.allocator.field_clearance.set(0, &field);
-    assert_eq!(plan.status(&core), "invalid");
-    let before = (core.region_graph.edge_count(), core.undo_stack.len());
+    assert_reservation_refuses(&mut core, &points, "field_overlap");
+    core.allocator.field_clearance.clear();
+    assert_eq!(commit_stroke(&mut core, &points), "");
+}
+
+// A junction corner reaches beyond the corridors of both its roads: a field in the curb return
+// of a T, clear of the side road's and the through road's corridors, refuses the side road.
+#[test]
+fn a_field_in_a_junction_corner_refuses_the_road() {
+    let through = vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)];
+    let side = vec![Vector3::new(0.0, 0.0, -48.0), Vector3::ZERO];
+    // The corridor half width of a 1+1 road: what the replaced corridor checks covered.
+    let corridor_m = crate::config::LANE_WIDTH + crate::config::SIDEWALK_WIDTH;
+    let mut probe = test_core();
+    commit_ready(&mut probe, through.clone());
+    assert_eq!(commit_stroke(&mut probe, &side), "");
+    let roadbed = &probe.transit_network.roadbed;
+    // The covered point nearest the corner of the two corridors, in the side road's quadrant.
+    let corner = (1..40)
+        .map(|step| corridor_m + 0.05 * step as f32)
+        .map(|offset| (offset, -offset))
+        .find(|&(x, z)| roadbed.height_at(x, z).is_some())
+        .expect("the junction piece covers the corner outside both corridors");
+    let field = [
+        Vector2::new(corner.0 - 0.02, corner.1 - 0.02),
+        Vector2::new(corner.0 + 0.02, corner.1 - 0.02),
+        Vector2::new(corner.0 + 0.02, corner.1 + 0.02),
+        Vector2::new(corner.0 - 0.02, corner.1 + 0.02),
+    ];
+    let mut core = test_core();
+    commit_ready(&mut core, through);
+    core.allocator.field_clearance.set(0, &field);
     assert!(
         !core
-            .add_road_internal_with_snap_and_validation(points.clone(), 1, 1, true, Some(&plan))
-            .committed
+            .allocator
+            .field_clearance
+            .overlaps_road_corridor(&side, corridor_m)
     );
-    assert!(!core.add_road_internal(points, 1, 1).committed);
-    assert_eq!(
-        (core.region_graph.edge_count(), core.undo_stack.len()),
-        before
-    );
-    core.allocator.field_clearance.clear();
-    assert_eq!(plan.status(&core), "ready");
+    assert_reservation_refuses(&mut core, &side, "field_overlap");
 }
 
 #[test]
@@ -297,17 +360,10 @@ fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
     let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
     assert!(!selection.cells.is_empty());
     core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
-    assert_eq!(plan.status(&core), "invalid");
-    let before = core.region_graph.edge_count();
-    assert!(
-        !core
-            .add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan))
-            .committed
-    );
-    assert_eq!(core.region_graph.edge_count(), before);
+    assert_reservation_refuses(&mut core, &points, "zoning_cell_overlap");
     let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
     core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
-    assert_eq!(plan.status(&core), "ready");
+    assert_eq!(commit_stroke(&mut core, &points), "");
 }
 
 #[test]

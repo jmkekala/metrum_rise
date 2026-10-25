@@ -4,7 +4,7 @@
 
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
-use crate::simulation::network::roadbed::RoadVec3;
+use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
 use crate::simulation::zoning::cells::{CellBounds, road_contact_interior};
 use glam::DVec2;
 use godot::prelude::Vector3;
@@ -48,6 +48,32 @@ impl ZoningSystem {
             return false;
         }
         self.cells_overlap_road_points(points.iter().map(|p| [p.x, p.z]))
+    }
+
+    /// Whether the top surface of one road piece overlaps reserved cells (`ROAD-68` open
+    /// question 1): each candidate cell in the piece's bounds against its top triangles. Cells
+    /// that only touch the road along their frontage do not overlap. O(candidate cells * top
+    /// triangles), nothing beyond one bounds query when no cell is reserved near the piece.
+    pub(crate) fn cells_overlap_road_piece(&self, mesh: &PieceMesh) -> bool {
+        if !self.cells.has_reservations() {
+            return false;
+        }
+        let [min_x, min_z, max_x, max_z] = mesh.bounds_xz();
+        let bounds = CellBounds {
+            min: DVec2::new(min_x, min_z),
+            max: DVec2::new(max_x, max_z),
+        };
+        let top = &mesh.triangles()[..mesh.top_triangle_count()];
+        self.reserved_cells_overlap(bounds, true, |corners| {
+            let cell = PolygonFootprint::from_precise_points(corners.iter().map(|p| [p.x, p.y]));
+            top.iter().any(|triangle| {
+                let points = triangle.map(|vertex| {
+                    let point = mesh.positions()[vertex as usize];
+                    [point.x, point.z]
+                });
+                cell.overlaps_precise_points(&points)
+            })
+        })
     }
 
     fn cells_overlap_road_points(&self, points: impl Iterator<Item = [f64; 2]> + Clone) -> bool {
