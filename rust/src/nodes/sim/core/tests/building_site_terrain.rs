@@ -879,6 +879,24 @@ fn kuopio_yards_bake_as_pads_with_the_partition_materials() {
         baked > 0 && pads > 1_000 && paved > 1_000,
         "{baked} tiles, {pads} pad and {paved} paved samples"
     );
+    // Pruned equals unpruned bitwise around the first yard, on the hills.
+    use crate::simulation::terrain::graded::TileKey;
+    let (x, z) = {
+        let b = core.allocator.building_sites[0].bounds();
+        (f64::from(b.0 + b.2) * 0.5, f64::from(b.1 + b.3) * 0.5)
+    };
+    let centre = TileKey::at(x, z);
+    let tiles: Vec<TileKey> = (-2..2)
+        .flat_map(|dx| (-2..2).map(move |dz| TileKey { x: centre.x + dx, z: centre.z + dz }))
+        .collect();
+    crate::simulation::terrain::graded::tests::assert_exact_pruning(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+        &tiles,
+        &[centre],
+        "kuopio yards",
+    );
 }
 
 // `TERRAIN-07-C`: the graded terrain stage of each Kuopio yard placement on the reference save
