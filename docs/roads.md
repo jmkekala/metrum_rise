@@ -4265,12 +4265,13 @@ question 21 (b) is not started, so the gate's final commit waits.
   T's probe products unchanged, and was not re-timed (the orbiting branch poses may change).
 - **Clippy** `--all-targets` (fresh, on the final tree): the identical 59-warning
   set (file, message) as the baseline.
-- **`./run.sh --test` (fresh, 11:32-11:50 EET, DISPLAY and WAYLAND_DISPLAY unset, run lock,
-  shared timing lock, build slot):** exit 0. Debug lib 1,908 passed / 0 failed / 165 ignored
-  (475 s); integration 4 passed; every Godot script PASS, no SCRIPT ERROR; skipped only the
-  display-only shader-global probe and rendered vegetation tests. Profile deleted, imports
-  restored. Ignores tagged for later gates: 1 `ROAD-68-E` (question 31), 3 `TERRAIN-07`,
-  1 `ROAD-68-F`.
+- **`./run.sh --test` (fresh, DISPLAY and WAYLAND_DISPLAY unset, run lock, shared timing lock,
+  build slot):** before question 31's change (11:32-11:50 EET) exit 0, debug lib 1,908 passed /
+  0 failed / 165 ignored; on the final code (12:06-12:24) exit 0, debug lib 1,909 passed / 0
+  failed / 164 ignored (449 s), integration 4 passed, every Godot script PASS, no SCRIPT ERROR;
+  skipped only the display-only shader-global probe and rendered vegetation tests. Profiles
+  deleted, imports restored. Ignores tagged for later gates: none `ROAD-68-E`, 3 `TERRAIN-07`,
+  1 `ROAD-68-F`. The rebase onto `road` `8c6f89e7` (documentation only) changes no code.
 - **Not done this round:** question 21 (b), the first-sample `surface` rise above (to
   attribute), and the Godot stream with this library.
 
