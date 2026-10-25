@@ -2039,6 +2039,14 @@ These need a user decision; work that does not depend on them continues.
       the mouths instead of 12 m out, so its tilt follows the ground over the junction's own
       extent; on even slopes the difference is millimetres, on a hill's knee it removes the
       embankments above (5.76 m and 5.08 m beside the recorded junctions).
+    - **On `ROAD-68-F` part 2 (round 4).** Rebased onto part 2's families, the same sample
+      changes six of their product-probe entries, attributed by a build of the combined tree
+      with this sample reverted, which gives part 2's table exactly: the sloped `rural_y_40`,
+      `band_width_step`, `band_width_step_curved` and `width_pass_through`, and
+      `width_bridge_pass_through` flat and sloped (its bridge climbs 6 m), whose mouths lie
+      beyond 12 m (the narrow Y and the D4 tapers that part 2 lays out at straight profile
+      changes). So the visible change above also covers those junctions; in the reference
+      probe `y_25/true`'s lanes follow both part 2's minimum run and this sample.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, for review: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
@@ -4274,6 +4282,56 @@ question 21 (b) is not started, so the gate's final commit waits.
   1 `ROAD-68-F`. The rebase onto `road` `8c6f89e7` (documentation only) changes no code.
 - **Not done this round:** question 21 (b), the first-sample `surface` rise above (to
   attribute), and the Godot stream with this library.
+
+#### Part 2, round 4 (2026-10-25, branch `road68-E4`, work in progress)
+
+Part 1 of the round: round 3 rebased onto `road` `4dc466fc` (`ROAD-68-F` part 2's code
+`8b2ad9eb` and the adopted `TERRAIN-07` specification); question 21 (b) follows in part 2.
+
+- **Conflicts.** Only the documentation and the reference probe's table conflicted. Git merged
+  the code: in `junction_profiles.rs` question 31's sample distance and part 2's pass-through
+  rule by profile (`edges_pass_through`) are separate lines of the same solve, so a straight
+  pair of two profiles now takes its corridor plane sampled at its mouth stations; zoning's
+  `piece_covers` and the field index's `overlaps_road_piece` walk the piece's query grid (part 2)
+  under round 3's reservation index, and the preview still calls the commit's own
+  `ReservedOverlap::first`. Ignores: four `TERRAIN-07`, none `ROAD-68-E` or `ROAD-68-F`.
+- **Product probes, attributed.** Each entry of the combined tree's tables against both
+  parents' recordings, with a build of the combined tree with only question 31's sample
+  reverted (`R31`), whose tables equal part 2's exactly (so round 3's plan excerpt, reservation
+  index and preview test change no entry on part 2's families either):
+
+  | Probe | Entry | Products changed against `road` | Cause |
+  | --- | --- | --- | --- |
+  | reference | `y_25_branches_first`, `y_40`, `y_60` (sloped) | graph, nodes, spans, walkways, lanes, queries | question 31 alone (as round 3 recorded) |
+  | reference | `y_25/true` | graph, nodes, spans, walkways, lanes, queries | question 31; its lanes differ from both parents: part 2's minimum run and question 31 together |
+  | reference | `y_25/false` | none | part 2 alone (its lanes, as part 2 recorded) |
+  | node | `width_bridge_pass_through` (flat and sloped), sloped `width_pass_through`, `band_width_step_curved` | graph, nodes, spans, walkways, lanes, queries | question 31 on part 2's new families |
+  | node | sloped `band_width_step` | graph, spans, lanes, queries | question 31 on part 2's new families |
+  | node | sloped `rural_y_40` | graph, nodes, spans, lanes, queries | question 31 on part 2's new families |
+  | node | `path_t` (flat and sloped) | none | part 2 alone (the minimum run, as part 2 recorded) |
+
+  No layout changes; every other entry equals both recordings. Both tables are re-recorded
+  with this attribution in their comments; the narrow-marks digest test passes unchanged.
+- **Determinism (fresh, 13:06 and 13:12 EET).** Gate G's `road68g_commit_determinism`
+  (release, P-cores, shared timing lock; workers 1 / 3 / 8, late rebuild at 1 and 8, save in
+  the hold): no difference in any variant; digest `da3d23b6c8b63d20`, as round 3. Part 2's rules
+  do not change it (`ROAD-68-F`'s timing run: `6252b7ba71c5a6f1` on both its control and part 2),
+  nor does question 31 here (`R31` gives `da3d23b6c8b63d20` too): the populated city is flat,
+  where a junction's plane does not depend on where its arms are sampled.
+- **Clippy** `--all-targets` (fresh, 13:14 and 13:52): the baseline's 59-warning set (file,
+  message), none new.
+- **`./run.sh --test` (fresh, `DISPLAY` and `WAYLAND_DISPLAY` unset, run lock, shared timing
+  lock, build slot).** First run (13:14-13:34): debug library 1,913 passed / 0 failed / 164
+  ignored, integration 4 passed, then `network_tool_chunk_renderer_test` failed once: "hover
+  validation keeps its prepared profile" (`validate_road_candidate_with_snap` on a blank flat
+  world, right after four valid `preview_road` calls on the same stroke), and run.sh stopped.
+  The same library's script alone passed three times out of three (13:51), and a second full
+  run (13:52-14:09) exits 0: debug library 1,913 / 0 / 164 (458 s), integration 4, every Godot
+  script PASS, no SCRIPT ERROR; skipped only the display-only shader-global probe and the
+  rendered vegetation tests. Both parents passed this script in their gate runs; the failure
+  is intermittent and not reproduced, so its cause is open. The assertion now reports the
+  validation's reason, so the next occurrence names it. Profiles deleted, imports restored.
+- **Size.** `roadbed/` production lines 7,798, as `ROAD-68-F` part 2 (round 3 changed none).
 
 ### `ROAD-68-F` — remaining families
 

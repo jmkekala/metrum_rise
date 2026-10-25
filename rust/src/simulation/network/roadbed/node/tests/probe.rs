@@ -81,6 +81,14 @@ fn roadbed_fixture_products_match_the_probe() {
 // minimum run beyond a corner changes `path_t` alone (its stem has two concave corners and no
 // crossing, so its mouth moves 1 m beyond the farther one; graph clips and everything after them
 // follow). The pass-through rule by profile and the removed span taper change no other entry.
+// Re-recorded by `ROAD-68-E` part 2 round 4 (rebased onto `ROAD-68-F` part 2), attributed by a
+// build with open question 31's sample reverted, which gives part 2's table exactly: the plane
+// sample at the mouth station where it lies beyond 12 m changes six of part 2's family entries,
+// the sloped `rural_y_40`, `band_width_step`, `band_width_step_curved` and `width_pass_through`,
+// and `width_bridge_pass_through` flat and sloped (its bridge climbs 6 m, so its node plane is
+// tilted on flat ground too): graph, spans, lanes and queries, and nodes and walkways except for
+// `band_width_step` (and walkways for `rural_y_40`, which has none), never the layouts. Their
+// mouths lie beyond 12 m (the narrow Y, the D4 tapers). No other entry changes.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -769,13 +777,13 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "width_bridge_pass_through/false",
         [
-            0xb02fb0c634b1f305,
-            0x6eda9af4a3890cf9,
+            0x74d1d856a26040e7,
+            0x6b50d483186356d3,
             0x605fc6fbf3e05500,
-            0xd330c9ef2737c71d,
-            0x82b2904e2718ae65,
-            0x826c40d2a7026a01,
-            0x324f4b4d521cbb0b,
+            0xd647dd18e9724f73,
+            0xcaef0c70398172e7,
+            0xb17ff9f89b5524ce,
+            0x00624c2e000e6791,
         ],
     ),
     (
@@ -1429,13 +1437,13 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "rural_y_40/true",
         [
-            0x9c5e0713b7240b34,
-            0x89e804a96837203f,
+            0xbf568e94ac09aa0f,
+            0xcdef6acbcce93201,
             0x1fda42f488af70ca,
-            0xdf21d92cc21f8005,
+            0x0c42f93e6fe08bcd,
             0x8228805f03791825,
-            0xe78da6f556f22d2e,
-            0x4122856a21201759,
+            0x1d1057c1b8a5bb5d,
+            0xfd62cafb41d0a45d,
         ],
     ),
     (
@@ -1525,13 +1533,13 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "band_width_step/true",
         [
-            0xec7c64dbd43effae,
+            0x6dd939246e425097,
             0xf93c61b70a683c14,
             0x9f8e4c2b14212330,
-            0x6882c35b38bb0925,
+            0xc69d37c7ef87647d,
             0x25ed1a44f334cf71,
-            0x382111b6de4d9d12,
-            0x87567a5051d1e637,
+            0xd7e17eab5bb51b26,
+            0x9eb78b2fcb98f8ec,
         ],
     ),
     (
@@ -1561,25 +1569,25 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "width_pass_through/true",
         [
-            0x7abbd08b7cfc4981,
-            0x0934cd4d15477719,
+            0xb9fab945f4b07411,
+            0xc4e101114ae8f0f4,
             0xe099e4c1df05e15a,
-            0x1258c90db628e4f6,
-            0x5ae37acffa9b6457,
-            0xab7d60cac5ed71c7,
-            0xd7db77cc12a51f75,
+            0x7223b1026a97e761,
+            0xdccb1b1b8710d471,
+            0xdf0c24ae61b0d13a,
+            0x85bec03cb10de5ff,
         ],
     ),
     (
         "width_bridge_pass_through/true",
         [
-            0x43fe10bc1ee5b00f,
-            0x63c5054687de33c9,
+            0x8eb98bec10b58f08,
+            0x31eac905302a9a61,
             0x605fc6fbf3e05500,
-            0x3b924d040d7edf49,
-            0x1929e2f36e1b155d,
-            0x78defa220e482ec3,
-            0x6843db9a0829a79c,
+            0x6d613c895ea5efef,
+            0x2b904b49bc9f4a15,
+            0xc4463066a0e80bb1,
+            0xd29e4c9f43c0ada6,
         ],
     ),
     (
@@ -1681,13 +1689,13 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "band_width_step_curved/true",
         [
-            0x7207f279f15aa5be,
-            0x6c03aaa35680a277,
+            0x2fa6d4b379df1832,
+            0x98942f7e690352e2,
             0xcc737046812e010e,
-            0x67abbf5a2d7d935a,
-            0x368fae29ca502e29,
-            0x7f970e14bac5191b,
-            0xed8de0ed85a2faea,
+            0x50289483ec5f3e0f,
+            0x219584b67a3a5be2,
+            0x18906559153265f8,
+            0x1c28a55dc8c969f4,
         ],
     ),
     (

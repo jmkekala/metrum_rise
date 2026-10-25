@@ -1225,7 +1225,8 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 		for chunk in chunks:
 			if not chunk.get("removed", false):
 				_expect(chunk.get("road_mesh_payload_validated", false), "preview chunks are sealed as committed chunks are")
-	_expect(simulation.validate_road_candidate_with_snap(points, 1, 1, false).get("is_valid", false), "hover validation keeps its prepared profile")
+	var hover: Dictionary = simulation.validate_road_candidate_with_snap(points, 1, 1, false)
+	_expect(hover.get("is_valid", false), "hover validation keeps its prepared profile: %s" % hover.get("invalid_reason", ""))
 	tool.fwd_lanes = 2
 	tool.bkw_lanes = 1
 	tool.active = true

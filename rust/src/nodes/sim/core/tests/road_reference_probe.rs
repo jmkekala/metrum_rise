@@ -95,11 +95,14 @@ fn reference_junction_products_match_the_probe() {
 // inside `s_min`; the minimum run beyond a corner moves that mouth to 1.77 m (was 1 m), and the
 // lanes that commit builds keep their ids in the final Y. Its graph, pieces, layouts, walkways and
 // queries are unchanged, as is every other entry.
-// Re-recorded by `ROAD-68-E` part 2 round 3 (rebased onto `ROAD-68-F` part 2): open question
-// 31's plane sample at the mouth station where it lies beyond 12 m changes the four sloped Y
-// fixtures (`y_25_branches_first`, `y_25`, `y_40`, `y_60`; graph, nodes, spans, walkways, lanes
-// and queries, not the layouts), whose narrow-angle mouths lie beyond 12 m; the plan-excerpt fix
-// of open question 8 changes none. ATTRIBUTION-PENDING
+// Re-recorded by `ROAD-68-E` part 2 round 3 and, rebased onto `ROAD-68-F` part 2, by round 4,
+// attributed by a build of the combined tree with question 31's sample reverted, which gives
+// `ROAD-68-F` part 2's table exactly: open question 31's plane sample at the mouth station
+// where it lies beyond 12 m changes the four sloped Y fixtures (`y_25_branches_first`, `y_25`,
+// `y_40`, `y_60`; graph, nodes, spans, walkways, lanes and queries, not the layouts), whose
+// narrow-angle mouths lie beyond 12 m; the plan-excerpt fix of open question 8 changes none.
+// `y_25/true`'s lanes differ from both parents' tables: `ROAD-68-F`'s minimum run moves the
+// intermediate bend's mouth, question 31 the Y's plane, and the lanes follow both.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -265,7 +268,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0x72fb69808e0f820c,
             0x0ff79938b4e00d18,
-            0x1dc36e4907235e55,
+            0x91c2d837a8190802,
             0x4b4830d61a573246,
         ],
     ),

@@ -167,6 +167,9 @@ that lies beyond 12 m (question 31, decided under the delegation for review: thr
 Kuopio profiles had left the ground by 5.08-5.76 m beside steep junctions; the sloped Y probe
 fixtures change). Open: question 21 (b) (lots from the preview need the whole cell store
 persistent) and the slower first commit of a painted city (`surface`, unattributed).
+Round 4 (branch `road68-E4`, work in progress) rebases round 3 onto `ROAD-68-F` part 2: question
+31's sample also changes six of part 2's family probe entries (attributed with a build that
+reverts it), and gate G's determinism digest is unchanged.
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.
