@@ -3925,6 +3925,17 @@ plan and `ROAD-68-F` part 1) before the post-rebase checks below. Questions 11 (
   passed 2 ignored, `zoning_buildability` 28 passed 1 ignored, and the full debug lib suite
   1,901 passed / 0 failed / 166 ignored (559 s, 09:22-09:31). `roadbed/` production lines: 7,881 (unchanged; this round's code is in the graph,
   topology, editing and undo modules).
+- **After the rebase onto `road` `008a3280` (fresh, 09:48-10:07 EET).** Debug: the product probe
+  and the narrow-marks digest test pass unchanged; `road_edit_order` 7 passed 1 ignored,
+  `road_terrain_plan` 14 passed 2 ignored, `zoning_buildability` 28 passed 1 ignored,
+  `road_preview` 13 passed 2 ignored. Clippy `--all-targets`: the identical 59-warning set.
+  `roadbed/` production lines 7,972, equal to `road`'s (gate F part 1's growth; none from E2).
+  `./run.sh --test` on the rebased tree (09:49-10:07, same settings as above): exit 0; debug lib
+  1,904 passed / 0 failed / 165 ignored (509 s); integration 4 passed; every Godot script PASS,
+  no SCRIPT ERROR, only the display-only tests skipped; profile deleted, imports restored.
+- **Not done this round:** a C F F C re-measure of the commit (stopped for the rebase; one C F
+  pair only, above), questions 25 (c) and 21 (b), the recorded Kuopio replay's `MouthOffPlane`
+  and the hillside fixture's parcels.
 
 ### `ROAD-68-F` — remaining families
 
