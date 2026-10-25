@@ -194,7 +194,8 @@ mod tests {
             }
         }
         let on_outline = |a: [u64; 3], b: [u64; 3]| {
-            let [a, b] = [a, b].map(|k| DVec3::new(f64::from_bits(k[0]), 0.0, f64::from_bits(k[2])));
+            let [a, b] =
+                [a, b].map(|k| DVec3::new(f64::from_bits(k[0]), 0.0, f64::from_bits(k[2])));
             [(p[0], p[1]), (p[1], p[3]), (p[3], p[2]), (p[2], p[0])]
                 .iter()
                 .any(|&(s, e)| {

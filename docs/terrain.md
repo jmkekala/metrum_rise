@@ -3953,7 +3953,8 @@ Current deterministic rules:
 - any later atmospheric or horizon brightening must be an explicit render effect with its own
   parameters, not an emergent side effect of mip/detail fade
 - building-site ground uses the same grass texture stack and world-space material semantics as
-  terrain while remaining a separate flat support pad mesh
+  terrain; since `ROAD-68-D` part 5 the flat support pad is part of the terrain patch mesh
+  (below), not a separate site mesh
 - authored building asphalt and concrete site surfaces remain separate materials from grass/site
   ground
 - water rendering consumes the visible baseline water field and applies a dark Baltic-blue depth
@@ -4925,6 +4926,14 @@ Deterministic terrain-render rules:
   building-part yaw, invalidating earlier oversized/misrotated pads and one-sided apron products;
   Rust and Godot enforce the same revision. Invalid geometry still blocks publication, and both
   `terrain` and `road` debugging expose the renderer's rejection reason.
+- render frames (`ROAD-68-D` part 5): a patch's vertices are local to its frame centre
+  (`TerrainPatchSnapshot::frame_centre`, `render_frame_centre`), converted from `f64` world
+  metres once by `render_frame_local`. The road render chunk over a patch uses the same centre
+  and the same conversion, and each building site's flat pad is composed into the patch buffers
+  (footprint triangulated in `f64`, clipped to the patch by `terrain/rect_clip.rs`, partitioned
+  with the terrain faces by the site paving partition), so terrain, pads and roads give a shared
+  seam vertex the same bits ([`roads.md`](roads.md#footprint-and-terrain), open question 23).
+  Godot places terrain patches and road chunks at those centres.
 - CDT export retains world XZ in `f64` while calculating face normals, slope/pathology metrics,
   patch-local positions, and UV deltas; it converts only the resulting local values to Godot's
   `f32` buffers. Converting kilometre-scale world coordinates first can collapse a valid

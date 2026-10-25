@@ -76,30 +76,34 @@ before). The commit's synchronous cell-lot regeneration (about 20 ms) still miss
 question 21), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20).
-`ROAD-68-D` (terrain from the roadbed's outer chains) is in progress on branch `road68-D`: every
+`ROAD-68-D` (terrain from the roadbed's outer chains) is done on branch `road68-D` (part 5,
+2026-10-25): every
 64 m CDT tile takes its road loops from its own halo rectangle of outer chains, holes come from
 orientation, one source `RoadBoundary` replaces the legacy span and node sources, roads and sites
 share one grading envelope, and edits stamp only the tiles their old and new pieces reach. Road
-seams on tile sides are exact in both tiles. 24 of its 25 disabled tests are re-enabled and 23
-pass; the recorded Kuopio replay and the hillside fixture predate `ROAD-68-C` and wait for
-`ROAD-68-E`'s fixture regeneration, and one Kuopio yard test stays disabled (the world-space
-foundation and the patch-local terrain do not share their seam; open question 23, open,
-blocking; part 4 fixed the material partition's T-vertex cracks). Part 4 made the terrain
-watertight (a conforming regular filler, no dropped small faces; test
-`reference_junction_terrain_is_watertight`): the reference screenshots' pinholes fell from 33 to
-9, none on the flat fixtures; the 9 lie in the road surface on slopes, uncovered now that the
-terrain is clipped (open question 24, open, blocking). Part 3 fixed the economy perf contract regression (a
+seams on tile sides are exact in both tiles. All 25 of its disabled tests are re-enabled and
+the 24 that `ROAD-68-D` owns pass; the recorded Kuopio replay and the hillside fixture predate
+`ROAD-68-C` and wait for `ROAD-68-E`'s fixture regeneration. Part 4 made the terrain watertight
+(a conforming regular filler, no dropped small faces; `reference_junction_terrain_is_watertight`),
+and part 5 the road surface and its seams (open questions 23 and 24, decided under delegation
+and done): zebras paint whole asphalt triangles instead of cutting them, road chunks clip at
+chunk lines and share the terrain patch's frame (`reference_junction_road_chunks_are_watertight`,
+`reference_junction_road_and_terrain_share_seam_vertices`), and building pads are part of the
+terrain patch mesh, which re-enables the Kuopio yard test. The reference screenshots' pinholes
+went from 33 to 9 (part 4) to 0 (part 5). Still open under question 23: seam
+T-vertices on straight edges at CDT tile lines and on one `y_60` edge, the truncated border
+patch's frame and the shared filler/tile height function. Part 3 fixed the economy perf contract regression (a
 quadratic orientation test in the grading pass, and building-site changes re-grading roads): every
 timing is back within the control's range with identical work counts. The sloped T's terrain
 stage meets its 2 ms target at 1.85–1.88 ms (open question 22, resolved). Span rows follow one
 constructive station rule and terminal cap apexes are exact. Tests that need later gates are
-disabled until then (11 Rust tests, 4 Godot scripts). `ROAD-68-D`, `-E`, `-F` and `-H` are
+disabled until then (10 Rust tests, 4 Godot scripts). `ROAD-68-E`, `-F` and `-H` are
 open, and `roads.md` lists twenty-four open questions; open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
-frames, the yard test) is decided under delegation and not yet built, and 24 (road surface
-pinholes on slopes) is open. Design,
+frames, the yard test) and 24 (road surface pinholes on slopes) are decided under delegation and
+done in part 5, with question 23's straight-edge seam T-vertices still open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

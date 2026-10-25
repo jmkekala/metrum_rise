@@ -490,6 +490,14 @@ The road side is rewritten:
   sample points (open question 23). A refined patch's outer side carries the boundary lattice,
   and an unrefined neighbour renders its regular heightmap grid there (a T-junction on a
   straight edge, as tiles on patch sides always had).
+- **Pads and road seams share the patch frame** (`ROAD-68-D` part 5, open question 23). Every
+  site's pad is part of the patch buffers: its footprint triangulated in f64, clipped to the
+  patch canonically, converted once by `render_frame_local` and partitioned with the terrain
+  faces by `SitePavingPartition`; there is no world-space foundation mesh. The road chunk over a
+  patch has the patch's frame (its centre), so a seam vertex both meshes hold has the same bits
+  in both (`reference_junction_road_and_terrain_share_seam_vertices`). Open: seam edges split
+  by the CDT at a tile line inside a patch, and one straight `y_60` seam edge that passes a road
+  vertex, are T-vertices on straight edges (open question 23).
 - **Patch selection.** Every compile records the XZ bounds of the old and new pieces it replaced
   (`RoadbedSystem::take_changed_bounds`); the edit marks the render patches and CDT tiles within
   the envelope cap of them and stamps the tiles in the assembly ledger
@@ -535,13 +543,20 @@ Node pieces are rebuilt for those nodes and spans for those edges. The far end o
 is unaffected unless the edge itself changed, because a layout reads only its own arms.
 
 Render chunks keep the existing terrain-aligned grid. A changed piece rebuilds the sorted union of
-its old and new chunks, and every triangle has one deterministic centroid home chunk. Since
+its old and new chunks. A triangle inside one chunk goes there whole; one crossing chunk lines is
+clipped at them by the canonical rectangle clip (`terrain/rect_clip.rs`: each split point a
+function of its edge alone), so both sides of a chunk line take the same vertices. A chunk's
+payload (mesh layers, lights and signs) is local to the chunk's centre, the frame of the terrain
+patch over it, converted from the pieces' f64 positions by the terrain's own
+`render_frame_local`; Godot places each chunk node at that centre (`ROAD-68-D` part 5, open
+questions 23 and 24). Zebras cut no triangle: the asphalt under a crossing's bars carries its
+paint frame. Since
 `ROAD-68-G` part 2 a rebuilt chunk keeps its unchanged owners' triangles from the published chunk
 and emits only the pieces built since the last publication, whose lanes alone are lifted onto the
 new surface ([local commit publication](#local-commit-publication-road-68-g-part-2-2026-10-24)). The Rust to
-Godot chunk payload stays byte-compatible, so Godot's committed-chunk renderer is unchanged:
-`NetworkMeshData` layers, owner ranges, the generation and acknowledgement protocol, and removal
-tombstones.
+Godot chunk payload stays byte-compatible, so Godot's committed-chunk renderer is unchanged apart
+from the chunk frame: `NetworkMeshData` layers, owner ranges, the generation and acknowledgement
+protocol, and removal tombstones.
 
 ### Preview, commit, undo and load
 
@@ -687,7 +702,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-A` | done | Remove the legacy compiler; add the roadbed façade; the crate compiles |
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
-| `ROAD-68-D` | in progress | Footprint chains and terrain patches |
+| `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | open | Synchronous preview, commit adoption, undo and load |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit (41 ms at 100k); the commit's lot regeneration still misses a frame ([open question 21](#road-68-open-questions)) |
@@ -785,11 +800,9 @@ requires the merged node's piece before the merge.
 `ROAD-68-D` (25): `ROAD-68-D` re-enables 24; 23 pass, and
 `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` moved to `ROAD-68-E` (a recorded
 stroke fails node 5 with `node_piece_failed` at `79e7a476` as well, so it predates `ROAD-68-D`;
-the recorded placements predate `ROAD-68-C`, [open question 8](#road-68-open-questions)). One
-stays disabled, `cars_and_walkers_enter_and_exit_on_compiled_yards` (`ROAD-68-D`: Kuopio yard
-samples of buildings 1 and 3 find no rendered paving face: building 1's lie on its site loop's
-sides, building 3's inside its site loop but outside any foundation paving; see the gate's
-part 3).
+the recorded placements predate `ROAD-68-C`, [open question 8](#road-68-open-questions)). The
+last, `cars_and_walkers_enter_and_exit_on_compiled_yards`, passes since part 5 (site pads in the
+terrain patch, open question 23); none stays disabled under `ROAD-68-D`.
 
 | Module | Tests | Reason |
 | --- | --- | --- |
@@ -1238,14 +1251,32 @@ These need a user decision; work that does not depend on them continues.
     - **Scope (coordinator, same delegation):** (a) in `ROAD-68-D`, with one frame per shared
       seam for road chunks and terrain as well, and one shared height function for filler and
       tile sides; the yard test is re-enabled with it.
-    - **Not yet done.** Part 4 does not implement (a); the yard test stays a `ROAD-68-D` ignore
-      (seam samples of buildings 0 and 1).
-      Also open under this question: filler and tile side heights come from two bilinear
-      evaluations (patch snapshot and terrain system) that agree on sample points but can differ
-      in the last bit between them ([watertight patches](#footprint-and-terrain)); one shared
-      height function (the snapshot carrying the terrain grid frame) closes it.
+    - **Done in part 5** ([D part 5](#road-68-d--footprint-and-terrain)). Each site's pad is
+      composed into the terrain patch buffers: the footprint triangulated in f64, clipped to the
+      patch by the canonical rectangle clip (`terrain/rect_clip.rs`), converted once by the
+      terrain's own `render_frame_local` and run through the same `SitePavingPartition` as the
+      terrain faces. `get_building_site_mesh_data_internal` no longer uploads a world-space
+      foundation (`BuildingSiteClient::foundation_mesh` is gone). Road chunks take the frame of
+      the terrain patch over them (the cell centre, `render_frame_centre`), converted from the
+      pieces' f64 positions by the same function, and are clipped at chunk lines. The yard test
+      passes again; building 0's last miss was a 17 µm sliver the test's height query dropped
+      under `SAMPLE_EPSILON_M`, now an exact point-in-face test.
+    - **Still open.** (1) Seam edges are shared at vertex level only: where a seam crosses a CDT
+      tile line inside a patch, the CDT loop clip (`terrain/cdt/loop_clip.rs`, overlay grid and
+      `CDT_EPSILON_M` matching) adds a seam vertex the road lacks, and on `y_60` a terrain seam
+      edge runs straight past a road vertex 1.85 cm from its end (a near-collinear chain vertex
+      the terrain does not keep): T-vertices on straight seam edges, 4 to 16 per reference
+      fixture, allowed by `reference_junction_road_and_terrain_share_seam_vertices`.
+      Recommendation: let the CDT clip loops at tile sides with `rect_clip`'s canonical split and
+      the road render clip at the same tile grid, and keep every chain vertex. (2) A truncated
+      last patch at the world border (world size not a multiple of the patch span) centres its
+      frame on its own middle, the road chunk over it on the full cell. (3) Filler and tile side
+      heights come from two bilinear evaluations (patch snapshot and terrain system) that agree
+      on sample points but can differ in the last bit between them ([watertight
+      patches](#footprint-and-terrain)); the reference fixtures do not need the shared height
+      function, so it is not built.
 24. **Road surface pinholes on slopes (`ROAD-68-D` part 4) — decided by the coordinator under
-    the user's delegation, 2026-10-24, for review: (a), in `ROAD-68-D`.** With the terrain watertight,
+    the user's delegation, 2026-10-24, for review: (a), in `ROAD-68-D`; done in part 5.** With the terrain watertight,
     the reference screenshots keep 9 single sky pixels, all on the sloped fixtures and none on
     the flat ones (`pinholes.py`): 8 inside the carriageway (`t`, `four_way` and
     `t_footpath_beside_arm` at one screen point near the side arm's curb, three in a row on the
@@ -1279,6 +1310,19 @@ These need a user decision; work that does not depend on them continues.
     `reference_junction_terrain_is_watertight`, then give road chunks and terrain one frame per
     shared seam (question 23's rule); (b) hide the cracks under terrain again (rejected:
     terrain must stay clipped). **Recommendation: (a).**
+    - **Correction and fix (part 5).** Crosswalks did cut the asphalt:
+      `crosswalks::emit_triangle` split every carriageway triangle its zebra's rectangle touched
+      along the rectangle's lines, extended across the whole triangle, and left neighbours
+      outside the rectangle and the curb faces whole. With the 6.5 m carriageways' zero margin
+      the rectangle's corners lie on the kerb, hence (−3.25, 7.25). The test
+      `reference_junction_road_chunks_are_watertight` failed every fixture with 72 to 138 open
+      edges; with zebras off, the T fixtures passed and the Y and bend fixtures kept 22 to 28,
+      edges whose two faces sat in different chunks and rounded their chunk-local f32 apart.
+      Now a zebra cuts nothing: every asphalt triangle meeting the bar rectangle carries the
+      crossing's affine paint frame, and the shader draws only the bars (fewer than a bar pitch
+      of margin is left to the kerbs, so no extra bar fits); and a triangle crossing a chunk line
+      is clipped at it by the canonical rectangle clip, in the chunk's centre frame. The test
+      passes on all 20 fixtures, flat and sloped.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -2693,6 +2737,81 @@ Part 4 (2026-10-24, same branch): watertight terrain.
   `prepare_cached_refined_terrain_window_mesh_buffers` lose their unused boundary-step and
   window-bounds parameters, and the cached window buffers lose their four side manifests.
   `roadbed/` is unchanged (7,588 lines).
+
+Part 5 (2026-10-25, same branch): render seams; the gate closes. Open questions 23 and 24 (a),
+decided by the coordinator under the user's delegation, 2026-10-24, for review.
+
+- **Road chunks edge-match** (question 24). Test first:
+  `reference_junction_road_chunks_are_watertight` (`nodes/sim/core/tests/terrain_seams.rs`)
+  publishes the 20 reference junctions' road chunks, adds each chunk's frame in f64, and
+  requires every edge of the road, sidewalk, curb, curb-face and concrete layers with road on
+  both sides to border exactly two faces with bitwise equal vertices. Before the fix every
+  fixture failed, 72 to 138 edges, flat and sloped alike. Two causes:
+  - **Zebra cut-outs.** `crosswalks::emit_triangle` cut each carriageway triangle its zebra's
+    bar rectangle touched along the rectangle's lines, extended across the whole triangle;
+    neighbours outside the rectangle and the curb faces kept the unsplit edge (T-vertices; at
+    zero margin the rectangle's corners lie on the kerb). Now nothing is cut: an asphalt
+    triangle meeting the bar rectangle (separating axes) carries the crossing's affine paint
+    frame on its three vertices, and the shader draws only the bars. The margin to each kerb is
+    under a bar pitch, so no extra bar fits. The layout's strips are disjoint and bounded by mesh
+    rows; a debug assertion holds that at most one crossing meets a triangle. The polygon split
+    helper `render/ownership/preview.rs` is gone with the cut.
+  - **Chunk frames.** A triangle went whole into its centroid's chunk, and two faces sharing an
+    edge across a chunk line rounded their chunk-local f32 apart (22 to 28 edges on the Y and
+    bend fixtures, whose junction sits on a chunk corner). Now a triangle crossing chunk lines
+    is clipped at them by `terrain/rect_clip.rs`, whose split points are functions of the edge
+    alone (from its lexicographically lower end, the line coordinate exact) and whose chunk
+    corners lie on the triangle's plane, so every vertex two chunks share lies on their line,
+    exact in both frames.
+- **One frame per seam** (question 23). A chunk's payload is local to the chunk's centre
+  (`render_frame_centre`, the terrain patch's frame on the terrain-aligned grid), converted from
+  the pieces' f64 positions by `render_frame_local`, the terrain export's conversion; the road
+  emitters carry f64 world positions to the partition. Godot places chunk nodes, lights and
+  signs at that centre (`network_tool.gd` `_road_chunk_frame_centre`). Test
+  `reference_junction_road_and_terrain_share_seam_vertices`: every terrain seam vertex is a road
+  chunk vertex with the same bits in the same frame, or a CDT tile-line point (open, below).
+- **Site pads in the terrain** (question 23). Each site's pad is composed into the patch
+  buffers (`foundation_faces_in_frame`, `partition_terrain_site_paving`; the patch inputs carry
+  `site_foundations`, and the composed buffers are reused only while they are equal), so pad and
+  terrain meet on one partition in one frame. `get_building_site_mesh_data_internal` uploads no
+  foundation. The yard test `cars_and_walkers_enter_and_exit_on_compiled_yards` passes again.
+  Its last miss, building 0 at (56.519, −111.866), fell in a 17 µm sliver between the pad side
+  and a terrain vertex 17 µm off the footprint corner; the test's height query dropped faces
+  under `SAMPLE_EPSILON_M` and is now an exact point-in-face test. `assert_no_terrain_over_site_pads`
+  now requires every face over a pad point to be flat at the support height.
+- **Open** (question 23): seam edges are shared at vertex level only. The CDT's loop clip adds a
+  seam vertex where a seam crosses a tile line inside a patch, and one `y_60` terrain seam edge
+  passes a road vertex 1.85 cm from its end: T-vertices on straight seam edges. The truncated
+  border patch's frame and the shared filler/tile height function are open too.
+- **Fresh checks** (this session): debug `cargo test --lib` (`RAYON_NUM_THREADS=4`,
+  `METRUM_DEBUG=0`) 1,871 passed, 0 failed, 167 ignored (`ROAD-68-E` 5, `-F` 5; no `ROAD-68-D`
+  ignore remains); `cargo clippy --all-targets` 59 warnings, the baseline set; `./run.sh --test`
+  (DISPLAY and WAYLAND_DISPLAY unset) exit 0, Rust 1,871 / 0 / 167, integration 4 passed, 0 SCRIPT
+  ERROR, still skipping `network_tool_chunk_renderer_test`, `road_junction_preview_test`,
+  `road_preview_stream_test` (until `ROAD-68-E`) and `zoning_cells_tool_test` (until
+  `ROAD-68-F`). `run.sh` and the screenshots ran on the tree before the last commit's
+  single-chunk fast path in `render/road/chunks.rs`, which emits bitwise the same triangles; on
+  the final tree the seam, road render, rectangle clip, zebra and building-site terrain tests
+  pass (58), and clippy is the baseline set.
+- **Screenshots** (`$ARTIFACTS/screenshots-D5`, `screenshots-C.sh`, final code tree): PASS, 20
+  images, 0 SCRIPT ERROR; `pinholes.py` finds **0** pinholes (part 4: 9, the same script on
+  `screenshots-D4`). Zebras render as before (seven bars kerb to kerb on the 6.5 m arms).
+- **Terrain stage** (`benchmark_roadbed_terrain_tiles`, release test binaries,
+  `RAYON_NUM_THREADS=4 taskset -c 0,2,4,6,8,10,12,14`, both timing locks; A = the first WIP
+  binary, the gate's same-session control, B = part 5): the sloped T stays under its 2 ms target.
+  The closing A run waited behind other agents' timing batches and is not in this record.
+
+  | Build (part 5 session) | Total p50 (ms) | Plan p50 (ms) | Tile CDT p50 (ms) | Slowest tile (ms) |
+  | --- | --- | --- | --- | --- |
+  | first WIP (control) | 2.906 | 1.388 | 0.332 | 1.648 |
+  | part 5 | 1.974 / 1.837 | 0.414 / 0.418 | 0.340 / 0.329 | 1.484 / 1.034 |
+
+  Part 5 does not touch the tile plan or the CDT (the export's frame conversion is the same
+  arithmetic through `render_frame_local`); pads and chunk clipping run at composition and
+  publication, outside this stage.
+- **Product probes** unchanged: the roadbed is untouched (`roadbed/` 7,588 lines), and
+  `reference_junction_products_match_the_probe` and the fixture probes pass without
+  re-recording.
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 
