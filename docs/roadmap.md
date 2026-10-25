@@ -188,7 +188,14 @@ store's write journal, with one planner generic over both; products and determin
 unchanged, and the hover-validation flake is root-caused (the test read the hover path's pending
 answer as invalid). The user paused question 21 (b)'s preview half (question 33: no per-pose lot
 planning; after `TERRAIN-07`, if the commit still misses a frame, lot regeneration is deferred
-one frame like D7). Not ready to land: the publication pays the copy, about 0.1 ms at 10k and 30k residents, and two unchanged stages measured slightly slower, unattributed.
+one frame like D7).
+Round 7 (branch `road68-E7`, rebased onto `ROAD-68-K14` and `TERRAIN-07-A` as `road68-E8`) lands gate E: the copy follows beside the commit's graph copy on the
+shared pool, so the tool snapshot is at its control's; the two unchanged stages that measured
+slower (render publication, preview payload) do identical work in profiles, code layout under
+question 36; and round 5's lot planner, whose parcel overlay tested every parcel it had changed
+on each query (quadratic in a plan's new lots: a populated city's preparation took 3 s longer at
+30k residents), now finds them by chunk, bitwise. Open in gate E: question 21 (b)'s preview half
+(paused, question 33) and the terrain stage (`TERRAIN-07`).
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.
@@ -225,7 +232,7 @@ Tests that need later gates are disabled until then (6 Rust tests: 4 `TERRAIN-07
 recorded and saved Kuopio quality tests under open question 39, junction blends beside arms the
 grade rule cuts to the 5 m source-delta limit; no `ROAD-68-E` or `ROAD-68-F` one, no Godot
 script).
-`ROAD-68-E` and `-H` are open (`ROAD-68-F` is done), and `roads.md` lists thirty-eight open questions (1-33 and 35-39); open question 16 (strokes pinned to the
+`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists thirty-eight open questions (1-33 and 35-39); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different

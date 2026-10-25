@@ -1159,7 +1159,9 @@ area/width/depth and road identity. Cell claims publish sequentially in that ord
 Since `ROAD-68-E` round 5 one planner (`CellLotPlanner`) does all of it: cell generation and lot
 claims on a cell store and lot queue it changes in place, against a parcel store it only reads
 through `PlannedParcels`, which answers reads as the store would after the plan's own
-retirements, reattachments and new lots and records each as the store call it stands for. The
+retirements, reattachments and new lots and records each as the store call it stands for. It
+finds its changed parcels by the store's 512 m chunk (round 7; round 5 tested every changed
+parcel on each overlap query, quadratic in a plan over a populated city's regions). The
 installer (`ZoningSystem::install_cell_lot_plan`) makes those calls in order on the store the
 plan read and advances the overlay revision as the plan did, so the installed parcels equal
 making the calls directly (a replay test compares every index and revision). The commit, the

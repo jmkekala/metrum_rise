@@ -681,14 +681,17 @@ render snapshot publishes the revision and the getter reads it lock-free).
 
 As built (`ROAD-68-E` part 1): the context is the published view plus the preview's private
 graph replica. The view shares terrain and water until their own generations change, the
-roadbed in `O(1)` and the published road chunks in `O(1)`, and takes its graph from the copy the
-command's routing rebuild made (commit, undo, road bulldoze); the replica follows by the records
+roadbed in `O(1)` and the published road chunks in `O(1)`, and shares one graph copy with the
+command's routing rebuild (undo and road bulldoze offer theirs; a commit's publication makes it);
+the replica follows by the records
 of the owners whose pieces the roadbed rebuilt. The commit tests the pieces it installs against
 fields and painted cells, and its stroke corridor against parcels ([open questions 1 and
 25](#road-68-open-questions)); since part 2 round 3 the view shares the field index (an `Arc`
-the allocator copies on write) in `O(1)`, and since round 4 the whole zoning cell store, whose
-maps are persistent (`imbl`), so a copy is `O(1)` and shares every block until either side
-writes it; the preview runs the commit's own test on its installed and replaced pieces against
+the allocator copies on write) in `O(1)`, and since round 6 a persistent copy (`imbl` maps,
+cloned in `O(1)`) of the whole zoning cell store, whose live maps stay plain: each publication
+copies exactly the entries the live store's write journal names
+([question 32](#road-68-open-questions)), beside the commit's graph copy on the shared pool
+(round 7); the preview runs the commit's own test on its installed and replaced pieces against
 the store's reserved cells, so it shows `field_overlap` or `zoning_cell_overlap` before the
 click. Since round 5 every lot derivation is one planner (`CellLotPlanner`: cell generation and
 lot claims on a cell store and lot queue it changes in place, against a parcel store it only
@@ -906,7 +909,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
-| `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; the terrain stage's budget and part 2 (open questions) are open |
+| `ROAD-68-E` | implemented, acceptance open (2026-10-25, part 2 round 7) | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; part 2 the user's decisions on the open questions (order-independent strokes, overlap checks, node moves, pinned knots, the cell store's journal-synced view copy); open: the terrain stage's budget (`TERRAIN-07`) and question 21 (b)'s preview half (paused, question 33) |
 | `ROAD-68-F` | done (2026-10-25, part 2 round 4) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk), and round 4 fixed the preview payload's codegen regression. Moved to `TERRAIN-07`: bridge abutments and tunnel portals (`TERRAIN-07-C`, with closing the grounded chains at structures, open question 19), building sites, driveways and paving (`TERRAIN-07-C`), bridge fascias (`TERRAIN-07-B`). Left open: question 17's item on footpaths in a sector without a sidewalk |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
@@ -2206,9 +2209,10 @@ These need a user decision; work that does not depend on them continues.
       ([round 6 record](#part-2-round-6-2026-10-25-branch-road68-e6-work-in-progress)). Products
       and determinism are unchanged; `buildings` is within the control's spread once the breakdown harness
       publishes its first view as the game does (one 10k sample 0.06 ms above the control's
-      higher run, inside the control's own run-to-run difference). Not ready to land: the
-      publication pays the follow, about 0.1 ms at 10k and 30k, and render publication and two
-      preview stages measured slightly above their controls without a profile yet. The copy holds 175,055 entries at 100k
+      higher run, inside the control's own run-to-run difference). Round 7 hides the follow
+      behind the commit's graph copy on the pool, so the tool snapshot is at the control's, and
+      profiles render publication and the two preview stages: identical work, code layout under
+      question 36 ([round 7 record](#part-2-round-7-2026-10-25-branch-road68-e7)). The copy holds 175,055 entries at 100k
       residents: 16.5 MB of keys, values and lists, about 20.7 MB with each entry's pointer and
       `Arc` header (map nodes not counted), next to the live store's own 16.5 MB.
 33. **Where the preview's lot plan runs (`ROAD-68-E` round 6, from question 21 (b)) — decided by
@@ -5034,6 +5038,138 @@ the preview half of question 21 (b) is paused by the user ([question 33](#road-6
   lock, by design: the corridor's parcel clearance reads the live core (unlike `ROAD-54`'s
   preview checks, a hover candidate cannot be evaluated ahead); a view-side parcel copy would
   remove that, and waits with question 21 (b)'s preview half.
+
+#### Part 2, round 7 (2026-10-25, branch `road68-E7`)
+
+Round 6 on `road` `4710f59b` (no conflict). The two commit stages round 6 left above their
+controls, then a regression the round found in the city setup.
+
+- **The cell copy follows beside the commit's graph copy.** The commit's publication now makes
+  the routing rebuild's graph copy itself (`publish_committed_road_tool_view`; the view and the
+  rebuild share it, as before) and runs the view's cell-copy follow beside it in one
+  `rayon::join` through `thread_pools::install`, inline on the commit's pool worker; the graph
+  record capture, the roadbed snapshot and any terrain or water copy run on the copy's side.
+  Neither side waits for a pure job (gate G part 5's rule). A publication without a city-sized
+  copy (a paint, an unchanged graph) runs both sides in turn on its own thread instead of
+  entering the pool. The follow is unchanged, `O(journaled entries × log entries)`, now hidden
+  behind the `O(city)` graph copy; debug tests still compare the copy's whole state with the
+  live store at every publication. Undo and road bulldoze still offer their routing copy.
+- **Commit breakdown, session 1 (fresh, 21:56-22:18, both locks, P-cores, 8 workers, release
+  library tests, no restic; C2 = `road` + round 6's harness fix, E7 = `a16e7b17`; C2 E7 E7
+  C2).** Gate G's determinism on E7: no difference, `da3d23b6c8b63d20`; lot and generated
+  digests equal in every tier and sample. Tool snapshot medians C2 / E7: 0.26 / 0.25 (10k),
+  0.69 / 0.70 (30k), 2.73 / 2.77 ms (100k), against round 6's +0.06-0.16 ms; every E7 sample lies
+  within 0.02 ms of C2's range but one 100k second sample (+0.09 ms; C2's two runs differ by
+  0.01 ms there, round 6's by 0.14). `buildings` and `mesh` medians are within 0.15 ms of C2's
+  (`mesh` 0.86 / 1.01, 1.53 / 1.51, 2.31 / 2.23 ms); single samples of one E7 run lie up to
+  1.0 ms (`buildings`, 10k first) and 0.3 ms (`mesh`) above C2's two runs, as do single samples of
+  stages no round of gate E changed (lanes +0.46 ms and agent invalidation +0.50 ms at 100k, plan
+  +0.13 ms on the bare grid): the session's noise floor for one sample.
+- **Render publication profiled (22:18-22:38, both locks, P-cores, 8 workers, the commit windows
+  at 30k and 100k, `perf record` 8 kHz user cycles and instructions with LBR call chains, and
+  `perf stat`).** Samples whose call chain passes through `precompute_road_mesh_data` or the
+  road render emission: instructions C2 1.992e8, E7 2.005e8 (+0.7%, within the sampling
+  error), cycles 1.220e8 and 1.088e8 (E7 11% fewer in this run). The leaf functions differ
+  only by inlining: samples move between `push_triangle_to_layer_with_crossing` and
+  `push_layer_triangle`, `triangle_height_at_xz` and `LaneSurfaceQuery::height_at`,
+  `emit_piece_surfaces` and `for_each_strip_triangle` / `emit_into`, the street-light chain
+  closure and `for_each_crossing` / `place_road_signs`. The stage runs no changed code on equal
+  inputs (equal digests), so its work is identical: code layout under
+  [question 36](#road-68-open-questions). Whole windows: user instructions 12.280e9 / 12.366e9
+  (+0.7%: the routing rebuild's pure job runs on the pool during the window, `flow_cut` +95 M),
+  user cycles 4.811e9 / 4.730e9, page faults 33,861 / 31,425.
+- **Preview stages (fresh, 21:56, 4 workers, C E7 E7 C):** plan, payload and terrain within C's
+  range or below (terrain 4.39-4.42 against 4.62-4.68 ms on `sloped_t`); roadbed on
+  `sloped_branch` 0.332-0.334 against 0.322-0.328 ms. Profile (22:55, both locks, P-cores, the
+  whole benchmark at 4 kHz): user instructions over the run 169.70e9 (C) and 167.48e9 (E7),
+  cycles 66.1e9 and 64.0e9; the roadbed functions' instructions -0.6% and cycles +3.2%, with
+  `rect_loops::clip_path` called out of line from `terrain_loops` as in round 6: identical work,
+  layout (question 36). No preview stage runs code this round or round 6 changed.
+- **Lot plans were quadratic in their new lots (round 5's planner).** Every breakdown run of the
+  round 5-7 builds took 20-30 s longer than its control's, outside the timed commits. Whole-run
+  profiles of one tier (22:41 and 23:00, user cycles, LBR): 20.9 / 21.2 s at 10k, 62.9 / 65.7 s
+  at 30k (C2 / E7), the difference in `PlannedParcels::overlaps_existing` (1.72e9 cycles at 30k, absent in
+  C2), `rectangles_overlap_on_axes` (0.19e9 to 4.05e9) and `rectangles_overlap_geometry`
+  (0.07e9 to 1.42e9). The plan's overlay tested every parcel the plan had changed on each
+  overlap query and bounds visit, so a plan over a populated city's queued regions (the setup's
+  preparation; in the game, a load, a large paint or a busy hourly pass) cost
+  `O(new lots²)`; a commit plans few lots, which is why `buildings` never showed it. The overlay
+  now indexes its changed parcels by the parcel store's 512 m chunk, under every chunk of each
+  bounds they had in the plan, and each read checks the parcel's present bounds and visits it
+  from its first queried chunk, as the store's own visit does; visits keep their order (the
+  store's unchanged parcels, then the changed ones by id). A query costs the store's own plus
+  `O(log changes)` per changed parcel in its chunks. A new test moves a planned parcel across a
+  chunk line and compares visits and overlaps with the directly changed store.
+- **Session 2 on the final code (fresh, 23:45-00:06, same locks, cores and workers; E8 =
+  `879ffe10`; C E8 E8 C preview stages, C2 E8 E8 C2 breakdown).** Determinism: no difference,
+  `da3d23b6c8b63d20`; lot and generated digests equal C2's in every tier and sample, so the
+  overlay's index changes no product. A whole four-tier run takes 307.1 / 306.5 s (E8) against
+  307.8 / 308.0 s (C2); session 1's E7 runs took 341 / 337 s against 310 / 309 s. Medians C2 /
+  E8, ms:
+
+  | Stage | 10k | 30k | 100k |
+  | --- | --- | --- | --- |
+  | `buildings` | 4.19 / 3.86 | 2.51 / 2.58 | 3.18 / 3.17 |
+  | tool snapshot | 0.25 / 0.25 | 0.69 / 0.71 | 2.76 / 2.73 |
+  | `mesh` | 0.96 / 1.05 | 1.40 / 1.47 | 2.29 / 2.22 |
+
+  Single E8 samples above C2's two runs: `buildings` 30k second +0.11 ms (the other run +0.01),
+  100k first +0.08-0.25 ms (C2's runs 0.52 ms apart); tool snapshot 100k first +0.20 ms in one
+  run, otherwise at most +0.03; `mesh` 10k third +0.07-0.09 ms in both runs (C2's runs 0.01 ms
+  apart; session 1's C2 0.80-0.84 and E7 0.85 / 1.13), one 30k third +0.13 and one 100k first
+  +0.35 ms. Unchanged stages move as much (plan +0.10-0.15 ms and add +0.13 ms at 100k).
+- **E8's preview payload and render code, profiled.** Preview stages (23:45): plan, roadbed and
+  terrain within C's range or below (terrain 4.40 against 4.66-4.71 ms on `sloped_t`), payload
+  0.421-0.434 against 0.387-0.388 ms (`sloped_t`) and 0.422 against 0.384-0.396 ms
+  (`sloped_branch`), which E7 with the same render source did not show (0.382-0.387). The stage
+  runs no code changed since `road` (E8 changes only lot plans, which the benchmark never
+  makes). Fixed-period instruction samples (00:20, every 2 M user instructions, unthrottled;
+  totals 169.5-169.6e9 for C and 163.2-163.7e9 for E8, as `perf stat` counts): the render
+  functions execute 3.30 / 3.38e9 (C, two runs) and 3.32 / 3.37e9 (E8) instructions, identical
+  work; E8's machine code for the same source differs (`push_triangle_to_layer_with_crossing`
+  4,846 bytes in C and E7, 3,014 in E8, with `NetworkMeshData::new` called out of line), and
+  the legacy terrain CDT's code moved too (E8 executes 3.5% fewer instructions over the run).
+  Code layout under [question 36](#road-68-open-questions); the render publication's `mesh`
+  runs the same functions, and session 1's commit-window profile of E7 showed identical work
+  there.
+- **E8's render publication at 10k, profiled (00:25, both locks, P-cores, 8 workers, the three
+  commit windows, as session 1's profile):** samples through the render publication execute
+  9.47e7 (C2) and 9.13e7 (E8) user instructions in 4.96e7 and 4.88e7 cycles; the leaf functions
+  differ by inlining only (`for_each_strip_triangle`, `road_signs::place` and
+  `emit_piece_surfaces` appear out of line in C2 alone). Identical work: the 10k third sample's
+  `mesh` difference is code layout under question 36, as at 30k and 100k in session 1.
+- **Gate checks (fresh, on `879ffe10`).** Clippy `--all-targets` (00:09): the baseline's
+  59-warning set, none new (also on `a16e7b17`, 21:48 and 23:03). `./run.sh --test` (00:09-00:25,
+  `DISPLAY` and `WAYLAND_DISPLAY` unset): exit 0, debug library 1,916 passed / 0 failed / 164
+  ignored (round 6 1,915 plus the new overlay test), integration 4 passed, every Godot script
+  PASS, no SCRIPT ERROR; skipped only the display-only shader-global probe and the rendered
+  vegetation tests. Targeted debug suites on E7 and E8 (zoning, save, road preview, fields,
+  editing, buildings, simulation node, both probes) pass with round 6's counts (zoning 132 with
+  the new test). No `ROAD-68` ignore remains; four `TERRAIN-07`. `roadbed/` has no change
+  against `road` (7,943 non-blank lines outside test modules).
+- **Acceptance.** Every commit stage's median is at its control's (within 0.1 ms) and the tool
+  snapshot's follow cost is gone; the samples above the control's two runs are single-run
+  excursions also seen in unchanged stages, and the two stages that rose consistently without a
+  code change (render publication, preview payload) do identical work in profiles, with
+  products bitwise equal: code layout under question 36. Gate E lands with this round. Open:
+  the preview's terrain stage budget (`TERRAIN-07`), question 21 (b)'s paused preview half
+  ([question 33](#road-68-open-questions)) and the 100k commit's frame (question 21, measured
+  again with `TERRAIN-07`'s terrain validation).
+- **Landing on `road` (2026-10-26, branch `road68-E8`).** Rounds 4-7 rebased onto `road`
+  `5f2c5fbf` (`ROAD-68-K14`'s maximum grade and Kuopio re-record, question 20's attribution,
+  `TERRAIN-07-A`). Only `roadmap.md`'s status paragraph conflicted, resolved keeping both
+  sides. The code merged without a conflict and needed no semantic resolution: `editing.rs`
+  holds E's surface sub-stage timers beside K14's grade refusal in `try_graph_edit`, and the
+  commit breakdown E's first view through the publisher and cell-copy report beside
+  `TERRAIN-07-A`'s graded census and tiles. Fresh on the rebased tree: clippy `--all-targets`
+  the baseline's 59-warning set, none new; `./run.sh --test` (01:00-01:18, `DISPLAY` and
+  `WAYLAND_DISPLAY` unset) exit 0, debug library 1,931 passed / 0 failed / 173 ignored,
+  integration 4 passed, every Godot script PASS, no SCRIPT ERROR, skipped only the shader-global
+  probe and the rendered vegetation tests; both product probes and the narrow-marks test pass;
+  gate G's determinism (release, 8 P-cores): no difference, `da3d23b6c8b63d20`, unchanged by
+  K14's grade rule. Disabled: four `TERRAIN-07` and the two Kuopio quality tests under
+  `ROAD-68-K14` (question 39). `roadbed/` has no change against `road`. No timing was re-run:
+  no code conflict needed a semantic resolution.
 
 ### `ROAD-68-F` — remaining families
 
