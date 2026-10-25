@@ -4223,12 +4223,14 @@ A's Kuopio acceptance is judged on the re-recorded reference
   roadbed accessor `for_each_grounded_top_triangle_in_bounds`, a piece inside the bounds visits
   its top triangles once each instead of once per grid cell (the same set; coverage takes the
   maximum and the inputs are sorted and unique).
-- **Exactness** (debug library tests, fresh): pruned equals unpruned bitwise at `GL0`, `GL2` and
+- **Exactness** (debug library tests, fresh, on the round 3 code before the rebase onto `4710f59b`;
+  76 passed, 7 ignored with the roadbed tests): pruned equals unpruned bitwise at `GL0`, `GL2` and
   now `GL3` (step 2) on the conflict fixtures and Kuopio's edge 43 block, in batches of 16 and 1,
   reversed, on 1, 4 and 8 workers; the lanes equal one point at a time (texels, rows, inputs and
   every `BakeStats` field) on all seven fixtures at all four levels
-  (`lanes_equal_one_point_at_a_time_on_every_fixture_and_level`) and on all 517 Kuopio road tiles
-  at `GL0` (in `kuopio_pruned_bake_equals_every_seam`); `a_seam_in_lanes_equals_the_seam_at_each_point`.
+  (`lanes_equal_one_point_at_a_time_on_every_fixture_and_level`) and on all 517 Kuopio road tiles at
+  `GL0` (in `kuopio_pruned_bake_equals_every_seam`);
+  `a_seam_in_lanes_equals_the_seam_at_each_point`.
 - **Did round 1 under-select the 100k edit?** No. Round 1's rule (the four-term one-pass reach of
   `71601ca5`'s `reached` plus the unchanged covering-triangle half), run on today's edits with
   the coverage check (a temporary diagnostic, not committed): on the 100k city it selects the same
