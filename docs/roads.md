@@ -116,7 +116,9 @@ boundary, or final node polygon carrier.
 - immutable span and node pieces: meshes, outer chains and query grids
 - the road chunk index and the source / compiled generation gate
 - visible-surface height, band and ray queries
-- the road side of terrain integration: patch loops, grading envelope and patch selection
+- the road side of terrain integration: patch loops, grading envelope and patch selection (the
+  exact cut's; under [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) the roadbed gives terrain only its outer chains, top
+  triangles and terrain changes)
 - preview artifacts, commit adoption and undo records
 - road debug output
 
@@ -155,7 +157,9 @@ input, and display debug data. They must not:
    inputs. Road queries answer from the triangles that render.
 4. **Watertight by construction.** Adjacent bands share vertex sequences, curb faces share their
    edges with both levels, spans and nodes share mouth vertices, and terrain seams reuse the road's
-   outer-edge vertices.
+   outer-edge vertices. The terrain half is superseded by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07): terrain meets the
+   outer chains through an exact mask and road skirts, within a tolerance, not through shared
+   vertices.
 5. **No repair.** A construction that cannot satisfy its rules returns a typed error, and the edit
    is rejected with a reason. There is no tolerance snapping, nearest-height, averaging, fallback
    geometry or render masking.
@@ -413,6 +417,24 @@ edges (which meet terrain) and mouth edges. Every mouth edge appears in exactly 
 node piece, with bit-identical endpoints. Tests check both conditions on every fixture.
 
 ### Footprint and terrain
+
+**Terrain side superseded by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (approach B, user 2026-10-25; draft spec for
+review).** Terrain will be graded per 64 m tile from the outer chains, with an exact footprint mask
+in the terrain shader and road skirts, and the exact cut below is deleted at `TERRAIN-07-G`. The
+roadbed side stays as the contract terrain consumes:
+
+- grounded outer chains, road on the left, joined at bit-identical mouth corners, `f64` positions;
+  structure spans publish none
+- the pieces' top triangles and the point-in-triangle predicate `height_at` uses, which `TERRAIN-07`
+  takes as the footprint's coverage (no loops, so an open end flips no region; question 19)
+- `take_terrain_changes`, extended in `TERRAIN-07-A` to return the changed grounded chain segments
+  themselves
+- road skirts, one strip per outer chain in the piece mesh (`TERRAIN-07-B`)
+
+Everything else in this section (patch loops, holes, open ends, source tags, the grading envelope,
+seams on tile sides, watertight patches, pads in the patch frame, patch selection, tile clip,
+ownership refresh) is the road side of the exact cut. It describes the code on `road` until
+`TERRAIN-07-G` deletes it; new terrain work follows `TERRAIN-07`.
 
 The terrain CDT core in `rust/src/simulation/terrain/cdt/` stays. It is generic: patch-clipped
 loops, source samples and tie-in guides in; stitched patch mesh out. Its contract in
@@ -1349,6 +1371,8 @@ These need a user decision; work that does not depend on them continues.
 18. **Grading envelope cap (`ROAD-68-D`) — decided 2026-10-24 (user): the probed reach, capped at
     the 64 m tile halo.** Each ray is probed until the 1:2 tie-in meets the terrain, at most
     `GRADING_ENVELOPE_MAX_MARGIN_M`.
+    - **`TERRAIN-07` (2026-10-25):** carried into its product decision TD5 (64 m cap, proposed); the
+      reach becomes an exact bound under that cap ([T1](terrain.md#terrain-07-open-questions)).
     - **The gap.** `roads.md` capped the envelope at `EARTHWORK_MAX_MARGIN_M`, which no longer
       exists in code; it was 18 m in the deleted legacy `surface/earthwork.rs` (ray search 4–18 m
       at slope 0.5), used for patch selection. `earthworks.md` "Geometry Decision" fixes the rule
@@ -1365,6 +1389,9 @@ These need a user decision; work that does not depend on them continues.
       larger cap with a larger halo (more loops per tile).
 19. **Open chain ends at structures and failed nodes (`ROAD-68-D`) — decided 2026-10-24 (user):
     the typed error `roadbed_chain_open_end` until `ROAD-68-F` builds abutments and portals.**
+    - **`TERRAIN-07` (2026-10-25):** superseded there: inside and outside come from the pieces' top
+      triangles, so an open end flips no region ([T3](terrain.md#terrain-07-open-questions));
+      abutments and portals in [T14](terrain.md#terrain-07-open-questions).
     - **The case.** Bridge and tunnel spans publish no terrain chains (no mid-span clipping), and
       their terminals have no node piece, so a grounded chain that meets one ends inside a tile's
       rectangle. A failed node publishes as a gap (question 11) and leaves the same open ends.
@@ -1518,6 +1545,8 @@ These need a user decision; work that does not depend on them continues.
     coordinator under the user's delegation, 2026-10-24, for review: (a).** The yard test
     `cars_and_walkers_enter_and_exit_on_compiled_yards` samples exactly on the terrain/foundation
     seam (coordinator's decision of 2026-10-24: a seam point must be covered).
+    - **`TERRAIN-07` (2026-10-25):** superseded for terrain: graded terrain shares no vertices with roads
+      or pads, so the open T-vertex and filler items go with the CDT at `TERRAIN-07-G`.
     - **Evidence.** Kuopio yard fixture, after part 4. Building 1, sample (65.538, −95.030): the
       foundation's paved triangle misses it by 2.7 µm across the footprint side, and the terrain
       faces along the same side miss it too. The foundation is a world-space f32 mesh
@@ -1606,6 +1635,8 @@ These need a user decision; work that does not depend on them continues.
     `reference_junction_terrain_is_watertight`, then give road chunks and terrain one frame per
     shared seam (question 23's rule); (b) hide the cracks under terrain again (rejected:
     terrain must stay clipped). **Recommendation: (a).**
+    - **`TERRAIN-07` (2026-10-25):** the road side stays: terrain is still discarded under roads, so a
+      road crack would show, and the road chunk watertightness test stays.
     - **Correction and fix (part 5).** Crosswalks did cut the asphalt:
       `crosswalks::emit_triangle` split every carriageway triangle its zebra's rectangle touched
       along the rectangle's lines, extended across the whole triangle, and left neighbours
@@ -1717,6 +1748,8 @@ These need a user decision; work that does not depend on them continues.
       the budget for no geometric reason.
     - **Recommendation.** (a) now; (b) when the debug inspector needs edge ids again.
 29. **The commit's terrain at city scale (`ROAD-68-D` part 6) — open, target missed.**
+    - **`TERRAIN-07` (2026-10-25):** superseded: the graded bake follows the dirty tiles (spike: 1.64-2.52
+      ms per populated edit at 2k and 30k); the 3.0 ms target moves to `TERRAIN-07`'s budgets.
     - **Evidence.** With the city's refined terrain built and `ROAD-68-E`'s chain rule, a T
       split's terrain validation (`surface`) takes 10-12 ms in open terrain and 55-73 ms beside
       city patches, at 0 to 100k residents alike (eight workers; [part 6
@@ -3000,6 +3033,9 @@ it misses the 3.0 ms terrain stage at city density ([open question 29](#road-68-
 The terrain surface core is to be rewritten as [`TERRAIN-07`](roadmap.md) (heightmap plus fine
 grading and mask layers, road skirts); the legacy terrain surface code is retired with it. The
 roadbed side of this gate (outer chains, terrain changes, heights) stays as `TERRAIN-07`'s input.
+The terrain side's specification, gates and open questions are in
+[`terrain.md`, "Graded terrain surface (`TERRAIN-07`)"](terrain.md#graded-terrain-surface-terrain-07) (draft for review, 2026-10-25); the
+contract it consumes is listed under [footprint and terrain](#footprint-and-terrain).
 
 1. `roadbed/terrain.rs`: patch loops from outer chains, the grading envelope and patch selection.
 2. `terrain/cdt/model.rs`: the `RoadBoundary` source variant, with source ordering simplified to

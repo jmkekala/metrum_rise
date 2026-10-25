@@ -64,45 +64,12 @@ XDG_DATA_HOME=$ARTIFACTS/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godo
 XDG_DATA_HOME=$ARTIFACTS/metrum-plot-light RAYON_NUM_THREADS=4 godot --headless --path godot --script res://tests/network_tool_chunk_renderer_test.gd -- --asset-editor
 ```
 
-### Native terrain winding correction
+### Native terrain winding correction (archived)
 
-The initial plane-based checks missed the actual exported mesh orientation. Internal CDT
-and regular terrain buffers use upward cross products; Godot front faces use clockwise
-winding viewed from above. The exporter copied internal indices unchanged. With two-sided
-rendering Godot therefore flipped the shading normals on the visible upper faces, leaving
-frontage and the graded paving around the Food Processing Plant dark. Foundation/yard
-meshes already used the correct winding, explaining the exact boundary. The materials
-were selected correctly.
-
-`godot_terrain_indices` reverses the second and third index of each face during the existing
-`PackedInt32Array` export. Cached geometry, winding used by terrain queries, normal sums,
-face order, material tags, positions and retaining-wall output remain unchanged. Cost remains
-O(exported indices), only on payload publication, with no extra pass or intermediate buffer.
-The iterator supplies an exact lower size hint, preserving PackedArray's single preallocation.
-
-Fresh native verification on the rebuilt release: the extended material regression requests
-an actual 80 m blank-world road preview, checks all exported faces, and renders one exported
-flat face as paving against the yard reference. The old library fails with **904/904**
-backward faces and daytime/nighttime RGB-vector differences **0.635 / 0.045**. The rebuilt
-library passes with **0/904** backward faces and differences **0.000 / 0.0039** (tolerance
-0.012). Existing material/light checks also pass. Rust winding test: 1 passed; CDT bridge
-suite: 57 passed, 1 ignored; building-site terrain suite: 12 passed, 4 ignored. Release build
-succeeds and is deployed; restart the game to load it. New library SHA-256:
-`54ecc2f8dad9d5f3cd48134242883023dfa2d4cfdc1dc61ce1481c2a2650f108`.
-
-Matched unprofiled iterator-copy microbenchmark: Rust 1.98.1, `rustc -O`, one thread,
-preallocated destination, exact current helper extracted from source, old forward copy versus
-new clockwise copy, two alternating pairs, 10 warm-up and 60 measured batches of 100 copies.
-For 12,288 indices: old **0.928 / 1.032 µs**, corrected **4.001 / 1.281 µs**;
-98,304: **5.448 / 5.431 → 10.005 / 9.983 µs**;
-999,999: **132.457 / 140.237 → 147.808 / 150.013 µs**.
-This isolates index iteration/copying; it does not measure full Godot upload or city frames.
-
-Commands: `cargo test --manifest-path rust/Cargo.toml --lib
-exported_terrain_faces_are_front_facing_from_above`, `cargo test --manifest-path rust/Cargo.toml
---lib nodes::simulation_node::tests::cdt`, `cargo test --manifest-path rust/Cargo.toml --lib
-building_site_terrain`, `cargo build --manifest-path rust/Cargo.toml --release`; use the
-material-test command above without benchmark flags for the native rendered check.
+The CDT terrain export's index-order correction (`godot_terrain_indices`) and its verification are
+archived with the legacy terrain surface in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#native-terrain-winding-correction). The graded terrain
+([`TERRAIN-07`](#graded-terrain-surface-terrain-07)) draws regular grids and exports no CDT faces.
 
 ### Morning sky reflection parity
 
@@ -3219,6 +3186,8 @@ It answers questions like:
   increases
 - what is already implemented
 - what the next deterministic implementation slices must do
+- how the graded terrain surface (`TERRAIN-07`) replaces the exact terrain cut around roads and
+  sites
 
 It does not own zoning legality, building placement rules, or multi-tier inactive-region
 simulation behavior. Those remain owned by their respective docs.
@@ -3233,6 +3202,8 @@ Interpretation rules:
   authored-world behavior.
 - Sections under `Remaining Planned Deterministic Implementation` are intended next steps, not
   shipped behavior.
+- The section `Graded terrain surface (TERRAIN-07)` is a draft specification for review; nothing in
+  it is shipped behavior.
 - `must` means required for the owning contract.
 - `should` means intended unless a better measured implementation replaces it.
 - `may` means allowed but optional.
@@ -3243,8 +3214,952 @@ Terminology:
 - `runtime terrain cell`: one live terrain sample in the current in-memory terrain grid
 - `authored terrain chunk`: the canonical chunk span described by `WorldConfig`
 - `source terrain`: the authoritative player- or importer-authored terrain surface
-- `visual terrain`: the derived terrain surface after engineered-ground earthworks
+- `visual terrain`: the derived terrain surface after engineered-ground earthworks (legacy; equal to
+  source terrain on `road`)
+- `base heightmap`: the source terrain as `TERRAIN-07` reads it
+- `graded terrain`: the base plus the `TERRAIN-07` grading near roads and sites
 - `WorldDefinition`: the reusable authored-world asset for blank-world v1
+
+## Graded terrain surface (`TERRAIN-07`)
+
+### Purpose and status
+
+**Draft specification for the user's review (2026-10-25). Nothing in this section is
+implemented.** `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
+replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
+render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
+grading and footprint distance layer per 64 m tile near roads and sites, an exact seam mask in the
+terrain shader and road skirts.
+
+Decided by the user, 2026-10-25:
+
+- the terrain surface core is rewritten, and the existing terrain surface code is legacy
+- the scope: the heightmap representation, earthworks and grading, the road and site cut,
+  building pads and paving, the terrain mesh, its LOD and its shader. Vegetation, water,
+  weather and fields stay; they are re-pointed at the new height and mask functions
+- approach B, after the spike below
+- 0.5 m texels
+
+Everything else in this section is **proposed**: the product defaults marked so in
+[product decisions](#product-decisions), the gates, and every rule below that the user has
+not ruled on. Choices that need the user are [open questions T1-T17](#terrain-07-open-questions),
+each with evidence, options and a recommendation.
+
+**Why.** The exact cut is correct, but it misses the 3.0 ms terrain stage at city density. A road
+commit beside built-up blocks re-grades the loops of all 64 tiles of every stamped patch,
+re-triangulates the stamped tiles and their neighbours, and recomposes each patch with its paving
+partition: a T split's terrain validation took 10-12 ms in open terrain and 55-73 ms beside city
+patches at 0 to 100k residents alike, and 4.3-4.7 ms per preview pose on the sloped reference
+fixtures ([`roads.md` open question 29](roads.md#road-68-open-questions)). The cost follows the
+512 m patch, not the edit.
+
+**What B gives up.** Bitwise shared seam vertices between road and terrain. The seam stays exact
+in XZ: the shader's mask follows the outer chains to the float precision of tile-local
+coordinates. In height it is exact on straight edges and within the 0.5 m interpolation at curb
+returns, and the skirt covers the rest. Watertightness becomes the tolerance contract of
+[invariant 10](#invariants) instead of a topological property, which supersedes the
+terrain half of `ROAD-68` invariant 4.
+
+**The spike** (branch `road68-Bspike` from `road` at `359406c1`, not for merge; behaviour final at
+`ec0ef34e`, clippy fixes in `4c6662e9`), built clean-room beside the legacy path in
+`simulation/terrain/grading_tiles.rs`, `nodes/simulation_node/bspike_api.rs`,
+`godot/assets/materials/terrain_b_spike.gdshader` and `godot/tests/bspike_terrain.gd`. Its
+measurements are historical evidence for that build, not acceptance of this design:
+
+- **Cost per populated edit.** Release library tests, four Rayon workers, pinned to P-cores,
+  run 3 on 2026-10-25 10:30-10:31, binary sha256 `40612e3a6fe0…` from `ec0ef34e`;
+  `bspike_grading` appended to `benchmark_populated_commit_breakdown`, measured on the same core
+  right after the exact cut's own commit (its `surface_ms` is the same-run control); median of 7
+  warm runs:
+
+  | Tier | sample | exact cut `surface_ms` | B select | B bake 0.5 m (tiles) | B total 0.5 m | B total 1 m | B 0.5 m with the exact cut's 64 m stamping (graded / candidates) |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 2k | 0 | 91.5 | 0.16 | 1.84 (9) | **2.01** | 0.82 | 3.01 (16 / 23) |
+  | 2k | 1 | 78.3 | 0.12 | 2.40 (11) | **2.52** | 0.96 | 3.29 (20 / 31) |
+  | 2k | 2 | 14.0 | 0.11 | 1.61 (9) | **1.71** | 0.61 | 1.90 (14 / 27) |
+  | 30k | 0 | 85.1 | 0.18 | 1.67 (6) | **1.85** | 0.75 | 2.91 (16 / 24) |
+  | 30k | 1 | 75.4 | 0.15 | 1.69 (9) | **1.85** | 0.74 | 2.70 (16 / 27) |
+  | 30k | 2 | 58.9 | 0.12 | 1.51 (7) | **1.64** | 0.65 | 2.36 (15 / 30) |
+
+  The tile count, not the city size, sets the cost. Selecting tiles by each seam's own reach
+  matters: the exact cut's 64 m halo stamping misses 3.0 ms on 2 of 6 samples.
+- **Reference fixtures** (`benchmark_bspike_grading`, the 16 tiles of the 256 m window around
+  the junction, p50 of 50 runs): 1.30-1.88 ms total at 0.5 m on 10 m terrain, 0.37-0.58 ms at
+  1 m, 0.27-0.43 ms per tile single-threaded (max 0.61-0.68 ms). Same-session control: the exact
+  cut's T bench (`benchmark_roadbed_terrain_tiles`) 1.78 ms.
+- **Godot** (debug library, which affects only the Rust half of the call): RGBAF, 266 KB per
+  0.5 m tile; rewriting a tile's texture in place (`ImageTexture.update`) 20-80 µs at 0.5 m, so
+  a populated edit's 6-11 tiles upload in 0.2-0.9 ms; creating `Image`, `ImageTexture` and
+  `ShaderMaterial` per tile costs 70-460 µs and is not the design. Not measured: release
+  marshalling, GPU upload completion, the exact mask's fragment cost at full screen.
+- **Renders.** With the arm-continuation inside rule and the exact seam mask, B at 0.5 m is
+  indistinguishable from the exact cut on every reference fixture, flat, 2.5% and 8%, the
+  street-grid patch (`city_grid_t`), a mound and a hollow (`t_mound`), at 4x zooms of curb returns
+  in plan and in 2.5 m close-ups. The renders and logs are local artefacts.
+- **Artefacts found and removed on the way:** a skirt line under curb returns when the samples
+  inside the footprint were not on the outer tie-in surface (fixed by the arm continuation);
+  background slivers along curves seen from above, because a bilinear distance field is exact
+  only for straight edges (fixed by the exact mask); terrain a few centimetres over the
+  sidewalk's outer edge at 1 m texels (not visible at 0.5 m; the reason for 0.5 m); whole regions
+  with the wrong side when a chain was open (`t_cutfill`, the sign came from the nearest seam and
+  a flood fill; removed by [coverage](#inside-and-outside-from-the-roadbeds-top-triangles)).
+- Not built in the spike: sites and pads, LOD, slot pools, skirts in the piece mesh,
+  preview/commit/undo, the consumer queries, a raycast over graded ground, packing.
+
+**Two spike defects this specification corrects.** (1) The spike's reach is not an exact bound
+where cones conflict, and it took the base slope over the union of the requested tiles, so a tile's
+bytes in a conflict could depend on which tiles were baked with it ([T1](#terrain-07-open-questions)).
+(2) Ties between seams used a `1e-12` tolerance and iteration order; this specification uses a
+total order.
+
+The legacy surface sections of this document, the code that still runs on `road` until
+[`TERRAIN-07-G`](#terrain-07-g--acceptance-and-legacy-deletion) deletes it, are archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md).
+
+### Ownership boundaries
+
+**Roadbed** ([`roads.md`](roads.md#footprint-and-terrain)) gives, and terrain only reads:
+
+- grounded outer chains: footprint boundary polylines with the road on their left, joined at
+  bit-identical mouth corners, `f64` positions with heights; structure spans publish none
+- the pieces' top triangles and the point-in-triangle predicate `height_at` uses (coverage)
+- the visible surface queries (`height_at`, band kinds, rays), which win inside the footprint
+- terrain changes: `take_terrain_changes`, extended in [`TERRAIN-07-A`](#terrain-07-a--grading-core-and-queries-roads-only)
+  to return the changed grounded chain segments themselves (old and new, net of segments a
+  rebuild republished unchanged), where it returns only their bounds today
+- road skirts in the piece mesh, built in [`TERRAIN-07-B`](#terrain-07-b--road-skirts-in-the-piece-mesh)
+  and owned by `roads.md` like every other piece layer
+
+The roadbed does no grading, tile selection or terrain ownership; the patch loops, holes,
+grading envelope and patch selection of its legacy terrain side are deleted with the exact cut.
+
+**Building allocator** ([`building_allocator.md`](building_allocator.md),
+[`earthworks.md`](earthworks.md#building-site-target-earth-02)) gives each site's support
+footprint and flat support height, its point-in-footprint predicate, and its surface polygons with
+materials in building and authored order, through the 512 m site chunks; and the old and new
+footprints of every site change. Placement chooses the pad height; terrain never moves a pad.
+
+**Terrain** (this section) owns the base heightmap, the grading function, the footprint distance
+and class masks, the tile bake, residency and payloads, the Godot terrain mesh, LOD and shader,
+and the [read API](#queries-for-consumers) every consumer moves to.
+
+**Godot** uploads payloads into pooled slots, lays out tile instances, picks levels by camera
+distance and swaps slots. It does no geometry: no resampling, clipping, `Geometry2D`, CPU height
+evaluation or masking of missing topology.
+
+**Consumers** (vegetation, grass, water, mist, reflections, agents, vehicles, picking, tools,
+zoning overlays, building render probes, placement) read only the query API.
+
+### Invariants
+
+1. **Pointwise and pure.** Every texel and every query answer is a function of its world position,
+   its level and three inputs only: the base heightmap, and the grounded road seams and the sites
+   within the cap (or within the footprint distance band, where a coarse level's band is wider).
+   The level only chooses the lattice and the band. No edit history, tile order, batch, residency
+   or camera enters a value.
+2. **Tiles are a residency cache.** Baked tiles exist only as GPU slots, in-flight payloads and
+   the preview's staging; nothing is saved, and Rust keeps no baked tile at rest. There are no
+   stage caches beyond that: a seam index, slope bound or tile cache needs a measurement that
+   shows the need.
+3. **Deterministic.** `max`, `min`, `clamp` and the midpoint are exact; ties between seams are broken
+   by a total order with exact comparisons; per-tile lists are sorted by canonical keys. Output is
+   bitwise independent of the Rayon worker count, tile order, batch composition, hash order and
+   any edit history that produces the same inputs.
+4. **Exact pruning.** Bins, reach bounds and skipped seams leave every value bitwise equal to the
+   evaluation over every seam within the cap. A reach is a bound, never a parameter of the result.
+5. **Local.** A bake reads its tile's window (the tile grown by the cap or the band). An edit
+   rebakes the tiles its changed seams and sites can affect, a base edit the tiles holding its
+   changed samples. No stage scans the city; cost follows the edit and stays flat from 0 to 100k
+   residents.
+6. **`f64` geometry.** Seams, distances, cones and the base interpolation are evaluated in `f64`
+   from the `f32` samples and rounded to `f32` once per texel; GPU geometry uses tile-local
+   coordinates.
+7. **Construct, never cut.** No polygon boolean, loop joining, clipping, winding or hole
+   classification, noding, CDT or T-vertex handling. The inputs are segments and points.
+8. **One value, one function.** Graded height, footprint distance, coverage, nearest seam and
+   material class each have one implementation, shared by the bake, the queries, the raycast,
+   preview, commit, undo and load. Road coverage is the roadbed's own predicate.
+9. **WYSIWYG.** Queries answer from the surface that renders at `GL0`. Preview, commit, undo and
+   load produce bitwise-identical tile data from the same inputs.
+10. **Seam contract.** In XZ, terrain is discarded exactly inside the road footprint. In height,
+    terrain meets the outer chain exactly on straight edges and within the `GL0` interpolation at
+    curves, and no gap at a road seam is deeper than the skirt. A visible miss is a defect to fix at
+    its cause, never with a deeper skirt or a mask.
+11. **No repair.** An input the payload cannot represent (seam capacity, [T7](#terrain-07-open-questions))
+    is a typed error. Nothing is dropped, snapped or averaged silently.
+
+### Dataflow
+
+```text
+roadbed pieces: grounded outer chains (f64)          building sites: support footprints,
+and top triangles (coverage)                         pad heights, surface polygons
+        |                                                     |
+        +---- seams, coverage and material edges per window ---+
+                         |   + base heightmap (source chunks, 10 m)
+                         v
+   pointwise function at p: class (road / pad / ground), nearest seam, footprint distance,
+   cones and overlap rule, inside rule, material class
+             |                                        |
+   tile bake on a level lattice (GL0-GL3)        queries: base, ground and surface height,
+   -> pack -> pooled slot upload (Godot)         normal, mask, raycast (consumers)
+             ^
+   dirty tiles <- changed seams (roadbed), changed sites (allocator), changed base samples
+```
+
+### Data
+
+**Base heightmap.** The source terrain chunks are the base: `terrain_cell_m` cells (10 m by
+default), raw `f32` samples scaled by `HEIGHT_SCALE` at the query boundary
+([T16](#terrain-07-open-questions)), 512 m sparse chunks, saved as today. Only terrain brushes, DEM
+import and world definitions write it. The base function `b(p)` is the bilinear interpolation of
+the samples, evaluated in `f64`. The visual buffer goes in `TERRAIN-07-G`: on `road` every writer
+sets both buffers or resets the visual one from the source, so it equals the source.
+
+**Tiles and level lattices.** A tile is a 64 m square aligned to the world origin
+(`floor(x / 64 m)`, the CDT tiles' grid and the spike's). Each level samples the tile on its own
+lattice, corners included, so neighbours share their border samples, plus one apron ring outside
+the tile for central-difference normals:
+
+| Level | Spacing | Samples per side (apron) | Mesh triangles per tile | Distance (proposed, [T5](#terrain-07-open-questions)) |
+| --- | --- | --- | --- | --- |
+| `GL0` | 0.5 m | 129 (131) | 32,768 | to 256 m |
+| `GL1` | 1 m | 65 (67) | 8,192 | 256-512 m |
+| `GL2` | 2 m | 33 (35) | 2,048 | 512 m to the end of patch LOD step 1 (2 km) |
+| `GL3` | the base lattice at the patch's LOD step (20, 40 or 80 m), plus the tile's sides | at most 6 (8) | at most 50 | beyond 2 km, to the cull distance |
+
+Precondition (proposed, validated by `WorldConfig` and the DEM importer for the worlds the game
+loads, [T17](#terrain-07-open-questions)): the base lattice lies on the 2 m lattice, that is,
+`terrain_cell_m` is a multiple of 2 m and the half extents are multiples of 2 m. The 20 km default
+(half extent 10,000 m) and the 18 km Kuopio world (9,000 m) satisfy it; `TERRAIN-07-A` checks the
+fixture worlds. The lattices then nest, base step lattice ⊂ `GL2` ⊂ `GL1` ⊂ `GL0`, and every patch
+side, being a base lattice line, is a lattice line of every level.
+
+**Seams.** `Seam { a: [f64; 3], b: [f64; 3], kind }`, height linear along the segment:
+
+- `SeamKind::Road`: one grounded outer-chain segment, road on the left
+- `SeamKind::Pad`: one side of a site's support footprint, oriented counter-clockwise, at the
+  support height
+- `SeamKind::Wall`: reserved for structures ([T14](#terrain-07-open-questions)); not built
+
+A seam's key is the bits of `a` then `b`, never a piece, edge or building id: a split renumbers
+pieces far from the edit whose vertices stay bit-identical (`ROAD-68-E` round 4). Every kind
+ties in at the slope ratio `k = 0.5` (1:2).
+
+**Material edges.** The sides of each site surface polygon (`SiteSurfaceMaterial`: asphalt or
+concrete), keyed like seams. The material class at a point is the first surface, in building and
+authored order, that contains it, which is the rule `SitePavingPartition` applies today.
+
+**Texels** (proposed format, [T6](#terrain-07-open-questions)): one RGBAF texel, 16 bytes, per
+lattice sample:
+
+- R, `delta`: graded height minus base, metres. It is exactly `0.0` where nothing grades,
+  because `clamp` returns the base itself there.
+- G, `sdf`: distance to the nearest road seam, clamped to the band `B = max(2 m, 3 × spacing)`
+  (2 m at `GL0`, as in the spike), negative where the sample is covered by a road top triangle.
+  The band grows with the spacing so that the four samples around any fragment within two texels
+  of an edge name a seam. A level's bake reads the tile grown by `max(C, B)`.
+- B: the nearest road seam's index in the tile's seam row when `|sdf| < B`, else `-1`.
+- A: `16 × (e + 1) + class`, integer-valued: `class` the material class (0 none, 1 asphalt,
+  2 concrete), `e` the nearest material edge's index in the tile's edge row within `B`, else `-1`.
+
+`delta` is `f32` rather than half float so that a pad renders at its support height and an ungraded
+sample is bitwise the base (a half-float delta between 16 m and 32 m rounds to 1.6 cm steps).
+
+**Rows.** Per tile and level: the road seams the texels name, tile-local `[ax, az, bx, bz]`
+(`f32`, metres from the tile origin), sorted by key; then the material edges likewise. Proposed
+capacities, to be confirmed by measured maxima ([T7](#terrain-07-open-questions)): 512 seams and
+256 edges at `GL0`, 256/128 at `GL1`, 128/64 at `GL2`, 32/16 at `GL3`.
+
+**Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, and
+the tile's inputs (the sorted seam keys and heights, the site footprints, heights and surfaces,
+and the base revisions under the window) for adoption, compared exactly as `ROAD-68-E` compares
+terrain sources (a hash only as a fast reject).
+
+**Residency and eviction.** Godot owns residency. A tile is resident at a level while its patch is
+resident and the level's distance rule selects it. Rust bakes the requested tile and level on the
+payload workers (bounded snapshot under `try_lock`, bake off-lock, as terrain payloads are built
+today) or, for the preview, synchronously on the shared pool. Eviction frees the slot and nothing
+is kept; a tile that becomes resident again is baked again.
+
+**Memory bounds.** The spike's 10-25 GB for a dense 20 km city came from storing every tile at
+0.5 m. Residency by level bounds GPU memory by distance, not by city size. Worst case, every tile
+within 8 km graded (rows included):
+
+| Level | Slot | Tiles in range | Pool |
+| --- | --- | --- | --- |
+| `GL0` | 131² × 16 B + rows 12 KB ≈ 287 KB | ≈ 50 within 256 m, 64 slots | 18 MB |
+| `GL1` | 67² × 16 B + 6 KB ≈ 78 KB | ≈ 150, 192 slots | 15 MB |
+| `GL2` | 35² × 16 B + 3 KB ≈ 23 KB | ≈ 2,870 between 512 m and 2 km, 3,200 slots | 73 MB |
+| `GL3` | 8² × 16 B + 0.8 KB ≈ 1.8 KB | ≈ 46,000 between 2 km and 8 km | 83 MB |
+
+That is about 190 MB in all. Graded tiles exist only where roads and sites are, so real cities
+use a fraction of `GL2` and `GL3`. Rust holds the in-flight payloads (bounded by the per-frame
+request budget), the preview's staging (the dirty tiles of one pose) and per-worker bake scratch
+(about 300 KB at `GL0`, reused).
+
+### The grading function
+
+For a world point `p`, in `f64`:
+
+1. **Seams in reach.** `S(p)` is every seam that comes within the cap `C = 64 m` of `p`. The cap
+   is part of the definition: a seam farther away never affects `p`.
+2. **Cones.** For each `s` in `S(p)`: the nearest point `q_s` (projection parameter clamped to
+   `[0, 1]`, with `q = a` and `q = b` exactly at the clamps), the distance `d_s = |p - q_s|`, the
+   seam height there `h_s`, and the cone interval `[h_s - k d_s, h_s + k d_s]`.
+3. **Bounds.** `L = max_s (h_s - k d_s)`, `U = min_s (h_s + k d_s)`; `L = -∞`, `U = +∞` when
+   `S(p)` is empty.
+4. **Class**, in this order: `Road` when a road top triangle covers `p` (the roadbed's coverage
+   predicate); `Pad` when `p` lies in a site's support footprint (the allocator's predicate);
+   `Ground` otherwise.
+5. **Ground.** `g = clamp(b, L, U)` when `L <= U`, else the conflict midpoint `(L + U) / 2`
+   ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions)). Both branches agree at
+   `L = U`, so `g` is continuous, and `max`, `min` and the midpoint make it order-free.
+6. **Pad.** `g` is the site's support height, exactly.
+7. **Road (inside rule).** With `s*` the nearest road seam and depth `σ = d_s*`: on a cut
+   (`b >= h_s*`), `g = h_s* - kσ`; on a fill, `g = h_s* + k min(σ, σ_max)` with `σ_max = 0.5√2 m`,
+   one `GL0` texel diagonal ([T4](#terrain-07-open-questions)). The mask discards these samples'
+   fragments; they only shape the triangles that straddle the edge, which are then linear through
+   the seam height on straight edges (the spike's arm continuation). The cap on fills changes no
+   `GL0` triangle that straddles the edge, and keeps coarser levels from rising more than 0.35 m
+   above a road.
+8. **Delta.** `delta = g - b`, rounded to `f32` once.
+9. **Footprint distance.** The distance to the nearest road seam within the level's band `B`
+   (`B` where there is none), negative for `Road`. Pads are not part of the mask.
+10. **Nearest seam.** The total order: smaller `d`, then the larger distance from `p` to the
+    segment's line (the pseudo-normal rule at a shared vertex), then the smaller key; exact
+    comparisons, no tolerance.
+11. **Material.** The class of the first surface containing `p`, and the nearest material edge
+    within `B`.
+
+The cone uses the seam height at the nearest point, not `max over q of h(q) - k |p - q|` along the
+seam. For a seam of grade `γ` the true bound is tighter by at most `d γ²`: 0.13 m at 20 m from an 8%
+road, none on level roads. That is accepted (proposed) for its simplicity, as in the spike.
+
+**Exact pruning.** A seam may be skipped at `p` only when its interval at `p` contains
+`[min(b(p), H_lo), max(b(p), H_hi)]`, where `H_lo` and `H_hi` bound the heights of every seam in
+`S(p)`. That suffices because `g`, and `L` and `U` where they conflict, lie in that range. Per
+tile, with `H_lo` and `H_hi` taken over the window's seams, `h_lo` and `h_hi` the seam's own
+height range, `b_lo` and `b_hi` the base range over the cells under the seam and `Σ` a Lipschitz
+bound of the base over the window (the largest cell gradient), seam `s` has the reach
+
+```text
+r(s, tile) = min(C, max( (h_hi - b_lo) / (k - Σ), (b_hi - h_lo) / (k - Σ),
+                         (h_hi - H_lo) / k,       (H_hi - h_lo) / k,  0 ))   (C when Σ >= k)
+```
+
+and is binned by its box grown by `max(r, B)` in 4 m bins. The first two terms are the spike's
+Lipschitz reach. The last two are what conflicts need: without them a seam whose cone holds the
+base can still move the midpoint. Any valid bound gives the same bits, so the slope may come
+from the tile's own window. On flat ground the extra terms are small; on slopes they grow with the
+height spread of the window's roads (about 10 m of reach on 2.5%, 30 m on 8%), so they must be
+measured ([T1](#terrain-07-open-questions)).
+
+### Inside and outside from the roadbed's top triangles
+
+The bake rasterizes the top triangles of the pieces meeting the tile (found through
+`pieces_in_bounds` on the 32 m grid, then each piece's triangle grid) onto the level lattice. Each
+candidate lattice point is tested with the roadbed's own point-in-triangle predicate, so coverage
+equals `height_at(p).is_some()` bitwise. Curb faces are vertical and cover nothing. Cost
+`O(top triangles + candidate points)`.
+
+No loops are joined or closed, and no flood fill or orientation sum decides a side, so an open
+chain cannot flip a region: a failed node's gap is simply uncovered, and a bridge or tunnel end has
+no chain beyond the abutment. An open end changes the mask only within two texels of its end, where
+the shader's exact test reads the nearest seam's side. This replaces the exact cut's
+`TerrainLoopError::OpenEnd` ([`roads.md` open question 19](roads.md#road-68-open-questions)) and
+the spike's flood fill ([T3](#terrain-07-open-questions)).
+
+### The exact seam mask
+
+Away from the edge the fragment shader takes the bilinear `sdf` of the four surrounding samples.
+Within two texels of zero it takes the exact signed distance to the nearest of the four samples'
+seams, with Rust's nearest-seam order and the side from the segment's cross product, and discards
+below zero. It works in tile-local coordinates interpolated from the instance mesh's local vertex,
+never world XZ: at 10 km from the origin an `f32` world coordinate has a 1 mm step. The test runs
+in every pass that runs the fragment shader (depth prepass, shadows), so cut-away terrain casts no
+shadow on the road. Cost: at most four segment distances per fragment in the band; its cost at full
+screen is an acceptance measurement.
+
+The material class uses the same pattern with the material edges: away from an edge the nearest
+sample's class; near one, the class of a surrounding sample on the fragment's side of the nearest
+edge. A hidden edge inside another surface then has the same class on both sides and draws nothing.
+
+### Skirts
+
+One strip per grounded outer chain in the road piece mesh
+([`TERRAIN-07-B`](#terrain-07-b--road-skirts-in-the-piece-mesh)): its top vertices are the
+chain vertices, bitwise, its bottom vertices 0.5 m straight below ([TD6](#product-decisions)),
+facing away from the road, in the curb's concrete, casting no shadow (where the seam is met the
+skirt lies inside the ground). It goes through the chunk
+emission with the other piece layers, so the preview's skirt is the commit's. A vertex attribute
+marks the bottom vertices so the road shader can deepen them with distance
+([T5](#terrain-07-open-questions)). Pads need no skirt: the terrain is the pad.
+
+### Sites, pads and paving
+
+- A site's support footprint contributes `Pad` seams at its support height and a `Pad` interior.
+  The terrain is the pad: inside the footprint `g` is the support height, exactly, so there is no
+  pad mesh, no `SitePavingPartition` and no foundation mesh, and the building stands on terrain
+  ([T11](#terrain-07-open-questions)).
+- The pad's sides grade out at 1:2 like a road seam and meet roads and neighbouring pads through
+  the overlap rule. The allocator keeps a frontage clearance between a pad and the sidewalk
+  ([`earthworks.md`](earthworks.md#1-the-runtime-site-support-footprint-is-protected)), so the
+  frontage strip is graded ground between the two seams.
+- Site surfaces, the yard paving and its frontage extension to the road, are material classes the
+  terrain shader paints with the paving include. Outside the pad they follow the graded ground, as
+  today's paving triangles do.
+- For consumers, `mask_at` reports `Pad` inside the footprint and `Paved` on a surface.
+- A placement, removal, surface change or pad height change marks the tiles within its reach of the
+  old and the new footprint.
+
+### Cliffs, coal pits, retaining walls
+
+- **Cliffs** stay shading of the base heightmap (`TERRAIN-06`, `patch_masks.rs`), computed from the
+  base only, so 1:2 graded slopes (slope 0.5, above `CLIFF_SLOPE_END` 0.44) are not drawn as
+  cliffs. The slope-aware rock weighting reads the rendered normal, as it reads the CDT mesh's
+  normals today.
+- **Coal pits** are an overlay today (`get_coal_pit_overlay_data`, an L8 mask the terrain shader
+  paints), not a cut. They stay an overlay ([T15](#terrain-07-open-questions)).
+- **Retaining walls.** The exact cut promotes structural sources (tunnel portals, bridge abutments)
+  to wall faces. B has none yet: `SeamKind::Wall` (no cone; the client builds its wall mesh from its
+  skirt grown to the graded height difference) is reserved for `ROAD-68-F`'s abutments and portals
+  ([T14](#terrain-07-open-questions)). Ordinary grounded roads never get walls.
+
+### LOD and distant tiles
+
+- The patch LOD steps are unchanged: step 1 (10 m) to 2 km, 2 to 5 km, 4 to 12 km, 8 beyond.
+- A graded tile takes its level from the camera's distance to the tile ([T5](#terrain-07-open-questions)),
+  with 32 m of hysteresis (proposed): `GL0` to 256 m, `GL1` to 512 m, `GL2` to 2 km, `GL3`
+  beyond. At 1920×1080 and the game's 60 degree field of view a pixel covers about 1 mm per metre
+  of distance, so 0.5 m texels resolve within about 500 m.
+- Every level samples the same pointwise function on its own lattice. Values at shared lattice
+  points are bitwise equal across levels, so there are no mips, no downsampling and no
+  conservative minimum, and two neighbours at different levels need only the stitching below.
+- `GL3` uses the patch's base lattice so its tiles stitch to the patch's ungraded cells and to the
+  neighbouring patches. Its vertices are exact samples; between them the mesh is coarse. The
+  inside rule keeps its triangles below a road on cuts and at most 0.35 m above it on fills; the
+  skirt, deepened with distance, covers the sag on cuts.
+- The mask works at every level: bilinear `sdf` plus the exact test with that level's samples'
+  seams, whose band `B` grows with the spacing so a road narrower than the spacing is still found.
+
+### Godot tile renderer
+
+- **Patches** stay the residency, streaming and payload unit, with today's base heightmap texture
+  (R32F with apron) and `TERRAIN-06` mask layer. A patch with no graded tile renders as today,
+  one `PlaneMesh` at its step.
+- **Cells.** A patch with graded tiles renders its cells, each tile clipped to the patch, as
+  instances: one `MultiMesh` per patch and mesh, at most five (the base cell mesh and the four
+  levels). Instance data carries the tile origin, the slot, the level and each side's neighbour
+  level. Vertices clamp to the patch rectangle, which is a lattice line of every level.
+- **Base cell mesh.** One generic grid whose vertex `k` per axis lies at `clamp(o + s(k - 1), 0,
+  64 m)` for the patch step `s` and the cell's phase `o` (the first base lattice line inside the
+  tile), so one mesh serves every phase and its vertices are the patch's own vertices.
+- **Stitching.** On a side shared with a coarser neighbour (another cell, or a neighbouring patch's
+  `PlaneMesh` at its step), the finer side, base cells included, moves each of its border
+  vertices onto the coarser side's border vertex at or before it along the side, so both sides use
+  the same border edges and every border vertex is a vertex of both. A shared vertex has the same
+  `delta` on both sides (pointwise values) and its base comes from the same shader expression
+  (`delta = 0` on an ungraded side), so it gets the same bits. No skirts between cells. The
+  existing seams between patches at different steps are unchanged.
+- **Slot pools.** Per level, a `Texture2DArray` of RGBAF layers for the texels and one for the rows,
+  sized by the [memory table](#data), prewarmed at renderer load as patch resources are today.
+  Residency allocates and eviction frees. An exhausted pool is a typed error, logged and counted;
+  the sizes make it impossible within the distance rules.
+- **Uploads.** `Texture2DArray.update_layer` per dirty slot (as the `TERRAIN-06` mask pages are
+  written) from one pooled `Image` per level, rewritten in place. No texture, material or mesh is
+  created per edit.
+- **Budgets per frame.** An edit (preview pose, commit, undo) installs its dirty tiles in one frame
+  within the terrain share of `ROAD-68`'s 2.0 ms Godot stage. Streaming installs closest first,
+  within 1.0 ms of the main thread, like the existing patch installs.
+- **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
+  have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
+  early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
+  lattice point), the normal from today's base gradient plus the central difference of `delta`
+  over the apron, the exact mask and the material class. Both share the grass and paving includes,
+  the baked world noise (`TERRAIN-04`), the patch masks (`TERRAIN-06`), the overlays, the shoreline
+  sampling of the water texture and the cloud shadow in `light()`.
+- **Debug.** `terrain_visual_debug_mode` gains `delta` (raised orange, lowered blue, as the spike's
+  `plan_grading`), `sdf`, level and slot views.
+
+### Preview, commit, undo and load
+
+- **Dirty tiles.** From the roadbed's terrain changes: every tile that meets a changed seam's box
+  grown by its selection bound, at each level's band. The bound has the four terms of the pruning
+  reach, with the ranges and the slope taken over everything within `3C` of the seam, so it is at
+  least the reach of every tile whose window can hold the seam. A superset is safe: rebaking an
+  unaffected tile reproduces its bits. From site changes: the old and new footprints' seams and
+  surface edges likewise. From a base edit: the tiles holding its changed samples' bilinear
+  support, since `g(p)` reads the base only at `p`. A stroke that re-solves road profiles
+  (`ROAD-68-E` part 2) adds its roads' changes.
+- **Preview.** `preview_road` selects the dirty tiles from the preview roadbed's changes and bakes
+  the resident ones at their current level, synchronously on the shared pool, with their inputs.
+  Godot uploads them into free slots and swaps the instances to them (and the cells' meshes where a
+  tile becomes graded or ungraded); cancel swaps back. This replaces the refined patches in the
+  terrain half of the preview and `road_terrain_preview.gd`'s patch staging.
+- **Commit.** For the same tiles the commit gathers the committed inputs and compares them with the
+  preview's. Matching tiles are adopted: Godot keeps the preview slots and frees the old ones.
+  Others are baked by the commit. The function is total, so no terrain validation can reject a
+  road; only a representation error ([T7](#terrain-07-open-questions)) or a user decision on
+  [T2](#terrain-07-open-questions) could.
+- **Undo.** The roadbed's undo swaps its pieces back (`ROAD-68-E`); their terrain changes select the
+  same tiles, which are baked again from the restored inputs, bitwise the pre-edit tiles, and
+  installed by a slot swap ([T9](#terrain-07-open-questions)).
+- **Load.** No terrain surface state is saved. Tiles are baked as residency requests them.
+- **Bitwise.** A preview tile equals the committed tile, a fresh bake of the same inputs, the tile
+  after undo and redo, and the tile after save and load.
+
+### Queries for consumers
+
+Read-only, allocation-free methods on the simulation core. A point query is one chunk lookup for
+the road, one site chunk lookup and the seams near the point
+([T8](#terrain-07-open-questions)):
+
+| Query | Answer | Replaces | Consumers |
+| --- | --- | --- | --- |
+| `base_height_at(x, z)` | the base `b(p)` | `sample_height_world`, `get_height_at_internal` | terrain brushes and authoring tools, water depth ([T13](#terrain-07-open-questions)) |
+| `ground_height_at(x, z)` | the graded ground: `GL0` values on the `GL0` triangle under `p`; at a pad the pad; under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
+| `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
+| `normal_at(x, z)` | the rendered `GL0` normal | (new) | vegetation slope tests |
+| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }` | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
+| `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles) | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
+| `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
+
+`Graded` means `delta != 0` outside footprints. Consumer caches keep keying on the existing
+per-patch terrain payload generations, which the dirty tile selection bumps for the patches
+holding dirty tiles. A gather variant collects the seams once for clustered points, as
+`gather_nearby_sites` does for a vehicle's contacts (`SIM-02-K`).
+
+### Complexity bounds
+
+| Stage | Bound |
+| --- | --- |
+| Window gather | `O(P + S log S)`: pieces `P` meeting the window on the 32 m grid and their `S` chain segments sorted by key, plus the sites of the 512 m site chunks |
+| Per-tile bounds | `O(S + c)` for `c` base cells in the window (at most about 20 × 20 at 10 m) |
+| Coverage | `O(T + K)`: top triangles `T` meeting the tile, candidate lattice points `K` in their boxes |
+| Sample | `O(k)` for the `k` seams in its 4 m bin |
+| Tile bake | `O(N + sum over bins of k × samples in the bin)` for `N` lattice points |
+| Dirty selection | `O(changed seams × tiles within C of each)` |
+| Point query | `O(P + S)` for the gather, then `O(S)` for each of three lattice points ([T8](#terrain-07-open-questions)) |
+| Raycast | `O(base cells crossed + GL0 cells crossed inside graded tiles × k)` |
+| Godot install | `O(dirty tiles × slot bytes)` uploads and `O(cells of changed patches)` instance writes |
+
+No stage scans the city.
+
+### Budgets
+
+| Stage | Budget |
+| --- | --- |
+| Terrain stage per preview pose: selection, bake, pack, four workers | 3.0 ms ([`roads.md` stage budgets](roads.md#stage-budgets)), flat from 0 to 100k |
+| Terrain stage per commit, and per undo, four workers | 3.0 ms, flat from 0 to 100k |
+| Godot terrain install per pose, commit or undo | within `ROAD-68`'s 2.0 ms Godot stage and install; proposed share 1.0 ms |
+| Streaming installs | 1.0 ms of the main thread per frame |
+| Idle GPU frame | not above the exact cut's terrain in the same session, on the idle-frame matrix |
+| Load | not above the exact cut's load in the same session (Kuopio and the populated city) |
+| Memory | the pools of the [memory table](#data); Rust keeps no baked tile at rest |
+
+The spike's 1.64-2.52 ms per edit has none of: the conflict terms of the reach, coverage
+rasterization, sites, materials, the apron, the levels or packing. `TERRAIN-07-A`, `-C` and `-E`
+measure them against this budget; the budget is not relaxed to fit.
+
+### Guardrails
+
+- **Size.** No line limit. Each gate records the production lines of `simulation/terrain/graded/`
+  and of the Godot renderer, tests excluded; `TERRAIN-07-G` records the legacy lines deleted.
+- **No stage caches** ([invariant 2](#invariants)).
+- **No hot-path allocation.** Per-worker bake scratch (bins, coverage bitset, sample buffers) and
+  payload buffers are reused; Godot rewrites pooled `Image`s.
+- **No second implementation.** The shader's nearest-seam order, side test and class rule mirror
+  Rust's; a Rust test ports the shader's arithmetic and checks it against the bake, as
+  `TERRAIN-06` mirrors the shader's mask sampling.
+- **Rayon** only through `crate::thread_pools`.
+- **Benchmarks gate performance.** Every gate that touches the bake, the selection, the queries or
+  the install reruns its benchmark: release, pinned to P-cores, no overlapping builds or
+  benchmarks, against a same-session control binary.
+- **Non-repair.** The [rendering non-repair rule](#14-terrain-site-ground-water-and-lighting-materials-are-runtime-presentation)
+  holds: the mask is the footprint itself, evaluated exactly, and must not hide missing roadbed
+  topology. A failed node shows terrain in its gap, because coverage is pointwise.
+
+### Product decisions
+
+| ID | Decision | Default | Status |
+| --- | --- | --- | --- |
+| TD1 | Approach | B: base heightmap, fine grading and footprint distance tiles, exact seam mask, road skirts; replaces the exact CDT cut | decided by the user 2026-10-25 |
+| TD2 | Scope | heightmap representation, earthworks and grading, road and site cut, pads and paving, terrain mesh, LOD, shader; vegetation, water, weather and fields stay and are re-pointed | decided by the user 2026-10-25 |
+| TD3 | Texel (`GL0`) | 0.5 m | decided by the user 2026-10-25 |
+| TD4 | Tie-in slope | 1:2 (`k = 0.5`) for roads and pads, the legacy `MAX_TERRAIN_TIE_IN_SLOPE_RATIO` | proposed |
+| TD5 | Cap | 64 m, the legacy envelope cap (`roads.md` question 18, decided by the user for the CDT 2026-10-24) | proposed |
+| TD6 | Skirt depth | 0.5 m near, deeper with distance ([T5](#terrain-07-open-questions)) | proposed |
+| TD7 | Overlap rule | `clamp(base, L, U)`; `(L + U) / 2` where `L > U` | proposed ([T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions)) |
+| TD8 | Tile | 64 m, aligned to the world origin | proposed ([T17](#terrain-07-open-questions)) |
+| TD9 | Footprint distance band | `max(2 m, 3 × spacing)`: 2 m at `GL0` | proposed |
+| TD10 | Levels | `GL0`-`GL3` to 256 m, 512 m, 2 km and the cull distance | proposed ([T5](#terrain-07-open-questions)) |
+| TD11 | Inside rule | cut `h - kσ`; fill `h + k min(σ, 0.35 m)` | proposed ([T4](#terrain-07-open-questions)) |
+
+### Implementation plan
+
+Gates are sequential unless noted. Every gate ends with:
+
+- a commit that compiles and adds no Clippy warning to the baseline set (the warning set compared,
+  not only the count)
+- its own tests passing, plus `cargo test --lib` in debug and `./run.sh --test`
+- the line counts of the [guardrails](#guardrails)
+- updates to this section, [`roadmap.md`](roadmap.md) and [`project.md`](project.md)
+
+A test that cannot pass until a later gate is marked `#[ignore = "TERRAIN-07-<gate>: <reason>"]`
+and listed under that gate; at `TERRAIN-07-G` none may remain. As under `ROAD-68`, the game may
+be unplayable between gates, and the exact cut stays buildable and renderable for comparison
+until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
+
+| Gate | Status | Scope |
+| --- | --- | --- |
+| `TERRAIN-07-A` | open | Grading core and queries in Rust, roads only, beside the legacy path |
+| `TERRAIN-07-B` | open | Road skirts in the piece mesh (roadbed; may run beside A) |
+| `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients |
+| `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-E` | open | Preview, commit, undo and load |
+| `TERRAIN-07-F` | open | Consumers re-pointed |
+| `TERRAIN-07-G` | open | Acceptance and legacy deletion |
+
+#### `TERRAIN-07-A` — grading core and queries, roads only
+
+1. `simulation/terrain/graded.rs` as the API router, with `seams`, `grade`, `coverage`, `sample`,
+   `tile`, `select` and `query` modules in `simulation/terrain/graded/`.
+2. Roadbed accessors, no new geometry: the grounded seams of the pieces in a rectangle, sorted by
+   key; their top triangles and the coverage predicate; `take_terrain_changes` returning the
+   changed segments.
+3. The pointwise function for the `Road` and `Ground` classes with exact pruning; the four level
+   lattices with apron; packing to texels and rows; payload inputs.
+4. The queries of [queries for consumers](#queries-for-consumers) for roads, used by no consumer
+   yet.
+5. Benchmarks: `benchmark_graded_tiles` (the reference fixtures' 16 tiles, every level); a
+   `graded_tiles` row in `benchmark_populated_commit_breakdown` after each exact-cut commit, whose
+   `surface_ms` is the same-run control; a point-query benchmark.
+
+Acceptance:
+
+- the overlap rule is order-free and continuous; the pruned evaluation equals the evaluation over
+  every seam within the cap, bitwise, on fixtures with conflicts (two footprints closer than 1:2
+  allows), for batches of 1 and 16 tiles, reversed tile order, and 1, 4 and 8 workers
+- neighbouring tiles' shared border samples, and every level's samples at shared lattice points,
+  are bitwise equal
+- coverage equals `height_at(p).is_some()` at every lattice point of every reference fixture tile
+- removing a node piece (a failed node's gap) uncovers the gap and changes the mask elsewhere only
+  within two texels of the open chain ends; no other region changes side (the spike's `t_cutfill`
+  failure)
+- across a straight edge the `GL0` triangles pass through the seam height
+- the terrain stage of the populated edits at 2k, 10k, 30k and 100k is at most 3.0 ms on four
+  workers, and with the edited neighbourhood fixed it stays flat from 0 to 100k with bitwise
+  equal local tiles
+- recorded for [T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions),
+  [T7](#terrain-07-open-questions) and [T8](#terrain-07-open-questions): reach and seams per sample
+  with the conflict terms; conflict samples within one texel of a road seam on the populated
+  fixtures and Kuopio; the largest seam and edge counts per tile and level; point-query cost
+
+#### `TERRAIN-07-B` — road skirts in the piece mesh
+
+1. `PieceMesh` gains a skirt layer: one strip per grounded outer chain, top vertices the chain's,
+   0.5 m deep, with the bottom-vertex attribute.
+2. The chunk emission carries the layer; the road shader draws it and deepens the bottom vertices
+   by the distance rule of [T5](#terrain-07-open-questions).
+
+Acceptance: skirt tops are bitwise the chain vertices;
+`reference_junction_road_chunks_are_watertight` covers the skirts' top edges against the sidewalk
+outer edge; previewed chunks with skirts equal the committed chunks
+(`preview_chunks_with_crossings_and_signs_are_the_committed_chunks` and
+`road_junction_preview_test.gd`); payload packing stays within its 1.0 ms budget
+(`benchmark_road_preview_stages`); the `roadbed/` line count is recorded.
+
+#### `TERRAIN-07-C` — sites, pads and paving
+
+1. Allocator accessors: the sites in a rectangle through the 512 m site chunks, with their support
+   footprints, heights, predicate and surfaces, and the bounds of every site change.
+2. `Pad` seams and class, material classes and edges, and site change selection.
+3. `mask_at` reports `Pad` and `Paved`.
+
+Acceptance: samples inside a pad equal its support height bitwise; the material class equals the
+`SitePavingPartition` material at the lattice points of the Kuopio yard fixture and the frontage
+extension cases of [`earthworks.md`](earthworks.md#1-the-runtime-site-support-footprint-is-protected);
+the hillside houses (`hillside_houses_terrain_builds_clean`, re-pointed from the refined CDT
+patches) and the Kuopio reference save's sites bake without errors; a placement or removal marks only
+the tiles within its bound, with 100k background sites; a placement's terrain stage is timed.
+
+#### `TERRAIN-07-D` — residency, payloads and the Godot tile renderer
+
+1. Residency requests by tile and level, async bakes on the payload workers, per-frame request and
+   install budgets, eviction.
+2. Per patch, the sorted list of its graded tiles, from the same inputs as the bake.
+3. Godot: slot pools, the cell `MultiMesh`es, the base cell mesh, the level meshes, stitching,
+   clamping to the patch, the two shader variants and the debug views.
+4. The game stops requesting refined CDT patches. `get_world_surface_height` and
+   `intersect_world_surface` answer from `surface_height_at` and `raycast_surface` in the same gate,
+   so the render and the queries agree. The exact cut stays reachable from the reference test only.
+5. A commit bakes and installs its dirty resident tiles; preview adoption follows in E.
+6. `road_junction_reference_test.gd` gains the spike's fixtures (8% `steep` variants, `city_grid_t`,
+   `t_mound`, `t_cutfill`) and views (`close_east`, `close_west`, `close_corner`, `plan_terrain`,
+   `plan_grading`), rendering the exact cut and B in one session.
+
+Acceptance:
+
+- every reference fixture, B against the exact cut in one session: no gap, no terrain over a
+  sidewalk, no background sliver in 4x crops of the curb returns, in plan and in the close views;
+  sky pinholes 0
+- distance renders at 200 m, 400 m, 1 km and 3 km over a junction and a street grid: no crack along
+  cell or level borders, no road hidden by terrain, the skirt not visible
+- the idle-frame matrix (`overview`, `close`, `ground`, `city`, `city_low`, and `saved` on the
+  `kuopio-city` save): GPU frame p50 not above the exact cut in the same session; triangle counts
+  and the mask's fragment cost recorded
+- the Godot install of a populated edit's dirty tiles within 1.0 ms, release library; no texture,
+  material or mesh created per edit (pool counters)
+- slot pool sizes and video memory on Kuopio and the 100k city; Kuopio and populated-city load
+  times against the exact cut in the same session
+- the Godot suites of `./run.sh --test` pass, among them `network_tool_chunk_renderer_test.gd`,
+  `road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`,
+  `plot_material_lighting_test.gd` and `plot_dawn_lighting_test.gd`
+
+#### `TERRAIN-07-E` — preview, commit, undo and load
+
+1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
+   them by slot swap.
+2. Commit adoption by inputs, undo by rebake and slot swap, load by residency.
+3. The commit's terrain validation is removed: no terrain failure can reject a road.
+
+Acceptance:
+
+- preview tile data equals the committed tile data, a fresh bake and the tiles after save and load,
+  bitwise, in Rust tests over the T, Y, four-way, a split trunk and their sloped variants, and in
+  `road_junction_preview_test.gd`
+- undo and redo restore bitwise; a commit with a stale context bakes and equals a fresh bake
+- the terrain stage per pose (`benchmark_road_preview_stages`, `sloped_t` and `sloped_branch`) and
+  per commit (`benchmark_populated_commit_breakdown`, 0 to 100k) is at most 3.0 ms on four workers;
+  the Godot install stays within its share; the idle-clock preview stream of
+  [`roads.md` open question 27](roads.md#road-68-open-questions) runs again
+
+#### `TERRAIN-07-F` — consumers re-pointed
+
+1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
+   `surface_height_at`, clearance by `mask_at` instead of road, site and field tests where the mask
+   answers them.
+2. GPU grass: the exclusion from the grading textures (`sdf`, class) instead of rasterizing the CDT
+   mesh into a coverage mask.
+3. Water: `mask_at` for the cells under roads instead of the road-clip suppression; depth stays on
+   the base ([T13](#terrain-07-open-questions)). Mist and water reflection on `ground_height_at`.
+4. Agents off lane and vehicle contacts on `surface_height_at` with the gather variant; building
+   render probes, cell zoning overlays and the Godot tools on the new queries.
+5. Site placement feasibility and the pad height solve read the base and the new cap constant
+   instead of the CDT's ([T12](#terrain-07-open-questions)).
+
+Acceptance: the consumers' existing tests pass (the vegetation suites,
+`vehicle_ground_support_test.gd`, the zoning, water and agent tests,
+`cars_and_walkers_enter_and_exit_on_compiled_yards`); vegetation placement digests are unchanged
+outside graded ground, and changes inside it are listed; vegetation patch invalidation stays local.
+
+#### `TERRAIN-07-G` — acceptance and legacy deletion
+
+1. The acceptance runs of [measurement and acceptance](#measurement-and-acceptance).
+2. Delete: `terrain/cdt/`, `rect_loops.rs`, `grading.rs`, `visual.rs` and the visual buffer; the
+   loop building of `roadbed/terrain.rs` (the chain change accounting stays); `variant_export/cdt/`;
+   the refined cache and jobs of `async_terrain/`; `query/terrain/engineered.rs`;
+   `SitePavingPartition`, `foundation_faces_in_frame` and the site terrain clip; the baked
+   `ArrayMesh` path of `terrain.gd` (`height_is_baked`, refined requests, the CDT contract
+   revision); water's road-clip suppression. Spade and `i_overlay` stay: the roadbed and agriculture
+   use them.
+3. Every `TERRAIN-07` ignore removed. The legacy contract text left in [`earthworks.md`](earthworks.md)
+   and [`roads.md`](roads.md#footprint-and-terrain) moves to the archive; the stale visual-terrain
+   references in this document (DEM import, the short version) are updated.
+
+Acceptance: no `TERRAIN-07` ignore remains; the full debug suite, `./run.sh --test` and Clippy
+pass; line counts recorded; docs updated.
+
+### Measurement and acceptance
+
+**Targets.**
+
+- **Terrain stage.** At most 3.0 ms per preview pose, per commit and per undo on four workers, on
+  the reference fixtures and the populated city at 0, 2k, 10k, 30k and 100k residents.
+- **Locality.** With the edited neighbourhood fixed, grow remote roads, sites, parcels and agents
+  from 0 to 100k: local tiles stay bitwise equal and their cost stays flat. Snapshot and setup
+  costs are reported separately from the repeated bake.
+- **Bitwise.** Preview, commit, undo, redo, save and load give equal tile data; a batch of tiles
+  equals the tiles baked one by one; 1, 4 and 8 workers agree.
+- **Rendered.** The reference fixtures match the exact cut at 4x zoom in plan and close views, with
+  no sky pinhole; the distance renders show no crack and no hidden road.
+- **Frame.** Godot installs within the terrain share of the 2.0 ms stage; the idle-frame matrix is
+  not slower than the exact cut in the same session; the `ROAD-68` moving and commit targets
+  ([`roads.md`](roads.md#targets)) hold with terrain in the preview.
+- **Memory and load.** Within the memory table; load not slower than the exact cut.
+
+**Method.** Release builds; matched, unprofiled processes pinned to P-cores, with no overlapping
+builds or benchmarks; four Rayon workers unless the row says otherwise; a same-session control
+binary for every comparison, never results from another boot. Record the commands, the build
+identity (commit and binary hash), worker settings and results in this section. Logs, binaries
+and screenshots stay under `$ARTIFACTS`.
+
+```bash
+cd rust
+cargo test --release --lib --no-run       # prints $TEST_BINARY
+RAYON_NUM_THREADS=4 taskset -c 0,2,4,6,8,10,12,14 \
+  $TEST_BINARY benchmark_graded_tiles --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 taskset -c 0,2,4,6,8,10,12,14 \
+  $TEST_BINARY benchmark_populated_commit_breakdown --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=4 taskset -c 0,2,4,6,8,10,12,14 \
+  $TEST_BINARY benchmark_road_preview_stages --ignored --nocapture --test-threads=1
+```
+
+Rendered runs use `road_junction_reference_test.gd` on gamescope's headless backend with an
+isolated profile, as in [`roads.md`](roads.md#rendered-reference-screenshots); never the player's
+profile or `xvfb-run`. The idle frame uses the idle-frame matrix
+(`METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle`, [`TERRAIN-04`](#14-terrain-site-ground-water-and-lighting-materials-are-runtime-presentation)).
+
+### `TERRAIN-07` open questions
+
+None is decided. Each records evidence, options and a recommendation for the user.
+
+1. **T1. Exact locality of the overlap rule.**
+   - **Evidence.** The spike's reach `dev / (1/2 - s)` bounds where a seam's cone excludes the base.
+     Where two footprints' cones conflict (`L > U`), a seam whose cone holds the base can still set
+     `U` below `L` and move the midpoint: base 0, a fill seam at height 10 at 4 m gives `L = 8`, a
+     seam at height 1 at 6 m has `[-2, 4]`, which holds the base, and turns 8 into the midpoint 6.
+     The spike also took the slope `s` over the union of the requested tiles, so a tile's bytes in a
+     conflict depended on its batch: a preview's 6 dirty tiles could differ from the same tiles at
+     load.
+   - **Options.** (a) Keep the rule and use the [exact pruning](#the-grading-function) reach with
+     the two conflict terms. (b) Superposition, `g = L* + U* - b` with `L* = max(b, L)` and
+     `U* = min(b, U)`: exact with the spike's reach and continuous, but where cones conflict it
+     ignores the ceiling of a seam whose cone holds the base (8 stays 8 here; in T2's example it
+     leaves the terrain 4 m above the lower road's edge).
+     (c) Evaluate every seam within the cap, no pruning: exact, unaffordable in a city.
+   - **Recommendation.** (a); measure its reach and cost on the sloped fixtures in `TERRAIN-07-A`.
+2. **T2. Terrain at a seam inside a conflict.**
+   - **Evidence.** Where `L > U` at a road seam (`d = 0`, so `U = h`), the midpoint puts the terrain
+     `(L - h) / 2` above or below that road's edge: two grounded roads 10 m apart with 9 m between
+     their heights leave a 2 m step at the lower road's sidewalk. The exact cut had no such rule;
+     its rays graded each loop independently. How often this happens in real cities is unmeasured.
+   - **Options.** (a) Accept the midpoint and count conflict samples within one texel of a road
+     seam in diagnostics. (b) Reject such edits with a typed reason (`grading_conflict`), as
+     `ROAD-68` rejects constructions that cannot satisfy their rules. (c) Raise a retaining wall
+     there automatically (needs `SeamKind::Wall`, [T14](#terrain-07-open-questions)).
+   - **Recommendation.** (a) in `TERRAIN-07-A` with the counts on the populated fixtures and
+     Kuopio; then the user chooses between (a) and (b), with (c) as later product work.
+3. **T3. Where inside and outside come from.**
+   - **Evidence.** The spike's sign came from the nearest seam and a flood fill; with one node piece
+     missing (`t_cutfill`) it discarded the ground south of the road and drew grass over the north
+     lanes. The exact cut fails loudly (`OpenEnd`), which also blocks bridges and tunnels until
+     `ROAD-68-F` ([`roads.md` question 19](roads.md#road-68-open-questions)).
+   - **Options.** (a) Coverage by rasterizing the published top triangles with the roadbed's own
+     predicate. (b) Keep `OpenEnd` as a typed error. (c) The spike's flood fill.
+   - **Recommendation.** (a): pointwise, equal to the road query, local, no closed loops.
+4. **T4. The inside rule on fills.**
+   - **Evidence.** The spike continued the tie-in arm through the whole 2 m band, rising to 1 m
+     above the road on fills; only samples within one texel diagonal shape visible triangles at
+     0.5 m. At 1 m texels the rise lifted terrain a few centimetres over the sidewalk edge
+     (artefact 3), and coarse levels would rise up to their whole spacing.
+   - **Options.** (a) Cap the fill arm at one `GL0` texel diagonal (0.35 m of rise). (b) The spike's
+     rule. (c) Cap at the road surface (the spike's untested fix): a few centimetres of gap at
+     curb returns at 0.5 m, the dark line of artefact 1.
+   - **Recommendation.** (a): identical at `GL0`, bounded at every coarser level.
+5. **T5. Levels, their distances and the far representation.**
+   - **Evidence.** A fully graded patch at 0.5 m would be about 2.1 million triangles (64 tiles ×
+     32,768), against about 200k faces for a refined patch today; at 1080p a pixel covers about
+     1 mm per metre, so 0.5 m texels resolve only within about 500 m. Road patches render at LOD
+     step 1 at every distance today. Coarse vertices undersample the cut cones near a road, and the
+     spike tested no LOD.
+   - **Options.** (a) `GL0`-`GL3` as proposed, the skirt deepened with distance (0.5 m to 2 km,
+     2.5 m to 5 km, 5 m to 12 km, 10 m beyond). (b) `GL2` everywhere beyond 512 m, with no `GL3`
+     (more triangles and memory at distance). (c) A conservative minimum per coarse vertex (no
+     road ever hidden, but fills sag by up to half the spacing).
+   - **Recommendation.** (a), with the distances tuned by the distance renders and the idle-frame
+     matrix in `TERRAIN-07-D`.
+6. **T6. Texel format.**
+   - **Evidence.** RGBAF (16 B) is the spike's format, one fetch per sample. A half-float delta
+     rounds to 1.6 cm steps between 16 m and 32 m of grading, so pads and seams would be off by up
+     to 8 mm; half-float distances and indices are exact enough.
+   - **Options.** (a) RGBAF. (b) `R32F` delta plus `RGBAH` for the rest, 12 B. (c) All half float,
+     8 B.
+   - **Recommendation.** (a) in `TERRAIN-07-D`; (b) if the measured pools exceed the memory table.
+7. **T7. Seam and edge capacity per slot.**
+   - **Evidence.** Not measured; a dense junction tile holds curb returns sampled finely.
+   - **Options.** (a) Fixed capacities per level with at least twice the measured maximum, and
+     overflow a typed bake error. (b) A shared row buffer with offsets and counts per slot.
+   - **Recommendation.** (a), sized from `TERRAIN-07-A`'s maxima on the populated fixtures and
+     Kuopio; (b) only if a maximum is far above the typical tile.
+8. **T8. Acceleration for point queries.**
+   - **Evidence.** A query gathers the pieces within 64 m and evaluates three lattice points;
+     pedestrians off lane and vehicle contacts query every rendered agent each frame.
+   - **Options.** (a) No index; the gather variant for clustered points. (b) A persistent seam index
+     (the spike's 32 m bins with reaches), a derived cache.
+   - **Recommendation.** (a); (b) only with a measurement that shows the need (invariant 2).
+9. **T9. Undo.**
+   - **Evidence.** A rebake of an edit's tiles fits the 3.0 ms stage (spike: 1.6-2.5 ms); keeping the
+     replaced tiles would cost up to about 3 MB per undo entry.
+   - **Options.** (a) Rebake from the restored inputs and swap slots. (b) Keep the replaced tiles in
+     the undo record.
+   - **Recommendation.** (a): no stored terrain state, bitwise by construction.
+10. **T10. Comparing with the exact cut.**
+    - **Evidence.** The spike rendered both in one session, so each pair had the same roads, lights
+      and camera; the exact cut still has to work while B is accepted.
+    - **Options.** (a) Keep the exact cut reachable from the reference test until `TERRAIN-07-G`.
+      (b) Tag the last exact-cut commit and compare renders across builds.
+    - **Recommendation.** (a): every comparison stays within one session, and the exact cut is
+      deleted at the last gate either way.
+11. **T11. Pads as terrain.**
+    - **Evidence.** Today each pad is triangulated into the patch buffers and partitioned by
+      material (`SitePavingPartition`), so terrain, pads and roads share seam vertex bits.
+    - **Options.** (a) The terrain is the pad (`Pad` class, exact support height, unmasked).
+      (b) A site-owned pad mesh with the pad masked out of the terrain.
+    - **Recommendation.** (a): no second mesh, no seam between pad and ground.
+12. **T12. Site placement feasibility.**
+    - **Evidence.** `building_site_support_tie_in_is_valid` and `solve_building_site_support_height`
+      cast their own rays on the visual terrain with the CDT's sample margin; B grades any pad.
+    - **Options.** (a) Keep the allocator's rule, re-pointed at the base and the new cap constant.
+      (b) Feasible when the pad's cones meet the roads without a conflict at a seam (ties to
+      [T2](#terrain-07-open-questions)).
+    - **Recommendation.** (a) in `TERRAIN-07-F`; changing placement belongs to `EARTH-02`.
+13. **T13. Water against graded ground.**
+    - **Evidence.** Depth is `surface - base`; a cut below a lake's level beside its shore changes
+      the real ground. Water suppresses the mesh cells a road touches.
+    - **Options.** (a) Depth on the base, road cells from `mask_at`; a cut below the water level
+      outside the lake stays dry. (b) Depth on the graded ground. (c) Grading stops at the shore.
+    - **Recommendation.** (a) in `TERRAIN-07-F`; the rest under a water item.
+14. **T14. Structure ends and retaining walls.**
+    - **Evidence.** Bridge and tunnel spans publish no chains; their abutments and portals are
+      `ROAD-68-F` work. The exact cut builds retaining-wall faces for structural sources.
+    - **Options.** (a) `SeamKind::Wall` arrives with `ROAD-68-F`; until then structure ends are open
+      chains, which coverage handles. (b) Walls wherever cones conflict.
+    - **Recommendation.** (a).
+15. **T15. Coal pits.**
+    - **Options.** (a) Keep the overlay. (b) An excavation client: a lowered pad with a 1:1 seam.
+    - **Recommendation.** (a); (b) is a product change for its own item.
+16. **T16. Base heights in metres.**
+    - **Evidence.** The base stores raw samples scaled by `HEIGHT_SCALE` (20) at the query boundary,
+      a known compatibility gap; changing it changes saves, world definitions and the DEM importer.
+    - **Options.** (a) Not in `TERRAIN-07`; the new queries return metres. (b) Convert now.
+    - **Recommendation.** (a).
+17. **T17. The tile grid and lattice nesting.**
+    - **Evidence.** Render patches are 51 cells (510 m at 10 m), so 64 m tiles straddle patches;
+      stitching needs the base lattice to nest in the level lattices. A future 5 m base would not
+      nest in a 2 m `GL2` and would need other level spacings.
+    - **Options.** (a) 64 m tiles on the world origin, cells clamped to patches, and the nesting
+      precondition validated. (b) Tiles anchored at the terrain lattice origin, which nest for every
+      cell size that is a multiple of 2 m without a world-size rule. (c) Patch-aligned tiles (51 m or
+      102 m), which change the spike's measured unit. (d) Skirts between cells instead of nesting.
+    - **Recommendation.** (a): the unit measured in the spike and used by the CDT and road chunk
+      grids; every current world satisfies it.
+
+#### Superseded `ROAD-68` questions
+
+- **18** (grading envelope cap): carried into [TD5](#product-decisions); the reach is an
+  exact bound under the cap ([T1](#terrain-07-open-questions)).
+- **19** (open chain ends): superseded by coverage ([T3](#terrain-07-open-questions)); abutments
+  and portals in [T14](#terrain-07-open-questions).
+- **23** (seams between meshes in different frames): superseded; terrain no longer shares vertices
+  with roads or pads, and its open T-vertex and filler items go with the CDT.
+- **24** (road surface pinholes on slopes): the road side, done in `ROAD-68-D` part 5, stays; terrain
+  is still discarded under roads, so a road crack would still show, and the road chunk
+  watertightness test stays.
+- **29** (the commit's terrain at city scale): superseded; the bake follows the dirty tiles
+  ([budgets](#budgets)).
+- **40** (a clipped site loop in the shared-vertex height rule; recorded on branch `road68-D7`, not
+  on `road`): superseded; nothing is clipped.
 
 ## Implemented Runtime Contract
 
@@ -3437,55 +4352,21 @@ repeatable within each build, and inactive-overlay controls match across builds.
 denied Xvfb's local listening socket; rendered checks ran with that restriction lifted. No
 display/network service is needed by the simulation tests.
 
-### 3. Terrain Uses Dual Sparse Buffers
+### 3. Terrain Uses Dual Sparse Buffers (archived)
 
-The live `TerrainSystem` owns two sparse chunk-backed grids:
+The source / visual buffer pair is legacy terrain surface, archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#3-terrain-uses-dual-sparse-buffers). On `road` every writer sets both
+buffers or resets the visual one from the source, so it equals the source.
+[`TERRAIN-07`](#graded-terrain-surface-terrain-07) reads the source terrain as its base heightmap and deletes the
+visual buffer at its last gate.
 
-- `source terrain`: authoritative sculpted terrain
-- `visual terrain`: derived terrain after engineered-ground earthworks
+### 4. Surface Queries Distinguish Source Terrain From Visible World Surface (archived)
 
-Current deterministic rules:
-
-- untouched sparse terrain cells are implicit and read back as the configured base elevation
-- setting terrain directly writes both source and visual buffers
-- sculpting writes both source and visual buffers
-- `reset_visuals_from_source()` discards the current visual terrain and clones the authoritative
-  source terrain into it
-- save/load persists the authoritative source terrain only
-- renderer uploads use the visual terrain
-- procedural hillshade is a render-only derivation generated from the uploaded visual terrain
-  heightmap
-- procedural hillshade must never become authored world data or save-game data
-- terrain sculpting, DEM import, world load, and road-earthwork visual refreshes must all update
-  hillshade automatically because it derives from the same visual terrain upload
-
-### 4. Surface Queries Distinguish Source Terrain From Visible World Surface
-
-Terrain-only height queries are authoritative against the source terrain surface, not the
-engineered-ground-derived visual terrain. Separate world-surface queries read the current
-engineered-ground client surface first and fall back to visual terrain only when no client-owned
-surface owns the queried location.
-
-Current deterministic rules:
-
-- `get_height(x, y)` reads source terrain
-- `sample_height_world(x, z)` reads source terrain
-- `intersect_terrain()` and terrain height queries use source terrain interpolation in world space
-- `get_world_surface_height()` returns visible client-owned surface height when an engineered-ground
-  client owns the queried XZ location, otherwise visual terrain height
-- `intersect_world_surface()` raycasts the visible client-owned surface first and falls back to
-  visual terrain when no client-owned triangle is hit
-- engineered-ground earthworks are a visual derivation, not an edit to source terrain
-
-Editor interaction rule:
-
-- authored-ground editing tools must use the terrain-only query family
-- visible-surface placement, inspection, and selection tools must use the visible-world query
-  family
-- terrain-authoring tools must not implicitly move already placed engineered-ground client surfaces
-
-This preserves the rule that engineered-ground placement must not feed back into the terrain that
-grade and slope calculations treat as authored ground.
+The legacy query family (terrain-only queries on the source; visible-surface queries over roads,
+sites, the CDT ground and visual terrain) is archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#4-surface-queries-distinguish-source-terrain-from-visible-world-surface).
+It stays live until [`TERRAIN-07`](#queries-for-consumers) moves its consumers to the new queries,
+which keep the split between authored ground and the visible surface.
 
 ### 5. Terrain Height Storage Is Scaled At Query / Render Boundaries
 
@@ -3569,64 +4450,13 @@ timing. Sparse fixtures fill the final cell of every sixty-fourth chunk; all out
 chunk counts match across builds and worker counts. This isolates sparse reconstruction, excluding
 SQLite decoding, water filling and renderer upload.
 
-### 8. Engineered Ground Is A Chunk-Local Visual Derivation Step
+### 8. Engineered Ground Is A Chunk-Local Visual Derivation Step (archived)
 
-Shared engineered-ground semantics now live in [`earthworks.md`](earthworks.md). This document owns
-the terrain-storage side of that boundary: source terrain stays authored ground, visual terrain is
-the derived buffer, and only touched chunks are reset and restamped.
-
-Current deterministic sequence:
-
-1. compile or refresh the affected engineered-ground client surface inputs
-2. prepare structural support writes for the touched visual terrain chunks
-3. in canonical chunk order, reset each touched chunk from source terrain and apply its support
-   writes before advancing to the next chunk (shared borders preserve this ordering)
-4. leave untouched visual chunks and all source terrain chunks unchanged
-5. rebuild dependent caches against the updated client state plus visual terrain
-
-Current runtime client state:
-
-- roads are the first live engineered-ground client
-- grounded roads no longer stamp ordinary `Standard` footprints or margins into visual terrain;
-  road-touched terrain patches receive stitched mesh topology from Rust
-- grounded road-owned asphalt, shoulder / curb, and sidewalk footprints also provide exact clip
-  polygons to terrain and water render patches so neither terrain nor water remains a visible carrier
-  under the committed road footprint
-- grounded roads use Rust-generated stitched terrain patch topology from the clipped footprint edge
-  to nearby terrain, so ordinary `Standard` roads do not need a visible closure strip
-- terrain-only queries still read source terrain, while visible-world queries use the client-owned
-  surface first, structural local earthwork geometry second, and visual terrain third; ordinary
-  grounded seams are terrain topology, not a separate road-owned query surface
-- flat building/yard pads and graded edge paving use the same Rust-side stitched terrain patch model for local site
-  tie-ins; future engineered-ground clients should extend [`earthworks.md`](earthworks.md) instead
-  of inventing a separate terrain-flattening path
-
-Current deterministic editor rule:
-
-- terrain authoring edits source terrain first
-- after the source edit, touched engineered-ground clients rebuild derived terrain outputs; ordinary
-  grounded roads regenerate CDT terrain patch meshes while structural clients may restamp visual
-  terrain
-- terrain brushes do not directly sculpt roadbeds, flat pads, or future local earthwork geometry
-
-Remaining limitation:
-
-- the fixed Kuopio workload passes 39 placements / 158 profile checks, shared-side and coverage
-  regressions, and saved-reference settlement; broader authored-map coverage remains ongoing,
-  not a claim of watertightness for arbitrary inputs (see `ROAD-24` in [`roads.md`](roads.md))
-- terrain density alone is no longer the target fix for road / terrain gaps
-- the live road-touched seam path is the Spade CDT patch builder described in
-  [`roads.md`](roads.md):
-  road footprint loops become hard constraints, terrain faces inside those loops are omitted, and
-  road seam constraint edges are preserved exactly
-- current grounded-road terrain editing must keep placed `Standard` road geometry fixed and rebuild
-  derived terrain outputs around the committed roadbed instead of silently resynchronizing the road
-  to later source-terrain edits
-
-Authoritative rule:
-
-- engineered-ground earthworks change the visual terrain only
-- source terrain remains the authored ground surface
+Engineered ground as a visual derivation (the touched-chunk reset and restamp, the stitched CDT
+seam for roads and pads) is archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#8-engineered-ground-is-a-chunk-local-visual-derivation-step).
+Source terrain stays the authored ground; [`TERRAIN-07`](#graded-terrain-surface-terrain-07) derives the graded
+surface from it as a pure function of roads, sites and the base.
 
 ### 9. Water Uses Sparse Baseline-Depth Storage
 
@@ -4872,94 +5702,11 @@ Deterministic terrain-render rules:
 - terrain/site height sampling and road-footprint collection must use the existing building and
   road-surface ownership indices; full-building or full-road scans are not allowed in patch jobs or
   repeated point queries
-- refined terrain divides each render patch into fixed world-aligned bounded CDT core tiles clipped
-  to the parent patch; every tile uses exact indexed contributor and required grading-influence
-  coverage rather than an assumed fixed-neighbor halo
-- tile identity is separate from a full local content fingerprint covering clipped contours and
-  provenance, local terrain samples, grading guides/constraints, render step, core bounds, and
-  contract revision; unchanged fingerprints reuse immutable compiled geometry and per-tile render
-  buffers from the last accepted generation
-- each cached tile also retains its road-input clipping: ordered source loops shared across tiles
-  and halo contributor loops/manifests. Canonicalization clips ownership to the core while retaining
-  the uncut halo for grading shared sides. Reuse compares full geometry/provenance
-  (including float bits), exact core bounds, and freshly sampled corner heights in
-  `O(local contributor vertices + source edges)` without allocating on a hit. Halo clipping is
-  skipped only after this match. Terrain samples, adaptive margins, road/site grading
-  guides, and final input fingerprints are still rebuilt; source-generation equality alone cannot
-  authorize reuse of visual-terrain inputs. Retention is bounded by cached tiles, with no history
-  chain or independent global geometry cache.
-- an edit plans `old_coverage union new_coverage` plus deterministic seam-dependency tiles; removed
-  contributors omit their old refined coverage so regular terrain fills it again, while unrelated
-  tile fingerprints and compiled meshes remain unchanged
-- seam invalidation remains cardinal, but only tiles with current road/site contributors enter the
-  CDT builder; contributor-free neighbors return to the regular filler, which takes the exact
-  exported side vertices of each adjacent window, and contributor coverage/guide generation share
-  one adaptive grading-margin probe result
-- contributor margin/guide generation and tile-local clipping, sampling, and fingerprint generation
-  run as ordered Rayon jobs; deterministic serial aggregation retains canonical tile and manifest
-  ordering, keeping total work `O(contributors + windows)` while reducing its wall-clock critical path
-- only changed tiles build through Rayon; completed tile results are sorted canonically before patch
-  composition so scheduling order cannot change topology or shared seam identity
-- road grading guides provide sampling positions, not independent parent-edge height authority.
-  They sample the common visual terrain; interior samples inside the required tie-in envelope
-  yield to the retained road seam. Shared-side samples remain, graded once against uncut halo
-  contributors, so adjacent CDT tiles cannot bridge different elevations. Building pads and
-  structural retaining walls retain their own authority. Canonical boundary-cell welding and
-  strict core containment prevent sub-millimetre outside samples from expanding the CDT domain.
-  Snap guide/source samples within the existing 1 mm side tolerance before testing containment:
-  both adjacent tiles must retain the same side point and height, even when its original position
-  falls just inside only one tile. More distant halo samples remain excluded.
-  Guide points on road constraints are noded with the retained seam's interpolated height.
-  Clipping also preserves exact rectangle intersections when a nearby interior road vertex
-  occupies the same canonical identity cell. Deduplication prefers the vertex on the exact
-  tile side, including the closing pair and reversed contours; it does not move arbitrary
-  road vertices onto a boundary. Discarding that intersection previously produced a nearly
-  vertical terrain face beside a flat orthogonal road block. The focused clipping regression
-  and native four-road preview/commit fixture cover this case; see the
-  [zoning reference verification](zoning.md#native-road-transactions-and-rendered-references).
-  Segment incidence tolerances are distances, never fractions of arbitrarily long segments.
-  Noded-edge cleanup deduplicates canonical vertex IDs, not nearby segment parameters:
-  even sub-millimetre intersections in distinct identity cells must remain on both incident
-  boundaries. Otherwise a road/site corner can leave crossing constraints and suppress an
-  entire render patch after loading. CDT contract revision `13` includes that noding fix,
-  imported-bounds building support, symmetric shared-side sample welding and editor-consistent
-  building-part yaw, invalidating earlier oversized/misrotated pads and one-sided apron products;
-  Rust and Godot enforce the same revision. Invalid geometry still blocks publication, and both
-  `terrain` and `road` debugging expose the renderer's rejection reason.
-- render frames (`ROAD-68-D` part 5): a patch's vertices are local to its frame centre
-  (`TerrainPatchSnapshot::frame_centre`, `render_frame_centre`), converted from `f64` world
-  metres once by `render_frame_local`. The road render chunk over a patch uses the same centre
-  and the same conversion, and each building site's flat pad is composed into the patch buffers
-  (footprint triangulated in `f64`, clipped to the patch by `terrain/rect_clip.rs`, partitioned
-  with the terrain faces by the site paving partition), so terrain, pads and roads give a shared
-  seam vertex the same bits ([`roads.md`](roads.md#footprint-and-terrain), open question 23).
-  Godot places terrain patches and road chunks at those centres.
-- CDT export retains world XZ in `f64` while calculating face normals, slope/pathology metrics,
-  patch-local positions, and UV deltas; it converts only the resulting local values to Godot's
-  `f32` buffers. Converting kilometre-scale world coordinates first can collapse a valid
-  sub-millimetre road/site separation, inflate its measured slope, and falsely suppress the whole
-  atomic patch. The saved benchmark-city regression covers that case at patch `(27, 0)`.
-- successful tile output caches vertices, normals, UVs, offset-ready indices and pre-normalized
-  local normal-sum magnitudes; reuse therefore skips triangle conversion and triangle-index normal
-  reconstruction for unchanged tiles, and composition reads each window's side vertices from its
-  exported vertices (`O(window vertices)`, as the copy already is)
-- the regular filler is conforming (`ROAD-68-D` part 4, [`roads.md`](roads.md#footprint-and-terrain)):
-  filler cells are bounded by patch and window lines only; a cell side shared with a window takes
-  that window's exported side vertices bitwise, every other cell side the render-step boundary
-  lattice, and one strip per side joins it to the cell's regular grid. No side vertex runs on as
-  a grid line into other cells, so there is neither a T-vertex nor a Cartesian filler-grid
-  expansion. Only exactly
-  degenerate faces are dropped from CDT and filler output, and face slopes are measured without
-  absolute cut-offs (a small face is not vertical)
-- atomic composition still copies the complete bounded render-patch mesh because Godot owns one
-  surface per patch; concatenation, regular filler, duplicate-normal reconciliation, and upload
-  remain `O(patch output vertices + indices)`, while contributor queries, CDT input assembly,
-  triangulation, and tile conversion are proportional to changed plus deterministic seam tiles and
-  never revisit every connected road in the patch
-- refined patch publication is atomic for the exact requested generation; one failed tile, a failed
-  road clip query, or missing road ownership on a road-owned patch suppresses the complete new
-  payload, stale jobs cannot publish, and the immutable last accepted generation remains visible
-  and available for reuse until a complete replacement is accepted
+- the refined (road- and site-touched) terrain rules that stood here, CDT core tiles, tile caches
+  and fingerprints, seam invalidation, grading guides, render frames, the CDT export, the regular
+  filler, atomic composition and publication, are archived in
+  [`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#5-chunk-local-terrain--water-rendering-is-now-live-refined-terrain-rules);
+  [`TERRAIN-07`](#graded-terrain-surface-terrain-07) replaces them
 - Godot applies the same transaction boundary across every resident dirty patch in one visual
   batch: it validates exact patch/generation/render-step identity and payload structure, builds
   height textures plus terrain/retaining meshes into inactive resources, and swaps only after every
@@ -4967,37 +5714,6 @@ Deterministic terrain-render rules:
   no handled failure is acknowledgement-eligible. Standalone publication rechecks network dirtiness
   and generation after staging, residency additions wait while network publication is pending, and
   transient detached-resource build failures remain retryable in the same generation.
-- road insertion also validates the production terrain payloads before accepting simulation state.
-  The simulation thread borrows the staged world, rebuilds only affected patch/tile products, and
-  stores successful buffers in the existing cache. A failure rolls back graph and split dependents
-  before lane, entrance, parcel-maintenance, routing, or treasury changes. GPU staging remains a
-  separate generation check; it is no longer the first place a terrain-CDT failure can reject a road.
-- Default `ROAD-28` road-only previews display canonical road/junction geometry over unchanged terrain.
-  They sample terrain for road heights but do not construct stamps, cutouts, grading meshes or
-  paired terrain uploads, even while idle. A matching click shares the road solve and completes
-  terrain under the simulation command before atomic validation/publication. Preview readiness
-  is independent of terrain renderer residency; final placement keeps the clipping contract above.
-  `ROAD-29` adds opt-in full road/terrain preview: compile the same local terrain products on
-  the worker, stage both draw batches atomically, and restore original meshes on cancel,
-  mode change or patch invalidation. This changes only temporary rendering; source samples,
-  resident payload caches and acknowledgments remain unchanged. Matching clicks share the
-  completed terrain plan after dependency revalidation.
-- a statusless non-engineered payload may use the regular heightmap `PlaneMesh`. An engineered
-  payload is renderable only when its current-contract final status is `ok` and its clipped baked
-  buffers are structurally valid. Any omitted-pathological-face count rejects the complete patch
-  in both Rust readiness and Godot staging: removing a bad face is not a coverage repair.
-  `empty`, `failed`, `conflicted`, still-`pathological`, unknown,
-  wrong-contract, or malformed engineered output keeps the previous mesh and may not fall back to
-  raw terrain.
-- a road-locked patch selected through the grading-ray safety pad expands its clip-source query by
-  that same render-step / terrain-cell pad; bridge-to-ground transitions cannot mark a neighboring
-  patch as road-owned while querying just short of the responsible road seam
-- a road loop discovered only through that padded query contributes to a CDT tile only when its
-  exact grading influence overlaps positive-area tile core coverage after parent-patch clipping;
-  margin-only neighboring loops must not materialize phantom refined coverage
-- engineered ownership travels with the Rust payload, and Rust must reject raw-heightmap payload
-  requests for known road- or building-site-owned patches even if the renderer's patch-membership
-  lookup is stale
 
 Deterministic water-render rules:
 
@@ -5046,141 +5762,22 @@ Deterministic density gate:
   - water upload cost
   - terrain brush cost
   - earthwork restamp cost
-- the accepted road / terrain seam fix is not a density move; it is the Spade CDT terrain-patch
-  hardcut in [`roads.md`](roads.md)
+- the road / terrain seam does not depend on the base density: [`TERRAIN-07`](#graded-terrain-surface-terrain-07)
+  grades and masks at 0.5 m over the 10 m base (the earlier Spade CDT hardcut is archived)
 
-Deterministic transition rules:
-
-- future engineered-ground closed local earthwork / tie-in geometry is required whether the
-  implementation extends the current terrain runtime or rewrites it
-- any terrain-runtime rewrite must still preserve:
-  - authoritative source terrain
-  - a derived far-field terrain surface outside engineered-ground tie-in boundaries
-  - chunk-local invalidation and rebuild boundaries
-  - the split terrain / water render-upload path
-  - Rust-generated stitched terrain topology anywhere grounded `Standard` road top surfaces own the
-    visible surface; the clip boundary is the compiled road-piece outer loop, and shader discard,
-    alpha masking, internal road-band clipping, or Godot-side polygon clipping must not be the
-    ordinary road seam carrier
-  - terrain clipping must be derived from the compiled road-piece outer loop in Rust; asphalt /
-    sidewalk render triangles are not reused as terrain ownership triangles
-  - span terrain-query footprints are closed in 64 m section-station runs using existing owned
-    regions and handoff sources. Internal caps cancel in the patch union; full render/earthwork
-    outlines remain unchanged. This bounds exported source loops before the micrometre i32 overlay,
-    fixing the 2,790 m `ROAD-14` overflow without reducing precision or relocating the fixture.
-    Construction adds one linear boundary pass and O(regions) source storage, not a new spatial index.
-  - road-piece and terrain-patch ownership cleanup uses `i_overlay` before triangulation; boolean
-    union / difference / hole handling must produce non-overlapping asphalt, sidewalk, and terrain
-    regions before Spade receives constraints
-  - target road-touched patch generation uses Spade's Rust-side
-    `ConstrainedDelaunayTriangulation` with a deterministic `try_bulk_load_cdt` input made from the
-    terrain patch rectangle, road-owned footprint constraint loops, and deterministic
-    source-terrain sample points outside those footprints
-  - conflicting constraints are reported through CDT debug counters and skipped; they are treated
-    as geometry bugs to fix at the road-piece source, not as a reason to panic the backend or fall
-    back to legacy clipping
-  - constraint incidence uses the micrometre road-contour resolution, not the millimetre
-    identity grid as an overlap buffer. Distinct near-parallel approach boundaries must not be
-    fabricated into overlapping constraints with conflicting heights. Real overlaps and height
-    conflicts retain their existing checks; this does not widen height tolerances. The existing
-    patch-local noding complexity is unchanged.
-  - Spade CDT faces whose centroids are inside road-owned footprints are omitted; all emitted
-    terrain triangles must preserve road seam constraint edges and must not cross road footprint
-    loops
-  - `ghx_constrained_delaunay` is not a terrain backend or fallback in this spec; Spade is the
-    production hard-cut target because it gives the project a documented constrained triangulation
-    API with exact geometric predicates
-  - `robust` is not part of this path for now; standalone exact-predicate code is not needed unless
-    a future measured gap remains after `i_overlay` boolean cleanup and Spade CDT
-  - current road-touched patch emission uses the Spade CDT path directly; the old subtractive
-    triangle cutter, visible seam strip, and conservative cell-triangle ownership rule are no
-    longer live fallbacks
-  - terrain render suppression for structural local earthwork geometry must remain bounded to true
-    geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge terrain
-    topology must still be geometrically correct if terrain-side suppression is turned off
-  - visible-world query precedence over client-owned top surfaces and closed local earthwork
-    geometry
-- post-placement terrain edits should rebuild earthworks around already placed client surfaces
-  instead of resynchronizing those client surfaces to edited terrain
+Deterministic transition rules: the legacy hardcut's transition rules (the stitched CDT seam
+carrier, `i_overlay` ownership cleanup, Spade patch generation) are archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#deterministic-transition-rules). The rewrite
+([`TERRAIN-07`](#graded-terrain-surface-terrain-07), approach B decided by the user 2026-10-25) keeps
+authoritative source terrain, chunk-local invalidation and rebuild boundaries, the split terrain /
+water upload path, visible-world query precedence over client-owned top surfaces, and fixed placed
+clients under later terrain edits; it replaces the stitched CDT seam with the graded terrain's
+exact mask and road skirts.
 
 The chunk-local render path is now the live large-world terrain / water runtime boundary.
 
-#### Road/site corner noding verification (2026-09-11)
-
-`road_site_intersections_near_pad_corners_keep_distinct_vertices` uses an authored 32 m tile
-with a sidewalk boundary crossing just inside two flat-pad corners. It fails with the old
-split cleanup (two rejected constraints), and passes with identity-only deduplication. It
-also checks complete exterior area, no missing constraints, level output, and exact geometry
-agreement after contributor reordering. This fix keeps the existing tile-local complexity:
-`O(K log K)` sorting and `O(K)` cleanup per edge with K split events, removing the extra
-deduplication buffer. No city-wide query or per-agent work is introduced.
-
-Fresh verification: `cargo test --release --lib` passes 1,656 tests (9 intentionally ignored);
-headless `road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd` pass.
-
-Targeted unprofiled measurement uses the same fixture plus 1,089 regular source samples:
-24 batches of 50 builds, four warmups, input cloning outside the timed compiler. Command:
-`RAYON_NUM_THREADS=24 cargo test --release --lib benchmark_road_site_cdt_noding -- --ignored --nocapture`.
-The production release test reports **0.4477 ms/tile**, 763 retained vertices, 1,369 faces,
-and zero invalid/missing constraints. Test-binary SHA-256:
-`614a167a46dc9fc3bf2c8ef5ca6820d0a156afd194126af9181733074e9cafcc`.
-
-Three matched isolated CDT-module process pairs (`rustc 1.98.1`, `--edition=2024 --test -O`,
-identical release Spade/R-tree/overlay dependencies, debug logging disabled, no concurrent
-builds/tests) measure old/new medians **0.4816/0.4611**, **0.4828/0.4607**, and
-**0.4842/0.4607 ms/tile**. The middle pair reverses process order. Each build runs the serial
-tile kernel; outer Rayon scheduling and whole-patch upload are outside this measurement. The
-old output has one invalid and three missing constraints, so these are correction-cost
-measurements, not an equivalent-output speedup or a city-scale FPS claim. Matched binary
-SHA-256 prefixes: `9c810e195d67e7d5` (before), `3952a9f86230267ee` (after).
-
-#### Shared-side yard seam verification (2026-09-11)
-
-A commercial apron exposed a 0.276727 m vertical T-junction across a 64 m tile side. A grading
-sample less than 1 mm inside one tile snapped onto that side, while the neighbor rejected it
-before snapping and retained an unsplit edge at a different height. Canonicalization now welds
-samples first and enforces strict containment afterwards. This adds no allocations, spatial
-queries or city-wide work: constant work per local source/guide sample, with existing CDT costs.
-Flat pads and authored assets are unchanged; Rust/Godot contract revision 12 invalidates old meshes.
-
-`adjacent_tiles_share_near_boundary_grading_samples_from_either_side` failed before the fix and
-passes afterwards. Its 64 cases cover both axes, positive/negative large-world coordinates, both
-offset directions and source/guide inputs. It compares referenced side vertices and heights;
-the containment regression also proves that farther halo samples stay excluded.
-
-Fresh release verification passes **1,659 Rust tests (9 ignored)**, including the 61 CDT tests,
-plus headless `road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd`. The
-read-only loaded scene publishes all eight requested patches; its repaired point is referenced
-by triangles on both sides at exactly the same height. A local rendered-triangle incidence audit
-changes from one >1 cm disagreement to zero (maximum residual under 5 mm with 1 mm XZ incidence
-tolerance). The neighboring frontage still passes 99 probes, maximum paired difference 6.5 mm.
-Neither assets, the diagnostic save nor the checked-in terrain fixture were modified. Full-suite
-command from repository root: `RAYON_NUM_THREADS=24
-$TEST_BINARY --test-threads=8`.
-
-Matched, unprofiled release timing (`rustc 1.98.1`, Cargo release profile, debug flags unset,
-`RAYON_NUM_THREADS=24`, no concurrent builds/tests) reuses `benchmark_road_site_cdt_noding` above.
-Three before/after process pairs give **0.4516/0.4463**, **0.4493/0.4477**, and
-**0.4483/0.4477 ms/tile**; the middle pair reverses order. All outputs retain 763 vertices,
-1,369 faces and zero invalid/missing constraints. No kernel regression is apparent in this fixture;
-these small differences are not a general speedup claim.
-
-The existing `populated_paved_road_plan_scaling` also passes one matched process pair, 100 measured
-edits plus three warmups per population, with fixed local sites and identical local products at
-every background size within each build. Worker p50 milliseconds, before/after:
-
-| Remote buildings | Remote roads | Agents | Before / after |
-| ---: | ---: | ---: | ---: |
-| 0 | 0 | 24 | 21.45 / 23.50 |
-| 1,000 | 4 | 6,024 | 21.55 / 22.85 |
-| 10,000 | 40 | 60,024 | 22.39 / 22.60 |
-| 100,000 | 391 | 600,024 | 22.76 / 22.54 |
-
-Current readiness p50 stays below 0.020 ms; one-time snapshot cost is separate (0.007–3.312 ms).
-This verifies locality, not an end-to-end speedup: one pair cannot attribute the small-map timing
-variation. Commands for each retained release test binary use `RAYON_NUM_THREADS=24 <binary>
-<benchmark_name> --ignored --nocapture --test-threads=1`. Deployed library SHA-256:
-`8e8daecd8676bfe2a6d914531fc59b0587be111a45429ed2fa47ff3431e4e832`.
+The 2026-09-11 CDT verifications (road/site corner noding, shared-side yard seams) are archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#roadsite-corner-noding-verification-2026-09-11).
 
 ### 6. Offline Heightmap / DEM Import Is Live
 

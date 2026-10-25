@@ -94,6 +94,11 @@ Structural terrain stamping may still be used for explicit bridge / tunnel / ret
 ordinary grounded roads must solve the road / terrain boundary through road-owned top surfaces plus
 Rust-generated stitched terrain topology.
 
+Superseded for ordinary grounded roads and building pads by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (approach B,
+decided by the user 2026-10-25; draft spec): a heightfield graded at 0.5 m near footprints carries
+the cut and fill slopes, the road's top surface owns its footprint, and an exact seam mask plus road
+skirts form the seam. Vertical faces (retaining walls, abutments, portals) stay client geometry.
+
 ### 4. Placed Client Surfaces Stay Fixed Under Later Terrain Edits
 
 Placement and later terrain authoring are separate operations.
@@ -147,6 +152,10 @@ Required rule:
   grounded footprint just to hide terrain overlap
 - ordinary grounded roads must not render a visible closure strip, carpet, or second support mesh;
   the terrain patch mesh itself is the only ordinary seam carrier outside the road-owned footprint
+
+The seam contract below is the legacy exact cut's: it describes the code on `road` until
+[`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) replaces the stitched CDT carrier with the graded terrain's exact mask and
+road skirts and its last gate moves this text to the archive. New work follows `TERRAIN-07`.
 
 Deterministic seam contract:
 
@@ -463,7 +472,7 @@ The current deterministic characterization now proves:
   whole-map dense renderer upload path
 
 So terrain density may improve far-field blend quality, but the accepted seam representation is the
-Spade CDT terrain-patch hardcut in [`roads.md`](roads.md).
+Spade CDT terrain-patch hardcut in [`roads.md`](roads.md), until [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) replaces it.
 
 ### 4. Current Runtime Compatibility Gap On Post-Placement Terrain Edits
 
@@ -502,6 +511,14 @@ Current deterministic conclusion:
 
 The former whole-map dense terrain / water render boundary is intentionally not listed here as an
 open blocker, because [`TERRAIN-01`](roadmap.md) already removed it.
+
+**Terrain side replaced by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (user, 2026-10-25: approach B; draft spec).** The
+piece-owned road carrier, piece-owned tie-in boundaries, fixed clients and the shared query order
+below stand. Their constrained-Delaunay parts, stitched terrain topology as the seam carrier and the
+ban on skirts and shader discard, are replaced: terrain is graded per 64 m tile from the outer chains
+and pads, an exact seam mask discards it inside the footprint, and road skirts cover the
+interpolation at the seam. The replaced text is archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#from-earthworksmd).
 
 ### 1. The Current Corridor-Sheet Prototype Is Retired
 
@@ -548,16 +565,17 @@ Required road geometry contract:
 - terrain seam generation must derive from those same piece-owned profile boundaries instead of
   from separate terrain-side widening or generic node-fill polygons
 - ordinary grounded `Standard` roads use the road-owned top surface inside the footprint and
-  Rust-stitched terrain topology outside it; they must not render a visible road-owned closure
-  strip, carpet, skirt, or second support mesh as the seam fix
+  the graded terrain of [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) outside it; the road skirt hangs from the outer
+  chain as part of that seam contract, and no visible closure strip, carpet or second support mesh
+  is a seam fix
 - structural road classes or later explicit retaining variants may render local earthwork geometry,
   but that path is not a compatibility fallback for ordinary grounded-road gaps
-- terrain owns the far-field ground outside the deterministic road-owned footprint and receives
-  exact road-footprint constraints for the hardcut
+- terrain owns the far-field ground outside the deterministic road-owned footprint and grades
+  it from the road's outer chains (`TERRAIN-07`)
 - flat-ground cases must collapse toward a visually minimal shoulder / verge join instead of
   emitting a wide apron
 - sloped ordinary-road cases must keep asphalt, curb / shoulder, and sidewalk as road-owned top
-  surfaces while the clipped terrain mesh terminates at their exact outer footprint
+  surfaces while the graded terrain's mask ends exactly at their outer footprint
 
 ### 3. Tie-In Boundaries Follow Piece-Owned Boundaries, Not Coarse Terrain Cells Or Generic Node Loops
 
@@ -592,50 +610,25 @@ Required seam acceptance checks:
 - a diagonal road against the terrain grid must meet the same rule; correctness must not depend on
   alignment to terrain-cell axes
 - a sloped road must keep asphalt, shoulder / curb, and sidewalks as the visible top surface while
-  clipped terrain topology terminates exactly at the road-owned seam
+  the graded terrain meets the road-owned seam (`TERRAIN-07` seam contract)
 - a `JunctionN` with any ordered arm count must build seam sectors from adjacent mouth profiles,
   not from a special-case `3`-arm or `4`-arm template
-- clipped terrain topology must leave an actual road-shaped hole under the full asphalt, shoulder /
-  curb, and sidewalk footprint; there must be no terrain mesh there for z-fighting to occur
-- clipped water topology must leave a conservative road-shaped hole where visible water overlaps a
-  grounded road-owned footprint; road placement over water must not leave a hidden lake plane or
-  transparent fragment wedges between the road mesh and its owned support surface
+- no terrain fragment renders inside the full asphalt, shoulder / curb, and sidewalk footprint
+  (the `TERRAIN-07` mask), so nothing z-fights with the road
+- water must not render inside a grounded road-owned footprint; road placement over water must not
+  leave a hidden lake plane or transparent fragment wedges between the road mesh and its owned
+  support surface (water reads the `TERRAIN-07` mask)
 - bridges remain a separate class: midspan bridge decks do not claim grounded terrain ownership
   except at explicit abutment / portal support regions
 
-### 4. The First Required Variant Is Rust-Stitched Terrain Topology
+### 4. The First Required Variant Is Rust-Stitched Terrain Topology (replaced)
 
-The first required rewrite variant is intentionally hard-cut: grounded road seams are generated as
-terrain topology in Rust, not as a visible seal drawn by the road renderer.
-
-Required first variant:
-
-- the first shipped rewrite variant must clip terrain patches directly to the road-owned footprint
-  boundary for grounded `Standard` roads; the clip carrier is the compiled piece-owned
-  `outer_boundary_loops`, not the internal asphalt / sidewalk band polygons
-- any internal triangles derived from those outer loops are implementation detail only and must be
-  rejected if their sampled interior leaves the source loop; terrain must never be cut by a
-  triangulation wedge that extends outside the road-owned footprint
-- the terrain patch payload must include baked mesh vertices, normals, and UVs when the patch
-  intersects a grounded road-owned footprint
-- Godot must upload that baked `ArrayMesh` directly and must not run `Geometry2D` terrain clipping,
-  shader discard, alpha masking, or an ordinary road-side closure-strip fallback
-- boundary vertices generated by the terrain patch mesh must take their height from the intersected
-  road / sidewalk edge and all non-boundary terrain vertices must sample visual terrain
-- road-locked terrain patch selection is bounded to each road-owned footprint plus that footprint's
-  required grade-limited tie-in envelope; one steep road must not force unrelated roads or whole-map
-  terrain patches into clipped-terrain rebuilds
-- cut versus fill for structural variants is determined from the support-surface anchors relative
-  to the sampled tie-in boundary, not from ad hoc widening of stamped terrain
-- the first shipped rewrite variant does not require retaining walls, cliff faces, or other
-  special-case vertical structures
-- the terrain mesh itself must be open below the road footprint and must terminate at the exact
-  road-owned seam boundary
-- terrain suppression is allowed only as topology omission from the clipped terrain mesh; fragment
-  discard, alpha masking, or post-shader hiding is not an accepted grounded-road solution
-- future retaining or wall variants may replace structural local earthwork faces when deterministic
-  thresholds say terrain topology alone is not the intended visual treatment, but ordinary grounded
-  roads still use the stitched terrain topology as their seam carrier
+Replaced by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) (approach B, user 2026-10-25): terrain is not clipped or
+triangulated around roads. It is the base heightmap plus a per-tile grading layer, a pure function of
+the outer chains, the pads and the base; the terrain shader discards it exactly inside the road
+footprint, and road skirts from the outer chains cover the interpolation at the seam. The variant's
+text, which still describes the exact cut on `road` until `TERRAIN-07-G`, is archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#4-the-first-required-variant-is-rust-stitched-terrain-topology).
 
 ### 5. Terrain Runtime Rewrites Are Allowed, But The Ownership Contract Is Not Optional
 
@@ -688,10 +681,9 @@ Required cache and query contract:
   2. client-owned local earthwork geometry for the touched chunk
   3. visual terrain
   4. source terrain only for terrain-only APIs
-- the terrain renderer must not continue drawing visual terrain in texels already owned by a
-  client-owned top surface or client-owned local earthwork geometry
-- terrain omission must be expressed in the terrain mesh topology itself for grounded `Standard`
-  roads; shader discard or alpha masking must not be used to hide missing clipped topology
+- the terrain renderer must not draw terrain inside a client-owned top surface or client-owned local
+  earthwork geometry; for grounded `Standard` roads the omission is the exact footprint mask of
+  [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07), which is the footprint itself and never hides missing road topology
 - world-surface picking and visible-surface queries must not require a whole-world scan across every
   engineered-ground client
 - rebuilding local earthwork geometry or stitched terrain patches must not force whole-world terrain

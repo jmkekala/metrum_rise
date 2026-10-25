@@ -21,7 +21,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`asset_editor.md`](asset_editor.md) | Asset-editor workflow and content contract. |
 | [`roads.md`](roads.md) | Live roadbed contract: profiles, junction layout, road meshes and queries, the road side of terrain, preview/commit/undo, and the `ROAD-68` plan. |
 | [`earthworks.md`](earthworks.md) | Shared engineered-ground / cut-fill / local terrain-override contract for roads and terrain pads; building construction lifecycle is owned by `economy.md` / `demand.md`. |
-| [`terrain.md`](terrain.md) | Terrain source ingest, chunked terrain runtime, and large-world terrain ownership. |
+| [`terrain.md`](terrain.md) | Terrain source ingest, chunked terrain runtime, large-world terrain ownership, and the graded terrain surface around roads and sites (`TERRAIN-07`). |
 | [`ui.md`](ui.md) | UI paradigm, surface ownership, style conventions, and migration plan. |
 | [`debug.md`](debug.md) | Debug channels, log format, shared log, events, the `MetrumDebug` bridge, the in-game debug console, and `run.sh` debug flags (`DEBUG-01`). |
 
@@ -38,4 +38,5 @@ This directory stays intentionally flat for now. Each file should have one clear
 - [`archive/project_legacy_2026-04-09.md`](archive/project_legacy_2026-04-09.md) preserves the old monolithic project ledger and numbered backlog for historical reference only. It is not the live planning source anymore.
 - [`archive/roads_hardcut_history_2026-05-31.md`](archive/roads_hardcut_history_2026-05-31.md) preserves the old full roadbed hardcut spec for historical reference only. [`roads.md`](roads.md) is the live road contract.
 - [`archive/roads_legacy_surface_2026-10-23.md`](archive/roads_legacy_surface_2026-10-23.md) preserves the complete road document for the retired legacy surface compiler, including the `ROAD-01`–`ROAD-67` history, measurements and the `ROAD-67-A` baseline method. The constructive roadbed (`ROAD-68`) in [`roads.md`](roads.md) replaces it.
+- [`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md) preserves the legacy terrain surface sections of [`terrain.md`](terrain.md) and the constrained-Delaunay parts of [`earthworks.md`](earthworks.md) (visual terrain buffer, refined CDT patches, pads in the patch buffers, the stitched seam contract), retired by the graded terrain surface (`TERRAIN-07`).
 - [`archive/economy_history_2026-10-10.md`](archive/economy_history_2026-10-10.md) and [`archive/demand_history_2026-10-10.md`](archive/demand_history_2026-10-10.md) preserve the economy and demand documents up to 2026-10-10, including the `ECON-14`/`DEM-02` diagnoses, implementation logs and dated measurements. [`economy.md`](economy.md) and [`demand.md`](demand.md) are the live specifications.
