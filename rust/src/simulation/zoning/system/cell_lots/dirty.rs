@@ -69,6 +69,16 @@ impl CellLotQueue {
         self.refresh.pop_first()
     }
 
+    // The next region `pop` takes; without reservations nothing needs lots and the queue
+    // empties.
+    pub(super) fn pop_region(&mut self, cells: &CellStore) -> Option<CellBounds> {
+        if !cells.has_reservations() {
+            self.clear();
+            return None;
+        }
+        self.pop().map(chunk_bounds)
+    }
+
     // Every pending chunk once, in coordinate order.
     fn drain_sorted(&mut self) -> Vec<(i32, i32)> {
         let mut chunks: Vec<_> = self
@@ -258,12 +268,9 @@ impl ZoningSystem {
     /// chunks marked together in coordinate order, then chunks awaiting a catalog refresh.
     /// Without reservations nothing needs lots and the queue empties. O(1) amortized and
     /// allocation-free once its buffers have grown.
+    #[cfg(test)]
     pub(crate) fn pop_dirty_cell_lot_region(&mut self) -> Option<CellBounds> {
-        if !self.cells.has_reservations() {
-            self.cell_lot_queue.clear();
-            return None;
-        }
-        self.cell_lot_queue.pop().map(chunk_bounds)
+        self.cell_lot_queue.pop_region(&self.cells)
     }
 
     /// Pending chunks as saved: queued ones in service order (`true`), then the ones marked

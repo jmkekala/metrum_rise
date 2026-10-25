@@ -2,9 +2,12 @@
 
 //! Stable parcel storage and chunk-local parcel lookup.
 
+mod planned;
 mod removal;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use planned::{PlannedParcelChange, PlannedParcels};
 
 use super::geometry::{
     chunk_key, chunks_for_aabb, geometry_for_parcel, geometry_overlaps_road_corridor_segment,
@@ -472,24 +475,7 @@ impl ParcelStore {
         geometry: &ParcelGeometry,
         ignored_id: ParcelId,
     ) -> bool {
-        let mut visited = HashSet::new();
-        for chunk in chunks_for_aabb(geometry.aabb_min, geometry.aabb_max) {
-            let Some(ids) = self.chunk_index.get(&chunk) else {
-                continue;
-            };
-            for &id in ids {
-                if id == ignored_id || !visited.insert(id) {
-                    continue;
-                }
-                let Some(parcel) = self.get(id) else {
-                    continue;
-                };
-                if rectangles_overlap_geometry(geometry, parcel) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.overlaps_existing_unless(geometry, |id| id == ignored_id)
     }
 
     pub(crate) fn set_zone_profile_runtime_id(&mut self, id: ParcelId, runtime_id: u16) -> bool {

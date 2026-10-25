@@ -226,3 +226,88 @@ fn benchmark_road_parcel_removal_locality() {
         );
     }
 }
+
+// A cell-lot plan's view of the store answers as the store would after its calls, and the
+// replay of its recorded calls leaves the store exactly as making them directly does
+// (`ROAD-68` open question 21 (b)), across chunk lines and with an id burnt by a removal.
+#[test]
+fn a_planned_change_list_replays_to_the_directly_changed_store() {
+    use crate::simulation::zoning::cells::{CellFrontage, CellKey};
+
+    let lot = |x| {
+        CellLot::new(CellKey { grid: 1, x, y: 0 }, 1, 1, CellFrontage::MinY).unwrap()
+    };
+    let mut base = ParcelStore::default();
+    let kept = base.insert_new(geometry(0, Vector2::new(500.0, 0.0)), 1);
+    let retired = base.insert_new(geometry(0, Vector2::new(520.0, 0.0)), 1);
+    let moved = base.insert_new(geometry(0, Vector2::new(540.0, 0.0)), 1);
+    for (id, x) in [(kept, 0), (retired, 2), (moved, 4)] {
+        base.set_cell_lot(id, lot(x));
+    }
+    let mut direct = base.clone();
+    let mut planned = PlannedParcels::new(&base);
+    let reattached = ParcelGeometry {
+        edge_idx: 3,
+        side: -1,
+        ..geometry(0, Vector2::new(540.0, 0.0))
+    };
+    direct.remove_local(retired);
+    planned.remove_local(retired);
+    direct.replace_geometry(moved, reattached);
+    planned.replace_geometry(moved, reattached);
+    let created = geometry(1, Vector2::new(515.0, 20.0));
+    let burnt = direct.insert_new(created, 2);
+    assert_eq!(planned.insert_new(created, 2), burnt);
+    direct.remove_local(burnt);
+    planned.remove_local(burnt);
+    let new = direct.insert_new(created, 2);
+    assert_eq!(planned.insert_new(created, 2), new);
+    direct.set_cell_lot(new, lot(8));
+    planned.set_cell_lot(new, lot(8));
+
+    let (min, max) = (Vector2::new(490.0, -10.0), Vector2::new(560.0, 40.0));
+    let (mut seen, mut expected) = (Vec::new(), Vec::new());
+    planned.visit_in_bounds(min, max, |p| seen.push((p.id(), p.edge_idx(), p.cell_lot())));
+    direct.visit_in_bounds(min, max, |p| expected.push((p.id(), p.edge_idx(), p.cell_lot())));
+    seen.sort_unstable_by_key(|entry| entry.0);
+    expected.sort_unstable_by_key(|entry| entry.0);
+    assert_eq!(seen, expected);
+    for id in [kept, retired, moved, burnt, new] {
+        assert_eq!(
+            planned.get(id).map(|p| (p.edge_idx(), p.cell_lot())),
+            direct.get(id).map(|p| (p.edge_idx(), p.cell_lot()))
+        );
+    }
+    for origin in [
+        Vector2::new(505.0, 5.0),
+        Vector2::new(525.0, 5.0),
+        Vector2::new(512.0, 25.0),
+    ] {
+        let probe = geometry(9, origin);
+        assert_eq!(
+            planned.overlaps_existing(&probe),
+            direct.overlaps_existing(&probe)
+        );
+    }
+
+    let changes = planned.into_changes();
+    let mut replayed = base.clone();
+    replayed.apply_planned(changes);
+    assert_eq!(replayed.id_to_index, direct.id_to_index);
+    assert_eq!(replayed.chunk_index, direct.chunk_index);
+    assert_eq!(replayed.edge_index, direct.edge_index);
+    assert_eq!(replayed.edge_slots, direct.edge_slots);
+    assert_eq!(replayed.authored_count, direct.authored_count);
+    assert_eq!(replayed.chunk_revisions, direct.chunk_revisions);
+    assert_eq!(replayed.overlay_revision, direct.overlay_revision);
+    assert_eq!(replayed.layout_revision, direct.layout_revision);
+    assert_eq!(replayed.next_id, direct.next_id);
+    let fields = |store: &ParcelStore| -> Vec<_> {
+        store
+            .parcels()
+            .iter()
+            .map(|p| (p.id(), p.edge_idx(), p.side(), p.cell_lot(), p.corners()))
+            .collect()
+    };
+    assert_eq!(fields(&replayed), fields(&direct));
+}

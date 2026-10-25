@@ -11,7 +11,7 @@ use crate::simulation::zoning::cells::{
     CellBounds, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
 };
 use crate::simulation::zoning::{
-    CellLotGeneration, CellZoningEdit, MAX_PARCEL_FRONTAGE_M, ZoningSystem,
+    CellLotGeneration, CellLotPlanner, CellZoningEdit, MAX_PARCEL_FRONTAGE_M,
 };
 use glam::DVec2;
 
@@ -229,19 +229,22 @@ impl SimCore {
             return CellLotGeneration::default();
         }
         let mut left = quota;
-        self.regenerate_cell_lot_regions(|zoning| {
+        self.regenerate_cell_lot_regions(|planner| {
             left = left.checked_sub(1)?;
-            zoning.pop_dirty_cell_lot_region()
+            planner.pop_dirty_cell_lot_region()
         })
     }
 
-    // Rebuilds the regions `next` takes from the zoning authority with one query preparation
-    // and the cached asset sizes, then publishes reattached occupants once.
+    // Rebuilds the regions `next` takes from the lot queue with one query preparation and the
+    // cached asset sizes, as one lot plan on the live cell store installed at once, then
+    // publishes reattached occupants once.
     fn regenerate_cell_lot_regions(
         &mut self,
-        mut next: impl FnMut(&mut ZoningSystem) -> Option<CellBounds>,
+        mut next: impl FnMut(&mut CellLotPlanner) -> Option<CellBounds>,
     ) -> CellLotGeneration {
-        let Some(first) = next(&mut self.zoning) else {
+        // Taking the first region changes only the queue (or empties it), so this plan has
+        // nothing to install.
+        let Some(first) = next(&mut self.zoning.cell_lot_planner()) else {
             return CellLotGeneration::default();
         };
         #[cfg(test)]
@@ -258,6 +261,7 @@ impl SimCore {
         let roads = &self.transit_network.roadbed;
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
+        let mut planner = self.zoning.cell_lot_planner();
         let mut region = Some(first);
         while let Some(bounds) = region {
             let phase = crate::debug::Channel::EconomyPhases
@@ -265,7 +269,7 @@ impl SimCore {
                 .then(std::time::Instant::now);
             // Share cell selection's completeness cache, including local dirty envelopes.
             // Growth can depend on a front row just outside the changed paint's chunk.
-            self.zoning.prepare_generated_cells(
+            planner.prepare_generated_cells(
                 &self.region_graph,
                 bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
                 blocked,
@@ -273,10 +277,9 @@ impl SimCore {
             let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
             let phase = phase.map(|_| std::time::Instant::now());
             let report =
-                self.zoning
-                    .derive_cell_lots(&self.region_graph, bounds, &sizes, |corners, _| {
-                        blocked(corners)
-                    });
+                planner.derive_cell_lots(&self.region_graph, bounds, &sizes, |corners, _| {
+                    blocked(corners)
+                });
             crate::debug_log!(
                 "economy_phases",
                 "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
@@ -291,8 +294,10 @@ impl SimCore {
             result.created.extend(report.created);
             result.retired.extend(report.retired);
             result.reattached.extend(report.reattached);
-            region = next(&mut self.zoning);
+            region = next(&mut planner);
         }
+        let plan = planner.finish();
+        self.zoning.install_cell_lot_plan(plan);
         self.zoning.cell_lot_sizes = Some(sizes);
         self.allocator.sync_cell_lot_attachments(
             &result.reattached,

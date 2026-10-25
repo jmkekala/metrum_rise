@@ -24,7 +24,7 @@ pub use profiles::{
 };
 pub use system::ZoningSystem;
 pub(crate) use system::{
-    CellLotGeneration, CellLotRemovalUndo, CellZoningEdit, ZoningParcelRemovalUndo,
+    CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, CellZoningEdit, ZoningParcelRemovalUndo,
 };
 pub use zone_type::ZoneType;
 

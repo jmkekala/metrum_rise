@@ -3,6 +3,7 @@
 //! Shared parcel edit validation for `ZoningSystem` operations.
 
 use super::ZoningSystem;
+use crate::simulation::zoning::ZoningProfileRegistry;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::parcels::{
     self, ParcelGeometry, ParcelPlacementError, ParcelRunProjection,
@@ -170,11 +171,19 @@ impl ZoningSystem {
     }
 
     pub(super) fn validate_profile_id(&self, runtime_id: u16) -> Result<(), ParcelPlacementError> {
-        if runtime_id == 0 || self.profiles.profile_by_runtime_id(runtime_id).is_some() {
-            Ok(())
-        } else {
-            Err(ParcelPlacementError::UnknownProfile)
-        }
+        validate_profile(&self.profiles, runtime_id)
+    }
+}
+
+// Profile zero (unzoned) or a profile the registry knows.
+pub(super) fn validate_profile(
+    profiles: &ZoningProfileRegistry,
+    runtime_id: u16,
+) -> Result<(), ParcelPlacementError> {
+    if runtime_id == 0 || profiles.profile_by_runtime_id(runtime_id).is_some() {
+        Ok(())
+    } else {
+        Err(ParcelPlacementError::UnknownProfile)
     }
 }
 

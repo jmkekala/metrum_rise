@@ -13,6 +13,7 @@ const CURVE_RUN_SPACING_BINARY_STEPS: usize = 10;
 const ROAD_OVERLAP_QUERY_PAD_M: f32 = 128.0;
 
 pub use store::ParcelStore;
+pub(crate) use store::{PlannedParcelChange, PlannedParcels};
 pub use types::{ParcelGeometry, ParcelId, ParcelPlacementError, ZoningParcel};
 
 pub(crate) use geometry::{

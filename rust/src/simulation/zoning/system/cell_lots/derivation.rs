@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Local asset-sized lot proposals supported by complete generated road frontages.
+//! Local asset-sized lot proposals supported by complete generated road frontages, planned
+//! by one planner and applied by one installer (`ROAD-68` open question 21 (b)).
 
-use super::ZoningSystem;
+use super::{CellLotQueue, ZoningSystem};
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::zoning::cells::{
-    CELL_DEPTH, CELL_FRONTAGE_UNITS, CellBounds, CellKey, CellLot, CellLotSize, CellRoadFrontage,
-    GridFrame, overlaps_road_corridors,
+    CELL_DEPTH, CELL_FRONTAGE_UNITS, CellBounds, CellGeneration, CellKey, CellLot, CellLotSize,
+    CellRoadFrontage, CellStore, GridFrame, overlaps_road_corridors,
 };
-use crate::simulation::zoning::{MAX_PARCEL_FRONTAGE_M, ParcelGeometry, ParcelId, parcels};
+use crate::simulation::zoning::parcels::{PlannedParcelChange, PlannedParcels};
+use crate::simulation::zoning::{
+    MAX_PARCEL_FRONTAGE_M, ParcelGeometry, ParcelId, ZoningProfileRegistry, parcels,
+};
 use glam::DVec2;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -28,6 +33,27 @@ pub(crate) struct CellLotGeneration {
     pub(crate) reattached: Vec<ParcelId>,
 }
 
+/// One cell-lot plan in progress: cell generation and lot derivation over a cell store and a
+/// lot queue it changes in place, against a parcel store it only reads, recording its parcel
+/// changes. The commit plans on the live store and queue; [`ZoningSystem::install_cell_lot_plan`]
+/// then makes the recorded parcel calls on the parcel store the plan read. Every lot derivation
+/// goes through this one planner, so a plan made on an equal copy installs equal products.
+pub(crate) struct CellLotPlanner<'a> {
+    config: &'a WorldConfig,
+    profiles: &'a ZoningProfileRegistry,
+    cells: &'a mut CellStore,
+    queue: &'a mut CellLotQueue,
+    parcels: PlannedParcels<'a>,
+    // Times the plan advanced the zoning overlay revision.
+    overlay_bumps: u64,
+}
+
+/// A finished plan's parcel changes, for [`ZoningSystem::install_cell_lot_plan`].
+pub(crate) struct CellLotPlan {
+    changes: Vec<PlannedParcelChange>,
+    overlay_bumps: u64,
+}
+
 struct Proposal {
     seed: CellKey,
     frame: GridFrame,
@@ -38,6 +64,77 @@ struct Proposal {
 }
 
 impl ZoningSystem {
+    /// A planner on the live cell store, lot queue and parcel store; install its plan with
+    /// [`Self::install_cell_lot_plan`] before the next lot derivation.
+    pub(crate) fn cell_lot_planner(&mut self) -> CellLotPlanner<'_> {
+        CellLotPlanner {
+            config: &self.config,
+            profiles: &self.profiles,
+            cells: &mut self.cells,
+            queue: &mut self.cell_lot_queue,
+            parcels: PlannedParcels::new(&self.parcels),
+            overlay_bumps: 0,
+        }
+    }
+
+    /// Makes a plan's parcel changes on the parcel store it was planned on, in its order, and
+    /// advances the overlay revision as the plan did. O(changes).
+    pub(crate) fn install_cell_lot_plan(&mut self, plan: CellLotPlan) {
+        self.parcels.apply_planned(plan.changes);
+        self.overlay_revision = self.overlay_revision.wrapping_add(plan.overlay_bumps);
+    }
+
+    /// Derives new disjoint lots around a changed painted area using compatible asset sizes,
+    /// planned and installed at once ([`CellLotPlanner::derive_cell_lots`]); tests' entry.
+    #[cfg(test)]
+    pub(crate) fn derive_cell_lots(
+        &mut self,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        sizes: &[CellLotSize],
+        blocked: impl Fn(&[DVec2; 4], u16) -> bool + Sync,
+    ) -> CellLotGeneration {
+        let mut planner = self.cell_lot_planner();
+        let report = planner.derive_cell_lots(graph, bounds, sizes, blocked);
+        let plan = planner.finish();
+        self.install_cell_lot_plan(plan);
+        report
+    }
+}
+
+impl CellLotPlanner<'_> {
+    /// Ends the plan, leaving its parcel changes for the installer.
+    pub(crate) fn finish(self) -> CellLotPlan {
+        CellLotPlan {
+            changes: self.parcels.into_changes(),
+            overlay_bumps: self.overlay_bumps,
+        }
+    }
+
+    /// Takes the next region of the plan's `cell lots` queue (`SIM-02-H`): the oldest queued
+    /// chunk, chunks marked together in coordinate order, then chunks awaiting a catalog
+    /// refresh. Without reservations nothing needs lots and the queue empties. O(1) amortized.
+    pub(crate) fn pop_dirty_cell_lot_region(&mut self) -> Option<CellBounds> {
+        self.queue.pop_region(self.cells)
+    }
+
+    /// Refreshes only cold or invalidated cell geometry of the plan's cells before deriving
+    /// lots, with the same parcel and caller-owned blockers as direct generation. Plans create,
+    /// reattach and retire cell lots only, never authored parcels, so the parcel store the plan
+    /// started from excludes the same cells as the plan's view of it.
+    pub(crate) fn prepare_generated_cells(
+        &mut self,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> CellGeneration {
+        let parcels = self.parcels.base();
+        self.cells
+            .ensure_generated_in_bounds(graph, self.config, bounds, |corners| {
+                super::super::cell_editing::overlaps_parcels(parcels, corners) || blocked(corners)
+            })
+    }
+
     /// Derives new disjoint lots around a changed painted area using compatible asset sizes.
     /// Existing lots remain fixed. At each canonical frontage address, larger footprints get
     /// first claim; other proposals remain paint when their coverage is already claimed.
@@ -127,7 +224,7 @@ impl ZoningSystem {
         // Claims depend on earlier proposals, so publication is deliberately ordered. It adds
         // only within this bounded neighborhood; there is no removal/repacking cascade.
         for proposal in proposals {
-            if let Some(id) = self.install_prevalidated_cell_lot(
+            if let Some(id) = self.claim_prevalidated_cell_lot(
                 proposal.lot,
                 proposal.frontage.edge,
                 proposal.frontage.side,
@@ -216,9 +313,45 @@ impl ZoningSystem {
             }
         }
         if !reattached.is_empty() || !retired.is_empty() {
-            self.bump_overlay_revision();
+            self.overlay_bumps += 1;
         }
         (retired, reattached)
+    }
+
+    /// Claims a derived lot on the plan after the caller has validated road access and external
+    /// sites. Paint, ownership, world bounds and parcel conflicts are rechecked before any
+    /// write; the rectangle is always reconstructed from its grid.
+    pub(crate) fn claim_prevalidated_cell_lot(
+        &mut self,
+        lot: CellLot,
+        edge_idx: usize,
+        side: i8,
+        frontage_center_t: f32,
+        profile: u16,
+    ) -> Option<ParcelId> {
+        if super::super::validation::validate_profile(self.profiles, profile).is_err()
+            || !self.cells.can_claim_lot(lot, profile)
+            || !matches!(side, -1 | 1)
+            || !frontage_center_t.is_finite()
+            || !(0.0..=1.0).contains(&frontage_center_t)
+        {
+            return None;
+        }
+        let frame = self.cells.frame(lot.origin().grid)?;
+        let geometry = lot.geometry(frame, edge_idx, side, frontage_center_t);
+        if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m)
+            || self.parcels.overlaps_existing(&geometry)
+        {
+            return None;
+        }
+        let id = self.parcels.insert_new(geometry, profile);
+        if !self.cells.claim_lot(lot, id.raw(), profile) {
+            self.parcels.remove_local(id);
+            return None;
+        }
+        self.parcels.set_cell_lot(id, lot);
+        self.overlay_bumps += 1;
+        Some(id)
     }
 
     fn cell_lot_proposals(

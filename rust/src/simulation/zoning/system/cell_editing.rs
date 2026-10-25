@@ -77,19 +77,17 @@ impl ZoningSystem {
             })
     }
 
-    /// Refreshes only cold or invalidated cell geometry before deriving demand lots.
-    /// Uses the same parcel and caller-owned blockers as direct generation.
+    /// Refreshes only cold or invalidated cell geometry before deriving demand lots, through
+    /// the lot planner ([`super::CellLotPlanner::prepare_generated_cells`]); tests' entry.
+    #[cfg(test)]
     pub(crate) fn prepare_generated_cells(
         &mut self,
         graph: &RegionGraph,
         bounds: CellBounds,
         blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
     ) -> CellGeneration {
-        let parcels = &self.parcels;
-        self.cells
-            .ensure_generated_in_bounds(graph, &self.config, bounds, |corners| {
-                overlaps_parcels(parcels, corners) || blocked(corners)
-            })
+        self.cell_lot_planner()
+            .prepare_generated_cells(graph, bounds, blocked)
     }
 
     /// Generates the cells a loaded save left out near every road, on registered frames
@@ -276,7 +274,7 @@ impl ZoningSystem {
     }
 }
 
-fn overlaps_parcels(
+pub(super) fn overlaps_parcels(
     parcels: &crate::simulation::zoning::ParcelStore,
     corners: &[DVec2; 4],
 ) -> bool {

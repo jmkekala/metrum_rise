@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 pub(crate) use cell_editing::CellZoningEdit;
-pub(crate) use cell_lots::{CellLotGeneration, CellLotRemovalUndo};
+pub(crate) use cell_lots::{CellLotGeneration, CellLotPlanner, CellLotRemovalUndo};
 
 /// Road-aligned parcel zoning system.
 #[derive(Clone)]

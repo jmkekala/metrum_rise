@@ -4,7 +4,7 @@
 
 mod derivation;
 mod dirty;
-pub(crate) use derivation::CellLotGeneration;
+pub(crate) use derivation::{CellLotGeneration, CellLotPlanner};
 pub(super) use dirty::CellLotQueue;
 
 use super::ZoningSystem;
@@ -148,6 +148,9 @@ impl ZoningSystem {
     /// Installs a derived lot after the caller has validated road access and external sites.
     /// Paint, ownership, world bounds and parcel conflicts are rechecked here before any write.
     /// The rectangle is always reconstructed from its grid, independently of road tangents.
+    /// Planned and installed at once ([`CellLotPlanner::claim_prevalidated_cell_lot`]); tests'
+    /// entry.
+    #[cfg(test)]
     pub(crate) fn install_prevalidated_cell_lot(
         &mut self,
         lot: CellLot,
@@ -156,29 +159,11 @@ impl ZoningSystem {
         frontage_center_t: f32,
         profile: u16,
     ) -> Option<ParcelId> {
-        if self.validate_profile_id(profile).is_err()
-            || !self.cells.can_claim_lot(lot, profile)
-            || !matches!(side, -1 | 1)
-            || !frontage_center_t.is_finite()
-            || !(0.0..=1.0).contains(&frontage_center_t)
-        {
-            return None;
-        }
-        let frame = self.cells.frame(lot.origin().grid)?;
-        let geometry = lot.geometry(frame, edge_idx, side, frontage_center_t);
-        if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m)
-            || self.parcels.overlaps_existing(&geometry)
-        {
-            return None;
-        }
-        let id = self.parcels.insert_new(geometry, profile);
-        if !self.cells.claim_lot(lot, id.raw(), profile) {
-            self.parcels.remove_local(id);
-            return None;
-        }
-        self.parcels.set_cell_lot(id, lot);
-        self.bump_overlay_revision();
-        Some(id)
+        let mut planner = self.cell_lot_planner();
+        let id = planner.claim_prevalidated_cell_lot(lot, edge_idx, side, frontage_center_t, profile);
+        let plan = planner.finish();
+        self.install_cell_lot_plan(plan);
+        id
     }
 
     /// Releases incompatible paint and queues road revalidation after the occupant is cleared.
