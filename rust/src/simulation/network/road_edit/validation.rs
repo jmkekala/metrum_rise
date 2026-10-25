@@ -7,7 +7,7 @@
 use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, is_surface_edge,
 };
-use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadExtensionReprofile, RoadTopologyPlan};
+use super::{FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan};
 use crate::config;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
@@ -166,7 +166,7 @@ pub(crate) fn validate_road_candidate_fast(
 ) -> RoadPreviewValidation {
     let mut validation = profile_validation(
         prepared_input.class,
-        &prepared_input.validation_points,
+        &prepared_input.points,
         terrain,
         true,
     );
@@ -175,7 +175,6 @@ pub(crate) fn validate_road_candidate_fast(
         &mut validation,
         &prepared_input.points,
         existing_graph,
-        prepared_input.extension.as_ref(),
         prepared_input.endpoint_snap_enabled,
     );
     if !validation.is_valid || prepared_input.points.len() < 2 {
@@ -199,22 +198,11 @@ pub(crate) fn validate_road_edit(
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
     let new_edge_validation =
         profile_validation(prepared_input.class, &prepared_input.points, terrain, false);
-    if stroke_too_short(&prepared_input.validation_points) {
+    if stroke_too_short(&prepared_input.points) {
         return (
             new_edge_validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON),
             None,
         );
-    }
-    if prepared_input.validation_points != prepared_input.points {
-        let corridor_validation = profile_validation(
-            prepared_input.class,
-            &prepared_input.validation_points,
-            terrain,
-            false,
-        );
-        if !corridor_validation.is_valid {
-            return (corridor_validation, None);
-        }
     }
     validate_against_graph(
         prepared_input,
@@ -359,16 +347,13 @@ fn record_endpoint_snap_debug(
     validation: &mut RoadPreviewValidation,
     prepared_points: &[Vector3],
     existing_graph: &RegionGraph,
-    extension: Option<&RoadExtensionReprofile>,
     endpoint_snap_enabled: bool,
 ) -> (Option<u32>, Option<u32>) {
     let (Some(start), Some(end)) = (prepared_points.first(), prepared_points.last()) else {
         return (None, None);
     };
-    let start_existing =
-        endpoint_existing_node(*start, existing_graph, extension, endpoint_snap_enabled);
-    let end_existing =
-        endpoint_existing_node(*end, existing_graph, extension, endpoint_snap_enabled);
+    let start_existing = endpoint_existing_node(*start, existing_graph, endpoint_snap_enabled);
+    let end_existing = endpoint_existing_node(*end, existing_graph, endpoint_snap_enabled);
     let debug_node_id = |node_id: u32| node_id.min(i32::MAX as u32) as i32;
     validation.start_endpoint_snapped_node_id = start_existing.map(debug_node_id).unwrap_or(-1);
     validation.end_endpoint_snapped_node_id = end_existing.map(debug_node_id).unwrap_or(-1);
@@ -383,12 +368,10 @@ fn validate_against_graph(
     mut validation: RoadPreviewValidation,
 ) -> (RoadPreviewValidation, Option<RoadTopologyPlan>) {
     let prepared_points = &prepared_input.points;
-    let extension = prepared_input.extension.as_ref();
     let (start_existing, end_existing) = record_endpoint_snap_debug(
         &mut validation,
         prepared_points,
         existing_graph,
-        extension,
         prepared_input.endpoint_snap_enabled,
     );
     if !validation.is_valid || prepared_points.len() < 2 {
@@ -416,7 +399,6 @@ fn validate_against_graph(
         fwd_lanes,
         bkw_lanes,
         existing_graph,
-        extension,
         prepared_input.endpoint_snap_enabled,
     )
     else {
@@ -465,7 +447,6 @@ fn build_validation_graph(
     fwd_lanes: u8,
     bkw_lanes: u8,
     existing_graph: &RegionGraph,
-    extension: Option<&RoadExtensionReprofile>,
     endpoint_snap_enabled: bool,
 ) -> Option<ValidationGraph> {
     if prepared_points.len() < 2 {
@@ -478,13 +459,11 @@ fn build_validation_graph(
     let start_existing = endpoint_existing_node(
         prepared_points[0],
         existing_graph,
-        extension,
         endpoint_snap_enabled,
     );
     let end_existing = endpoint_existing_node(
         *prepared_points.last().unwrap(),
         existing_graph,
-        extension,
         endpoint_snap_enabled,
     );
 
@@ -494,7 +473,6 @@ fn build_validation_graph(
         bkw_lanes,
         edge_class,
         existing_graph,
-        extension,
         start_existing,
         end_existing,
     );
@@ -505,7 +483,6 @@ fn build_validation_graph(
             &mut node_map,
             &mut copied_edges,
             edge_idx,
-            extension,
         );
     }
 
@@ -515,7 +492,6 @@ fn build_validation_graph(
         &mut node_map,
         start_existing,
         prepared_points[0],
-        extension,
     );
     let end_node = validation_graph_endpoint_node(
         &mut validation_graph,
@@ -523,7 +499,6 @@ fn build_validation_graph(
         &mut node_map,
         end_existing,
         *prepared_points.last().unwrap(),
-        extension,
     );
     if start_node == end_node {
         return None;
@@ -542,13 +517,8 @@ fn build_validation_graph(
         );
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
-    let reprofiled_edge =
-        extension.and_then(|extension| copied_edges.get(&extension.existing_edge_idx).copied());
-    let (finalized, splits) = process_validation_graph_intersections(
-        &mut validation_graph,
-        new_edge_idx,
-        reprofiled_edge,
-    );
+    let (finalized, splits) =
+        process_validation_graph_intersections(&mut validation_graph, new_edge_idx);
 
     let mut required_edge_ids = validation_graph
         .edges()
@@ -595,7 +565,6 @@ fn candidate_existing_edge_ids(
     bkw_lanes: u8,
     edge_class: EdgeClass,
     existing_graph: &RegionGraph,
-    extension: Option<&RoadExtensionReprofile>,
     start_existing: Option<u32>,
     end_existing: Option<u32>,
 ) -> Vec<usize> {
@@ -617,9 +586,6 @@ fn candidate_existing_edge_ids(
         Vector3::new(min_x - pad, 0.0, min_z - pad),
         Vector3::new(max_x + pad, 0.0, max_z + pad),
     );
-    if let Some(extension) = extension {
-        edge_ids.push(extension.existing_edge_idx);
-    }
     for existing_node in [start_existing, end_existing].into_iter().flatten() {
         push_incident_validation_edges(existing_graph, existing_node, &mut edge_ids);
     }
@@ -665,7 +631,6 @@ fn push_incident_validation_edges(
 fn process_validation_graph_intersections(
     validation_graph: &mut RegionGraph,
     new_edge_idx: usize,
-    reprofiled_edge: Option<usize>,
 ) -> (FinalizedRoadGeometry, Vec<PlannedRoadSplit>) {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
@@ -680,11 +645,6 @@ fn process_validation_graph_intersections(
     network.bulk_load = true;
     network.recorded_road_splits = Some(Vec::new());
     network.bulk_dirty_edges.insert(new_edge_idx);
-    // Terminal extensions already replaced the source edge's profile in the excerpt.
-    // Commit adds that edge to the bulk ledger too, so both solve the same nodes.
-    if let Some(edge_idx) = reprofiled_edge {
-        network.bulk_dirty_edges.insert(edge_idx);
-    }
     topology::process_intersections(
         &mut network,
         validation_graph,
@@ -741,7 +701,6 @@ fn validation_graph_endpoint_node(
     node_map: &mut HashMap<u32, u32>,
     existing_node: Option<u32>,
     fallback_pos: Vector3,
-    extension: Option<&RoadExtensionReprofile>,
 ) -> u32 {
     match existing_node {
         Some(node_id) => copy_validation_graph_node(
@@ -749,7 +708,6 @@ fn validation_graph_endpoint_node(
             existing_graph,
             node_map,
             node_id,
-            extension,
         ),
         None => validation_graph.add_node(fallback_pos, NodeType::Junction),
     }
@@ -760,7 +718,6 @@ fn copy_validation_graph_node(
     existing_graph: &RegionGraph,
     node_map: &mut HashMap<u32, u32>,
     node_id: u32,
-    extension: Option<&RoadExtensionReprofile>,
 ) -> u32 {
     let valid = existing_graph.get_valid_node(node_id);
     if let Some(&mapped) = node_map.get(&valid) {
@@ -768,10 +725,7 @@ fn copy_validation_graph_node(
     }
 
     let node = existing_graph.node(valid);
-    let pos = extension
-        .filter(|extension| existing_graph.get_valid_node(extension.snapped_node_id) == valid)
-        .map_or(node.pos, |extension| extension.snapped_node_pos);
-    let mapped = validation_graph.add_node(pos, node.node_type);
+    let mapped = validation_graph.add_node(node.pos, node.node_type);
     node_map.insert(valid, mapped);
     mapped
 }
@@ -782,7 +736,6 @@ fn copy_validation_graph_edge(
     node_map: &mut HashMap<u32, u32>,
     copied_edges: &mut HashMap<usize, usize>,
     edge_idx: usize,
-    extension: Option<&RoadExtensionReprofile>,
 ) {
     if copied_edges.contains_key(&edge_idx) || edge_idx >= existing_graph.edge_count() {
         return;
@@ -797,14 +750,12 @@ fn copy_validation_graph_edge(
         existing_graph,
         node_map,
         edge.start_node,
-        extension,
     );
     let end_node = copy_validation_graph_node(
         validation_graph,
         existing_graph,
         node_map,
         edge.end_node,
-        extension,
     );
     if start_node == end_node {
         return;
@@ -813,16 +764,6 @@ fn copy_validation_graph_edge(
     let mut copied_edge = edge.clone();
     copied_edge.start_node = start_node;
     copied_edge.end_node = end_node;
-    if let Some(extension) = extension
-        && edge_idx == extension.existing_edge_idx
-    {
-        copied_edge.geometry = extension.existing_points.clone();
-        copied_edge.physical_geometry = extension.existing_points.clone();
-        let (cost, length) =
-            crate::simulation::pathing::cost::CostCalculator::calculate_costs(&copied_edge);
-        copied_edge.base_cost = cost;
-        copied_edge.physical_length = length;
-    }
     let local_edge = validation_graph.add_edge(copied_edge);
     copied_edges.insert(edge_idx, local_edge);
 }
@@ -830,17 +771,8 @@ fn copy_validation_graph_edge(
 fn endpoint_existing_node(
     point: Vector3,
     existing_graph: &RegionGraph,
-    extension: Option<&RoadExtensionReprofile>,
     endpoint_snap_enabled: bool,
 ) -> Option<u32> {
-    if let Some(extension) = extension {
-        let node_pos = existing_graph.node(extension.snapped_node_id).pos;
-        let dx = point.x - node_pos.x;
-        let dz = point.z - node_pos.z;
-        if dx.hypot(dz) < config::SNAP_TOLERANCE {
-            return Some(extension.snapped_node_id);
-        }
-    }
     if !endpoint_snap_enabled {
         return None;
     }

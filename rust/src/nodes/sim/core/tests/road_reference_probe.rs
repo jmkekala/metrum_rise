@@ -83,10 +83,13 @@ fn reference_junction_products_match_the_probe() {
 // the constructive span station rule changes the spans and queries of 18 junctions (and the lanes
 // of the 9 sloped ones; the terminal stubs keep theirs); the exact terminal cap apex then changes
 // the nodes, layouts, walkways, lanes and queries of all 20, never the spans. No change touches
-// the graph. Re-recorded by `ROAD-68-E` part 2 (open question 16): only `y_25/true` changes, in
-// its graph and every piece product but the layouts, because its last branch no longer pins to
-// the carriageway of the first branch's span beside the node, which its edit rebuilds; the other
-// 19 hash as before.
+// the graph. Re-recorded by `ROAD-68-E` part 2, each change attributed by a build without the
+// next: open question 16 changes only `y_25/true` (graph and every piece product but the
+// layouts), whose last branch no longer pins to the first branch's span beside the node; open
+// question 30 (a) then changes the five sloped fixtures whose second stroke starts at a road end
+// (`y_25_branches_first`, `y_25`, `y_40`, `y_60` and `bend_45`, the same products), because that
+// stroke no longer re-solves the road it extends. Flat fixtures and the other sloped ones hash as
+// before.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -235,61 +238,61 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "y_25_branches_first/true",
         [
-            0x3ed85561b8846c85,
-            0xc2c31564ad9b2e02,
+            0x7f558118f48130a4,
+            0x453cf814acf924f2,
             0xe4c667d40f4b3c30,
-            0xdd572a0f35426833,
-            0xc4c2ce6d3391eaf6,
-            0xdb0bd84a6706d513,
-            0xd496975c5ae4e94f,
+            0x5c04cfcec07f9c38,
+            0x23e267fd69e98af9,
+            0xa5103a8c30479054,
+            0x2411cf548041bb2a,
         ],
     ),
     (
         "y_25/true",
         [
-            0x338c9fadc8b3d2d4,
-            0x06e50c782d651e93,
+            0x48f69d93dc864e28,
+            0x114b3d86330fa396,
             0x2658fc21c04f8df4,
-            0xd00e97ec380b6fa3,
-            0xc59f0c83ae4c8ca4,
-            0x289192eaf81a4598,
-            0xd1b92c822f0f5ad7,
+            0xf76f10dd4d7cc118,
+            0xa3871c95fed3ed6d,
+            0x0869224101f68ae6,
+            0x3bf1995fc2861986,
         ],
     ),
     (
         "y_40/true",
         [
-            0x0a045dfcf4c8351d,
-            0x8fa077a9c2f61739,
+            0x2eb45ace554a97c6,
+            0x46c3d2f3887e4d87,
             0x282bbc68e8e7ad2b,
-            0xf995a6ab6c4e7b48,
-            0x154ca6e1cb734076,
-            0xac5d669741295348,
-            0x2121389bf25945c2,
+            0x413ffbf5036d7f92,
+            0x99774b91ae59818f,
+            0x9b339dbcb6f252d3,
+            0xb8798c4e87523b63,
         ],
     ),
     (
         "y_60/true",
         [
-            0x86033475f927e538,
-            0x5e5d1b8516fced02,
+            0xa5c04c8a83634f15,
+            0x208597362724688a,
             0x2108b450ccc98488,
-            0x997a8fbae5b55753,
-            0xdda04fa5ac8f595e,
-            0xa0a13fa0a33257e2,
-            0xcf64fe6b68269177,
+            0xbf244973b15d4002,
+            0x10b00f40d981054c,
+            0xbe73b019b55cf23f,
+            0x2962e28f0ac2fe96,
         ],
     ),
     (
         "bend_45/true",
         [
-            0x59dea7acf107049d,
-            0x0ae9b7719b4b8f7c,
+            0xa0dfec84d21d3a6b,
+            0x7835b22448a36a92,
             0xd79b65b1ddcd55c9,
-            0x1325fe6aa22506d6,
-            0x115dc46eda035b57,
-            0x0c23dc684ae843ce,
-            0xa57a0358af740dda,
+            0x0283be9510bd8e7b,
+            0x741add2ecb1b7acd,
+            0x61f0df47c0dd65e2,
+            0x90190fc393a2b1d3,
         ],
     ),
     (

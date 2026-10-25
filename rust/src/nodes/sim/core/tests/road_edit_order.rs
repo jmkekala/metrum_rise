@@ -326,20 +326,83 @@ fn flat_junctions_do_not_depend_on_drawing_order() {
 
 // Open question 16: a stroke reads no piece its own edit rebuilds, so the through road of a T
 // drawn after its side road ignores the side road's cap and span, and the side road drawn
-// second meets the through road at its graph profile.
+// second meets the through road at its graph profile. Open question 30 (a): a stroke from a
+// road end joins it like any node, so every order of a Y solves its roads alike.
 #[test]
 fn sloped_junctions_do_not_depend_on_drawing_order() {
+    y_junctions(true);
     t_junctions(true);
 }
 
-// The rest of the sloped fixtures still depend on drawing order through two authored-state
-// rules (open question 30): a terminal extension re-solves the road it extends (every Y), and a
-// mid-span meeting takes the first-drawn road's profile height (question 16's crossing rule).
+// Mid-span meetings still depend on drawing order (open question 30): by question 16's crossing
+// rule the road drawn second meets the first at its graph profile, so the first sets the height.
 #[test]
-#[ignore = "ROAD-68-E: open question 30, terminal extensions and mid-span meetings depend on drawing order"]
-fn sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order() {
-    y_junctions(true);
+#[ignore = "ROAD-68-E: open question 30, a mid-span meeting takes the first-drawn road's height"]
+fn sloped_mid_span_meetings_do_not_depend_on_drawing_order() {
     splits_and_adjacent_junctions(true);
+}
+
+// Open question 30 (a): a stroke from a road end on the slope, straight on or bending, leaves the
+// road it extends as it was and meets it at the node's height, with grades within the profile
+// limits and no kink across the joint beyond the profile's curvature rule.
+#[test]
+fn a_stroke_from_a_road_end_joins_it_continuously_on_a_slope() {
+    // The profile solve's design grade and grade change per metre (`road_edit/input.rs`).
+    const MAX_GRADE: f32 = 0.16;
+    const MAX_GRADE_CHANGE_PER_M: f32 = 0.018;
+    let stem = ([Vector2::new(-ARM_M, 0.0), Vector2::ZERO], 1);
+    for end in [Vector2::new(ARM_M, 0.0), Vector2::new(60.0, 40.0)] {
+        let strokes = [stem, ([Vector2::ZERO, end], 1)];
+        let first = committed(&strokes, &[0], true);
+        let core = committed(&strokes, &[0, 1], true);
+        let graph = &core.region_graph;
+        let node = (0..graph.node_count() as u32)
+            .map(|node| graph.get_valid_node(node))
+            .find(|&node| graph.node(node).pos.x == 0.0 && graph.node(node).pos.z == 0.0)
+            .expect("the joint");
+        let joint = graph.node(node).pos;
+        let arms: Vec<_> = graph
+            .node_adjacency(node)
+            .iter()
+            .map(|&edge| graph.edge(edge))
+            .filter(|edge| !edge.deleted)
+            .collect();
+        assert_eq!(arms.len(), 2, "end {end:?}");
+        let stem_before = &first.region_graph.edges()[0];
+        let stem_after = arms
+            .iter()
+            .find(|edge| edge.geometry[0] == stem_before.geometry[0])
+            .expect("the stem keeps its id and start");
+        assert_eq!(
+            stem_after.geometry, stem_before.geometry,
+            "end {end:?}: the stroke leaves the stem's control profile as it was"
+        );
+        // Each arm's grade beside the joint, measured away from it.
+        let grades: Vec<_> = arms
+            .iter()
+            .map(|edge| {
+                let profile = &edge.physical_geometry;
+                let (at, next) = if edge.end_node == node {
+                    (profile[profile.len() - 1], profile[profile.len() - 2])
+                } else {
+                    (profile[0], profile[1])
+                };
+                assert_eq!(at, joint, "end {end:?}: the arm ends at the joint");
+                let run = (next.x - at.x).hypot(next.z - at.z);
+                ((next.y - at.y) / run, run)
+            })
+            .collect();
+        for &(grade, _) in &grades {
+            assert!(grade.abs() <= MAX_GRADE, "end {end:?}: grade {grade}");
+        }
+        // Through the joint the road climbs on one side as much as it falls on the other.
+        let change = (grades[0].0 + grades[1].0).abs();
+        let mean_run = 0.5 * (grades[0].1 + grades[1].1);
+        assert!(
+            change <= MAX_GRADE_CHANGE_PER_M * mean_run,
+            "end {end:?}: grade change {change} over {mean_run} m at the joint"
+        );
+    }
 }
 
 // Open question 16's crossing exception: a road crossing a raised road mid-span meets it on top,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Road-tool input preparation: alignment simplification, endpoint snapping, terminal
-//! extensions and the vertical profile solve shared by preview and committed placement.
+//! Road-tool input preparation: alignment simplification, endpoint snapping and the vertical
+//! profile solve shared by preview and committed placement.
 
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -27,27 +27,10 @@ pub(super) const ROAD_PROFILE_MAX_GRADE: f32 = 0.16;
 pub(crate) struct PreparedRoadInput {
     /// Physical geometry for the new edge that will be previewed or committed.
     pub(crate) points: Vec<Vector3>,
-    /// Physical geometry used to validate the full vertical profile solve.
-    pub(crate) validation_points: Vec<Vector3>,
     /// Road class inferred from the input heights.
     pub(crate) class: EdgeClass,
     /// True when endpoint proximity to existing graph nodes is treated as an authored snap.
     pub(crate) endpoint_snap_enabled: bool,
-    /// Existing terminal edge reprofile needed before committing the new edge.
-    pub(crate) extension: Option<RoadExtensionReprofile>,
-}
-
-/// Existing-edge geometry changes produced by a terminal road-extension solve.
-#[derive(Clone, Debug)]
-pub(crate) struct RoadExtensionReprofile {
-    /// Degree-1 graph node that becomes an internal road-profile point.
-    pub(crate) snapped_node_id: u32,
-    /// Existing edge incident to `snapped_node_id` whose profile is re-solved.
-    pub(crate) existing_edge_idx: usize,
-    /// Replacement geometry for the existing edge in its stored graph orientation.
-    pub(crate) existing_points: Vec<Vector3>,
-    /// Updated world-space position for `snapped_node_id`.
-    pub(crate) snapped_node_pos: Vector3,
 }
 
 #[derive(Clone, Copy)]
@@ -57,18 +40,6 @@ struct RoadVerticalProfileSample {
     target_y: f32,
     y: f32,
     pinned: bool,
-}
-
-struct TerminalRoadExtensionPreparation {
-    new_points: Vec<Vector3>,
-    validation_points: Vec<Vector3>,
-    reprofile: RoadExtensionReprofile,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TerminalExtensionEndpoint {
-    Start,
-    End,
 }
 
 // Prepares road-tool input into the physical geometry used by preview and committed roads.
@@ -104,9 +75,11 @@ fn prepare_road_input_points_to_visible_surface(
     )
 }
 
-// Prepares road-tool input and, when extending a terminal, solves the old and new edge as
-// one vertical corridor.
-fn prepare_road_input_with_extension_to_visible_surface(
+// Prepares road-tool input pinned to the visible surface and snaps its ends to existing nodes.
+// A stroke from a road end joins it like any node, at the node's graph height: the road it
+// extends keeps its own profile (`ROAD-68` open question 30), and the node's plane solve joins
+// the two.
+fn prepare_snapped_road_input_to_visible_surface(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
@@ -115,39 +88,15 @@ fn prepare_road_input_with_extension_to_visible_surface(
     let (mut points, mut class) =
         prepare_road_input_points_to_visible_surface(raw_points, terrain, support);
     snap_road_endpoints_to_existing_nodes(&mut points, graph);
-    if class == EdgeClass::Standard
-        && terminal_bridge_transition_endpoint(&points, terrain, graph).is_some()
+    if class == EdgeClass::Standard && is_terminal_bridge_transition(&points, terrain, graph)
     {
         solve_structural_transition_profile(&mut points);
         class = EdgeClass::Bridge;
     }
-
-    if class != EdgeClass::Standard || points.len() < 2 {
-        return PreparedRoadInput {
-            validation_points: points.clone(),
-            points,
-            class,
-            endpoint_snap_enabled: true,
-            extension: None,
-        };
-    }
-
-    if let Some(extension) = prepare_terminal_road_extension(raw_points, &points, terrain, graph) {
-        return PreparedRoadInput {
-            points: extension.new_points,
-            validation_points: extension.validation_points,
-            class,
-            endpoint_snap_enabled: true,
-            extension: Some(extension.reprofile),
-        };
-    }
-
     PreparedRoadInput {
-        validation_points: points.clone(),
         points,
         class,
         endpoint_snap_enabled: true,
-        extension: None,
     }
 }
 
@@ -185,7 +134,7 @@ pub(super) fn prepare_road_input_excluding(
 ) -> (PreparedRoadInput, Vec<PieceId>) {
     if snap_to_existing_roads {
         let mut support = StrokeSupport::new(roadbed, graph, excluded);
-        let prepared = prepare_road_input_with_extension_to_visible_surface(
+        let prepared = prepare_snapped_road_input_to_visible_surface(
             raw_points,
             terrain,
             graph,
@@ -196,11 +145,9 @@ pub(super) fn prepare_road_input_excluding(
 
     let (points, class) = prepare_road_input_points(raw_points, terrain);
     let prepared = PreparedRoadInput {
-        validation_points: points.clone(),
         points,
         class,
         endpoint_snap_enabled: false,
-        extension: None,
     };
     (prepared, Vec::new())
 }
@@ -285,44 +232,6 @@ fn prepare_road_input_points_with_support(
     (prepared_points, EdgeClass::Standard)
 }
 
-fn prepare_terminal_road_extension(
-    raw_points: &[Vector3],
-    prepared_points: &[Vector3],
-    terrain: &TerrainSystem,
-    graph: &RegionGraph,
-) -> Option<TerminalRoadExtensionPreparation> {
-    let start_node = graph.find_node_within(prepared_points[0], config::SNAP_TOLERANCE);
-    let end_node = graph.find_node_within(*prepared_points.last().unwrap(), config::SNAP_TOLERANCE);
-    let start_extension = start_node.and_then(|node_id| {
-        terminal_extension_incident_edge(graph, node_id)
-            .map(|edge_idx| (node_id, edge_idx, TerminalExtensionEndpoint::Start))
-    });
-    let end_extension = end_node.and_then(|node_id| {
-        terminal_extension_incident_edge(graph, node_id)
-            .map(|edge_idx| (node_id, edge_idx, TerminalExtensionEndpoint::End))
-    });
-
-    let extension = match (start_extension, end_extension) {
-        (Some(extension), None) | (None, Some(extension)) => extension,
-        _ => return None,
-    };
-
-    let (snapped_node_id, existing_edge_idx, endpoint) = extension;
-    build_terminal_extension_profile(
-        raw_points,
-        prepared_points,
-        terrain,
-        graph,
-        snapped_node_id,
-        existing_edge_idx,
-        endpoint,
-    )
-}
-
-fn terminal_extension_incident_edge(graph: &RegionGraph, node_id: u32) -> Option<usize> {
-    terminal_incident_surface_edge(graph, node_id, EdgeClass::Standard)
-}
-
 fn terminal_incident_surface_edge(
     graph: &RegionGraph,
     node_id: u32,
@@ -353,15 +262,16 @@ fn terminal_incident_surface_edge(
         .then_some(edge_idx)
 }
 
-fn terminal_bridge_transition_endpoint(
+fn is_terminal_bridge_transition(
     points: &[Vector3],
     terrain: &TerrainSystem,
     graph: &RegionGraph,
-) -> Option<TerminalExtensionEndpoint> {
-    let first = *points.first()?;
-    let last = *points.last()?;
+) -> bool {
+    let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
+        return false;
+    };
     if points.len() < 2 {
-        return None;
+        return false;
     }
 
     let start_is_elevated_bridge_terminal = graph
@@ -381,14 +291,8 @@ fn terminal_bridge_transition_endpoint(
     let start_is_grounded = source_terrain_clearance_m(first, terrain).abs() <= PREVIEW_CLEARANCE_M;
     let end_is_grounded = source_terrain_clearance_m(last, terrain).abs() <= PREVIEW_CLEARANCE_M;
 
-    match (
-        start_is_elevated_bridge_terminal && end_is_grounded,
-        end_is_elevated_bridge_terminal && start_is_grounded,
-    ) {
-        (true, false) => Some(TerminalExtensionEndpoint::Start),
-        (false, true) => Some(TerminalExtensionEndpoint::End),
-        _ => None,
-    }
+    (start_is_elevated_bridge_terminal && end_is_grounded)
+        != (end_is_elevated_bridge_terminal && start_is_grounded)
 }
 
 fn source_terrain_clearance_m(point: Vector3, terrain: &TerrainSystem) -> f32 {
@@ -416,109 +320,6 @@ fn solve_structural_transition_profile(points: &mut [Vector3]) {
         let t = (station_m / total_length_m).clamp(0.0, 1.0);
         points[index].y = first.y + (last.y - first.y) * t;
     }
-}
-
-fn build_terminal_extension_profile(
-    raw_points: &[Vector3],
-    prepared_points: &[Vector3],
-    terrain: &TerrainSystem,
-    graph: &RegionGraph,
-    snapped_node_id: u32,
-    existing_edge_idx: usize,
-    endpoint: TerminalExtensionEndpoint,
-) -> Option<TerminalRoadExtensionPreparation> {
-    let existing_edge = graph.edge(existing_edge_idx);
-    let stored_existing_points = if existing_edge.geometry.len() >= 2 {
-        &existing_edge.geometry
-    } else {
-        &existing_edge.physical_geometry
-    };
-    if stored_existing_points.len() < 2 {
-        return None;
-    }
-
-    let mut new_alignment = simplify_road_alignment_points(raw_points);
-    if new_alignment.len() < 2 {
-        return None;
-    }
-
-    let snapped_node_pos = graph.node(snapped_node_id).pos;
-    match endpoint {
-        TerminalExtensionEndpoint::Start => {
-            new_alignment[0] = snapped_node_pos;
-            let last_idx = new_alignment.len() - 1;
-            new_alignment[last_idx] = *prepared_points.last().unwrap();
-        }
-        TerminalExtensionEndpoint::End => {
-            new_alignment[0] = prepared_points[0];
-            let last_idx = new_alignment.len() - 1;
-            new_alignment[last_idx] = snapped_node_pos;
-        }
-    }
-
-    let mut existing_corridor_points = stored_existing_points.to_vec();
-    let existing_corridor_matches_stored_orientation = match endpoint {
-        TerminalExtensionEndpoint::Start => existing_edge.end_node == snapped_node_id,
-        TerminalExtensionEndpoint::End => existing_edge.start_node == snapped_node_id,
-    };
-    if !existing_corridor_matches_stored_orientation {
-        existing_corridor_points.reverse();
-    }
-
-    let mut combined_alignment = match endpoint {
-        TerminalExtensionEndpoint::Start => existing_corridor_points.clone(),
-        TerminalExtensionEndpoint::End => new_alignment.clone(),
-    };
-    match endpoint {
-        TerminalExtensionEndpoint::Start => {
-            combined_alignment.extend_from_slice(&new_alignment[1..]);
-        }
-        TerminalExtensionEndpoint::End => {
-            combined_alignment.extend_from_slice(&existing_corridor_points[1..]);
-        }
-    }
-    if combined_alignment.len() < 2 {
-        return None;
-    }
-
-    let join_xz = Vector3::new(snapped_node_pos.x, 0.0, snapped_node_pos.z);
-    let mut samples =
-        build_standard_road_profile_samples_with_endpoint_height_pins(&combined_alignment, terrain);
-    solve_standard_road_profile(&mut samples);
-    let solved_points: Vec<Vector3> = samples
-        .into_iter()
-        .map(|sample| Vector3::new(sample.x, sample.y, sample.z))
-        .collect();
-    let join_idx = nearest_xz_point_index(&solved_points, join_xz)?;
-
-    let (new_points, mut existing_points) = match endpoint {
-        TerminalExtensionEndpoint::Start => (
-            solved_points[join_idx..].to_vec(),
-            solved_points[..=join_idx].to_vec(),
-        ),
-        TerminalExtensionEndpoint::End => (
-            solved_points[..=join_idx].to_vec(),
-            solved_points[join_idx..].to_vec(),
-        ),
-    };
-    if !existing_corridor_matches_stored_orientation {
-        existing_points.reverse();
-    }
-    if new_points.len() < 2 || existing_points.len() < 2 {
-        return None;
-    }
-
-    let snapped_node_pos = solved_points[join_idx];
-    Some(TerminalRoadExtensionPreparation {
-        new_points,
-        validation_points: solved_points,
-        reprofile: RoadExtensionReprofile {
-            snapped_node_id,
-            existing_edge_idx,
-            existing_points,
-            snapped_node_pos,
-        },
-    })
 }
 
 fn simplify_road_alignment_points(points: &[Vector3]) -> Vec<Vector3> {
@@ -583,34 +384,6 @@ fn build_standard_road_profile_samples(
         first.pinned = true;
     }
     if let Some(last) = samples.last_mut() {
-        last.pinned = true;
-    }
-    samples
-}
-
-fn build_standard_road_profile_samples_with_endpoint_height_pins(
-    alignment_points: &[Vector3],
-    terrain: &TerrainSystem,
-) -> Vec<RoadVerticalProfileSample> {
-    let mut no_visible_support = |_: f32, _: f32| None;
-    let mut samples =
-        build_standard_road_profile_samples(alignment_points, terrain, &mut no_visible_support);
-    if samples.is_empty() {
-        return samples;
-    }
-
-    if let Some(first_alignment) = alignment_points.first()
-        && let Some(first) = samples.first_mut()
-    {
-        first.target_y = first_alignment.y;
-        first.y = first_alignment.y;
-        first.pinned = true;
-    }
-    if let Some(last_alignment) = alignment_points.last()
-        && let Some(last) = samples.last_mut()
-    {
-        last.target_y = last_alignment.y;
-        last.y = last_alignment.y;
         last.pinned = true;
     }
     samples
@@ -759,18 +532,6 @@ fn enforce_road_profile_curvature(samples: &mut [RoadVerticalProfileSample]) {
 
 fn profile_sample_run_m(a: RoadVerticalProfileSample, b: RoadVerticalProfileSample) -> f32 {
     ((b.x - a.x).hypot(b.z - a.z)).max(f32::EPSILON)
-}
-
-fn nearest_xz_point_index(points: &[Vector3], target_xz: Vector3) -> Option<usize> {
-    points
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            let da = (a.x - target_xz.x).hypot(a.z - target_xz.z);
-            let db = (b.x - target_xz.x).hypot(b.z - target_xz.z);
-            da.total_cmp(&db)
-        })
-        .map(|(index, _)| index)
 }
 
 fn xz_distance(a: Vector3, b: Vector3) -> f32 {

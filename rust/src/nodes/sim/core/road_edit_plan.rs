@@ -290,9 +290,7 @@ impl RoadEditPlan {
 mod tests {
     use super::*;
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::road_edit::{
-        RoadExtensionReprofile, prepare_road_input_for_tool,
-    };
+    use crate::simulation::network::road_edit::prepare_road_input_for_tool;
     use crate::simulation::network::roadbed::RoadbedSystem;
     use crate::simulation::terrain::TerrainSystem;
 
@@ -336,40 +334,5 @@ mod tests {
             plan.prepared_input_for(11, 3, &plan.prepared.points, 1, 1, true)
                 .is_none()
         );
-    }
-
-    #[test]
-    fn plan_retains_terminal_reprofile_without_repreparation() {
-        let points = vec![Vector3::ZERO, Vector3::new(24.0, 0.0, 0.0)];
-        let mut prepared = prepare_road_input_for_tool(
-            &points,
-            &TerrainSystem::new(65, 65),
-            &RegionGraph::new(),
-            &RoadbedSystem::new(16.0),
-            true,
-        );
-        prepared.extension = Some(RoadExtensionReprofile {
-            snapped_node_id: 9,
-            existing_edge_idx: 4,
-            existing_points: points.clone(),
-            snapped_node_pos: Vector3::ZERO,
-        });
-        let plan = RoadEditPlan::new(
-            RoadPreviewRequest {
-                surface_generation: 11,
-                points: points.clone(),
-                fwd_lanes: 1,
-                bkw_lanes: 1,
-                snap_to_existing_roads: true,
-            },
-            3,
-            5,
-            prepared,
-            RoadPreviewValidation::valid(0.0),
-            None,
-        );
-        let input = plan.prepared_input_for(11, 3, &points, 1, 1, true).unwrap();
-        assert!(std::ptr::eq(input, &plan.prepared));
-        assert_eq!(input.extension.as_ref().unwrap().existing_edge_idx, 4);
     }
 }

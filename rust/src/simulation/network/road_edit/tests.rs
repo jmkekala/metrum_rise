@@ -62,24 +62,6 @@ impl Fixture {
 
     fn cold_add(&mut self, prepared: &PreparedRoadInput) {
         self.network.bulk_load = true;
-        if let Some(extension) = &prepared.extension {
-            let id = extension.existing_edge_idx;
-            self.graph
-                .set_node_pos(extension.snapped_node_id, extension.snapped_node_pos);
-            self.graph.remove_from_spatial_index(id);
-            let edge = self.graph.edge_mut(id);
-            edge.geometry = extension.existing_points.clone();
-            edge.physical_geometry = extension.existing_points.clone();
-            let (cost, length) =
-                crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge);
-            edge.base_cost = cost;
-            edge.physical_length = length;
-            let nodes = HashSet::from([edge.start_node, edge.end_node]);
-            self.graph.add_to_spatial_index(id);
-            self.network
-                .mark_surface_dirty_from_sets(&HashSet::from([id]), &nodes);
-            self.network.bulk_dirty_edges.insert(id);
-        }
         self.network.add_road(
             &mut self.graph,
             prepared.points.clone(),
@@ -259,8 +241,10 @@ fn hillside_crossing_keeps_existing_corridor_authority_after_splits() {
     }
 }
 
+// A stroke from a road end joins it like any node (`ROAD-68` open question 30): the adopted plan
+// equals the cold add, and the road it extends keeps its own profile.
 #[test]
-fn terminal_extension_adopts_existing_road_reprofile() {
+fn a_stroke_from_a_road_end_adopts_like_a_cold_add() {
     let mut planned = Fixture::new(false);
     let mut cold = Fixture::new(false);
     for fixture in [&mut planned, &mut cold] {
@@ -288,10 +272,11 @@ fn terminal_extension_adopts_existing_road_reprofile() {
     }
     let (prepared, plan) =
         planned.plan(&[Vector3::new(0.0, 8.0, 0.0), Vector3::new(48.0, 0.0, 0.0)]);
-    assert!(prepared.extension.is_some());
+    let extended = planned.graph.edge(0).geometry.clone();
     cold.cold_add(&prepared);
     planned.adopt(&plan);
     assert_cold_geometry_matches(&planned, &cold);
+    assert_eq!(planned.graph.edge(0).geometry, extended);
 }
 
 #[test]

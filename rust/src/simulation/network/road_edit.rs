@@ -18,7 +18,7 @@ mod support;
 mod tests;
 mod validation;
 
-pub(crate) use input::{PreparedRoadInput, RoadExtensionReprofile, prepare_road_input_for_tool};
+pub(crate) use input::{PreparedRoadInput, prepare_road_input_for_tool};
 pub(crate) use support::{RebuiltPieces, plan_road_edit};
 pub(crate) use validation::{
     RoadPreviewValidation, validate_road_candidate_fast, validate_road_edit,

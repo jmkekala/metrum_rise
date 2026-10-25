@@ -18,7 +18,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::road_edit::{
-    FinalizedRoadGeometry, RoadExtensionReprofile, plan_road_edit,
+    FinalizedRoadGeometry, plan_road_edit,
     validate_road_candidate_fast, validate_road_edit,
 };
 use crate::simulation::network::roadbed::{
@@ -1324,10 +1324,6 @@ impl SimCore {
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
 
-        if topology_plan.is_none() {
-            self.apply_road_extension_reprofile(prepared_input.extension.as_ref());
-        }
-
         // Compute polyline length before fixed_points is moved into add_road.
         let build_length_m: f64 = fixed_points
             .windows(2)
@@ -1422,91 +1418,6 @@ impl SimCore {
                 zoning_ms,
             },
         }
-    }
-
-    fn apply_road_extension_reprofile(
-        &mut self,
-        extension: Option<&RoadExtensionReprofile>,
-    ) -> HashSet<usize> {
-        let Some(extension) = extension else {
-            return HashSet::new();
-        };
-        if extension.existing_edge_idx >= self.region_graph.edge_count()
-            || (extension.snapped_node_id as usize) >= self.region_graph.node_count()
-            || extension.existing_points.len() < 2
-        {
-            return HashSet::new();
-        }
-
-        let edge_idx = extension.existing_edge_idx;
-        if self.region_graph.edge(edge_idx).deleted {
-            return HashSet::new();
-        }
-
-        let old_node_pos = self.region_graph.node(extension.snapped_node_id).pos;
-        let old_chunks = self.region_graph.get_edge_chunks(edge_idx);
-        self.region_graph
-            .set_node_pos(extension.snapped_node_id, extension.snapped_node_pos);
-        self.region_graph.remove_from_spatial_index(edge_idx);
-        {
-            let edge = self.region_graph.edge_mut(edge_idx);
-            edge.geometry = extension.existing_points.clone();
-            edge.physical_geometry = extension.existing_points.clone();
-            let (cost, length) =
-                crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge);
-            edge.base_cost = cost;
-            edge.physical_length = length;
-        }
-        self.region_graph.add_to_spatial_index(edge_idx);
-
-        let affected_edges = HashSet::from([edge_idx]);
-        let edge = self.region_graph.edge(edge_idx);
-        let affected_nodes = HashSet::from([
-            self.region_graph.get_valid_node(extension.snapped_node_id),
-            self.region_graph.get_valid_node(edge.start_node),
-            self.region_graph.get_valid_node(edge.end_node),
-        ]);
-
-        for chunk in old_chunks
-            .into_iter()
-            .chain(self.region_graph.get_edge_chunks(edge_idx))
-        {
-            self.transit_network.cch_dirty_chunks.insert(chunk);
-        }
-        self.transit_network.mark_point_dirty(old_node_pos);
-        self.transit_network
-            .mark_point_dirty(extension.snapped_node_pos);
-        self.transit_network
-            .mark_surface_dirty_from_sets(&affected_edges, &affected_nodes);
-
-        if self.transit_network.bulk_load {
-            self.transit_network.bulk_dirty_edges.insert(edge_idx);
-        } else {
-            self.agents.invalidate_lane_ids_for_edges(
-                &affected_edges,
-                &self.transit_network.lane_system,
-                &self.region_graph,
-            );
-            self.transit_network
-                .lane_system
-                .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
-            self.agents.reattach_invalidated_lanes_for_edges(
-                &affected_edges,
-                &self.transit_network.lane_system,
-                &self.region_graph,
-            );
-        }
-
-        debug_log!(
-            "road",
-            "road_extension_reprofile node={} edge={} old_y={:.3} new_y={:.3} points={}",
-            extension.snapped_node_id,
-            edge_idx,
-            old_node_pos.y,
-            extension.snapped_node_pos.y,
-            extension.existing_points.len()
-        );
-        affected_edges
     }
 
     /// Returns a road-frontage snapped preview for one explicit service building asset.
