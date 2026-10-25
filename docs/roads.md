@@ -3847,6 +3847,24 @@ gate F starts now, in parallel with gate E part 2's last items, because gate E's
   frontage tests and the yard test); none belongs to markings. The one `ROAD-68-F` test still
   disabled, the tunnel portal CDT test, belongs to the tunnel part (the node-move tests went to
   gate E part 2, which re-enabled them).
+- **Timing (fresh, 2026-10-25).** Release library tests, `taskset -c 0,2,4,6,8,10,12,14`, both
+  timing locks, C F F C in one session: C = `road` `3f24cff2`, F = this part on `3f24cff2`,
+  built in one target directory. Native preview stages (`benchmark_road_preview_stages`, 4
+  workers), payload packing p50, C / F: `sloped_t` 0.375-0.384 / 0.349-0.350 ms, `sloped_branch`
+  0.366-0.367 / 0.338-0.340 ms (budget 1.0); plan, roadbed and terrain unchanged. So emitting
+  zebra frames, lights and signs in the preview costs nothing measurable. Gate G's commit
+  breakdown (8 workers, three samples per tier, medians): render publication (`mesh`) at 0 / 10k
+  / 30k residents C 2.72-2.35 / 3.68-4.00 / 3.47-3.68 ms, F 2.14-1.92 / 3.59-3.35 / 3.27-3.22 ms
+  (piece lookups replace the scans of each node's connector lanes); lots and generated digests
+  equal at every tier. **Open:** the commit's `surface` stage (roadbed install and terrain
+  validation, which this part does not change; equal products) measured 7-8 ms slower at 30k
+  in F (samples 2-3: C 63.3 / 55.8 and 63.5 / 53.9 ms, F 71.3 / 61.0 and 70.2 / 62.4 ms; same in
+  an earlier pair against gate E's binary of `4b6bdb8d`), not at 0 or 10k; two runs of one
+  binary differ by under 2 ms. Not located yet (see the handoff); it needs a profile of both
+  binaries' commit windows.
+- **Size.** `roadbed/` production lines 7,972 against 7,881 on `road` `359406c1` (+91): the
+  crossing record (`for_each_crossing`, 49 lines with its contract), the span piece's crossing
+  kerbs and `crossing_kerbs_right_first` (shared with the walkways), mostly doc comments.
 
 ### `ROAD-68-G` — commit consequences inside one frame
 
