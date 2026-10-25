@@ -217,15 +217,13 @@ fn emit(
     f: &(RegionGraph, super::RoadbedSystem, TerrainSystem),
     edges: Vec<usize>,
 ) -> Vec<StreetLight> {
-    let mut mesh = super::NetworkMeshData::new();
     let coverage = super::CompiledSurfaceCoverage {
         edge_indices: edges,
         node_ids: Vec::new(),
         rebuilt_edges: Vec::new(),
         rebuilt_nodes: Vec::new(),
     };
-    super::emit_street_lights(&mut mesh, &f.0, &f.1, &f.2, &coverage);
-    mesh.street_lights
+    super::place_street_lights(&f.0, &f.1, &f.2, &coverage)
 }
 
 fn signature(lights: &[StreetLight]) -> Vec<[u32; 5]> {
@@ -379,8 +377,8 @@ fn exhausted_margins_keep_the_existing_single_middle_light() {
         length_m: 10.0,
     };
     let rule = super::rule_for_edge(f.0.edge(0)).unwrap();
-    let mut mesh = super::NetworkMeshData::new();
-    super::place_along_chain(&mut mesh, &f.2, &[(0, true)], &[run], 0, &rule, 8.0, 2.0);
-    assert_eq!(mesh.street_lights.len(), 1);
-    assert!((mesh.street_lights[0].position.x - 5.0).abs() < 1e-5);
+    let mut lights = Vec::new();
+    super::place_along_chain(&mut lights, &f.2, &[(0, true)], &[run], 0, &rule, 8.0, 2.0);
+    assert_eq!(lights.len(), 1);
+    assert!((lights[0].position.x - 5.0).abs() < 1e-5);
 }

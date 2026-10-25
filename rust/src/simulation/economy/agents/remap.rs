@@ -250,39 +250,47 @@ impl AgentSystem {
             );
         }
         // Agent `i`'s reattachment reads only agent `i` and the rebuilt lanes and writes only
-        // agent `i`: the shared pool finds the invalidated on-road agents, which then reattach
-        // in agent order, as the serial loop did. O(A / P + invalidated agents).
+        // agent `i`: the shared pool finds the invalidated on-road agents and each one's best
+        // rebuilt lane, and they then reattach in agent order, as the serial loop did.
+        // O(A / P + invalidated agents × rebuilt lanes / P).
         let agents = &self.agents;
-        let detached: Vec<usize> = crate::thread_pools::install(|| {
-            (0..agents.len())
-                .into_par_iter()
-                .filter(|&i| {
-                    agents.current_lane_id[i] == usize::MAX
-                        && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
-                        && affected_edges.contains(&agents.current_edge[i])
-                })
-                .collect()
-        });
-        for i in detached {
-            let desired_lane_type = if self.agents.transit_mode[i] == MODE_WALK {
-                LaneType::Foot
-            } else {
-                LaneType::Vehicle
-            };
+        let detached: Vec<(usize, Option<LaneReattachCandidate>)> =
+            crate::thread_pools::install(|| {
+                let detached: Vec<usize> = (0..agents.len())
+                    .into_par_iter()
+                    .filter(|&i| {
+                        agents.current_lane_id[i] == usize::MAX
+                            && matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+                            && affected_edges.contains(&agents.current_edge[i])
+                    })
+                    .collect();
+                detached
+                    .into_par_iter()
+                    .map(|i| {
+                        let desired_lane_type = if agents.transit_mode[i] == MODE_WALK {
+                            LaneType::Foot
+                        } else {
+                            LaneType::Vehicle
+                        };
+                        let candidate = best_reattach_lane(
+                            Vector2::new(agents.pos_x[i], agents.pos_y[i]),
+                            desired_lane_type,
+                            &affected_edges,
+                            lane_system,
+                            graph,
+                            max_dist_sq,
+                        );
+                        (i, candidate)
+                    })
+                    .collect()
+            });
+        for (i, candidate) in detached {
             let old_edge = self.agents.current_edge[i];
             let old_node = self.agents.current_node[i];
             let old_lane_d = self.agents.lane_distance[i];
             let old_pos_x = self.agents.pos_x[i];
             let old_pos_y = self.agents.pos_y[i];
-            let agent_pos = Vector2::new(self.agents.pos_x[i], self.agents.pos_y[i]);
-            let Some(candidate) = best_reattach_lane(
-                agent_pos,
-                desired_lane_type,
-                &affected_edges,
-                lane_system,
-                graph,
-                max_dist_sq,
-            ) else {
+            let Some(candidate) = candidate else {
                 if traffic_debug {
                     crate::traffic_log!(
                         "[ROAD_EDIT_AGENT_REATTACH] agent={} action=no-candidate transit={} mode={} old_edge={} old_node={} old_lane_d={:.2} pos=({:.2},{:.2}) max_dist_m={:.2}",

@@ -53,27 +53,15 @@ impl RoadRenderer {
     ) -> NetworkMeshData {
         let compiled_surface = standard_surface::build_compiled_surface_coverage(graph, roadbed);
         let mut mesh = NetworkMeshData::new();
-
-        crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, &compiled_surface);
-        standard_surface::emit_piece_surfaces(&mut mesh, graph, roadbed, &compiled_surface);
-        standard_surface::emit_bridge_structures(
-            &mut mesh,
-            graph,
-            roadbed,
-            terrain,
-            &compiled_surface,
-        );
-        standard_surface::emit_compiled_lane_markings(&mut mesh, graph, roadbed, &compiled_surface);
-        street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, &compiled_surface);
-        road_signs::emit_road_signs(
+        emit_into(
             &mut mesh,
             graph,
             lane_system,
-            roadbed,
             terrain,
+            roadbed,
+            &compiled_surface,
             &compiled_surface,
         );
-
         mesh
     }
 
@@ -221,13 +209,61 @@ fn emit_chunks(
         chunk_origin_z_m,
         target_chunks.clone(),
     );
-    crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, pieces);
-    standard_surface::emit_piece_surfaces(&mut mesh, graph, roadbed, pieces);
-    standard_surface::emit_bridge_structures(&mut mesh, graph, roadbed, terrain, pieces);
-    standard_surface::emit_compiled_lane_markings(&mut mesh, graph, roadbed, pieces);
-    street_lights::emit_street_lights(&mut mesh, graph, roadbed, terrain, covered);
-    road_signs::emit_road_signs(&mut mesh, graph, lane_system, roadbed, terrain, covered);
+    emit_into(
+        &mut mesh,
+        graph,
+        lane_system,
+        terrain,
+        roadbed,
+        pieces,
+        covered,
+    );
     mesh.into_partitioned_chunks()
+}
+
+// Emits `pieces` and the street lights and signs of every `covered` edge into `mesh`.
+fn emit_into(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    lane_system: &crate::simulation::network::lanes::LaneSystem,
+    terrain: &crate::simulation::terrain::TerrainSystem,
+    roadbed: &RoadbedSystem,
+    pieces: &CompiledSurfaceCoverage,
+    covered: &CompiledSurfaceCoverage,
+) {
+    // Lights and signs read only the graph, lanes, roadbed and terrain (signs keep clear of the
+    // lights), so they are placed while the pieces are emitted, then pushed after them as the
+    // serial passes pushed them: each chunk's payload is the same.
+    let (lights, signs) = crate::thread_pools::install(|| {
+        rayon::join(
+            || {
+                crosswalks::prepare_crosswalks(mesh, graph, lane_system, pieces);
+                standard_surface::emit_piece_surfaces(mesh, graph, roadbed, pieces);
+                standard_surface::emit_bridge_structures(mesh, graph, roadbed, terrain, pieces);
+                standard_surface::emit_compiled_lane_markings(mesh, graph, roadbed, pieces);
+            },
+            || {
+                let lights = street_lights::place_street_lights(graph, roadbed, terrain, covered);
+                let signs = road_signs::place_road_signs(
+                    graph,
+                    lane_system,
+                    roadbed,
+                    terrain,
+                    covered,
+                    &lights,
+                );
+                (lights, signs)
+            },
+        )
+        .1
+    });
+    debug_assert!(mesh.street_lights.is_empty() && mesh.road_signs.is_empty());
+    for light in lights {
+        mesh.push_street_light(light);
+    }
+    for sign in signs {
+        mesh.push_road_sign(sign);
+    }
 }
 
 // The target chunks assembled from the `published` meshes and `fresh` (the rebuilt pieces'

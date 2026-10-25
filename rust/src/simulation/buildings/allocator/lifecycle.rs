@@ -1098,28 +1098,36 @@ impl BuildingAllocator {
     /// [`Self::repair_road_attachments_after_topology_edit`] with the same visits, in the same
     /// order and with the same results, but only for the buildings whose visit can act: a
     /// parallel read-only pass skips those already on a plausible frontage of their own or of
-    /// their parcel. Returns the visited buildings, ascending. `O(B / P)` tests plus the visits.
+    /// their parcel. Returns the visited buildings and the buildings `also` admits as they were
+    /// before the repair, ascending and distinct: one pass serves a caller that needs both.
+    /// `O(B / P)` tests plus the visits.
     pub(crate) fn repair_road_attachments_that_may_act(
         &mut self,
         graph: &RegionGraph,
         zoning: &mut ZoningSystem,
+        also: impl Fn(&crate::simulation::buildings::allocator::Building) -> bool + Sync,
     ) -> Vec<usize> {
         let allocator = &*self;
         let zoning_view = &*zoning;
-        let visits: Vec<usize> = crate::thread_pools::install(|| {
+        let tested: Vec<(usize, bool)> = crate::thread_pools::install(|| {
             (0..allocator.buildings.len())
                 .into_par_iter()
-                .filter(|&building_idx| {
-                    allocator.attachment_repair_may_act(building_idx, graph, zoning_view)
+                .filter_map(|building_idx| {
+                    let visit =
+                        allocator.attachment_repair_may_act(building_idx, graph, zoning_view);
+                    (visit || also(&allocator.buildings[building_idx]))
+                        .then_some((building_idx, visit))
                 })
                 .collect()
         });
-        let repaired = visits
+        let repaired = tested
             .iter()
-            .filter(|&&building_idx| self.repair_road_attachment(building_idx, graph, zoning))
+            .filter(|&&(building_idx, visit)| {
+                visit && self.repair_road_attachment(building_idx, graph, zoning)
+            })
             .count();
         self.finish_attachment_repair(repaired);
-        visits
+        tested.into_iter().map(|(building_idx, _)| building_idx).collect()
     }
 
     // One building's repair visit; true when it counts as a repair.

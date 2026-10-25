@@ -227,8 +227,17 @@ impl CellStore {
                 .then_with(|| a.x.cmp(&b.x))
                 .then_with(|| a.y.cmp(&b.y))
         });
+        // Sorted candidates come in runs of one frame: its id is reused instead of hashed again.
+        let mut last_frame = None;
         for candidate in candidates {
-            let grid = raw.register_frame(candidate.frame);
+            let grid = match last_frame {
+                Some((frame, grid)) if frame == candidate.frame => grid,
+                _ => {
+                    let grid = raw.register_frame(candidate.frame);
+                    last_frame = Some((candidate.frame, grid));
+                    grid
+                }
+            };
             let key = CellKey {
                 grid,
                 x: candidate.x,

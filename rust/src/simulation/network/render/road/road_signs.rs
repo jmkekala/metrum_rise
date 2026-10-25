@@ -9,8 +9,8 @@
 //! uses fixed-width radix sorting. Topology-dependent rebuilds are sequential, outside tick/agent
 //! loops. Reusable scratch is allocated per rebuild, never per sign or measurement sample.
 
-use super::NetworkMeshData;
 use super::standard_surface::CompiledSurfaceCoverage;
+use super::street_lights::StreetLight;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::lanes::{CrosswalkMarking, LaneSystem};
 use crate::simulation::network::roadbed::{
@@ -22,7 +22,6 @@ use crate::simulation::network::validate::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Sign models in the renderer's model order; priority signs are deliberately absent.
@@ -718,12 +717,12 @@ struct PoleGrid {
 }
 
 impl PoleGrid {
-    fn new(mesh: &NetworkMeshData) -> Self {
+    fn new(lights: &[StreetLight]) -> Self {
         let mut grid = Self {
-            heads: HashMap::with_capacity(mesh.street_lights.len()),
-            poles: Vec::with_capacity(mesh.street_lights.len()),
+            heads: HashMap::with_capacity(lights.len()),
+            poles: Vec::with_capacity(lights.len()),
         };
-        for light in &mesh.street_lights {
+        for light in lights {
             let key = Self::cell(light.position);
             let previous = grid.heads.insert(key, grid.poles.len()).unwrap_or(NO_LINK);
             grid.poles.push((light.position, previous));
@@ -825,20 +824,20 @@ fn offset(section: &RoadSection, side: f32) -> Option<(f32, Option<f32>)> {
 }
 
 fn pose(
-    sections: &[RoadSection],
+    sections: SectionRun<'_>,
     terrain: &TerrainSystem,
     s: f32,
     side: f32,
     direction: f32,
     kind: RoadSignKind,
 ) -> Option<RoadSign> {
-    if sections.len() < 2 || s < sections[0].s_m || s > sections.last()?.s_m {
+    if sections.len() < 2 || s < sections.get(0).s_m || s > sections.last().s_m {
         return None;
     }
     let index = sections
         .partition_point(|section| section.s_m < s)
         .clamp(1, sections.len() - 1);
-    let (a, b) = (&sections[index - 1], &sections[index]);
+    let (a, b) = (sections.get(index - 1), sections.get(index));
     let t = f64::from(((s - a.s_m) / (b.s_m - a.s_m).max(f32::EPSILON)).clamp(0.0, 1.0));
     let lateral = a.lateral_xz.lerp(b.lateral_xz, t).try_normalize()?;
     let (oa, ha) = offset(a, side)?;
@@ -865,7 +864,7 @@ fn pose(
 
 #[allow(clippy::too_many_arguments)]
 fn place(
-    sections: &[RoadSection],
+    sections: SectionRun<'_>,
     terrain: &TerrainSystem,
     poles: &PoleGrid,
     s: f32,
@@ -874,7 +873,7 @@ fn place(
     direction: f32,
     kind: RoadSignKind,
 ) -> Option<(RoadSign, f32)> {
-    if sections.len() < 2 || s < sections[0].s_m || s > sections.last()?.s_m {
+    if sections.len() < 2 || s < sections.get(0).s_m || s > sections.last().s_m {
         return None;
     }
     let mut s = s;
@@ -885,7 +884,7 @@ fn place(
     }
     .clamp(1, sections.len() - 1);
     loop {
-        let (a, b) = (&sections[index - 1], &sections[index]);
+        let (a, b) = (sections.get(index - 1), sections.get(index));
         let (oa, _) = offset(a, side)?;
         let (ob, _) = offset(b, side)?;
         let pa = a.center_xz + a.lateral_xz * f64::from(side * oa);
@@ -924,47 +923,111 @@ fn place(
     }
 }
 
-// An edge's span sections with the crosswalk approach section of each end's node piece added
-// before or after them; the span's own sections when neither end has a crossing.
+// Sections in station order, borrowed: an edge's span sections, optionally with one more
+// section before and one after them. `pose`, `place` and `crossing_s` walk it as they would the
+// concatenated slice, without copying any section or its bands.
+#[derive(Clone, Copy)]
+struct SectionRun<'a> {
+    head: Option<&'a RoadSection>,
+    body: &'a [RoadSection],
+    tail: Option<&'a RoadSection>,
+}
+
+impl<'a> SectionRun<'a> {
+    fn span(body: &'a [RoadSection]) -> Self {
+        Self {
+            head: None,
+            body,
+            tail: None,
+        }
+    }
+
+    fn len(&self) -> usize {
+        usize::from(self.head.is_some()) + self.body.len() + usize::from(self.tail.is_some())
+    }
+
+    // Section `index` of the run; panics past its end, as slice indexing does.
+    fn get(&self, index: usize) -> &'a RoadSection {
+        let index = match self.head {
+            Some(head) if index == 0 => return head,
+            Some(_) => index - 1,
+            None => index,
+        };
+        match self.body.get(index) {
+            Some(section) => section,
+            None if index == self.body.len() => self.tail.expect("section past the run"),
+            None => panic!("section past the run"),
+        }
+    }
+
+    // The run's last section; the run is never empty where this is called.
+    fn last(&self) -> &'a RoadSection {
+        self.get(self.len() - 1)
+    }
+
+    // `<[RoadSection]>::partition_point` of the concatenated run. The run is in station order
+    // (asserted where it is built), so for the station predicates used here the point is
+    // unique and equals the slice's.
+    fn partition_point(&self, mut pred: impl FnMut(&RoadSection) -> bool) -> usize {
+        let before = usize::from(self.head.is_some());
+        if self.head.is_some_and(|head| !pred(head)) {
+            return 0;
+        }
+        let point = self.body.partition_point(&mut pred);
+        if point < self.body.len() {
+            return before + point;
+        }
+        before + point + usize::from(self.tail.is_some_and(pred))
+    }
+
+    // Consecutive pairs, as `windows(2)` of the concatenated run.
+    fn pairs(self) -> impl Iterator<Item = (&'a RoadSection, &'a RoadSection)> {
+        (1..self.len()).map(move |index| (self.get(index - 1), self.get(index)))
+    }
+}
+
+// An edge's span sections with the crosswalk approach section of each end's node piece before
+// or after them; the span's own sections when neither end has a crossing. A zebra's inner edge
+// lies between its node and the span's mouth, so the run stays in station order.
 fn crossing_sections<'a>(
     graph: &RegionGraph,
     roadbed: &'a RoadbedSystem,
     edge_id: usize,
     sections: &'a [RoadSection],
-) -> Cow<'a, [RoadSection]> {
+) -> SectionRun<'a> {
     let edge = graph.edge(edge_id);
     let approach = |node: u32, end: EdgeEnd| {
         roadbed
             .node_piece(graph.get_valid_node(node))?
             .crosswalk_approach(ArmKey { edge: edge_id, end })
     };
-    let start = approach(edge.start_node, EdgeEnd::Start);
-    let end = approach(edge.end_node, EdgeEnd::End);
-    if start.is_none() && end.is_none() {
-        return Cow::Borrowed(sections);
-    }
-    let mut extended = Vec::with_capacity(sections.len() + 2);
-    extended.extend(start.cloned());
-    extended.extend_from_slice(sections);
-    extended.extend(end.cloned());
-    Cow::Owned(extended)
+    let run = SectionRun {
+        head: approach(edge.start_node, EdgeEnd::Start),
+        body: sections,
+        tail: approach(edge.end_node, EdgeEnd::End),
+    };
+    debug_assert!(
+        run.pairs().all(|(a, b)| a.s_m <= b.s_m),
+        "crossing sections of edge {edge_id} out of station order"
+    );
+    run
 }
 
-fn crossing_s(sections: &[RoadSection], marking: CrosswalkMarking) -> Option<f32> {
+fn crossing_s(sections: SectionRun<'_>, marking: CrosswalkMarking) -> Option<f32> {
     let center = (marking.start + marking.end) * 0.5;
     let point = RoadVec2::new(f64::from(center.x), f64::from(center.z));
     sections
-        .windows(2)
-        .filter_map(|pair| {
-            let d = pair[1].center_xz - pair[0].center_xz;
+        .pairs()
+        .filter_map(|(a, b)| {
+            let d = b.center_xz - a.center_xz;
             let norm = d.length_squared();
             if norm <= f64::EPSILON {
                 return None;
             }
-            let t = ((point - pair[0].center_xz).dot(d) / norm).clamp(0.0, 1.0);
+            let t = ((point - a.center_xz).dot(d) / norm).clamp(0.0, 1.0);
             Some((
-                (point - (pair[0].center_xz + d * t)).length_squared(),
-                pair[0].s_m + (pair[1].s_m - pair[0].s_m) * t as f32,
+                (point - (a.center_xz + d * t)).length_squared(),
+                a.s_m + (b.s_m - a.s_m) * t as f32,
             ))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -1072,7 +1135,14 @@ fn place_spaced(
             s += direction * (advance + CLEARANCE_ROUNDOFF_M as f32);
         }
         let (sign, actual) = place(
-            sections, terrain, poles, s, direction, direction, direction, kind,
+            SectionRun::span(sections),
+            terrain,
+            poles,
+            s,
+            direction,
+            direction,
+            direction,
+            kind,
         )?;
         if spacing.advance(span, actual, direction, direction) == 0.0 {
             return Some((sign, actual));
@@ -1120,15 +1190,16 @@ fn order_signs(signs: &mut Vec<RoadSign>) {
     }
 }
 
-/// Emits signs after the light pass, retaining world-space clearance even across chunk borders.
-pub(super) fn emit_road_signs(
-    mesh: &mut NetworkMeshData,
+/// The signs of every covered edge, in world space and in the order a mesh takes them, clear of
+/// the world-space `lights` (every light the light pass placed, across chunk borders too).
+pub(super) fn place_road_signs(
     graph: &RegionGraph,
     lanes: &LaneSystem,
     roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
-) {
+    lights: &[StreetLight],
+) -> Vec<RoadSign> {
     let mut degrees = HashMap::with_capacity(coverage.node_ids.len());
     let StreetSigns {
         lengths,
@@ -1136,7 +1207,7 @@ pub(super) fn emit_road_signs(
         stations,
         edges,
     } = street_lengths(graph, &coverage.edge_indices, &mut degrees);
-    let poles = PoleGrid::new(mesh);
+    let poles = PoleGrid::new(lights);
     // Include complete touched chains in all priority passes. This makes gaps across degree-two
     // nodes identical for full and local chunk rebuilds; only covered edges publish their poses.
     // Edge order within each independent chain is canonical; chain order does not affect gaps.
@@ -1181,7 +1252,7 @@ pub(super) fn emit_road_signs(
                     else {
                         continue;
                     };
-                    let sections = &**approach_sections;
+                    let sections = *approach_sections;
                     let Some(s) = crossing_s(sections, marking) else {
                         continue;
                     };
@@ -1202,8 +1273,8 @@ pub(super) fn emit_road_signs(
                         } else {
                             RoadSignKind::CrossingLeft
                         };
-                        let first = sections.first().map_or(s, |section| section.s_m);
-                        let last = sections.last().map_or(s, |section| section.s_m);
+                        let first = sections.get(0).s_m;
+                        let last = sections.last().s_m;
                         let sign_s = (s - direction * CROSSING_SIGN_SETBACK_M).clamp(first, last);
                         if let Some((sign, placed_s)) = place(
                             sections, terrain, &poles, sign_s, away, side, direction, kind,
@@ -1330,9 +1401,7 @@ pub(super) fn emit_road_signs(
         }
     }
     order_signs(&mut signs);
-    for sign in signs {
-        mesh.push_road_sign(sign);
-    }
+    signs
 }
 
 #[cfg(test)]

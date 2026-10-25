@@ -8,8 +8,6 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use rayon::prelude::*;
-
 use super::frame::record_crash_phase_for_core;
 use super::road_edit_plan::RoadEditPlan;
 use super::road_preview::{RoadPreview, RoadPreviewFingerprint, RoadPreviewRequest};
@@ -323,34 +321,33 @@ impl SimCore {
     // and attachment repair, but only the entrances whose inputs the edit may have changed are
     // derived again: of the buildings the repair visits, the lots the refresh reattached and
     // the buildings fronting the lane rebuild closure of `dirty`, whose geometry and lanes
-    // changed. A cache already stale before the commit rebuilds whole. Two parallel
-    // `O(B / P)` tests plus the local work.
+    // changed. The repair's pass also finds the fronting buildings: a building the repair moves
+    // is among its visits, so testing the attachment before the repair finds the same set. A
+    // cache already stale before the commit rebuilds whole. One parallel `O(B / P)` test plus
+    // the local work.
     fn rebuild_building_entrances_for_commit(&mut self, dirty: &HashSet<usize>) {
         crate::thread_pools::install(|| {
             let allocator = &self.allocator;
             let cache_current = !allocator.entrances_dirty
                 && allocator.entrances.len() == allocator.buildings.len();
             let lots = self.prepare_cell_lots_internal();
-            let mut changed = self
-                .allocator
-                .repair_road_attachments_that_may_act(&self.region_graph, &mut self.zoning);
+            let closure = LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, dirty);
+            let mut changed = self.allocator.repair_road_attachments_that_may_act(
+                &self.region_graph,
+                &mut self.zoning,
+                |building| closure.contains(&building.edge_idx),
+            );
             let lanes = &self.transit_network.lane_system;
             if !cache_current {
                 self.allocator
                     .rebuild_entrance_cache(&self.region_graph, lanes);
                 return;
             }
-            let closure = LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, dirty);
             let buildings = &self.allocator.buildings;
             changed.extend(lots.reattached.iter().filter_map(|&parcel| {
                 let index = self.zoning.parcels.get(parcel)?.occupied_building()?;
                 (index < buildings.len()).then_some(index)
             }));
-            changed.par_extend(
-                (0..buildings.len())
-                    .into_par_iter()
-                    .filter(|&index| closure.contains(&buildings[index].edge_idx)),
-            );
             changed.sort_unstable();
             changed.dedup();
             self.allocator

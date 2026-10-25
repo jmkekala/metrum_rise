@@ -86,7 +86,9 @@ fn junction_with_lanes(
     (graph, lanes, surface, terrain)
 }
 
-fn generate(f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem)) -> NetworkMeshData {
+fn generate(
+    f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem),
+) -> super::super::NetworkMeshData {
     RoadRenderer.generate_mesh_data_with_surface(&f.0, &f.1, &f.3, &f.2)
 }
 
@@ -337,9 +339,9 @@ fn signs_keep_two_metres_from_every_light_and_shift_away_from_junction() {
         .iter()
         .find_map(|&lane| f.1.crosswalk_marking(lane))
         .unwrap();
-    let s = crossing_s(&sections, marking).unwrap();
+    let s = crossing_s(sections, marking).unwrap();
     let (shifted, shifted_s) = place(
-        &sections,
+        sections,
         &f.3,
         &poles,
         s,
@@ -509,7 +511,7 @@ fn every_sign_pole_uses_the_kerb_face_and_interpolated_sidewalk_height() {
             RoadSignKind::CurveRight,
             RoadSignKind::Uneven,
         ] {
-            let sign = pose(&sections, &f.3, 60.0, side, side, kind).unwrap();
+            let sign = pose(SectionRun::span(&sections), &f.3, 60.0, side, side, kind).unwrap();
             assert!((sign.position.z.abs() - distance).abs() < 1e-5);
             assert_eq!(sign.position.y, height.unwrap());
         }
@@ -543,7 +545,15 @@ fn without_a_sidewalk_the_sign_uses_the_verge_and_terrain_height() {
             .max_by(f32::total_cmp)
             .unwrap();
         assert_eq!(distance, outer + 0.75);
-        let sign = pose(&sections, &f.3, 60.0, side, side, RoadSignKind::Speed50).unwrap();
+        let sign = pose(
+            SectionRun::span(&sections),
+            &f.3,
+            60.0,
+            side,
+            side,
+            RoadSignKind::Speed50,
+        )
+        .unwrap();
         assert_eq!(
             sign.position.y,
             f.3.sample_height_world(sign.position.x, sign.position.z)
@@ -866,7 +876,7 @@ fn uneven_and_steep_signs_obey_gap_and_pole_clearance() {
             if a.position.z.signum() == b.position.z.signum() {
                 let station = |sign: &RoadSign| {
                     crossing_s(
-                        sections,
+                        SectionRun::span(sections),
                         CrosswalkMarking {
                             start: sign.position,
                             end: sign.position,

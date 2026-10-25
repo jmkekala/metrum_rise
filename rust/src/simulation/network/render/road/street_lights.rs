@@ -8,7 +8,6 @@
 //! O(degree * (chain sections + walk steps * degree) + lights), junction degree <= 6; no
 //! city-wide scan or recursive chain dependency.
 
-use super::NetworkMeshData;
 use super::standard_surface::CompiledSurfaceCoverage;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
@@ -100,19 +99,19 @@ fn rule_for_edge(edge: &Edge) -> Option<Rule> {
     })
 }
 
-/// Places the street lights of every covered edge into `mesh`, which routes each to its chunk.
+/// The street lights of every covered edge, in world space and in the order a mesh takes them.
 ///
 /// Lights are spaced along whole streets: chains of edges through degree-two nodes that take the
 /// same family of light. Each edge emits the chain's lights that fall on it, so every chunk
 /// rebuild agrees. Endpoint resolution is O(degree * (chain sections + walk steps)), degree <= 6,
 /// plus O(chain length + lights) for placement. Scratch allocation is per chain, never per pole.
-pub(super) fn emit_street_lights(
-    mesh: &mut NetworkMeshData,
+pub(super) fn place_street_lights(
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
-) {
+) -> Vec<StreetLight> {
+    let mut lights = Vec::new();
     for &edge_idx in &coverage.edge_indices {
         let Some(rule) = rule_for_edge(graph.edge(edge_idx)) else {
             continue;
@@ -125,9 +124,17 @@ pub(super) fn emit_street_lights(
         let start_m = separated_end_margin(graph, roadbed, terrain, start, chain[0].0);
         let end_m = separated_end_margin(graph, roadbed, terrain, end, chain[chain.len() - 1].0);
         place_along_chain(
-            mesh, terrain, &chain, &runs, edge_idx, &rule, start_m, end_m,
+            &mut lights,
+            terrain,
+            &chain,
+            &runs,
+            edge_idx,
+            &rule,
+            start_m,
+            end_m,
         );
     }
+    lights
 }
 
 // The visible stretch of one chain edge, in chain order.
@@ -398,7 +405,7 @@ fn poles_at(
 
 #[allow(clippy::too_many_arguments)]
 fn place_along_chain(
-    mesh: &mut NetworkMeshData,
+    lights: &mut Vec<StreetLight>,
     terrain: &TerrainSystem,
     chain: &[(usize, bool)],
     runs: &[Run],
@@ -459,7 +466,7 @@ fn place_along_chain(
         let (a, b) = (&sections[section_index], &sections[section_index + 1]);
         for &side in sides {
             if let Some(light) = place_at(terrain, a, b, s, side, rule.kind) {
-                mesh.push_street_light(light);
+                lights.push(light);
             }
         }
     }
