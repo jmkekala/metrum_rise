@@ -2188,6 +2188,10 @@ These need a user decision; work that does not depend on them continues.
       copy in the view kept up to date from the store's write journal at each publication,
       exact and never stale, at about twice the cell store's memory, with one generic planner.
       Its measurement records the extra memory at 100k residents.
+    - **Profile done (round 5, 18:14-18:17):** the extra time is spread over every lap of
+      generation and over derivation, with no single ~1 ms cut
+      ([round 5 record](#part-2-round-5-2026-10-25-branch-road68-e5-work-in-progress)); (b) is
+      next.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
@@ -4845,6 +4849,16 @@ Round 4's part 2 on `road` `ebe4381e` (documentation only, so the rebase is empt
   kept; digests equal C's in every sample and determinism is `da3d23b6c8b63d20`. The cost is
   the live store's own persistent reads and writes in generation and derivation; where
   exactly is the profile the user decided on first ([question 32](#road-68-open-questions)).
+- **Profile of the commit's cell-lot work (question 32's first step; fresh, 18:14-18:17, both
+  locks, P-cores, 8 workers, a profile, not a timing).** C against P at 10k and 30k, `perf`
+  toggled by the harness around each commit, with the commit's `economy_phases` laps
+  (`METRUM_COMMIT_PHASES`). Per commit, `buildings` C / P: 12.26 / 13.60, 4.54 / 4.88,
+  1.10 / 1.41 (10k) and 8.63 / 9.88, 2.68 / 3.10, 1.61 / 1.91 ms (30k). Of the first
+  samples' 1.3 ms, lot generation takes 1.10 and 1.01 ms more and derivation 0.24 and 0.25;
+  inside generation the extra is spread over every lap (publication 0.16 / 0.30, candidate
+  indexing 0.16 / 0.26, the rest over preparation, clearance, conflicts and support), each
+  the persistent maps' lookups and writes on its own path. No single cut of about 1 ms
+  exists, so under the user's decision question 32 goes to (b), next round.
 - **One lot planner and one installer (question 21 (b), first half).** Every lot derivation
   (the commit, the `cell lots` queue, the tests' entries) runs on `CellLotPlanner`: cell
   generation and lot claims on a cell store and lot queue it changes in place, against a parcel
@@ -4858,6 +4872,19 @@ Round 4's part 2 on `road` `ebe4381e` (documentation only, so the rebase is empt
   both probes pass, and a replay test (`a_planned_change_list_replays_to_the_directly_changed_store`)
   checks the plan's reads against the directly changed store and every index and revision of
   the replay. The commit plans on the live store, so the split changes no cost (P against B).
+- **Gate checks on this round's tree (`6f006989` plus documentation; fresh).** Clippy
+  `--all-targets` (17:55): the baseline's 59-warning set, none new. `./run.sh --test`
+  (17:56-18:14, `DISPLAY` and `WAYLAND_DISPLAY` unset, run lock, shared timing lock, build
+  slot): exit 0, debug library 1,913 passed / 0 failed / 164 ignored (the replay test is the
+  one more), integration 4 passed, all 20 Godot scripts PASS (the hover assertion included),
+  no SCRIPT ERROR; skipped only the display-only shader-global probe and the rendered
+  vegetation tests. No `ROAD-68-E` or `ROAD-68-F` ignore; four `TERRAIN-07`. `roadbed/` is
+  untouched (7,798 production lines, as round 4). Profile and imports cleaned up.
+- **The hover-validation flake (`network_tool_chunk_renderer_test`, round 4) — open.** Not
+  reproduced this round: the gate's run (`./run.sh --test`, 18:14) and a standalone run in
+  the isolated profile layout (18:23) pass. The 20-run loop the brief asks for queued behind
+  another gate's run lock at the handoff; its remaining runs are the next agent's to read, and
+  the assertion prints the validation's reason if it recurs.
 - **Question 21 (b), second half: not started.** The preview's plan needs, besides question
   32's store: a parcel view the planner can read off the simulation thread (the planner reads
   through `PlannedParcels`; its base is the live `ParcelStore`, which a view copies in
