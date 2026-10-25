@@ -1164,7 +1164,19 @@ installer (`ZoningSystem::install_cell_lot_plan`) makes those calls in order on 
 plan read and advances the overlay revision as the plan did, so the installed parcels equal
 making the calls directly (a replay test compares every index and revision). The commit, the
 `cell lots` queue and the tests' entries all plan and install this way; the road tool's preview
-is to plan on its own copies with the same planner (`roads.md` open question 21 (b)). Supported
+is to plan on its own copies with the same planner (`roads.md` open question 21 (b)). Since round
+6 (`roads.md` open question 32 (b)) the cell store is generic over its map kind (`CellMaps`):
+the live store keeps plain hash maps (`LiveMaps`, as before round 4), and the road tool's view
+keeps a persistent copy (`SharedMaps`: `imbl` maps with values behind `Arc`, frames in an
+`imbl` vector) whose clone is `O(1)`. Every store write records its key in the store's journal
+(block, chunk entry, frontage list, curve source); each road-tool publication copies or removes
+exactly the journaled entries, appends the frames registered since and shares the already
+persistent road alignments (`CellStore::follow`, `O(written keys * log entries)`), so the copy
+is exact and never stale (debug tests compare the whole state at every publication). A clear or
+a whole-world invalidation makes the next publication copy the store whole. The journal keeps
+consecutive repeats once and dedups itself whenever it doubles, so between publications it holds
+at most twice the distinct keys written. Generation, lot derivation, the planner and the road
+overlap test are each one function generic over the map kind. Supported
 existing lots and occupied lots remain fixed. This is a specified deterministic allocation order,
 not a global packing search. An asset change retires an unsupported **empty** lot and lets the
 new catalog derive a replacement; it never moves an occupied footprint. Local paint, source-road
