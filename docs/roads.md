@@ -1532,6 +1532,27 @@ These need a user decision; work that does not depend on them continues.
       the budget for no geometric reason.
     - **Recommendation.** (a) now; (b) when the debug inspector needs edge ids again.
 
+29. **The commit's terrain at city scale (`ROAD-68-D` part 6) — open, target missed.**
+    - **Evidence.** With the city's refined terrain built and `ROAD-68-E`'s chain rule, a T
+      split's terrain validation (`surface`) takes 10-12 ms in open terrain and 55-73 ms beside
+      city patches, at 0 to 100k residents alike (eight workers; [part 6
+      record](#road-68-d--footprint-and-terrain)), against the 3.0 ms stage budget. The cost
+      follows the 512 m render patches the edit's stamped tiles fall in: per patch, the road
+      ownership refresh re-grades the loops of all 64 tiles (`road_terrain_patch_margin_m`,
+      after a `visual_patch_snapshot` copy), the stamped tiles and their neighbours
+      re-triangulate, and the patch's mesh buffers and paving partition are recomposed over
+      every site in it. Inside a window: Spade's bulk load and predicates, the per-sample
+      loop-edge scans of canonicalisation (`widening_tie_in_sample_against_any_road_loop`,
+      `point_inside_any_road_footprint`), heightmap sampling and grading rays (`ROAD-68-E`
+      round 4's profile).
+    - **Options.** (a) Make the patch-level work follow the stamped tiles: a patch's road margin
+      from per-tile margins kept beside the assembly ledger (derived state, so measured first,
+      per the no-stage-caches rule), and composition per tile, so a patch payload joins
+      unchanged tiles' buffers and pads. (b) Index loop edges for the per-sample scans (question
+      22's option (b)). (c) Smaller render patches near roads, which multiplies Godot's patch
+      count.
+    - **Recommendation.** (a) first, measured with the commit breakdown at every tier, then (b).
+
 Spec corrections in `ROAD-68-A`:
 
 - The façade defines only what consumers use (`RoadbedSystem`, `BandKind`, `RoadSection`,
@@ -3076,7 +3097,29 @@ Two causes, both fixed constructively; the patch-selection rule stays `ROAD-68-E
   zero-area f32 faces at kilometre coordinates and the truncated border patch's frame centre
   (part 5) are unchanged: the 100k failure was neither.
 
-D6_RESULTS_PLACEHOLDER
+- **Commit breakdown** (`benchmark_populated_commit_breakdown`, `ROAD-68-G`'s harness with the
+  warm-up above, release library tests, eight workers, `taskset -c 0,2,4,6,8,10,12,14`, both
+  timing locks, one session; A = `road` at `9f092846` plus the harness warm-up, binary
+  `aac6869d…`, 05:16-05:21; B = this part, binary `6d1661b3…`, 05:48-05:53). `surface` per
+  sample (the three T splits) and click to ack median, ms:
+
+  | Tier | A `surface` | B `surface` | A click → ack | B click → ack |
+  | --- | --- | --- | --- | --- |
+  | 0 | 18.2 / 11.7 / 11.4 | 11.2 / 12.7 / 11.1 | 14.5 | 15.3 |
+  | 2k | 90.0 / 68.0 / 9.6 | 73.2 / 65.4 / 10.3 | 74.9 | 72.7 |
+  | 10k | 209 / 18.1 / 15.6 | 133 / 18.7 / 15.3 | 31.0 | 29.0 |
+  | 30k | 447 / 63.5 / 53.4 | 67.3 / 63.0 / 55.4 | 80.6 | 73.3 |
+  | 100k | the warm-up fails (`conflicting_road_boundary_height`, patch (1, 2)) | 71.0 / 65.3 / 11.8 | | 78.7 |
+
+  The 100k commits are accepted, and the first sample no longer grows with the city (447 ms at
+  30k in A, from the stamps A's first commit inherits; 67 ms in B). The lots and generated-cell
+  digests equal A's at every tier A reaches. **Open, target missed:** with a warm cache the
+  commit's terrain still takes 10-73 ms against the 3.0 ms stage budget. It follows the 512 m
+  patches the edit touches, not the edit: a T beside city patches costs 55-73 ms, one in open
+  terrain 10-12 ms. Per stamped patch the validation re-grades every tile's loops for the
+  patch's road margin, rebuilds the stamped tiles' windows and their neighbours, and recomposes
+  the whole patch, its paving partition over every site in it ([open question
+  29](#road-68-open-questions)). D6_B4_RESULTS
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 
