@@ -921,36 +921,35 @@ terrain patch, open question 23); none stays disabled under `ROAD-68-D`.
 | `nodes::simulation_node::tests::async_payload` | `conservative_road_grading_pad_filters_only_margin_only_engineered_patches`, `unmatched_surface_preserves_road_ownership_while_site_ownership_refreshes` | road terrain patches |
 | `nodes::simulation_node::tests::cdt` | `terrain_cdt_adjacent_tiles_emit_identical_shared_side_vertices`, `terrain_cdt_guides_use_shared_source_height_and_final_grade_limits`, `terrain_cdt_input_keeps_multi_loop_tie_in_guides_unconstrained`, `terrain_cdt_local_bounds_expand_for_required_grading_distance` | road terrain patches |
 
-`ROAD-68-E` (5; the third from pre-D, the last two from `ROAD-68-D`):
+`ROAD-68-E` (5 at the gate; part 1 re-enabled
+`undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology`, and part 2
+`sloped_junctions_do_not_depend_on_drawing_order`, which now covers the T fixtures, and the three
+tests relabelled from `ROAD-68-F` below; four stay off):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
-| `nodes::sim::core::tests::road_edit_order` | `sloped_junctions_do_not_depend_on_drawing_order` | open question 16: strokes pin to carriageways the edit rebuilds; needs the topology plan before stroke preparation (pre-D labelled it `ROAD-68-D`, relabelled before `ROAD-68-D`) |
-| `nodes::sim::editing::tests` | `undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology` | undo restores the exact pre-edit junction pieces and mesh |
+| `nodes::sim::core::tests::road_edit_order` | `sloped_extensions_and_mid_span_meetings_do_not_depend_on_drawing_order` | the sloped Y, cross and pair fixtures split off the re-enabled test: terminal extensions and mid-span meetings still depend on drawing order ([open question 29](#road-68-open-questions); part 2) |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_saved_reference_repairs_rejected_junction_before_publication` | a save from before `ROAD-68-C` re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration (moved from `ROAD-68-C`, [open question 8](#road-68-open-questions)) |
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | a recorded stroke fails node 5 (`node_piece_failed`) at `79e7a476` too; the recorded placements predate `ROAD-68-C` ([open question 8](#road-68-open-questions); moved from `ROAD-68-D`) |
 | `nodes::sim::core::tests::zoning_buildability` | `hillside_residential_sites_select_constructible_houses` | the recorded fixture predates `ROAD-68-C`: node 2 fails `MouthOffPlane` on its legacy clips, so its tiles report `roadbed_chain_open_end` ([open question 19](#road-68-open-questions)); clips recomputed as an edit does overlap the recorded parcels (`OverlapsExistingParcel`), so the fixture is regenerated with the load rebuild ([open question 8](#road-68-open-questions); added by `ROAD-68-D`) |
 
-`ROAD-68-F` (5; 7 at the gate, two re-enabled by the
+`ROAD-68-F` (2; 7 at the gate, two re-enabled by the
 [C follow-up](#tighter-corners-and-junction-crosswalks-follow-up) and one by the
 [footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d), one added by
-`ROAD-68-D`):
+`ROAD-68-D`; the two node-move tests and `bridge_entry_points_never_use_the_global_pool` were
+relabelled `ROAD-68-E`, which owns open question 2, and pass since `ROAD-68-E` part 2):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
 | `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | lights keep a span-end clearance; the terminal cap needs layout furniture stations (moved from `ROAD-68-C`) |
-| `nodes::sim::core::tests::zoning_buildability::cell_zoning::movement` | `node_move_into_paint_or_erased_occupied_claim_is_atomic`, `node_move_rejects_terminal_cap_overlap_outside_the_straight_corridor` | node-move reservation check against moved pieces |
-| `nodes::simulation_node::tests::global_pool` | `bridge_entry_points_never_use_the_global_pool` | unchecked node moves leave a saved parcel over the moved road, so the load entry fails; every other entry point keeps to the shared pool (moved from `ROAD-68-B`) |
 | `simulation::terrain::cdt::tests::builder` | `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` | tunnel portal boundaries require walls where widened samples cannot tie in; `RoadBoundary` carries only grounded or structure support, and portal sources arrive with the tunnel family (from `ROAD-68-D`) |
 
 The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
 support target) pass on span sections and were re-enabled in `ROAD-68-B`.
 
-Godot scripts skipped by `run.sh --test`:
-
-| Gate | Script | Reason |
-| --- | --- | --- |
-| `ROAD-68-F` | `zoning_cells_tool_test` | node moves check painted cells; parcels beside cells need frontage |
+Godot scripts skipped by `run.sh --test`: none since `ROAD-68-E` part 2, which checks node moves
+against painted cells (open question 2) and runs `zoning_cells_tool_test` again (it was skipped
+until `ROAD-68-F`, relabelled `ROAD-68-E`).
 
 `network_tool_chunk_renderer_test`, `road_junction_preview_test` and `road_preview_stream_test`
 (`ROAD-68-E`: the preview's road mesh, junction scene and pose stream) are rewritten for the
@@ -974,10 +973,15 @@ These need a user decision; work that does not depend on them continues.
    **Implemented in `ROAD-68-E` part 2 (2026-10-25), at the commit.** The commit tests the pieces
    it installs, which are the preview's own when it adopts them and its local compile otherwise,
    against committed fields and painted cells (with their occupied grace claims) before it accepts
-   the edit: each piece's top triangles against the fields in its bounds and the reserved cells in
-   its bounds (`ReservedOverlap`, `FieldClearance::overlaps_road_piece`,
-   `ZoningSystem::cells_overlap_road_piece`); an overlap rolls the staged edit back with
-   `field_overlap` or `zoning_cell_overlap`. The field and cell corridor checks are gone from the
+   the edit: each piece's top triangles against the fields and the reserved cells in its bounds
+   (`ReservedOverlap`, `FieldClearance::overlaps_road_piece`,
+   `ZoningSystem::cells_newly_covered_by_road_piece`); an overlap rolls the staged edit back with
+   `field_overlap` or `zoning_cell_overlap`. Only land the edit newly covers counts: a cell is
+   refused when a new piece covers it and none of the pieces the edit replaces did, a field when
+   a new piece overlaps one and no replaced piece overlapped any. Cell grids are laid out against
+   the straight road corridors (`overlaps_road_corridors`), so cells beside an existing junction
+   corner or road end may already lie under its piece; testing every rebuilt piece refused every
+   edit that re-lays such a junction (found with the narrow-marks digest test's node move). The field and cell corridor checks are gone from the
    commit and from plan readiness (`RoadEditPlan::status`): a plan has no pieces to test, so a ready
    plan is refused at the commit with the graph, undo history and roadbed unchanged. The parcel
    corridor check stays. `a_field_in_a_junction_corner_refuses_the_road` (a field in a T's curb
@@ -988,9 +992,12 @@ These need a user decision; work that does not depend on them continues.
    It is removed until `ROAD-68-F`; node moves are currently unchecked against cell reservations.
    **Implemented in `ROAD-68-E` part 2 (2026-10-25).** A node move tries the move on the graph,
    compiles the moved closure into an `O(1)` copy of the published roadbed, puts the graph back from
-   the move's own undo checkpoint and refuses, with nothing else touched, when a node of the closure
-   fails its layout or profile solve or a piece overlaps a field or painted cells
-   (`SimCore::closure_refusal`, question 1's test); otherwise the move proceeds as before. Both
+   a local checkpoint and refuses, with nothing else touched, when a node of the closure fails its
+   layout or profile solve or a piece newly covers a field or painted cells (`SimCore::try_graph_edit`,
+   question 1's test; the reason goes to `last_road_rejection`); otherwise the checkpoint becomes
+   the move's undo record and the move proceeds as before. The narrow-marks digest test's two
+   1 m moves of painted grid junctions carry their roads onto painted lots, so they are refused
+   now, and the test checks that the refusals change no product. Both
    movement tests, `bridge_entry_points_never_use_the_global_pool` and `run.sh`'s
    `zoning_cells_tool_test` run again (the global-pool test's save now settles the routing hold
    first, `save_game_settled`: a harness change `ROAD-68-G`'s D7 required while the test was off).
@@ -1110,9 +1117,11 @@ These need a user decision; work that does not depend on them continues.
       hold test. It fails if the hold is restored.
     - **Follow-up for `ROAD-68-E`.** Option (c): validate affected layouts in every operation
       that dirties nodes (undo, terrain sync, node moves), so a published gap can only come from
-      a bug. **Part 2 (2026-10-25):** node moves validate their closure before they apply
-      (question 2, `SimCore::closure_refusal`); undo, terrain sync, crosswalk overrides, edge class
-      changes and road bulldoze still publish a failed node as a gap.
+      a bug. **Part 2 (2026-10-25):** node moves, crosswalk overrides and edge class changes try
+      their graph edit, compile its closure into a scratch roadbed and refuse when a node fails or
+      a piece newly covers reserved land (question 2, `SimCore::try_graph_edit`; the crosswalk
+      override's earlier layout-only test is replaced). Undo, terrain sync and road bulldoze still
+      publish a failed node as a gap: next round.
 
 12. **Walkers switch sides only on crossings (`ROAD-68-C` follow-up) — resolved 2026-10-24: the
     user chose "keep the old behaviour".**
@@ -3627,6 +3636,57 @@ Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gat
 - **Open in part 1:** the terrain stage's budget and the idle-clock frame (gate D part 6;
   question 27), the 100k publication and snapshot (after gate D part 6), payloads with
   crossings or signs (question 26, `ROAD-68-F`).
+
+#### Part 2 (2026-10-25, branch `road68-E2`, work in progress)
+
+The user's decisions on open questions 1, 2, 7, 11 (c) and 16, on `road` `4b6bdb8d` (D final,
+G parts 1-6, E1 rounds 1-5). Questions 8 and 21 (b) and the rest of 11 (c) are open for the next
+round; question 29 is new.
+
+- **Question 16.** `plan_road_edit` (`road_edit/support.rs`) is the one preparation and plan of a
+  stroke for the commit, the preview and the editor's checks: a stroke reads no carriageway of a
+  piece its own edit rebuilds, meets a road it splits at that road's graph profile and joins a
+  node at the node's graph height (details under the question). Cost: a stroke that reads no
+  carriageway plans once; a join or crossing plans twice (stage timings below).
+  `sloped_junctions_do_not_depend_on_drawing_order` runs again on the T fixtures and passes;
+  `a_crossing_of_a_raised_road_meets_it_on_top` is new; the Y, cross and pair fixtures stay
+  asserted but ignored under [open question 29](#road-68-open-questions).
+- **Question 1.** The commit tests the pieces it installs against fields and painted cells, for
+  the land the edit newly covers, and rolls the staged edit back on an overlap; the field and cell
+  corridor checks are gone from the commit and plan readiness, the parcel corridor check stays.
+  `a_field_in_a_junction_corner_refuses_the_road` is new (fails with the corridor checks); the
+  field and painted-cell readiness tests now drive the commit and check that a refused commit
+  leaves the graph, undo history and roadbed as they were.
+- **Questions 2 and 11 (c).** Node moves, crosswalk overrides and edge class changes try their
+  graph edit on the live graph, compile the closure into an `O(1)` copy of the roadbed and put
+  the graph back from a local checkpoint; a failed node or newly covered reservation refuses the
+  edit with nothing else touched. Re-enabled: both `cell_zoning::movement` tests,
+  `bridge_entry_points_never_use_the_global_pool` (its save now settles the routing hold) and
+  `zoning_cells_tool_test` in `run.sh`. The narrow-marks digest test's two painted-grid node moves
+  are refused now and checked as refusals.
+- **Question 7.** Confirmed on the preview path by
+  `a_far_junction_keeps_the_near_mouth_pinned_on_the_preview_path`; no code change.
+- **Product probe.** Only `y_25/true` changes (graph and every product but the layouts): its last
+  branch no longer pins to the first branch's span beside the node (question 16). Re-recorded with
+  that attribution; the other 19 entries are unchanged.
+- **Size.** `roadbed/` production lines: 7,881 (road 7,831): +50 for the per-piece carriageway
+  visitor and the installed and replaced piece accessors the reservation checks read.
+- **Fresh checks (2026-10-25).** Clippy `--all-targets`: the identical 59-warning set (file,
+  message) as the baseline. Targeted debug suites after each change: `road_edit_order` 4 passed
+  1 ignored; `road_preview` 13 passed 2 ignored; `road_terrain_plan` 12 passed 2 ignored;
+  `zoning` 178 passed 18 ignored (before the newly-covered rule; `cell_zoning` 37 passed 2
+  ignored after it); `probe`, `editing`, `road_commit`, `undo`, `fields`, `agriculture` pass.
+- **Stage timings (fresh, 06:42 EET).** `benchmark_road_preview_stages` as in part 1 (release,
+  4 workers, P-cores, both timing locks), C = `cc192880` (the code of `road` before E1 round 5,
+  `$BENCH_BINARY` of gate G part 6) as the same-session control, E = this round's release build
+  on `4b6bdb8d`; C E E C, ms p50 / p95. Edit plan: `sloped_t` C 0.236-0.238 / 0.270-0.274, E
+  0.461-0.464 / 0.517-0.531; `sloped_branch` C 0.208 / 0.235-0.250, E 0.402-0.404 /
+  0.451-0.466. Both fixtures join or split existing roads, so every pose plans twice; the plan
+  stays within its 1.0 ms budget. Roadbed and payload stages are unchanged (0.32 / 0.31-0.35);
+  terrain 4.39-4.75 (C) against 4.53-4.79 (E), the open miss gate D part 6 owns. Not measured:
+  the Godot stream with this library, and whether the first pass can stop before the profile
+  solve (the rebuilt pieces need the solve's dirty edges today).
+RUNSH_PLACEHOLDER
 
 ### `ROAD-68-F` — remaining families
 
