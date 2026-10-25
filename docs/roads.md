@@ -2855,6 +2855,12 @@ RAYON_NUM_THREADS=4 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 $BENCH_BINARY -
 
 ### `ROAD-68-D` — footprint and terrain
 
+**Terrain cut superseded (user, 2026-10-25).** The exact CDT cut below landed and is correct, but
+it misses the 3.0 ms terrain stage at city density ([open question 29](#road-68-open-questions)).
+The terrain surface core is to be rewritten as [`TERRAIN-07`](roadmap.md) (heightmap plus fine
+grading and mask layers, road skirts); the legacy terrain surface code is retired with it. The
+roadbed side of this gate (outer chains, terrain changes, heights) stays as `TERRAIN-07`'s input.
+
 1. `roadbed/terrain.rs`: patch loops from outer chains, the grading envelope and patch selection.
 2. `terrain/cdt/model.rs`: the `RoadBoundary` source variant, with source ordering simplified to
    match.
