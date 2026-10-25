@@ -3355,6 +3355,18 @@ Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gat
   (`note_sites`) query the sites again; the others keep their shared site snapshot and site
   ownership, and site ownership is read from the snapshot (the widest margin holds the local
   one, under the same overlap rule), so a site-noted patch queries once.
+  Rebased on `road` `9f092846` (gate G part 6), B = `road` (this branch's tests only), A = the
+  fix (`7b6412be`), B A A B, tiers 2k/10k/30k, same settings, lots digests equal; warm samples
+  1 / 2, `snapshot_ms`: 2k B 0.54-0.55 / 0.30-0.31, A 0.06 / 0.05-0.06; 10k B 4.13-4.18 /
+  0.84-0.86, A 0.29 / 0.26-0.27; 30k B 7.76-9.22 / 1.23-1.27, A 0.81-0.88 / 0.77-0.80, back to
+  gate G part 5's 0.27 and 0.79 ms. Click to acknowledgement in sample 1: 10k 32.0-32.2 to
+  26.9-27.0 ms, 30k 81.8-82.8 to 73.3-76.2 ms. The city's first commit still rebuilds every
+  patch's inputs (A 0.68 / 3.9 / 7.4-7.6 ms), the harness's stand-in for the load's
+  publication. Question 21 (c), the persistent graph: the commit's graph copy is the rest of
+  the snapshot (0.33-0.40 ms at 10k, 0.94-1.07 ms at 30k, `graph_clone_ms`; 2.4-2.6 ms at
+  100k before gate D, gate G part 5) beside commits of 21-27 ms at 10k and 59-76 ms at 30k,
+  so it does not decide the 16.7 ms target at these tiers; 100k is measured once gate D part 6
+  lets the 100k commit through.
 - **The commit's surface stage on this branch (for gate D part 6).** In the same session the
   surface stage (`validate_staged_road_render`) took 71.5-73.5 / 58.9-61.9 ms on E against
   62.2-62.8 / 54.6-55.0 ms on C at 30k (samples 1 / 2), and 1,856-1,943 against 1,722-1,758 ms
@@ -3378,6 +3390,18 @@ Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gat
   performance contract's cities, medians of five alternated runs): 0.18 ms for 247 nodes at
   10k against the load's 17.3 ms piece compile, 0.29 ms for 642 nodes at 30k against 52.0 ms.
   The check is new, so the load's own compile in the same process is the reference.
+- **Undo record heap.** `measure_undo_record_heap` (release, heaptrack `--record-only`, 4
+  workers): the T of the locality test on a sloped 1,024 m world, the record leaked
+  (`METRUM_UNDO_HEAP=forget`) against dropped. One road edit's record keeps 2.26 MB alive with
+  a 220 m trunk and 2.40 MB with a 660 m trunk (leaked 2.32 / 2.46 MB against 0.06 MB), mostly
+  the replaced refined terrain entries of its eight patches; the trunk's length adds the
+  replaced span piece of the split trunk. With the 30-record undo stack that is about 70 MB
+  in the worst case. An upper bound: it also counts what the record shares with the city.
+- **Size.** `roadbed/` production lines 7,831, as on `road` `9f092846`: this round changes no
+  `roadbed/` code (the round-4 count of 7,807 was before gate G parts 3-6).
+- **Open in part 1:** the terrain stage's budget and the idle-clock frame (gate D part 6;
+  question 27), the 100k publication and snapshot (after gate D part 6), payloads with
+  crossings or signs (question 26, `ROAD-68-F`).
 
 ### `ROAD-68-F` — remaining families
 
