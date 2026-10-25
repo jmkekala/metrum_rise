@@ -150,7 +150,7 @@ impl SimCore {
         } else {
             Vec::new()
         };
-        for (index, key) in unique_keys.into_iter().enumerate() {
+        for (index, &key) in unique_keys.iter().enumerate() {
             let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
             let road_margin = if refresh_roads {
                 self.road_ownership_pending_patch_keys.remove(&key);
