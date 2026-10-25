@@ -3248,15 +3248,20 @@ Round 4 (part 1, 2026-10-25, work in progress; rebased on `road` `e9fee678`, gat
   in the tile's loop edges per sample, D's question 22 option (b)), grading rays 5%, the window
   ground-triangle index 2.7%, Spade and its predicates about 14%; the per-pose work is the
   junction's 11 windows plus the inputs of the stamped tiles and their neighbours.
+- **Per-pose scratch.** The preview context keeps the span and node builders' buffers
+  (`RoadbedScratch`) and compiles each pose's closure with them (`compile_delta_with`), as the
+  [guardrail](#guardrails) asks; larger closures still build on the pool with per-worker
+  scratch. The builders clear what they use, so the pieces are unchanged (probe and bitwise tests
+  pass); not yet timed.
 - **Size.** `roadbed/` production lines (every line of each non-test `.rs` under `roadbed/` plus
-  `roadbed.rs`, without `tests/`, `tests.rs`, `fixtures.rs` and `#[cfg(test)]` items): 7,788 on
-  this branch against 7,394 on `road` (gate D's final); round 4 adds 98 (7,690 before it): the
-  chain-change ledger and `TerrainChanges` in `roadbed/terrain.rs`, its wiring in `system.rs` and
-  the span's `grounded` flag. Rounds 1-3 add 296 (the install API, the delta and restore, the
+  `roadbed.rs`, without `tests/`, `tests.rs`, `fixtures.rs` and `#[cfg(test)]` items): 7,807 on
+  this branch against 7,394 on `road` (gate D's final); round 4 adds 117 (7,690 before it): the
+  chain-change ledger and `TerrainChanges` in `roadbed/terrain.rs`, its wiring in `system.rs`,
+  the span's `grounded` flag and `RoadbedScratch` with `compile_delta_with`. Rounds 1-3 add 296 (the install API, the delta and restore, the
   inline small-closure build).
 - **Open in part 1:** the terrain stage's budget (with gate D part 6's scope rule), a Godot test of
-  the terrain staging on a resident terrain renderer, the roadbed per-pose scratch, the context
-  refresh and graph copy at 10k and 100k (the 100k commit is rejected on `e9fee678` with
+  the terrain staging on a resident terrain renderer, the rebase onto gate G parts 3-5
+  (`a4941bbf`), the context refresh and graph copy at 10k and 100k (the 100k commit is rejected on `e9fee678` with
   `render_geometry_invalid`, gate D part 6), the load `unpinned_nodes` test and timing, and the
   undo record's retained heap.
 
