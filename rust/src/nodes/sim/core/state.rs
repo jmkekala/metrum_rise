@@ -298,6 +298,9 @@ pub struct SimCore {
     pub(crate) last_road_rejection: Option<crate::nodes::sim::core::RoadRejection>,
     /// Fixed-size diagnostics; dictionary conversion happens only when explicitly requested.
     pub(crate) last_road_edit_metrics: crate::nodes::sim::benchmark::road_edit::RoadEditMetrics,
+    /// The terrain changes of the last road install, kept for the graded terrain's dirty tile
+    /// selection (`TERRAIN-07-A` measures it; `TERRAIN-07-E` consumes it).
+    pub(crate) last_road_terrain_changes: crate::simulation::network::roadbed::TerrainChanges,
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
@@ -443,6 +446,7 @@ impl SimCore {
             last_road_timing: String::new(),
             last_road_rejection: None,
             last_road_edit_metrics: Default::default(),
+            last_road_terrain_changes: Default::default(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),

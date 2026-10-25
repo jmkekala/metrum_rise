@@ -673,6 +673,14 @@ impl RoadbedSystem {
         (nodes, closure.into_iter().collect())
     }
 
+    /// Drops a published piece as a failed node leaves its gap, recording its terrain changes
+    /// (`TERRAIN-07-A` coverage tests).
+    #[cfg(test)]
+    pub(crate) fn remove_piece_for_test(&mut self, id: PieceId) {
+        let mut changed = BTreeSet::new();
+        self.replace_piece(id, None, &mut changed);
+    }
+
     // Publishes a piece built in this generation in place of the owner's current one, which
     // it returns.
     fn replace_piece(
@@ -718,9 +726,11 @@ impl RoadbedSystem {
     /// the old and new pieces' bounds and the chain segments that differ between them. Taking
     /// them clears both.
     pub fn take_terrain_changes(&mut self) -> TerrainChanges {
+        let (chains, segments) = self.changed_chains.take();
         TerrainChanges {
             pieces: std::mem::take(&mut self.changed_bounds),
-            chains: self.changed_chains.take_bounds(),
+            chains,
+            segments,
         }
     }
 

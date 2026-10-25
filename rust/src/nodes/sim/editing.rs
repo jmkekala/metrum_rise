@@ -2305,6 +2305,7 @@ impl SimCore {
         let (changed_chunks, restore) = roadbed.install(delta);
         let terrain_changes = self.transit_network.roadbed.take_terrain_changes();
         let road_terrain_patches = self.bump_road_terrain_payload_generations(&terrain_changes);
+        self.last_road_terrain_changes = terrain_changes;
         // Generated trees keep clear of walkways and poles beside them, possibly from a
         // neighboring terrain patch; the canopy margin covers both setbacks.
         for &chunk in &changed_chunks {

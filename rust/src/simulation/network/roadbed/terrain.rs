@@ -9,7 +9,7 @@
 
 use super::query::PieceId;
 use super::system::{Piece, PublishedPiece};
-use super::{PieceMesh, RoadbedSystem};
+use super::{PieceMesh, RoadVec3, RoadbedSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::rect_loops::{RectLoop, clip_path, join_runs, within};
@@ -68,6 +68,11 @@ pub struct TerrainChanges {
     /// geometry, `road_terrain_loops`). A split trunk's far half keeps its segments, so only the
     /// junction's surroundings appear here.
     pub chains: Vec<[f64; 4]>,
+    /// The changed segments of [`Self::chains`] themselves, endpoints with heights, in the same
+    /// order (`TERRAIN-07-A`): the graded terrain's dirty tiles follow each segment's own reach,
+    /// and a removed segment's heights are gone from the roadbed. A one-vertex chain gives a
+    /// segment from the vertex to itself.
+    pub segments: Vec<[RoadVec3; 2]>,
 }
 
 // An outer-chain segment as `terrain_loops` reads it: its endpoints' coordinate bits, whether
@@ -111,16 +116,19 @@ impl ChainChanges {
         }
     }
 
-    // The XZ bounds of every segment whose net count is not zero; taking them clears the
+    // Every segment whose net count is not zero, with its XZ bounds; taking them clears the
     // counts.
-    pub(super) fn take_bounds(&mut self) -> Vec<[f64; 4]> {
+    pub(super) fn take(&mut self) -> (Vec<[f64; 4]>, Vec<[RoadVec3; 2]>) {
         std::mem::take(&mut self.0)
             .into_keys()
             .map(|(bits, ..)| {
-                let [ax, _, az, bx, _, bz] = bits.map(f64::from_bits);
-                [ax.min(bx), az.min(bz), ax.max(bx), az.max(bz)]
+                let [ax, ay, az, bx, by, bz] = bits.map(f64::from_bits);
+                (
+                    [ax.min(bx), az.min(bz), ax.max(bx), az.max(bz)],
+                    [RoadVec3::new(ax, ay, az), RoadVec3::new(bx, by, bz)],
+                )
             })
-            .collect()
+            .unzip()
     }
 }
 

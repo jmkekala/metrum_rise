@@ -562,6 +562,27 @@ fn kuopio_saved_reference_loads_as_saved() {
     );
 }
 
+// `TERRAIN-07-A` `T2` and `T7` on Kuopio: every road tile of the reference save baked at
+// `GL0` and `GL1`; prints the conflict samples and row maxima.
+#[test]
+#[ignore = "TERRAIN-07-A census: cargo test --release --lib kuopio_graded_census -- --ignored --nocapture"]
+fn kuopio_graded_census() {
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    for level in [
+        crate::simulation::terrain::graded::Level::Gl0,
+        crate::simulation::terrain::graded::Level::Gl1,
+    ] {
+        let census = crate::simulation::terrain::graded::tests::graded_census(
+            &core.heightmap,
+            &core.transit_network.roadbed,
+            level,
+        );
+        eprintln!("GRADED_CENSUS {}", serde_json::json!({"fixture": "kuopio", "census": census}));
+    }
+}
+
 // The regenerated reference's refined terrain builds clean. The refined patches the roads reach:
 // 27 on the legacy save as recorded before `ROAD-68-C`, 28 on the regenerated one.
 #[test]

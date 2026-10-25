@@ -9,6 +9,7 @@
 
 pub(crate) mod cdt;
 pub mod chunks;
+pub mod graded;
 pub(crate) mod grading;
 mod patch_masks;
 pub(crate) mod rect_clip;

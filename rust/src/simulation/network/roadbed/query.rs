@@ -13,6 +13,7 @@ use super::geometry::{
 };
 use super::index::{QUERY_CELL_M, query_cell_at};
 use super::mesh::PieceMesh;
+use super::system::Piece;
 use super::{BandKind, RoadVec2, RoadVec3, RoadbedSystem};
 use godot::prelude::Vector3;
 
@@ -295,6 +296,91 @@ impl RoadbedSystem {
                 .get(&id)
                 .map(|published| (id, published.build_generation))
         })
+    }
+
+    /// The grounded outer-chain segments of the pieces whose bounds touch the XZ bounds
+    /// `[min_x, min_z, max_x, max_z]`, each segment whose own XZ bounds touch them, sorted and
+    /// deduplicated by key, the bits of its start then its end (`TERRAIN-07-A`): the seams the
+    /// graded terrain grades against. Bridge and tunnel spans publish none; a one-vertex chain
+    /// has no segment. `pieces` is the caller's scratch. `O(P log P + V + S log S)` for the `P`
+    /// pieces met, their `V` chain vertices and the `S` segments kept.
+    pub fn grounded_seams_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &mut Vec<PieceId>,
+        out: &mut Vec<[RoadVec3; 2]>,
+    ) {
+        out.clear();
+        self.for_each_grounded_seam_in_bounds(bounds_xz, pieces, |segment| out.push(segment));
+        let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
+        out.sort_unstable_by_key(key);
+        out.dedup_by_key(|segment| key(segment));
+    }
+
+    /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order: a segment two
+    /// pieces share is visited twice. `O(P log P + V)`.
+    pub fn for_each_grounded_seam_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &mut Vec<PieceId>,
+        mut visit: impl FnMut([RoadVec3; 2]),
+    ) {
+        self.grounded_pieces_in_bounds(bounds_xz, pieces);
+        for id in pieces.iter() {
+            let mesh = self.pieces[id].mesh();
+            for chain in mesh.outer_chains() {
+                for pair in chain.vertices().windows(2) {
+                    let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                    let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
+                    if bounds_intersect(segment, bounds_xz) {
+                        visit([a, b]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Visits the top triangles of the grounded pieces whose bounds touch the XZ bounds, whose
+    /// piece grid cells touch them, in ascending piece order (`TERRAIN-07-A`): the footprint's
+    /// coverage, tested with [`Self::top_triangle_height_at`]. A triangle may be visited more
+    /// than once. `pieces` is the caller's scratch.
+    pub fn for_each_grounded_top_triangle_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &mut Vec<PieceId>,
+        mut visit: impl FnMut([RoadVec3; 3]),
+    ) {
+        self.grounded_pieces_in_bounds(bounds_xz, pieces);
+        for id in pieces.iter() {
+            let mesh = self.pieces[id].mesh();
+            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
+                visit(mesh.triangle_points(triangle));
+                false
+            });
+        }
+    }
+
+    /// The point-in-triangle predicate and height [`Self::height_at`] takes the highest of:
+    /// the triangle's height at the XZ point, `None` outside it (within the roadbed's sampling
+    /// tolerance). The graded terrain's coverage is this predicate (`TERRAIN-07`).
+    pub fn top_triangle_height_at(triangle: &[RoadVec3; 3], x: f64, z: f64) -> Option<f32> {
+        triangle_height_at_xz(triangle, RoadVec2::new(x, z))
+    }
+
+    // The grounded pieces (node pieces and grounded spans) whose bounds touch `bounds`, sorted
+    // and unique, into `pieces`.
+    fn grounded_pieces_in_bounds(&self, bounds: [f64; 4], pieces: &mut Vec<PieceId>) {
+        pieces.clear();
+        self.any_piece_in_bounds(bounds, |id, _| {
+            pieces.push(id);
+            false
+        });
+        pieces.sort_unstable();
+        pieces.dedup();
+        pieces.retain(|id| match &self.pieces[id].piece {
+            Piece::Span(span) => span.grounded(),
+            Piece::Node(_) => true,
+        });
     }
 
     // Visits pieces whose bounds touch `bounds` until `visit` returns true. Walks the query

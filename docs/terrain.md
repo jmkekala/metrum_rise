@@ -3476,8 +3476,9 @@ capacities, to be confirmed by measured maxima ([T7](#terrain-07-open-questions)
 256 edges at `GL0`, 256/128 at `GL1`, 128/64 at `GL2`, 32/16 at `GL3`.
 
 **Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, and
-the tile's inputs (the sorted seam keys and heights, the site footprints, heights and surfaces,
-and the base revisions under the window) for adoption, compared exactly as `ROAD-68-E` compares
+the tile's inputs (the sorted seam keys and heights, the bits of the road top triangles the
+coverage visited, sorted, the site footprints, heights and surfaces, and the base revisions under
+the window) for adoption, compared exactly as `ROAD-68-E` compares
 terrain sources (a hash only as a fast reject).
 
 **Residency and eviction.** Godot owns residency. A tile is resident at a level while its patch is
@@ -3527,6 +3528,13 @@ For a world point `p`, in `f64`:
    the seam height on straight edges (the spike's arm continuation). The cap on fills changes no
    `GL0` triangle that straddles the edge, and keeps coarser levels from rising more than 0.35 m
    above a road.
+   Correction (`TERRAIN-07-A`): `s*` is the nearest road seam within `D_in = 2 m`, the `GL0`
+   band. Deeper inside, with `ρ` the road surface there (the highest covering top triangle),
+   `g = ρ - k D_in` on a cut (`b >= ρ`) and `g = ρ + k σ_max` on a fill. The nearest seam beyond
+   the band is not found exactly by the bins without a nearest-neighbour search per bin, and the
+   levels' bands differ, so the uncorrected rule made a covered sample's value depend on the bins
+   and the level. Only coarse levels' triangles reach such samples (deeper than 2 m), and the mask
+   discards them.
 8. **Delta.** `delta = g - b`, rounded to `f32` once.
 9. **Footprint distance.** The distance to the nearest road seam within the level's band `B`
    (`B` where there is none), negative for `Road`. Pads are not part of the mask.
@@ -3561,8 +3569,11 @@ measured ([T1](#terrain-07-open-questions)).
 
 ### Inside and outside from the roadbed's top triangles
 
-The bake rasterizes the top triangles of the pieces meeting the tile (found through
-`pieces_in_bounds` on the 32 m grid, then each piece's triangle grid) onto the level lattice. Each
+The bake rasterizes the top triangles of the grounded pieces meeting the tile (found through
+`pieces_in_bounds` on the 32 m grid, then each piece's triangle grid) onto the level lattice.
+Bridge and tunnel spans are left out like their chains (`TERRAIN-07-A` correction: a deck or a
+tunnel's road would otherwise discard the terrain under or over it), so coverage equals
+`height_at(p).is_some()` wherever no structure span covers `p`. Each
 candidate lattice point is tested with the roadbed's own point-in-triangle predicate, so coverage
 equals `height_at(p).is_some()` bitwise. Curb faces are vertical and cover nothing. Cost
 `O(top triangles + candidate points)`.
@@ -3700,6 +3711,15 @@ to point).
   surface edges likewise. From a base edit: the tiles holding its changed samples' bilinear
   support, since `g(p)` reads the base only at `p`. A stroke that re-solves road profiles
   (`ROAD-68-E` part 2) adds its roads' changes.
+  Correction (`TERRAIN-07-A`, `dirty_tiles_for_road_changes`): the bound is computed per
+  candidate tile, not over `3C`. The candidates are the tiles within `max(C, B)` of a changed
+  segment; each takes the reach its own bake computes (its window's slope and the base under the
+  segment), with the window's seam heights widened by every changed segment, so the bound holds
+  before and after the change and a removed segment counts. `3C` did not contain every affected
+  tile's window (a tile within `C` of the segment, 64 m wide, with a window of `C` beyond it,
+  reaches `3C` plus the apron), and per-tile windows are tighter. Tiles whose lattice meets a
+  changed piece's bounds are dirty too: coverage and the road surface under the deep inside rule
+  change only there, also where no chain changed.
 - **Preview.** `preview_road` selects the dirty tiles from the preview roadbed's changes and bakes
   the resident ones at their current level, synchronously on the shared pool, with their inputs.
   Godot uploads them into free slots and swaps the instances to them (and the cells' meshes where a
@@ -3726,9 +3746,9 @@ the road, one site chunk lookup and the seams near the point
 | Query | Answer | Replaces | Consumers |
 | --- | --- | --- | --- |
 | `base_height_at(x, z)` | the base `b(p)` | `sample_height_world`, `get_height_at_internal` | terrain brushes and authoring tools, water depth ([T13](#terrain-07-open-questions)) |
-| `ground_height_at(x, z)` | the graded ground: `GL0` values on the `GL0` triangle under `p`; at a pad the pad; under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
+| `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
 | `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
-| `normal_at(x, z)` | the rendered `GL0` normal | (new) | vegetation slope tests |
+| `normal_at(x, z)` | the rendered `GL0` normal: per lattice point the central difference of base plus delta over its four neighbours, interpolated over the `GL0` triangle (`TERRAIN-07-D`'s shader mirrors it, base gradient included) | (new) | vegetation slope tests |
 | `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }` | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
 | `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles) | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
