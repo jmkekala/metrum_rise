@@ -3873,6 +3873,11 @@ gate F starts now, in parallel with gate E part 2's last items, because gate E's
 - **Size.** `roadbed/` production lines 7,972 against 7,881 on `road` `359406c1` (+91): the
   crossing record (`for_each_crossing`, 49 lines with its contract), the span piece's crossing
   kerbs and `crossing_kerbs_right_first` (shared with the walkways), mostly doc comments.
+- **Gate run** (fresh, 2026-10-25, the part's final sources, `DISPLAY` and `WAYLAND_DISPLAY`
+  unset): `./run.sh --test` exits 0. Debug library suite 1,900 passed, 0 failed, 165 ignored;
+  integration 4 passed; every Godot bridge suite passes with no SCRIPT ERROR, none skipped.
+  `ROAD-68-F` ignores left: the tunnel portal boundary test, whose terrain side moves to
+  [`TERRAIN-07`](roadmap.md) with bridge abutments, building sites, driveways and paving.
 
 ### `ROAD-68-G` — commit consequences inside one frame
 
