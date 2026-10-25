@@ -18,6 +18,20 @@ impl RegionGraph {
         }
     }
 
+    /// Deletes an edge from the graph alone: the edge index, its flag and its two endpoint
+    /// adjacency lists, which keep their order. `O(endpoint degree + log edges)`; what a road
+    /// removal tries before it commits (`ROAD-68` open question 11 (c)).
+    pub(crate) fn delete_edge_locally(&mut self, edge_idx: usize) {
+        self.remove_from_spatial_index(edge_idx);
+        let edge = &mut self.edges[edge_idx];
+        edge.deleted = true;
+        for node in [edge.start_node, edge.end_node] {
+            if let Some(incident) = self.adjacency.get_mut(node as usize) {
+                incident.retain(|&incident_edge| incident_edge != edge_idx);
+            }
+        }
+    }
+
     /// Returns the number of disconnected components (islands) in the network
     pub fn get_island_count(&self) -> usize {
         if self.nodes.is_empty() {

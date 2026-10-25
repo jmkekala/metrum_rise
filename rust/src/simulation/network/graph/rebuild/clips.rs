@@ -168,4 +168,27 @@ impl RegionGraph {
     ) -> f32 {
         (a.x - b.x).hypot(a.z - b.z)
     }
+
+    /// Height of a graph profile polyline at the XZ projection of a point: the nearest
+    /// segment's lerp. The one height a road meets another road at mid-span (`ROAD-68` open
+    /// questions 16 and 30). `O(profile points)`.
+    pub(crate) fn profile_height_at(profile: &[Vector3], x: f32, z: f32) -> f32 {
+        let mut best = (f32::INFINITY, profile.first().map_or(0.0, |point| point.y));
+        for pair in profile.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (dx, dz) = (b.x - a.x, b.z - a.z);
+            let length_sq = dx * dx + dz * dz;
+            let t = if length_sq > 0.0 {
+                (((x - a.x) * dx + (z - a.z) * dz) / length_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (px, pz) = (a.x + dx * t, a.z + dz * t);
+            let distance_sq = (x - px) * (x - px) + (z - pz) * (z - pz);
+            if distance_sq < best.0 {
+                best = (distance_sq, a.y + (b.y - a.y) * t);
+            }
+        }
+        best.1
+    }
 }

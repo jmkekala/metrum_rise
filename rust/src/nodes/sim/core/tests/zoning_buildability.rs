@@ -244,8 +244,13 @@ fn missing_assets_allow_zoning_and_growth_waits_for_a_compatible_initial_asset()
 }
 
 #[test]
-#[ignore = "ROAD-68-E: the recorded fixture predates ROAD-68-C (open question 8): node 2 fails MouthOffPlane on its legacy clips, so its tiles report roadbed_chain_open_end (question 19); recomputed clips overlap the recorded parcels"]
 fn hillside_residential_sites_select_constructible_houses() {
+    hillside_houses();
+}
+
+// The hillside's five empty lots, checked for terrain-neutral feasibility across all profiles and
+// built, the family house on parcel 7.
+fn hillside_houses() -> SimCore {
     let mut core = fixture();
     let before = (
         core.zoning.parcels().len(),
@@ -324,6 +329,15 @@ fn hillside_residential_sites_select_constructible_houses() {
         core.publish_pending_building_site_changes();
     }
     assert_eq!(core.allocator.buildings.len(), 5);
+    core
+}
+
+// The fixture still holds legacy clips: node 2 fails `MouthOffPlane`, so its tiles report
+// `roadbed_chain_open_end` (`ROAD-68` open questions 8 and 19).
+#[test]
+#[ignore = "TERRAIN-07: refined CDT patches of the legacy terrain pipeline; the fixture's node 2 also fails MouthOffPlane on legacy clips (open question 8)"]
+fn hillside_houses_terrain_builds_clean() {
+    let mut core = hillside_houses();
     let patches = core.collect_refined_terrain_patch_build_inputs(2.0);
     for patch in SimCore::build_refined_terrain_patch_cache_entries(patches) {
         assert!(

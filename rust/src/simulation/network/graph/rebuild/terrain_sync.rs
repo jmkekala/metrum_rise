@@ -96,5 +96,10 @@ impl RegionGraph {
             edge.physical_geometry.clone_from(&edge.geometry);
         }
         self.rebuild_intersection_clips();
+        // The copies above drop every junction's pins: each node's arms re-derive their profiles
+        // from the re-graded control polylines, as an edit's solve does (`ROAD-68` invariant 6,
+        // open question 11 (c)). O(nodes + edges), like the sync.
+        let nodes = (0..self.nodes.len() as u32).collect();
+        self.finalize_junction_endpoint_profiles(&nodes);
     }
 }

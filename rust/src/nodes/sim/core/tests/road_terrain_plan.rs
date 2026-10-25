@@ -402,16 +402,20 @@ fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
     }
 }
 
+const KUOPIO_REFERENCE_SAVE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+);
+
+// Open question 8: the reference save is regenerated with `ROAD-68-E`'s load rebuild (loaded,
+// repaired and saved by `ROAD-68-E` part 2), so it loads as saved: no junction is repaired, every
+// saved control and physical point comes back bitwise and no node fails. The load repair itself
+// is `headlight_house_junction_full_load_compiles_with_terrain_earthwork`'s.
 #[test]
-#[ignore = "ROAD-68-E: a pre-ROAD-68-C save re-pins every junction whose profile reaches only the legacy hard zone, not just node 34; the load rebuild owns save migration"]
-fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
-    );
+fn kuopio_saved_reference_loads_as_saved() {
+    let fixture = KUOPIO_REFERENCE_SAVE;
     let mut core = test_core();
     core.load_game_internal(fixture).unwrap();
-    // The rejected junction is a local repair, not permission to regrade the city.
     let connection =
         rusqlite::Connection::open_with_flags(fixture, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
@@ -419,8 +423,6 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
         "SELECT edge_id, point_index, x, y, z, physical FROM network_edge_geometry ORDER BY edge_id, physical, point_index",
     ).unwrap();
     let mut rows = statement.query([]).unwrap();
-    let repaired_edges = core.region_graph.node_adjacency(34);
-    let mut repaired_points = 0;
     while let Some(row) = rows.next().unwrap() {
         let edge_id: usize = row.get(0).unwrap();
         let point_index: usize = row.get(1).unwrap();
@@ -431,25 +433,17 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
         );
         let physical: bool = row.get(5).unwrap();
         let edge = core.region_graph.edge(edge_id);
-        if repaired_edges.contains(&edge_id) {
-            repaired_points +=
-                usize::from(physical && edge.physical_geometry.get(point_index) != Some(&stored));
+        let restored = if physical {
+            &edge.physical_geometry
         } else {
-            let restored = if physical {
-                &edge.physical_geometry
-            } else {
-                &edge.geometry
-            };
-            assert_eq!(
-                restored[point_index], stored,
-                "unrelated saved geometry changed: edge {edge_id}"
-            );
-        }
+            &edge.geometry
+        };
+        assert_eq!(
+            restored.get(point_index),
+            Some(&stored),
+            "saved geometry changed on load: edge {edge_id} point {point_index} physical {physical}"
+        );
     }
-    assert!(
-        repaired_points > 0,
-        "fixture no longer exercises rejected-junction repair"
-    );
     core.precompute_road_mesh_data();
     let roadbed = &core.transit_network.roadbed;
     assert!(
@@ -457,8 +451,18 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
         "{:?}",
         roadbed.failed_nodes()
     );
+}
+
+// The regenerated reference's refined terrain builds clean. The refined patches the roads reach:
+// 27 on the legacy save as recorded before `ROAD-68-C`, 28 on the regenerated one.
+#[test]
+#[ignore = "TERRAIN-07: patch count and refined CDT patches of the legacy terrain pipeline"]
+fn kuopio_saved_reference_terrain_builds_clean() {
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
     let patches = SimCore::build_refined_terrain_patch_cache_entries(inputs(&mut core));
-    assert_eq!(patches.len(), 27);
+    assert_eq!(patches.len(), 28);
     for patch in patches {
         assert!(
             crate::nodes::simulation_node::SimulationNode::cached_refined_cdt_failure_label(&patch)
@@ -474,7 +478,7 @@ fn kuopio_saved_reference_repairs_rejected_junction_before_publication() {
 }
 
 #[test]
-#[ignore = "ROAD-68-E: a recorded Kuopio stroke fails node 5 (node_piece_failed) at 79e7a476 as well; the recorded placements predate ROAD-68-C (open question 8)"]
+#[ignore = "ROAD-68-E: recorded stroke kuopio_05 attempt 14 fails node 5 with MouthOffPlane (edge 0, end): the profile solve leaves an arm off its plane (open question 8)"]
 fn kuopio_recorded_profiles_and_terrain_preserve_quality_limits() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

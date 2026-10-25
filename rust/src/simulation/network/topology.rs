@@ -403,6 +403,27 @@ pub(crate) fn scan_intersection_candidates(graph: &RegionGraph, edge_id: usize) 
     candidates
 }
 
+// Height at which a new edge meets the existing edge `crossed` at the XZ of `at`: the crossed
+// edge's graph profile (`RegionGraph::profile_height_at`). A self-crossing keeps the stroke's own
+// height. O(profile points).
+fn crossed_road_height_at(
+    graph: &RegionGraph,
+    crossed: usize,
+    new_edge: usize,
+    at: Vector3,
+) -> f32 {
+    if crossed == new_edge {
+        return at.y;
+    }
+    let edge = graph.edge(crossed);
+    let profile = if edge.physical_geometry.len() >= 2 {
+        &edge.physical_geometry
+    } else {
+        &edge.geometry
+    };
+    RegionGraph::profile_height_at(profile, at.x, at.z)
+}
+
 /// Identifies all physical road crossings where edges intersect in 2D.
 fn collect_crossing_splits(
     graph: &mut RegionGraph,
@@ -455,7 +476,14 @@ fn collect_crossing_splits(
                         continue;
                     }
 
-                    let pos = p1;
+                    // The stroke meets the road it crosses at that road's graph profile, so the
+                    // split leaves the crossed road's profile as it was (`ROAD-68` open
+                    // questions 16 and 30).
+                    let pos = Vector3::new(
+                        p1.x,
+                        crossed_road_height_at(graph, other_id, edge_id, p1),
+                        p1.z,
+                    );
                     let factor_t = find_geo_factor(&edge1_geo_full, pos);
                     let factor_u = find_geo_factor(&edge2_geo_full, pos);
 
@@ -544,9 +572,14 @@ fn collect_endpoint_snap_splits(
                     < config::INTERSECTION_TOLERANCE
                 {
                     // Endpoint snaps are topological centerline connections. Use the refined
-                    // existing-road XZ so dense baked roads split at the true centerline, while
-                    // keeping the new endpoint height as the authored vertical connection pin.
-                    let junction_pos = Vector3::new(refined.x, p.y, refined.z);
+                    // existing-road XZ so dense baked roads split at the true centerline, at
+                    // the existing road's graph profile there: an end that meets a road
+                    // mid-span meets it at its height (`ROAD-68` open questions 16 and 30).
+                    let junction_pos = Vector3::new(
+                        refined.x,
+                        crossed_road_height_at(graph, other_id, edge_id, refined),
+                        refined.z,
+                    );
                     let junction_id = snap_new_edge_endpoint_to_intersection(
                         graph,
                         edge_id,

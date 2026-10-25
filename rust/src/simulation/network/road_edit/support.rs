@@ -92,7 +92,7 @@ impl<'a> StrokeSupport<'a> {
             } else if let PieceId::Span(edge) = piece
                 && rebuilt.crossed.binary_search(&edge).is_ok()
             {
-                graph_profile_height_at(&graph.edge(edge).physical_geometry, x, z)
+                RegionGraph::profile_height_at(&graph.edge(edge).physical_geometry, x, z)
             } else {
                 return;
             };
@@ -113,28 +113,6 @@ impl<'a> StrokeSupport<'a> {
     pub(super) fn into_read(self) -> Vec<PieceId> {
         self.read
     }
-}
-
-// Height of a profile polyline at the XZ projection of a point: the nearest segment's lerp.
-// O(profile points).
-fn graph_profile_height_at(profile: &[Vector3], x: f32, z: f32) -> f32 {
-    let mut best = (f32::INFINITY, profile.first().map_or(0.0, |point| point.y));
-    for pair in profile.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let (dx, dz) = (b.x - a.x, b.z - a.z);
-        let length_sq = dx * dx + dz * dz;
-        let t = if length_sq > 0.0 {
-            (((x - a.x) * dx + (z - a.z) * dz) / length_sq).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let (px, pz) = (a.x + dx * t, a.z + dz * t);
-        let distance_sq = (x - px) * (x - px) + (z - pz) * (z - pz);
-        if distance_sq < best.0 {
-            best = (distance_sq, a.y + (b.y - a.y) * t);
-        }
-    }
-    best.1
 }
 
 /// Prepares, validates and plans a stroke so that its profile reads no piece its own edit

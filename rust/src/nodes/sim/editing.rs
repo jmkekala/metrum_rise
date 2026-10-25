@@ -143,7 +143,10 @@ impl SimCore {
                 &patches,
                 terrain.filter(|_| installed),
             ),
-            Some(node) => Err(format!("node_piece_failed node={node}")),
+            Some(&node) => Err(format!(
+                "node_piece_failed node={node} error={:?}",
+                roadbed.node_error(node)
+            )),
         };
         match validation {
             Ok((entries, adopted)) => {
@@ -297,6 +300,26 @@ impl SimCore {
         self.transit_network
             .roadbed
             .compile_dirty(&self.region_graph);
+        // An edit that leaves a node without a layout or profile is rolled back from the undo
+        // record it pushed before it began, before anything publishes (`ROAD-68` open question
+        // 11 (c)).
+        if let Some(&node) = self.transit_network.roadbed.failed_nodes().first() {
+            let error = self.transit_network.roadbed.node_error(node);
+            debug_log!(
+                "world-editor",
+                "terrain_edit_rolled_back node={} error={:?}",
+                node,
+                error
+            );
+            self.last_road_rejection = Some(RoadRejection::new(
+                "node_piece_failed",
+                format!(
+                    "the terrain edit leaves node {node} without a layout or profile: {error:?}"
+                ),
+            ));
+            self.undo_action_in_pool();
+            return;
+        }
         self.refresh_road_locked_terrain_patch_state(
             crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
         );
@@ -702,6 +725,28 @@ impl SimCore {
             }
         }
 
+        // A removal that leaves a node at either end without a layout or profile is refused,
+        // with nothing touched (`ROAD-68` open question 11 (c)).
+        let ends = HashSet::from([start_node, end_node]);
+        let tried = self.try_graph_edit(&affected_edges, &affected_nodes, |core| {
+            let graph = &mut core.region_graph;
+            graph.delete_edge_locally(edge_idx);
+            graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+            graph.finalize_junction_endpoint_profiles(&ends);
+            HashSet::new()
+        });
+        if let Err(rejection) = tried {
+            debug_log!(
+                "road",
+                "road_removal_rejected edge={} reason={} detail={}",
+                edge_idx,
+                rejection.reason,
+                rejection.detail
+            );
+            self.last_road_rejection = Some(rejection);
+            return false;
+        }
+
         self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
@@ -719,7 +764,6 @@ impl SimCore {
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
         // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
         // edge the solve derives touches one of them, so it is in the undo record and rebuilt.
-        let ends = HashSet::from([start_node, end_node]);
         let changed = self.region_graph.finalize_junction_endpoint_profiles(&ends);
         debug_assert!(changed.is_subset(&affected_edges));
         for chunk in old_chunks {
@@ -1891,14 +1935,7 @@ impl SimCore {
         edges: &HashSet<usize>,
         nodes: &HashSet<u32>,
     ) -> Option<RoadRejection> {
-        let mut scratch = self.transit_network.roadbed.snapshot();
-        for &edge in edges {
-            scratch.mark_edge_dirty(edge);
-        }
-        for &node in nodes {
-            scratch.mark_node_dirty(self.region_graph.get_valid_node(node));
-        }
-        let delta = scratch.compile_delta(&self.region_graph);
+        let delta = self.compile_closure(edges, nodes);
         if let Some((node, error)) = delta.failed_nodes().next() {
             return Some(RoadRejection::new(
                 "node_piece_failed",
@@ -1912,6 +1949,43 @@ impl SimCore {
             .collect();
         ReservedOverlap::first(self, delta.pieces().filter_map(|(_, mesh)| mesh), &before)
             .map(ReservedOverlap::rejection)
+    }
+
+    // The closure of `edges` and `nodes` compiled, unpublished, into an `O(1)` copy of the
+    // published roadbed with the graph as it stands; ids past the graph's records are skipped.
+    // O(closure pieces).
+    fn compile_closure(
+        &self,
+        edges: &HashSet<usize>,
+        nodes: &HashSet<u32>,
+    ) -> crate::simulation::network::roadbed::RoadbedDelta {
+        let graph = &self.region_graph;
+        let mut scratch = self.transit_network.roadbed.snapshot();
+        for &edge in edges.iter().filter(|&&edge| edge < graph.edge_count()) {
+            scratch.mark_edge_dirty(edge);
+        }
+        for &node in nodes
+            .iter()
+            .filter(|&&node| (node as usize) < graph.node_count())
+        {
+            scratch.mark_node_dirty(graph.get_valid_node(node));
+        }
+        scratch.compile_delta(graph)
+    }
+
+    // Undo restores a graph that compiled when it was published, so its closure compiles again
+    // and a failed node there is a bug (`ROAD-68` open question 11 (c)). Debug builds only.
+    // O(closure pieces).
+    pub(super) fn debug_assert_closure_compiles(
+        &self,
+        edges: &HashSet<usize>,
+        nodes: &HashSet<u32>,
+    ) {
+        if cfg!(debug_assertions) {
+            let delta = self.compile_closure(edges, nodes);
+            let failed: Vec<_> = delta.failed_nodes().collect();
+            debug_assert!(failed.is_empty(), "undo restored failing nodes: {failed:?}");
+        }
     }
 
     /// Sets a lane connection rule at a junction node.

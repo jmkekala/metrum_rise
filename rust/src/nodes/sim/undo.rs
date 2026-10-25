@@ -392,7 +392,7 @@ impl SimCore {
         crate::thread_pools::install(|| self.undo_action_in_pool())
     }
 
-    fn undo_action_in_pool(&mut self) -> bool {
+    pub(super) fn undo_action_in_pool(&mut self) -> bool {
         if let Some(state) = self.undo_stack.pop_back() {
             if let Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)) = &state.runtime {
                 if !self.restore_cell_gesture_internal(edit) {
@@ -507,6 +507,7 @@ impl SimCore {
                     self.zoning.invalidate_cell_lot_assets();
                     self.reset_network_render_state(old_engineered_patch_keys);
                 } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
+                    self.debug_assert_closure_compiles(&edge_ids, &node_ids);
                     self.reset_local_network_render_state(
                         &edge_ids,
                         &node_ids,

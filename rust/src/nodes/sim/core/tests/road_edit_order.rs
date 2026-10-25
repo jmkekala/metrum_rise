@@ -4,8 +4,9 @@
 //! the same graph profiles, clips and roadbed pieces, bitwise. The fixtures are the rendered
 //! reference junctions, committed stroke by stroke through `SimCore::commit_road` as the
 //! reference harness does, flat and on its 2.5% slope. A stroke reads no carriageway of a piece
-//! its edit rebuilds (open question 16); on the slope, terminal extensions and mid-span meetings
-//! still depend on drawing order (open question 30).
+//! its edit rebuilds (open question 16) and joins a road end like any node (open question 30
+//! (a)); on the slope, a mid-span meeting takes the first-drawn road's height, the crossing rule
+//! (open questions 16 and 30), so those fixtures depend on drawing order by that rule alone.
 
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
@@ -231,6 +232,31 @@ fn node_moves_and_removals_leave_freshly_solved_profiles() {
     }
 }
 
+// Open question 11 (c): a terrain edit re-grades the roads, and the junctions it leaves compile
+// with freshly solved profiles, so it neither publishes a gap nor has to be rolled back. A 2 m
+// bump in the corner of the sloped T.
+#[test]
+fn a_terrain_edit_beside_a_sloped_junction_leaves_no_failed_node() {
+    let strokes = [
+        ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 1),
+        ([Vector2::ZERO, Vector2::new(0.0, ARM_M)], 1),
+    ];
+    let mut core = committed(&strokes, &[0, 1], true);
+    let at = Vector2::new(10.0, 10.0);
+    let height = core.get_world_surface_height_internal(at);
+    let terrain_before = core.heightmap.clone_visual_dense();
+    core.level_terrain_internal(at, 12.0, height + 2.0, 1.0);
+    let roadbed = &core.transit_network.roadbed;
+    let failed: Vec<_> = roadbed.failed_nodes().to_vec();
+    assert!(failed.is_empty(), "failed nodes after the edit: {failed:?}");
+    assert!(
+        core.heightmap.clone_visual_dense() != terrain_before,
+        "the edit was rolled back: {:?}",
+        core.last_road_rejection.as_ref().map(|r| &r.detail)
+    );
+    assert_profiles_fresh("terrain edit", &core);
+}
+
 fn assert_order_independent(name: &str, strokes: &[Stroke], orders: &[&[usize]], sloped: bool) {
     let reference = build(strokes, orders[0], sloped);
     for order in &orders[1..] {
@@ -334,12 +360,140 @@ fn sloped_junctions_do_not_depend_on_drawing_order() {
     t_junctions(true);
 }
 
-// Mid-span meetings still depend on drawing order (open question 30): by question 16's crossing
-// rule the road drawn second meets the first at its graph profile, so the first sets the height.
+// Mid-span meetings depend on drawing order by question 16's crossing rule alone: the road drawn
+// second meets the first at its graph profile, so the first sets the height
+// (`a_mid_span_meeting_lies_on_the_first_drawn_road`). On the slope the two roads' profiles at
+// the sloped cross's meeting differ by an ulp, so the orders differ there; only re-heighting the
+// first road (open question 30 (c), which edits an authored road) would make them equal.
 #[test]
-#[ignore = "ROAD-68-E: open question 30, a mid-span meeting takes the first-drawn road's height"]
+#[ignore = "ROAD-68-E: open question 30, by the crossing rule a mid-span meeting takes the first-drawn road's height; the sloped cross's two profiles differ there by an ulp"]
 fn sloped_mid_span_meetings_do_not_depend_on_drawing_order() {
     splits_and_adjacent_junctions(true);
+}
+
+// The height a stroke meets at `at` on the graph it is drawn on: an existing node's graph
+// height, else the graph profile of the live road passing nearest.
+fn met_height(core: &SimCore, at: Vector3) -> f32 {
+    let graph = &core.region_graph;
+    let node = (0..graph.node_count() as u32)
+        .map(|node| graph.get_valid_node(node))
+        .filter(|&node| live_node(graph, node))
+        .find(|&node| {
+            let pos = graph.node(node).pos;
+            (pos.x - at.x).hypot(pos.z - at.z) < 0.5
+        });
+    if let Some(node) = node {
+        return graph.node(node).pos.y;
+    }
+    let distance = |edge: &crate::simulation::network::graph::Edge| {
+        edge.physical_geometry
+            .windows(2)
+            .map(|pair| {
+                let (a, b) = (pair[0], pair[1]);
+                let (dx, dz) = (b.x - a.x, b.z - a.z);
+                let t =
+                    (((at.x - a.x) * dx + (at.z - a.z) * dz) / (dx * dx + dz * dz)).clamp(0.0, 1.0);
+                (at.x - a.x - dx * t).hypot(at.z - a.z - dz * t)
+            })
+            .fold(f32::INFINITY, f32::min)
+    };
+    let edge = graph
+        .edges()
+        .iter()
+        .filter(|edge| !edge.deleted)
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+        .expect("a road to meet");
+    crate::simulation::network::graph::RegionGraph::profile_height_at(
+        &edge.physical_geometry,
+        at.x,
+        at.z,
+    )
+}
+
+fn live_node(graph: &crate::simulation::network::graph::RegionGraph, node: u32) -> bool {
+    graph
+        .node_adjacency(node)
+        .iter()
+        .any(|&edge| !graph.edge(edge).deleted)
+}
+
+// Open questions 16 and 30: a stroke meets a road it crosses or ends on mid-span at that road's
+// graph profile, and a road end it passes over at that node's height, so the road drawn first
+// sets the meeting's height and the road drawn second edits neither. The sloped cross and pair,
+// every order of the order test: each meeting node lies exactly on what the first-drawn road
+// had there before the second arrived.
+#[test]
+fn a_mid_span_meeting_lies_on_the_first_drawn_road() {
+    let cross: &[Stroke] = &[
+        ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 1),
+        ([Vector2::new(20.0, -ARM_M), Vector2::new(20.0, ARM_M)], 1),
+    ];
+    let pair: &[Stroke] = &[
+        ([Vector2::new(-ARM_M, 0.0), Vector2::new(ARM_M, 0.0)], 1),
+        ([Vector2::new(-30.0, 0.0), Vector2::new(-30.0, ARM_M)], 1),
+        ([Vector2::new(20.0, 0.0), Vector2::new(20.0, -ARM_M)], 1),
+    ];
+    // Each fixture's meetings: where, and the two strokes that meet there.
+    type Case<'a> = (
+        &'a str,
+        &'a [Stroke],
+        &'a [&'a [usize]],
+        &'a [(Vector2, [usize; 2])],
+    );
+    let cases: [Case; 2] = [
+        (
+            "cross",
+            cross,
+            &[&[0, 1], &[1, 0]],
+            &[(Vector2::new(20.0, 0.0), [0, 1])],
+        ),
+        (
+            "two_junctions",
+            pair,
+            &[&[0, 1, 2], &[1, 0, 2], &[1, 2, 0]],
+            &[
+                (Vector2::new(-30.0, 0.0), [0, 1]),
+                (Vector2::new(20.0, 0.0), [0, 2]),
+            ],
+        ),
+    ];
+    for (name, strokes, orders, meetings) in cases {
+        for order in orders {
+            let core = committed(strokes, order, true);
+            let graph = &core.region_graph;
+            for &(at, roads) in meetings {
+                let node = (0..graph.node_count() as u32)
+                    .map(|node| graph.get_valid_node(node))
+                    .filter(|&node| live_node(graph, node))
+                    .find(|&node| {
+                        let pos = graph.node(node).pos;
+                        (pos.x - at.x).hypot(pos.z - at.y) < 0.5
+                    })
+                    .unwrap_or_else(|| panic!("{name} {order:?}: no node at {at:?}"));
+                let pos = graph.node(node).pos;
+                // The graph just before the second of the two roads was drawn.
+                let second = order
+                    .iter()
+                    .position(|index| roads.contains(index))
+                    .map(|first| first + 1)
+                    .and_then(|start| {
+                        order[start..]
+                            .iter()
+                            .position(|index| roads.contains(index))
+                            .map(|offset| start + offset)
+                    })
+                    .unwrap();
+                let before = committed(strokes, &order[..second], true);
+                let expected = met_height(&before, pos);
+                assert_eq!(
+                    pos.y.to_bits(),
+                    expected.to_bits(),
+                    "{name} {order:?} at {at:?}: the meeting at {} m is not on the first road at {expected} m",
+                    pos.y
+                );
+            }
+        }
+    }
 }
 
 // Open question 30 (a): a stroke from a road end on the slope, straight on or bending, leaves the
