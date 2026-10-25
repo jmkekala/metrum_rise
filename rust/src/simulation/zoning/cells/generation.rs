@@ -9,7 +9,8 @@ mod support;
 use super::geometry::interiors_overlap;
 use super::sources::{CellCurveSource, CurveSourceKey};
 use super::{
-    CELL_DEPTH, CellBounds, CellFrontage, CellKey, CellMap, CellRoadFrontage, CellStore, GridFrame,
+    CELL_DEPTH, CellBounds, CellFrontage, CellKey, CellMap, CellMaps, CellRoadFrontage, CellStore,
+    GridFrame, LiveMaps,
 };
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -61,7 +62,7 @@ impl Candidate {
     }
 }
 
-impl CellStore {
+impl<M: CellMaps> CellStore<M> {
     /// Recomputes cells intersecting a bounded edit/view envelope. The caller supplies exact
     /// compiled-road, manual-parcel, building-site and field exclusion without transferring
     /// ownership to this module. That predicate must be read-only and safe to query in parallel.
@@ -209,7 +210,8 @@ impl CellStore {
 
         // Reuse the cell block spatial structure as a temporary candidate index. It is local
         // to this operation and does not clone or scan the city's persistent frame registry.
-        let mut raw = CellStore::default();
+        // It keeps plain maps whatever the store's kind.
+        let mut raw = CellStore::<LiveMaps>::default();
         let mut priorities =
             CellMap::with_capacity_and_hasher(candidates.len(), Default::default());
         let mut frontages: CellMap<CellKey, Vec<CellRoadFrontage>> = CellMap::default();

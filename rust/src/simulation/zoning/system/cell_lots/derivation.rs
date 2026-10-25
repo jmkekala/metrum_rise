@@ -9,7 +9,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::zoning::cells::{
     CELL_DEPTH, CELL_FRONTAGE_UNITS, CellBounds, CellGeneration, CellKey, CellLot, CellLotSize,
-    CellRoadFrontage, CellStore, GridFrame, overlaps_road_corridors,
+    CellMaps, CellRoadFrontage, CellStore, GridFrame, LiveMaps, overlaps_road_corridors,
 };
 use crate::simulation::zoning::parcels::{PlannedParcelChange, PlannedParcels};
 use crate::simulation::zoning::{
@@ -37,11 +37,12 @@ pub(crate) struct CellLotGeneration {
 /// lot queue it changes in place, against a parcel store it only reads, recording its parcel
 /// changes. The commit plans on the live store and queue; [`ZoningSystem::install_cell_lot_plan`]
 /// then makes the recorded parcel calls on the parcel store the plan read. Every lot derivation
-/// goes through this one planner, so a plan made on an equal copy installs equal products.
-pub(crate) struct CellLotPlanner<'a> {
+/// goes through this one planner, generic over the store's map kind (`ROAD-68` open question
+/// 32), so a plan made on an equal copy, plain or persistent, installs equal products.
+pub(crate) struct CellLotPlanner<'a, M: CellMaps = LiveMaps> {
     config: &'a WorldConfig,
     profiles: &'a ZoningProfileRegistry,
-    cells: &'a mut CellStore,
+    cells: &'a mut CellStore<M>,
     queue: &'a mut CellLotQueue,
     parcels: PlannedParcels<'a>,
     // Times the plan advanced the zoning overlay revision.
@@ -84,6 +85,36 @@ impl ZoningSystem {
         self.overlay_revision = self.overlay_revision.wrapping_add(plan.overlay_bumps);
     }
 
+    /// Plans, as the commit does, generation of `bounds`' invalid cells and then lot derivation
+    /// on `cells`, the live store or a copy of it of either kind, with a scratch queue and the
+    /// live parcel store, without blockers; returns the report and the uninstalled plan's
+    /// parcel changes. Tests' entry for the planner on the view's persistent copy.
+    #[cfg(test)]
+    pub(crate) fn plan_cell_lots_on<M: CellMaps>(
+        &self,
+        cells: &mut CellStore<M>,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        sizes: &[CellLotSize],
+    ) -> (CellLotGeneration, Vec<PlannedParcelChange>) {
+        let mut queue = CellLotQueue::default();
+        let mut planner = CellLotPlanner {
+            config: &self.config,
+            profiles: &self.profiles,
+            cells,
+            queue: &mut queue,
+            parcels: PlannedParcels::new(&self.parcels),
+            overlay_bumps: 0,
+        };
+        planner.prepare_generated_cells(
+            graph,
+            bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
+            |_| false,
+        );
+        let report = planner.derive_cell_lots(graph, bounds, sizes, |_, _| false);
+        (report, planner.finish().changes)
+    }
+
     /// Derives new disjoint lots around a changed painted area using compatible asset sizes,
     /// planned and installed at once ([`CellLotPlanner::derive_cell_lots`]); tests' entry.
     #[cfg(test)]
@@ -102,7 +133,7 @@ impl ZoningSystem {
     }
 }
 
-impl CellLotPlanner<'_> {
+impl<M: CellMaps> CellLotPlanner<'_, M> {
     /// Ends the plan, leaving its parcel changes for the installer.
     pub(crate) fn finish(self) -> CellLotPlan {
         CellLotPlan {

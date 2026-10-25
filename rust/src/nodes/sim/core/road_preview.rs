@@ -102,9 +102,11 @@ pub(crate) struct RoadToolQuerySnapshot {
     /// Committed field reservations, shared in `O(1)`: the preview tests its pieces against
     /// them as the commit does (`ROAD-68` open question 25).
     pub(crate) fields: Arc<crate::simulation::agriculture::FieldClearanceIndex>,
-    /// The zoning cell store, a persistent copy shared in `O(1)`: the preview tests its pieces
-    /// against its reserved cells as the commit does (open questions 21 (b) and 25).
-    pub(crate) cells: crate::simulation::zoning::cells::CellStore,
+    /// A persistent copy of the zoning cell store, shared in `O(1)` and brought up to date at
+    /// each publication from the live store's write journal (open question 32): the preview
+    /// tests its pieces against its reserved cells as the commit does (open question 25).
+    pub(crate) cells:
+        crate::simulation::zoning::cells::CellStore<crate::simulation::zoning::cells::SharedMaps>,
     pub(crate) surface_generation: u64,
 }
 
@@ -160,7 +162,7 @@ pub(crate) fn road_tool_snapshot_from_core(core: &SimCore) -> Option<RoadToolQue
         road_mesh_generation: core.road_mesh_lane_generation,
         terrain_inputs: core.road_terrain_inputs.current(),
         fields: Arc::clone(&core.allocator.field_clearance),
-        cells: core.zoning.cells.clone(),
+        cells: crate::simulation::zoning::cells::CellStore::copy_of(&core.zoning.cells),
         surface_generation: core.road_tool_surface_generation,
     })
 }

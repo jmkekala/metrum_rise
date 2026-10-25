@@ -1145,6 +1145,31 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         eprintln!("COMMIT_BREAKDOWN {record}");
         graded_tiles(residents, sample, core, &before_roadbed);
     }
+    // After the timed commits: the road tool view's persistent cell copy (`ROAD-68` open
+    // question 32), its entries and estimated bytes (each persistent entry also holds a
+    // pointer and an `Arc` header, counted as 24 bytes), and the process's resident-set growth
+    // while one more copy is alive.
+    let resident = || {
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|statm| statm.split_whitespace().nth(1)?.parse::<usize>().ok())
+            .unwrap_or(0)
+            * 4096
+    };
+    let (entries, bytes) = core.zoning.cells.memory_estimate();
+    let before = resident();
+    let begin = Instant::now();
+    let copy = crate::simulation::zoning::cells::CellStore::copy_of(&core.zoning.cells);
+    let copy_ms = begin.elapsed().as_secs_f64() * 1e3;
+    let grown = resident().saturating_sub(before);
+    assert_eq!(copy.memory_estimate(), (entries, bytes));
+    drop(black_box(copy));
+    eprintln!(
+        "COMMIT_CELL_COPY {}",
+        serde_json::json!({"residents": residents, "entries": entries, "payload_bytes": bytes,
+            "copy_estimate_bytes": bytes + 24 * entries, "copy_resident_growth_bytes": grown,
+            "copy_ms": copy_ms})
+    );
 }
 
 // `TERRAIN-07-A`: the graded terrain stage of the same commit on the same core, after it

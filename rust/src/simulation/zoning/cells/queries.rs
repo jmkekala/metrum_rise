@@ -2,12 +2,12 @@
 
 //! Gesture materialization independent of previously viewed or generated neighborhoods.
 
-use super::{CellBounds, CellGeneration, CellSelection, CellSelectionShape, CellStore};
+use super::{CellBounds, CellGeneration, CellMaps, CellSelection, CellSelectionShape, CellStore};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
 use glam::DVec2;
 
-impl CellStore {
+impl<M: CellMaps> CellStore<M> {
     /// Materializes cold chunks or retained dirty envelopes in a bounded query region.
     /// Ready chunks cost one lookup; generation and publication use the existing local cache.
     pub(crate) fn ensure_generated_in_bounds(
@@ -38,7 +38,9 @@ impl CellStore {
         }
         report
     }
+}
 
+impl CellStore {
     /// Generates only gesture-relevant chunks before selecting. Fill follows its component
     /// into uncached chunks; storage and previous camera coverage never stop the traversal.
     /// Work is local generation per visited chunk plus the ordinary selector's work.

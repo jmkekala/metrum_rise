@@ -5,7 +5,7 @@
 use super::*;
 use std::collections::HashSet;
 
-impl CellStore {
+impl<M: CellMaps> CellStore<M> {
     /// Resolves a canonical frame through its existing constant-time registry.
     pub(crate) fn grid_for_frame(&self, frame: GridFrame) -> Option<u64> {
         self.frame_ids.get(&frame).copied()
@@ -54,12 +54,12 @@ impl CellStore {
         }
         if !self.curve_sources.contains_key(&key) {
             for chunk in chunks_for_bounds(key.bounds()) {
-                Arc::make_mut(self.chunks.entry(chunk).or_default())
-                    .sources
-                    .push(key);
+                self.chunks.entry_or_default(chunk).sources.push(key);
+                self.journal.chunks.push(chunk);
             }
         }
         self.curve_sources.insert(key, source);
+        self.journal.sources.push(key);
     }
 
     /// Drops locally evicted empty guides; paint and occupied coverage retain their originals.
@@ -74,11 +74,11 @@ impl CellStore {
                 continue;
             }
             self.curve_sources.remove(&key);
+            self.journal.sources.push(key);
             for chunk in chunks_for_bounds(key.bounds()) {
                 if let Some(entry) = self.chunks.get_mut(&chunk) {
-                    Arc::make_mut(entry)
-                        .sources
-                        .retain(|&candidate| candidate != key);
+                    entry.sources.retain(|&candidate| candidate != key);
+                    self.journal.chunks.push(chunk);
                 }
             }
         }
@@ -88,7 +88,8 @@ impl CellStore {
     pub(crate) fn saved_curve_sources(&self) -> Vec<&CellCurveSource> {
         let mut sources: Vec<_> = self
             .curve_sources
-            .values()
+            .iter()
+            .map(|(_, source)| source)
             .filter(|source| self.curve_source_reserved(source))
             .map(Arc::as_ref)
             .collect();

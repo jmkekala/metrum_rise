@@ -6,7 +6,7 @@
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::cells::{
-    CELL_GROUP_COLUMNS, CellBounds, CellKey, CellLotSize, CellStore,
+    CELL_GROUP_COLUMNS, CellBounds, CellKey, CellLotSize, CellMaps, CellStore,
 };
 use crate::simulation::zoning::{MAX_PARCEL_FRONTAGE_M, cells::CELL_DEPTH};
 use glam::DVec2;
@@ -71,7 +71,7 @@ impl CellLotQueue {
 
     // The next region `pop` takes; without reservations nothing needs lots and the queue
     // empties.
-    pub(super) fn pop_region(&mut self, cells: &CellStore) -> Option<CellBounds> {
+    pub(super) fn pop_region<M: CellMaps>(&mut self, cells: &CellStore<M>) -> Option<CellBounds> {
         if !cells.has_reservations() {
             self.clear();
             return None;

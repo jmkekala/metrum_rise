@@ -11,7 +11,10 @@ use crate::simulation::network::road_edit::{
 };
 use crate::simulation::network::roadbed::{PieceMesh, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::zoning::{ZoningSystem, cells::CellStore};
+use crate::simulation::zoning::{
+    ZoningSystem,
+    cells::{CellMaps, CellStore},
+};
 use godot::prelude::Vector3;
 
 /// Immutable preparation and solved local graph delta against pinned road/source revisions.
@@ -56,9 +59,9 @@ impl ReservedOverlap {
     /// passes the live indices and the road tool's preview the view's copies of them (`ROAD-68`
     /// open question 25). O(pieces * reservations in their bounds * top triangles); a piece with
     /// no reservation in its bounds costs one bounds query each.
-    pub(crate) fn first<'a>(
+    pub(crate) fn first<'a, M: CellMaps>(
         fields: &FieldClearanceIndex,
-        cells: &CellStore,
+        cells: &CellStore<M>,
         pieces: impl IntoIterator<Item = &'a PieceMesh>,
         before: &[&PieceMesh],
     ) -> Option<Self> {

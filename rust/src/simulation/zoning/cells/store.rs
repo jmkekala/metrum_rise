@@ -4,17 +4,19 @@
 
 mod alignment;
 mod chunks;
+mod maps;
 mod sources;
 
 pub(crate) use alignment::RoadCellAlignment;
+pub(crate) use maps::{CellMaps, LiveMaps, SharedMaps};
 
 use super::sources::{CellCurveSource, CurveSourceKey};
 use super::{
     BLOCK_CELLS, BLOCK_SIDE, BlockKey, CellBounds, CellKey, CellLot, CellRoadFrontage, GridFrame,
-    StoreMap,
 };
 use crate::simulation::network::graph::RegionGraph;
 use glam::DVec2;
+use maps::{FrameList, KeyLog, StoreMap};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -60,34 +62,167 @@ struct CellChunk {
     dirty_bounds: Option<CellBounds>,
 }
 
-/// Sparse authoritative paint and lot coverage; geometry is derived from persistent frames.
-/// Every map is persistent, so a clone is `O(1)` (bar the bounded stale-chunk list) and the
-/// first write after it copies only the written paths (`ROAD-68` open question 21 (b)).
-/// Blocks, chunk entries and frontage lists sit behind `Arc`: a copied map node then moves
-/// pointers, and a write copies only the one value it changes. Writers read first and take a
-/// mutable path only for a real change, so an unchanged cell never copies a shared path.
+// The keys a store wrote since the road tool view's copy last followed it (`ROAD-68` open
+// question 32). Frames are append-only between clears, so the copy takes the new suffix, and
+// road alignments are already persistent, so it shares them.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct CellStore {
-    frames: imbl::Vector<GridFrame>,
-    frame_ids: StoreMap<GridFrame, u64>,
-    blocks: StoreMap<BlockKey, Arc<CellBlock>>,
-    chunks: StoreMap<(i32, i32), Arc<CellChunk>>,
+struct CellJournal {
+    // A clear or a whole-world invalidation since the last drain: the copy is rebuilt whole.
+    whole: bool,
+    blocks: KeyLog<BlockKey>,
+    chunks: KeyLog<(i32, i32)>,
+    frontages: KeyLog<CellKey>,
+    sources: KeyLog<CurveSourceKey>,
+}
+
+impl CellJournal {
+    fn clear(&mut self) {
+        self.whole = false;
+        self.blocks.clear();
+        self.chunks.clear();
+        self.frontages.clear();
+        self.sources.clear();
+    }
+}
+
+/// Sparse authoritative paint and lot coverage; geometry is derived from persistent frames.
+/// Generic over its map kind ([`CellMaps`]): the live store keeps plain maps ([`LiveMaps`]);
+/// the road tool's view keeps a persistent copy ([`SharedMaps`]) that each publication brings
+/// up to date from the live store's write journal ([`CellStore::follow`]), so every algorithm
+/// on the store, lot planning included, runs one function on either (`ROAD-68` open question
+/// 32). Every write records its key in that journal.
+#[derive(Clone, Debug)]
+pub(crate) struct CellStore<M: CellMaps = LiveMaps> {
+    frames: M::Frames,
+    frame_ids: M::Map<GridFrame, u64>,
+    blocks: M::Map<BlockKey, CellBlock>,
+    chunks: M::Map<(i32, i32), CellChunk>,
     // Warm chunks invalidated since the last drain; bounded by the edits' footprints.
     stale_chunks: Vec<(i32, i32)>,
-    frontages: StoreMap<CellKey, Arc<[CellRoadFrontage]>>,
-    curve_sources: StoreMap<CurveSourceKey, Arc<CellCurveSource>>,
+    frontages: M::Map<CellKey, Vec<CellRoadFrontage>>,
+    curve_sources: M::Map<CurveSourceKey, Arc<CellCurveSource>>,
     road_alignments: imbl::HashMap<usize, RoadCellAlignment>,
+    journal: CellJournal,
     painted_count: usize,
     claimed_count: usize,
     revision: u64,
 }
 
+// Only the live kind has a default, so `CellStore::default()` names the live store; the view's
+// copy starts from [`CellStore::copy_of`].
+impl Default for CellStore {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl CellStore<SharedMaps> {
+    /// A persistent copy of `live`, with an empty journal. O(entries log entries).
+    pub(crate) fn copy_of(live: &CellStore) -> Self {
+        let mut copy = Self::empty();
+        for frame in live.frames.iter() {
+            copy.frames.push(frame);
+        }
+        for (&frame, &id) in live.frame_ids.iter() {
+            copy.frame_ids.insert(frame, id);
+        }
+        for (&key, block) in live.blocks.iter() {
+            copy.blocks.insert(key, block.clone());
+        }
+        for (&key, chunk) in live.chunks.iter() {
+            copy.chunks.insert(key, chunk.clone());
+        }
+        for (&key, links) in live.frontages.iter() {
+            copy.frontages.insert(key, links.clone());
+        }
+        for (&key, source) in live.curve_sources.iter() {
+            copy.curve_sources.insert(key, Arc::clone(source));
+        }
+        copy.follow_scalars(live);
+        copy
+    }
+
+    /// Brings this copy up to date with `live`, of which it was a copy when `live`'s journal
+    /// was last drained, and drains the journal: every journaled entry is copied or removed,
+    /// frames after the copy's last are appended, alignments are shared. Exact, never stale.
+    /// O(written keys * log entries); a clear or whole-world invalidation copies `live` whole.
+    pub(crate) fn follow(&mut self, live: &mut CellStore) {
+        if live.journal.whole {
+            *self = Self::copy_of(live);
+            live.journal.clear();
+            return;
+        }
+        for index in self.frames.len()..live.frames.len() {
+            let frame = live.frames[index];
+            self.frames.push(frame);
+            self.frame_ids.insert(frame, index as u64 + 1);
+        }
+        fn copy_entries<K, V>(
+            log: &mut KeyLog<K>,
+            from: &impl StoreMap<K, V>,
+            to: &mut impl StoreMap<K, V>,
+        ) where
+            K: Copy + Ord,
+            V: Clone,
+        {
+            for key in log.drain_sorted() {
+                match from.get(&key) {
+                    Some(value) => to.insert(key, value.clone()),
+                    None => to.remove(&key),
+                }
+            }
+        }
+        let journal = &mut live.journal;
+        copy_entries(&mut journal.blocks, &live.blocks, &mut self.blocks);
+        copy_entries(&mut journal.chunks, &live.chunks, &mut self.chunks);
+        copy_entries(&mut journal.frontages, &live.frontages, &mut self.frontages);
+        copy_entries(
+            &mut journal.sources,
+            &live.curve_sources,
+            &mut self.curve_sources,
+        );
+        self.follow_scalars(live);
+    }
+
+    // Shares the alignments and copies the counts and revision; the stale-chunk list stays the
+    // live overlay's.
+    fn follow_scalars(&mut self, live: &CellStore) {
+        self.road_alignments = live.road_alignments.clone();
+        self.painted_count = live.painted_count;
+        self.claimed_count = live.claimed_count;
+        self.revision = live.revision;
+    }
+}
+
 impl CellStore {
+    /// Forgets the journal after the road tool's view took a whole copy of this store.
+    pub(crate) fn clear_journal(&mut self) {
+        self.journal.clear();
+    }
+}
+
+impl<M: CellMaps> CellStore<M> {
+    fn empty() -> Self {
+        Self {
+            frames: Default::default(),
+            frame_ids: Default::default(),
+            blocks: Default::default(),
+            chunks: Default::default(),
+            stale_chunks: Vec::new(),
+            frontages: Default::default(),
+            curve_sources: Default::default(),
+            road_alignments: imbl::HashMap::new(),
+            journal: CellJournal::default(),
+            painted_count: 0,
+            claimed_count: 0,
+            revision: 0,
+        }
+    }
+
     /// Visits persistent frames in id order for serialization, including temporarily empty ones.
     pub(crate) fn saved_frames(&self) -> impl Iterator<Item = (u64, GridFrame)> + '_ {
         self.frames
             .iter()
-            .copied()
             .enumerate()
             .map(|(i, frame)| (i as u64 + 1, frame))
     }
@@ -95,7 +230,7 @@ impl CellStore {
     /// Captures only paint and occupied coverage; generated empty geometry is a rebuildable cache.
     pub(crate) fn saved_cells(&self) -> Vec<(CellKey, u16)> {
         let mut result = Vec::new();
-        for (&key, block) in &self.blocks {
+        for (&key, block) in self.blocks.iter() {
             let mut mask = block.valid;
             while mask != 0 {
                 let offset = mask.trailing_zeros() as usize;
@@ -116,7 +251,7 @@ impl CellStore {
         use crate::debug::work::debug_hash;
         let mut claims = Vec::new();
         let mut valid = Vec::new();
-        for (&key, block) in &self.blocks {
+        for (&key, block) in self.blocks.iter() {
             valid.push((key, block.valid));
             for offset in 0..BLOCK_CELLS {
                 if block.profiles[offset] != 0 || block.lots[offset] != 0 {
@@ -128,10 +263,71 @@ impl CellStore {
         valid.sort_unstable();
         let mut frontages: Vec<_> = self.frontages.iter().collect();
         frontages.sort_unstable();
+        let frames: Vec<_> = self.frames.iter().collect();
         (
-            debug_hash(&(&self.frames, claims)),
+            debug_hash(&(&frames, claims)),
             debug_hash(&(valid, frontages)),
         )
+    }
+
+    /// Test-only digest of everything a copy must equal, independent of map order: frames,
+    /// every block, chunk entry (its lists in their order), frontage list and curve source,
+    /// the alignments, counts and revision. The stale-chunk list and the journal are left out.
+    #[cfg(test)]
+    pub(crate) fn state_digest(&self) -> u64 {
+        fn sorted<'a, K: Ord + 'a, V: 'a>(
+            entries: impl Iterator<Item = (&'a K, &'a V)>,
+        ) -> Vec<(&'a K, &'a V)> {
+            let mut entries: Vec<_> = entries.collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            entries
+        }
+        let frames: Vec<_> = self.frames.iter().collect();
+        let mut frame_ids: Vec<_> = self.frame_ids.iter().map(|(&f, &id)| (id, f)).collect();
+        frame_ids.sort_unstable_by_key(|&(id, _)| id);
+        let blocks = sorted(self.blocks.iter());
+        let chunks = sorted(self.chunks.iter());
+        let frontages = sorted(self.frontages.iter());
+        let sources = sorted(self.curve_sources.iter());
+        let alignments = self.saved_road_alignments();
+        crate::debug::work::debug_hash(&(
+            (
+                frames, frame_ids, blocks, chunks, frontages, sources, alignments,
+            ),
+            (self.painted_count, self.claimed_count, self.revision),
+        ))
+    }
+
+    /// Test-only memory estimate (`ROAD-68` open question 32): the entries of every map and the
+    /// bytes of their keys, values and owned lists, as either kind stores them, without map
+    /// nodes, spare capacity or `Arc` headers. Frames count twice (list and id map).
+    #[cfg(test)]
+    pub(crate) fn memory_estimate(&self) -> (usize, usize) {
+        use std::mem::size_of;
+        let mut entries = 2 * self.frames.len();
+        let mut bytes = entries * size_of::<GridFrame>() + self.frames.len() * size_of::<u64>();
+        for (_, block) in self.blocks.iter() {
+            entries += 1;
+            bytes += size_of::<BlockKey>() + size_of_val(block);
+        }
+        for (_, chunk) in self.chunks.iter() {
+            entries += 1;
+            bytes += size_of::<(i32, i32)>()
+                + size_of_val(chunk)
+                + chunk.blocks.len() * size_of::<BlockKey>()
+                + chunk.sources.len() * size_of::<CurveSourceKey>();
+        }
+        for (_, links) in self.frontages.iter() {
+            entries += 1;
+            bytes += size_of::<CellKey>()
+                + size_of_val(links)
+                + links.len() * size_of::<CellRoadFrontage>();
+        }
+        for (_, source) in self.curve_sources.iter() {
+            entries += 1;
+            bytes += size_of::<CurveSourceKey>() + size_of_val(source);
+        }
+        (entries, bytes)
     }
 
     /// Restores consecutive frame identities, rejecting duplicates and invalid serialized bases.
@@ -184,6 +380,8 @@ impl CellStore {
         self.road_alignments.clear();
         self.painted_count = 0;
         self.claimed_count = 0;
+        self.journal.clear();
+        self.journal.whole = true;
         self.bump_revision();
     }
 
@@ -193,7 +391,7 @@ impl CellStore {
             return id;
         }
         let id = self.frames.len() as u64 + 1;
-        self.frames.push_back(frame);
+        self.frames.push(frame);
         self.frame_ids.insert(frame, id);
         id
     }
@@ -206,7 +404,7 @@ impl CellStore {
     /// Resolves a grid without depending on road storage order.
     pub(crate) fn frame(&self, grid: u64) -> Option<GridFrame> {
         let index = usize::try_from(grid.checked_sub(1)?).ok()?;
-        self.frames.get(index).copied()
+        self.frames.get(index)
     }
 
     /// Generation and paint edits advance this epoch; stale gestures cannot target new cells.
@@ -226,7 +424,7 @@ impl CellStore {
 
     /// Visits painted storage tiles during an explicit whole-catalog refresh, without sorting cells.
     pub(crate) fn visit_painted_block_bounds(&self, mut visit: impl FnMut(CellBounds)) {
-        for (&key, block) in &self.blocks {
+        for (&key, block) in self.blocks.iter() {
             let mut mask = block.valid;
             let mut painted = false;
             while mask != 0 {
@@ -245,7 +443,7 @@ impl CellStore {
 
     /// Returns current road-facing boundaries; rear cells and orphaned paint have none.
     pub(crate) fn frontages(&self, key: CellKey) -> &[CellRoadFrontage] {
-        self.frontages.get(&key).map_or(&[], |links| &links[..])
+        self.frontages.get(&key).map_or(&[], Vec::as_slice)
     }
 
     /// Replaces sorted transient road support and advances the epoch only when it changes.
@@ -260,14 +458,15 @@ impl CellStore {
         if frontages.is_empty() {
             self.frontages.remove(&key);
         } else {
-            self.frontages.insert(key, frontages.into());
+            self.frontages.insert(key, frontages);
         }
+        self.journal.frontages.push(key);
         self.bump_revision();
     }
 
     /// Publishes a cell after generation and reservation validation. Existing paint is retained.
     pub(super) fn insert(&mut self, key: CellKey) -> bool {
-        let inserted = self.insert_unstamped(key);
+        let inserted = self.insert_cell::<true>(key);
         if inserted {
             self.revision = self.revision.wrapping_add(1);
             self.mark_cell_chunk_changed(key);
@@ -275,9 +474,14 @@ impl CellStore {
         inserted
     }
 
-    // [`Self::insert`] without advancing the store's revision or stamping the cell's rendering
-    // chunk: for a generation's temporary candidate index, whose revisions nothing reads.
+    // [`Self::insert`] without advancing the store's revision, stamping the cell's rendering
+    // chunk or journaling: for a generation's temporary candidate index, which nothing reads
+    // after the generation.
     pub(super) fn insert_unstamped(&mut self, key: CellKey) -> bool {
+        self.insert_cell::<false>(key)
+    }
+
+    fn insert_cell<const JOURNAL: bool>(&mut self, key: CellKey) -> bool {
         let Some(frame) = self.frame(key.grid) else {
             return false;
         };
@@ -292,45 +496,45 @@ impl CellStore {
                     return false;
                 }
                 for chunk in chunks_for_bounds(bounds) {
-                    Arc::make_mut(self.chunks.entry(chunk).or_default())
-                        .blocks
-                        .push(block_key);
+                    self.chunks.entry_or_default(chunk).blocks.push(block_key);
+                    if JOURNAL {
+                        self.journal.chunks.push(chunk);
+                    }
                 }
             }
         }
-        Arc::make_mut(self.blocks.entry(block_key).or_default()).valid |= bit;
+        self.blocks.entry_or_default(block_key).valid |= bit;
+        if JOURNAL {
+            self.journal.blocks.push(block_key);
+        }
         true
     }
 
     /// Removes only unreserved cells. Painted/occupied geometry requires lifecycle handling.
     pub(super) fn remove_unreserved(&mut self, key: CellKey) -> bool {
         let block_key = key.block();
-        let Some(block) = self.blocks.get(&block_key) else {
-            return false;
-        };
         let offset = key.offset();
         let bit = 1_u64 << offset;
-        if block.valid & bit == 0 || block.profiles[offset] != 0 || block.lots[offset] != 0 {
+        let Some(block) = self.blocks.get_mut_if(&block_key, |block| {
+            block.valid & bit != 0 && block.profiles[offset] == 0 && block.lots[offset] == 0
+        }) else {
             return false;
-        }
-        let remove_block = block.valid == bit;
-        // A persistent map's removal copies its shared path even for an absent key.
-        if self.frontages.contains_key(&key) {
-            self.frontages.remove(&key);
-        }
+        };
+        block.valid &= !bit;
+        let remove_block = block.valid == 0;
+        self.frontages.remove(&key);
+        self.journal.frontages.push(key);
+        self.journal.blocks.push(block_key);
         if remove_block {
             self.blocks.remove(&block_key);
             if let Some(frame) = self.frame(key.grid) {
                 for chunk in chunks_for_bounds(block_bounds(&frame.geometry(), block_key)) {
                     if let Some(entry) = self.chunks.get_mut(&chunk) {
-                        Arc::make_mut(entry)
-                            .blocks
-                            .retain(|candidate| *candidate != block_key);
+                        entry.blocks.retain(|candidate| *candidate != block_key);
+                        self.journal.chunks.push(chunk);
                     }
                 }
             }
-        } else if let Some(block) = self.blocks.get_mut(&block_key) {
-            Arc::make_mut(block).valid &= !bit;
         }
         self.revision = self.revision.wrapping_add(1);
         self.mark_cell_chunk_changed(key);
@@ -360,21 +564,19 @@ impl CellStore {
 
     /// Updates an already validated cell and only its owning overlay chunk.
     pub(super) fn set_profile(&mut self, key: CellKey, profile: u16) {
-        let Some(block) = self.blocks.get(&key.block()) else {
+        let offset = key.offset();
+        let Some(block) = self.blocks.get_mut_if(&key.block(), |block| {
+            block.valid & (1_u64 << offset) != 0 && block.profiles[offset] != profile
+        }) else {
             return;
         };
-        if block.valid & (1_u64 << key.offset()) == 0 || block.profiles[key.offset()] == profile {
-            return;
-        }
-        if let Some(block) = self.blocks.get_mut(&key.block()) {
-            let block = Arc::make_mut(block);
-            self.painted_count -= usize::from(block.profiles[key.offset()] != 0);
-            self.painted_count += usize::from(profile != 0);
-            block.profiles[key.offset()] = profile;
-            block.refresh_reservation(key.offset());
-            self.bump_revision();
-            self.mark_cell_chunk_changed(key);
-        }
+        self.painted_count -= usize::from(block.profiles[offset] != 0);
+        self.painted_count += usize::from(profile != 0);
+        block.profiles[offset] = profile;
+        block.refresh_reservation(offset);
+        self.journal.blocks.push(key.block());
+        self.bump_revision();
+        self.mark_cell_chunk_changed(key);
     }
 
     /// Invalidates outstanding selections after an authoritative batch of cell mutations.
@@ -385,19 +587,17 @@ impl CellStore {
     /// Writes previously validated coverage and refreshes its count, masks and selection epoch.
     pub(super) fn assign_lot(&mut self, lot: CellLot, parcel_id: u64) {
         for key in lot.cells() {
-            if self
+            let offset = key.offset();
+            // An unchanged claim leaves the counts as they are.
+            if let Some(block) = self
                 .blocks
-                .get(&key.block())
-                .is_none_or(|block| block.lots[key.offset()] == parcel_id)
+                .get_mut_if(&key.block(), |block| block.lots[offset] != parcel_id)
             {
-                continue;
-            }
-            if let Some(block) = self.blocks.get_mut(&key.block()) {
-                let block = Arc::make_mut(block);
-                self.claimed_count -= usize::from(block.lots[key.offset()] != 0);
+                self.claimed_count -= usize::from(block.lots[offset] != 0);
                 self.claimed_count += usize::from(parcel_id != 0);
-                block.lots[key.offset()] = parcel_id;
-                block.refresh_reservation(key.offset());
+                block.lots[offset] = parcel_id;
+                block.refresh_reservation(offset);
+                self.journal.blocks.push(key.block());
             }
         }
         self.bump_revision();

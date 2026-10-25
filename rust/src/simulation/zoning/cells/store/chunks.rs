@@ -2,14 +2,33 @@
 
 //! Generation completeness and paint revisions on the existing cell spatial chunks.
 
-use super::{CellBounds, CellKey, CellStore, DVec2, RegionGraph, chunk_at, chunks_for_bounds};
+use super::maps::StoreMap;
+use super::{
+    CellBounds, CellKey, CellMaps, CellStore, DVec2, RegionGraph, chunk_at, chunks_for_bounds,
+};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::zoning::cells::CELL_DEPTH;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 impl CellStore {
+    /// World envelope for one cell overlay/generation chunk.
+    pub(crate) fn chunk_bounds(chunk: (i32, i32)) -> CellBounds {
+        chunk_bounds(chunk)
+    }
+}
+
+// [`CellStore::chunk_bounds`], for the store's generic methods.
+fn chunk_bounds(chunk: (i32, i32)) -> CellBounds {
+    let size = f64::from(RegionGraph::CHUNK_SIZE);
+    let min = DVec2::new(f64::from(chunk.0), f64::from(chunk.1)) * size;
+    CellBounds {
+        min,
+        max: min + DVec2::splat(size),
+    }
+}
+
+impl<M: CellMaps> CellStore<M> {
     /// Generates at load every cold chunk within reach of a road that grows cells or holding
     /// reserved cells, in chunk order, and completes it (`SIM-02-K`). Saves leave generated
     /// cells out; without this the first lot region served next to a chunk generates it whole,
@@ -81,13 +100,13 @@ impl CellStore {
     /// dirty lookup uses at most nine more, with no allocation or city-wide traversal.
     pub(crate) fn chunk_generation_bounds(&self, chunk: (i32, i32)) -> Option<CellBounds> {
         let Some(entry) = self.chunks.get(&chunk) else {
-            return Some(Self::chunk_bounds(chunk));
+            return Some(chunk_bounds(chunk));
         };
         if entry.generated {
             return None;
         }
         let Some(local) = entry.dirty_bounds else {
-            return Some(Self::chunk_bounds(chunk));
+            return Some(chunk_bounds(chunk));
         };
         let mut joined = local;
         for x in chunk.0.saturating_sub(1)..=chunk.0.saturating_add(1) {
@@ -114,23 +133,19 @@ impl CellStore {
     /// Completes the requested chunk and warm neighbours whose entire dirty envelope was
     /// covered by the caller's generation bounds. Partly covered and cold neighbours stay dirty.
     pub(crate) fn complete_generated_chunk(&mut self, chunk: (i32, i32), bounds: CellBounds) {
-        let entry = Arc::make_mut(self.chunks.entry(chunk).or_default());
+        let entry = self.chunks.entry_or_default(chunk);
         entry.generated = true;
         entry.dirty_bounds = None;
+        self.journal.chunks.push(chunk);
         for neighbour in chunks_for_bounds(bounds) {
-            // Read first: only a neighbour this completes copies its shared path.
-            if self
-                .chunks
-                .get(&neighbour)
-                .and_then(|entry| entry.dirty_bounds)
-                .is_some_and(|dirty| {
+            if let Some(entry) = self.chunks.get_mut_if(&neighbour, |entry| {
+                entry.dirty_bounds.is_some_and(|dirty| {
                     dirty.min.cmpge(bounds.min).all() && dirty.max.cmple(bounds.max).all()
                 })
-                && let Some(entry) = self.chunks.get_mut(&neighbour)
-            {
-                let entry = Arc::make_mut(entry);
+            }) {
                 entry.generated = true;
                 entry.dirty_bounds = None;
+                self.journal.chunks.push(neighbour);
             }
         }
     }
@@ -142,8 +157,8 @@ impl CellStore {
         if bounds.is_valid() {
             for chunk in chunks_for_bounds(bounds) {
                 if let Some(entry) = self.chunks.get_mut(&chunk) {
-                    let entry = Arc::make_mut(entry);
-                    let chunk_bounds = Self::chunk_bounds(chunk);
+                    self.journal.chunks.push(chunk);
+                    let chunk_bounds = chunk_bounds(chunk);
                     let dirty = CellBounds {
                         min: bounds.min.max(chunk_bounds.min),
                         max: bounds.max.min(chunk_bounds.max),
@@ -163,11 +178,12 @@ impl CellStore {
 
     /// Full-world authoring/load operations may invalidate every viewed chunk explicitly.
     pub(crate) fn invalidate_all_generated_cells(&mut self) {
-        for (_, entry) in self.chunks.iter_mut() {
-            let entry = Arc::make_mut(entry);
+        self.chunks.for_each_mut(|entry| {
             entry.generated = false;
             entry.dirty_bounds = None;
-        }
+        });
+        // Every entry changed: the view's copy is rebuilt whole.
+        self.journal.whole = true;
         // Whole-world rebuilds stay lazy: only chunks the overlay requests are prepared.
         self.stale_chunks.clear();
     }
@@ -188,21 +204,11 @@ impl CellStore {
 
     /// Assigns each full cell to its centre's chunk so packed overlay uploads contain no duplicates.
     pub(crate) fn visit_chunk_cells(&self, chunk: (i32, i32), mut visit: impl FnMut(CellKey)) {
-        self.visit_in_bounds(Self::chunk_bounds(chunk), |key| {
+        self.visit_in_bounds(chunk_bounds(chunk), |key| {
             if self.cell_chunk(key) == Some(chunk) {
                 visit(key);
             }
         });
-    }
-
-    /// World envelope for one cell overlay/generation chunk.
-    pub(crate) fn chunk_bounds(chunk: (i32, i32)) -> CellBounds {
-        let size = f64::from(RegionGraph::CHUNK_SIZE);
-        let min = DVec2::new(f64::from(chunk.0), f64::from(chunk.1)) * size;
-        CellBounds {
-            min,
-            max: min + DVec2::splat(size),
-        }
     }
 
     fn cell_chunk(&self, key: CellKey) -> Option<(i32, i32)> {
@@ -215,7 +221,8 @@ impl CellStore {
     /// Stamps a changed full cell's single rendering owner after its authority epoch advances.
     pub(super) fn mark_cell_chunk_changed(&mut self, key: CellKey) {
         if let Some(chunk) = self.cell_chunk(key) {
-            Arc::make_mut(self.chunks.entry(chunk).or_default()).revision = self.revision;
+            self.chunks.entry_or_default(chunk).revision = self.revision;
+            self.journal.chunks.push(chunk);
         }
     }
 }

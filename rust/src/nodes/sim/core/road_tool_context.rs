@@ -157,13 +157,22 @@ impl SimCore {
                     road_mesh_generation: self.road_mesh_lane_generation,
                     terrain_inputs,
                     fields: Arc::clone(&self.allocator.field_clearance),
-                    cells: self.zoning.cells.clone(),
+                    cells: {
+                        let mut cells = previous.view.cells.clone();
+                        cells.follow(&mut self.zoning.cells);
+                        // Debug tests check that the copy is exact at every publication.
+                        #[cfg(all(test, debug_assertions))]
+                        assert_eq!(cells.state_digest(), self.zoning.cells.state_digest());
+                        cells
+                    },
                     surface_generation: self.road_tool_surface_generation,
                 };
                 (view, replica)
             }
             _ => {
                 let mut view = road_tool_snapshot_from_core(self)?;
+                // The view took a whole copy of the cell store.
+                self.zoning.cells.clear_journal();
                 if let Some(graph) = graph {
                     view.region_graph = graph;
                 }

@@ -5,7 +5,7 @@
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
-use crate::simulation::zoning::cells::{CellBounds, CellStore, road_contact_interior};
+use crate::simulation::zoning::cells::{CellBounds, CellMaps, CellStore, road_contact_interior};
 use glam::DVec2;
 
 // Whether a piece's top triangles overlap a polygon with positive area.
@@ -72,8 +72,8 @@ impl ZoningSystem {
     /// store and the road tool's preview the view's persistent copy of it, so both decide alike
     /// (open question 25). O(candidate cells * top triangles of the piece and of `before`), one
     /// bounds query when no cell is reserved near the piece.
-    pub(crate) fn cells_newly_covered_by_road_piece(
-        cells: &CellStore,
+    pub(crate) fn cells_newly_covered_by_road_piece<M: CellMaps>(
+        cells: &CellStore<M>,
         mesh: &PieceMesh,
         before: &[&PieceMesh],
     ) -> bool {
@@ -116,8 +116,8 @@ impl ZoningSystem {
         })
     }
 
-    fn reserved_cells_overlap(
-        cells: &CellStore,
+    fn reserved_cells_overlap<M: CellMaps>(
+        cells: &CellStore<M>,
         bounds: CellBounds,
         road_contact: bool,
         mut test: impl FnMut([DVec2; 4]) -> bool,

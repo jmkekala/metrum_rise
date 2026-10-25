@@ -72,8 +72,8 @@ pub(super) fn column_is_covered(
 
 /// Reuses nearby reserved frames when the current curb lies on their exact lattice boundary.
 /// Full frontage coverage is the union of local collinear intervals, independent of edge splits.
-pub(super) fn pinned_candidates(
-    store: &CellStore,
+pub(super) fn pinned_candidates<M: CellMaps>(
+    store: &CellStore<M>,
     graph: &RegionGraph,
     config: &WorldConfig,
     roads: &[usize],
@@ -108,8 +108,8 @@ pub(super) fn pinned_candidates(
         .collect()
 }
 
-fn frame_candidates(
-    store: &CellStore,
+fn frame_candidates<M: CellMaps>(
+    store: &CellStore<M>,
     frame: GridFrame,
     grid: u64,
     graph: &RegionGraph,

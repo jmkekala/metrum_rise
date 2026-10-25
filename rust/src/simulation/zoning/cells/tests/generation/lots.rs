@@ -588,6 +588,40 @@ fn asset_order_and_worker_count_do_not_change_lot_products() {
     }
 }
 
+// `ROAD-68` open question 32: one planner on the live store's plain maps and on the road tool
+// view's persistent copy plans equal products, and the copy follows the live store's journal.
+#[test]
+fn a_plan_on_the_views_persistent_copy_equals_the_live_plan_and_the_copy_follows_it() {
+    use crate::simulation::zoning::cells::{CellStore, SharedMaps};
+
+    let (graph, mut zoning) = painted_road(0.35);
+    let mut view = CellStore::copy_of(&zoning.cells);
+    zoning.cells.clear_journal();
+    assert_eq!(view.state_digest(), zoning.cells.state_digest());
+    let mut planned: CellStore<SharedMaps> = view.clone();
+    // Both regenerate every cell and derive lots on it.
+    zoning.cells.invalidate_generated_cells(extent());
+    planned.invalidate_generated_cells(extent());
+    let mut live = std::mem::take(&mut zoning.cells);
+    let (live_report, live_plan) = zoning.plan_cell_lots_on(&mut live, &graph, extent(), &[size()]);
+    zoning.cells = live;
+    let (copy_report, copy_plan) =
+        zoning.plan_cell_lots_on(&mut planned, &graph, extent(), &[size()]);
+    assert_eq!(live_report.created.len(), 4);
+    assert_eq!(format!("{live_report:?}"), format!("{copy_report:?}"));
+    assert_eq!(format!("{live_plan:?}"), format!("{copy_plan:?}"));
+    assert_eq!(planned.state_digest(), zoning.cells.state_digest());
+    assert_eq!(planned.digests(), zoning.cells.digests());
+    // The view, untouched by the plan on its clone, follows the live store's journal.
+    assert_ne!(view.state_digest(), zoning.cells.state_digest());
+    view.follow(&mut zoning.cells);
+    assert_eq!(view.state_digest(), zoning.cells.state_digest());
+    // A clear makes the next follow copy the store whole.
+    zoning.cells.clear();
+    view.follow(&mut zoning.cells);
+    assert_eq!(view.state_digest(), zoning.cells.state_digest());
+}
+
 #[test]
 #[ignore = "matched release timing of local lot derivation and retirement, excluding setup"]
 fn benchmark_cell_lot_derivation_locality() {

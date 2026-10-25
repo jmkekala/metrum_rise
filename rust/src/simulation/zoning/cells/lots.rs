@@ -2,7 +2,7 @@
 
 //! Rectangular cell coverage owned by a derived building lot, independently of its road access.
 
-use super::{CELL_DEPTH, CellKey, CellStore, GridFrame};
+use super::{CELL_DEPTH, CellKey, CellMaps, CellStore, GridFrame};
 use crate::simulation::zoning::ParcelGeometry;
 use glam::DVec2;
 use godot::prelude::Vector2;
@@ -192,7 +192,7 @@ impl CellLot {
     }
 }
 
-impl CellStore {
+impl<M: CellMaps> CellStore<M> {
     /// Returns one nonzero profile only when every covered cell still has that designation.
     pub(crate) fn lot_profile(&self, lot: CellLot) -> Option<u16> {
         if !lot.valid() {

@@ -14,8 +14,8 @@ struct Interval {
 }
 
 /// Rebuilds local reserved-group suppliers without changing their original lattice geometry.
-pub(super) fn pinned_candidates(
-    store: &CellStore,
+pub(super) fn pinned_candidates<M: CellMaps>(
+    store: &CellStore<M>,
     graph: &RegionGraph,
     roads: &[usize],
     bounds: CellBounds,
@@ -31,8 +31,8 @@ pub(super) fn pinned_candidates(
         .collect()
 }
 
-fn source_candidates(
-    store: &CellStore,
+fn source_candidates<M: CellMaps>(
+    store: &CellStore<M>,
     source: &Arc<CellCurveSource>,
     graph: &RegionGraph,
     roads: &[usize],
