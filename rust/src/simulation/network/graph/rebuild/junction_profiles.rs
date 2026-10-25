@@ -651,7 +651,10 @@ impl RegionGraph {
         })
     }
 
-    // Each incident's control-profile point `min(12 m, half its edge)` along it; `None` when an
+    // Each incident's control-profile point 12 m along it, or at its mouth station where that
+    // lies farther (the clip, current before the solve), at most half its edge: the plane then
+    // meets the control profile no nearer than where the pin ends, so a wide mouth on a hill's
+    // knee does not carry the near grade past it (`ROAD-68` open question 31). `None` when an
     // incident's edge is too short for a sample at least 1 m from the node.
     fn junction_profile_incident_samples(
         &self,
@@ -663,7 +666,9 @@ impl RegionGraph {
             .map(|incident| {
                 let edge = self.edges.get(incident.edge_idx)?;
                 let total_length_m = Self::edge_profile_length_m(edge);
-                let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M.min(total_length_m * 0.5);
+                let sample_distance_m = JUNCTION_PROFILE_SOLVE_SAMPLE_M
+                    .max(self.junction_profile_hard_zone_m(incident.edge_idx, incident.at_start))
+                    .min(total_length_m * 0.5);
                 if sample_distance_m < JUNCTION_PROFILE_MIN_SAMPLE_M {
                     return None;
                 }

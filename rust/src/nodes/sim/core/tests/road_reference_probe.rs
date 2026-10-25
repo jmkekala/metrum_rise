@@ -95,6 +95,11 @@ fn reference_junction_products_match_the_probe() {
 // inside `s_min`; the minimum run beyond a corner moves that mouth to 1.77 m (was 1 m), and the
 // lanes that commit builds keep their ids in the final Y. Its graph, pieces, layouts, walkways and
 // queries are unchanged, as is every other entry.
+// Re-recorded by `ROAD-68-E` part 2 round 3 (rebased onto `ROAD-68-F` part 2): open question
+// 31's plane sample at the mouth station where it lies beyond 12 m changes the four sloped Y
+// fixtures (`y_25_branches_first`, `y_25`, `y_40`, `y_60`; graph, nodes, spans, walkways, lanes
+// and queries, not the layouts), whose narrow-angle mouths lie beyond 12 m; the plan-excerpt fix
+// of open question 8 changes none. ATTRIBUTION-PENDING
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -243,49 +248,49 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "y_25_branches_first/true",
         [
-            0x7f558118f48130a4,
-            0x453cf814acf924f2,
+            0xee8d6df479d2e315,
+            0xf267bf62f6991cf7,
             0xe4c667d40f4b3c30,
-            0x5c04cfcec07f9c38,
-            0x23e267fd69e98af9,
-            0xa5103a8c30479054,
-            0x2411cf548041bb2a,
+            0x8ff1522bfa09645c,
+            0x978ea8db0d82e488,
+            0x60d2be20989e61b3,
+            0xa9dd6d496aa66c76,
         ],
     ),
     (
         "y_25/true",
         [
-            0x48f69d93dc864e28,
-            0x114b3d86330fa396,
+            0x0ec9605cade18269,
+            0x24fe92973bc8d0cf,
             0x2658fc21c04f8df4,
-            0xf76f10dd4d7cc118,
-            0xa3871c95fed3ed6d,
-            0x146f19541c5c34cd,
-            0x3bf1995fc2861986,
+            0x72fb69808e0f820c,
+            0x0ff79938b4e00d18,
+            0x1dc36e4907235e55,
+            0x4b4830d61a573246,
         ],
     ),
     (
         "y_40/true",
         [
-            0x2eb45ace554a97c6,
-            0x46c3d2f3887e4d87,
+            0x3bfcdb8984261eec,
+            0x0d34fbeec21f73ce,
             0x282bbc68e8e7ad2b,
-            0x413ffbf5036d7f92,
-            0x99774b91ae59818f,
-            0x9b339dbcb6f252d3,
-            0xb8798c4e87523b63,
+            0xc3ac97b1b3ac4ecc,
+            0x1d1dc420bdc56f63,
+            0x1593aed7548df839,
+            0x0e7813513a04bd2b,
         ],
     ),
     (
         "y_60/true",
         [
-            0xa5c04c8a83634f15,
-            0x208597362724688a,
+            0x268fbb60feaab71b,
+            0x0c3034e5bfd7348c,
             0x2108b450ccc98488,
-            0xbf244973b15d4002,
-            0x10b00f40d981054c,
-            0xbe73b019b55cf23f,
-            0x2962e28f0ac2fe96,
+            0xe2969a080ab79204,
+            0x8d4202bdb5ac9c55,
+            0xf86c40f7bd976543,
+            0x1b69e5524c9a1e0c,
         ],
     ),
     (

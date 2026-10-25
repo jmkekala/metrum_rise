@@ -576,8 +576,9 @@ fn kuopio_recorded_strokes_commit_with_every_node_solved() {
 }
 
 // The fixed quality gates of the rendered replay, across every live edge after each edit.
+// Beside steep junctions three profiles left the ground by 5.08-5.76 m while the plane was
+// sampled 12 m out inside wider mouths (`ROAD-68` open question 31).
 #[test]
-#[ignore = "ROAD-68-E: open question 31, three recorded profiles leave the source terrain by 5.08-5.76 m beside steep junctions (limit 5 m)"]
 fn kuopio_recorded_profiles_preserve_quality_limits() {
     let mut failures = Vec::new();
     replay_kuopio_recorded_cases(|case_id, stroke, core| {

@@ -350,8 +350,9 @@ compute no crossing or corner geometry of their own
   meet) are taken in incident order: the `f64` angle from world +x of each arm's direction
   towards its first control point beyond 1 mm (`roadbed::incident_direction`, the function node
   layouts and span ends classify with), with edge ids only for exactly equal directions, which
-  layouts reject. Every incident gives the sample `min(12 m, half its edge)` along its control
-  profile; an arm too short for a sample at least 1 m from the node leaves the node without a
+  layouts reject. Every incident gives the sample `max(12 m, its mouth station)`, at most half its
+  edge, along its control profile (open question 31: never inside the stretch the pin holds);
+  an arm too short for a sample at least 1 m from the node leaves the node without a
   plane (`NodeError::NoPlane`, `junction_profile_mismatch`), never a plane fitted without it. A
   bend takes the plane through its two samples. A junction, or a pass-through pair with attached
   footpaths, takes an authority corridor, a pair of arms at least as opposite as `dot <= -0.86`,
@@ -979,12 +980,10 @@ terrain patch, open question 23); none stays disabled under `ROAD-68-D`.
 fixtures, and the three tests relabelled from `ROAD-68-F` below; part 2 round 2 the Kuopio saved
 reference, rewritten as `kuopio_saved_reference_loads_as_saved` on the regenerated save, and the
 hillside houses without their terrain step; round 3 the recorded Kuopio strokes, as
-`kuopio_recorded_strokes_commit_with_every_node_solved`, and removed the mid-span order test,
-which [open question 30](#road-68-open-questions)'s rule test replaces; one stays off):
-
-| Module | Tests | Reason |
-| --- | --- | --- |
-| `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_preserve_quality_limits` | three recorded profiles leave the source terrain by 5.08-5.76 m beside steep junctions, over the fixture's 5 m limit ([open question 31](#road-68-open-questions); the recorded replay's road half, split in round 3) |
+`kuopio_recorded_strokes_commit_with_every_node_solved` and
+`kuopio_recorded_profiles_preserve_quality_limits` ([open question 31](#road-68-open-questions)),
+and removed the mid-span order test, which [open question 30](#road-68-open-questions)'s rule
+test replaces): none stays off.
 
 `TERRAIN-07` (4: two split off by `ROAD-68-E` part 2 round 2, one by round 3, one by `ROAD-68-F`
 part 2): the user's rewrite of the terrain surface core makes the exact CDT cut, refined patches
@@ -1196,8 +1195,9 @@ These need a user decision; work that does not depend on them continues.
    - **Recorded placements.** The replay is split: `kuopio_recorded_strokes_commit_with_every_node_solved`
      (every recorded stroke commits, no node fails, 158 profiles; failed before the fix at
      `kuopio_05` attempt 14) runs; the fixture's quality limits
-     (`kuopio_recorded_profiles_preserve_quality_limits`) stay ignored under
-     [open question 31](#road-68-open-questions), which the attempt-14 failure hid; the patch
+     (`kuopio_recorded_profiles_preserve_quality_limits`), which the attempt-14 failure hid,
+     failed on three profiles and run again since [open question 31](#road-68-open-questions)'s
+     plane sample; the patch
      seam, window and CDT assertions moved to `kuopio_recorded_terrain_builds_clean`, ignored
      under `TERRAIN-07` (passes today).
    - **Hillside fixture.** Regenerated with the load rebuild, no migration code: the legacy
@@ -1993,7 +1993,8 @@ These need a user decision; work that does not depend on them continues.
       pass-through node, or bending 34 degrees, either stroke first;
       `sloped_junctions_do_not_depend_on_drawing_order`, also flat).
 31. **Recorded Kuopio profiles beyond the 5 m source-delta limit (`ROAD-68-E` part 2 round 3) —
-    open, target missed.**
+    decided by the coordinator under the user's delegation, 2026-10-25, for review: (a), as the
+    plane sample at the mouth station where it lies beyond 12 m; done, the limits hold.**
     - **Evidence.** With `kuopio_05` attempt 14 fixed (question 8), the recorded replay's fixed
       quality gates (offset from the source terrain at most 5 m, grade at most 1.0, pitch change
       at most 30 degrees per knot, as the rendered replay checks) fail on three profiles:
@@ -2022,6 +2023,22 @@ These need a user decision; work that does not depend on them continues.
       changes which road keeps its grade (with the fall-line corridor the contour road, 57
       degrees off it, would take about 16% across its 15.85 m mouth, about 2.6 m). The quality
       test stays ignored under this question until then.
+    - **Measured and decided (round 3).** (a) as `max(12 m, mouth station)`, at most half the
+      edge (`junction_profile_incident_samples`; the clip is current before the solve): the
+      plane never takes a sample inside the stretch it pins. On the recorded replay every
+      profile passes the limits, `kuopio_07` included: its steep arm's 15.85 m mouth moves the
+      sample out, which changes both corridors' grades and the ranking's outcome, so (b) is not
+      needed. The reference probe changes only the four sloped Y fixtures (`y_25_branches_first`,
+      `y_25`, `y_40`, `y_60`: graph, nodes, spans, walkways, lanes and queries, not the layouts),
+      whose narrow-angle mouths lie beyond 12 m; re-recorded with that attribution. Every flat
+      fixture, the T, four-way, bend, terminal and footpath fixtures on the slope, the edit-order
+      tests (T, Y and end-to-end joins in every order) and the narrow-marks digest test are
+      unchanged. `kuopio_recorded_profiles_preserve_quality_limits` runs again.
+    - **Visible change, for review.** On slopes, a junction whose mouth lies beyond 12 m (narrow
+      Y angles, wide roads at oblique angles) takes its plane from the arms' control heights at
+      the mouths instead of 12 m out, so its tilt follows the ground over the junction's own
+      extent; on even slopes the difference is millimetres, on a hill's knee it removes the
+      embankments above (5.76 m and 5.08 m beside the recorded junctions).
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, for review: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
@@ -4156,8 +4173,8 @@ plan and `ROAD-68-F` part 1) before the post-rebase checks below. Questions 11 (
 #### Part 2, round 3 (2026-10-25, branch `road68-E3`, work in progress)
 
 On `road` `0eabfe36` (round 2 landed as work in progress). Question 8's recorded replay and
-hillside fixture, question 30's order test and question 25 (c) are done; question 21 (b) is not
-started and the new question 31 is open, so the gate's final commit waits.
+hillside fixture, question 30's order test, question 25 (c) and the new question 31 are done;
+question 21 (b) is not started, so the gate's final commit waits.
 
 - **Plan excerpt (question 8).** `kuopio_05` attempt 14's `MouthOffPlane` was the edit plan's
   local excerpt holding one ring of incidence: the solve re-derives every edge at the nodes the
@@ -4176,9 +4193,12 @@ started and the new question 31 is open, so the gate's final commit waits.
 - **Question 25 (c).** The view shares the field index and a persistent cell-reservation index
   in `O(1)`; the preview runs `ReservedOverlap::first`, the commit's own test, and the road tool
   shows the refusal before the click (details under the question).
-- **Question 31 (new, open).** The recorded replay's quality limits fail on three profiles
-  beside steep junctions (5.08-5.76 m over the ground against 5 m); evidence and options under
-  the question. Its test stays ignored under that question.
+- **Question 31 (new; decided by the coordinator under the user's delegation, for review).**
+  The recorded replay's quality limits failed on three profiles beside steep junctions
+  (5.08-5.76 m over the ground against 5 m): the plane was sampled 12 m out inside wider
+  mouths. It now samples at the mouth station where that lies beyond 12 m; the limits hold, and
+  the probe changes only in the four sloped Y fixtures, re-recorded with that attribution
+  (details under the question).
 - **Question 21 (b).** Not started: the preview would need the whole cell store persistent
   (details under the question).
 - **Tests.** New: `kuopio_recorded_strokes_commit_with_every_node_solved` (the recorded replay's
@@ -4187,7 +4207,7 @@ started and the new question 31 is open, so the gate's final commit waits.
   (fails without round 2's re-solve), `the_reservation_index_follows_paint_erase_and_undo`; the
   three reservation refusal tests now assert the preview's reason first (by construction it was
   empty before: the preview had no overlap test). Split: `kuopio_recorded_profiles_preserve_quality_limits`
-  (question 31) and `kuopio_recorded_terrain_builds_clean` (`TERRAIN-07`). Removed:
+  (runs since question 31) and `kuopio_recorded_terrain_builds_clean` (`TERRAIN-07`). Removed:
   `sloped_mid_span_meetings_do_not_depend_on_drawing_order` (question 30).
 - **Size.** `roadbed/` production lines 7,972, unchanged (this round's code is in the edit plan,
   the cell store, the allocator's field index and the road tool's view and preview).
@@ -4238,8 +4258,12 @@ started and the new question 31 is open, so the gate's final commit waits.
   `6252b7ba71c5a6f1` again (11:55). The one-ring plans left profiles a fresh solve would not
   give even on flat ground (the flat street grid's edge 9 lacked its far pin; the test fails
   with one ring), so the populated city's road edits now commit different, correct profiles.
-  The reservation index, the shared field index and the preview's test change no output.
-- **Clippy** `--all-targets` (fresh, before the last test-only change): the identical 59-warning
+  The reservation index, the shared field index and the preview's test change no output, nor
+  does question 31's plane sample (rerun on the final code at 12:06: no difference,
+  `da3d23b6c8b63d20`). The preview and commit timings above were taken before question 31's
+  change; it adds one comparison per plane sample, leaves the city's flat edits and the sloped
+  T's probe products unchanged, and was not re-timed (the orbiting branch poses may change).
+- **Clippy** `--all-targets` (fresh, on the final tree): the identical 59-warning
   set (file, message) as the baseline.
 - **`./run.sh --test` (fresh, 11:32-11:50 EET, DISPLAY and WAYLAND_DISPLAY unset, run lock,
   shared timing lock, build slot):** exit 0. Debug lib 1,908 passed / 0 failed / 165 ignored
@@ -4247,8 +4271,8 @@ started and the new question 31 is open, so the gate's final commit waits.
   display-only shader-global probe and rendered vegetation tests. Profile deleted, imports
   restored. Ignores tagged for later gates: 1 `ROAD-68-E` (question 31), 3 `TERRAIN-07`,
   1 `ROAD-68-F`.
-- **Not done this round:** question 21 (b) and question 31 (open), the first-sample `surface`
-  rise above (to attribute), and the Godot stream with this library.
+- **Not done this round:** question 21 (b), the first-sample `surface` rise above (to
+  attribute), and the Godot stream with this library.
 
 ### `ROAD-68-F` — remaining families
 

@@ -162,10 +162,11 @@ click-to-acknowledgement median from 80 to 21 ms), the hillside fixture is regen
 the load rebuild (same parcel ids and frontage points), the mid-span order test is replaced by
 question 30's rule, and the preview shows field and painted-cell overlaps before the click with
 the commit's own test (question 25 (c): the field index and a persistent cell-reservation index
-are shared with the view in `O(1)`). Open: question 31 (three recorded Kuopio profiles leave
-the ground by 5.08-5.76 m beside steep junctions, over the fixture's 5 m limit), question 21 (b)
-(lots from the preview need the whole cell store persistent), and 6-9 ms that round 1 added to
-the commit's `surface` stage beside a painted city (not the reservation checks; unattributed).
+are shared with the view in `O(1)`), and a junction plane is sampled at the mouth station where
+that lies beyond 12 m (question 31, decided under the delegation for review: three recorded
+Kuopio profiles had left the ground by 5.08-5.76 m beside steep junctions; the sloped Y probe
+fixtures change). Open: question 21 (b) (lots from the preview need the whole cell store
+persistent) and the slower first commit of a painted city (`surface`, unattributed).
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.
@@ -175,8 +176,8 @@ out with D4 tapers instead of a pass-through, and the span width taper is remove
 and tunnel road pieces at node pieces and span mouths, and one triangle walk for the zoning,
 field and roadbed overlap queries; abutments, portals and sites moved to `TERRAIN-07`, and a
 bridge or tunnel stroke from a road is rejected until it lands (open question 19).
-Tests that need later gates are disabled until then (5 Rust tests, 3 of them `TERRAIN-07`, no
-`ROAD-68-F` one, no Godot script).
+Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`, no
+`ROAD-68-E` or `ROAD-68-F` one, no Godot script).
 `ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty-two open questions (1-31 and 35); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
@@ -189,7 +190,8 @@ face sources name tile-local chain runs) and 35 (worn zebra bars, kept as design
 by the coordinator for review, 26 (preview payloads with crossings or signs) is met by
 `ROAD-68-F` part 1; 30 (drawing
 order on slopes) is decided (a) for review: joins are order independent and mid-span meetings
-follow the first-drawn road, as tested; 31 (recorded profiles beyond the 5 m limit) is open. Design,
+follow the first-drawn road, as tested; 31 (recorded profiles beyond the 5 m limit) is decided
+for review and done. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 
