@@ -83,13 +83,14 @@ impl Level {
         (3.0 * self.spacing_m(cell_m)).max(2.0)
     }
 
-    /// Seam row capacity of one slot (`T7`): at least twice the measured maximum (`GL2`'s 6 m
-    /// band named 116 seams in a reference tile). `GL3`'s 128 is its largest lattice (at most
-    /// 11 x 11 points on a base of 8 m cells, each naming one seam) rounded up.
+    /// Seam row capacity of one slot (`T7`): at least twice the measured maximum (`GL0` 245 in
+    /// the 100k city, `GL1` 221 on Kuopio, `GL2` 120 on the reference fixtures). `GL3`'s 128 is
+    /// its largest lattice (at most 11 x 11 points on a base of 8 m cells, each naming one seam)
+    /// rounded up.
     pub fn seam_capacity(self) -> usize {
         match self {
-            Self::Gl0 => 512,
-            Self::Gl1 | Self::Gl2 => 256,
+            Self::Gl0 | Self::Gl1 => 512,
+            Self::Gl2 => 256,
             Self::Gl3 { .. } => 128,
         }
     }
