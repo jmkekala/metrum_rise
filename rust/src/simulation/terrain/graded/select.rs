@@ -26,25 +26,35 @@ pub struct SelectScratch {
 #[derive(Default)]
 struct CandidateScratch {
     pieces: Vec<PieceId>,
+    other_pieces: Vec<PieceId>,
+    triangles: Vec<[[u64; 3]; 3]>,
+    other_triangles: Vec<[[u64; 3]; 3]>,
     base: BaseWindow,
     xs: Vec<f64>,
     zs: Vec<f64>,
+    // The candidate's lattice rectangle.
+    rect: [f64; 4],
 }
 
 thread_local! {
     static CANDIDATE: RefCell<CandidateScratch> = RefCell::default();
 }
 
-/// The tiles at `level` whose bake a road change can alter, sorted and unique, into `out`:
-/// every tile whose lattice meets a changed piece (coverage and the road heights there), and
-/// every tile within a changed segment's band or its reach over that tile, the reach computed
-/// as the tile's bake computes it but with the window's seam heights widened by every changed
-/// segment, so it bounds the reach before and after the change and a removed seam counts. A
-/// superset is safe: rebaking an unaffected tile reproduces its bits. `O(changed segments x
+/// The tiles at `level` whose bake a road change from `before` to `after` can alter, sorted
+/// and unique, into `out`:
+/// - every tile within a changed segment's band or its reach over that tile, the reach computed
+///   as the tile's bake computes it but with the window's seam heights widened by every changed
+///   segment, so it bounds the reach before and after the change and a removed seam counts;
+/// - every tile whose lattice meets a changed piece and whose covering top triangles differ
+///   between the two roadbeds (coverage and the road surface under the deep inside rule), so a
+///   split trunk's far half, rebuilt bit for bit, marks nothing.
+///
+/// A superset is safe: rebaking an unaffected tile reproduces its bits. `O(changed segments x
 /// tiles within the cap of each)` plus one window per candidate tile, in parallel.
 pub fn dirty_tiles_for_road_changes(
     terrain: &TerrainSystem,
-    roadbed: &RoadbedSystem,
+    before: &RoadbedSystem,
+    after: &RoadbedSystem,
     changes: &TerrainChanges,
     level: Level,
     scratch: &mut SelectScratch,
@@ -55,33 +65,31 @@ pub fn dirty_tiles_for_road_changes(
     let band = level.band_m(grid.cell_m);
     // Lattice points lie at most one spacing (`GL3`: one step) beyond their tile.
     let apron = level.spacing_m(grid.cell_m);
+    scratch.candidates.clear();
     for bounds in &changes.pieces {
-        push_tiles(grown(*bounds, apron + PIECE_PAD_M), out);
+        push_tiles(grown(*bounds, apron + PIECE_PAD_M), &mut scratch.candidates);
     }
     scratch.changed.clear();
     scratch
         .changed
         .extend(changes.segments.iter().map(|[a, b]| road_seam(*a, *b)));
-    scratch.candidates.clear();
     for seam in &scratch.changed {
         push_tiles(
             grown(seam.box_xz(), CAP_M.max(band) + apron),
             &mut scratch.candidates,
         );
     }
-    sort_unique(out);
     sort_unique(&mut scratch.candidates);
-    scratch
-        .candidates
-        .retain(|tile| out.binary_search(tile).is_err());
     let changed = &scratch.changed;
+    let pieces = &changes.pieces;
     crate::thread_pools::install(|| {
         scratch
             .candidates
             .par_iter()
             .map(|&tile| {
                 CANDIDATE.with_borrow_mut(|candidate| {
-                    reached(terrain, roadbed, changed, tile, level, &grid, candidate)
+                    reached(terrain, after, changed, tile, level, &grid, candidate)
+                        || covering_triangles_changed(before, after, pieces, candidate)
                 })
             })
             .collect_into_vec(&mut scratch.dirty);
@@ -93,7 +101,63 @@ pub fn dirty_tiles_for_road_changes(
             .zip(&scratch.dirty)
             .filter_map(|(&tile, &dirty)| dirty.then_some(tile)),
     );
-    sort_unique(out);
+}
+
+// Whether the grounded top triangles that can cover a lattice point of the candidate's lattice
+// (left in `candidate` by `reached`) differ between the roadbeds, where a changed piece meets
+// it. Pieces published in both with the same mesh are skipped; the others' triangles meeting
+// the lattice are compared as sorted bits, whatever their pieces and grids.
+fn covering_triangles_changed(
+    before: &RoadbedSystem,
+    after: &RoadbedSystem,
+    pieces: &[[f64; 4]],
+    candidate: &mut CandidateScratch,
+) -> bool {
+    let rect = grown(candidate.rect, PIECE_PAD_M);
+    if !pieces.iter().any(|bounds| meets(*bounds, rect)) {
+        return false;
+    }
+    before.grounded_pieces_in_bounds(rect, &mut candidate.pieces);
+    after.grounded_pieces_in_bounds(rect, &mut candidate.other_pieces);
+    let shared = |id: &PieceId, other: &RoadbedSystem| {
+        let (a, b) = (before.piece_mesh(*id), other.piece_mesh(*id));
+        matches!((a, b), (Some(a), Some(b)) if std::ptr::eq(a, b))
+    };
+    for (roadbed, ids, bits) in [
+        (before, &candidate.pieces, &mut candidate.triangles),
+        (
+            after,
+            &candidate.other_pieces,
+            &mut candidate.other_triangles,
+        ),
+    ] {
+        bits.clear();
+        for id in ids.iter().filter(|id| !shared(id, after)) {
+            let Some(mesh) = roadbed.piece_mesh(*id) else {
+                continue;
+            };
+            mesh.any_top_triangle_in_bounds(rect, |triangle| {
+                let points = mesh.triangle_points(triangle);
+                if meets(triangle_box(&points), rect) {
+                    bits.push(points.map(|p| [p.x, p.y, p.z].map(f64::to_bits)));
+                }
+                false
+            });
+        }
+        bits.sort_unstable();
+        bits.dedup();
+    }
+    candidate.triangles != candidate.other_triangles
+}
+
+fn triangle_box(points: &[crate::simulation::network::roadbed::RoadVec3; 3]) -> [f64; 4] {
+    let [a, b, c] = points;
+    [
+        a.x.min(b.x).min(c.x),
+        a.z.min(b.z).min(c.z),
+        a.x.max(b.x).max(c.x),
+        a.z.max(b.z).max(c.z),
+    ]
 }
 
 /// The tiles at `level` whose values a base edit of the samples `[x0, x1] x [z0, z1]` (grid
@@ -138,6 +202,7 @@ fn reached(
         scratch.xs[scratch.xs.len() - 1],
         scratch.zs[scratch.zs.len() - 1],
     ];
+    scratch.rect = rect;
     let window = window(rect, band);
     let in_window = |seam: &&Seam| meets(seam.box_xz(), window);
     if !changed.iter().any(|seam| in_window(&seam)) {

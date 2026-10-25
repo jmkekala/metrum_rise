@@ -430,6 +430,7 @@ fn road_changes_select_every_tile_they_alter() {
             let mut dirty = Vec::new();
             dirty_tiles_for_road_changes(
                 &terrain,
+                &roadbed,
                 &edited,
                 &changes,
                 level,
@@ -623,6 +624,7 @@ fn benchmark_graded_tiles_locality() {
             let start = Instant::now();
             dirty_tiles_for_road_changes(
                 &terrain,
+                &roadbed,
                 &edited,
                 &changes,
                 Level::Gl0,

@@ -367,9 +367,9 @@ impl RoadbedSystem {
         triangle_height_at_xz(triangle, RoadVec2::new(x, z))
     }
 
-    // The grounded pieces (node pieces and grounded spans) whose bounds touch `bounds`, sorted
-    // and unique, into `pieces`.
-    fn grounded_pieces_in_bounds(&self, bounds: [f64; 4], pieces: &mut Vec<PieceId>) {
+    /// The grounded pieces (node pieces and grounded spans) whose bounds touch the XZ bounds,
+    /// sorted and unique, into `pieces` (`TERRAIN-07-A`).
+    pub fn grounded_pieces_in_bounds(&self, bounds: [f64; 4], pieces: &mut Vec<PieceId>) {
         pieces.clear();
         self.any_piece_in_bounds(bounds, |id, _| {
             pieces.push(id);

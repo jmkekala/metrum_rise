@@ -1026,6 +1026,8 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         // (`acknowledge_uploads`), so the commit's road-locked terrain state walks its own.
         let terrain = core.terrain_dirty_patch_states();
         core.acknowledge_terrain_render_patches(&terrain);
+        // The roadbed before the commit, for the graded terrain's dirty tiles (`O(1)`).
+        let before_roadbed = core.transit_network.roadbed.snapshot();
         crate::debug::Channel::EconomyPhases.set_enabled(phases);
         profile_control("enable");
         let road_total = Instant::now();
@@ -1132,7 +1134,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "lots_digest": lots_digest, "generated_digest": format!("{generated:016x}"),
         });
         eprintln!("COMMIT_BREAKDOWN {record}");
-        graded_tiles(residents, sample, core);
+        graded_tiles(residents, sample, core, &before_roadbed);
     }
 }
 
@@ -1140,7 +1142,12 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
 // dirty tile selection from the commit's terrain changes and the `GL0` bake of those tiles on
 // the shared pool. Median of 7 warm runs; the exact cut's `surface_ms` of the commit is the
 // same-run control. `digest` hashes the baked texels, to compare builds.
-fn graded_tiles(residents: u32, sample: usize, core: &crate::nodes::sim::core::state::SimCore) {
+fn graded_tiles(
+    residents: u32,
+    sample: usize,
+    core: &crate::nodes::sim::core::state::SimCore,
+    before: &crate::simulation::network::roadbed::RoadbedSystem,
+) {
     use crate::simulation::terrain::graded::{
         Level, SelectScratch, bake_tiles, dirty_tiles_for_road_changes,
     };
@@ -1150,7 +1157,15 @@ fn graded_tiles(residents: u32, sample: usize, core: &crate::nodes::sim::core::s
     let mut runs = Vec::new();
     for _ in 0..7 {
         let begin = Instant::now();
-        dirty_tiles_for_road_changes(terrain, roadbed, changes, Level::Gl0, &mut scratch, &mut tiles);
+        dirty_tiles_for_road_changes(
+            terrain,
+            before,
+            roadbed,
+            changes,
+            Level::Gl0,
+            &mut scratch,
+            &mut tiles,
+        );
         let selected = begin.elapsed().as_secs_f64() * 1e3;
         bake_tiles(terrain, roadbed, &tiles, Level::Gl0, &mut payloads)
             .expect("the commit's tiles bake");
