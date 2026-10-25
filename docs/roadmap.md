@@ -144,10 +144,11 @@ questions 1, 2, 7, 11 (c) and 16: strokes read no piece their own edit rebuilds 
 crossed road at its graph profile, so the sloped T fixtures are independent of drawing order;
 the commit refuses pieces that newly cover fields or painted cells (no more corridor checks for
 them); node moves, crosswalk overrides and edge class changes are tried on a scratch roadbed and
-refused when a node fails or reserved land would be covered. Questions 8 (fixture regeneration),
-21 (b) (waits for `ROAD-68-D` part 6) and 11 (c) for undo, terrain sync and bulldoze are next;
-question 30 (terminal extensions and mid-span meetings on slopes) is new, decided (a) under the
-delegation for review, not yet built.
+refused when a node fails or reserved land would be covered; a stroke from a road end joins it
+like any node instead of re-solving the road it extends (question 30 (a), decided under the
+delegation for review), so sloped Y junctions are order independent too. Questions 8 (fixture
+regeneration), 21 (b) (measurable now that `ROAD-68-D` part 6 landed), 11 (c) for undo, terrain
+sync and bulldoze, and question 30's mid-span meetings are next.
 Tests that need later gates are disabled until then (6 Rust tests, no Godot script).
 `ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty open questions; open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
@@ -159,8 +160,7 @@ at the commit only; part 2 checks the installed pieces), 27 (stage budgets at th
 frame is an open miss since terrain is in the preview) and 28 (debug
 face sources name tile-local chain runs) are decided by the coordinator for review, and 26
 (preview payloads with crossings or signs, until `ROAD-68-F`) is an open miss; 30 (drawing
-order on slopes through terminal extensions and mid-span meetings) is decided (a) for review and
-not built yet. Design,
+order on slopes) is decided (a) for review: joins are built, mid-span meetings are open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 
