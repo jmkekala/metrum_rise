@@ -3616,15 +3616,16 @@ conflicts among the evaluated cones; a fill's `L` above the upper bound of an un
 evaluated and not counted (the ground is that `L` either way), and the wall census, which takes
 every seam, counts walls exactly.
 
-**Lanes** (round 3). The bake evaluates a row's points within one bin together, four at a time:
-each candidate seam is evaluated for the four points with the same operations per lane
-(`Seam::at_lanes`, its clamps as selects so the lanes compile to vector instructions), the cone
-bounds update by selects, and each lane stops where the evaluation of its point alone stops, so
-later candidates no longer touch it. Every lane's value, cones, nearest seam and count equal the
-one-point evaluation bitwise (the one-point evaluation is the single lane); a tie in the nearest
-seam's distance is broken by the scalar seam evaluation, whose distances are the same bits. On the
-`x86-64-v2` target (SSE4.1: two `f64` per register; no `unsafe`) part of the arithmetic compiles
-to two-wide instructions. The base stops and bin columns are computed once per lattice column.
+**Lanes** (round 3). The bake evaluates a row's points within one bin together, four at a time: each
+candidate seam is evaluated for the four points with the same operations per lane (`Seam::at_lanes`,
+its clamps as selects so the lanes compile to vector instructions), the cone bounds update by
+selects, and each lane stops where the evaluation of its point alone stops, so later candidates no
+longer touch it. Every lane's value, cones, nearest seam and count equal the one-point evaluation
+bitwise (the one-point evaluation is the single lane, which takes the seam's branching scalar form);
+a tie in the nearest seam's distance is broken by the scalar seam evaluation, whose distances are
+the same bits. On the `x86-64-v2` target (SSE4.1: two `f64` per register; no `unsafe`) part of the
+arithmetic compiles to two-wide instructions. The base stops and bin columns are computed once per
+lattice column.
 
 Correction of T18's wording: the floor of pass 2 is the bin's *lowest* first-pass ground below the
 base, not the tile's largest first-pass `L`. A seam must be listed wherever it can rise above

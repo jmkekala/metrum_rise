@@ -86,8 +86,9 @@ pub(super) fn evaluate(
 /// and covering road heights `roads`, over one candidate list. Each lane takes the candidates
 /// until its own early exit, and later ones no longer touch it, so every lane equals
 /// `evaluate` at its point bitwise, its cones and count included. Each candidate's seam is
-/// evaluated for all lanes at once ([`Seam::at_lanes`]), with the cone bounds updated by
-/// selects, so the arithmetic compiles to vector instructions. `O(candidates x N)`.
+/// evaluated for all lanes at once ([`Seam::at_lanes`]; one lane takes [`Seam::at`], the same
+/// bits), with the cone bounds updated by selects, so the arithmetic compiles to vector
+/// instructions. `O(candidates x N)`.
 pub(super) fn evaluate_lanes<const N: usize>(
     xs: &[f64; N],
     z: f64,
@@ -135,7 +136,14 @@ pub(super) fn evaluate_lanes<const N: usize>(
             break;
         }
         let seam = &seams[index as usize];
-        let (distance, height) = seam.at_lanes(xs, z);
+        // One lane (the queries, a run of one point) takes the branching scalar form, which is
+        // cheaper where most seams clamp to an end; both give the same bits.
+        let (distance, height) = if N == 1 {
+            let at = seam.at(xs[0], z);
+            ([at.distance; N], [at.height; N])
+        } else {
+            seam.at_lanes(xs, z)
+        };
         for lane in 0..N {
             let take = live[lane] && distance[lane] <= CAP_M;
             let (cone_lower, cone_upper) = cone(height[lane], distance[lane]);
