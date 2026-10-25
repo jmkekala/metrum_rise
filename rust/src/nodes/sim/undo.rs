@@ -8,6 +8,7 @@ use crate::nodes::sim::core::{
 };
 use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::Vector3;
 use rayon::prelude::*;
@@ -537,6 +538,20 @@ impl SimCore {
         lanes.rebuild_edges_incremental(&mut self.region_graph, edge_ids);
         self.agents
             .reattach_invalidated_lanes_for_edges(edge_ids, lanes, &self.region_graph);
+        // The rebuilt lanes have new ids, so the entrances fronting them are derived again, as
+        // the commit derives its own; a cache that was already stale waits for the next
+        // frame's repair. `O(buildings / P)` for the scan, `O(changed / P)` for the derivation.
+        let allocator = &mut self.allocator;
+        if !allocator.entrances_dirty && allocator.entrances.len() == allocator.buildings.len() {
+            let closure =
+                LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, edge_ids);
+            let buildings = &allocator.buildings;
+            let changed: Vec<usize> = (0..buildings.len())
+                .into_par_iter()
+                .filter(|&index| closure.contains(&buildings[index].edge_idx))
+                .collect();
+            allocator.rebuild_entrances_of(&changed, &self.region_graph, lanes);
+        }
     }
 
     // A dense terrain restore resets every road product, so its lanes rebuild whole. The rebuild
@@ -553,6 +568,8 @@ impl SimCore {
             .rebuild(&mut self.region_graph);
         self.agents
             .restore_lane_identities(&lane_identities, &self.transit_network.lane_system);
+        // So does every entrance's: the next frame derives them again.
+        self.allocator.entrances_dirty = true;
         if let Some((edge_ids, _)) = topology_scope {
             self.agents.reattach_invalidated_lanes_for_edges(
                 edge_ids,
