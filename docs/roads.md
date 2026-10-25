@@ -673,7 +673,8 @@ restores them by swapping.
 As built (`ROAD-68-E` part 1): undo swaps the replaced pieces back when nothing rebuilt them
 since, restores the graph in `O(delta records * log edges)`, and rebuilds the lanes of the
 restored closure as a commit does (the agents on them detach and reattach, the connection lanes
-of dropped nodes retire); a test checks the result equals a full lane rebuild. A dense terrain
+of dropped nodes retire, and the entrances fronting the closure are derived again); a test
+checks the result equals a full lane rebuild. A dense terrain
 restore still rebuilds every lane, as it resets every road product. The record also keeps the
 refined terrain entries the edit's validation replaced and the patches' generations after the
 edit (round 3); when the roadbed swap held and no generation of those patches moved since,
@@ -1473,6 +1474,11 @@ These need a user decision; work that does not depend on them continues.
       wastes power to win a benchmark.
     - **Recommendation.** (a): the budgets describe work, and the end-to-end 16.7 ms holds even at
       the idle clock (_process max 9.7 ms). The idle-clock numbers stay recorded with every run.
+    - **Since terrain is in the preview (round 5, open).** The idle-clock stream exceeds 16.7 ms on
+      38 of 864 frames (`_process` max 21.1 ms, terrain 8.1-9.8 ms p50); back to back every frame
+      fits (max 8.8 ms). The idle-clock frame is an open miss with the terrain stage
+      ([gate E round 5](#progress-2026-10-24-branch-road68-e1-work-in-progress)), not a relaxed
+      target.
 28. **Debug face sources name tile-local chain runs (`ROAD-68-E` round 4) — decided by the
     coordinator under the user's delegation, 2026-10-25, for review: (a).**
     - **Evidence.** The CDT's `RoadBoundary` source named the graph piece, chain and segment of
@@ -3265,6 +3271,46 @@ Round 4 (part 1, 2026-10-25, work in progress; rebased on `road` `e9fee678`, gat
   (`a4941bbf`), the context refresh and graph copy at 10k and 100k (the 100k commit is rejected on `e9fee678` with
   `render_geometry_invalid`, gate D part 6), the load `unpinned_nodes` test and timing, and the
   undo record's retained heap.
+
+Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gate G parts 3-5):
+
+- **Rebase.** Conflicts only in `road_edit.rs` (G's `changed_edges` of an adopted plan, now
+  computed in `adopt_road_topology_plan` from the plan's edges and the live ids
+  `apply_to_graph` returns) and the breakdown harness (`RoadToolShared` beside G's
+  `METRUM_COMMIT_PHASES`). `schedule_cch_rebuild_of_live_graph` still returns its copy for the
+  view; the preview's pool entry and `RetiredRoadToolState::retire` only spawn, so G's rule that
+  no shared-pool worker waits for a pure job holds.
+- **Fix: a lane-local undo left stale entrances.** Since round 2 the undo rebuilds the lane
+  closure of its restored edges, which gives those lanes new ids; the buildings' entrance cache
+  kept the old ones, and G's local entrance update at the next commit found them (debug check in
+  `rebuild_entrances_of`; `narrow_road_marks_match_marking_the_whole_refreshed_ring`: T split,
+  undo, T split again). The undo now derives the entrances that front the closure again, as the
+  commit does; the dense-terrain path, which renumbers every lane, marks the cache stale for the
+  next frame. Before the rebase no test committed after a lane-local undo on a built-up city.
+- **Godot stream (round 4's release library `713ae3a7`, run at the end of round 4).**
+  `road_preview_stream_test.gd` headless, isolated profile, pinned to the P-cores, both timing
+  locks, `RAYON_NUM_THREADS=4`, 96 moving frames per fixture, nine fixtures. Every moving pose was
+  previewed and shown in its own frame (864 of 864). Back to back (operating clock,
+  [open question 27](#road-68-open-questions)): the tool's `_process` took 5.2-7.2 ms p50, p95
+  5.7-7.9 ms, max 8.8 ms (`cross`), so every frame fits 16.7 ms; stages p50 (max): terrain
+  3.48-5.13 (6.22) ms, the miss gate D part 6 now owns (`dense_t` 5.13, `cross` 4.55,
+  `sloped_t` 4.05); payload packing 0.44-0.49 (0.65), within 1.0; Godot stage and install
+  0.43-0.56 (0.74), within 2.0; plan 0.23-0.27, roadbed 0.28-0.37, road chunks 0.28-0.48. With
+  the 1/60 s timer (idle clock, observation): `_process` 11.8-13.5 ms p50, max 21.1 ms, and
+  **38 of 864 frames exceed 16.7 ms** (`wide_bend` 14, `control_curve_t` 6, `t` and `cross` 5,
+  `bend` 4, `sloped_t` and `chunk_boundary_t` 2, `wide_t` and `dense_t` 0), terrain 8.1-9.8 ms
+  p50 (max 15.4). Question 27's evidence that the frame holds even at the idle clock dates from
+  before terrain was in the preview; it no longer holds, so the idle-clock frame is recorded as
+  an open miss with the terrain stage, not as an accepted target.
+- **Godot terrain staging on the real renderer.** `network_tool_chunk_renderer_test.gd`
+  (`_test_road_preview_stages_terrain_on_the_real_renderer`): the road tool, given a preview
+  with one road chunk and one engineered terrain payload, shows in one `_show_preview` call
+  both the chunk and the payload's mesh under the resident patch of the real `terrain.gd`
+  (resident mesh detached, resident data untouched); an accepted commit holds both; the
+  committed chunks' install leaves the terrain preview shown; the commit's own patch, staged and
+  installed through the renderer's terrain transaction, releases the held preview inside the
+  install call (`patch_render_will_change`), after which the resident node shows the commit's
+  mesh. So no frame shows neither.
 
 ### `ROAD-68-F` — remaining families
 
