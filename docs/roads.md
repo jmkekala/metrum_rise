@@ -451,9 +451,18 @@ The road side is rewritten:
   handoff variants are replaced by one `RoadBoundary { piece, chain, segment, support }`, where
   `support` is grounded or structure (from the edge class) and carries the retaining-wall policy:
   only structures may tie in with walls. Sources order by their derived field order, adjacent
-  segments of one chain merge into the lower segment, and tile fingerprints hash piece identity,
-  chain and segment, which change only when that piece rebuilds. The CDT model stays free of
-  network types (`TerrainCdtRoadPiece`).
+  segments of one chain merge into the lower segment, and tile fingerprints hash the sources. The
+  CDT model stays free of network types (`TerrainCdtRoadPiece`). Correction (`ROAD-68-E` round
+  4): the sources no longer name graph pieces. A split renumbers what a tile far from the edit
+  sees although its vertices stay bit-identical (the far half of a split trunk becomes another
+  edge's span, and its chain segments shift), so every tile along the trunk changed its
+  fingerprint and re-triangulated. `road_terrain_loops` now makes a rectangle's loops canonical
+  in its footprint alone: each loop starts at its least vertex by coordinate bits, loops are
+  ordered by that vertex, and a source names the run of consecutive segments of one piece chain
+  it lies on (`piece` is the run's number, ordered by the bits of its first two vertices, with
+  the piece's kind; `chain` is 0; `segment` is the place in the run). Equality, order and merges
+  between a tile's sources are as before; debug face sources show run numbers
+  ([open question 28](#road-68-open-questions)).
 - **Grading envelope.** One envelope for roads and sites (`terrain/grading.rs`, open question 3):
   rays leave every sourced boundary edge at the render step (2 m or finer) and every boundary
   vertex on its outward bisector; a ray reaches as far as the 1:2 tie-in from the seam height
@@ -499,10 +508,17 @@ The road side is rewritten:
   by the CDT at a tile line inside a patch, and one straight `y_60` seam edge that passes a road
   vertex, are T-vertices on straight edges (open question 23).
 - **Patch selection.** Every compile records the XZ bounds of the old and new pieces it replaced
-  (`RoadbedSystem::take_changed_bounds`); the edit marks the render patches and CDT tiles within
-  the envelope cap of them and stamps the tiles in the assembly ledger
-  (`road_tile_dirty_at`, keyed by tile), so a later request rebuilds only those tiles and their
-  neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
+  and the net multiset of their grounded outer-chain segments, keyed by endpoint bits, piece kind
+  and chain start and end (`RoadbedSystem::take_terrain_changes`, `ROAD-68-E` round 4): a piece
+  rebuilt unchanged, or a split trunk's far half, cancels out. A tile's loops come from the
+  chains inside its halo, so they change only within the envelope cap (the halo) of a changed
+  segment; its building sites grade against road surfaces and edges up to
+  `site_feasibility_dependency_margin_m` beyond them, less than the cap, and a split
+  re-parametrises a whole edge. So the edit marks the render patches and CDT tiles within the cap
+  of a changed segment, and those within the cap of a changed piece that have a site within the
+  local sample margin of their window (`road_terrain_tiles`), and stamps the tiles in the
+  assembly ledger (`road_tile_dirty_at`, keyed by tile), so a later request rebuilds only those
+  tiles and their neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
   it, from the same per-tile loops; while the roadbed is dirty it keeps its last road ownership.
   Undo and rollback go through the same compile, so they follow.
 - **Ownership refresh.** A patch's road ownership is recomputed only while it is pending: a
@@ -601,22 +617,26 @@ render chunk the stroke changes, built by the commit's own emission and splice
 stroke whose closure has no crossing and no sign publishes exactly the previewed chunks (tested
 in Rust and in `road_junction_preview_test.gd`). Crosswalk paint and road signs are missing from
 the preview's rebuilt pieces, because the renderer builds both from lanes, which a preview does
-not build; a zebra also cuts the asphalt triangles under it, so the asphalt of a rebuilt piece
-with a crossing differs too. `ROAD-68-F` owns "lane markings at junctions, street lights and road
+not build (since `ROAD-68-D` part 5 a zebra cuts no triangle, so only the asphalt's per-vertex
+paint frame under the bars differs). `ROAD-68-F` owns "lane markings at junctions, street lights and road
 signs" and builds both from the layout's `Crosswalk` and arms for preview and commit alike (one
 function); no cheaper exact path exists now (lanes for the closure would need a lane-system
 replica), so payload equality stays open for those strokes
-([open question 24](#road-68-open-questions)). The parcel and field corridor checks run at the
-commit only ([open question 23](#road-68-open-questions)). The fingerprint is the road-tool surface
+([open question 26](#road-68-open-questions)). The parcel and field corridor checks run at the
+commit only ([open question 25](#road-68-open-questions)). The fingerprint is the road-tool surface
 generation, the roadbed generation and the source and visual terrain generations: the roadbed
 generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
 generation was added.
 
-Stage 3 and the terrain half of 4 (round 3): the patches and tiles the preview's old and new
-pieces touch are the commit's (`road_terrain_tiles`, the function the commit's stamps use). Each
-patch's ownership (`road_terrain_patch_margin_for` on the edited replica and the preview's
-roadbed), assembly scope, margins and site query come from the one source function the core's
-requests and the commit's staged validation also call (`refined_terrain_patch_source`); the
+Stage 3 and the terrain half of 4 (round 3): the patches and tiles whose terrain the preview's
+pieces change are the commit's (`road_terrain_tiles` over the preview roadbed's
+`take_terrain_changes`, the function the commit's stamps use; round 4: tiles near changed chain
+segments, or near changed pieces where a site grades, so a split trunk's far half is not
+rebuilt, [patch selection](#footprint-and-terrain)); the preview's site test reads the published
+sites of the tile's patch. Each patch's ownership (`road_terrain_patch_margin_m` on the edited
+replica and the preview's roadbed, the patches in parallel), assembly scope, margins and site
+query come from the one source function the core's requests and the commit's staged validation
+also call (`refined_terrain_patch_source`); the
 ledger is the published one with the preview's tiles stamped at a provisional generation later
 than every stamp, as the commit's new generation is. The patches build with the commit's job
 and entry functions on the shared pool. The terrain half of the fingerprint is each built
@@ -1429,12 +1449,14 @@ These need a user decision; work that does not depend on them continues.
       checks. A refused click keeps its reason on the stroke until the pointer or the context moves.
 26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — open, target missed.**
     The preview's chunks equal the committed chunks bitwise only when the edit's closure has no
-    crossing and no road sign: the renderer builds crosswalk paint (which also cuts the asphalt
-    triangles under it) and signs from lanes, and a preview builds no lanes. Building lanes for
+    crossing and no road sign: the renderer builds crosswalk paint and signs from lanes, and a
+    preview builds no lanes. Since `ROAD-68-D` part 5 a zebra no longer cuts the asphalt: the
+    preview's asphalt geometry is the commit's, and only the per-vertex paint frame under the
+    bars and the signs are missing. Building lanes for
     the closure would need a lane-system replica beside the graph replica. The target stands:
     `ROAD-68-F` builds both from the layout (`Crosswalk`, arms) in one function that preview and
     commit share; gate E's payload acceptance stays open until then.
-25. **Godot stage timings at the CPU's idle clock (`ROAD-68-E` part 1) — decided by the coordinator
+27. **Godot stage timings at the CPU's idle clock (`ROAD-68-E` part 1) — decided by the coordinator
     under the user's delegation, 2026-10-25, for review: option (a).**
     - **Evidence.** The headless stream test sleeps 16.7 ms between inputs; on an otherwise idle
       machine the P-cores then stay at the 800 MHz floor (0.77-0.9 GHz measured through the motion
@@ -1450,6 +1472,23 @@ These need a user decision; work that does not depend on them continues.
       wastes power to win a benchmark.
     - **Recommendation.** (a): the budgets describe work, and the end-to-end 16.7 ms holds even at
       the idle clock (_process max 9.7 ms). The idle-clock numbers stay recorded with every run.
+28. **Debug face sources name tile-local chain runs (`ROAD-68-E` round 4) — decided by the
+    coordinator under the user's delegation, 2026-10-25, for review: (a).**
+    - **Evidence.** The CDT's `RoadBoundary` source named the graph piece, chain and segment of
+      each boundary edge, and a tile's window fingerprint hashed them. A T that splits a 220 m
+      trunk renumbers the far half (another edge's span, its chain segments shifted by the
+      split) although its vertices stay bit-identical, so on the sloped T all 15 windows changed
+      fingerprint and re-triangulated, 11 of them with no geometric change within 40 m. The
+      terrain stage measured 7.0-8.3 ms p50 against its 3.0 ms budget.
+    - **Options.** (a) Name each source by its tile-local chain run and place in the run, ordered
+      by vertex bits ([source tags](#footprint-and-terrain)): products depend on the footprint
+      only, and the debug display's face sources (`*_face_sources`, the terrain inspector's
+      summary) show run numbers instead of edge and node ids. (b) As (a), and map runs back to
+      pieces in the debug export only, by looking up the current roadbed's chains at the run's
+      first segment; costs a lookup per exported source, changes no product. (c) Keep graph
+      labels and rebuild every tile a renumbered piece reaches (the whole trunk), which misses
+      the budget for no geometric reason.
+    - **Recommendation.** (a) now; (b) when the debug inspector needs edge ids again.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -3114,7 +3153,7 @@ Round 3 (part 1, 2026-10-25, work in progress):
   the 0.07-0.09 ms packing. No code change follows;
   `road_preview_stream_test.gd` takes `METRUM_PREVIEW_STREAM_INTERVAL_SEC` (0 drives frames
   back to back) so the stage timings are reproducible at operating clock
-  ([open question 25](#road-68-open-questions)).
+  ([open question 27](#road-68-open-questions)).
 - **Stage timings (round 3, 2026-10-25).** `benchmark_road_preview_stages` as in part 1
   (release, 4 workers, P-cores, both timing locks), C = this round's binary, B = round 2's
   inline-build binary as the same-session control (C B; the second B and C were not run: the run
@@ -3142,6 +3181,69 @@ Round 3 (part 1, 2026-10-25, work in progress):
   staging and swap on a resident terrain renderer, the roadbed p95
   per-pose scratch, the context refresh and graph copy at 10k and 100k, the load
   `unpinned_nodes` test and timing, and the rebase onto gate D.
+
+Round 4 (part 1, 2026-10-25, work in progress; rebased on `road` `e9fee678`, gate D done):
+
+- **Rebase.** The branch now sits on gate D's final commit; E's open questions are 25-27 (were
+  23-25), after D's 23 and 24. The preview display places chunks through
+  `NetworkTool._place_road_chunk_instance`, so it follows D part 5's chunk-centre frames; the
+  preview's road payloads come from the commit's own emission and clip. `road_preview`, the
+  product probe and D's `reference_junction_road_chunks_are_watertight` and
+  `reference_junction_road_and_terrain_share_seam_vertices` pass after the rebase.
+- **Terrain stage, cause.** A T splits the trunk; the trunk's far half keeps its chain vertices
+  and heights bit for bit (measured: every added or removed chain vertex lies within about 40 m
+  of the junction and the new stroke), but the CDT input named graph pieces and chain segment
+  indices, which the split renumbers (the far half becomes another edge's span, its segments
+  shift). Every window along the trunk changed fingerprint and re-triangulated (15 of 15 on the
+  sloped T at x = 25), and the stamps, from the old and new pieces' whole bounds, covered the
+  whole trunk (11 patches per pose).
+- **Fix (exact, constructive).** (1) `road_terrain_loops` makes a tile's loops canonical in the
+  footprint inside its rectangle ([source tags](#footprint-and-terrain), open question 28): the
+  far windows then keep their fingerprints and are reused (11 of 15 change on the same T, all
+  within the junction's halo). (2) The roadbed keeps the net multiset of changed grounded chain
+  segments (`TerrainChanges`, `take_terrain_changes`), and `road_terrain_tiles` stamps only tiles
+  within the cap of a changed segment, or of a changed piece when a building site lies within
+  the local sample margin of the tile's window ([patch selection](#footprint-and-terrain)); the
+  commit asks the allocator's site index, the preview the published patch sites. (3) The preview
+  grades its patches' road margins in parallel inside one pool entry. Gate D part 6 now owns the
+  patch-selection rule for commit and preview (coordinator, 2026-10-25); this round's rule stays
+  until D6's replaces it.
+- **Tests.** `incremental_road_terrain_equals_a_fresh_build` (flat and sloped T at x = 25, sloped
+  at x = -40): after the commit every refined patch's render buffers and every window key
+  (fingerprints included) equal a from-scratch build's. `a_split_trunk_rebuilds_only_the_terrain_near_the_junction`
+  (locality): on a 1,024 m world the preview builds, and the adopted commit stamps, the same
+  patches and tiles for a 220 m and a 660 m trunk, flat and sloped. The round-3 bitwise preview,
+  commit, stale and undo terrain tests pass unchanged.
+- **Commit publication (coordinator, from gate G part 4's profile).** `RoadToolShared::publish`
+  swaps the context's and the shared view under their locks and frees the replaced views (with
+  the simulation's previous view and a replaced replica) on the shared pool, so the last copy of
+  an old graph, heightmap or watermap is no longer freed on the simulation thread. Sharing the
+  preview's graph replica with the CCH job instead of the commit's graph copy is not exact as
+  things stand: previews mutate the replica every pose while the job builds, so the job would
+  need its own copy anyway; a persistent graph ([open question 21](#road-68-open-questions) (c))
+  is the way to drop the copy.
+- **Stage timings (round 4).** `benchmark_road_preview_stages` as in part 1 (release, 4 workers,
+  P-cores, both timing locks), C = round 3's binary (`7089b50f`), D1 = this round before the
+  rebase (`d78dc7cc`), C D1 D1 C in one session, ms p50 / p95: terrain on `sloped_t` 7.07 / 8.20
+  (C, both runs within 0.01) against 5.59-5.60 / 6.26-6.31 (D1), 11 against 8 patches; on
+  `sloped_branch` 8.27-8.35 / 9.12-9.15 against 6.20-6.27 / 7.13-7.15, 11 against 9 patches.
+  Plan, roadbed and chunks unchanged (0.22-0.25, 0.33-0.35, 0.25-0.27 ms p50). **The terrain
+  stage still misses its 3.0 ms budget (open).** A profile of what remains (rebased binary, flat):
+  heightmap interpolation 7%, the tie-in widening test 6.4% and the footprint test 3.1% (linear
+  in the tile's loop edges per sample, D's question 22 option (b)), grading rays 5%, the window
+  ground-triangle index 2.7%, Spade and its predicates about 14%; the per-pose work is the
+  junction's 11 windows plus the inputs of the stamped tiles and their neighbours.
+- **Size.** `roadbed/` production lines (every line of each non-test `.rs` under `roadbed/` plus
+  `roadbed.rs`, without `tests/`, `tests.rs`, `fixtures.rs` and `#[cfg(test)]` items): 7,788 on
+  this branch against 7,394 on `road` (gate D's final); round 4 adds 98 (7,690 before it): the
+  chain-change ledger and `TerrainChanges` in `roadbed/terrain.rs`, its wiring in `system.rs` and
+  the span's `grounded` flag. Rounds 1-3 add 296 (the install API, the delta and restore, the
+  inline small-closure build).
+- **Open in part 1:** the terrain stage's budget (with gate D part 6's scope rule), a Godot test of
+  the terrain staging on a resident terrain renderer, the roadbed per-pose scratch, the context
+  refresh and graph copy at 10k and 100k (the 100k commit is rejected on `e9fee678` with
+  `render_geometry_invalid`, gate D part 6), the load `unpinned_nodes` test and timing, and the
+  undo record's retained heap.
 
 ### `ROAD-68-F` — remaining families
 
