@@ -25,6 +25,10 @@ const FOOTPRINT_PAD_M: f64 = 0.01;
 // Bounds padding around a surface or an edge's band: rounding only lists more points, each
 // then tested exactly.
 const SURFACE_PAD_M: f64 = 1.0e-6;
+// Distance from a polygon's sides beyond which a lattice point's side is the even-odd rule's
+// along its row, so the point needs no predicate test: far above the allocator predicate's 1 mm
+// tolerance and the f32 rounding of its crossings.
+const SPAN_MARGIN_M: f64 = 0.01;
 
 /// What the graded terrain reads of building sites: the sites whose bounds meet a rectangle,
 /// through a spatial index (the allocator's 512 m site chunks), never a scan of every site.
@@ -272,17 +276,30 @@ impl SiteBuffer {
 
     /// Rasterizes the `Pad` class over the lattice `xs` x `zs` (row-major by `z`): `pads[k]`
     /// is the canonical position of the first site whose footprint holds point `k`, else
-    /// [`NO_SITE`]. Pruned, each footprint visits the points of its padded box; unpruned,
-    /// every point. `O(points in the boxes x corners)`.
-    pub(super) fn rasterize_pads(&self, xs: &[f64], zs: &[f64], prune: bool, pads: &mut Vec<u32>) {
+    /// [`NO_SITE`]. Pruned, each footprint's rows take the even-odd rule away from its sides
+    /// ([`for_each_span_point`]) and the allocator's predicate within `SPAN_MARGIN_M` of them;
+    /// unpruned, the predicate at every point. `O(points in the footprints + points near their
+    /// sides x corners)`.
+    pub(super) fn rasterize_pads(
+        &mut self,
+        xs: &[f64],
+        zs: &[f64],
+        prune: bool,
+        pads: &mut Vec<u32>,
+    ) {
         pads.clear();
         pads.resize(xs.len() * zs.len(), NO_SITE);
         for rank in 0..self.sites.len() {
-            let footprint = self.footprint(self.ranked(rank));
-            let area = bounds_of(footprint);
-            for_each_point(xs, zs, area, FOOTPRINT_PAD_M, prune, |k, x, z| {
+            let site = *self.ranked(rank);
+            if site.footprint.1 - site.footprint.0 < 3 {
+                continue;
+            }
+            self.oriented_ring(site.footprint);
+            let (ring, footprint) = (&self.ring, self.footprint(&site));
+            for_each_span_point(xs, zs, ring, FOOTPRINT_PAD_M, prune, |k, x, z, sure| {
                 if pads[k] == NO_SITE
-                    && site_footprint_contains(footprint, Vector2::new(x as f32, z as f32))
+                    && (sure
+                        || site_footprint_contains(footprint, Vector2::new(x as f32, z as f32)))
                 {
                     pads[k] = rank as u32;
                 }
@@ -307,8 +324,8 @@ impl SiteBuffer {
                 let record = self.surfaces[surface as usize];
                 self.oriented_ring(record.points);
                 let (ring, class) = (&self.ring, material_class(record.material));
-                for_each_point(xs, zs, record.bounds, SURFACE_PAD_M, prune, |k, x, z| {
-                    if classes[k] == 0 && polygon_holds(ring, x, z) {
+                for_each_span_point(xs, zs, ring, SURFACE_PAD_M, prune, |k, x, z, sure| {
+                    if classes[k] == 0 && (sure || polygon_holds(ring, x, z)) {
                         classes[k] = class;
                     }
                 });
@@ -452,30 +469,89 @@ fn compare_sites(
         .then_with(|| surface_list(a).cmp(surface_list(b)))
 }
 
-// Visits the lattice points of `xs` x `zs` (row-major by `z`, as `(k, x, z)`) inside `area`
-// grown by `pad`, or every point unpruned.
-fn for_each_point(
+// Visits the lattice points of `xs` x `zs` (row-major by `z`, as `(k, x, z, sure)`) the
+// polygon `ring` may hold, its box grown by `pad`: `sure` where the point lies inside by the
+// even-odd rule along its row and farther than `SPAN_MARGIN_M` from every side, where the
+// predicate the caller would test agrees; unsure (to be tested) within that margin of a side;
+// outside points farther than it are skipped. A row within the margin of a corner's z visits
+// every point of the box unsure, so every side a point there can be near crosses the row
+// transversally, and a point is within the margin of a crossing side only if it is within
+// `margin / |sin|` of the crossing in x. Unpruned, every point is visited unsure.
+// `O(points in the box)` with `O(crossings)` per point.
+fn for_each_span_point(
     xs: &[f64],
     zs: &[f64],
-    area: [f64; 4],
+    ring: &[[f64; 2]],
     pad: f64,
     prune: bool,
-    mut visit: impl FnMut(usize, f64, f64),
+    mut visit: impl FnMut(usize, f64, f64, bool),
 ) {
     let width = xs.len();
-    let (i0, i1, j0, j1) = if prune {
-        (
-            xs.partition_point(|&x| x < area[0] - pad),
-            xs.partition_point(|&x| x <= area[2] + pad),
-            zs.partition_point(|&z| z < area[1] - pad),
-            zs.partition_point(|&z| z <= area[3] + pad),
-        )
-    } else {
-        (0, xs.len(), 0, zs.len())
-    };
+    let area = ring.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |[a, b, c, d], p| [a.min(p[0]), b.min(p[1]), c.max(p[0]), d.max(p[1])],
+    );
+    if !prune {
+        for (j, &z) in zs.iter().enumerate() {
+            for (i, &x) in xs.iter().enumerate() {
+                visit(j * width + i, x, z, false);
+            }
+        }
+        return;
+    }
+    let pad = pad.max(SPAN_MARGIN_M);
+    let (i0, i1) = (
+        xs.partition_point(|&x| x < area[0] - pad),
+        xs.partition_point(|&x| x <= area[2] + pad),
+    );
+    let (j0, j1) = (
+        zs.partition_point(|&z| z < area[1] - pad),
+        zs.partition_point(|&z| z <= area[3] + pad),
+    );
+    // Per crossing side: its x on the row and the x distance within which a point may lie within
+    // the margin of it. At most a few per row for the footprints and surfaces of sites.
+    let mut crossings = [(0.0f64, 0.0f64); 16];
+    let n = ring.len();
     for (j, &z) in zs.iter().enumerate().take(j1).skip(j0) {
+        let risky = ring.iter().any(|p| (p[1] - z).abs() <= SPAN_MARGIN_M);
+        let mut count = 0;
+        if !risky {
+            for e in 0..n {
+                let (a, b) = (ring[e], ring[(e + 1) % n]);
+                if (a[1] < z) != (b[1] < z) {
+                    if count == crossings.len() {
+                        count = usize::MAX;
+                        break;
+                    }
+                    let (dx, dz) = (b[0] - a[0], b[1] - a[1]);
+                    let x = a[0] + dx * ((z - a[1]) / dz);
+                    crossings[count] = (x, SPAN_MARGIN_M * dx.hypot(dz) / dz.abs());
+                    count += 1;
+                }
+            }
+        }
         for (i, &x) in xs.iter().enumerate().take(i1).skip(i0) {
-            visit(j * width + i, x, z);
+            let k = j * width + i;
+            if risky || count == usize::MAX {
+                visit(k, x, z, false);
+                continue;
+            }
+            let near = crossings[..count]
+                .iter()
+                .any(|&(cx, margin)| (x - cx).abs() <= margin);
+            if near {
+                visit(k, x, z, false);
+                continue;
+            }
+            let left = crossings[..count].iter().filter(|&&(cx, _)| cx < x).count();
+            if left % 2 == 1 {
+                visit(k, x, z, true);
+            }
         }
     }
 }

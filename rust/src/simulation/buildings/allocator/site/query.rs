@@ -72,11 +72,18 @@ impl SiteSource for BuildingAllocator {
             rect[3] + SITE_RECT_SLACK_M,
         ]
         .map(|value| value as f32);
+        // Every footprint, surface and planting corner lies within the maximum site radius of
+        // its lot centre, so a lot centre farther from the rectangle (plus the polygon test's
+        // slack) rules the site out before its polygons are read, as `site_at` does.
+        let reach = self.max_site_radius_m.max(0.0) + SITE_REACH_SLACK_M;
         self.visit_indexed_site_candidates_for_bounds(min_x, min_z, max_x, max_z, |idx| {
             let Some(site) = self.building_sites.get(idx) else {
                 return;
             };
-            if site.overlaps_bounds(min_x, min_z, max_x, max_z) {
+            let centre = site_lot_center(site);
+            let dx = (min_x - centre.x).max(centre.x - max_x).max(0.0);
+            let dz = (min_z - centre.y).max(centre.y - max_z).max(0.0);
+            if dx * dx + dz * dz <= reach * reach && site.overlaps_bounds(min_x, min_z, max_x, max_z) {
                 out.push_site(&site.footprint_world, site.support_height_m);
                 for surface in &site.surfaces {
                     out.push_surface(surface.material, &surface.vertices_world);
