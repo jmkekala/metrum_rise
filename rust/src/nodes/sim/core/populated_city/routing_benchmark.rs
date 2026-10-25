@@ -968,7 +968,6 @@ fn benchmark_populated_commit_breakdown() {
 
 fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
     use crate::nodes::sim::core::frame::FRAME_DT_S;
-    use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
 
     core.transit_network
         .rebuild_pathing_if_dirty(&mut core.region_graph);
@@ -998,8 +997,10 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     // republishes only the chunks it changes (`acknowledge_network_render`).
     core.precompute_road_mesh_data();
     assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
-    let published = crate::nodes::sim::core::RoadToolShared::new(
-        road_tool_snapshot_from_core(core).expect("the fixture roadbed is current"),
+    // The game publishes the road tool's first view through the publisher at start-up, so every
+    // commit below publishes incrementally from it, as a commit in the game does.
+    let published = crate::nodes::sim::core::RoadToolShared::from_publication(
+        core.publish_road_tool_view(None).expect("the fixture roadbed is current"),
     );
     // Godot also requested and uploaded the refined terrain of the road patches it showed, so a
     // commit rebuilds only the tiles it changes. The fixture builds every road patch once here,
