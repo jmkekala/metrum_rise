@@ -7,8 +7,9 @@
 //! holes from outer boundaries. Bridge and tunnel spans publish no chains (`ROAD-68-F`).
 //! `O(S log S)` for `S` chain segments.
 
-use super::RoadbedSystem;
 use super::query::PieceId;
+use super::system::{Piece, PublishedPiece};
+use super::{PieceMesh, RoadbedSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::rect_loops::{RectLoop, clip_path, join_runs, within};
@@ -51,6 +52,81 @@ impl TerrainLoopError {
             Self::OpenEnd { .. } => "roadbed_chain_open_end",
         }
     }
+}
+
+/// Where compiles changed what [`terrain_loops`] reads (`ROAD-68-E`), from
+/// [`RoadbedSystem::take_terrain_changes`]: the terrain an edit must rebuild.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TerrainChanges {
+    /// XZ bounds `[min_x, min_z, max_x, max_z]` of every old and new piece the compiles
+    /// replaced, added or removed, in compile order: whatever building-site grading reads from
+    /// the roads (surface heights and the graph edges they belong to) changed only inside them.
+    pub pieces: Vec<[f64; 4]>,
+    /// XZ bounds of every outer-chain segment the old pieces had and the new ones lack, or the
+    /// reverse, in segment order: the loops of a rectangle that meets none of them are equal
+    /// before and after, bit for bit, labels included (the CDT input numbers its chain runs by
+    /// geometry, `road_terrain_loops`). A split trunk's far half keeps its segments, so only the
+    /// junction's surroundings appear here.
+    pub chains: Vec<[f64; 4]>,
+}
+
+// An outer-chain segment as `terrain_loops` reads it: its endpoints' coordinate bits, whether
+// its piece is a node, and whether it starts or ends its chain (where chains join). A
+// one-vertex chain is a segment from the vertex to itself that starts and ends its chain.
+type ChainSegmentKey = ([u64; 6], bool, bool, bool);
+
+// Net count of each grounded chain segment over the pieces published (`+1`) and replaced
+// (`-1`) since the last take, so a piece rebuilt unchanged, or a clear followed by the same
+// pieces, cancels out (`ROAD-68-E`). Structure spans' chains never reach the loops and are not
+// counted.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ChainChanges(BTreeMap<ChainSegmentKey, i64>);
+
+impl ChainChanges {
+    // `O(V log S)` for the piece's chain vertices `V` and the counted segments `S`.
+    pub(super) fn count(&mut self, piece: &PublishedPiece, sign: i64) {
+        let (mesh, node) = match &piece.piece {
+            Piece::Span(span) if !span.grounded() => return,
+            Piece::Span(span) => (span.mesh(), false),
+            Piece::Node(node) => (node.mesh(), true),
+        };
+        for chain in mesh.outer_chains() {
+            let vertices = chain.vertices();
+            let segments = vertices.len().saturating_sub(1).max(1);
+            for index in 0..segments {
+                let start = vertices[index];
+                let end = vertices.get(index + 1).copied().unwrap_or(start);
+                let key = (
+                    segment_bits(mesh, start, end),
+                    node,
+                    index == 0,
+                    index + 1 == segments,
+                );
+                let count = self.0.entry(key).or_insert(0);
+                *count += sign;
+                if *count == 0 {
+                    self.0.remove(&key);
+                }
+            }
+        }
+    }
+
+    // The XZ bounds of every segment whose net count is not zero; taking them clears the
+    // counts.
+    pub(super) fn take_bounds(&mut self) -> Vec<[f64; 4]> {
+        std::mem::take(&mut self.0)
+            .into_keys()
+            .map(|(bits, ..)| {
+                let [ax, _, az, bx, _, bz] = bits.map(f64::from_bits);
+                [ax.min(bx), az.min(bz), ax.max(bx), az.max(bz)]
+            })
+            .collect()
+    }
+}
+
+fn segment_bits(mesh: &PieceMesh, start: u32, end: u32) -> [u64; 6] {
+    let [a, b] = [start, end].map(|vertex| mesh.positions()[vertex as usize]);
+    [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits)
 }
 
 // One piece chain: its vertex range in the gathered points and its owner.

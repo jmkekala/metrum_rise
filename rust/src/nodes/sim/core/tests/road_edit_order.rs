@@ -104,8 +104,18 @@ fn build(strokes: &[Stroke], order: &[usize], sloped: bool) -> NetworkState {
 }
 
 pub(super) fn committed(strokes: &[Stroke], order: &[usize], sloped: bool) -> SimCore {
+    committed_on(512.0, strokes, order, sloped)
+}
+
+// As `committed`, on a square world `world_m` wide; the slope stays the 256 m one at the centre.
+pub(super) fn committed_on(
+    world_m: f32,
+    strokes: &[Stroke],
+    order: &[usize],
+    sloped: bool,
+) -> SimCore {
     let mut core = test_core();
-    core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+    core.create_blank_world_internal(world_m, world_m, 8.0, 128.0, 0.0)
         .expect("blank world");
     core.treasury.balance = 1.0e9;
     if sloped {

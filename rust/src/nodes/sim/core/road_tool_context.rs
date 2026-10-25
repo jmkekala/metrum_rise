@@ -59,6 +59,27 @@ pub(crate) struct RoadToolPublication {
     pub(crate) sequence: u64,
     pub(crate) view: RoadToolQuerySnapshot,
     pub(crate) replica: ReplicaSync,
+    // The view the simulation published before, which it no longer holds; freed with the
+    // context's and the shared view's predecessors off the publishing thread.
+    retired: Option<RoadToolQuerySnapshot>,
+}
+
+// What one publication replaced: the previous views and, after a full replacement, the old
+// replica. They may hold the last copies of a graph, a heightmap and a watermap, whose frees
+// are `O(city)` and decide nothing, so `retire` frees them on the shared pool instead of on
+// the simulation thread under the road tool's locks (`ROAD-68-E`).
+struct RetiredRoadToolState {
+    views: [Option<RoadToolQuerySnapshot>; 3],
+    replica: Option<RegionGraph>,
+}
+
+impl RetiredRoadToolState {
+    // Frees everything on the shared pool without waiting.
+    fn retire(self) {
+        if self.views.iter().any(Option::is_some) || self.replica.is_some() {
+            crate::thread_pools::spawn(move || drop(self));
+        }
+    }
 }
 
 impl SimCore {
@@ -95,7 +116,7 @@ impl SimCore {
         );
         let role_revision = self.region_graph.node_role_revision();
         let previous = self.road_tool_publisher.published.take();
-        let (view, replica) = match previous {
+        let (view, replica) = match &previous {
             Some(previous) if !rebuilt.all && previous.role_revision == role_revision => {
                 let graph_changed = !rebuilt.is_empty() || previous.graph_counts != graph_counts;
                 let replica = if graph_changed {
@@ -111,15 +132,15 @@ impl SimCore {
                 let region_graph = match graph {
                     Some(graph) => graph,
                     None if graph_changed => Arc::new(self.region_graph.clone()),
-                    None => previous.view.region_graph,
+                    None => Arc::clone(&previous.view.region_graph),
                 };
                 let terrain = if previous.terrain_generations == terrain_generations {
-                    previous.view.terrain
+                    Arc::clone(&previous.view.terrain)
                 } else {
                     Arc::new(self.heightmap.clone())
                 };
                 let water = if previous.water_generation == water_generation {
-                    previous.view.water
+                    Arc::clone(&previous.view.water)
                 } else {
                     Arc::new(self.watermap.clone())
                 };
@@ -159,6 +180,7 @@ impl SimCore {
             sequence: self.road_tool_publisher.sequence,
             view,
             replica,
+            retired: previous.map(|previous| previous.view),
         })
     }
 }
@@ -213,15 +235,30 @@ impl RoadToolShared {
 
     /// Applies a publication to the context and, when it was newer, to the view. Terrain inputs
     /// newer than the publication's (published since by [`Self::publish_terrain_inputs`]) stay.
+    /// The replaced views are swapped out under the locks and freed on the shared pool.
     pub(crate) fn publish(&self, mut publication: RoadToolPublication) {
+        let mut retired = RetiredRoadToolState {
+            views: [publication.retired.take(), None, None],
+            replica: None,
+        };
         let mut context = self
             .context
             .lock()
             .expect("road tool context lock poisoned");
-        if context.apply(&publication) {
+        if let Some((view, replica)) = context.follow(&publication) {
             publication.view.terrain_inputs = context.view.terrain_inputs.clone();
-            *self.view.write().expect("road tool view lock poisoned") = publication.view;
+            let shared = std::mem::replace(
+                &mut *self.view.write().expect("road tool view lock poisoned"),
+                publication.view,
+            );
+            retired.views[1] = Some(view);
+            retired.views[2] = Some(shared);
+            retired.replica = replica;
+        } else {
+            retired.views[1] = Some(publication.view);
         }
+        drop(context);
+        retired.retire();
     }
 
     /// Takes newer terrain inputs into the context and the view, between publications: the
@@ -265,24 +302,38 @@ impl RoadPreviewContext {
         }
     }
 
-    /// Follows one publication; false when it is older than the context, which ignores it. A
-    /// publication that skips one replaces the replica from its view.
+    /// Follows one publication, as [`Self::follow`] does, and frees what it replaced in place.
+    #[cfg(test)]
     pub(crate) fn apply(&mut self, publication: &RoadToolPublication) -> bool {
+        self.follow(publication).is_some()
+    }
+
+    /// Follows one publication and returns the view it replaced, with the old replica when the
+    /// publication replaced it; `None` when the publication is older than the context, which
+    /// ignores it. A publication that skips one replaces the replica from its view.
+    pub(crate) fn follow(
+        &mut self,
+        publication: &RoadToolPublication,
+    ) -> Option<(RoadToolQuerySnapshot, Option<RegionGraph>)> {
         if publication.sequence <= self.sequence {
-            return false;
+            return None;
         }
         let in_order = publication.sequence == self.sequence + 1;
-        match &publication.replica {
-            ReplicaSync::Unchanged if in_order => {}
+        let replaced_replica = match &publication.replica {
+            ReplicaSync::Unchanged if in_order => None,
             ReplicaSync::Records(records) if in_order => {
                 self.replica.restore_undo_delta_local(records);
+                None
             }
-            _ => self.replica = (*publication.view.region_graph).clone(),
-        }
+            _ => Some(std::mem::replace(
+                &mut self.replica,
+                (*publication.view.region_graph).clone(),
+            )),
+        };
         let newer_terrain = (self.view.terrain_inputs.revision
             > publication.view.terrain_inputs.revision)
             .then(|| self.view.terrain_inputs.clone());
-        self.view = publication.view.clone();
+        let replaced = std::mem::replace(&mut self.view, publication.view.clone());
         if let Some(inputs) = newer_terrain {
             self.view.terrain_inputs = inputs;
         }
@@ -290,7 +341,7 @@ impl RoadPreviewContext {
         self.last_preview = None;
         #[cfg(debug_assertions)]
         assert_replica_matches(&self.replica, &self.view.region_graph);
-        true
+        Some((replaced, replaced_replica))
     }
 }
 

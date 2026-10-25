@@ -510,14 +510,25 @@ impl SimCore {
         self.road_terrain_inputs.note(patch_keys.iter().copied());
     }
 
-    /// Marks the terrain a road edit's old and new pieces touch (`ROAD-68-D`): the patches and
-    /// tiles of [`road_terrain_tiles`] get a new generation, and the ledger stamps the tiles, so
-    /// the refined build re-assembles only those tiles. Returns the sorted patch keys.
+    /// Marks the terrain a road edit changed (`ROAD-68-D`, `ROAD-68-E`): the patches and tiles
+    /// of [`road_terrain_tiles`] get a new generation, and the ledger stamps the tiles, so the
+    /// refined build re-assembles only those tiles. Returns the sorted patch keys.
     pub(crate) fn bump_road_terrain_payload_generations(
         &mut self,
-        changed_bounds: &[[f64; 4]],
+        changes: &crate::simulation::network::roadbed::TerrainChanges,
     ) -> Vec<(usize, usize)> {
-        let tiles = road_terrain_tiles(&self.heightmap, changed_bounds);
+        if !changes.pieces.is_empty() {
+            self.allocator
+                .prepare_building_site_query_index(self.config.zone_cell_m);
+        }
+        let allocator = &self.allocator;
+        let tiles = road_terrain_tiles(
+            &self.heightmap,
+            changes,
+            |_, [min_x, min_z, max_x, max_z]| {
+                allocator.has_building_site_for_world_bounds(min_x, min_z, max_x, max_z)
+            },
+        );
         if tiles.is_empty() {
             return Vec::new();
         }
@@ -1930,16 +1941,65 @@ impl SimCore {
     }
 }
 
-/// The render patches and 64 m CDT tiles a road edit's changed pieces touch (`ROAD-68-D`):
-/// every patch and tile within the grading envelope cap (the tile halo) of a changed piece's XZ
-/// bounds, by patch. The commit stamps them; the preview builds the same patches
-/// (`ROAD-68-E`). `O(changed pieces * covered tiles * log)`.
+/// The render patches and 64 m CDT tiles whose refined terrain a road edit changes, by patch
+/// (`ROAD-68-D`, `ROAD-68-E`). A tile reads the roads through the loops inside its halo, which
+/// is also the grading envelope cap, and through the building sites within the local sample
+/// margin of its window, which grade against road surfaces and edges up to
+/// `site_feasibility_dependency_margin_m` beyond them (less than the cap). So a tile changes
+/// only within the cap of a changed chain segment, or within the cap of a changed piece when a
+/// site lies near its window: `has_site(patch, bounds)` tells whether one overlaps the bounds,
+/// for the patch the window is in. The commit stamps these tiles; the preview builds the same.
+/// `O((changed segments + changed pieces) * covered tiles * log)` plus one site query per tile
+/// near a changed piece.
 pub(crate) fn road_terrain_tiles(
     heightmap: &crate::simulation::terrain::TerrainSystem,
-    changed_bounds: &[[f64; 4]],
+    changes: &crate::simulation::network::roadbed::TerrainChanges,
+    mut has_site: impl FnMut((usize, usize), [f32; 4]) -> bool,
 ) -> BTreeMap<(usize, usize), BTreeSet<(i64, i64)>> {
-    let margin_m = f64::from(crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M);
+    use crate::simulation::terrain::{TERRAIN_CDT_TILE_SPAN_MM, terrain_cdt_local_sample_margin_m};
     let mut tiles = BTreeMap::<(usize, usize), BTreeSet<(i64, i64)>>::new();
+    visit_road_terrain_tiles(heightmap, &changes.chains, |key, tile, _| {
+        tiles.entry(key).or_default().insert(tile);
+    });
+    let site_margin_m =
+        terrain_cdt_local_sample_margin_m(heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M) + 1.0;
+    let span_m = TERRAIN_CDT_TILE_SPAN_MM as f64 / 1000.0;
+    visit_road_terrain_tiles(heightmap, &changes.pieces, |key, tile, patch| {
+        if tiles
+            .get(&key)
+            .is_some_and(|patch_tiles| patch_tiles.contains(&tile))
+        {
+            return;
+        }
+        // The tile's window: the tile inside its patch.
+        let window = [
+            (tile.0 as f64 * span_m).max(f64::from(patch.0)),
+            (tile.1 as f64 * span_m).max(f64::from(patch.1)),
+            ((tile.0 + 1) as f64 * span_m).min(f64::from(patch.2)),
+            ((tile.1 + 1) as f64 * span_m).min(f64::from(patch.3)),
+        ]
+        .map(|value| value as f32);
+        let near = [
+            window[0] - site_margin_m,
+            window[1] - site_margin_m,
+            window[2] + site_margin_m,
+            window[3] + site_margin_m,
+        ];
+        if has_site(key, near) {
+            tiles.entry(key).or_default().insert(tile);
+        }
+    });
+    tiles
+}
+
+// Visits every patch and tile within the grading envelope cap of each bounds, with the patch's
+// world bounds; a tile may be visited more than once.
+fn visit_road_terrain_tiles(
+    heightmap: &crate::simulation::terrain::TerrainSystem,
+    changed_bounds: &[[f64; 4]],
+    mut visit: impl FnMut((usize, usize), (i64, i64), (f32, f32, f32, f32)),
+) {
+    let margin_m = f64::from(crate::simulation::terrain::grading::GRADING_ENVELOPE_MAX_MARGIN_M);
     let mut keys = Vec::new();
     for bounds in changed_bounds {
         let reach = [
@@ -1967,13 +2027,14 @@ pub(crate) fn road_terrain_tiles(
                 reach[3].min(f64::from(patch.3)),
             ];
             if inside[0] <= inside[2] && inside[1] <= inside[3] {
-                tiles.entry(key).or_default().extend(
-                    crate::simulation::terrain::terrain_cdt_tile_keys_for_world_bounds(inside),
-                );
+                for tile in
+                    crate::simulation::terrain::terrain_cdt_tile_keys_for_world_bounds(inside)
+                {
+                    visit(key, tile, patch);
+                }
             }
         }
     }
-    tiles
 }
 
 // The first slot of the hour after `slot`'s.

@@ -173,16 +173,44 @@ impl SimulationNode {
         if inputs.stroke_active || !roadbed.is_current() {
             return Err("terrain_input_unavailable".to_owned());
         }
+        crate::thread_pools::install(|| {
+            Self::build_road_preview_terrain_on_pool(
+                terrain,
+                inputs,
+                graph,
+                roadbed,
+                road_surface_generation,
+                tiles,
+            )
+        })
+    }
+
+    // The preview's terrain stage inside the shared pool: the patches' road margins grade in
+    // parallel (an indexed collect keeps them in key order), the sources follow in key order,
+    // then the patches build in parallel.
+    fn build_road_preview_terrain_on_pool(
+        terrain: &TerrainSystem,
+        inputs: &RoadTerrainInputs,
+        graph: &crate::simulation::network::graph::RegionGraph,
+        roadbed: &crate::simulation::network::roadbed::RoadbedSystem,
+        road_surface_generation: u64,
+        tiles: &std::collections::BTreeMap<(usize, usize), BTreeSet<(i64, i64)>>,
+    ) -> Result<RoadPreviewTerrain, String> {
         let step_m = ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
         let site_margin_m =
             crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain, step_m);
         let none = RoadTerrainPatchInputs::default();
+        let keys: Vec<(usize, usize)> = tiles.keys().copied().collect();
+        let road_margins: Vec<Option<f32>> = keys
+            .par_iter()
+            .map(|&key| {
+                SimCore::road_terrain_patch_margin_m(terrain, (graph, roadbed), key, step_m)
+            })
+            .collect();
         let mut patches = Vec::with_capacity(tiles.len());
         let mut sources = Vec::with_capacity(tiles.len());
-        for (&key, patch_tiles) in tiles {
+        for ((&key, patch_tiles), road_margin_m) in tiles.iter().zip(road_margins) {
             let patch_inputs = inputs.patch(key).unwrap_or(&none);
-            let road_margin_m =
-                SimCore::road_terrain_patch_margin_m(terrain, (graph, roadbed), key, step_m);
             let engineered_margin_m = SimCore::engineered_terrain_margin_m(
                 road_margin_m,
                 patch_inputs.site_owned,
@@ -239,15 +267,13 @@ impl SimulationNode {
             });
             sources.push(TerrainPatchPayloadBuildSource::Refined(source));
         }
-        let entries = crate::thread_pools::install(|| {
-            Self::build_road_terrain_sources(
-                graph,
-                roadbed,
-                terrain,
-                road_surface_generation,
-                sources,
-            )
-        })?;
+        let entries = Self::build_road_terrain_sources(
+            graph,
+            roadbed,
+            terrain,
+            road_surface_generation,
+            sources,
+        )?;
         for entry in entries {
             let key = (entry.key.patch_x, entry.key.patch_z);
             if let Some(patch) = patches.iter_mut().find(|patch| patch.key == key) {

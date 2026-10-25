@@ -324,7 +324,18 @@ impl RoadPreviewContext {
         let (changed_chunks, _) = roadbed.install(&delta);
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_start = Instant::now();
-        let tiles = road_terrain_tiles(&self.view.terrain, &roadbed.take_changed_bounds());
+        let inputs = &self.view.terrain_inputs;
+        let tiles = road_terrain_tiles(
+            &self.view.terrain,
+            &roadbed.take_terrain_changes(),
+            |patch, [min_x, min_z, max_x, max_z]| {
+                inputs.patch(patch).is_some_and(|inputs| {
+                    inputs
+                        .sites
+                        .has_site_for_world_bounds(min_x, min_z, max_x, max_z)
+                })
+            },
+        );
         let terrain = SimulationNode::build_road_preview_terrain(
             &self.view.terrain,
             &self.view.terrain_inputs,

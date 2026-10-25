@@ -9,6 +9,7 @@ use super::mesh::PieceMesh;
 use super::node::{NodeError, NodePiece, NodePlan, NodeScratch, build_node_piece, plan_node};
 use super::query::PieceId;
 use super::span::{MouthSection, SpanPiece, SpanScratch, build_span_piece};
+use super::terrain::{ChainChanges, TerrainChanges};
 use super::{RoadSection, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
 use rayon::prelude::*;
@@ -74,8 +75,10 @@ pub struct RoadbedSystem {
     pub(super) index: PieceIndex,
     // Render chunks changed since the mesh publisher last took them.
     changed_chunks: BTreeSet<SurfaceChunkKey>,
-    // XZ bounds of the old and new pieces replaced since terrain last took them (`ROAD-68-D`).
+    // XZ bounds of the old and new pieces replaced since terrain last took them (`ROAD-68-D`),
+    // and the net chain segments they changed (`ROAD-68-E`).
     changed_bounds: Vec<[f64; 4]>,
+    changed_chains: ChainChanges,
     // Nodes whose piece failed in the published generation, with the reason, and their ids.
     failed: imbl::OrdMap<u32, NodeError>,
     failed_ids: Arc<Vec<u32>>,
@@ -184,6 +187,7 @@ impl RoadbedSystem {
             index: PieceIndex::default(),
             changed_chunks: BTreeSet::new(),
             changed_bounds: Vec::new(),
+            changed_chains: ChainChanges::default(),
             failed: imbl::OrdMap::new(),
             failed_ids: Arc::default(),
             rebuilt: RebuiltOwners::default(),
@@ -196,6 +200,7 @@ impl RoadbedSystem {
         Self {
             changed_chunks: BTreeSet::new(),
             changed_bounds: Vec::new(),
+            changed_chains: ChainChanges::default(),
             rebuilt: RebuiltOwners::default(),
             dirty_edges: self.dirty_edges.clone(),
             dirty_nodes: self.dirty_nodes.clone(),
@@ -224,6 +229,9 @@ impl RoadbedSystem {
         self.changed_chunks.extend(self.index.occupied_chunks());
         let dropped = self.pieces.values().map(|piece| piece.mesh().bounds_xz());
         self.changed_bounds.extend(dropped);
+        for piece in self.pieces.values() {
+            self.changed_chains.count(piece, -1);
+        }
         self.compiled = false;
         self.generation = self.generation.wrapping_add(1);
         self.dirty_edges.clear();
@@ -643,22 +651,27 @@ impl RoadbedSystem {
             self.index.remove(id, footprint);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(old.mesh().bounds_xz());
+            self.changed_chains.count(old, -1);
         }
         if let Some(published) = published {
             let (mesh, footprint) = published.parts();
             self.index.insert(id, mesh, footprint);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(published.mesh().bounds_xz());
+            self.changed_chains.count(&published, 1);
             self.pieces.insert(id, published);
         }
         old
     }
 
-    /// XZ bounds `[min_x, min_z, max_x, max_z]` of every old and new piece the compiles since
-    /// the last call replaced, added or removed, in compile order: the footprints whose terrain
-    /// patches an edit touches (`ROAD-68-D`). Taking them clears the list.
-    pub fn take_changed_bounds(&mut self) -> Vec<[f64; 4]> {
-        std::mem::take(&mut self.changed_bounds)
+    /// What the compiles since the last call changed for the terrain (`ROAD-68-D`, `ROAD-68-E`):
+    /// the old and new pieces' bounds and the chain segments that differ between them. Taking
+    /// them clears both.
+    pub fn take_terrain_changes(&mut self) -> TerrainChanges {
+        TerrainChanges {
+            pieces: std::mem::take(&mut self.changed_bounds),
+            chains: self.changed_chains.take_bounds(),
+        }
     }
 
     /// Sorted render chunks changed by compiles since the mesh publisher last took them.

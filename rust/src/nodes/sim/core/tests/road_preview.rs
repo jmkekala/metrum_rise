@@ -4,7 +4,7 @@
 //! installs (the same `Arc`s), a stale preview's commit equals a fresh commit bitwise, undo swaps
 //! the pre-edit pieces back, and the road tool's replica follows every publication.
 
-use super::road_edit_order::{ARM_M, Stroke, committed};
+use super::road_edit_order::{ARM_M, Stroke, committed, committed_on};
 use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::{RoadPreview, RoadPreviewRequest};
@@ -595,6 +595,111 @@ fn benchmark_road_preview_stages() {
             graph_copy_ms,
             core.last_road_edit_metrics.preview_terrain_adopted,
             core.region_graph.edge_count(),
+        );
+    }
+}
+
+// The refined patches the preview built and the tiles each re-assembles.
+fn previewed_scope(preview: &RoadPreview) -> Vec<((usize, usize), Option<Vec<(i64, i64)>>)> {
+    let terrain = preview
+        .pieces
+        .as_ref()
+        .expect("a valid stroke compiles pieces")
+        .terrain
+        .as_ref()
+        .expect("the preview's terrain builds");
+    terrain
+        .patches
+        .iter()
+        .map(|patch| {
+            let scope = patch
+                .source
+                .as_ref()
+                .and_then(|source| source.scope.clone());
+            (patch.key, scope)
+        })
+        .collect()
+}
+
+// A T on a straight trunk changes the terrain only around the junction: the split trunk's far
+// half keeps its chain segments, so the preview builds, and the commit stamps, the same patches
+// and tiles on a 220 m trunk as on a 660 m one, flat and sloped (`ROAD-68-E` locality).
+#[test]
+fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
+    let side = [Vector2::new(0.0, -80.0), Vector2::new(25.0, 0.0)];
+    for sloped in [false, true] {
+        let scopes: Vec<_> = [110.0, 330.0]
+            .map(|half_m| {
+                let trunk = ([Vector2::new(-half_m, 0.0), Vector2::new(half_m, 0.0)], 1);
+                let mut core = committed_on(1024.0, &[trunk], &[0], sloped);
+                let points = stroke(&core, side);
+                let mut context = context(&mut core);
+                let preview = Arc::new(preview(&mut context, &points));
+                let scope = previewed_scope(&preview);
+                commit(&mut core, &points, Some(preview));
+                assert!(
+                    core.last_road_edit_metrics.preview_terrain_adopted,
+                    "sloped {sloped}, trunk {half_m}: the commit stamps the previewed patches"
+                );
+                scope
+            })
+            .into_iter()
+            .collect();
+        assert!(
+            !scopes[0].is_empty(),
+            "sloped {sloped}: the T touches terrain"
+        );
+        assert_eq!(
+            scopes[0], scopes[1],
+            "sloped {sloped}: the trunk's length does not change the terrain the T rebuilds"
+        );
+    }
+}
+
+// Terrain the commits assembled tile by tile equals terrain built from scratch from the same
+// roads, bit for bit: the tiles a split trunk's far half spans keep windows whose inputs did
+// not change (`ROAD-68-E`).
+#[test]
+fn incremental_road_terrain_equals_a_fresh_build() {
+    use crate::nodes::sim::core::terrain_payloads::CachedRefinedTerrainPatch;
+    use crate::nodes::simulation_node::SimulationNode;
+    let main = ([Vector2::new(-110.0, 0.0), Vector2::new(110.0, 0.0)], 1);
+    for (end_x, sloped) in [(25.0, false), (25.0, true), (-40.0, true)] {
+        let mut core = committed(&[main], &[0], sloped);
+        let points = stroke(&core, [Vector2::new(0.0, -80.0), Vector2::new(end_x, 0.0)]);
+        commit(&mut core, &points, None);
+        let window_keys = |entries: &mut dyn Iterator<Item = &Arc<CachedRefinedTerrainPatch>>| {
+            entries
+                .map(|entry| {
+                    let keys: Vec<_> = entry.windows.iter().map(|window| window.key).collect();
+                    ((entry.key.patch_x, entry.key.patch_z), keys)
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let incremental = terrain_buffers(&core);
+        let incremental_windows = window_keys(&mut core.refined_terrain_patch_cache.values());
+        let keys: Vec<_> = incremental.keys().copied().collect();
+        core.refined_terrain_patch_cache.clear();
+        core.refined_terrain_assembly_ledgers.clear();
+        let (entries, _) = crate::thread_pools::install(|| {
+            SimulationNode::validate_staged_road_terrain(&mut core, &keys, None)
+        })
+        .expect("the roads' terrain builds from scratch");
+        let fresh: BTreeMap<_, _> = entries
+            .iter()
+            .map(|entry| {
+                let key = (entry.key.patch_x, entry.key.patch_z);
+                (key, format!("{:?}", entry.mesh_buffers))
+            })
+            .collect();
+        assert_eq!(
+            incremental, fresh,
+            "T at {end_x}, sloped {sloped}: incremental terrain equals a fresh build"
+        );
+        assert_eq!(
+            incremental_windows,
+            window_keys(&mut entries.iter()),
+            "T at {end_x}, sloped {sloped}: every kept window's input is a fresh build's"
         );
     }
 }

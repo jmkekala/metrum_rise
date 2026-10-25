@@ -59,6 +59,9 @@ pub struct SpanPiece {
     end_mouth: Arc<MouthSection>,
     // Crossing line of a pass-through crossing at the start and end (D8).
     crossings_m: [Option<f32>; 2],
+    // A standard edge's span stands on the terrain; a bridge's or tunnel's does not, so its
+    // chains are no terrain loops (`ROAD-68-E` terrain changes).
+    grounded: bool,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
 }
@@ -107,6 +110,11 @@ impl SpanPiece {
 
     pub(super) fn footprint(&self) -> &PieceFootprint {
         &self.footprint
+    }
+
+    // Whether the edge was a standard (grounded) edge when the span was built.
+    pub(super) fn grounded(&self) -> bool {
+        self.grounded
     }
 
     pub(super) fn nodes(&self) -> [u32; 2] {
@@ -158,6 +166,7 @@ pub(crate) fn build_span_piece(
         start_mouth,
         end_mouth,
         crossings_m: [EdgeEnd::Start, EdgeEnd::End].map(|end| model.crossing_m(end)),
+        grounded: edge.class == crate::simulation::network::types::EdgeClass::Standard,
         mesh: Arc::new(mesh),
         footprint,
     })

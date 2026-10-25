@@ -107,6 +107,21 @@ impl BuildingSiteTerrainSnapshot {
         }
     }
 
+    /// Whether a captured site overlaps the bounds, as
+    /// [`BuildingAllocator::has_building_site_for_world_bounds`] answers for bounds inside the
+    /// captured ones (`ROAD-68-E`).
+    pub(crate) fn has_site_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> bool {
+        self.sites
+            .iter()
+            .any(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
+    }
+
     /// Returns the captured local sites' support pads, in site order.
     pub(crate) fn foundations(&self) -> Vec<super::model::BuildingSiteFoundation> {
         self.sites

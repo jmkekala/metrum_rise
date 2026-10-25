@@ -6,7 +6,7 @@ use super::super::super::*;
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{
-    PieceId, RoadbedSystem, TerrainLoop, TerrainLoopError, terrain_loops,
+    ChainSegment, PieceId, RoadbedSystem, TerrainLoop, TerrainLoopError, terrain_loops,
 };
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::cdt::{
@@ -92,17 +92,37 @@ impl SimulationNode {
     }
 
     /// The roadbed's terrain loops inside `rect` as CDT road loops: vertices and heights are the
-    /// chain vertices, and every chain edge carries its `RoadBoundary` source.
+    /// chain vertices, and every chain edge carries a `RoadBoundary` source. Loops, their
+    /// rotation and their sources are canonical in the footprint inside `rect` alone
+    /// (`ROAD-68-E`): each loop starts at its least vertex by coordinate bits, loops are ordered
+    /// by that vertex, and a source names the run of consecutive edges of one piece chain it lies
+    /// on, runs numbered by the bits of their first two vertices and edges by their place in the
+    /// run, keeping only the piece's kind and support. A tile whose footprint an edit leaves
+    /// unchanged so gets the same CDT input bit for bit even when the edit renumbers edges or
+    /// chains (a split trunk's far half), and its window is reused.
+    /// `O(E log E)` for `E` loop edges beyond [`terrain_loops`].
     pub(in crate::nodes::simulation_node) fn road_terrain_loops(
         graph: &RegionGraph,
         roadbed: &RoadbedSystem,
         rect: [f64; 4],
     ) -> Result<Vec<TerrainCdtRoadLoop>, TerrainLoopError> {
-        let loops = terrain_loops(roadbed, graph, rect)?;
+        let mut loops = terrain_loops(roadbed, graph, rect)?;
+        for terrain_loop in &mut loops {
+            let first = (0..terrain_loop.points.len())
+                .min_by_key(|&vertex| vertex_bits(terrain_loop.points[vertex]))
+                .unwrap_or(0);
+            terrain_loop.points.rotate_left(first);
+            terrain_loop.edges.rotate_left(first);
+        }
+        loops.sort_by_key(|terrain_loop| terrain_loop.points.first().copied().map(vertex_bits));
+        let labels = road_run_labels(&loops);
         Ok(loops
             .iter()
+            .zip(labels)
             .enumerate()
-            .map(|(index, terrain_loop)| Self::road_terrain_loop(graph, index, terrain_loop))
+            .map(|(index, (terrain_loop, labels))| {
+                Self::road_terrain_loop(graph, index, terrain_loop, &labels)
+            })
             .collect())
     }
 
@@ -110,6 +130,7 @@ impl SimulationNode {
         graph: &RegionGraph,
         index: usize,
         terrain_loop: &TerrainLoop,
+        labels: &[Option<(u32, u32)>],
     ) -> TerrainCdtRoadLoop {
         let vertex = |point: crate::simulation::network::roadbed::RoadVec3| {
             TerrainCdtVertex::new(point.x, point.y as f32, point.z)
@@ -118,20 +139,21 @@ impl SimulationNode {
         let source_edges = terrain_loop
             .edges
             .iter()
+            .zip(labels)
             .enumerate()
-            .filter_map(|(edge, segment)| {
-                let segment = (*segment)?;
+            .filter_map(|(edge, (segment, label))| {
+                let (segment, (run, place)) = ((*segment)?, (*label)?);
                 let (piece, support) = match segment.piece {
                     PieceId::Span(edge_idx) => (
-                        TerrainCdtRoadPiece::Span(edge_idx as u64),
+                        TerrainCdtRoadPiece::Span(u64::from(run)),
                         if graph.edge(edge_idx).class == EdgeClass::Standard {
                             TerrainCdtRoadSupport::Grounded
                         } else {
                             TerrainCdtRoadSupport::Structure
                         },
                     ),
-                    PieceId::Node(node) => (
-                        TerrainCdtRoadPiece::Node(node),
+                    PieceId::Node(_) => (
+                        TerrainCdtRoadPiece::Node(run),
                         TerrainCdtRoadSupport::Grounded,
                     ),
                 };
@@ -140,8 +162,8 @@ impl SimulationNode {
                     end: vertex(terrain_loop.points[(edge + 1) % count]),
                     source: TerrainCdtRoadBoundarySource::RoadBoundary {
                         piece,
-                        chain: segment.chain,
-                        segment: segment.segment,
+                        chain: 0,
+                        segment: place,
                         support,
                     },
                 })
@@ -313,4 +335,56 @@ impl SimulationNode {
         *hash ^= value;
         *hash = hash.wrapping_mul(0x100000001b3);
     }
+}
+
+// A vertex's coordinate bits, X then Z then height: a total order that names a point exactly.
+fn vertex_bits(point: crate::simulation::network::roadbed::RoadVec3) -> (u64, u64, u64) {
+    (point.x.to_bits(), point.z.to_bits(), point.y.to_bits())
+}
+
+// Per loop edge, its run number and its place in the run, `None` along the rectangle. A run is
+// a maximal cyclic sequence of consecutive edges on one piece chain; one that closes on itself
+// starts at the loop's first vertex. Runs are numbered in the order of their first two
+// vertices' bits, so the labels depend on the footprint inside the rectangle, not on piece or
+// segment numbers (`ROAD-68-E`).
+fn road_run_labels(loops: &[TerrainLoop]) -> Vec<Vec<Option<(u32, u32)>>> {
+    let same_chain = |a: Option<ChainSegment>, b: Option<ChainSegment>| match (a, b) {
+        (Some(a), Some(b)) => a.piece == b.piece && a.chain == b.chain,
+        _ => false,
+    };
+    // (first two vertices, loop, first edge, length)
+    let mut runs = Vec::new();
+    for (loop_index, terrain_loop) in loops.iter().enumerate() {
+        let edges = &terrain_loop.edges;
+        let count = edges.len();
+        let mut starts = (0..count)
+            .filter(|&edge| {
+                edges[edge].is_some() && !same_chain(edges[(edge + count - 1) % count], edges[edge])
+            })
+            .peekable();
+        let closed_run = starts.peek().is_none() && edges.iter().any(Option::is_some);
+        for start in starts.chain(closed_run.then_some(0)) {
+            let length = (1..count)
+                .take_while(|&step| same_chain(edges[start], edges[(start + step) % count]))
+                .count()
+                + 1;
+            let key = (
+                vertex_bits(terrain_loop.points[start]),
+                vertex_bits(terrain_loop.points[(start + 1) % count]),
+            );
+            runs.push((key, loop_index, start, length));
+        }
+    }
+    runs.sort_unstable();
+    let mut labels: Vec<Vec<Option<(u32, u32)>>> = loops
+        .iter()
+        .map(|terrain_loop| vec![None; terrain_loop.edges.len()])
+        .collect();
+    for (run, &(_, loop_index, start, length)) in runs.iter().enumerate() {
+        let count = labels[loop_index].len();
+        for place in 0..length {
+            labels[loop_index][(start + place) % count] = Some((run as u32, place as u32));
+        }
+    }
+    labels
 }
