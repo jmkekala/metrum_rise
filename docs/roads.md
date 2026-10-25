@@ -1541,17 +1541,25 @@ These need a user decision; work that does not depend on them continues.
       ownership refresh re-grades the loops of all 64 tiles (`road_terrain_patch_margin_m`,
       after a `visual_patch_snapshot` copy), the stamped tiles and their neighbours
       re-triangulate, and the patch's mesh buffers and paving partition are recomposed over
-      every site in it. Inside a window: Spade's bulk load and predicates, the per-sample
-      loop-edge scans of canonicalisation (`widening_tie_in_sample_against_any_road_loop`,
-      `point_inside_any_road_footprint`), heightmap sampling and grading rays (`ROAD-68-E`
-      round 4's profile).
+      every site in it. A profile of the three 2k commits (four workers, commit windows only,
+      profiled, not acceptance) puts 45% of all samples in the window plans
+      (`terrain_cdt_planned_window_for_tile`), 32% in building-site grading guides
+      (`append_building_site_grading_guides_from_parts`), 28% of them in the guide
+      de-duplication's `HashSet<(i64, i64)>` (SipHash, and 17% in its rehash as the set grows),
+      25% in the tiles' road loops (18% their grading rays), 12% in the CDT and 11% in
+      heightmap sampling. Inside a window, `ROAD-68-E` round 4's profile adds Spade's bulk load
+      and predicates and the per-sample loop-edge scans of canonicalisation
+      (`widening_tie_in_sample_against_any_road_loop`, `point_inside_any_road_footprint`).
     - **Options.** (a) Make the patch-level work follow the stamped tiles: a patch's road margin
       from per-tile margins kept beside the assembly ledger (derived state, so measured first,
       per the no-stage-caches rule), and composition per tile, so a patch payload joins
       unchanged tiles' buffers and pads. (b) Index loop edges for the per-sample scans (question
       22's option (b)). (c) Smaller render patches near roads, which multiplies Godot's patch
       count.
-    - **Recommendation.** (a) first, measured with the commit breakdown at every tier, then (b).
+      (d) De-duplicate site grading guides without a growing SipHash set (the guides keep
+      their first-wins order: a pre-sized set with an integer hasher, or sorted keys).
+    - **Recommendation.** (d) now (local, output-preserving), then (a), measured with the commit
+      breakdown at every tier, then (b).
 
 Spec corrections in `ROAD-68-A`:
 
@@ -3119,7 +3127,20 @@ Two causes, both fixed constructively; the patch-selection rule stays `ROAD-68-E
   terrain 10-12 ms. Per stamped patch the validation re-grades every tile's loops for the
   patch's road margin, rebuilds the stamped tiles' windows and their neighbours, and recomposes
   the whole patch, its paving partition over every site in it ([open question
-  29](#road-68-open-questions)). D6_B4_RESULTS
+  29](#road-68-open-questions)). On the stage budget's four
+  workers (B only, same session, 06:07-06:13) the `surface` medians are 15.7 / 75.6 / 26.7 /
+  76.8 / 74.4 ms at 0 / 2k / 10k / 30k / 100k (first samples 16.1 / 90.4 / 101 / 85.5 /
+  86.5 ms). The sloped T's terrain stage (`benchmark_roadbed_terrain_tiles`, four workers, A
+  and B back to back, 06:07) is unchanged: 1.846 / 1.854 ms total p50 (plan 0.434 /
+  0.439, tile CDT 0.323 / 0.325), under its 2 ms target; its tiles have no rails.
+- **Fresh checks.** On the final tree: `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY
+  unset) exit 0, Rust 1,890 passed, 0 failed, 169 ignored (`ROAD-68-E` 4, `-F` 5), integration
+  4 passed, 0 SCRIPT ERROR, still skipping `zoning_cells_tool_test` (until `ROAD-68-F`) and the
+  display-only rendered tests; `cargo clippy --all-targets` 59 warnings, the baseline set; the
+  two new tests, `ROAD-68-E`'s `a_split_trunk_rebuilds_only_the_terrain_near_the_junction` and
+  `incremental_road_terrain_equals_a_fresh_build`, D's watertight and seam-vertex tests and the
+  product probes pass. Screenshots (`$ARTIFACTS/screenshots-D6`, `screenshots-C.sh`): PASS, 20
+  fixtures, `pinholes.py` 0. `roadbed/` is untouched: 7,831 lines, as on `road`.
 
 ### `ROAD-68-E` — preview equals commit equals undo, in one frame
 

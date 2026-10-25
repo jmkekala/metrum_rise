@@ -120,7 +120,10 @@ constructive station rule and terminal cap apexes are exact. Part 6 (branch `roa
 compiles' terrain changes to the first commit (which then graded and built every road patch:
 203 of 225 at 100k), and the CDT's tile clip no longer leaves zero-width rails to the tile
 corners, whose made-up heights conflicted with building pads in 64 tiles of the 100k city
-(`render_geometry_invalid`). D6_ROADMAP_RESULTS `ROAD-68-E` part 1 is in progress on
+(`render_geometry_invalid`). The 100k commits are accepted and
+the first commit no longer grows with the city (30k: 447 ms to 67 ms), but with a warm cache the
+commit's terrain still takes 10-73 ms against the 3.0 ms budget, following the 512 m patches
+the edit touches (open question 29). `ROAD-68-E` part 1 is in progress on
 branch `road68-E1`, rebased on `ROAD-68-D`: the road tool previews synchronously on a versioned
 context (published view plus a graph replica, no per-command city copies), returns the changed
 road chunks exactly as the commit publishes them (crosswalk paint frames and road signs excepted
