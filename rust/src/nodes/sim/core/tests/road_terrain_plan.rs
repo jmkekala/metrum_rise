@@ -785,7 +785,8 @@ fn bulk_trunk_world(background: usize) -> SimCore {
 // The patches whose refined terrain one T-branch commit on the trunk built: every cache entry
 // it added or replaced.
 fn patches_built_by_trunk_branch(core: &mut SimCore) -> Vec<(usize, usize)> {
-    let entry = |key: &crate::nodes::sim::core::RefinedTerrainPatchCacheKey| (key.patch_x, key.patch_z);
+    let entry =
+        |key: &crate::nodes::sim::core::RefinedTerrainPatchCacheKey| (key.patch_x, key.patch_z);
     let before: std::collections::BTreeMap<_, _> = core
         .refined_terrain_patch_cache
         .iter()
@@ -795,7 +796,10 @@ fn patches_built_by_trunk_branch(core: &mut SimCore) -> Vec<(usize, usize)> {
         .prepare_building_site_query_index(core.config.zone_cell_m);
     let outcome = core.commit_road(
         RoadCommitRequest {
-            points: vec![Vector3::new(-500.0, 0.0, 0.0), Vector3::new(-500.0, 0.0, 120.0)],
+            points: vec![
+                Vector3::new(-500.0, 0.0, 0.0),
+                Vector3::new(-500.0, 0.0, 120.0),
+            ],
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
@@ -825,5 +829,8 @@ fn the_first_commit_builds_only_its_own_terrain_as_the_city_grows() {
     let alone = patches_built_by_trunk_branch(&mut bulk_trunk_world(0));
     let in_city = patches_built_by_trunk_branch(&mut bulk_trunk_world(5));
     assert!(!alone.is_empty(), "the T must build the terrain around it");
-    assert_eq!(alone, in_city, "background roads must not add terrain to the commit");
+    assert_eq!(
+        alone, in_city,
+        "background roads must not add terrain to the commit"
+    );
 }

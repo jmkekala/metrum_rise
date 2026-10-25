@@ -525,8 +525,10 @@ impl SimCore {
         let tiles = road_terrain_tiles(
             &self.heightmap,
             changes,
-            |_, [min_x, min_z, max_x, max_z]| {
-                allocator.has_building_site_for_world_bounds(min_x, min_z, max_x, max_z)
+            |_, [min_x, min_z, max_x, max_z], sites| {
+                allocator.append_building_site_bounds_for_world_bounds(
+                    min_x, min_z, max_x, max_z, sites,
+                );
             },
         );
         if tiles.is_empty() {
@@ -1947,14 +1949,17 @@ impl SimCore {
 /// margin of its window, which grade against road surfaces and edges up to
 /// `site_feasibility_dependency_margin_m` beyond them (less than the cap). So a tile changes
 /// only within the cap of a changed chain segment, or within the cap of a changed piece when a
-/// site lies near its window: `has_site(patch, bounds)` tells whether one overlaps the bounds,
-/// for the patch the window is in. The commit stamps these tiles; the preview builds the same.
-/// `O((changed segments + changed pieces) * covered tiles * log)` plus one site query per tile
-/// near a changed piece.
+/// site's bounds overlap its window grown by that margin. `site_bounds(patch, bounds, out)`
+/// appends the bounds `[min_x, min_z, max_x, max_z]` of the sites overlapping `bounds`, for the
+/// patch the windows are in; it is asked once per patch, for the union of its candidate
+/// windows, and each candidate is tested against those sites (`ROAD-68-D` part 6: one site
+/// query per patch, not per visited tile). The commit stamps these tiles; the preview builds
+/// the same. `O((changed segments + changed pieces) * covered tiles * log)` plus one site query
+/// per patch and `O(candidate tiles * sites near them)` tests.
 pub(crate) fn road_terrain_tiles(
     heightmap: &crate::simulation::terrain::TerrainSystem,
     changes: &crate::simulation::network::roadbed::TerrainChanges,
-    mut has_site: impl FnMut((usize, usize), [f32; 4]) -> bool,
+    mut site_bounds: impl FnMut((usize, usize), [f32; 4], &mut Vec<[f32; 4]>),
 ) -> BTreeMap<(usize, usize), BTreeSet<(i64, i64)>> {
     use crate::simulation::terrain::{TERRAIN_CDT_TILE_SPAN_MM, terrain_cdt_local_sample_margin_m};
     let mut tiles = BTreeMap::<(usize, usize), BTreeSet<(i64, i64)>>::new();
@@ -1964,6 +1969,9 @@ pub(crate) fn road_terrain_tiles(
     let site_margin_m =
         terrain_cdt_local_sample_margin_m(heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M) + 1.0;
     let span_m = TERRAIN_CDT_TILE_SPAN_MM as f64 / 1000.0;
+    // Tiles near a changed piece that no changed segment stamped, with their window grown by
+    // the site margin.
+    let mut candidates = BTreeMap::<(usize, usize), BTreeMap<(i64, i64), [f32; 4]>>::new();
     visit_road_terrain_tiles(heightmap, &changes.pieces, |key, tile, patch| {
         if tiles
             .get(&key)
@@ -1971,24 +1979,59 @@ pub(crate) fn road_terrain_tiles(
         {
             return;
         }
-        // The tile's window: the tile inside its patch.
-        let window = [
-            (tile.0 as f64 * span_m).max(f64::from(patch.0)),
-            (tile.1 as f64 * span_m).max(f64::from(patch.1)),
-            ((tile.0 + 1) as f64 * span_m).min(f64::from(patch.2)),
-            ((tile.1 + 1) as f64 * span_m).min(f64::from(patch.3)),
-        ]
-        .map(|value| value as f32);
-        let near = [
-            window[0] - site_margin_m,
-            window[1] - site_margin_m,
-            window[2] + site_margin_m,
-            window[3] + site_margin_m,
-        ];
-        if has_site(key, near) {
-            tiles.entry(key).or_default().insert(tile);
-        }
+        candidates
+            .entry(key)
+            .or_default()
+            .entry(tile)
+            .or_insert_with(|| {
+                // The tile's window: the tile inside its patch.
+                let window = [
+                    (tile.0 as f64 * span_m).max(f64::from(patch.0)),
+                    (tile.1 as f64 * span_m).max(f64::from(patch.1)),
+                    ((tile.0 + 1) as f64 * span_m).min(f64::from(patch.2)),
+                    ((tile.1 + 1) as f64 * span_m).min(f64::from(patch.3)),
+                ]
+                .map(|value| value as f32);
+                [
+                    window[0] - site_margin_m,
+                    window[1] - site_margin_m,
+                    window[2] + site_margin_m,
+                    window[3] + site_margin_m,
+                ]
+            });
     });
+    let mut sites = Vec::new();
+    for (key, patch_candidates) in candidates {
+        // A site overlapping a candidate overlaps their union, so one query sees them all.
+        let union = patch_candidates.values().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |union, near| {
+                [
+                    union[0].min(near[0]),
+                    union[1].min(near[1]),
+                    union[2].max(near[2]),
+                    union[3].max(near[3]),
+                ]
+            },
+        );
+        sites.clear();
+        site_bounds(key, union, &mut sites);
+        if sites.is_empty() {
+            continue;
+        }
+        for (tile, near) in patch_candidates {
+            if sites.iter().any(|site| {
+                site[0] <= near[2] && site[2] >= near[0] && site[1] <= near[3] && site[3] >= near[1]
+            }) {
+                tiles.entry(key).or_default().insert(tile);
+            }
+        }
+    }
     tiles
 }
 

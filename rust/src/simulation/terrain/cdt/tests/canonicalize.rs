@@ -704,7 +704,9 @@ fn a_loop_reaching_past_a_tile_side_adds_no_vertex_off_its_footprint() {
     let strip = clip_loop_to_patch_components(&road.vertices, patch);
     assert_eq!(strip.len(), 1);
     assert!(
-        strip[0].iter().all(|vertex| vertex.z == 38.0 || vertex.z == 48.0),
+        strip[0]
+            .iter()
+            .all(|vertex| vertex.z == 38.0 || vertex.z == 48.0),
         "only the row strip lies in the tile: {:?}",
         strip[0]
     );

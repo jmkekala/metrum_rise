@@ -328,12 +328,12 @@ impl RoadPreviewContext {
         let tiles = road_terrain_tiles(
             &self.view.terrain,
             &roadbed.take_terrain_changes(),
-            |patch, [min_x, min_z, max_x, max_z]| {
-                inputs.patch(patch).is_some_and(|inputs| {
+            |patch, [min_x, min_z, max_x, max_z], sites| {
+                if let Some(inputs) = inputs.patch(patch) {
                     inputs
                         .sites
-                        .has_site_for_world_bounds(min_x, min_z, max_x, max_z)
-                })
+                        .append_site_bounds_for_world_bounds(min_x, min_z, max_x, max_z, sites);
+                }
             },
         );
         let terrain = SimulationNode::build_road_preview_terrain(

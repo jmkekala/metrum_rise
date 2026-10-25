@@ -39,6 +39,28 @@ impl BuildingAllocator {
     }
 
     /// Returns whether the chunk-index candidates contain a site overlapping the bounds.
+    /// Appends the bounds `[min_x, min_z, max_x, max_z]` of every building site overlapping the
+    /// bounds, in building order: one candidate query for any number of later overlap tests
+    /// (`ROAD-68-D` part 6).
+    pub(crate) fn append_building_site_bounds_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        out: &mut Vec<[f32; 4]>,
+    ) {
+        out.extend(
+            self.site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z)
+                .into_iter()
+                .filter_map(|building_idx| {
+                    let bounds = self.building_sites.get(building_idx)?.bounds();
+                    overlaps(bounds, (min_x, min_z, max_x, max_z))
+                        .then_some(<[f32; 4]>::from(bounds))
+                }),
+        );
+    }
+
     pub(crate) fn has_building_site_for_world_bounds(
         &self,
         min_x: f32,
@@ -107,19 +129,22 @@ impl BuildingSiteTerrainSnapshot {
         }
     }
 
-    /// Whether a captured site overlaps the bounds, as
-    /// [`BuildingAllocator::has_building_site_for_world_bounds`] answers for bounds inside the
-    /// captured ones (`ROAD-68-E`).
-    pub(crate) fn has_site_for_world_bounds(
+    /// Appends the bounds `[min_x, min_z, max_x, max_z]` of every captured site overlapping the
+    /// bounds, in site order, as
+    /// [`BuildingAllocator::append_building_site_bounds_for_world_bounds`] does for bounds inside
+    /// the captured ones (`ROAD-68-E`, `ROAD-68-D` part 6).
+    pub(crate) fn append_site_bounds_for_world_bounds(
         &self,
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> bool {
-        self.sites
-            .iter()
-            .any(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
+        out: &mut Vec<[f32; 4]>,
+    ) {
+        out.extend(self.sites.iter().filter_map(|site| {
+            let bounds = site.bounds();
+            overlaps(bounds, (min_x, min_z, max_x, max_z)).then_some(<[f32; 4]>::from(bounds))
+        }));
     }
 
     /// Returns the captured local sites' support pads, in site order.
@@ -156,11 +181,19 @@ impl BuildingSiteTerrainSnapshot {
 }
 
 impl BuildingSiteTerrainClient {
-    fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
-        let (site_min_x, site_min_z, site_max_x, site_max_z) =
-            super::model::site_surface_bounds(&self.footprint_world, &self.surfaces);
-        site_min_x <= max_x && site_max_x >= min_x && site_min_z <= max_z && site_max_z >= min_z
+    fn bounds(&self) -> (f32, f32, f32, f32) {
+        super::model::site_surface_bounds(&self.footprint_world, &self.surfaces)
     }
+
+    fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
+        overlaps(self.bounds(), (min_x, min_z, max_x, max_z))
+    }
+}
+
+// Closed axis-aligned overlap of a site's bounds with query bounds, both `(min_x, min_z, max_x,
+// max_z)`.
+fn overlaps(site: (f32, f32, f32, f32), query: (f32, f32, f32, f32)) -> bool {
+    site.0 <= query.2 && site.2 >= query.0 && site.1 <= query.3 && site.3 >= query.1
 }
 
 fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> TerrainCdtRoadLoop {
