@@ -1018,6 +1018,11 @@ relabelled `ROAD-68-E`, which owns open question 2, and pass since `ROAD-68-E` p
 tunnel portal CDT test, added by `ROAD-68-D`, was relabelled `TERRAIN-07` by
 [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)). None is left.
 
+`ROAD-68-K13` (1): `kuopio_saved_reference_profiles_preserve_quality_limits`
+(`nodes::sim::core::tests::road_terrain_plan`) applies the recorded replay's quality limits to the
+reference save's own network and fails on its legacy profiles until
+[open question 38](#road-68-open-questions) is answered.
+
 The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
 support target) pass on span sections and were re-enabled in `ROAD-68-B`.
 
@@ -1224,6 +1229,11 @@ These need a user decision; work that does not depend on them continues.
      them as a save holds them and checks every node builds. The source grid and nodes are
      byte-identical. `hillside_residential_sites_select_constructible_houses` passes, and so
      does the `TERRAIN-07` half (`hillside_houses_terrain_builds_clean`, still ignored there).
+   **`ROAD-68-K13` (2026-10-25): the regenerated Kuopio save keeps the recorded session's
+   profiles.** Its control polylines and node heights are the session's stroke solve's (before
+   `2ec65ca9`), which the load rebuild re-derives from and cannot change; on 21 of its 70 edges
+   they break the replay's quality limits, up to grade 4.56 and 37.6 m off the ground
+   ([open question 38](#road-68-open-questions); no maximum grade, question 37).
 9. **Width steps on straight sectors (`ROAD-68-C`) — decided 2026-10-24 (user): build D4's taper at the start of
    `ROAD-68-D`.** D4's radial step has no face of its own. A
    straight sector between a narrower and a wider carriageway gets the generic strips, which are
@@ -2112,6 +2122,91 @@ These need a user decision; work that does not depend on them continues.
       layout only when a profile shows identical work and the products are bitwise equal, as
       round 4 showed; hot paths a gate owns are fixed structurally. The 0.23 ms in the legacy
       terrain CDT is accepted as layout; `TERRAIN-07` deletes that code.
+37. **No maximum road grade (`ROAD-68-K13`, from the `TERRAIN-07-A` wall census) — open.**
+    - **Evidence.** Nothing bounds a road's grade. The stroke solve
+      (`solve_standard_road_profile`) treats 16% as a target and raises each 6 m span's limit to
+      the slope of its own targets (the terrain under it, or a carriageway the stroke pins to), so
+      it follows any hillside. Replayed today, the recorded Kuopio strokes reach 0.725
+      (`kuopio_12`, edge 1); of the replayed city's 70 final edges, 63 exceed 10%, 47 exceed 16%,
+      21 exceed 1:3 and 4 exceed 1:2 (0.50-0.73, in `kuopio_04`, `kuopio_06`, `kuopio_07` and
+      `kuopio_12`). The [`ROAD-54`](#road-geometry-validation-road-54) validator measures grade
+      (illegal above 16%), but placement does not refuse it (the hill policy). A load checks only
+      that every piece builds and every bend or junction has a plane, so the reference save's
+      grade-4.56 span loads (question 38). The recorded replay's grade 1.0 is a test limit
+      (`placements.json`), not a rule. Under `TERRAIN-07`'s TD7 every road steeper than the 1:2
+      tie-in slope walls itself (terrain.md, the T2 wall census), and a road end's node piece
+      continues the end grade over its cap: the saved edge 13's dead end reaches 22.65 m below
+      the ground. The saved edges 13 and 14 also show what a 16% clamp without a rejection
+      builds (question 38).
+    - **Options.** (a) A grade limit with a typed rejection (`road_too_steep`, with the measured
+      grade and the limit in the road tool, as `ROAD-54`'s radius and arm refusals): the stroke
+      solve relaxes a span only up to the limit, cutting or filling where the ground is steeper,
+      placement refuses an edit whose finalized physical profiles exceed it or whose ends cannot
+      be joined within it, and a load fails on a saved profile over it, as on a failed node. The
+      value: at 16% (`ROAD-54`'s illegal tier) 47 of the 70 replayed edges are re-profiled or
+      refused (`kuopio_04` attempt 9 climbs 24% on average between its ends, so it cannot be built
+      at all); at 1:2 (TD4's tie-in slope, the steepest road the graded terrain meets without a
+      wall) 4 are. (b) Automatic structures beyond the limit: the steep stretch becomes a bridge
+      or tunnel with piers or portals (a class change inside an edge, larger than `ROAD-68`).
+      (c) The current behaviour: no limit, and a road steeper than 1:2 walls itself.
+    - **Recommendation.** (a) at 1:2 now, keeping 16% as `ROAD-54`'s design warning and choosing
+      any lower hard value with `ROAD-54`'s hill policy; (b) later, as its own feature. Not
+      implemented: every option changes placement, and (a) also changes what loads, which
+      decides question 38's re-recording.
+38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
+    open.**
+    - **Evidence.** The five tallest walls of the `TERRAIN-07-A` wall census (43.9, 37.6, 19.3,
+      16.5 and 6.3 m) stand on the saved edges 13, 14 and 40. Edge 13 rises from its dead end
+      (node 16, 128.08 m, on the ground) to 155.20 m within 5.95 m (grade 4.56), and edge 14 from
+      node 18 (132.79 m) to 156.48 m within 5.94 m (3.99); both then climb at 16% on embankments
+      of up to 37.6 and 31.2 m to the four-way node 20 at 171.67 m, 29.43 m above its 142.24 m
+      ground. Its plane is flat (grade 0.0017) and its piece stands 24.2-34.6 m above the
+      ground; its other arms, edges 15 and 16, start 29.4 m up. The dead ends' terminal planes
+      take the 4.55 and 3.99 end grades, so node 16's piece reaches 22.65 m below the ground and
+      node 18's 19.83 m. Edge 40 leaves the four-way node 49 (131.07 m, 8.21 m below its 139.28 m
+      ground) through control knots at 131.06, 132.77, 131.04 and 134.63 m, 4.9, 10.9, 12.0 and
+      14.0 m out (grades up to 1.79); the solve pins it to the node plane up to its 10.09 m mouth
+      and blends back to that control by 46.6 m, at up to 1.08 (28 m out), 9.7 m below the
+      ground. Edge 44 (`kuopio_10`) has a control grade of 2.49 beside its bend.
+    - **Cause: the recorded session's stroke solve, not today's code.** The save is the session
+      recorded on 2026-09-08, whose stroke solve clamped every span to 16% with both ends pinned;
+      the per-span relaxation came the next day (`2ec65ca9`). Where a stroke's ends lie further
+      apart than 16% allows (`kuopio_04` attempt 9 climbs 77.6 m over 321.2 m), the clamp's last
+      backward pass leaves a 16% line from the upper pin and the rest of the difference in the
+      span beside the lower one: 205.65 − 0.16 × 315.3 = 155.20 m at 5.95 m, as saved. The
+      crossing at node 20 took that line's 171.69 m, and attempt 10's road was clamped from it
+      the same way (156.44 m at its 5.94 m; 156.48 m saved). The legacy save before `ROAD-68-E`
+      part 2 round 2 (the parent of `0a52d9d7`) holds the same control polylines and node
+      heights for these edges; the round's regeneration ([question 8](#road-68-open-questions))
+      re-derived only clips and junction pins from them, and every load keeps them bitwise
+      (`kuopio_saved_reference_loads_as_saved`), so regenerating through the load rebuild cannot
+      change them. Replayed today, the same strokes build `kuopio_04`'s four-way at 142.20 m on
+      its 142.24 m ground (arm grades 0.30-0.58, following the hill, at most 2.6 m off the
+      ground) and `kuopio_09`'s at 139.11 m on 139.28 m (at most 0.46 and 2.15 m). Neither the
+      profile solve, its pinned knots and node planes, nor the terrain-sync re-solve (never run
+      on the save) made these profiles.
+    - **Why the recorded tests passed.** `kuopio_recorded_profiles_preserve_quality_limits`
+      replays the strokes on the source world and never reads the save, and the replay tool
+      keeps the save as historical evidence that is never a Y target
+      (`tools/test_road_terrain_replay.py`). On the save's own network the replay's limits fail
+      on 21 of 70 edges: 19 lie more than 5 m off the ground (up to 37.6 m) and edges 13, 14, 40
+      and 44 exceed grade 1.0 (`kuopio_saved_reference_profiles_preserve_quality_limits`, which
+      shares the replay's measurement, fails so; it is ignored under this question).
+    - **Options.** (a) Re-record the reference network from the recorded strokes with today's
+      stroke solve: the 36 accepted strokes in attempt order on the source world in one session
+      (measured 2026-10-25: all 36 commit, 70 live edges, no failed node, every edge within the
+      replay's limits), saved with `save_game_settled`; `placements.json` is re-pinned and the
+      tests that name saved edges are re-baselined (the Kuopio yard tests, and on `TERRAIN-07-A`
+      the census sites, edge 43's removal and edge 69's hillside T). (b) Keep the save as a legacy
+      load fixture and run the geometry and terrain checks (the census, wall sites, pruning
+      exactness and Kuopio edits) on the replayed city, which `benchmark_kuopio_graded_edits`
+      already builds as its background. (c) Keep everything as it is; the census reports these
+      walls as legacy data.
+    - **Recommendation.** (a), after question 37, since a grade limit changes the solve and so
+      what the re-recording produces: the reference then measures today's roads, and the legacy
+      profiles stay in git history as the evidence the replay tool cites. Not taken: question 8
+      allows regeneration only through the load rebuild, and (a) moves `TERRAIN-07-A`'s
+      baselines.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -5672,7 +5767,8 @@ An audit of the 58 local saves found no illegal radius; illegal arm angles at 20
 the `simple-city` saves and the `road-snowflake` star; the degree-10 snowflake; and illegal grade
 change only on the steep Kuopio hillside roads (0.06 to 0.12 per metre).
 
-Remaining: the hill policy (grade), a debug overlay and preview colouring of design warnings.
+Remaining: the hill policy (grade; [`ROAD-68` open question 37](#road-68-open-questions)), a debug
+overlay and preview colouring of design warnings.
 
 ## Drawing and placement (`ROAD-63`)
 

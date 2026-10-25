@@ -575,48 +575,75 @@ fn kuopio_recorded_strokes_commit_with_every_node_solved() {
     );
 }
 
-// The fixed quality gates of the rendered replay, across every live edge after each edit.
-// Beside steep junctions three profiles left the ground by 5.08-5.76 m while the plane was
-// sampled 12 m out inside wider mouths (`ROAD-68` open question 31).
+// The fixed quality gates of the rendered replay (`placements.json`'s `quality_limits`) on every
+// live edge's physical profile: offset from the source terrain at most 5 m, grade at most 1.0 and
+// pitch change at most 30 degrees per knot. One line per edge over a limit.
+fn profile_quality_failures(core: &SimCore) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (edge_idx, edge) in core.region_graph.edges().iter().enumerate() {
+        if edge.deleted {
+            continue;
+        }
+        let mut offset = 0.0_f32;
+        let mut grade = 0.0_f32;
+        let mut pitch_change = 0.0_f32;
+        let mut last_pitch: Option<f32> = None;
+        for point in &edge.physical_geometry {
+            let source =
+                core.heightmap.sample_height_world(point.x, point.z) * crate::config::HEIGHT_SCALE;
+            offset = offset.max((point.y - source).abs());
+        }
+        for span in edge.physical_geometry.windows(2) {
+            let run = (span[1].x - span[0].x).hypot(span[1].z - span[0].z);
+            let dy = span[1].y - span[0].y;
+            if run == 0.0 {
+                assert_eq!(dy, 0.0, "edge {edge_idx}: vertical road span {span:?}");
+                continue;
+            }
+            grade = grade.max(dy.abs() / run);
+            let pitch = dy.atan2(run).to_degrees();
+            if let Some(previous) = last_pitch {
+                pitch_change = pitch_change.max((pitch - previous).abs());
+            }
+            last_pitch = Some(pitch);
+        }
+        if offset > 5.0 || grade > 1.0 || pitch_change > 30.0 {
+            failures.push(format!(
+                "edge {edge_idx}: offset {offset}, grade {grade}, pitch change {pitch_change}"
+            ));
+        }
+    }
+    failures
+}
+
+// The quality gates across every live edge after each recorded edit. Beside steep junctions
+// three profiles left the ground by 5.08-5.76 m while the plane was sampled 12 m out inside
+// wider mouths (`ROAD-68` open question 31).
 #[test]
 fn kuopio_recorded_profiles_preserve_quality_limits() {
     let mut failures = Vec::new();
     replay_kuopio_recorded_cases(|case_id, stroke, core| {
-        for (edge_idx, edge) in core.region_graph.edges().iter().enumerate() {
-            if edge.deleted {
-                continue;
-            }
-            let mut offset = 0.0_f32;
-            let mut grade = 0.0_f32;
-            let mut pitch_change = 0.0_f32;
-            let mut last_pitch: Option<f32> = None;
-            for point in &edge.physical_geometry {
-                let source = core.heightmap.sample_height_world(point.x, point.z)
-                    * crate::config::HEIGHT_SCALE;
-                offset = offset.max((point.y - source).abs());
-            }
-            for span in edge.physical_geometry.windows(2) {
-                let run = (span[1].x - span[0].x).hypot(span[1].z - span[0].z);
-                let dy = span[1].y - span[0].y;
-                if run == 0.0 {
-                    assert_eq!(dy, 0.0, "{case_id}: vertical road span {span:?}");
-                    continue;
-                }
-                grade = grade.max(dy.abs() / run);
-                let pitch = dy.atan2(run).to_degrees();
-                if let Some(previous) = last_pitch {
-                    pitch_change = pitch_change.max((pitch - previous).abs());
-                }
-                last_pitch = Some(pitch);
-            }
-            if offset > 5.0 || grade > 1.0 || pitch_change > 30.0 {
-                failures.push(format!(
-                    "{case_id} attempt {} edge {edge_idx}: offset {offset}, grade {grade}, pitch change {pitch_change}",
-                    stroke["attempt"]
-                ));
-            }
+        for failure in profile_quality_failures(core) {
+            failures.push(format!("{case_id} attempt {} {failure}", stroke["attempt"]));
         }
     });
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// The same gates on the reference save's own network, which no replay reads. Its profiles are
+// the recorded session's, from the stroke solve before 2026-09-09 (one 16% clamp for every
+// span, pinned ends): where the ends could not be joined at 16%, the clamp left a 16% line from
+// the upper pin and the rest of the difference in the span beside the lower one. Every load
+// keeps them as saved (open question 8), so
+// edges 13 and 14 leap 27.1 m and 23.7 m within 5.9 m from their dead ends onto a four-way
+// 29.4 m above the ground, and edge 40 climbs at 1.08 out of a junction 8.2 m below it: the
+// five tallest walls of the `TERRAIN-07-A` wall census (`ROAD-68` open question 38).
+#[test]
+#[ignore = "ROAD-68-K13: open question 38, the reference save keeps the legacy stroke solve's profiles"]
+fn kuopio_saved_reference_profiles_preserve_quality_limits() {
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    let failures = profile_quality_failures(&core);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

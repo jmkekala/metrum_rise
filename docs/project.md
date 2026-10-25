@@ -363,7 +363,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   bridge decks and tunnel road pieces, and one triangle walk for the zoning and field overlap
   checks. Bridge abutments, tunnel portals and building sites moved to `TERRAIN-07`; until then a
   bridge or tunnel cannot be built from a road. Tests that need later gates are disabled until
-  then.
+  then. No rule bounds a road's grade, and the Kuopio reference save still carries the recorded
+  session's legacy profiles (up to grade 4.56 and 37.6 m off the ground), which today's code does
+  not build; both wait for the user ([open questions 37 and 38](roads.md#road-68-open-questions)).
   See the [design and plan](roads.md#constructive-roadbed-road-68).
 
 - **Graded terrain surface (`TERRAIN-07`, spec adopted 2026-10-25)**: the user adopted
