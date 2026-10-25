@@ -3902,7 +3902,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 
 | Gate | Status | Scope |
 | --- | --- | --- |
-| `TERRAIN-07-A` | round 2 2026-10-25 (branch `terrain07-A`, work in progress; [record](#terrain-07-a-record)): the two-pass pruning takes Kuopio's tiles from 4.86 to 0.50 ms, but 17 of 44 Kuopio edits still exceed 3.0 ms (worst 6.32 ms, T18 open); the populated reruns, the wall census and `./run.sh --test` are pending | Grading core and queries in Rust, roads only, beside the legacy path |
+| `TERRAIN-07-A` | round 2 2026-10-25 (branch `terrain07-A`, work in progress; [record](#terrain-07-a-record)): the two-pass pruning takes Kuopio's tiles from 4.86 to 0.50 ms, but 17 of 44 Kuopio edits still exceed 3.0 ms (worst 6.35 ms, T18 open) and the first 100k populated edit takes 3.25 ms; `GL3` regressed; `./run.sh --test` is pending | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
@@ -4118,7 +4118,8 @@ miss the 3.0 ms stage, so the gate stays open.
   4-19 tiles per edit, of which 3-15 change bits (round 1's bound selected 12-41). With the
   edited neighbourhood fixed and 64 background edges added, `kuopio_12`'s strokes select the same
   tiles with the same texel digests at the same cost (1.68-3.59 ms against 1.75-3.57 ms). The
-  intermediate build: median 3.82 ms, worst 16.56 ms, 14 of 44 within 3.0 ms.
+  intermediate build: median 3.82 ms, worst 16.56 ms, 14 of 44 within 3.0 ms. Rerun within the
+  full set at 18:17: median 2.42 ms, p90 4.97 ms, worst 6.35 ms, 27 of 44 within 3.0 ms.
 - **Remaining cost per lever** (for the coordinator, T18): bins are already 4 m (lever 1 needs no
   smaller bins, and the exact ranges took `kuopio_04` attempt 10 from 16.9 to 7.6 seams per
   sample); the early exit took the census from 3.83 listed to 2.43 evaluated seams per sample;
@@ -4128,9 +4129,60 @@ miss the 3.0 ms stage, so the gate stays open.
   tiles on four workers, about 1.8 ms per tile per worker against the census mean of 0.50 ms:
   steep tiles with 3-8 evaluated seams per sample and up to 9 % second-pass samples are what
   remains.
-- **Not rerun yet** on the final binary: the populated tiers, locality, reference fixtures, T
-  bench, point queries and the wall census (queued under both locks; the round 2 handoff has
-  where their logs land).
+- **T2 wall census on Kuopio** (`kuopio_wall_sites`, every seam within the cap, independent of
+  the pruning; same binary, 18:18, untimed): 430 walled seam samples (0.5 m each), 182.9 m of
+  wall, highest 43.9 m; heights up to 0.01 / 0.1 / 0.5 / 1 / 2 / 5 m / more: 2, 26, 40, 39, 63,
+  104, 156. The five worst sites (per-site `GL0` dumps `site-1.json`-`site-5.json` under
+  `$ARTIFACTS`):
+
+  | Site | x, z | walled piece, setting piece | height difference | distance | wall | samples |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 1 | 400.3, -178.6 | `Node(16)`, `Span(13)` | 49.86 m | 11.93 m | 43.90 m | 36 |
+  | 2 | 289.1, -293.0 | `Node(18)`, `Span(14)` | 43.57 m | 11.92 m | 37.61 m | 37 |
+  | 3 | 404.8, -185.0 | `Span(13)`, itself | 21.62 m | 4.74 m | 19.25 m | 24 |
+  | 4 | 295.3, -288.2 | `Span(14)`, itself | 18.88 m | 4.74 m | 16.52 m | 24 |
+  | 5 | -822.9, -139.9 | `Span(40)`, itself | 14.37 m | 16.05 m | 6.35 m | 138 |
+
+  None is a census or rule defect: at every site the wall is the setting seam's height minus
+  `k` times the distance minus the walled seam's height, exactly (site 1: 49.86 - 0.5 x 11.93 =
+  43.90), and every setter lies within 16 m, so the cap plays no part. All five are road
+  geometry that stands far off the ground with no structure, which TD7 turns into walls:
+  - Sites 1 and 2 (`kuopio_04`, saved edges 13 and 14, each from a dead end): the dead end's node
+    piece seam lies at 105.5 m, 22.6 m *below* the 128.0 m ground, while the first span runs
+    27-33 m *above* the flat ground (base 127-128 m), so the span 11.9 m away stands 49.9 m (site
+    2: 43.6 m) above the node piece. The saved profiles leap from the node's 128.1 m to 155.2 m
+    within 6 m (grade 4.56; edge 14: 132.8 to 156.5 m, grade 3.99) and stay on a 27-33 m
+    embankment towards node 20 (171.7 m). That is a `ROAD-68` profile and node plane defect
+    of the reference save (an elevated road with no structure, and a cap below the ground), not
+    two roads crossing; the wall is its symptom.
+  - Sites 3 and 4: the same spans against themselves, 4.74 m apart along the near-vertical first
+    segment (21.6 and 18.9 m of height).
+  - Site 5 (`kuopio_09`, `Span(40)`): one road in an 8 m cut (seam 132.0 m, ground 140.2 m) whose
+    chain 16.05 m away is 14.37 m higher (about 0.9, steeper than 1:2), so its upper part's tie-in
+    cone stands 6.35 m over its lower edge. A road steeper than 1:2 always walls itself under
+    TD7 (`h + γ d - k d > h` for grade `γ > k`), as a cut switchback would.
+  Whether the exact cut showed something sensible at these sites is not checked here (renders of
+  these sites are the next step); the same `kuopio_04` tiles are also the costliest Kuopio edit.
+- **The rest of `timing.sh`** on the same binary (both locks, P-cores, four workers, 18:17-18:23;
+  restic skipped that day and absent at both ends; logs under `$ARTIFACTS`):
+  - Populated commits (`graded_tiles` rows; exact cut `surface_ms` the same-run control):
+    0: 2.22, 1.70, 1.57 ms (9, 10, 9 tiles; exact cut 6.8-21.0 ms); 2k: 2.52, 1.30, 1.63 (11, 7, 9;
+    14.2-97.6); 10k: 2.96, 1.65, 1.55 (11, 9, 9; 11.2-114.5); 30k: 2.63, 1.62, 1.21 (8, 8, 5;
+    12.7-152.6); 100k: **3.25**, 1.65, 1.32 (13, 10, 7; 9.6-96.6). Selection 0.27-0.97 ms. The
+    first 100k edit misses 3.0 ms: 13 tiles, of which 12 change bits by the coverage check. Round
+    1 selected 6-12 tiles on these edits without a coverage check, and the rebased roads may
+    differ, so whether round 1 missed tiles is open. No walls and no conflict samples at any tier.
+  - Locality (`benchmark_graded_tiles_locality`): the same 4 tiles with bitwise equal texels at
+    3 to 4,707 edges, p50 0.54, 0.73, 0.73, 0.81 ms.
+  - Reference fixtures (16 tiles, p50 of 50): `GL0` 0.94-1.41 ms on the road fixtures,
+    `conflict_8` 1.85 ms (round 1: 5.43 ms); `GL1` 0.61-0.88, `GL2` 0.49-0.66 ms. `GL3` regressed
+    to 2.68-4.29 ms (round 1: 0.51-0.82): its band is 60 m against 4 m bins, so each of the 289
+    bins lists and sorts nearly every seam for about 121 lattice points; bins as wide as the
+    lattice spacing (`max(4 m, spacing)`) are the fix, not yet made. Same-binary control, the
+    exact cut's T bench: 1.68 ms (round 1: 1.89 ms).
+  - Point queries: `base_height_at` 0.04-0.13 µs, `mask_at` 3.8-7.2, `surface_height_at`
+    4.7-9.1, `ground_height_at` 6.6-11.9, `normal_at` 11.5-22.4 µs (T19 unchanged).
+  - Not run: `./run.sh --test` (the run lock was taken by other gates' runs all evening).
 
 #### `TERRAIN-07-B` — road skirts in the piece mesh
 
