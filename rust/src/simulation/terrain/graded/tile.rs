@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Tiles, level lattices and the tile bake (`TERRAIN-07`): the pointwise function sampled on a
-//! level's lattice over one 64 m tile, with exact pruning, coverage, packing into texels and
-//! rows, and the tile's inputs.
+//! level's lattice over one 64 m tile, with the two-pass exact pruning (`prune`), coverage,
+//! packing into texels and rows, and the tile's inputs.
 //!
 //! A bake reads only its tile's window (the lattice grown by the cap or the band), so a tile's
 //! bytes never depend on the batch, tile order or worker count.
 
 use super::coverage::rasterize;
-use super::grade::{CAP_M, ReachBounds, reach};
-use super::sample::{BaseGrid, BaseWindow, NO_SEAM, evaluate};
+use super::grade::CAP_M;
+use super::prune::{
+    BinGrid, BinLists, Lifted, finish_second_pass, list_first_pass, list_second_pass,
+};
+use super::sample::{BaseGrid, BaseWindow, Listed, NO_SEAM, evaluate};
 use super::seams::{Seam, SeamScratch, gather_road_seams};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
@@ -19,8 +22,6 @@ use std::cell::RefCell;
 
 /// Tile side, metres; tiles are aligned to the world origin.
 pub const TILE_M: f64 = 64.0;
-// Seam bin side over a tile's lattice, metres.
-const BIN_M: f64 = 4.0;
 // Extra window growth beyond the cap or band: gathering more seams changes no value.
 const WINDOW_PAD_M: f64 = 1.0;
 
@@ -114,13 +115,22 @@ pub struct TileInputs {
 pub struct BakeStats {
     /// Seams in the window.
     pub window_seams: usize,
-    /// Sum and largest of the seams' reaches, metres.
+    /// Sum of the seams' first-pass reaches (the boxes their bins are visited in), metres.
     pub reach_sum_m: f64,
-    /// Largest reach, metres.
+    /// Largest first-pass reach, metres.
     pub reach_max_m: f64,
-    /// Candidate seams over every sample (the bins' list lengths).
+    /// Pass 1's candidate seams over every sample (the bins' list lengths).
+    pub listed: u64,
+    /// Seams evaluated over every sample, both passes: pass 1's candidates before each sample's
+    /// early exit, and pass 2's.
     pub candidates: u64,
-    /// Ground samples whose cones conflict (`L > U`, where the ground takes `L`).
+    /// Ground samples the second pass finished: a cut's upper bound held them below the base.
+    pub second_pass_samples: u32,
+    /// The second pass's candidate seams over those samples, included in `candidates`.
+    pub second_pass_candidates: u64,
+    /// Ground samples whose evaluated cones conflict (`L > U`, where the ground takes `L`). A
+    /// fill's `L` above the upper bound of a seam whose cone holds the base is not evaluated,
+    /// and not counted: the ground is that `L` either way.
     pub conflicts: u32,
     /// Conflict samples within one lattice spacing of a road seam.
     pub seam_conflicts: u32,
@@ -178,14 +188,19 @@ pub(super) struct BakeScratch {
     base: BaseWindow,
     xs: Vec<f64>,
     zs: Vec<f64>,
+    // Each seam's first-pass bin range `[x0, x1, z0, z1]`, empty as `[1, 0, 1, 0]`.
     seam_bins: Vec<[u32; 4]>,
-    bin_starts: Vec<u32>,
-    bin_items: Vec<u32>,
-    bin_cursor: Vec<u32>,
+    bins: BinGrid,
+    // Each bin's lowest first-pass ground below the base, `+inf` without one.
+    bin_floor: Vec<f64>,
+    pairs: Vec<(u32, Listed)>,
+    first: BinLists,
+    second: BinLists,
     pieces: Vec<PieceId>,
     road: Vec<f32>,
     nearest: Vec<u32>,
     row_of: Vec<u32>,
+    lifted: Vec<Lifted>,
 }
 
 thread_local! {
@@ -309,151 +324,127 @@ fn bake_tile(
     scratch: &mut BakeScratch,
     out: &mut TilePayload,
 ) -> Result<(), BakeError> {
+    let BakeScratch {
+        seams: seam_scratch,
+        window: seams,
+        base,
+        xs,
+        zs,
+        seam_bins,
+        bins,
+        bin_floor,
+        pairs,
+        first,
+        second,
+        pieces,
+        road,
+        nearest,
+        row_of,
+        lifted,
+    } = scratch;
     let grid = BaseGrid::of(terrain);
     let band = level.band_m(grid.cell_m);
+    let spacing = level.spacing_m(grid.cell_m);
     let origin = tile.origin();
-    lattice(terrain, tile, level, &mut scratch.xs, &mut scratch.zs);
-    let (xs, zs) = (&scratch.xs, &scratch.zs);
+    lattice(terrain, tile, level, xs, zs);
     let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
     let window = window(rect, band);
-    gather_road_seams(roadbed, window, &mut scratch.seams, &mut scratch.window);
-    scratch.base.fill(terrain, window);
-    let seams = &scratch.window;
+    gather_road_seams(roadbed, window, seam_scratch, seams);
+    base.fill(terrain, window);
     let mut stats = BakeStats {
         window_seams: seams.len(),
         ..BakeStats::default()
     };
 
-    // Reach per seam, then the seams in each 4 m bin over the lattice (CSR).
-    let slope = scratch.base.slope();
-    let window_low = seams
-        .iter()
-        .fold(f64::INFINITY, |low, seam| low.min(seam.height_range().0));
-    let bins = [0, 1].map(|axis| (((rect[axis + 2] - rect[axis]) / BIN_M).ceil() as usize).max(1));
-    let bin_of = |axis: usize, value: f64| {
-        (((value - rect[axis]) / BIN_M).floor().max(0.0) as usize).min(bins[axis] - 1)
-    };
-    scratch.seam_bins.clear();
-    scratch.bin_starts.clear();
-    scratch.bin_starts.resize(bins[0] * bins[1] + 1, 0);
-    for seam in seams {
-        let grow = if prune {
-            let reach = reach(&ReachBounds {
-                seam: seam.height_range(),
-                base_under: scratch.base.range(seam.box_xz()),
-                window_low,
-                slope,
-            });
-            stats.reach_sum_m += reach;
-            stats.reach_max_m = stats.reach_max_m.max(reach);
-            reach.max(band)
-        } else {
-            f64::INFINITY
-        };
-        let reach_box = grown(seam.box_xz(), grow);
-        let range = if meets(reach_box, rect) {
-            [
-                bin_of(0, reach_box[0]) as u32,
-                bin_of(0, reach_box[2]) as u32,
-                bin_of(1, reach_box[1]) as u32,
-                bin_of(1, reach_box[3]) as u32,
-            ]
-        } else {
-            [1, 0, 1, 0]
-        };
-        scratch.seam_bins.push(range);
-        for bz in range[2]..=range[3] {
-            for bx in range[0]..=range[1] {
-                scratch.bin_starts[bz as usize * bins[0] + bx as usize + 1] += 1;
-            }
-        }
-    }
-    for bin in 0..bins[0] * bins[1] {
-        scratch.bin_starts[bin + 1] += scratch.bin_starts[bin];
-    }
-    scratch.bin_items.clear();
-    scratch
-        .bin_items
-        .resize(scratch.bin_starts[bins[0] * bins[1]] as usize, 0);
-    scratch.bin_cursor.clear();
-    scratch
-        .bin_cursor
-        .extend_from_slice(&scratch.bin_starts[..bins[0] * bins[1]]);
-    // Seams enter their bins in window order, so every bin lists them in key order.
-    for (index, range) in scratch.seam_bins.iter().enumerate() {
-        for bz in range[2]..=range[3] {
-            for bx in range[0]..=range[1] {
-                let cursor = &mut scratch.bin_cursor[bz as usize * bins[0] + bx as usize];
-                scratch.bin_items[*cursor as usize] = index as u32;
-                *cursor += 1;
-            }
-        }
-    }
+    // Pass 1's seams in each 4 m bin over the lattice.
+    bins.fill(base, rect);
+    list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
+    first.build(bins.len(), pairs);
 
     rasterize(
         roadbed,
         xs,
         zs,
-        &mut scratch.pieces,
-        &mut scratch.road,
+        pieces,
+        road,
         Some(&mut out.inputs.triangles),
     );
 
-    // Sample every lattice point.
-    let spacing = level.spacing_m(grid.cell_m);
+    // Sample every lattice point over pass 1's seams. A ground sample left below its base is
+    // finished by pass 2; every other value is final.
     let count = xs.len() * zs.len();
     out.texels.clear();
     out.texels.reserve(count);
-    scratch.nearest.clear();
+    nearest.clear();
+    lifted.clear();
+    bin_floor.clear();
+    bin_floor.resize(bins.len(), f64::INFINITY);
     let mut graded = false;
     for (j, &z) in zs.iter().enumerate() {
-        let bz = bin_of(1, z);
         for (i, &x) in xs.iter().enumerate() {
-            let bin = bz * bins[0] + bin_of(0, x);
-            let list = &scratch.bin_items
-                [scratch.bin_starts[bin] as usize..scratch.bin_starts[bin + 1] as usize];
-            stats.candidates += list.len() as u64;
-            let road = scratch.road[j * xs.len() + i];
-            if list.is_empty() && road == f32::NEG_INFINITY {
+            let bin = bins.at(x, z);
+            let list = first.of(bin);
+            stats.listed += list.len() as u64;
+            let covering = road[j * xs.len() + i];
+            if list.is_empty() && covering == f32::NEG_INFINITY {
                 // Nothing within reach or band and uncovered: `evaluate` returns the base itself,
                 // so the delta is zero and the distance the band, without reading the base.
                 out.texels.push([0.0, band as f32, -1.0, 0.0]);
-                scratch.nearest.push(NO_SEAM);
+                nearest.push(NO_SEAM);
                 continue;
             }
-            let base = scratch.base.at(x, z);
+            let base_m = base.at(x, z);
             let value = evaluate(
                 x,
                 z,
-                base,
-                (road > f32::NEG_INFINITY).then_some(road),
+                base_m,
+                (covering > f32::NEG_INFINITY).then_some(covering),
                 seams,
                 list.iter().copied(),
                 band,
             );
-            if value.conflict {
-                stats.conflicts += 1;
-                if value.nearest_distance <= spacing {
-                    stats.seam_conflicts += 1;
+            stats.candidates += u64::from(value.evaluated);
+            let delta = (value.height - base_m) as f32;
+            let (in_band, near_seam) = (value.sdf < band, value.nearest_distance <= spacing);
+            if prune && covering == f32::NEG_INFINITY && value.height < base_m {
+                bin_floor[bin] = bin_floor[bin].min(value.height);
+                lifted.push(Lifted {
+                    sample: out.texels.len() as u32,
+                    bin: bin as u32,
+                    x,
+                    z,
+                    base: base_m,
+                    cones: value.cones,
+                    near_seam,
+                    in_band,
+                });
+            } else {
+                if value.conflict {
+                    stats.conflicts += 1;
+                    stats.seam_conflicts += u32::from(near_seam);
                 }
+                graded |= delta != 0.0 || in_band;
             }
-            let delta = (value.height - base) as f32;
-            graded |= delta != 0.0 || value.sdf < band;
             out.texels.push([delta, value.sdf as f32, -1.0, 0.0]);
-            scratch.nearest.push(value.nearest);
+            nearest.push(value.nearest);
         }
+    }
+    if !lifted.is_empty() {
+        list_second_pass(seams, bins, band, bin_floor, seam_bins, pairs);
+        second.build(bins.len(), pairs);
+        graded |= finish_second_pass(seams, second, lifted, &mut out.texels, &mut stats);
     }
 
     // The seam row: the named seams in key order.
-    scratch.row_of.clear();
-    scratch.row_of.resize(seams.len(), NO_SEAM);
-    for &nearest in &scratch.nearest {
-        if nearest != NO_SEAM {
-            scratch.row_of[nearest as usize] = 0;
+    row_of.clear();
+    row_of.resize(seams.len(), NO_SEAM);
+    for &named in nearest.iter() {
+        if named != NO_SEAM {
+            row_of[named as usize] = 0;
         }
     }
     out.seams.clear();
-    for (index, row) in scratch.row_of.iter_mut().enumerate() {
+    for (index, row) in row_of.iter_mut().enumerate() {
         if *row != NO_SEAM {
             *row = out.seams.len() as u32;
             let seam = &seams[index];
@@ -465,9 +456,9 @@ fn bake_tile(
             ]);
         }
     }
-    for (texel, &nearest) in out.texels.iter_mut().zip(&scratch.nearest) {
-        if nearest != NO_SEAM {
-            texel[2] = scratch.row_of[nearest as usize] as f32;
+    for (texel, &named) in out.texels.iter_mut().zip(nearest.iter()) {
+        if named != NO_SEAM {
+            texel[2] = row_of[named as usize] as f32;
         }
     }
 

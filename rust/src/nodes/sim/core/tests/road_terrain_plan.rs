@@ -6,6 +6,7 @@ use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
 use crate::nodes::sim::core::{RefinedTerrainPatchBuildInput, RoadEditPlan};
+use crate::simulation::network::roadbed::RoadbedSystem;
 use godot::prelude::Vector2;
 
 #[test]
@@ -583,6 +584,126 @@ fn kuopio_graded_census() {
     }
 }
 
+// `TERRAIN-07-A` `T18` (a): the two-pass exact pruning on Kuopio's steepest road, the 4 x 4
+// tiles around edge 43 of the reference save (a dead end on a 1:2 side slope): pruned equals
+// unpruned bitwise in any batch, order and worker count, with second-pass samples.
+#[test]
+fn kuopio_pruned_bake_equals_every_seam() {
+    use crate::simulation::terrain::graded::TileKey;
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    let tiles: Vec<TileKey> = (0..4)
+        .flat_map(|x| (16..20).map(move |z| TileKey { x, z }))
+        .collect();
+    let gl0 = [TileKey { x: 1, z: 17 }, TileKey { x: 2, z: 16 }];
+    let (_, second_pass) = crate::simulation::terrain::graded::tests::assert_exact_pruning(
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &tiles,
+        &gl0,
+        "kuopio",
+    );
+    assert!(second_pass > 0, "Kuopio's cuts need the second pass");
+}
+
+// `TERRAIN-07-A` `T18`: the graded terrain stage of Kuopio road edits against the 3.0 ms budget
+// (run on four workers). Every recorded stroke on the source world, each case alone; then
+// `kuopio_12`'s strokes again after every other case, the edited neighbourhood fixed and the
+// rest of the recorded city added, with the same tiles and texel bits; and on the reference
+// save a T up a 1:4 hillside from edge 69 and the removal of edge 43 (a dead end beside a 1:2
+// slope).
+#[test]
+#[ignore = "controlled release timing: cargo test --release --lib benchmark_kuopio_graded_edits -- --ignored --nocapture"]
+fn benchmark_kuopio_graded_edits() {
+    use crate::simulation::terrain::graded::tests::graded_stage;
+    let stage = |core: &SimCore, before: &RoadbedSystem| {
+        graded_stage(
+            &core.heightmap,
+            before,
+            &core.transit_network.roadbed,
+            &core.last_road_terrain_changes,
+        )
+    };
+    let manifest = kuopio_manifest();
+    let cases = manifest["cases"].as_array().unwrap();
+    let neighbourhood = |case: &serde_json::Value| case["case_id"] == "kuopio_12";
+    let mut alone = Vec::new();
+    for case in cases {
+        let mut core = kuopio_source_core();
+        replay_kuopio_case(&mut core, case, |stroke, core, before| {
+            let mut record = stage(core, before);
+            record["case"] = case["case_id"].clone();
+            record["attempt"] = stroke["attempt"].clone();
+            record["background_edges"] = 0.into();
+            eprintln!("GRADED_KUOPIO_EDIT {record}");
+            if neighbourhood(case) {
+                alone.push(record);
+            }
+        });
+    }
+    let mut core = kuopio_source_core();
+    for case in cases.iter().filter(|case| {
+        !case["case_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("kuopio_12"))
+    }) {
+        replay_kuopio_case(&mut core, case, |_, _, _| {});
+    }
+    let background = core
+        .region_graph
+        .edges()
+        .iter()
+        .filter(|edge| !edge.deleted)
+        .count();
+    let case = cases.iter().find(|case| neighbourhood(case)).unwrap();
+    let mut stroke_index = 0;
+    replay_kuopio_case(&mut core, case, |stroke, core, before| {
+        let mut record = stage(core, before);
+        let local = &alone[stroke_index];
+        stroke_index += 1;
+        assert_eq!(record["tile_keys"], local["tile_keys"], "the same tiles");
+        assert_eq!(record["digest"], local["digest"], "the same texel bits");
+        record["case"] = case["case_id"].clone();
+        record["attempt"] = stroke["attempt"].clone();
+        record["background_edges"] = background.into();
+        eprintln!("GRADED_KUOPIO_EDIT {record}");
+    });
+
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    drop(core.transit_network.roadbed.take_terrain_changes());
+    let saved_edges = core.region_graph.edge_count();
+    // The T: from edge 69's middle vertex 60 m up the slope across it.
+    let before = core.transit_network.roadbed.snapshot();
+    let points = [(-1367.94, 2492.99), (-1427.83, 2489.35)]
+        .map(|(x, z): (f32, f32)| {
+            let y = core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE;
+            Vector3::new(x, y, z)
+        })
+        .to_vec();
+    commit_ready_with_lanes(&mut core, points, 1, 1);
+    let mut record = stage(&core, &before);
+    record["edit"] = "hillside_t_edge_69".into();
+    record["background_edges"] = saved_edges.into();
+    eprintln!("GRADED_KUOPIO_EDIT {record}");
+    // The removal of edge 43 (saved edge ids load unchanged).
+    let before = core.transit_network.roadbed.snapshot();
+    assert!(core.bulldoze_road_edge_for_test(43));
+    core.precompute_road_mesh_data();
+    let changes = core.transit_network.roadbed.take_terrain_changes();
+    let mut record = graded_stage(
+        &core.heightmap,
+        &before,
+        &core.transit_network.roadbed,
+        &changes,
+    );
+    record["edit"] = "remove_edge_43".into();
+    record["background_edges"] = saved_edges.into();
+    eprintln!("GRADED_KUOPIO_EDIT {record}");
+}
+
 // `TERRAIN-07-A` `T2` (c): the conflict walls on Kuopio and the five worst sites by wall height.
 // With `METRUM_CONFLICT_DUMP_DIR` set, each site's graded samples, seams and top triangles are
 // written there as `site-<rank>.json` for renders.
@@ -680,6 +801,27 @@ fn commit_recorded_stroke(core: &mut SimCore, stroke: &serde_json::Value) {
     );
 }
 
+// Replays one recorded Kuopio case on `core`, stroke by stroke through the commit at the heights
+// `recorded_stroke_points` picks, and hands each committed stroke to `after_stroke` with the
+// roadbed before it (an `O(1)` snapshot).
+fn replay_kuopio_case(
+    core: &mut SimCore,
+    case: &serde_json::Value,
+    mut after_stroke: impl FnMut(&serde_json::Value, &mut SimCore, &RoadbedSystem),
+) {
+    for stroke in case["segments"].as_array().unwrap() {
+        let points = recorded_stroke_points(core, stroke);
+        let before = core.transit_network.roadbed.snapshot();
+        commit_ready_with_lanes(
+            core,
+            points,
+            stroke["fwd_lanes"].as_i64().unwrap() as i32,
+            stroke["bkw_lanes"].as_i64().unwrap() as i32,
+        );
+        after_stroke(stroke, core, &before);
+    }
+}
+
 // Replays every recorded Kuopio case on the source world, stroke by stroke through the commit,
 // and hands each committed stroke to `after_stroke`.
 fn replay_kuopio_recorded_cases(
@@ -689,10 +831,9 @@ fn replay_kuopio_recorded_cases(
     for case in manifest["cases"].as_array().unwrap() {
         let case_id = case["case_id"].as_str().unwrap();
         let mut core = kuopio_source_core();
-        for stroke in case["segments"].as_array().unwrap() {
-            commit_recorded_stroke(&mut core, stroke);
-            after_stroke(case_id, stroke, &mut core);
-        }
+        replay_kuopio_case(&mut core, case, |stroke, core, _| {
+            after_stroke(case_id, stroke, core)
+        });
     }
 }
 

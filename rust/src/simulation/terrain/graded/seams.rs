@@ -54,16 +54,16 @@ impl Seam {
         let [bx, by, bz] = self.b;
         let (dx, dz) = (bx - ax, bz - az);
         let len2 = dx * dx + dz * dz;
-        let (qx, qz, h, perp) = if len2 > 0.0 {
+        let (qx, qz, h, cross) = if len2 > 0.0 {
             let t = ((x - ax) * dx + (z - az) * dz) / len2;
-            // `(b - a) x (p - a)` over the length: the distance to the seam's line.
-            let perp = (dx * (z - az) - dz * (x - ax)).abs() / len2.sqrt();
+            // `|(b - a) x (p - a)|`: over the length, the distance to the seam's line.
+            let cross = (dx * (z - az) - dz * (x - ax)).abs();
             if t <= 0.0 {
-                (ax, az, ay, perp)
+                (ax, az, ay, cross)
             } else if t >= 1.0 {
-                (bx, bz, by, perp)
+                (bx, bz, by, cross)
             } else {
-                (ax + dx * t, az + dz * t, ay + (by - ay) * t, perp)
+                (ax + dx * t, az + dz * t, ay + (by - ay) * t, cross)
             }
         } else {
             (ax, az, ay, 0.0)
@@ -72,7 +72,8 @@ impl Seam {
         SeamAt {
             distance: (ex * ex + ez * ez).sqrt(),
             height: h,
-            line_distance: perp,
+            cross,
+            len2,
         }
     }
 }
@@ -84,12 +85,23 @@ pub(super) struct SeamAt {
     pub(super) distance: f64,
     // Seam height at the nearest point.
     pub(super) height: f64,
-    // Distance from the point to the seam's line (0 for a seam of zero length): the
-    // pseudo-normal tie-break at a shared vertex.
-    pub(super) line_distance: f64,
+    // `|(b - a) x (p - a)|` and the squared length, for the line distance, which only a tie in
+    // distance reads.
+    cross: f64,
+    len2: f64,
 }
 
 impl SeamAt {
+    // Distance from the point to the seam's line (0 for a seam of zero length): the
+    // pseudo-normal tie-break at a shared vertex.
+    fn line_distance(&self) -> f64 {
+        if self.len2 > 0.0 {
+            self.cross / self.len2.sqrt()
+        } else {
+            0.0
+        }
+    }
+
     /// The nearest-seam total order with the seam index (window order is key order): smaller
     /// distance, then the larger distance to the seam's line, then the smaller key. Exact
     /// comparisons, no tolerance.
@@ -97,8 +109,9 @@ impl SeamAt {
         if self.distance != other.distance {
             return self.distance < other.distance;
         }
-        if self.line_distance != other.line_distance {
-            return self.line_distance > other.line_distance;
+        let (line, other_line) = (self.line_distance(), other.line_distance());
+        if line != other_line {
+            return line > other_line;
         }
         index < other_index
     }

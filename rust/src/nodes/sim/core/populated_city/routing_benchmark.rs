@@ -1144,61 +1144,24 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     }
 }
 
-// `TERRAIN-07-A`: the graded terrain stage of the same commit on the same core, after it:
-// dirty tile selection from the commit's terrain changes and the `GL0` bake of those tiles on
-// the shared pool. Median of 7 warm runs; the exact cut's `surface_ms` of the commit is the
-// same-run control. `digest` hashes the baked texels, to compare builds.
+// `TERRAIN-07-A`: the graded terrain stage of the same commit on the same core, after it
+// (`graded_stage`: dirty tile selection and the `GL0` bake, median of 7); the exact cut's
+// `surface_ms` of the commit is the same-run control.
 fn graded_tiles(
     residents: u32,
     sample: usize,
     core: &crate::nodes::sim::core::state::SimCore,
     before: &crate::simulation::network::roadbed::RoadbedSystem,
 ) {
-    use crate::simulation::terrain::graded::{
-        Level, SelectScratch, bake_tiles, dirty_tiles_for_road_changes,
-    };
-    let (terrain, roadbed) = (&core.heightmap, &core.transit_network.roadbed);
-    let changes = &core.last_road_terrain_changes;
-    let (mut tiles, mut payloads, mut scratch) = (Vec::new(), Vec::new(), SelectScratch::default());
-    let mut runs = Vec::new();
-    for _ in 0..7 {
-        let begin = Instant::now();
-        dirty_tiles_for_road_changes(
-            terrain,
-            before,
-            roadbed,
-            changes,
-            Level::Gl0,
-            &mut scratch,
-            &mut tiles,
-        );
-        let selected = begin.elapsed().as_secs_f64() * 1e3;
-        bake_tiles(terrain, roadbed, &tiles, Level::Gl0, &mut payloads)
-            .expect("the commit's tiles bake");
-        runs.push((begin.elapsed().as_secs_f64() * 1e3, selected));
-    }
-    runs.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let (stage_ms, select_ms) = runs[3];
-    let bits: Vec<Vec<[u32; 4]>> = payloads
-        .iter()
-        .map(|payload| payload.texels.iter().map(|t| t.map(f32::to_bits)).collect())
-        .collect();
-    let record = serde_json::json!({
-        "residents": residents, "sample": sample,
-        "workers": crate::thread_pools::install(rayon::current_num_threads),
-        "surface_ms": core.last_road_edit_metrics.surface_ms,
-        "stage_ms": stage_ms, "select_ms": select_ms, "bake_ms": stage_ms - select_ms,
-        "changed_segments": changes.segments.len(), "changed_pieces": changes.pieces.len(),
-        "tiles": tiles.len(), "graded": payloads.iter().filter(|p| p.graded).count(),
-        "window_seams_max": payloads.iter().map(|p| p.stats.window_seams).max(),
-        "reach_max_m": payloads.iter().map(|p| p.stats.reach_max_m).fold(0.0, f64::max),
-        "seams_per_sample": payloads.iter().map(|p| p.stats.candidates).sum::<u64>() as f64
-            / payloads.iter().map(|p| p.texels.len()).sum::<usize>().max(1) as f64,
-        "row_seams_max": payloads.iter().map(|p| p.seams.len()).max(),
-        "conflicts": payloads.iter().map(|p| p.stats.conflicts).sum::<u32>(),
-        "seam_conflicts": payloads.iter().map(|p| p.stats.seam_conflicts).sum::<u32>(),
-        "digest": format!("{:016x}", crate::debug::work::debug_hash(&bits)),
-    });
+    let mut record = crate::simulation::terrain::graded::tests::graded_stage(
+        &core.heightmap,
+        before,
+        &core.transit_network.roadbed,
+        &core.last_road_terrain_changes,
+    );
+    record["residents"] = residents.into();
+    record["sample"] = sample.into();
+    record["surface_ms"] = core.last_road_edit_metrics.surface_ms.into();
     eprintln!("GRADED_TILES_COMMIT {record}");
 }
 

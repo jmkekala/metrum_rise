@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! The grading rules (`TERRAIN-07`): tie-in cones, the overlap rule, the inside rule under a
-//! road, and the exact pruning reach that bounds where a seam can change a value.
+//! road, and the reaches and tests of the two-pass exact pruning that bound where a seam can
+//! change a value.
 //!
 //! The overlap rule (`TD7`, the user's `T2` decision) is `g = max(L, min(b, U))`: the base
 //! clamped into `[L, U]`, and `L` where the cones conflict, so the upper road's embankment wins
@@ -84,37 +85,95 @@ pub(super) fn inside_deep(base: f64, road: f64) -> f64 {
     }
 }
 
-/// What bounds one seam's reach over a window: the seam's own height range, the base range
-/// over the cells under it, the lowest height of every seam in the window and a Lipschitz bound
-/// of the base over the window (its largest cell gradient).
+/// What bounds one seam's base reach over a window: the seam's own height range, the base range
+/// over the cells under it and a Lipschitz bound of the base over the window (its largest cell
+/// gradient).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ReachBounds {
     pub(super) seam: (f64, f64),
     pub(super) base_under: (f64, f64),
-    pub(super) window_low: f64,
     pub(super) slope: f64,
 }
 
-/// The exact pruning reach: beyond it the seam's cone has `h - k d <= min(b, H_lo)` and
-/// `h + k d >= b` at every point of the window, so skipping it leaves `g = max(L, min(b, U))`
-/// bitwise equal (`U >= H_lo` over the other seams). The first two terms bound where the cone
-/// can bind the base, the third where its lower bound can set a conflict's `L`; in a conflict
-/// only lower bounds decide. The cap where the base is as steep as the cone. `O(1)`.
-pub(super) fn reach(bounds: &ReachBounds) -> f64 {
+// A computed reach grown so that rounding in the bound can only make it larger.
+fn padded(reach: f64) -> f64 {
+    reach * (1.0 + REACH_SLACK) + REACH_SLACK_M
+}
+
+/// The Lipschitz base reach: beyond it the seam's cone holds the base, `h - k d <= b` and
+/// `h + k d >= b`, at every point of the window. The cap where the base is as steep as the cone.
+/// `O(1)`.
+pub(super) fn base_reach(bounds: &ReachBounds) -> f64 {
     let k = TIE_IN_SLOPE;
     if bounds.slope >= k {
-        return CAP_M;
+        return padded(CAP_M);
     }
     let (h_lo, h_hi) = bounds.seam;
     let (b_lo, b_hi) = bounds.base_under;
-    let reach = [
-        (h_hi - b_lo) / (k - bounds.slope),
-        (b_hi - h_lo) / (k - bounds.slope),
-        (h_hi - bounds.window_low) / k,
-    ]
-    .into_iter()
-    .fold(0.0, f64::max);
-    (reach * (1.0 + REACH_SLACK) + REACH_SLACK_M).min(CAP_M)
+    let reach = ((h_hi - b_lo) / (k - bounds.slope))
+        .max((b_hi - h_lo) / (k - bounds.slope))
+        .max(0.0);
+    padded(reach).min(padded(CAP_M))
+}
+
+/// The bind reach over a base range `base`: beyond it the cone of a seam with heights `seam`
+/// holds every base in that range, `h_hi - k d <= lo` and `h_lo + k d >= hi`. `O(1)`.
+pub(super) fn bind_reach(seam: (f64, f64), base: (f64, f64)) -> f64 {
+    let reach = (seam.1 - base.0).max(base.1 - seam.0).max(0.0) / TIE_IN_SLOPE;
+    padded(reach).min(padded(CAP_M))
+}
+
+/// The lift reach: beyond it the lower bound `h - k d` of a seam whose highest point is
+/// `seam_hi` stays at most `floor`, so it cannot raise a value of at least `floor`. Negative
+/// infinity where the seam never rises above `floor`. `O(1)`.
+pub(super) fn lift_reach(seam_hi: f64, floor: f64) -> f64 {
+    let reach = (seam_hi - floor) / TIE_IN_SLOPE;
+    if reach > 0.0 {
+        padded(reach).min(padded(CAP_M))
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
+/// The band reach: the band `band` grown like a reach, so a seam a sample names as its nearest
+/// within the band is always listed.
+pub(super) fn band_reach(band: f64) -> f64 {
+    padded(band)
+}
+
+/// The early exit of a sample's evaluation: whether no seam at least `distance` from the point
+/// with heights within `heights` (`(lowest, highest)`) can change the cone bounds `cones` or the
+/// nearest road seam (at `nearest`, `+inf` without one, within `band`), or lies within the cap:
+/// its lower bound stays at most `L`, its upper bound at least `U`, and it lies farther than the
+/// nearest seam or the band. The margin is a padded reach's, so rounding never stops early.
+/// `O(1)`.
+pub(super) fn settled(
+    cones: &Cones,
+    heights: (f64, f64),
+    distance: f64,
+    nearest: f64,
+    band: f64,
+) -> bool {
+    let k = TIE_IN_SLOPE;
+    let farther = distance - REACH_SLACK_M;
+    farther > padded(CAP_M)
+        || (heights.1 - k * farther < cones.lower
+            && heights.0 + k * farther > cones.upper
+            && farther > nearest.min(band) * (1.0 + REACH_SLACK))
+}
+
+/// Pass 1 of the exact pruning: whether a seam with heights `seam` may change a value at points
+/// at least `distance` from it whose base lies in `base`, because its cone can bind that base or
+/// it lies within the band `band`. Where it is false the cone holds the base there and the seam
+/// is not the nearest. `O(1)`.
+pub(super) fn may_bind(seam: (f64, f64), base: (f64, f64), distance: f64, band: f64) -> bool {
+    distance <= bind_reach(seam, base).max(band_reach(band))
+}
+
+/// Pass 2 of the exact pruning: whether a seam whose highest point is `seam_hi` may lift a
+/// first-pass ground of at least `floor` at points at least `distance` from it. `O(1)`.
+pub(super) fn may_lift(seam_hi: f64, floor: f64, distance: f64) -> bool {
+    distance <= lift_reach(seam_hi, floor)
 }
 
 #[cfg(test)]
@@ -192,25 +251,31 @@ mod tests {
         let flat = ReachBounds {
             seam: (1.0, 1.0),
             base_under: (1.0, 1.0),
-            window_low: 1.0,
             slope: 0.0,
         };
-        assert!(reach(&flat) < 1.0e-3);
-        // A seam 5 m above the window's lowest can set a conflict's `L` within 10 m; a lower
-        // seam's upper bound never decides one.
+        assert!(base_reach(&flat) < 1.0e-3);
+        // A seam 5 m above the base binds it within 10 m, at a 0.25 slope within 20 m.
         let above = ReachBounds {
             seam: (6.0, 6.0),
-            base_under: (6.0, 6.0),
             ..flat
         };
-        assert!((reach(&above) - 10.0).abs() < 1.0e-3);
-        let below = ReachBounds {
-            window_low: -5.0,
-            seam: (1.0, 1.0),
-            ..flat
+        assert!((base_reach(&above) - 10.0).abs() < 1.0e-3);
+        let sloped = ReachBounds {
+            slope: 0.25,
+            ..above
         };
-        assert!((reach(&below) - 12.0).abs() < 1.0e-3);
+        assert!((base_reach(&sloped) - 20.0).abs() < 1.0e-3);
         let steep = ReachBounds { slope: 0.5, ..flat };
-        assert_eq!(reach(&steep), CAP_M);
+        assert!(base_reach(&steep) >= CAP_M);
+        // Over a base range: the farther side of the range decides.
+        assert!((bind_reach((1.0, 1.0), (-2.0, 3.0)) - 6.0).abs() < 1.0e-3);
+        assert!(may_bind((1.0, 1.0), (-2.0, 3.0), 5.9, 2.0));
+        assert!(!may_bind((1.0, 1.0), (-2.0, 3.0), 6.1, 2.0));
+        assert!(may_bind((1.0, 1.0), (1.0, 1.0), 1.9, 2.0));
+        // A seam 5 m above a floor can lift it within 10 m; one below it never.
+        assert!((lift_reach(6.0, 1.0) - 10.0).abs() < 1.0e-3);
+        assert!(may_lift(6.0, 1.0, 9.9) && !may_lift(6.0, 1.0, 10.1));
+        assert!(!may_lift(1.0, 1.0, 0.0) && !may_lift(1.0, f64::INFINITY, 0.0));
+        assert!(lift_reach(200.0, 0.0) <= CAP_M + 1.0e-3);
     }
 }

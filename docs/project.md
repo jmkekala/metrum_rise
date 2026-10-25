@@ -383,7 +383,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   and bridges close their deck sides down to the concrete slab. While the exact cut still meets
   the roads, the skirts stay hidden in the ground. Gate `TERRAIN-07-A` round 1 landed (its reruns on the final conflict rule are pending): the grading core and its queries for roads run beside
   the legacy path, read by no consumer yet; a populated commit's graded tiles take 1.55-2.48 ms
-  from 0 to 100k residents, and hilly terrain (Kuopio) is still too slow (T18). See the
+  from 0 to 100k residents, and hilly terrain (Kuopio) is still too slow (T18). Round 2 (work in
+  progress) prunes the grading in two exact passes: a Kuopio tile now takes 0.50 ms instead of
+  4.86 ms on one worker, yet 17 of 44 Kuopio edits still exceed the 3.0 ms stage (worst
+  6.32 ms), which gate A must meet for Kuopio too. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the
   [gate record](terrain.md#terrain-07-a-record).
 

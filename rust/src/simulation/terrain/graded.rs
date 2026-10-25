@@ -13,6 +13,7 @@
 
 mod coverage;
 mod grade;
+mod prune;
 mod query;
 mod sample;
 mod seams;

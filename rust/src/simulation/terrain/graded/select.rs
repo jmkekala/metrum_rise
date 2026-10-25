@@ -3,7 +3,8 @@
 //! Dirty tile selection (`TERRAIN-07`): the tiles a road change or a base edit can alter, from
 //! the changed seams' own reaches, so cost follows the edit and never the city.
 
-use super::grade::{CAP_M, ReachBounds, reach};
+use super::grade::{CAP_M, TIE_IN_SLOPE, lift_reach};
+use super::prune::{BinGrid, box_distance};
 use super::sample::{BaseGrid, BaseWindow};
 use super::seams::{Seam, road_seam};
 use super::tile::{Level, TileKey, grown, lattice, meets, window};
@@ -30,6 +31,7 @@ struct CandidateScratch {
     triangles: Vec<[[u64; 3]; 3]>,
     other_triangles: Vec<[[u64; 3]; 3]>,
     base: BaseWindow,
+    bins: BinGrid,
     xs: Vec<f64>,
     zs: Vec<f64>,
     // The candidate's lattice rectangle.
@@ -42,10 +44,12 @@ thread_local! {
 
 /// The tiles at `level` whose bake a road change from `before` to `after` can alter, sorted
 /// and unique, into `out`:
-/// - every tile within a changed segment's band or its reach over that tile, the reach computed
-///   as the tile's bake computes it but with the window's lowest seam height taken over every
-///   changed segment too, so it bounds the reach before and after the change and a removed seam
-///   counts;
+/// - every tile where a changed segment may be listed by either pass of the bake's pruning:
+///   pass 1 by the bake's own bin test (its cone may bind a bin's base, or it lies within the
+///   band), pass 2 where its lower bound may rise above the tile's floor, the lowest
+///   `h + k D` over the window's seams before and after the change (`D` the distance from a
+///   seam's box to the lattice), which lies under every first-pass ground below the base; so a
+///   removed seam counts;
 /// - every tile whose lattice meets a changed piece and whose covering top triangles differ
 ///   between the two roadbeds (coverage and the road surface under the deep inside rule), so a
 ///   split trunk's far half, rebuilt bit for bit, marks nothing.
@@ -184,9 +188,12 @@ pub fn dirty_tiles_for_base_change(
     sort_unique(out);
 }
 
-// Whether a changed seam can reach the tile's lattice: its box grown by the band or by its
-// reach over the tile's window, with the window's lowest seam height including every changed
-// seam.
+// Whether a changed seam may change a value of the tile's lattice: the bake's pass 1 lists it
+// in a bin of the tile, or its lower bound may rise above the tile's floor, the lowest
+// `h_lo + k D` over the window's seams of both roadbeds (`after`'s and the changed ones): at a
+// sample whose first-pass ground lies below the base that ground is at least the upper bound
+// `U >= h + k d` of some seam there, so pass 2 lists no seam whose lower bound stays below the
+// floor. `O(window seams + changed seams x blocks)`.
 fn reached(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
@@ -210,23 +217,25 @@ fn reached(
     if !changed.iter().any(|seam| in_window(&seam)) {
         return false;
     }
-    let mut window_low = f64::INFINITY;
+    let lowest =
+        |seam: &Seam| seam.height_range().0 + TIE_IN_SLOPE * box_distance(seam.box_xz(), rect);
+    let mut floor = f64::INFINITY;
     roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b]| {
-        window_low = window_low.min(a.y).min(b.y);
+        floor = floor.min(lowest(&road_seam(a, b)));
     });
     for seam in changed.iter().filter(in_window) {
-        window_low = window_low.min(seam.height_range().0);
+        floor = floor.min(lowest(seam));
     }
     scratch.base.fill(terrain, window);
+    scratch.bins.fill(&scratch.base, rect);
     let slope = scratch.base.slope();
+    let (base, bins) = (&scratch.base, &scratch.bins);
     changed.iter().filter(in_window).any(|seam| {
-        let reach = reach(&ReachBounds {
-            seam: seam.height_range(),
-            base_under: scratch.base.range(seam.box_xz()),
-            window_low,
-            slope,
-        });
-        meets(grown(seam.box_xz(), reach.max(band)), rect)
+        if box_distance(seam.box_xz(), rect) <= lift_reach(seam.height_range().1, floor) {
+            return true;
+        }
+        let (range, _) = bins.first_range(seam, base, slope, band);
+        bins.first_bins(seam, range, band, |_, _| true)
     })
 }
 

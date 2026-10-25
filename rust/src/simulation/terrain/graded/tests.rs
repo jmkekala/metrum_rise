@@ -155,56 +155,84 @@ fn conflict_fixtures() -> Vec<(&'static str, RegionGraph, TerrainSystem)> {
         .collect()
 }
 
-#[test]
-fn pruned_bake_equals_every_seam_in_any_batch_order_and_worker_count() {
-    let tiles = window_tiles();
-    let mut conflicts = 0;
-    for (name, graph, terrain) in conflict_fixtures() {
-        let roadbed = compiled(&graph);
-        for level in [Level::Gl0, Level::Gl2] {
-            let reference = bake(&terrain, &roadbed, &tiles, level, true);
-            conflicts += reference.iter().map(|p| p.stats.conflicts).sum::<u32>();
-            // Every seam within the cap at every sample: all 16 tiles at `GL2`, the two tiles
-            // at the junction and between the conflicting roads at `GL0`.
-            let full_tiles: &[TileKey] = match level {
-                Level::Gl2 => &tiles,
-                _ => &[TileKey { x: -1, z: -1 }, TileKey { x: 0, z: 0 }],
-            };
-            let full = bake(&terrain, &roadbed, full_tiles, level, false);
-            for unpruned in &full {
-                let pruned = reference
-                    .iter()
-                    .find(|p| p.tile == unpruned.tile)
-                    .expect("baked");
-                assert_same(pruned, unpruned, &format!("{name} {level:?} unpruned"));
-            }
-            for workers in [1, 4, 8] {
-                let batch = on_workers(workers, || bake(&terrain, &roadbed, &tiles, level, true));
-                for (pruned, reference) in batch.iter().zip(&reference) {
-                    assert_same(
-                        pruned,
-                        reference,
-                        &format!("{name} {level:?} {workers} workers"),
-                    );
-                }
-            }
-            let mut reversed = tiles.clone();
-            reversed.reverse();
-            let backwards = bake(&terrain, &roadbed, &reversed, level, true);
-            for (pruned, reference) in backwards.iter().rev().zip(&reference) {
-                assert_same(pruned, reference, &format!("{name} {level:?} reversed"));
-            }
-            for (index, &tile) in tiles.iter().enumerate() {
-                let alone = bake(&terrain, &roadbed, &[tile], level, true);
+/// The exact pruning (`TERRAIN-07-A`, `T18` (a)) on `tiles` at `GL0` and `GL2`: texels, rows
+/// and inputs of the pruned bake equal the evaluation over every seam within the cap bitwise
+/// (every tile at `GL2`, `gl0_reference` at `GL0`), and do not depend on the batch (all tiles,
+/// or one at a time), the tile order or the worker count (1, 4 and 8). Returns the pruned bakes'
+/// conflict samples and second-pass samples.
+pub(crate) fn assert_exact_pruning(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    tiles: &[TileKey],
+    gl0_reference: &[TileKey],
+    name: &str,
+) -> (u32, u32) {
+    let (mut conflicts, mut second_pass) = (0, 0);
+    for level in [Level::Gl0, Level::Gl2] {
+        let reference = bake(terrain, roadbed, tiles, level, true);
+        conflicts += reference.iter().map(|p| p.stats.conflicts).sum::<u32>();
+        second_pass += reference
+            .iter()
+            .map(|p| p.stats.second_pass_samples)
+            .sum::<u32>();
+        let full_tiles = match level {
+            Level::Gl2 => tiles,
+            _ => gl0_reference,
+        };
+        let full = bake(terrain, roadbed, full_tiles, level, false);
+        for unpruned in &full {
+            let pruned = reference
+                .iter()
+                .find(|p| p.tile == unpruned.tile)
+                .expect("baked");
+            assert_same(pruned, unpruned, &format!("{name} {level:?} unpruned"));
+        }
+        for workers in [1, 4, 8] {
+            let batch = on_workers(workers, || bake(terrain, roadbed, tiles, level, true));
+            for (pruned, reference) in batch.iter().zip(&reference) {
                 assert_same(
-                    &alone[0],
-                    &reference[index],
-                    &format!("{name} {level:?} alone"),
+                    pruned,
+                    reference,
+                    &format!("{name} {level:?} {workers} workers"),
                 );
             }
         }
+        let mut reversed = tiles.to_vec();
+        reversed.reverse();
+        let backwards = bake(terrain, roadbed, &reversed, level, true);
+        for (pruned, reference) in backwards.iter().rev().zip(&reference) {
+            assert_same(pruned, reference, &format!("{name} {level:?} reversed"));
+        }
+        for (index, &tile) in tiles.iter().enumerate() {
+            let alone = bake(terrain, roadbed, &[tile], level, true);
+            assert_same(
+                &alone[0],
+                &reference[index],
+                &format!("{name} {level:?} alone"),
+            );
+        }
+    }
+    (conflicts, second_pass)
+}
+
+#[test]
+fn pruned_bake_equals_every_seam_in_any_batch_order_and_worker_count() {
+    let tiles = window_tiles();
+    let (mut conflicts, mut second_pass) = (0, 0);
+    for (name, graph, terrain) in conflict_fixtures() {
+        let roadbed = compiled(&graph);
+        // Every seam within the cap at every sample: all 16 tiles at `GL2`, the two tiles at
+        // the junction and between the conflicting roads at `GL0`.
+        let gl0 = [TileKey { x: -1, z: -1 }, TileKey { x: 0, z: 0 }];
+        let (c, s) = assert_exact_pruning(&terrain, &roadbed, &tiles, &gl0, name);
+        conflicts += c;
+        second_pass += s;
     }
     assert!(conflicts > 0, "the fixtures hold conflicting cones");
+    assert!(
+        second_pass > 0,
+        "the fixtures hold cuts the second pass finishes"
+    );
 }
 
 #[test]
@@ -371,7 +399,7 @@ fn the_graded_ground_never_lies_below_a_seam() {
             .filter(|s| s.a[0].abs() < 100.0 && s.a[2].abs() < 100.0)
         {
             let [x, h, z] = seam.a;
-            let all = 0..seams.len() as u32;
+            let all = (0..seams.len() as u32).map(super::sample::Listed::unbounded);
             let value = evaluate(x, z, base.at(x, z), None, &seams, all, 2.0);
             assert!(
                 value.height >= h,
@@ -542,6 +570,7 @@ fn benchmark_graded_tiles() {
                     "reach_mean_m": reach_sum / reach_seams.max(1) as f64,
                     "reach_max_m": out.iter().map(|p| p.stats.reach_max_m).fold(0.0, f64::max),
                     "seams_per_sample": candidates as f64 / samples.max(1) as f64,
+                    "second_pass_samples": out.iter().map(|p| p.stats.second_pass_samples).sum::<u32>(),
                     "row_seams_max": out.iter().map(|p| p.seams.len()).max(),
                     "conflicts": out.iter().map(|p| p.stats.conflicts).sum::<u32>(),
                     "seam_conflicts": out.iter().map(|p| p.stats.seam_conflicts).sum::<u32>(),
@@ -696,6 +725,120 @@ fn benchmark_graded_tiles_locality() {
     }
 }
 
+/// The graded terrain stage of one road edit (`TERRAIN-07-A`; no commit runs it yet): dirty
+/// tile selection from the edit's terrain changes between `before` and `after`, then the `GL0`
+/// bake of those tiles on the shared pool. Median of 7 warm runs, as JSON with the tiles, their
+/// measurements and a digest of the texel bits (to compare builds and backgrounds).
+pub(crate) fn graded_stage(
+    terrain: &TerrainSystem,
+    before: &RoadbedSystem,
+    after: &RoadbedSystem,
+    changes: &crate::simulation::network::roadbed::TerrainChanges,
+) -> serde_json::Value {
+    let (mut tiles, mut payloads, mut scratch) = (Vec::new(), Vec::new(), SelectScratch::default());
+    let mut runs = Vec::new();
+    for _ in 0..7 {
+        let begin = Instant::now();
+        dirty_tiles_for_road_changes(
+            terrain,
+            before,
+            after,
+            changes,
+            Level::Gl0,
+            &mut scratch,
+            &mut tiles,
+        );
+        let selected = begin.elapsed().as_secs_f64() * 1e3;
+        bake_tiles(terrain, after, &tiles, Level::Gl0, &mut payloads)
+            .expect("the edit's tiles bake");
+        runs.push((begin.elapsed().as_secs_f64() * 1e3, selected));
+    }
+    runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (stage_ms, select_ms) = runs[3];
+    let changed_tiles = assert_selection_covers(terrain, before, after, changes, &tiles);
+    let bits: Vec<Vec<[u32; 4]>> = payloads.iter().map(texel_bits).collect();
+    let stats = payloads.iter().map(|p| p.stats);
+    let samples = payloads
+        .iter()
+        .map(|p| p.texels.len())
+        .sum::<usize>()
+        .max(1) as f64;
+    serde_json::json!({
+        "workers": crate::thread_pools::install(rayon::current_num_threads),
+        "stage_ms": stage_ms, "select_ms": select_ms, "bake_ms": stage_ms - select_ms,
+        "changed_segments": changes.segments.len(), "changed_pieces": changes.pieces.len(),
+        "tiles": tiles.len(), "tile_keys": tiles.iter().map(|t| (t.x, t.z)).collect::<Vec<_>>(),
+        "changed_tiles": changed_tiles,
+        "graded": payloads.iter().filter(|p| p.graded).count(),
+        "window_seams_max": stats.clone().map(|s| s.window_seams).max(),
+        "reach_max_m": stats.clone().map(|s| s.reach_max_m).fold(0.0, f64::max),
+        "seams_per_sample": stats.clone().map(|s| s.candidates).sum::<u64>() as f64 / samples,
+        "listed_per_sample": stats.clone().map(|s| s.listed).sum::<u64>() as f64 / samples,
+        "second_pass_share": stats.clone().map(|s| u64::from(s.second_pass_samples)).sum::<u64>() as f64 / samples,
+        "row_seams_max": payloads.iter().map(|p| p.seams.len()).max(),
+        "conflicts": stats.clone().map(|s| s.conflicts).sum::<u32>(),
+        "seam_conflicts": stats.map(|s| s.seam_conflicts).sum::<u32>(),
+        "digest": format!("{:016x}", crate::debug::work::debug_hash(&bits)),
+    })
+}
+
+/// Asserts that dirty tile selection covers an edit: every `GL0` tile within the cap and band of
+/// the edit's changed segments and pieces whose texel bits differ between `before` and `after`
+/// is in `selected`. Returns how many changed. Diagnostics, never timed.
+fn assert_selection_covers(
+    terrain: &TerrainSystem,
+    before: &RoadbedSystem,
+    after: &RoadbedSystem,
+    changes: &crate::simulation::network::roadbed::TerrainChanges,
+    selected: &[TileKey],
+) -> usize {
+    let mut area = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let boxes = changes.pieces.iter().copied().chain(
+        changes
+            .segments
+            .iter()
+            .map(|[a, b]| super::seams::road_seam(*a, *b).box_xz()),
+    );
+    for b in boxes {
+        area = [
+            area[0].min(b[0]),
+            area[1].min(b[1]),
+            area[2].max(b[2]),
+            area[3].max(b[3]),
+        ];
+    }
+    if area[0] > area[2] {
+        return 0;
+    }
+    let grow = CAP_M + Level::Gl0.band_m(f64::from(terrain.cell_size_m())) + 1.0;
+    let (first, last) = (
+        TileKey::at(area[0] - grow, area[1] - grow),
+        TileKey::at(area[2] + grow, area[3] + grow),
+    );
+    let tiles: Vec<TileKey> = (first.x..=last.x)
+        .flat_map(|x| (first.z..=last.z).map(move |z| TileKey { x, z }))
+        .collect();
+    let old = bake(terrain, before, &tiles, Level::Gl0, true);
+    let new = bake(terrain, after, &tiles, Level::Gl0, true);
+    let mut changed = 0;
+    for (old, new) in old.iter().zip(&new) {
+        if texel_bits(old) != texel_bits(new) {
+            changed += 1;
+            assert!(
+                selected.contains(&old.tile),
+                "{:?} changed unselected",
+                old.tile
+            );
+        }
+    }
+    changed
+}
+
 /// Whole-world graded tile census for `T2` and `T7` (diagnostics, never timed as a stage):
 /// every tile within the cap of a grounded road seam baked at `level`, in batches of 64, as a
 /// JSON record of the tiles, graded tiles, conflict samples, conflict samples within one
@@ -709,7 +852,10 @@ pub(crate) fn graded_census(
     let mut out = Vec::new();
     let (mut graded, mut conflicts, mut seam_conflicts) = (0usize, 0u64, 0u64);
     let (mut row_max, mut window_max, mut reach_max) = (0usize, 0usize, 0.0f64);
-    let (mut candidates, mut samples) = (0u64, 0u64);
+    let (mut candidates, mut samples, mut reach_sum, mut window_sum) = (0u64, 0u64, 0.0, 0usize);
+    let (mut second_samples, mut second_candidates, mut listed) = (0u64, 0u64, 0u64);
+    // The tiles with the most second-pass samples, for the exactness test's Kuopio block.
+    let mut busiest: Vec<(u32, TileKey)> = Vec::new();
     let mut overflow = 0usize;
     let start = Instant::now();
     for batch in tiles.chunks(64) {
@@ -718,22 +864,39 @@ pub(crate) fn graded_census(
             eprintln!("graded census: {error:?}");
         }
         for payload in &out {
+            let stats = &payload.stats;
             graded += usize::from(payload.graded);
-            conflicts += u64::from(payload.stats.conflicts);
-            seam_conflicts += u64::from(payload.stats.seam_conflicts);
+            conflicts += u64::from(stats.conflicts);
+            seam_conflicts += u64::from(stats.seam_conflicts);
             row_max = row_max.max(payload.seams.len());
-            window_max = window_max.max(payload.stats.window_seams);
-            reach_max = reach_max.max(payload.stats.reach_max_m);
-            candidates += payload.stats.candidates;
+            window_max = window_max.max(stats.window_seams);
+            reach_max = reach_max.max(stats.reach_max_m);
+            reach_sum += stats.reach_sum_m;
+            window_sum += stats.window_seams;
+            candidates += stats.candidates;
+            listed += stats.listed;
             samples += payload.texels.len() as u64;
+            second_samples += u64::from(stats.second_pass_samples);
+            second_candidates += stats.second_pass_candidates;
+            busiest.push((stats.second_pass_samples, payload.tile));
         }
     }
+    let bake_s = start.elapsed().as_secs_f64();
+    busiest.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     serde_json::json!({
         "level": format!("{level:?}"), "seams": seams, "tiles": tiles.len(),
         "graded": graded, "conflicts": conflicts, "seam_conflicts": seam_conflicts,
         "row_seams_max": row_max, "window_seams_max": window_max, "reach_max_m": reach_max,
+        "reach_mean_m": reach_sum / window_sum.max(1) as f64,
         "seams_per_sample": candidates as f64 / samples.max(1) as f64,
-        "capacity_errors": overflow, "bake_s": start.elapsed().as_secs_f64(),
+        "listed_per_sample": listed as f64 / samples.max(1) as f64,
+        "second_pass_samples": second_samples,
+        "second_pass_share": second_samples as f64 / samples.max(1) as f64,
+        "second_pass_seams_per_sample": second_candidates as f64 / second_samples.max(1) as f64,
+        "busiest_tiles": busiest.iter().take(3).map(|(n, t)| (t.x, t.z, *n)).collect::<Vec<_>>(),
+        "workers": crate::thread_pools::install(rayon::current_num_threads),
+        "capacity_errors": overflow, "bake_s": bake_s,
+        "ms_per_tile_per_worker": bake_s * 1e3 * crate::thread_pools::install(rayon::current_num_threads) as f64 / tiles.len().max(1) as f64,
     })
 }
 
@@ -861,8 +1024,9 @@ pub(crate) fn wall_sites(
     for wall in &walls {
         histogram[bins.iter().position(|&top| wall.height <= top).unwrap()] += 1;
     }
-    let mut grouped: BTreeMap<(PieceId, PieceId), (usize, usize, BTreeMap<PieceId, f64>)> =
-        BTreeMap::new();
+    // Per pair of pieces: walled samples, the worst sample, the largest wall at each piece.
+    type Site = (usize, usize, BTreeMap<PieceId, f64>);
+    let mut grouped: BTreeMap<(PieceId, PieceId), Site> = BTreeMap::new();
     for (index, wall) in walls.iter().enumerate() {
         let pair = (wall.near.min(wall.other), wall.near.max(wall.other));
         let site = grouped.entry(pair).or_insert((0, index, BTreeMap::new()));

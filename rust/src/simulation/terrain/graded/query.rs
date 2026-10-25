@@ -9,7 +9,7 @@
 
 use super::coverage::covered_height_at;
 use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE};
-use super::sample::{BaseGrid, BaseWindow, evaluate};
+use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
 use super::seams::{Seam, SeamScratch, gather_road_seams};
 use super::tile::{Level, TILE_M, grown};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
@@ -178,7 +178,8 @@ impl GradedSurface<'_> {
     ) -> f64 {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
-        evaluate(x, z, base, road, seams, 0..seams.len() as u32, band).height
+        let all = (0..seams.len() as u32).map(Listed::unbounded);
+        evaluate(x, z, base, road, seams, all, band).height
     }
 
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake
