@@ -794,7 +794,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-B` | done | Profiles, spans, meshes, queries and render chunks |
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
-| `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the road half of the preview, commit adoption, local undo and the load check; terrain in the preview and part 2 (open questions) are open |
+| `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; the terrain stage's budget and part 2 (open questions) are open |
 | `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
@@ -932,10 +932,11 @@ Godot scripts skipped by `run.sh --test`:
 
 | Gate | Script | Reason |
 | --- | --- | --- |
-| `ROAD-68-E` | `network_tool_chunk_renderer_test` | the moving preview uploads a road mesh |
-| `ROAD-68-E` | `road_junction_preview_test` | the preview exports the junction scene and a ready plan |
-| `ROAD-68-E` | `road_preview_stream_test` | junction previews update while the pointer moves |
 | `ROAD-68-F` | `zoning_cells_tool_test` | node moves check painted cells; parcels beside cells need frontage |
+
+`network_tool_chunk_renderer_test`, `road_junction_preview_test` and `road_preview_stream_test`
+(`ROAD-68-E`: the preview's road mesh, junction scene and pose stream) are rewritten for the
+synchronous preview and run again since `ROAD-68-E` part 1.
 
 `zoning_road_tool_test` (`ROAD-68-B`: parcel lots need road frontage heights) passes again and
 runs since `ROAD-68-B`. `zoning_reference_test` (`ROAD-68-C`: lots exclude the junction sidewalk
