@@ -373,25 +373,38 @@ compute no crossing or corner geometry of their own
   every edge near the stroke and two rings of incidence around them, and a plan whose affected
   nodes or the far nodes of the edges they re-derive lack an arm in the excerpt is refused
   (`ROAD-68-E` part 2 round 3; with one ring a far node lost its pin, open question 8).
-- **Grade (`ROAD-68-K14`, [open question 37](#road-68-open-questions)).** The stroke solve
-  relaxes each 6 m span's 16% design grade towards the ground's slope only up to 33%, and builds
-  the profile inside the bounds of its pins (its ends and the carriageways it meets) and the
-  source-delta limit (every other sample within 5 m of the ground, read exactly in `f32`; a pin
-  further off the ground, such as a road end on an embankment, widens its neighbours' band by its
-  excess, shrinking at the grade with the distance from it): a forward and a backward pass
-  give each sample's exact interval of feasible heights, and the profile takes the mean of two
-  nearest-height passes, first to last and last to first, so it does not depend on the stroke's
-  direction (`grade::grade_envelope`, `grade::construct_within_grade`). Where the bounds admit
-  no profile within 33% it builds up to 1:3; where none within 1:3, the stroke is refused
-  (`road_too_steep`) with the least grade they allow. In a derived physical profile steeper than
-  33%, the blends are built the same way: a blend that eases an arm onto a flatter plane can
-  climb faster than either. Only the points a pinned end blends (past its mouth knot, up to its
-  blend end) move; the plane stretches and the control polyline beyond the blends stay, so a
-  steep control (a terrain sync, a saved legacy profile) is not the profile solve's to rebuild.
-  A profile within 33% is left untouched, so every flat and gently sloped product is unchanged. Placement refuses
-  what is left above 1:3. 33% lies a third of a percentage point under the maximum so that `f32`
-  rounding of the derived points (world coordinates in the thousands of metres, knots 5 cm apart
-  at the closest) never reads above it.
+- **Grade (`ROAD-68-K14`, [open questions 37 and 39](#road-68-open-questions)).** The stroke
+  solve relaxes each 6 m span's 16% design grade towards the ground's slope only up to 33%, and
+  builds the profile inside the bounds of its pins (its ends and the carriageways it meets) and
+  the source-delta band (every other sample within 5 m of the ground, read exactly in `f32`; a
+  pin further off the ground, such as a road end on an embankment, widens its neighbours' band by
+  its excess, shrinking at the 16% design grade with the distance from it, `grade::source_bounds`):
+  a forward and a backward pass give each sample's exact interval of feasible heights, and the
+  profile takes the mean of two nearest-height passes, first to last and last to first, so it
+  does not depend on the stroke's direction (`grade::grade_envelope`,
+  `grade::construct_within_grade`). Where the bounds admit no profile within 33% it builds up to
+  1:3; where none within 1:3, the stroke is refused (`road_too_steep`) with the least grade they
+  allow. The widening shrinks at the design grade, not at the grade the profile is built to: at
+  that grade a profile leaving an off-ground pin on flat ground runs exactly along the band's
+  edge, where `f32` rounding decides feasibility (`ROAD-68-K15`). Junction blends are built the
+  same way (`ROAD-68-K15`, question 39): in a derived physical profile of a standard road steeper
+  than 33% or with a point more than 5 m from the source ground, the points a pinned end blends
+  (past its mouth knot, up to its blend end) are rebuilt inside the band, every other point held
+  (the plane stretches, the control polyline beyond the blends and the two ends; a held point off
+  the ground widens the band as a pin does). A blend that eases an arm onto a flatter plane can
+  climb faster than either, and one that follows a plane fitted to the arms' heights a mouth
+  station out can leave the ground the stroke solve cut or filled the arm to. Where the held
+  points and the band leave no blend within 1:3, it is built inside the band at the least grade
+  they allow (`grade::construct_within_bounds`), which is steeper than the maximum, so placement
+  refuses the edit as `road_too_steep` with that grade. Bridges and tunnels have no band, and a
+  graph without a world (a unit fixture) passes no terrain. A profile within 33% and 5 m of the
+  ground is left untouched (checked without allocating), so every flat and gently sloped product
+  is unchanged. The whole-graph terrain sync builds each re-graded control the same way, its node
+  ends held; where the ground leaves no profile within 1:3 it builds the least grade the band
+  allows, and the terrain edit is not refused yet (open question 37, `ROAD-68-K14`'s open items). 33%
+  lies a third of a percentage point under the maximum so
+  that `f32` rounding of the derived points (world coordinates in the thousands of metres, knots
+  5 cm apart at the closest) never reads above it.
 - A `Terminal` gets a plane through its road end and its mouth centreline point, with the arm's
   end grade along that run and no crossfall; it is read from the solved profile, so the finalizer
   leaves terminals alone.
@@ -1050,12 +1063,11 @@ relabelled `ROAD-68-E`, which owns open question 2, and pass since `ROAD-68-E` p
 tunnel portal CDT test, added by `ROAD-68-D`, was relabelled `TERRAIN-07` by
 [`ROAD-68-F` part 2](#remaining-families-road-68-f-part-2-2026-10-25)). None is left.
 
-`ROAD-68-K14` (2, both in `nodes::sim::core::tests::road_terrain_plan`; `ROAD-68-K13`'s one
-relabelled): `kuopio_saved_reference_profiles_preserve_quality_limits` (the replay's quality
-limits on the reference save's own network; failed on the legacy profiles until question 38's
-re-record) and `kuopio_recorded_profiles_preserve_quality_limits` (the same limits after every
-recorded stroke) fail on up to 0.36 m past the 5 m source-delta limit in junction blends beside
-arms the grade rule cuts to that limit ([open question 39](#road-68-open-questions)).
+`ROAD-68-K14` (0; 2 at `ROAD-68-K14`, both in `nodes::sim::core::tests::road_terrain_plan`,
+`ROAD-68-K13`'s one relabelled): `kuopio_saved_reference_profiles_preserve_quality_limits` and
+`kuopio_recorded_profiles_preserve_quality_limits` failed on up to 0.36 m past the 5 m
+source-delta limit in junction blends ([open question 39](#road-68-open-questions)) and pass again
+since `ROAD-68-K15`. None is left.
 
 The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
 support target) pass on span sections and were re-enabled in `ROAD-68-B`.
@@ -2340,10 +2352,11 @@ These need a user decision; work that does not depend on them continues.
       `SimCore::try_graph_edit`. The validator's grade tiers become 16% / 1:3 for streets and
       6% / 1:3 for bridges and tunnels: one maximum for every class (decided by the coordinator
       under the user's delegation, 2026-10-25 night, for review: the user's 1:3 named no class,
-      and `ROAD-54`'s structural 16% was never refused). Not covered: `RegionGraph::sync_to_terrain`, the whole-graph terrain sync, which
-      re-grades control polylines to the ground without the rule; and loads, which keep saved
-      profiles as saved, over the limit or not (option (a)'s load rejection is not part of the
-      decision). New tests: `a_road_up_to_one_in_three_commits_and_a_steeper_one_is_refused`
+      and `ROAD-54`'s structural 16% was never refused). Not covered in `ROAD-68-K14`:
+      `RegionGraph::sync_to_terrain`, the whole-graph terrain sync, which re-graded control
+      polylines to the ground without the rule (covered since `ROAD-68-K15`, below); and loads,
+      which keep saved profiles as saved, over the limit or not (option (a)'s load rejection is
+      not part of the decision). New tests: `a_road_up_to_one_in_three_commits_and_a_steeper_one_is_refused`
       (20% and 30% commit with the warning, 10% without, 40% is refused in the preview and the
       commit alike) and the validator's 40% / 20% / 12% ramps. Two fixtures steeper than the
       maximum were brought within it, keeping their assertions: the stroke solve's interior-relief
@@ -2364,6 +2377,64 @@ These need a user decision; work that does not depend on them continues.
       terrain: an end beside a road the solve cut or filled read as a bridge or tunnel stroke
       and failed its open chain end (attempt 17). The source-delta quality limit fails on 4
       edges, up to 0.36 m past 5 m in junction blends ([open question 39](#road-68-open-questions)).
+    - **`ROAD-68-K14`'s open items (`ROAD-68-K15`; decided by the coordinator under the user's
+      delegation, 2026-10-25 night, for review).** (1) The whole-graph terrain sync applies the
+      rule's construction: `RegionGraph::sync_to_terrain` builds each re-graded standard control
+      inside the source band within 33%, else 1:3, its node ends held
+      (`grade::construct_within_bounds`), and where the ground leaves none, at the least grade it
+      allows (steeper than 1:3). Refusing such a terrain edit is not implemented: a rollback beside
+      the failed-node one (`road_too_steep` when the sync leaves a road steeper than 1:3 and than
+      before) was built and measured, but `terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility`
+      sculpts a 200 m mound over a lot and the road end beside it, which the rollback refuses, and
+      the only mound found that blocks the lot without reaching the road (centred 10 m beyond the
+      lot) leaves the lot blocked after its undo, because terrain undo restores the authored
+      terrain but not the source terrain the lot reads (terrain.md, "authoritative terrain undo",
+      `TERRAIN-07`'s). Recommendation, for the next gate: refuse the terrain edit as the
+      rollback did, once the test sculpts a mound its road can follow or terrain undo restores
+      the source terrain. (2) Old saves load as saved: a save with grades over 1:3 loads
+      unchanged and only new edits are refused (recommended and taken: refusing the load would
+      lose the player's city over a rule it predates, and every edit beside such a road stays
+      possible because placement refuses only a profile it makes steeper). (3) The first planning
+      pass can refuse `road_too_steep` from a carriageway pin its own edit rebuilds before a
+      second pass runs (a refused pass has no plan, so no rebuilt pieces to exclude). Fix only if
+      it changes a verdict: a probe counting refused passes that read any carriageway found none in
+      the debug `nodes::` (492 tests, the Kuopio replays and road tool tests included) and
+      `simulation::` (1,294) suites, so it is left as is and recorded.
+    - **Timing of the rule (`ROAD-68-K15`, fresh).** Release lib test binaries (`$TEST_BINARY`,
+      16 codegen units): C = `road` `4710f59b` (before the rule), K = `d740a332` (the rule, built
+      from `ac0480cc`, whose code is the same), F = `road68-K15`'s production code (its two test
+      changes came after the build). Both locks, `taskset -c 0,2,4,6,8,10,12,14`, no restic,
+      `METRUM_DEBUG=0`; `benchmark_road_preview_stages` with `RAYON_NUM_THREADS=4` and
+      `benchmark_populated_commit_breakdown` with `METRUM_COMMIT_TIERS=0,10000,30000,100000` and
+      `RAYON_NUM_THREADS=8`. Session 1 (2026-10-25 23:19-23:41): stages C K C K C K C K, breakdown
+      C K K C. Session 2 (2026-10-26 00:35-00:57): stages C K F three times, breakdown C F F C. Every
+      breakdown digest and every payload vertex count is equal across C, K and F.
+      | Preview stage p50, ms | C | K | F |
+      | --- | --- | --- | --- |
+      | `sloped_t` plan (session 1 / 2) | 0.460-0.471 / 0.463-0.467 | 0.482-0.490 / 0.486-0.487 | 0.485-0.489 |
+      | `sloped_branch` plan (session 1 / 2) | 0.404-0.412 / 0.402-0.407 | 0.418-0.425 / 0.420-0.426 | 0.416-0.426 |
+      | `sloped_t` payload (session 2) | 0.384-0.417 | 0.381-0.386 | 0.421-0.431 |
+      | `sloped_t` terrain (session 2) | 4.618-4.653 | 4.279-4.317 | 4.513-4.529 |
+      | `sloped_t` total (session 2) | 5.776-5.841 | 5.465-5.487 | 5.726-5.757 |
+      The preview plan stage rises by 0.015-0.022 ms (3-5%) with the rule, beyond C's spread, and
+      the commit's plan by 0.02-0.07 ms at every tier (for example 10k sample 0: C 0.468/0.476, K
+      0.509/0.515; 100k sample 0: C 0.538/0.582, F 0.600/0.675). It is the rule's work: the
+      envelope, the band and the construction in the stroke solve, the grade passes of every
+      derived profile, and in K the full `ROAD-54` validator (radius windows included) run again on
+      every re-derived profile for its grade alone; a flat profile (perf, LBR, 8 kHz, not
+      acceptance) shows `validate_edge` at 27 / 54 / 21 samples in C / K / F, since F checks the
+      re-derived profiles and the road tool's warning with the grade check alone
+      (`validate::grade_violation`). The remaining rise is open: the stroke solve's band and
+      envelope allocate about eight vectors per solve and run twice per two-pass plan. The terrain
+      stage and payload move by up to ±0.35 ms and +0.04 ms with code no gate changed (the legacy
+      terrain CDT and the payload, `spade`'s incircle inlined in K and F, `rstar`'s sort and the CDT
+      clip closures moving between functions in the same profile): code layout under question 36.
+      The commit's `surface` stage (the legacy terrain CDT) is bimodal in every binary: 30k sample
+      0 reads 110.0-115.3 ms for C in session 1 and 111.5 and 149.8 ms for C in session 2 (K 147.2
+      and 148.9 in session 1, F 114.5 and 117.1 in session 2), and F's surface reads 5-10 ms above
+      C at 10k sample 0, 30k sample 1 and 100k sample 0 with equal digests and a flat city whose
+      profiles take the allocation-free path; attributed to layout (question 36) on that evidence,
+      for review, with no per-function profile of the commit window yet.
 38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
     decided 2026-10-25 (user): (a), re-record the reference network with today's code, after
     question 37. The re-recorded network is interim: the user will provide a new Kuopio save once
@@ -2468,7 +2539,7 @@ These need a user decision; work that does not depend on them continues.
       [terrain.md, the gate A record](terrain.md#terrain-07-a-record).
 39. **Junction blends beside arms cut to the source-delta limit (`ROAD-68-K14`, from question 37)
     — decided by the coordinator under the user's delegation, 2026-10-25 night, for review: (a);
-    not yet implemented.**
+    implemented in `ROAD-68-K15`.**
     - **Evidence (fresh, `ROAD-68-K14`).** With the grade rule, the recorded session in one world
       (36 accepted strokes) commits every stroke with no failed node and no edge over 1:3, but two
       edges leave the replay's 5 m source-delta quality limit beside a junction: edge 14
@@ -2494,6 +2565,40 @@ These need a user decision; work that does not depend on them continues.
       terrain into `RegionGraph::finalize_junction_endpoint_profiles` and its callers, the band
       in `build_within_grade`, triggered by a blend off the band as well as by grade, and a
       `road_too_steep` refusal where the band and the grade leave no blend).
+    - **Implemented (`ROAD-68-K15`).** The source terrain reaches the junction profile solve
+      (`RegionGraph::finalize_junction_endpoint_profiles(nodes, terrain)`) from every caller with a
+      world: the road edit plan's validation graph, the unplanned bulk commit, node moves, road
+      removals, the crossing toggle, the load repair and the terrain sync; `None` only from graph
+      fixtures without a world (the probe fixtures, graph unit tests and the graph-only non-bulk
+      `TransitNetwork::add_road`, which no gameplay commit takes). The band, its widening near held
+      points and the construction are the stroke solve's own, moved into `network/grade.rs`
+      (`source_bounds`, `maximum_envelope`, `construct_within_bounds`, `least_grade`), so the two
+      solves share one definition ([Heights](#heights)). The construction is triggered by a blend
+      point more than 5 m from the ground as well as by grade, moves only blended points, and where
+      the held points and the band leave no blend within 1:3 it builds the blend inside the band
+      at the least grade they allow: steeper than the maximum, so the plan's existing grade check
+      refuses the edit (`road_too_steep`, with that grade) and no separate check is needed.
+      Measured on the way: with the widening shrinking at the grade the profile is built to (the
+      stroke solve's rule in `ROAD-68-K14`), a blend leaving a plane 1-3 m above the band on flat
+      ground ran exactly along the band's edge, `f32` rounding closed the 33% attempt, and the 1:3
+      attempt then built the blend's descent at exactly 1:3, which read above the maximum and was
+      refused; the widening now shrinks at the 16% design grade in both solves (the stroke solve's
+      33% attempt is otherwise unchanged; its 1:3 attempt and its refusal grade read a band at
+      least as wide as before). New test:
+      `junction_blends_keep_the_source_band_or_read_steeper_than_the_maximum` (a plane 6 m above
+      flat ground: the blend is back within 5 m once the 1 m excess has run out, and without the
+      band it is not; ground falling 10 m at 1:1 past the mouth: within 1:3 without the band,
+      steeper than 1:3 and within 5 m with it).
+    - **Results (fresh, `ROAD-68-K15`, debug).** `kuopio_recorded_profiles_preserve_quality_limits`
+      (13 cases, every stroke) and `kuopio_saved_reference_profiles_preserve_quality_limits` pass
+      again and are no longer ignored. The reference save is re-recorded and re-pinned by
+      question 38's steps: `1607f880…` (was `0f20a663…`), 70 live edges; only 18 profile points of
+      edges 13, 14, 27, 35 and 36 move (at most 0.363 m, edge 27), with those edges' lengths and
+      costs; every table keeps its row count, and `lane_connections` holds the same set of rows
+      in another order. `kuopio_saved_reference_loads_as_saved`, the `TERRAIN-07` half
+      `kuopio_saved_reference_terrain_builds_clean`, the 8 replay-tool tests and every
+      `building_site_terrain` test pass (18 passed, 4 ignored, as before); `TERRAIN-07-A` re-runs
+      its Kuopio census and edits on this save.
 
 Spec corrections in `ROAD-68-A`:
 

@@ -69,16 +69,20 @@ pub fn edit_violation(
         }
     }
     for &(edge, source) in rederived {
-        validate_edge(after, edge, limits, &mut found);
+        let Some(violation) = grade_violation(after, edge, limits) else {
+            continue;
+        };
+        let RoadGeometryViolation::Grade {
+            measured,
+            tier: RoadGeometryTier::Illegal,
+            ..
+        } = violation
+        else {
+            continue;
+        };
         // A profile that was already as steep is the existing road's, not this edit's.
         let old = source.and_then(|source| steepest_grade(centreline(before.edge(source))));
-        if let Some(violation) = found.drain(..).find(|violation| {
-            matches!(violation, RoadGeometryViolation::Grade {
-                measured,
-                tier: RoadGeometryTier::Illegal,
-                ..
-            } if old.is_none_or(|old| *measured > old.grade))
-        }) {
+        if old.is_none_or(|old| measured > old.grade) {
             return Some(violation);
         }
     }

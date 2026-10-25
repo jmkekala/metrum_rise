@@ -181,7 +181,7 @@ fn assert_profiles_fresh(name: &str, core: &SimCore) {
     let mut fresh = core.region_graph.clone();
     fresh.rebuild_intersection_clips();
     let nodes = (0..fresh.node_count() as u32).collect();
-    fresh.finalize_junction_endpoint_profiles(&nodes);
+    fresh.finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap));
     for index in 0..fresh.edge_count() {
         let (edge, solved) = (core.region_graph.edge(index), fresh.edge(index));
         if edge.deleted {

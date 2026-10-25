@@ -1082,11 +1082,10 @@ fn profile_quality_failures(core: &SimCore) -> Vec<String> {
 // The quality gates across every live edge after each recorded edit. Beside steep junctions
 // three profiles left the ground by 5.08-5.76 m while the plane was sampled 12 m out inside
 // wider mouths (`ROAD-68` open question 31). Under the 1:3 maximum grade, the arms the stroke
-// solve cuts to the source-delta limit on ground steeper than 33% leave it by up to 0.36 m in
+// solve cuts to the source-delta limit on ground steeper than 33% left it by up to 0.36 m in
 // their junction blends (`kuopio_04` attempt 10, `kuopio_06` attempts 17 and 18, `kuopio_08`
-// attempt 22; open question 39).
+// attempt 22) until the blends kept the same band (open question 39).
 #[test]
-#[ignore = "ROAD-68-K14: open question 39, junction blends beside arms cut to the source-delta limit"]
 fn kuopio_recorded_profiles_preserve_quality_limits() {
     let mut failures = Vec::new();
     replay_kuopio_recorded_cases(|case_id, stroke, core| {
@@ -1097,16 +1096,14 @@ fn kuopio_recorded_profiles_preserve_quality_limits() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// The same gates on the reference save's own network, which no replay reads. Its profiles are
-// the recorded session's, from the stroke solve before 2026-09-09 (one 16% clamp for every
-// span, pinned ends): where the ends could not be joined at 16%, the clamp left a 16% line from
-// the upper pin and the rest of the difference in the span beside the lower one. Every load
-// keeps them as saved (open question 8), so
-// edges 13 and 14 leap 27.1 m and 23.7 m within 5.9 m from their dead ends onto a four-way
-// 29.4 m above the ground, and edge 40 climbs at 1.08 out of a junction 8.2 m below it: the
-// five tallest walls of the `TERRAIN-07-A` wall census (`ROAD-68` open question 38).
+// The same gates on the reference save's own network, which no replay reads. The save before
+// `ROAD-68-K14` held the recorded session's profiles, from the stroke solve before 2026-09-09
+// (one 16% clamp for every span, pinned ends), which every load keeps as saved (open question
+// 8): edges 13 and 14 leapt 27.1 m and 23.7 m within 5.9 m from their dead ends onto a four-way
+// 29.4 m above the ground, the five tallest walls of the `TERRAIN-07-A` wall census (`ROAD-68`
+// open question 38). The re-recorded save holds today's profiles, inside the source band beside
+// its junctions too (question 39).
 #[test]
-#[ignore = "ROAD-68-K14: open question 39, junction blends beside arms cut to the source-delta limit"]
 fn kuopio_saved_reference_profiles_preserve_quality_limits() {
     let mut core = test_core();
     core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();

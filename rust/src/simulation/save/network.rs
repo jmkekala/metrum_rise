@@ -5,6 +5,7 @@
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
@@ -251,6 +252,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
 pub(super) fn rebuild_loaded_graph_runtime(
     graph: &mut RegionGraph,
     transit_network: &mut TransitNetwork,
+    terrain: Option<&TerrainSystem>,
 ) -> SaveLoadResult<()> {
     // Node positions, grades, physical lengths and junction clips are saved authority. Terrain
     // synchronization is an edit: running it here moves roads away from their restored parcels
@@ -285,7 +287,7 @@ pub(super) fn rebuild_loaded_graph_runtime(
         // Saves before `ROAD-68-C` hold clips from the legacy setback rule; the solve pins each
         // arm up to its layout mouth, which the clip must hold first.
         graph.rebuild_intersection_clips_for_nodes(&nodes);
-        let changed = graph.finalize_junction_endpoint_profiles(&nodes);
+        let changed = graph.finalize_junction_endpoint_profiles(&nodes, terrain);
         transit_network.mark_surface_dirty_from_sets(&changed, &nodes);
         transit_network.roadbed.compile_dirty(graph);
         crate::debug_log!(

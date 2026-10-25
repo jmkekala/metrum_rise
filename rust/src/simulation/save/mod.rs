@@ -755,7 +755,7 @@ pub(crate) fn load_from_sqlite(
     }
 
     let mut transit_network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network)?;
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, Some(&terrain))?;
     transit_network.lane_system.rebuild(&mut graph);
     transit_network
         .lane_system

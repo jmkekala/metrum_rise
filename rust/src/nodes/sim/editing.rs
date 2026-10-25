@@ -742,7 +742,7 @@ impl SimCore {
             let graph = &mut core.region_graph;
             graph.delete_edge_locally(edge_idx);
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            graph.finalize_junction_endpoint_profiles(&ends);
+            graph.finalize_junction_endpoint_profiles(&ends, Some(&core.heightmap));
             HashSet::new()
         });
         if let Err(rejection) = tried {
@@ -774,7 +774,9 @@ impl SimCore {
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
         // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
         // edge the solve derives touches one of them, so it is in the undo record and rebuilt.
-        let changed = self.region_graph.finalize_junction_endpoint_profiles(&ends);
+        let changed = self
+            .region_graph
+            .finalize_junction_endpoint_profiles(&ends, Some(&self.heightmap));
         debug_assert!(changed.is_subset(&affected_edges));
         for chunk in old_chunks {
             self.transit_network.cch_dirty_chunks.insert(chunk);
@@ -1910,7 +1912,7 @@ impl SimCore {
             .rebuild_intersection_clips_for_nodes(affected_nodes);
         let changed = self
             .region_graph
-            .finalize_junction_endpoint_profiles(affected_nodes);
+            .finalize_junction_endpoint_profiles(affected_nodes, Some(&self.heightmap));
         debug_assert!(changed.is_subset(affected_edges));
     }
 
@@ -1963,7 +1965,7 @@ impl SimCore {
         before: &std::collections::HashMap<usize, f32>,
     ) -> Option<RoadRejection> {
         use crate::simulation::network::validate::{
-            RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, validate_edge,
+            RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
         };
         let graph = &self.region_graph;
         let mut edges: Vec<usize> = edges
@@ -1973,12 +1975,9 @@ impl SimCore {
             .collect();
         edges.sort_unstable();
         let limits = RoadGeometryLimits::default();
-        let mut found = Vec::new();
         edges.into_iter().find_map(|edge| {
-            found.clear();
-            validate_edge(graph, edge, &limits, &mut found);
             let old = before.get(&edge).copied().unwrap_or(-1.0);
-            found.iter().find_map(|violation| match *violation {
+            match grade_violation(graph, edge, &limits)? {
                 RoadGeometryViolation::Grade {
                     measured,
                     limit,
@@ -1994,7 +1993,7 @@ impl SimCore {
                     ),
                 )),
                 _ => None,
-            })
+            }
         })
     }
 
@@ -2233,7 +2232,7 @@ impl SimCore {
                 .rebuild_intersection_clips_for_nodes(&nodes);
             // A crossing moves the mouths, so the node's arms re-derive their profiles.
             core.region_graph
-                .finalize_junction_endpoint_profiles(&nodes)
+                .finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap))
         };
         let checkpoint =
             match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle) {

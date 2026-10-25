@@ -19,7 +19,7 @@ use crate::simulation::network::roadbed::{
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::network::grade::{ROAD_GRADE_MAX, SteepestGrade, steepest_grade};
 use crate::simulation::network::validate::{
-    RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, validate_edge,
+    RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, centreline, grade_violation,
 };
 use crate::simulation::network::{
     TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
@@ -417,6 +417,7 @@ fn validate_against_graph(
         bkw_lanes,
         existing_graph,
         prepared_input.endpoint_snap_enabled,
+        terrain,
     )
     else {
         return (
@@ -480,6 +481,7 @@ fn build_validation_graph(
     bkw_lanes: u8,
     existing_graph: &RegionGraph,
     endpoint_snap_enabled: bool,
+    terrain: &TerrainSystem,
 ) -> Option<ValidationGraph> {
     if prepared_points.len() < 2 {
         return None;
@@ -550,7 +552,7 @@ fn build_validation_graph(
     validation_graph.edge_mut(new_edge_idx).base_cost = base_cost;
     validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
     let (finalized, splits) =
-        process_validation_graph_intersections(&mut validation_graph, new_edge_idx);
+        process_validation_graph_intersections(&mut validation_graph, new_edge_idx, terrain);
 
     let mut required_edge_ids = validation_graph
         .edges()
@@ -685,6 +687,7 @@ fn push_incident_validation_edges(
 fn process_validation_graph_intersections(
     validation_graph: &mut RegionGraph,
     new_edge_idx: usize,
+    terrain: &TerrainSystem,
 ) -> (FinalizedRoadGeometry, Vec<PlannedRoadSplit>) {
     let mut network = TransitNetwork::new();
     let world_config = WorldConfig::default();
@@ -718,7 +721,7 @@ fn process_validation_graph_intersections(
     );
     network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
-    let finalized = network.finalize_road_geometry(validation_graph);
+    let finalized = network.finalize_road_geometry(validation_graph, Some(terrain));
     (finalized, network.recorded_road_splits.take().unwrap())
 }
 
@@ -937,15 +940,11 @@ fn record_edit_grade(
         return;
     };
     record_steepest_span(validation, centreline(validation_graph.edge(id)), grade, terrain);
-    let mut found = Vec::new();
-    validate_edge(validation_graph, id, &limits, &mut found);
-    if let Some(&RoadGeometryViolation::Grade {
+    if let Some(RoadGeometryViolation::Grade {
         limit,
         tier: RoadGeometryTier::Design,
         ..
-    }) = found
-        .iter()
-        .find(|violation| matches!(violation, RoadGeometryViolation::Grade { .. }))
+    }) = grade_violation(validation_graph, id, &limits)
     {
         validation.warning_reason = PREVIEW_STEEP_WARNING;
         validation.warning_limit = limit;

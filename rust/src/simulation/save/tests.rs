@@ -151,7 +151,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         .restore_parcel_from_attachment(1, edge_idx, 1, 0.85, 20.0, 20.0, 0, &graph)
         .unwrap();
     let mut network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut network).unwrap();
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut network, None).unwrap();
     network.lane_system.rebuild(&mut graph);
     assert_eq!(graph.node(start).pos, points[0]);
     assert_eq!(graph.node(end).pos, points[1]);
@@ -2044,7 +2044,7 @@ fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     tx.commit().unwrap();
     let mut loaded = network::load_graph(&conn).unwrap();
     let mut transit = TransitNetwork::new();
-    network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit).unwrap();
+    network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit, None).unwrap();
     assert!(transit.roadbed.failed_nodes().is_empty());
     let piece = transit.roadbed.node_piece(0).expect("bend node piece");
     let crossing: Vec<usize> = piece
@@ -2088,7 +2088,7 @@ fn a_saved_junction_a_commit_would_reject_fails_the_load() {
         tx.commit().unwrap();
         let mut loaded = network::load_graph(&conn).unwrap();
         let mut transit = TransitNetwork::new();
-        let error = network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit)
+        let error = network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit, None)
             .expect_err("the junction fails the load")
             .to_string();
         assert!(
@@ -2111,7 +2111,7 @@ fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
     let mut graph = network::load_graph(&conn).unwrap();
     let saved_edges = graph.edges().to_vec();
     let mut transit = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit).unwrap();
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit, None).unwrap();
     assert!(transit.roadbed.is_current());
     assert!(transit.roadbed.failed_nodes().is_empty());
     assert!(

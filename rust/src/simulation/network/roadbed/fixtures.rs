@@ -183,7 +183,7 @@ pub(crate) fn finalize(graph: &mut RegionGraph) {
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
     let nodes: HashSet<u32> = (0..graph.node_count() as u32).collect();
-    graph.finalize_junction_endpoint_profiles(&nodes);
+    graph.finalize_junction_endpoint_profiles(&nodes, None);
 }
 
 /// Footpath junction fixtures at node 0 (D5), each with its name: a footpath in a T's corner and

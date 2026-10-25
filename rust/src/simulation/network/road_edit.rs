@@ -7,6 +7,7 @@ use super::roadbed::{PieceId, RoadbedSystem};
 use super::types::NodeType;
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -258,10 +259,13 @@ impl RoadTopologyPlan {
 }
 
 impl TransitNetwork {
-    /// Solves the same local junction/profile/clip scope for preview and unplanned commits.
+    /// Solves the same local junction/profile/clip scope for preview and unplanned commits; the
+    /// blends keep within the source band of `terrain`
+    /// ([`RegionGraph::finalize_junction_endpoint_profiles`]).
     pub(crate) fn finalize_road_geometry(
         &mut self,
         graph: &mut RegionGraph,
+        terrain: Option<&TerrainSystem>,
     ) -> FinalizedRoadGeometry {
         let mut dirty_edges = std::mem::take(&mut self.bulk_dirty_edges);
         let affected_nodes = self.bulk_surface_profile_nodes(graph, &dirty_edges);
@@ -270,7 +274,7 @@ impl TransitNetwork {
         graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
         let clips_us = start.elapsed().as_micros();
         let start = Instant::now();
-        dirty_edges.extend(graph.finalize_junction_endpoint_profiles(&affected_nodes));
+        dirty_edges.extend(graph.finalize_junction_endpoint_profiles(&affected_nodes, terrain));
         let profile_us = start.elapsed().as_micros();
         self.mark_surface_dirty_from_sets(&dirty_edges, &affected_nodes);
         FinalizedRoadGeometry {

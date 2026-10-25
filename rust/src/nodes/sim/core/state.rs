@@ -669,7 +669,7 @@ impl SimCore {
 
     pub(super) fn finalize_bulk_road_geometry_for_dirty_edges(&mut self) -> FinalizedRoadGeometry {
         self.transit_network
-            .finalize_road_geometry(&mut self.region_graph)
+            .finalize_road_geometry(&mut self.region_graph, Some(&self.heightmap))
     }
 }
 

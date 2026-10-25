@@ -71,7 +71,8 @@ impl Fixture {
             &mut self.zoning,
             &mut self.allocator,
         );
-        self.network.finalize_road_geometry(&mut self.graph);
+        self.network
+            .finalize_road_geometry(&mut self.graph, Some(&self.terrain));
         self.network.bulk_load = false;
         self.network.roadbed.compile_dirty(&self.graph);
         assert!(self.network.roadbed.is_current());

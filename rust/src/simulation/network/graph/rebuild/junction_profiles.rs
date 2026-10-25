@@ -7,7 +7,8 @@ use crate::simulation::network::roadbed::{
     CURB_STEP_HEIGHT_M, EdgeEnd, RoadVec2, directions_pass_through, edges_pass_through,
     incident_direction, terminal_plane,
 };
-use crate::simulation::network::types::{NodeType, TransitType};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
@@ -188,6 +189,7 @@ impl RegionGraph {
         self.solve_indexed_endpoint_profiles(
             affected_nodes,
             JunctionProfileLimitMode::ConservativeSourceFit,
+            None,
         )
     }
 
@@ -196,19 +198,28 @@ impl RegionGraph {
     /// to its mouth station (the clip, which must be current), eased back to the control grade.
     /// Control polylines are authored and never rewritten here, and the solve has no edit roles,
     /// so profiles depend only on the final graph, not on the edits that produced it (`ROAD-68`
-    /// invariant 6). The local RoadEditPlan and cold commit path share this entry point. Returns
-    /// the edges whose physical profile changed; `O(touching edges * points + local degree)`.
+    /// invariant 6). The blends of standard roads keep within the source-delta band of the
+    /// source `terrain` (`ROAD-68` open question 39); `None` only for a graph without a world (a
+    /// unit fixture), whose blends have no band. The local RoadEditPlan and cold commit path
+    /// share this entry point. Returns the edges whose physical profile changed;
+    /// `O(touching edges * points + local degree)`.
     pub(crate) fn finalize_junction_endpoint_profiles(
         &mut self,
         affected_nodes: &HashSet<u32>,
+        terrain: Option<&TerrainSystem>,
     ) -> HashSet<usize> {
-        self.solve_indexed_endpoint_profiles(affected_nodes, JunctionProfileLimitMode::FinalProfile)
+        self.solve_indexed_endpoint_profiles(
+            affected_nodes,
+            JunctionProfileLimitMode::FinalProfile,
+            terrain,
+        )
     }
 
     fn solve_indexed_endpoint_profiles(
         &mut self,
         affected_nodes: &HashSet<u32>,
         limit_mode: JunctionProfileLimitMode,
+        terrain: Option<&TerrainSystem>,
     ) -> HashSet<usize> {
         if affected_nodes.is_empty() {
             return HashSet::new();
@@ -219,7 +230,7 @@ impl RegionGraph {
             self.remove_from_spatial_index(edge_idx);
         }
 
-        let changed_edges = self.solve_junction_endpoint_profiles(&edges, limit_mode);
+        let changed_edges = self.solve_junction_endpoint_profiles(&edges, limit_mode, terrain);
 
         for &edge_idx in &edges {
             self.add_to_spatial_index(edge_idx);
@@ -231,6 +242,7 @@ impl RegionGraph {
         &mut self,
         edges: &[usize],
         limit_mode: JunctionProfileLimitMode,
+        terrain: Option<&TerrainSystem>,
     ) -> HashSet<usize> {
         // Both ends of every derived edge: its far end's pin must be reproduced exactly, and the
         // far node's plane is the same function of its arms' control polylines as before.
@@ -309,7 +321,7 @@ impl RegionGraph {
                     }
                 }
             }
-            self.derive_pinned_profiles(edges, &pins, &mut changed_edges);
+            self.derive_pinned_profiles(edges, &pins, &mut changed_edges, terrain);
         }
         for &edge_idx in &changed_edges {
             let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
@@ -327,6 +339,7 @@ impl RegionGraph {
         edges: &[usize],
         pins: &HashMap<(usize, bool), (JunctionEndpointProfilePlane, bool)>,
         changed_edges: &mut Vec<usize>,
+        terrain: Option<&TerrainSystem>,
     ) {
         for &edge_idx in edges {
             let pin = |at_start: bool| {
@@ -339,7 +352,8 @@ impl RegionGraph {
                     })
             };
             let pins = [pin(true), pin(false)];
-            let physical_geometry = Self::pinned_physical_profile(&self.edges[edge_idx], pins);
+            let physical_geometry =
+                Self::pinned_physical_profile(&self.edges[edge_idx], pins, terrain);
             if physical_geometry != self.edges[edge_idx].physical_geometry {
                 self.edges[edge_idx].physical_geometry = physical_geometry;
                 changed_edges.push(edge_idx);
@@ -808,10 +822,12 @@ impl RegionGraph {
     // The physical profile of `edge`, derived from its control polyline alone: a knot at each
     // pinned end's mouth, so heights lie on its plane exactly up to there, plus that end's
     // vertical-curve supports where it needs them, with heights eased back to the control grade
-    // over the blend zone. Start end first; `O(points * inserted knots)`.
+    // over the blend zone, and built within the grade and, on a standard road, the source band of
+    // `terrain` (`build_within_grade`). Start end first; `O(points * inserted knots)`.
     pub(super) fn pinned_physical_profile(
         edge: &Edge,
         pins: [Option<EndpointPin>; 2],
+        terrain: Option<&TerrainSystem>,
     ) -> Vec<Vector3> {
         let mut points = edge.geometry.clone();
         let total_length_m = Self::edge_profile_length_m(edge);
@@ -866,26 +882,46 @@ impl RegionGraph {
                 };
             }
         }
-        Self::build_within_grade(&mut points, &blends);
+        // Bridges and tunnels leave the ground by design; only a standard road keeps the band.
+        let terrain = terrain.filter(|_| edge.class == EdgeClass::Standard);
+        Self::build_within_grade(&mut points, &blends, terrain);
         points
     }
 
-    // Builds the blends of a derived profile steeper than 33% within 33%, or else within the 1:3
-    // maximum, where their ends allow it (`ROAD-68` open question 37): a blend that eases an arm
-    // onto a flatter plane can climb faster than either. Only the points each pinned end blends
-    // (past its mouth knot, up to its blend end) move, to the heights nearest their blended ones
+    // Builds the blends of a derived profile within 33%, or else within the 1:3 maximum, and on a
+    // standard road inside the source-delta band of `terrain` (`ROAD-68` open questions 37 and
+    // 39): a blend that eases an arm onto a flatter plane can climb faster than either, and one
+    // that follows a plane fitted to the arms' heights a mouth station out can leave the ground the
+    // stroke solve cut or filled the arm to. Only the points each pinned end blends (past its
+    // mouth knot, up to its blend end) move, to the heights nearest their blended ones
     // (`grade::construct_within_grade`); the plane stretches and the control polyline beyond the
-    // blends stay, so a steep control (a terrain sync, a saved legacy profile) is not this
-    // solve's to rebuild. A profile within 33% is left as it is; one whose blend ends force a
-    // steeper grade is left for placement to refuse (`road_too_steep`). O(points).
-    fn build_within_grade(points: &mut [Vector3], blends: &[Option<(EndpointPin, f32)>; 2]) {
+    // blends are held, so a steep control (a terrain sync, a saved legacy profile) is not this
+    // solve's to rebuild, and a held point off the ground widens its neighbours' band as a
+    // stroke's pins do (`grade::source_bounds`). A profile within 33% and the band is left as it
+    // is. Where the held points, the band and the 1:3 maximum leave no profile, the blends are
+    // built inside the band at the least grade that allows them, which placement refuses as
+    // steeper than the maximum (`road_too_steep`). O(points); that least grade O(points^2).
+    fn build_within_grade(
+        points: &mut [Vector3],
+        blends: &[Option<(EndpointPin, f32)>; 2],
+        terrain: Option<&TerrainSystem>,
+    ) {
         use crate::simulation::network::grade::{
-            ROAD_GRADE_BUILT, ROAD_GRADE_MAX, construct_within_grade, grade_envelope,
-            steepest_grade,
+            ROAD_GRADE_BUILT, SourcePoint, construct_within_bounds, source_bounds, source_ground_m,
+            steepest_grade, within_source_band,
         };
-        if points.len() < 3
-            || blends.iter().all(Option::is_none)
-            || steepest_grade(points).is_none_or(|steepest| steepest.grade <= ROAD_GRADE_BUILT)
+        if points.len() < 3 || blends.iter().all(Option::is_none) {
+            return;
+        }
+        // Allocation-free first: a profile within 33% whose every point lies within 5 m of the
+        // ground lies inside every band below, held points off it widening only.
+        let steep = steepest_grade(points).is_some_and(|steepest| steepest.grade > ROAD_GRADE_BUILT);
+        if !steep
+            && terrain.is_none_or(|terrain| {
+                points
+                    .iter()
+                    .all(|&point| within_source_band(terrain, point))
+            })
         {
             return;
         }
@@ -902,34 +938,52 @@ impl RegionGraph {
             })
         });
         let from = [true, false].map(|at_start| Self::profile_endpoint_distances(points, at_start));
-        let bounds: Vec<(f32, f32)> = points
-            .iter()
-            .enumerate()
-            .map(|(index, point)| {
+        let held: Vec<bool> = (0..points.len())
+            .map(|index| {
                 let blended = |end: usize| {
                     blended_m[end].is_some_and(|(held_m, end_m)| {
                         from[end][index] > held_m && from[end][index] < end_m
                     })
                 };
-                let held = index == 0 || index + 1 == points.len() || !(blended(0) || blended(1));
-                if held {
-                    (point.y, point.y)
-                } else {
-                    (f32::NEG_INFINITY, f32::INFINITY)
-                }
+                index == 0 || index + 1 == points.len() || !(blended(0) || blended(1))
             })
             .collect();
-        let Some((max_grade, envelope)) = [ROAD_GRADE_BUILT, ROAD_GRADE_MAX]
-            .into_iter()
-            .find_map(|grade| {
-                let mut envelope = bounds.clone();
-                grade_envelope(&mut envelope, &runs, grade).then_some((grade, envelope))
-            })
-        else {
-            return;
+        // Each point's bounds: a held point at its height, a blended one inside the band, or
+        // anywhere on a road without one.
+        let bounds: Vec<(f32, f32)> = match terrain {
+            Some(terrain) => {
+                let sources: Vec<SourcePoint> = points
+                    .iter()
+                    .zip(&held)
+                    .map(|(point, &held)| SourcePoint {
+                        ground_m: source_ground_m(terrain, point.x, point.z),
+                        held_m: held.then_some(point.y),
+                    })
+                    .collect();
+                source_bounds(&sources, &runs)
+            }
+            None => points
+                .iter()
+                .zip(&held)
+                .map(|(point, &held)| {
+                    if held {
+                        (point.y, point.y)
+                    } else {
+                        (f32::NEG_INFINITY, f32::INFINITY)
+                    }
+                })
+                .collect(),
         };
+        if !steep
+            && points
+                .iter()
+                .zip(&bounds)
+                .all(|(point, &(low, high))| (low..=high).contains(&point.y))
+        {
+            return;
+        }
         let mut heights: Vec<f32> = points.iter().map(|point| point.y).collect();
-        construct_within_grade(&mut heights, &envelope, &runs, max_grade);
+        construct_within_bounds(&mut heights, &bounds, &runs);
         for (point, height) in points.iter_mut().zip(heights) {
             point.y = height;
         }

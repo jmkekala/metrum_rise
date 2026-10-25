@@ -285,22 +285,7 @@ pub fn validate_edge(
             worst_change = (change, station);
         }
     });
-    let grade_bounds = match edge.class {
-        EdgeClass::Standard => &limits.standard_grade,
-        EdgeClass::Bridge => &limits.bridge_grade,
-        EdgeClass::Tunnel => &limits.tunnel_grade,
-    };
-    if let Some(steepest) = steepest_grade(points)
-        && let Some((limit, tier)) = upper_violation(steepest.grade, grade_bounds)
-    {
-        output.push(RoadGeometryViolation::Grade {
-            edge_id,
-            station_m: steepest.station_m + 0.5 * steepest.length_m,
-            measured: steepest.grade,
-            limit,
-            tier,
-        });
-    }
+    output.extend(grade_violation(graph, edge_id, limits));
     if let Some((limit, tier)) = upper_violation(worst_change.0, &limits.grade_change_per_m) {
         output.push(RoadGeometryViolation::GradeChange {
             edge_id,
@@ -326,6 +311,34 @@ pub fn validate_edge(
             tier,
         });
     }
+}
+
+/// The grade check of [`validate_edge`] alone: `edge_id`'s steepest segment (the one grade,
+/// [`steepest_grade`]) against its class's tiers, at the segment's midpoint station. Placement's
+/// checks of the profiles an edit re-derives read only this. O(points), no allocation.
+pub(crate) fn grade_violation(
+    graph: &RegionGraph,
+    edge_id: usize,
+    limits: &RoadGeometryLimits,
+) -> Option<RoadGeometryViolation> {
+    let edge = graph.edge(edge_id);
+    if !is_road(edge) {
+        return None;
+    }
+    let grade_bounds = match edge.class {
+        EdgeClass::Standard => &limits.standard_grade,
+        EdgeClass::Bridge => &limits.bridge_grade,
+        EdgeClass::Tunnel => &limits.tunnel_grade,
+    };
+    let steepest = steepest_grade(centreline(edge))?;
+    let (limit, tier) = upper_violation(steepest.grade, grade_bounds)?;
+    Some(RoadGeometryViolation::Grade {
+        edge_id,
+        station_m: steepest.station_m + 0.5 * steepest.length_m,
+        measured: steepest.grade,
+        limit,
+        tier,
+    })
 }
 
 /// Visits segment start station, 3D length, signed rise/run and grade change per metre.

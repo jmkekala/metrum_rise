@@ -226,12 +226,17 @@ strokes commit, 70 edges, none over 1:3) is interim until the user's new Kuopio 
 pinned by the same steps (`roads.md` question 38). `TERRAIN-07-A` re-ran its Kuopio census and
 edits on the re-recorded save (round 4, gate A done). Open question 39 (four re-recorded edges leave the 5 m quality
 limit by up to 0.36 m in junction blends) is decided by the coordinator under the user's
-delegation, 2026-10-25 night, for review: build the blends inside the source band; not yet
-implemented.
-Tests that need later gates are disabled until then (6 Rust tests: 4 `TERRAIN-07` and the
-recorded and saved Kuopio quality tests under open question 39, junction blends beside arms the
-grade rule cuts to the 5 m source-delta limit; no `ROAD-68-E` or `ROAD-68-F` one, no Godot
-script).
+delegation, 2026-10-25 night, for review: build the blends inside the source band.
+`ROAD-68-K15` (branch `road68-K15`, 2026-10-26) implements it: junction blends of standard roads
+are built inside the stroke solve's 5 m source band (one definition in `network/grade.rs`), and
+an arm the band and the plane leave no blend within 1:3 is refused as `road_too_steep`; the
+whole-graph terrain sync builds roads by the same rule (refusing a terrain edit that steepens a
+road past 1:3 is open, `roads.md` question 37). The Kuopio reference is re-recorded and re-pinned (5 edges move by at most
+0.36 m) and both Kuopio quality tests pass again. Its timing of the grade rule and the remaining
+`ROAD-68-K14` items (old saves load as saved; the first planning pass) are recorded under
+`roads.md` question 37.
+Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
+`ROAD-68-E`, `ROAD-68-F` or `ROAD-68-K14` one, no Godot script).
 `ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists thirty-eight open questions (1-33 and 35-39); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
@@ -247,7 +252,9 @@ order on slopes) is decided (a) for review: joins are order independent and mid-
 follow the first-drawn road, as tested; 31 (recorded profiles beyond the 5 m limit) is decided
 for review and done; 36 (timing comparisons that follow the crate's codegen-unit partition) is decided; 37 (the
 maximum road grade, 1:3 with a warning from 16%) and 38 (re-record the Kuopio reference, interim
-until the user's new save) are decided by the user and implemented in `ROAD-68-K14`. Design,
+until the user's new save) are decided by the user and implemented in `ROAD-68-K14`; 39 (junction
+blends inside the source band) is decided under delegation for review and implemented in
+`ROAD-68-K15`. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).
 

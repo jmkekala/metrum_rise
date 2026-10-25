@@ -51,7 +51,7 @@ fn corridor_ranking_does_not_depend_on_edge_creation_order() {
             ids.iter().all(|&id| graph.edge(id).start_clip > 0.0),
             "the Y lays out"
         );
-        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
+        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
         ids.map(|id| graph.edge(id).physical_geometry.clone())
     };
     assert_eq!(physical([0, 1, 2]), physical([2, 1, 0]));
@@ -75,7 +75,7 @@ fn final_junction_profile_preserves_a_supported_hillside_corridor() {
             graph.add_edge(edge);
         }
         graph.rebuild_intersection_clips();
-        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
+        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
         let plane = graph
             .solved_junction_endpoint_profile_plane(center)
             .unwrap();
@@ -108,7 +108,7 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
     }
     let nodes = HashSet::from([center]);
     graph.rebuild_intersection_clips();
-    graph.finalize_junction_endpoint_profiles(&nodes);
+    graph.finalize_junction_endpoint_profiles(&nodes, None);
     let solved: Vec<_> = graph
         .edges()
         .iter()
@@ -126,7 +126,7 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
         .map(|edge| (edge.geometry.clone(), edge.physical_geometry.clone()))
         .collect();
     for _ in 0..3 {
-        graph.finalize_junction_endpoint_profiles(&nodes);
+        graph.finalize_junction_endpoint_profiles(&nodes, None);
         for (edge, (control, physical)) in graph.edges().iter().zip(&solved) {
             assert_eq!(&edge.geometry, control);
             assert_eq!(edge.physical_geometry.len(), physical.len());
@@ -160,7 +160,7 @@ fn repeated_junction_solve_does_not_import_hard_control_pins_into_physical_profi
     };
     let control = edge.geometry.clone();
     for _ in 0..2 {
-        let derived = RegionGraph::pinned_physical_profile(&edge, [Some(pin), None]);
+        let derived = RegionGraph::pinned_physical_profile(&edge, [Some(pin), None], None);
         assert_eq!(edge.geometry, control, "control is never rewritten");
         if edge.physical_geometry.len() > 3 {
             assert_eq!(derived, edge.physical_geometry, "derivation is idempotent");
@@ -182,6 +182,77 @@ fn repeated_junction_solve_does_not_import_hard_control_pins_into_physical_profi
             );
         }
         assert!(checked_support_seam);
+    }
+}
+
+// A terrain whose source height at world `x` is `height(x)`, the same along z.
+fn profile_test_terrain(height: impl Fn(f32) -> f32) -> crate::simulation::terrain::TerrainSystem {
+    let mut terrain = crate::simulation::terrain::TerrainSystem::with_chunking(256, 256, 1.0, 8, 0.0);
+    for grid_z in 0..256 {
+        for grid_x in 0..256 {
+            let (x, _) = terrain.grid_to_world_coords(grid_x, grid_z);
+            terrain.set_height(grid_x, grid_z, height(x) / crate::config::HEIGHT_SCALE);
+        }
+    }
+    terrain
+}
+
+// `ROAD-68` open question 39: a junction blend keeps within the 5 m source band of the ground,
+// widened only near a held point off it, as the stroke solve's samples do; where the band and the
+// plane leave no blend within 1:3, the blend is built inside the band at the least grade that
+// allows it, steeper than the maximum, which placement refuses (`road_too_steep`).
+#[test]
+fn junction_blends_keep_the_source_band_or_read_steeper_than_the_maximum() {
+    use crate::simulation::network::grade::{ROAD_GRADE_MAX, source_ground_m, steepest_grade};
+    let pin = |height_m: f32| EndpointPin {
+        plane: JunctionEndpointProfilePlane {
+            origin: Vector3::new(0.0, height_m, 0.0),
+            grade_x: 0.0,
+            grade_z: 0.0,
+        },
+        hard_zone_m: 3.0,
+        force_supports: true,
+        half_edge: false,
+    };
+    let edge_on = |terrain: &crate::simulation::terrain::TerrainSystem| {
+        profile_test_edge(
+            (0..=10)
+                .map(|step| {
+                    let x = step as f32 * 6.0;
+                    Vector3::new(x, source_ground_m(terrain, x, 0.0), 0.0)
+                })
+                .collect(),
+        )
+    };
+    let offset = |terrain: &crate::simulation::terrain::TerrainSystem, point: &Vector3| {
+        (point.y - source_ground_m(terrain, point.x, point.z)).abs()
+    };
+
+    // A plane 6 m above flat ground: the blend is back inside 5 m once the plane's 1 m excess has
+    // run out (6.25 m past the mouth at the 16% the band shrinks at). Without the band the blend
+    // follows the plane past 5 m further out.
+    let flat = profile_test_terrain(|_| 0.0);
+    let edge = edge_on(&flat);
+    let unbanded = RegionGraph::pinned_physical_profile(&edge, [Some(pin(6.0)), None], None);
+    assert!(unbanded.iter().any(|point| point.x > 9.3 && offset(&flat, point) > 5.0));
+    let banded = RegionGraph::pinned_physical_profile(&edge, [Some(pin(6.0)), None], Some(&flat));
+    assert!(steepest_grade(&banded).unwrap().grade <= ROAD_GRADE_MAX);
+    for point in &banded {
+        assert!(point.x <= 9.3 || offset(&flat, point) <= 5.0, "{point:?}");
+    }
+    assert_eq!(banded.len(), unbanded.len(), "the band moves heights, never knots");
+
+    // Ground falling 10 m at 1:1 past the mouth: the arm's far control (on the ground, held) is
+    // 10 m below the plane over the 32 m blend, within 1:3 without the band, but a blend within
+    // 5 m of the falling ground has to drop faster.
+    let cliff = profile_test_terrain(|x| -(x - 4.0).clamp(0.0, 10.0));
+    let edge = edge_on(&cliff);
+    let unbanded = RegionGraph::pinned_physical_profile(&edge, [Some(pin(0.0)), None], None);
+    assert!(steepest_grade(&unbanded).unwrap().grade <= ROAD_GRADE_MAX);
+    let banded = RegionGraph::pinned_physical_profile(&edge, [Some(pin(0.0)), None], Some(&cliff));
+    assert!(steepest_grade(&banded).unwrap().grade > ROAD_GRADE_MAX);
+    for point in &banded {
+        assert!(offset(&cliff, point) <= 5.0, "{point:?}");
     }
 }
 
@@ -403,7 +474,7 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
     let controls_before = [0, 1].map(|edge| graph.edge(edge).geometry.clone());
-    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
+    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
 
     assert_eq!(changed_edges.len(), 2);
     let plane = graph
@@ -474,7 +545,7 @@ fn conservative_profile_materializes_supports_for_visible_vertical_curve() {
     };
 
     let mut visible_edge = edge.clone();
-    visible_edge.geometry = RegionGraph::pinned_physical_profile(&edge, [Some(pin), None]);
+    visible_edge.geometry = RegionGraph::pinned_physical_profile(&edge, [Some(pin), None], None);
     assert!(
         visible_edge.geometry.len() >= 8,
         "profile adaptation should materialize support vertices when the visible mouth needs a vertical curve"
@@ -593,7 +664,7 @@ fn pass_through_bridge_approach_profile_does_not_exceed_authored_grade_cap() {
     graph.rebuild_intersection_clips();
     let authored_profile = graph.edge(approach_idx).physical_geometry.clone();
 
-    graph.finalize_junction_endpoint_profiles(&HashSet::from([center, east]));
+    graph.finalize_junction_endpoint_profiles(&HashSet::from([center, east]), None);
 
     assert_eq!(
         graph.edge(approach_idx).physical_geometry,
@@ -674,7 +745,7 @@ fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
     graph.add_edge(opposite_edge);
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
-    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]));
+    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
     assert!(
         changed_edges.contains(&2) && changed_edges.contains(&3),
         "both branch surfaces must meet the preserved primary corridor; unchanged control authority does not imply unchanged physical geometry"

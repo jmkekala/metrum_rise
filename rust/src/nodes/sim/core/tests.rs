@@ -662,7 +662,7 @@ fn failed_junction_publishes_a_gap_not_its_previous_mesh() {
         edge.physical_geometry = points;
     }
     core.region_graph
-        .finalize_junction_endpoint_profiles(&HashSet::from([center]));
+        .finalize_junction_endpoint_profiles(&HashSet::from([center]), Some(&core.heightmap));
     // Steep planar roads alone are not a contradiction. Break the actual shared seam.
     core.region_graph
         .edge_mut(edge_ids[0])
