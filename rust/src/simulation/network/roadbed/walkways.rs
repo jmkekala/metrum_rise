@@ -39,7 +39,7 @@ use super::layout::{
     Side, for_each_run_station, segment_crossing,
 };
 use super::node::crossing_kerbs;
-use super::span::{SpanCrossing, pass_through_crossing};
+use super::span::{SpanCrossing, crossing_kerbs_right_first, pass_through_crossing};
 use super::{BandKind, RoadBand, RoadSection, RoadVec2, RoadVec3};
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector3;
@@ -337,18 +337,16 @@ fn span_walk_arm(key: ArmKey, crossing: &SpanCrossing) -> WalkArm {
             point: point(lateral_m),
         })
     });
-    let kerb = |p: RoadVec3| Vector3::new(p.x as f32, p.y as f32, p.z as f32);
-    let [negative_kerb, positive_kerb] = crossing.kerbs.map(kerb);
     // Walking away from the node, the right side is the negative lateral one at an edge's start
     // and the positive one at its end.
-    let (ends, kerbs) = match key.end {
-        EdgeEnd::Start => ([negative, positive], [negative_kerb, positive_kerb]),
-        EdgeEnd::End => ([positive, negative], [positive_kerb, negative_kerb]),
+    let ends = match key.end {
+        EdgeEnd::Start => [negative, positive],
+        EdgeEnd::End => [positive, negative],
     };
     WalkArm {
         key,
         ends,
-        kerbs: Some(kerbs),
+        kerbs: Some(crossing_kerbs_right_first(crossing.kerbs, key.end)),
     }
 }
 

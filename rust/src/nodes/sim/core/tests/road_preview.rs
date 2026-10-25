@@ -519,6 +519,48 @@ fn preview_chunks_are_the_committed_chunks_without_lane_layers() {
 }
 
 #[test]
+fn preview_chunks_with_crossings_and_signs_are_the_committed_chunks() {
+    // The T's side road: its closure holds the T's three crossings, their signs and the lights
+    // of its arms. A straight continuation of the through road: the pass-through node's
+    // span-owned crossing (D8). Paint, lights and signs come from the pieces, so the preview's
+    // chunks are published bitwise (`ROAD-68-F`, open question 26).
+    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
+    let on = [Vector2::new(ARM_M, 0.0), Vector2::new(2.0 * ARM_M, 0.0)];
+    for sloped in [false, true] {
+        for (name, ends) in [("t", side), ("continuation", on)] {
+            let mut core = committed(&[THROUGH], &[0], sloped);
+            let points = stroke(&core, ends);
+            let mut context = context(&mut core);
+            let preview = Arc::new(preview(&mut context, &points));
+            let pieces = preview.pieces.as_ref().expect("a valid stroke compiles");
+            let chunks = pieces.chunks.as_ref().expect("the view's chunks splice");
+            let painted = chunks
+                .values()
+                .flat_map(|mesh| &mesh.road_crossings)
+                .any(|paint| paint.z > 0.0);
+            let signed = chunks.values().any(|mesh| !mesh.road_signs.is_empty());
+            let lit = chunks.values().any(|mesh| !mesh.street_lights.is_empty());
+            assert!(
+                painted && signed && lit,
+                "{name} sloped {sloped}: the preview paints zebras ({painted}), signs ({signed}) \
+                 and lights ({lit})"
+            );
+            commit(&mut core, &points, Some(Arc::clone(&preview)));
+            assert!(core.last_road_edit_metrics.preview_plan_reused);
+            for chunk in &pieces.changed_chunks {
+                assert_eq!(
+                    chunks.get(chunk).map(|mesh| format!("{mesh:?}")),
+                    core.published_road_mesh_chunks
+                        .get(chunk)
+                        .map(|mesh| format!("{mesh:?}")),
+                    "{name} sloped {sloped}: chunk {chunk:?} is published as previewed"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn save_and_load_reproduce_the_pieces_bitwise() {
     let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
     for sloped in [false, true] {

@@ -460,7 +460,6 @@ impl TransitNetwork {
         let renderer = RoadRenderer;
         Some(renderer.generate_mesh_data_with_surface(
             graph,
-            &self.lane_system,
             terrain,
             &self.roadbed,
         ))

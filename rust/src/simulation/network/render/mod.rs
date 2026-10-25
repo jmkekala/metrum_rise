@@ -300,11 +300,10 @@ impl NetworkMeshData {
 
 /// Trait for generating mesh data from the road network graph.
 pub trait TransitRenderer {
-    /// Generates visual mesh data for the given graph and lane system.
+    /// Generates visual mesh data for the given graph.
     fn generate_mesh_data(
         &self,
         graph: &RegionGraph,
-        lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData;
 }

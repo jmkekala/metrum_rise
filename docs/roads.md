@@ -629,16 +629,20 @@ reason.
 As built (`ROAD-68-E` part 1): stages 1, 2 and the road half of 4. The road payload is every
 render chunk the stroke changes, built by the commit's own emission and splice
 (`RoadRenderer::generate_preview_chunks`) into the view's published chunks and sealed, so a
-stroke whose closure has no crossing and no sign publishes exactly the previewed chunks (tested
-in Rust and in `road_junction_preview_test.gd`). Crosswalk paint and road signs are missing from
-the preview's rebuilt pieces, because the renderer builds both from lanes, which a preview does
-not build (since `ROAD-68-D` part 5 a zebra cuts no triangle, so only the asphalt's per-vertex
-paint frame under the bars differs). `ROAD-68-F` owns "lane markings at junctions, street lights and road
-signs" and builds both from the layout's `Crosswalk` and arms for preview and commit alike (one
-function); no cheaper exact path exists now (lanes for the closure would need a lane-system
-replica), so payload equality stays open for those strokes
-([open question 26](#road-68-open-questions)). The field and cell checks of the preview's pieces
-and the parcel corridor check run at the commit only ([open question 25](#road-68-open-questions)). The fingerprint is the road-tool surface
+stroke publishes exactly the previewed chunks. Since `ROAD-68-F` part 1 that holds for strokes
+with crossings and signs too ([open question 26](#road-68-open-questions), closed): the
+emission (`emit_into`) reads only the graph, the pieces and the terrain, never lanes. Zebra
+paint frames and crossing signs take the pieces' crossings
+(`RoadbedSystem::for_each_crossing`, oriented by `CrosswalkMarking::of_arm`, the rule the
+pedestrian lanes own them by), and street lights their span sections and the terminal cap's
+layout station. Tested bitwise in Rust
+(`preview_chunks_with_crossings_and_signs_are_the_committed_chunks`: a T and a pass-through
+continuation, flat and sloped) and in `road_junction_preview_test.gd` (every fixture, every
+layer, `road_crossings`, `street_lights` and `road_signs`). Godot's preview display swaps the
+chunk meshes, which carry the paint; the resident chunks' lights and signs stay shown until the
+commit installs its own. The field and cell checks of the preview's pieces and the parcel
+corridor check run at the commit only ([open question 25](#road-68-open-questions)). The
+fingerprint is the road-tool surface
 generation, the roadbed generation and the source and visual terrain generations: the roadbed
 generation and the delta's dirty marks decide whether pieces install, so no per-edge or per-node
 generation was added.
@@ -813,7 +817,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-C` | done | Junction layout and node pieces for car roads |
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | in progress | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; the terrain stage's budget and part 2 (open questions) are open |
-| `ROAD-68-F` | open | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites |
+| `ROAD-68-F` | in progress (part 1 done 2026-10-25) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and sites: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met) |
 | `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); the commit still misses a frame ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
@@ -933,15 +937,16 @@ tests relabelled from `ROAD-68-F` below; four stay off):
 | `nodes::sim::core::tests::road_terrain_plan` | `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` | a recorded stroke fails node 5 (`node_piece_failed`) at `79e7a476` too; the recorded placements predate `ROAD-68-C` ([open question 8](#road-68-open-questions); moved from `ROAD-68-D`) |
 | `nodes::sim::core::tests::zoning_buildability` | `hillside_residential_sites_select_constructible_houses` | the recorded fixture predates `ROAD-68-C`: node 2 fails `MouthOffPlane` on its legacy clips, so its tiles report `roadbed_chain_open_end` ([open question 19](#road-68-open-questions)); clips recomputed as an edit does overlap the recorded parcels (`OverlapsExistingParcel`), so the fixture is regenerated with the load rebuild ([open question 8](#road-68-open-questions); added by `ROAD-68-D`) |
 
-`ROAD-68-F` (2; 7 at the gate, two re-enabled by the
-[C follow-up](#tighter-corners-and-junction-crosswalks-follow-up) and one by the
-[footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d), one added by
+`ROAD-68-F` (1; 7 at the gate, two re-enabled by the
+[C follow-up](#tighter-corners-and-junction-crosswalks-follow-up), one by the
+[footpath junctions](#footpath-junctions-and-the-bend-crossing-fallback-pre-d) and one by
+[`ROAD-68-F` part 1](#markings-lights-and-signs-from-the-layout-road-68-f-part-1-2026-10-25)
+(`a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb`), one added by
 `ROAD-68-D`; the two node-move tests and `bridge_entry_points_never_use_the_global_pool` were
 relabelled `ROAD-68-E`, which owns open question 2, and pass since `ROAD-68-E` part 2):
 
 | Module | Tests | Reason |
 | --- | --- | --- |
-| `simulation::network::render::road::street_lights::tests` | `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` | lights keep a span-end clearance; the terminal cap needs layout furniture stations (moved from `ROAD-68-C`) |
 | `simulation::terrain::cdt::tests::builder` | `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` | tunnel portal boundaries require walls where widened samples cannot tie in; `RoadBoundary` carries only grounded or structure support, and portal sources arrive with the tunnel family (from `ROAD-68-D`) |
 
 The 22 other `ROAD-68-F` tests (street lights, road signs, vegetation clearance and the site
@@ -1543,15 +1548,22 @@ These need a user decision; work that does not depend on them continues.
       The preview still learns of a field, cell or parcel overlap only from the refused click: a
       per-pose check needs the field and cell indices in the view, which (c) describes and which
       stays open until they are persistent.
-26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — open, target missed.**
-    The preview's chunks equal the committed chunks bitwise only when the edit's closure has no
-    crossing and no road sign: the renderer builds crosswalk paint and signs from lanes, and a
-    preview builds no lanes. Since `ROAD-68-D` part 5 a zebra no longer cuts the asphalt: the
-    preview's asphalt geometry is the commit's, and only the per-vertex paint frame under the
-    bars and the signs are missing. Building lanes for
-    the closure would need a lane-system replica beside the graph replica. The target stands:
-    `ROAD-68-F` builds both from the layout (`Crosswalk`, arms) in one function that preview and
-    commit share; gate E's payload acceptance stays open until then.
+26. **Preview payloads with crossings or signs (`ROAD-68-E` acceptance) — closed 2026-10-25 by
+    `ROAD-68-F` part 1: met, bitwise.** The preview's chunks equalled the committed chunks only
+    when the edit's closure had no crossing and no road sign: the renderer built crosswalk paint
+    and signs from lanes, and a preview builds no lanes. Since `ROAD-68-D` part 5 a zebra no
+    longer cuts the asphalt, so only the per-vertex paint frame under the bars and the signs
+    differed. Now one emission (`render/road/mod.rs` `emit_into`), which the preview and the
+    commit both call, reads crossings from the pieces: a node piece's layout crossings
+    (`NodePiece::crosswalk_kerbs`) or, at a pass-through node, the span row's kerb vertices the
+    span piece keeps (`SpanPiece::crosswalk_kerbs`), through `RoadbedSystem::for_each_crossing`;
+    `CrosswalkMarking::of_arm` orients them as the lanes own them. Lanes and pieces take the
+    kerbs from the same functions (`crossing_kerbs`, `crossing_kerbs_right_first`), so the
+    crossing contract holds bitwise. Rust: `preview_chunks_with_crossings_and_signs_are_the_committed_chunks`
+    (T and pass-through continuation, flat and sloped: paint, signs and lights present, every
+    changed chunk's payload equal); Godot: `road_junction_preview_test.gd` compares every
+    previewed chunk with the committed one for all 14 fixtures, crossings, lights and signs
+    included ([`ROAD-68-F` part 1](#markings-lights-and-signs-from-the-layout-road-68-f-part-1-2026-10-25)).
 27. **Godot stage timings at the CPU's idle clock (`ROAD-68-E` part 1) — decided by the coordinator
     under the user's delegation, 2026-10-25, for review: option (a).**
     - **Evidence.** The headless stream test sleeps 16.7 ms between inputs; on an otherwise idle
@@ -1631,7 +1643,6 @@ These need a user decision; work that does not depend on them continues.
       their first-wins order: a pre-sized set with an integer hasher, or sorted keys).
     - **Recommendation.** (d) now (local, output-preserving), then (a), measured with the commit
       breakdown at every tier, then (b).
-
 30. **Drawing order on slopes after question 16 (`ROAD-68-E` part 2) — decided by the coordinator
     under the user's delegation, 2026-10-25, for review: (a); joins implemented, mid-span
     meetings open.**
@@ -1688,6 +1699,25 @@ These need a user decision; work that does not depend on them continues.
       the first road on the sloped cross when the z road is drawn first), so the next step is to
       take the crossed road's height there and then test the rule instead of order
       independence.
+35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
+    decided by the coordinator under the user's delegation, 2026-10-25, for review: (a).**
+    - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
+      and patchy and were taken for z-fighting on the sloped node plane. They are the shader's
+      studded-tyre wear (`fr_zebra_paint`): it thins the paint in the wheel paths, 0.9 m either
+      side of each lane centre, by up to `age * 0.9 * 1.5`, for every crossing whatever its
+      traffic. On the 7 m two-lane fixtures the inner wheel paths (2.65 and 4.35 m from the kerb)
+      fall on the third and fifth of the seven bars; the outer ones fall in gaps. The flat Y
+      shows the same bars worn; the stem's crossing (cosmetic age 0.96) and the upper branch's
+      (0.71) wear, the lower branch's (0.29) is crisp. Nothing overlaps: since `ROAD-68-D` part 5
+      the paint is a vertex frame on the one asphalt layer.
+    - **Options.** (a) keep: Finnish winter traffic runs on studded tyres, so even residential
+      zebras wear in the wheel paths, and the look-dev against street photographs chose it;
+      (b) scale the wheel-path paint wear by the asphalt's traffic factor, as the ruts are
+      (none on a 1 + 1 street at 50 km/h), so residential zebras only fade evenly with age;
+      (c) cap the wear so a bar keeps at least half its paint.
+    - **Recommendation.** (a): it is the designed, photo-matched look, not a rendering defect;
+      (b) if the user finds residential crossings too worn.
+
 Spec corrections in `ROAD-68-A`:
 
 - The façade defines only what consumers use (`RoadbedSystem`, `BandKind`, `RoadSection`,
@@ -3669,8 +3699,8 @@ Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gat
 - **Size.** `roadbed/` production lines 7,831, as on `road` `9f092846`: this round changes no
   `roadbed/` code (the round-4 count of 7,807 was before gate G parts 3-6).
 - **Open in part 1:** the terrain stage's budget and the idle-clock frame (gate D part 6;
-  question 27), the 100k publication and snapshot (after gate D part 6), payloads with
-  crossings or signs (question 26, `ROAD-68-F`).
+  question 27), the 100k publication and snapshot (after gate D part 6). Payloads with
+  crossings or signs (question 26) are met since `ROAD-68-F` part 1.
 
 #### Part 2 (2026-10-25, branch `road68-E2`, work in progress)
 
@@ -3765,6 +3795,58 @@ Acceptance:
   connectors share one kerb segment
 - deterministic street-light and sign placement
 - the building frontage tests are re-enabled
+
+#### Markings, lights and signs from the layout (`ROAD-68-F` part 1, 2026-10-25)
+
+Decision (coordinator under the user's delegation, 2026-10-25, for review): the markings part of
+gate F starts now, in parallel with gate E part 2's last items, because gate E's own acceptance
+(open question 26: preview payloads with crossings or signs equal the committed ones) needs it.
+
+- **One emission for preview and commit.** `render/road/mod.rs` `emit_into` emits the pieces'
+  surfaces, bridges, lane markings, zebra paint frames, street lights and signs from the graph,
+  the pieces and the terrain only; the lane system is no longer an input
+  (`generate_mesh_data_with_surface`, `TransitRenderer::generate_mesh_data` and the private
+  `emit_chunks` lost it). The commit's publication still lifts the rebuilt pieces' lanes first,
+  for agents. The preview (`generate_preview_chunks`) calls the same emission and splice, so its
+  chunks are the commit's ([open question 26](#road-68-open-questions), closed).
+- **One crossing record.** `RoadbedSystem::for_each_crossing(graph, node)` visits a node's
+  crossings in its pieces: a node piece's layout kerbs (`NodePiece::crosswalk_kerbs`), or at a
+  pass-through node the span-owned crossing's kerbs, which the span piece now keeps from its
+  own mesh row on the crossing line (`SpanPiece::crosswalk_kerbs`). Lanes compute the same
+  kerbs with the same functions (`crossing_kerbs` on the node plane; the span row's
+  carriageway-edge vertices through `crossing_kerbs_right_first`, now shared by
+  `walkways::span_walk_arm` and the span piece). `CrosswalkMarking::of_arm` orients a crossing
+  as the lanes own it (from the positive lateral side's kerb, the sidewalk with the lower lane
+  index when driving on the right, as before), and `pedestrian_junctions` now takes its
+  ownership from the same rule (`starts_left`). `crosswalks::for_each_marking` composes the two;
+  zebra paint (`prepare_crosswalks`) and crossing signs (`place_road_signs`) read it. Cost per
+  node: `O(degree)` lookups in the pieces instead of a scan of the node's connector lanes.
+- **Crossing contract.** `zebra_markings_and_their_connectors_share_one_kerb_segment`
+  (`render/road/crosswalks.rs`): on the T, the bend, a pass-through node and every footpath
+  fixture, flat and sloped, each node's painted markings equal its lanes' markings bitwise, ends
+  in order, and both connectors of each walk exactly that kerb segment.
+- **Street lights.** Placement stays a pure function of the pieces and the canonical chain
+  (deterministic; whole-street order). A road end now measures its clearance from its layout
+  furniture station, the start of the round cap (D2), which is the node: the arm runs straight
+  from there to its mouth (`MIN_MOUTH_STATION_M` = 1 m, more where an attached footpath holds
+  it out), so the margin from the span end is `6 m - mouth station`, at least zero. Before, the
+  2 m dead-end margin ran from the span end, 3 m from the node, beside the turning cap.
+  Junctions keep 6 m from their mouths, family changes at degree-two nodes and road ends without
+  a node piece keep 2 m from the span end. Re-enabled:
+  `a_residential_street_gets_evenly_spaced_lights_on_one_side_behind_the_kerb` (failed on `road`:
+  first light at -57.0 m of the street's -60 m end, now -54.0 m, gaps 27 m).
+- **The faded zebra stripes (notes for gate F).** Not z-fighting or a decal overlap: nothing
+  overlaps since part 5 of gate D (the paint is a vertex frame on the asphalt, one triangle
+  layer). The faded bars are the shader's studded-tyre wear (`fr_zebra_paint`, `ROAD-56`), in
+  the wheel paths 0.9 m either side of each lane centre and scaled by the crossing's cosmetic
+  age. Evidence: the same two bars (the third and fifth of seven, 2.25-2.75 m and 4.25-4.75 m
+  from the kerb, where the inner wheel paths at 2.65 and 4.35 m fall) fade on the flat and the
+  sloped Y alike; the stem's crossing (age 0.96) and the upper branch's (0.71) wear, the lower
+  branch's (0.29) is crisp. Kept as designed ([open question 35](#road-68-open-questions)).
+- **Building frontage tests.** All re-enabled by `ROAD-68-D` (the 13 `building_site_terrain`
+  frontage tests and the yard test); none belongs to markings. The one `ROAD-68-F` test still
+  disabled, the tunnel portal CDT test, belongs to the tunnel part (the node-move tests went to
+  gate E part 2, which re-enabled them).
 
 ### `ROAD-68-G` — commit consequences inside one frame
 
@@ -4639,7 +4721,15 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
   used, so crossings on curved arms came out skewed
 
 Crossing availability and geometry must not be independently reconstructed by the renderer,
-selection queries, or agent movement.
+selection queries, or agent movement. Since `ROAD-68-F` part 1 the renderer's zebra paint and
+crossing signs read the crossings from the pieces (`RoadbedSystem::for_each_crossing`: a node
+piece's layout kerbs, or a pass-through crossing's span-row kerbs kept on the span piece),
+oriented by the lanes' own rule (`CrosswalkMarking::of_arm`: from the kerb on the positive
+lateral side, whose connector owns the marking). Lanes and pieces compute the kerbs with the
+same functions, so the painted marking is the lanes' marking bitwise, ends in order, and both
+directions of its connector walk exactly that segment
+(`zebra_markings_and_their_connectors_share_one_kerb_segment`: T, bend, pass-through and the
+footpath fixtures, flat and sloped). A preview, which builds no lanes, paints the same zebras.
 
 Footpaths (`TransitType::Foot`, `ROAD-55`) join the same junction graph as one-mouth arms. Until
 `ROAD-55` the builder skipped them, so their lanes had no junction connectors and walkers could
@@ -4928,10 +5018,10 @@ leftover width is split evenly between the two kerbs (`ROAD-64`).
 
 Crossings are paint in the asphalt itself (`road_asphalt.gdshader`), not quads laid on top: a
 quad floated over the road with its own flat colour and read as a printed decal. When a chunk's
-mesh is built, the asphalt triangles under a crossing's rectangle are split along it with the
-preview polygon clipper, and their vertices carry `CUSTOM0`: metres across and along the
-crossing, paint age plus one from the edge hash (zero off a crossing), and the distance from the
-kerb. The surface keeps its position, normal and UVs, so the paint shares the asphalt's
+mesh is built, every asphalt triangle meeting a crossing's bar rectangle carries the crossing's
+affine paint frame on its vertices, uncut since `ROAD-68-D` part 5 (open question 24):
+`CUSTOM0` holds metres across and along the crossing, paint age plus one from the edge hash
+(zero off a crossing), and the distance from the kerb. The surface keeps its position, normal and UVs, so the paint shares the asphalt's
 aggregate, relief, shadows, sun sheen, cloud shading and night lamps.
 
 `fr_surface_painted` in `road_surface_finnish.gdshaderinc` paints off-white over the same two
@@ -4948,8 +5038,9 @@ Kilonpuistonkatu, Nummikatu Oulu, Mustinlammenkatu and Neulaniementie Kuopio), n
 calibration; paving-block crossings are not drawn.
 
 Cost: one branch on asphalt off a crossing, bounded arithmetic on it, no extra texture reads.
-The mesh gains 16 bytes per asphalt vertex and at most eight triangles per triangle a crossing
-cuts; clipping is O(crossings × triangles) per owner, with no per-triangle allocations. Frame
+The mesh gains 16 bytes per asphalt vertex; the paint frame test is O(owner's crossings) per
+asphalt triangle, with no per-triangle allocations (the cut and its extra triangles went in
+`ROAD-68-D` part 5). Frame
 p50 on the M2 Pro (release, `light-road` at 13:00, 120 frames, old and new alternated twice):
 saved view 10.47-10.50 → 10.50-10.54 ms, eye level at a crossing 13.54 → 13.53-13.55 ms, 22 m
 overhead 12.85-12.86 → 12.86-12.87 ms, i.e. unchanged. The rounded, streak-worn revision
@@ -5022,7 +5113,10 @@ Every standard road and footpath gets street lights, placed in Rust with the roa
   through degree-two nodes that take the same family of light (residential, main road, path).
   Lights spread evenly over the chain's visible length with both ends lit and every gap between
   the family's minimum and its spacing; a street shorter than the minimum gets one light in its
-  middle. Only real junctions (degree three or more) keep 6 m clear; dead ends keep 2 m. Each edge
+  middle. Real junctions (degree three or more) keep 6 m clear beyond their mouths; a road end
+  keeps its round cap as clear, 6 m from the cap's start, its layout furniture station (the node,
+  from where the arm runs straight to its mouth and span; `ROAD-68-F` part 1); a family change at
+  a degree-two node, and a road end without a node piece, keep 2 m from the span end. Each edge
   emits the chain's lights that fall on it, so chunk rebuilds agree; the chain order is canonical
   (from the end with the lower node id), so a street lights the same whichever way it was drawn.
   O(chain length + lights) per covered edge. Per-edge placement, the first version, left chains of
@@ -5153,8 +5247,9 @@ Finnish road signs stand beside the roads, placed in Rust with the road chunks a
 `godot/scripts/renderers/road_signs.gd` as one MultiMesh per sign model and chunk. They are
 cosmetic: traffic ignores them.
 
-- **Pedestrian crossings (E1-1, E1-2).** One sign per approach at every zebra, taken from its
-  `CrosswalkMarking` (the crossing authority), on the right-hand side facing approaching traffic,
+- **Pedestrian crossings (E1-1, E1-2).** One sign per approach at every zebra, taken from the
+  pieces' crossing (`crosswalks::for_each_marking`, the marking the zebra paint reads and the
+  lanes' `CrosswalkMarking` equals; `ROAD-68-F` part 1), on the right-hand side facing approaching traffic,
   1.75 m before the crossing centre so it stands at the near edge of the stripes, out of the
   walking line (it stood in the middle of the crossing before).
   A one-way road gets E1-1 on the right and E1-2 on the left, both facing the legal approach.

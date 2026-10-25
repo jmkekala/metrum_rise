@@ -18,7 +18,7 @@ use super::super::graph::RegionGraph;
 use super::super::roadbed::{ArmKey, EdgeEnd, FootpathJoin, NodeWalkways, RoadVec3};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{build_cum_dist, road_half_width};
-use super::{CrosswalkMarking, Lane, LaneCrosswalk, LaneSuccessors, LaneType};
+use super::{CrosswalkMarking, Lane, LaneCrosswalk, LaneSuccessors, LaneType, starts_left};
 use crate::config;
 use godot::prelude::*;
 use std::collections::{BTreeMap, HashMap};
@@ -729,17 +729,13 @@ fn append_layout_steps(
         let (Some(right), Some(left)) = (mouth_at(arm, false), mouth_at(arm, true)) else {
             continue;
         };
-        // The direction from the lower lane index owns the marking, as it always has.
-        let (start, end, start_kerb, end_kerb) = if mouths[right].lane_idx <= mouths[left].lane_idx
-        {
-            (right, left, right_kerb, left_kerb)
+        // The direction from the marking's start kerb owns it (driving on the right, the
+        // sidewalk with the lower lane index, as it always was).
+        let marking = CrosswalkMarking::of_arm(arm, [right_kerb, left_kerb]);
+        let (start, end) = if starts_left(arm) {
+            (left, right)
         } else {
-            (left, right, left_kerb, right_kerb)
-        };
-        let marking = CrosswalkMarking {
-            edge_id: arm.edge,
-            start: start_kerb,
-            end: end_kerb,
+            (right, left)
         };
         let route = crosswalk_route(&mouths[start], &mouths[end], marking);
         both_ways(steps, (start, end), route, Some((arm.edge, marking)));

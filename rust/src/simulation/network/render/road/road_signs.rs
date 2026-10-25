@@ -12,7 +12,7 @@
 use super::standard_surface::CompiledSurfaceCoverage;
 use super::street_lights::StreetLight;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::lanes::{CrosswalkMarking, LaneSystem};
+use crate::simulation::network::lanes::CrosswalkMarking;
 use crate::simulation::network::roadbed::{
     ArmKey, BandKind, EdgeEnd, RoadSection, RoadVec2, RoadbedSystem, visual_roadbed_half_width_m,
 };
@@ -1192,9 +1192,10 @@ fn order_signs(signs: &mut Vec<RoadSign>) {
 
 /// The signs of every covered edge, in world space and in the order a mesh takes them, clear of
 /// the world-space `lights` (every light the light pass placed, across chunk borders too).
+/// Crossing signs stand at the pieces' crossings (`crosswalks::for_each_marking`), the zebras'
+/// own record, so a preview places the commit's signs.
 pub(super) fn place_road_signs(
     graph: &RegionGraph,
-    lanes: &LaneSystem,
     roadbed: &RoadbedSystem,
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
@@ -1233,6 +1234,8 @@ pub(super) fn place_road_signs(
             })
         })
         .collect();
+    // At most one marking per crossable arm of a node; reused across nodes.
+    let mut markings = Vec::with_capacity(8);
     for priority in 0..3 {
         for (edge_id, sections, approach_sections) in &visible_edges {
             let (edge_id, sections) = (*edge_id, *sections);
@@ -1242,16 +1245,13 @@ pub(super) fn place_road_signs(
             let mut starts = [visible[0].s_m + 2.0, visible.last().unwrap().s_m - 2.0];
             let mut speed_starts = starts;
             for node in [edge.start_node, edge.end_node] {
-                let Some(ids) = lanes.node_lanes.get(&(node as usize)) else {
-                    continue;
-                };
-                for lane in ids {
-                    let Some(marking) = lanes
-                        .crosswalk_marking(*lane)
-                        .filter(|m| m.edge_id == edge_id)
-                    else {
-                        continue;
-                    };
+                markings.clear();
+                super::crosswalks::for_each_marking(graph, roadbed, node, |marking| {
+                    if marking.edge_id == edge_id {
+                        markings.push(marking);
+                    }
+                });
+                for &marking in &markings {
                     let sections = *approach_sections;
                     let Some(s) = crossing_s(sections, marking) else {
                         continue;

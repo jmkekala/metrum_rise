@@ -47,7 +47,6 @@ impl RoadRenderer {
     pub fn generate_mesh_data_with_surface(
         &self,
         graph: &RegionGraph,
-        lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
         roadbed: &RoadbedSystem,
     ) -> NetworkMeshData {
@@ -56,7 +55,6 @@ impl RoadRenderer {
         emit_into(
             &mut mesh,
             graph,
-            lane_system,
             terrain,
             roadbed,
             &compiled_surface,
@@ -102,11 +100,9 @@ impl RoadRenderer {
             &compiled_surface.rebuilt_edges,
             &compiled_surface.rebuilt_nodes,
         );
-        let lane_system = &*lane_system;
         let emit = |pieces: &CompiledSurfaceCoverage| {
             emit_chunks(
                 graph,
-                lane_system,
                 terrain,
                 roadbed,
                 target_chunks,
@@ -156,10 +152,11 @@ impl RoadRenderer {
 impl RoadRenderer {
     /// The road-tool preview's replacement chunks (`ROAD-68-E`): the commit's local publication
     /// of the pieces a roadbed built after generation `built_after`, spliced into the
-    /// `published` chunks of that generation, by the same emission and splice. A preview has no
-    /// lanes, so the rebuilt pieces carry no crosswalk paint and the covered edges no signs
-    /// (`docs/roads.md` gate E; `ROAD-68-F` builds both from the layout). `None` if a published
-    /// chunk holds a run without an owner. `O(rebuilt pieces + target chunks' vertices)`.
+    /// `published` chunks of that generation, by the same emission and splice. Emission reads
+    /// only the graph, the pieces and the terrain (crosswalk paint, lights and signs too,
+    /// `ROAD-68-F`), so the chunks are the ones the commit publishes from the same pieces. `None`
+    /// if a published chunk holds a run without an owner.
+    /// `O(rebuilt pieces + target chunks' vertices)`.
     pub(crate) fn generate_preview_chunks(
         &self,
         graph: &RegionGraph,
@@ -175,10 +172,8 @@ impl RoadRenderer {
             target_chunks,
             Some(built_after),
         );
-        let no_lanes = crate::simulation::network::lanes::LaneSystem::new();
         let mut fresh = emit_chunks(
             graph,
-            &no_lanes,
             terrain,
             roadbed,
             target_chunks,
@@ -195,7 +190,6 @@ impl RoadRenderer {
 // and signs of every `covered` edge into the target chunks.
 fn emit_chunks(
     graph: &RegionGraph,
-    lane_system: &crate::simulation::network::lanes::LaneSystem,
     terrain: &crate::simulation::terrain::TerrainSystem,
     roadbed: &RoadbedSystem,
     target_chunks: &BTreeSet<SurfaceChunkKey>,
@@ -209,35 +203,28 @@ fn emit_chunks(
         chunk_origin_z_m,
         target_chunks.clone(),
     );
-    emit_into(
-        &mut mesh,
-        graph,
-        lane_system,
-        terrain,
-        roadbed,
-        pieces,
-        covered,
-    );
+    emit_into(&mut mesh, graph, terrain, roadbed, pieces, covered);
     mesh.into_partitioned_chunks()
 }
 
-// Emits `pieces` and the street lights and signs of every `covered` edge into `mesh`.
+// Emits `pieces` and the street lights and signs of every `covered` edge into `mesh`. It reads
+// only the graph, the pieces and the terrain, never lanes, so a preview's pieces emit the chunks
+// the commit publishes from the same pieces (`ROAD-68-F`).
 fn emit_into(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
-    lane_system: &crate::simulation::network::lanes::LaneSystem,
     terrain: &crate::simulation::terrain::TerrainSystem,
     roadbed: &RoadbedSystem,
     pieces: &CompiledSurfaceCoverage,
     covered: &CompiledSurfaceCoverage,
 ) {
-    // Lights and signs read only the graph, lanes, roadbed and terrain (signs keep clear of the
+    // Lights and signs read only the graph, roadbed and terrain (signs keep clear of the
     // lights), so they are placed while the pieces are emitted, then pushed after them as the
     // serial passes pushed them: each chunk's payload is the same.
     let (lights, signs) = crate::thread_pools::install(|| {
         rayon::join(
             || {
-                crosswalks::prepare_crosswalks(mesh, graph, lane_system, pieces);
+                crosswalks::prepare_crosswalks(mesh, graph, roadbed, pieces);
                 standard_surface::emit_piece_surfaces(mesh, graph, roadbed, pieces);
                 standard_surface::emit_bridge_structures(mesh, graph, roadbed, terrain, pieces);
                 standard_surface::emit_compiled_lane_markings(mesh, graph, roadbed, pieces);
@@ -246,7 +233,6 @@ fn emit_into(
                 let lights = street_lights::place_street_lights(graph, roadbed, terrain, covered);
                 let signs = road_signs::place_road_signs(
                     graph,
-                    lane_system,
                     roadbed,
                     terrain,
                     covered,
@@ -315,12 +301,11 @@ impl TransitRenderer for RoadRenderer {
     fn generate_mesh_data(
         &self,
         graph: &RegionGraph,
-        lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
         let mut temporary_roadbed = RoadbedSystem::new(RegionGraph::CHUNK_SIZE);
         temporary_roadbed.compile_dirty(graph);
-        self.generate_mesh_data_with_surface(graph, lane_system, terrain, &temporary_roadbed)
+        self.generate_mesh_data_with_surface(graph, terrain, &temporary_roadbed)
     }
 }
 

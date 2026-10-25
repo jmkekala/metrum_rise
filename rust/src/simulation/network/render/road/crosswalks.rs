@@ -2,8 +2,12 @@
 
 //! Finnish zebra paint on the existing asphalt triangles, never an offset paint plane and never a
 //! cut: the triangles under a crossing's bars carry its paint frame, and the shader draws the bars.
+//!
+//! Crossings come from the pieces ([`for_each_marking`]), never from lanes: the preview, which
+//! builds no lanes, paints the commit's zebras (`ROAD-68-F`, `ROAD-68` open question 26).
 
 use super::*;
+use crate::simulation::network::lanes::CrosswalkMarking;
 
 // Finnish L3_2 at urban speeds: planar metres, preserved from the existing marking contract.
 pub(super) const CROSSWALK_STRIPE_WIDTH: f32 = 0.5;
@@ -22,7 +26,7 @@ pub(in crate::simulation::network::render) struct Crossing {
 }
 
 impl Crossing {
-    fn new(marking: crate::simulation::network::lanes::CrosswalkMarking, age: f32) -> Option<Self> {
+    fn new(marking: CrosswalkMarking, age: f32) -> Option<Self> {
         let delta = marking.end - marking.start;
         let length = Vector2::new(delta.x, delta.z).length();
         let step = CROSSWALK_STRIPE_WIDTH + CROSSWALK_STRIPE_GAP;
@@ -84,31 +88,41 @@ impl Crossing {
     }
 }
 
+/// Visits the zebra markings at `node`: its pieces' crossings
+/// ([`RoadbedSystem::for_each_crossing`]) oriented as the pedestrian lanes own them
+/// ([`CrosswalkMarking::of_arm`]). The one crossing record zebra paint and crossing signs read,
+/// bitwise the kerb segment the node's pedestrian connectors walk, for a preview and a commit
+/// alike. `O(degree)`.
+pub(super) fn for_each_marking(
+    graph: &RegionGraph,
+    roadbed: &RoadbedSystem,
+    node: u32,
+    mut visit: impl FnMut(CrosswalkMarking),
+) {
+    roadbed.for_each_crossing(graph, node, |arm, kerbs| {
+        visit(CrosswalkMarking::of_arm(arm, kerbs));
+    });
+}
+
 /// Registers local crossing frames before emitting asphalt triangles.
 pub(super) fn prepare_crosswalks(
     mesh: &mut NetworkMeshData,
     graph: &RegionGraph,
-    lane_system: &crate::simulation::network::lanes::LaneSystem,
+    roadbed: &RoadbedSystem,
     coverage: &super::standard_surface::CompiledSurfaceCoverage,
 ) {
     // A crossing may sit in a span chunk whose junction mesh is in the neighboring chunk.
     let mut nodes: BTreeSet<_> = coverage.node_ids.iter().copied().collect();
     for &edge_id in &coverage.edge_indices {
         let edge = graph.edge(edge_id);
-        nodes.extend([edge.start_node, edge.end_node]);
+        nodes.extend([edge.start_node, edge.end_node].map(|node| graph.get_valid_node(node)));
     }
     for node_id in nodes {
-        let Some(lane_ids) = lane_system.node_lanes.get(&(node_id as usize)) else {
-            continue;
-        };
-        for &lane_id in lane_ids {
-            let Some(marking) = lane_system.crosswalk_marking(lane_id) else {
-                continue;
-            };
+        for_each_marking(graph, roadbed, node_id, |marking| {
             let Some(crossing) =
                 Crossing::new(marking, cosmetic_road_age(graph.edge(marking.edge_id)))
             else {
-                continue;
+                return;
             };
             for owner in [
                 NetworkMeshOwner::Node(node_id),
@@ -116,7 +130,7 @@ pub(super) fn prepare_crosswalks(
             ] {
                 mesh.crosswalks.entry(owner).or_default().push(crossing);
             }
-        }
+        });
     }
 }
 
@@ -159,7 +173,94 @@ pub(super) fn emit_triangle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::network::lanes::CrosswalkMarking;
+    use crate::simulation::network::lanes::LaneSystem;
+    use crate::simulation::network::roadbed::fixtures::{self, connect, finalize, point};
+    use crate::simulation::network::types::NodeType;
+
+    // A straight two-way road through a pass-through node at the origin: one span-owned crossing.
+    fn pass_through(sloped: bool) -> RegionGraph {
+        let mut graph = RegionGraph::new();
+        let hub = graph.add_node(point(0.0, 0.0, sloped), NodeType::Junction);
+        let west = graph.add_node(point(-80.0, 0.0, sloped), NodeType::Junction);
+        let east = graph.add_node(point(80.0, 0.0, sloped), NodeType::Junction);
+        for (a, b) in [(west, hub), (hub, east)] {
+            let edge = connect(&mut graph, a, b, 7.0, sloped);
+            let edge = graph.edge_mut(edge);
+            edge.fwd_lanes = 1;
+            edge.bkw_lanes = 1;
+        }
+        finalize(&mut graph);
+        graph
+    }
+
+    #[test]
+    fn zebra_markings_and_their_connectors_share_one_kerb_segment() {
+        // The crossing contract (`docs/roads.md` "Pedestrian Junction Crossings", `ROAD-68-F`):
+        // the marking the renderer paints and signs, read from the pieces, is the lanes' own
+        // crossing bitwise, kerbs in order, and both directions of its connector walk exactly
+        // that segment.
+        let bits = |p: Vector3| p.to_array().map(f32::to_bits);
+        let mut cases = Vec::new();
+        for sloped in [false, true] {
+            cases.push((format!("t {sloped}"), fixtures::t_junction(sloped)));
+            cases.push((format!("bend {sloped}"), fixtures::bend(60.0, 60.0, sloped)));
+            cases.push((format!("pass-through {sloped}"), pass_through(sloped)));
+            cases.extend(fixtures::footpath_fixtures(sloped));
+        }
+        let mut pass_through_crossings = 0;
+        for (name, graph) in cases {
+            let mut roadbed = RoadbedSystem::new(64.0);
+            roadbed.compile_dirty(&graph);
+            let mut lanes = LaneSystem::new();
+            lanes.rebuild(&mut graph.clone());
+            for node in 0..graph.node_count() as u32 {
+                let mut drawn = Vec::new();
+                for_each_marking(&graph, &roadbed, node, |marking| drawn.push(marking));
+                pass_through_crossings +=
+                    usize::from(!drawn.is_empty() && roadbed.node_piece(node).is_none());
+                let connectors = lanes.node_lanes.get(&(node as usize));
+                let connectors = connectors.map_or(&[][..], Vec::as_slice);
+                let key = |marking: &CrosswalkMarking| {
+                    (marking.edge_id, bits(marking.start), bits(marking.end))
+                };
+                let mut walked: Vec<_> = connectors
+                    .iter()
+                    .filter_map(|&lane| lanes.crosswalk_marking(lane))
+                    .map(|marking| key(&marking))
+                    .collect();
+                let mut painted: Vec<_> = drawn.iter().map(key).collect();
+                walked.sort_unstable();
+                painted.sort_unstable();
+                assert_eq!(
+                    painted, walked,
+                    "{name}: node {node} paints the lanes' crossings"
+                );
+                for marking in &drawn {
+                    let walks: Vec<_> = connectors
+                        .iter()
+                        .filter(|&&lane| {
+                            lanes.crosswalk(lane).map(|c| c.edge_id) == Some(marking.edge_id)
+                        })
+                        .map(|&lane| &lanes.lanes[lane].geometry)
+                        .collect();
+                    assert_eq!(walks.len(), 2, "{name}: node {node}, both directions");
+                    for geometry in walks {
+                        let segment = [geometry[1], geometry[2]].map(bits);
+                        let forward = [marking.start, marking.end].map(bits);
+                        let backward = [marking.end, marking.start].map(bits);
+                        assert!(
+                            segment == forward || segment == backward,
+                            "{name}: node {node}, a connector leaves the zebra's kerb segment"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            pass_through_crossings >= 2,
+            "the pass-through fixtures cross on a span"
+        );
+    }
 
     #[test]
     fn zebra_paint_frames_whole_asphalt_triangles_under_its_bars() {

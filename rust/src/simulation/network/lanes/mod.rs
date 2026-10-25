@@ -7,7 +7,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{CURB_STEP_HEIGHT_M, LaneSurfaceQuery, RoadbedSystem};
+use crate::simulation::network::roadbed::{
+    ArmKey, CURB_STEP_HEIGHT_M, EdgeEnd, LaneSurfaceQuery, RoadbedSystem,
+};
 use crate::simulation::network::types::TransitType;
 
 mod bounds;
@@ -44,6 +46,33 @@ pub struct CrosswalkMarking {
     pub start: Vector3,
     /// Opposite asphalt-edge endpoint of the stripe corridor.
     pub end: Vector3,
+}
+
+impl CrosswalkMarking {
+    /// The marking of arm `key`'s crossing from its kerb points, right side first (as
+    /// `NodeWalkways::crossings` and `RoadbedSystem::for_each_crossing` give them): it runs from
+    /// the kerb on the positive lateral side of the edge's forward frame (driving on the right,
+    /// where the sidewalk with the lower lane index ends) to the other; the connector from that
+    /// kerb owns it. The one function pedestrian lanes and the renderer's zebras and crossing
+    /// signs orient a crossing with.
+    pub(crate) fn of_arm(key: ArmKey, [right, left]: [Vector3; 2]) -> Self {
+        let (start, end) = if starts_left(key) {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        Self {
+            edge_id: key.edge,
+            start,
+            end,
+        }
+    }
+}
+
+/// Whether arm `key`'s crossing marking starts at its left kerb, seen walking away from the node:
+/// the left is the positive lateral side of the edge's forward frame at the edge's start.
+pub(crate) fn starts_left(key: ArmKey) -> bool {
+    key.end == EdgeEnd::Start
 }
 
 /// Street crossing walked by a pedestrian junction connector that is a single crosswalk.

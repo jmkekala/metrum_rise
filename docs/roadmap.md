@@ -126,8 +126,8 @@ commit's terrain still takes 10-73 ms against the 3.0 ms budget, following the 5
 the edit touches (open question 29). `ROAD-68-E` part 1 is in progress on
 branch `road68-E1`, rebased on `ROAD-68-D`: the road tool previews synchronously on a versioned
 context (published view plus a graph replica, no per-command city copies), returns the changed
-road chunks exactly as the commit publishes them (crosswalk paint frames and road signs excepted
-until `ROAD-68-F` builds them from the layout), and a click installs the previewed pieces; Godot
+road chunks exactly as the commit publishes them (crosswalk paint frames, lights and signs too
+since `ROAD-68-F` part 1 builds them from the pieces), and a click installs the previewed pieces; Godot
 shows each pose in the frame that sampled it and swaps to the committed chunks in one call. Undo
 swaps the pieces back and restores the graph and lanes locally. The preview also builds the
 terrain patches its pieces change with the commit's functions, the commit installs them when its
@@ -149,17 +149,21 @@ like any node instead of re-solving the road it extends (question 30 (a), decide
 delegation for review), so sloped Y junctions are order independent too. Questions 8 (fixture
 regeneration), 21 (b) (measurable now that `ROAD-68-D` part 6 landed), 11 (c) for undo, terrain
 sync and bulldoze, and question 30's mid-span meetings are next.
-Tests that need later gates are disabled until then (6 Rust tests, no Godot script).
-`ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty open questions; open question 16 (strokes pinned to the
+`ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
+signs from the pieces in the emission preview and commit share, keeps the crossing contract
+bitwise and keeps road-end lights clear of the cap.
+Tests that need later gates are disabled until then (5 Rust tests, no Godot script).
+`ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists thirty-one open questions (1-30 and 35); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
 frames, the yard test) and 24 (road surface pinholes on slopes) are decided under delegation and
 done in part 5, with question 23's straight-edge seam T-vertices still open, 25 (overlap checks
 at the commit only; part 2 checks the installed pieces), 27 (stage budgets at the CPU's idle clock; the idle-clock
-frame is an open miss since terrain is in the preview) and 28 (debug
-face sources name tile-local chain runs) are decided by the coordinator for review, and 26
-(preview payloads with crossings or signs, until `ROAD-68-F`) is an open miss; 30 (drawing
+frame is an open miss since terrain is in the preview), 28 (debug
+face sources name tile-local chain runs) and 35 (worn zebra bars, kept as designed) are decided
+by the coordinator for review, 26 (preview payloads with crossings or signs) is met by
+`ROAD-68-F` part 1; 30 (drawing
 order on slopes) is decided (a) for review: joins are built, mid-span meetings are open. Design,
 bounds, budgets, product defaults and gates are in
 [`roads.md`](roads.md#constructive-roadbed-road-68).

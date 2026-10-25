@@ -266,13 +266,14 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(tool._preview_display._instances.is_empty(), "cancel must remove the preview chunks")
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, fixture["name"] + "_cancelled")
-	await _commit_previewed(tool, points, preview, isolated)
+	await _commit_previewed(tool, points, preview, not isolated)
 	tool.free()
 	await process_frame
 
 # Clicks the previewed stroke: the commit installs the preview's pieces, and the preview stays
 # shown until the committed generation's chunks are installed, which replace it in one call.
-func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, lane_free: bool) -> void:
+# `crossed`: the stroke's closure holds crossings, whose paint and signs the preview must carry.
+func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, crossed: bool) -> void:
 	tool._begin_stroke(points[0], 0, Vector3.ZERO)
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
@@ -300,19 +301,30 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 	tool.cancel_road()
 	for instance in tool._road_chunk_instances.values():
 		_expect(instance.visible, "the committed generation must be visible")
-	if lane_free:
-		# Without crossings or signs the preview chunks are the committed chunks (`ROAD-68-E`).
-		var committed := {}
-		for chunk in simulation.get_road_mesh_data(true)["chunks"]:
-			committed[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
-		for chunk in preview["road_chunks"]:
-			var key := Vector2i(chunk["chunk_x"], chunk["chunk_z"])
-			_expect(committed.has(key) != chunk.get("removed", false), "a previewed chunk exists after the commit exactly when it was not removed")
-			if committed.has(key) and not chunk.get("removed", false):
-				for layer in ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]:
-					for field in ["vertices", "normals", "uvs", "colors"]:
-						var name := "%s_%s" % [layer, field]
-						_expect(chunk.get(name) == committed[key].get(name), "preview chunk %s %s equals the committed one" % [key, name])
+	# The preview chunks are the committed chunks, crosswalk paint, lights and signs included:
+	# both are built from the same pieces (`ROAD-68-F`, open question 26).
+	var committed := {}
+	for chunk in simulation.get_road_mesh_data(true)["chunks"]:
+		committed[Vector2i(chunk["chunk_x"], chunk["chunk_z"])] = chunk
+	var painted := false
+	var signed := false
+	for chunk in preview["road_chunks"]:
+		var key := Vector2i(chunk["chunk_x"], chunk["chunk_z"])
+		_expect(committed.has(key) != chunk.get("removed", false), "a previewed chunk exists after the commit exactly when it was not removed")
+		if not committed.has(key) or chunk.get("removed", false):
+			continue
+		var names: Array[String] = ["road_crossings", "street_lights", "road_signs"]
+		for layer in ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]:
+			for field in ["vertices", "normals", "uvs", "colors"]:
+				names.append("%s_%s" % [layer, field])
+		for name in names:
+			_expect(chunk.get(name) == committed[key].get(name), "preview chunk %s %s equals the committed one" % [key, name])
+		var crossings: PackedFloat32Array = chunk.get("road_crossings", PackedFloat32Array())
+		for index in range(2, crossings.size(), 4):
+			painted = painted or crossings[index] > 0.0
+		signed = signed or not chunk.get("road_signs", PackedFloat32Array()).is_empty()
+	if crossed:
+		_expect(painted and signed, "a crossing stroke's preview carries crosswalk paint (%s) and signs (%s)" % [painted, signed])
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, preview.get("name", "fixture") + "_committed")
 

@@ -12,6 +12,7 @@ use super::span::{MouthSection, SpanPiece, SpanScratch, build_span_piece};
 use super::terrain::{ChainChanges, TerrainChanges};
 use super::{RoadSection, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
+use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -823,6 +824,55 @@ impl RoadbedSystem {
         match &self.pieces.get(&PieceId::Node(node))?.piece {
             Piece::Node(node) => Some(node),
             Piece::Span(_) => None,
+        }
+    }
+
+    /// Visits the zebra crossings at `node` (D8) in its published pieces: each crossing arm's key
+    /// and kerb points, right side first. A node piece holds its layout's crossings
+    /// ([`NodePiece::crosswalk_kerbs`]); a pass-through node has no piece, and its crossing lies
+    /// on its arm's span ([`SpanPiece::crosswalk_kerbs`]). The points are bitwise the ones the
+    /// pedestrian lanes walk (`NodeWalkways::crossings`, from the same functions), so zebra paint
+    /// and crossing signs read the crossings here, from pieces alone: a preview, which builds no
+    /// lanes, draws the commit's crossings. `O(degree)`, without allocation.
+    pub fn for_each_crossing(
+        &self,
+        graph: &RegionGraph,
+        node: u32,
+        mut visit: impl FnMut(ArmKey, [Vector3; 2]),
+    ) {
+        let node = graph.get_valid_node(node);
+        if let Some(piece) = self.node_piece(node) {
+            for arm in &piece.layout().arms {
+                if let Some(kerbs) = piece.crosswalk_kerbs(arm.key) {
+                    visit(arm.key, kerbs);
+                }
+            }
+            return;
+        }
+        if node as usize >= graph.node_adjacency_count() {
+            return;
+        }
+        for &edge_idx in graph.node_adjacency(node) {
+            let Some(span) = self.span_piece(edge_idx) else {
+                continue;
+            };
+            let edge = graph.edge(edge_idx);
+            for (end, end_node) in [
+                (EdgeEnd::Start, edge.start_node),
+                (EdgeEnd::End, edge.end_node),
+            ] {
+                if graph.get_valid_node(end_node) == node
+                    && let Some(kerbs) = span.crosswalk_kerbs(end)
+                {
+                    visit(
+                        ArmKey {
+                            edge: edge_idx,
+                            end,
+                        },
+                        kerbs,
+                    );
+                }
+            }
         }
     }
 }

@@ -10,7 +10,7 @@
 
 use super::standard_surface::CompiledSurfaceCoverage;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::roadbed::{BandKind, RoadSection, RoadbedSystem};
+use crate::simulation::network::roadbed::{BandKind, NodeKind, RoadSection, RoadbedSystem};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -39,9 +39,11 @@ pub(crate) struct StreetLight {
 }
 
 // Distance kept clear at each end of a visible stretch, beyond the junction clip, so poles
-// stay out of crosswalks and corner radii.
+// stay out of crosswalks and corner radii. A road end keeps its turning cap as clear, measured
+// from the cap's start (`end_margin`).
 const JUNCTION_MARGIN_M: f32 = 6.0;
-// Dead ends keep a shorter clear margin than junctions.
+// Where a street changes family at a degree-two node, or ends without a cap (a structure end), it
+// keeps this shorter clear margin.
 const DEAD_END_MARGIN_M: f32 = 2.0;
 // Matches the residential minimum longitudinal spacing, but leaves junctions lit well inside
 // the usual 30/36 m spacing. This applies between chains, including both poles of Main arms.
@@ -236,12 +238,24 @@ fn street_chain(graph: &RegionGraph, edge_idx: usize, family: Family) -> Vec<(us
     chain
 }
 
-fn end_margin(graph: &RegionGraph, node: u32) -> f32 {
-    // Junctions keep their mouths and crosswalks clear; a dead end needs only a short margin.
-    if live_degree(graph, node) >= 3 {
-        JUNCTION_MARGIN_M
-    } else {
-        DEAD_END_MARGIN_M
+// Margin from the span end of chain edge `edge` at `node`, the chain's end there: junctions keep
+// their mouths and crosswalks clear; a family change needs only a short margin. A road end's
+// furniture station is the start of its round cap (D2), the node itself, from where the layout's
+// arm runs straight to its mouth and span: the pole keeps the junction margin from the cap, so a
+// turning street end is as clear as a junction's mouth, whatever holds the mouth out (an attached
+// footpath, D5). A road end without a node piece (a structure end, a failed node) keeps the
+// short margin from its span end.
+fn end_margin(graph: &RegionGraph, roadbed: &RoadbedSystem, node: u32, edge: usize) -> f32 {
+    match live_degree(graph, node) {
+        0 | 1 => roadbed
+            .node_piece(graph.get_valid_node(node))
+            .filter(|piece| piece.kind() == NodeKind::Terminal)
+            .and_then(|piece| piece.layout().arms.iter().find(|arm| arm.key.edge == edge))
+            .map_or(DEAD_END_MARGIN_M, |arm| {
+                (JUNCTION_MARGIN_M - arm.mouth_station_m as f32).max(0.0)
+            }),
+        2 => DEAD_END_MARGIN_M,
+        _ => JUNCTION_MARGIN_M,
     }
 }
 
@@ -288,7 +302,7 @@ fn separated_end_margin(
     node: u32,
     target: usize,
 ) -> f32 {
-    let normal = end_margin(graph, node);
+    let normal = end_margin(graph, roadbed, node, target);
     let degree = live_degree(graph, node);
     if degree < 2 {
         return normal;
@@ -326,7 +340,12 @@ fn separated_end_margin(
         }
         let (start, end) = chain_end_nodes(graph, &chain);
         let from_start = start == node && chain[0].0 == edge;
-        let cap = total - end_margin(graph, if from_start { end } else { start });
+        let far = if from_start {
+            (end, chain[chain.len() - 1].0)
+        } else {
+            (start, chain[0].0)
+        };
+        let cap = total - end_margin(graph, roadbed, far.0, far.1);
         if cap < normal {
             // No end candidate fits: keep the existing middle-light fallback.
             if edge == target {

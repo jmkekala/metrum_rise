@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::network::graph::Node;
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::render::road::RoadRenderer;
 use crate::simulation::network::types::{NodeType, TransitFlags};
 use crate::simulation::terrain::render_frame_centre;
@@ -89,7 +90,7 @@ fn junction_with_lanes(
 fn generate(
     f: &(RegionGraph, LaneSystem, RoadbedSystem, TerrainSystem),
 ) -> super::super::NetworkMeshData {
-    RoadRenderer.generate_mesh_data_with_surface(&f.0, &f.1, &f.3, &f.2)
+    RoadRenderer.generate_mesh_data_with_surface(&f.0, &f.3, &f.2)
 }
 
 fn crossing(kind: RoadSignKind) -> bool {
@@ -249,9 +250,12 @@ fn a_long_street_repeats_the_uniform_limit_after_its_junction() {
         Vector3::new(-120.0, 0.0, 0.0),
         Vector3::new(0.0, 0.0, 120.0),
     ];
-    let (mut graph, mut lanes, surface, terrain) =
+    let (mut graph, mut lanes, mut surface, terrain) =
         fixture(&points, &[(0, 1, 1, 1), (2, 0, 1, 1), (0, 3, 1, 1)]);
     graph.set_crosswalk_override(0, 0, true);
+    // Signs stand at the pieces' crossings: lay the junction out again with its zebra.
+    surface.clear();
+    surface.compile_dirty(&graph);
     lanes.rebuild(&mut graph);
     let mesh = generate(&(graph, lanes, surface, terrain));
     let speeds: Vec<_> = mesh
