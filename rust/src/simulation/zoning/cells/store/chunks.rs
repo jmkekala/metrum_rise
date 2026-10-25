@@ -7,6 +7,7 @@ use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::zoning::cells::CELL_DEPTH;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 impl CellStore {
     /// Generates at load every cold chunk within reach of a road that grows cells or holding
@@ -113,15 +114,21 @@ impl CellStore {
     /// Completes the requested chunk and warm neighbours whose entire dirty envelope was
     /// covered by the caller's generation bounds. Partly covered and cold neighbours stay dirty.
     pub(crate) fn complete_generated_chunk(&mut self, chunk: (i32, i32), bounds: CellBounds) {
-        let entry = self.chunks.entry(chunk).or_default();
+        let entry = Arc::make_mut(self.chunks.entry(chunk).or_default());
         entry.generated = true;
         entry.dirty_bounds = None;
         for neighbour in chunks_for_bounds(bounds) {
-            if let Some(entry) = self.chunks.get_mut(&neighbour)
-                && let Some(dirty) = entry.dirty_bounds
-                && dirty.min.cmpge(bounds.min).all()
-                && dirty.max.cmple(bounds.max).all()
+            // Read first: only a neighbour this completes copies its shared path.
+            if self
+                .chunks
+                .get(&neighbour)
+                .and_then(|entry| entry.dirty_bounds)
+                .is_some_and(|dirty| {
+                    dirty.min.cmpge(bounds.min).all() && dirty.max.cmple(bounds.max).all()
+                })
+                && let Some(entry) = self.chunks.get_mut(&neighbour)
             {
+                let entry = Arc::make_mut(entry);
                 entry.generated = true;
                 entry.dirty_bounds = None;
             }
@@ -135,6 +142,7 @@ impl CellStore {
         if bounds.is_valid() {
             for chunk in chunks_for_bounds(bounds) {
                 if let Some(entry) = self.chunks.get_mut(&chunk) {
+                    let entry = Arc::make_mut(entry);
                     let chunk_bounds = Self::chunk_bounds(chunk);
                     let dirty = CellBounds {
                         min: bounds.min.max(chunk_bounds.min),
@@ -156,6 +164,7 @@ impl CellStore {
     /// Full-world authoring/load operations may invalidate every viewed chunk explicitly.
     pub(crate) fn invalidate_all_generated_cells(&mut self) {
         for (_, entry) in self.chunks.iter_mut() {
+            let entry = Arc::make_mut(entry);
             entry.generated = false;
             entry.dirty_bounds = None;
         }
@@ -206,7 +215,7 @@ impl CellStore {
     /// Stamps a changed full cell's single rendering owner after its authority epoch advances.
     pub(super) fn mark_cell_chunk_changed(&mut self, key: CellKey) {
         if let Some(chunk) = self.cell_chunk(key) {
-            self.chunks.entry(chunk).or_default().revision = self.revision;
+            Arc::make_mut(self.chunks.entry(chunk).or_default()).revision = self.revision;
         }
     }
 }

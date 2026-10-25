@@ -63,15 +63,18 @@ struct CellChunk {
 /// Sparse authoritative paint and lot coverage; geometry is derived from persistent frames.
 /// Every map is persistent, so a clone is `O(1)` (bar the bounded stale-chunk list) and the
 /// first write after it copies only the written paths (`ROAD-68` open question 21 (b)).
+/// Blocks, chunk entries and frontage lists sit behind `Arc`: a copied map node then moves
+/// pointers, and a write copies only the one value it changes. Writers read first and take a
+/// mutable path only for a real change, so an unchanged cell never copies a shared path.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CellStore {
     frames: imbl::Vector<GridFrame>,
     frame_ids: StoreMap<GridFrame, u64>,
-    blocks: StoreMap<BlockKey, CellBlock>,
-    chunks: StoreMap<(i32, i32), CellChunk>,
+    blocks: StoreMap<BlockKey, Arc<CellBlock>>,
+    chunks: StoreMap<(i32, i32), Arc<CellChunk>>,
     // Warm chunks invalidated since the last drain; bounded by the edits' footprints.
     stale_chunks: Vec<(i32, i32)>,
-    frontages: StoreMap<CellKey, Vec<CellRoadFrontage>>,
+    frontages: StoreMap<CellKey, Arc<[CellRoadFrontage]>>,
     curve_sources: StoreMap<CurveSourceKey, Arc<CellCurveSource>>,
     road_alignments: imbl::HashMap<usize, RoadCellAlignment>,
     painted_count: usize,
@@ -242,7 +245,7 @@ impl CellStore {
 
     /// Returns current road-facing boundaries; rear cells and orphaned paint have none.
     pub(crate) fn frontages(&self, key: CellKey) -> &[CellRoadFrontage] {
-        self.frontages.get(&key).map_or(&[], Vec::as_slice)
+        self.frontages.get(&key).map_or(&[], |links| &links[..])
     }
 
     /// Replaces sorted transient road support and advances the epoch only when it changes.
@@ -257,7 +260,7 @@ impl CellStore {
         if frontages.is_empty() {
             self.frontages.remove(&key);
         } else {
-            self.frontages.insert(key, frontages);
+            self.frontages.insert(key, frontages.into());
         }
         self.bump_revision();
     }
@@ -279,28 +282,30 @@ impl CellStore {
             return false;
         };
         let block_key = key.block();
-        if !self.blocks.contains_key(&block_key) {
-            let bounds = block_bounds(&frame.geometry(), block_key);
-            if !bounds.is_valid() {
-                return false;
-            }
-            for chunk in chunks_for_bounds(bounds) {
-                self.chunks.entry(chunk).or_default().blocks.push(block_key);
-            }
-        }
-        let block = self.blocks.entry(block_key).or_default();
         let bit = 1_u64 << key.offset();
-        if block.valid & bit != 0 {
-            return false;
+        match self.blocks.get(&block_key) {
+            Some(block) if block.valid & bit != 0 => return false,
+            Some(_) => {}
+            None => {
+                let bounds = block_bounds(&frame.geometry(), block_key);
+                if !bounds.is_valid() {
+                    return false;
+                }
+                for chunk in chunks_for_bounds(bounds) {
+                    Arc::make_mut(self.chunks.entry(chunk).or_default())
+                        .blocks
+                        .push(block_key);
+                }
+            }
         }
-        block.valid |= bit;
+        Arc::make_mut(self.blocks.entry(block_key).or_default()).valid |= bit;
         true
     }
 
     /// Removes only unreserved cells. Painted/occupied geometry requires lifecycle handling.
     pub(super) fn remove_unreserved(&mut self, key: CellKey) -> bool {
         let block_key = key.block();
-        let Some(block) = self.blocks.get_mut(&block_key) else {
+        let Some(block) = self.blocks.get(&block_key) else {
             return false;
         };
         let offset = key.offset();
@@ -308,18 +313,24 @@ impl CellStore {
         if block.valid & bit == 0 || block.profiles[offset] != 0 || block.lots[offset] != 0 {
             return false;
         }
-        block.valid &= !bit;
-        self.frontages.remove(&key);
-        let remove_block = block.valid == 0;
+        let remove_block = block.valid == bit;
+        // A persistent map's removal copies its shared path even for an absent key.
+        if self.frontages.contains_key(&key) {
+            self.frontages.remove(&key);
+        }
         if remove_block {
             self.blocks.remove(&block_key);
             if let Some(frame) = self.frame(key.grid) {
                 for chunk in chunks_for_bounds(block_bounds(&frame.geometry(), block_key)) {
                     if let Some(entry) = self.chunks.get_mut(&chunk) {
-                        entry.blocks.retain(|candidate| *candidate != block_key);
+                        Arc::make_mut(entry)
+                            .blocks
+                            .retain(|candidate| *candidate != block_key);
                     }
                 }
             }
+        } else if let Some(block) = self.blocks.get_mut(&block_key) {
+            Arc::make_mut(block).valid &= !bit;
         }
         self.revision = self.revision.wrapping_add(1);
         self.mark_cell_chunk_changed(key);
@@ -349,11 +360,14 @@ impl CellStore {
 
     /// Updates an already validated cell and only its owning overlay chunk.
     pub(super) fn set_profile(&mut self, key: CellKey, profile: u16) {
+        let Some(block) = self.blocks.get(&key.block()) else {
+            return;
+        };
+        if block.valid & (1_u64 << key.offset()) == 0 || block.profiles[key.offset()] == profile {
+            return;
+        }
         if let Some(block) = self.blocks.get_mut(&key.block()) {
-            if block.valid & (1_u64 << key.offset()) == 0 || block.profiles[key.offset()] == profile
-            {
-                return;
-            }
+            let block = Arc::make_mut(block);
             self.painted_count -= usize::from(block.profiles[key.offset()] != 0);
             self.painted_count += usize::from(profile != 0);
             block.profiles[key.offset()] = profile;
@@ -371,7 +385,15 @@ impl CellStore {
     /// Writes previously validated coverage and refreshes its count, masks and selection epoch.
     pub(super) fn assign_lot(&mut self, lot: CellLot, parcel_id: u64) {
         for key in lot.cells() {
+            if self
+                .blocks
+                .get(&key.block())
+                .is_none_or(|block| block.lots[key.offset()] == parcel_id)
+            {
+                continue;
+            }
             if let Some(block) = self.blocks.get_mut(&key.block()) {
+                let block = Arc::make_mut(block);
                 self.claimed_count -= usize::from(block.lots[key.offset()] != 0);
                 self.claimed_count += usize::from(parcel_id != 0);
                 block.lots[key.offset()] = parcel_id;

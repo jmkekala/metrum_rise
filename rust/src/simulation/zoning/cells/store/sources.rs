@@ -54,7 +54,9 @@ impl CellStore {
         }
         if !self.curve_sources.contains_key(&key) {
             for chunk in chunks_for_bounds(key.bounds()) {
-                self.chunks.entry(chunk).or_default().sources.push(key);
+                Arc::make_mut(self.chunks.entry(chunk).or_default())
+                    .sources
+                    .push(key);
             }
         }
         self.curve_sources.insert(key, source);
@@ -74,7 +76,9 @@ impl CellStore {
             self.curve_sources.remove(&key);
             for chunk in chunks_for_bounds(key.bounds()) {
                 if let Some(entry) = self.chunks.get_mut(&chunk) {
-                    entry.sources.retain(|&candidate| candidate != key);
+                    Arc::make_mut(entry)
+                        .sources
+                        .retain(|&candidate| candidate != key);
                 }
             }
         }
