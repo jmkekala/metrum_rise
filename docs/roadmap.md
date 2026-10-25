@@ -182,6 +182,13 @@ read-first writes and a plain-map generation index do not remove it), and leaves
 design the preview's lot plan needs to question 32 (user, 2026-10-25: profile first, then a
 plain live store with a journal-synced persistent copy in the view); every lot derivation runs on one
 planner and one installer, bitwise. Still not ready to land.
+Round 6 (branch `road68-E6`, work in progress) builds question 32 (b): the live cell store keeps
+plain maps and the road tool's view a persistent copy that each publication updates from the
+store's write journal, with one planner generic over both; products and determinism are bitwise
+unchanged, and the hover-validation flake is root-caused (the test read the hover path's pending
+answer as invalid). The user paused question 21 (b)'s preview half (question 33: no per-pose lot
+planning; after `TERRAIN-07`, if the commit still misses a frame, lot regeneration is deferred
+one frame like D7). Not ready to land: the publication pays the copy, about 0.1 ms at 10k and 30k residents, and two unchanged stages measured slightly slower, unattributed.
 `ROAD-68-F` part 1 (branch `road68-F1`, 2026-10-25) builds zebra paint, street lights and road
 signs from the pieces in the emission preview and commit share, keeps the crossing contract
 bitwise and keeps road-end lights clear of the cap.

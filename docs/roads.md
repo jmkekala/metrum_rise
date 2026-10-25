@@ -2200,7 +2200,17 @@ These need a user decision; work that does not depend on them continues.
       generation and over derivation, with no single ~1 ms cut
       ([round 5 record](#part-2-round-5-2026-10-25-branch-road68-e5-work-in-progress)); (b) is
       next.
-    - **Built (round 6, branch `road68-E6`):** @@Q32@@
+    - **Built (round 6, branch `road68-E6`):** the live store keeps plain maps and the view a persistent copy that each
+      publication brings up to date from the live store's write journal, with every algorithm
+      on the store one function generic over the two kinds
+      ([round 6 record](#part-2-round-6-2026-10-25-branch-road68-e6-work-in-progress)). Products
+      and determinism are unchanged; `buildings` is within the control's spread once the breakdown harness
+      publishes its first view as the game does (one 10k sample 0.06 ms above the control's
+      higher run, inside the control's own run-to-run difference). Not ready to land: the
+      publication pays the follow, about 0.1 ms at 10k and 30k, and render publication and two
+      preview stages measured slightly above their controls without a profile yet. The copy holds 175,055 entries at 100k
+      residents: 16.5 MB of keys, values and lists, about 20.7 MB with each entry's pointer and
+      `Arc` header (map nodes not counted), next to the live store's own 16.5 MB.
 33. **Where the preview's lot plan runs (`ROAD-68-E` round 6, from question 21 (b)) — decided by
     the user, 2026-10-25: no per-pose lot planning; question 21 (b)'s preview half is paused
     until the commit is measured with `TERRAIN-07`; if it then misses, lot regeneration is
@@ -4920,6 +4930,110 @@ Round 4's part 2 on `road` `ebe4381e` (documentation only, so the rebase is empt
   plan whose base is still the live state (otherwise the commit plans itself). The test the
   round's brief asks for (commits with and without a matching preview plan, lot, generated and
   narrow-marks digests compared) comes with it.
+
+#### Part 2, round 6 (2026-10-25, branch `road68-E6`, work in progress)
+
+Round 5 on `road` `4710f59b` (one documentation conflict). Question 32 (b), as the user decided;
+the preview half of question 21 (b) is paused by the user ([question 33](#road-68-open-questions)).
+
+- **Plain live store, journal-synced view copy (question 32 (b)).** `CellStore<M: CellMaps>`
+  (`zoning/cells/store/maps.rs`): the live store keeps plain hash maps on the fixed hasher
+  (`LiveMaps`, as before round 4), the road tool's view a persistent copy (`SharedMaps`:
+  `imbl` maps with values behind `Arc`, frames in an `imbl` vector), cloned in `O(1)`. Every
+  store write records its key in the store's journal (blocks, chunk entries, frontage lists,
+  curve sources; consecutive repeats once, sorted and deduplicated whenever the log doubles).
+  Each publication copies or removes exactly the journaled entries, appends the frames
+  registered since and shares the already persistent road alignments (`CellStore::follow`,
+  `O(written keys * log entries)`); a clear or a whole-world invalidation copies the store
+  whole, as does a publication that replaces the view. Generation, lot derivation,
+  `CellLotPlanner`, the `cell lots` queue's pop and the reserved-overlap test are each one
+  function generic over the kind; generation's temporary candidate index is always plain.
+  Round 3's reservation mirror is removed. Debug tests compare the copy's whole state (frames,
+  blocks, chunk entries, frontages, sources, alignments, counts, revision) with the live store
+  at every publication, and
+  `a_plan_on_the_views_persistent_copy_equals_the_live_plan_and_the_copy_follows_it` plans on
+  both kinds and checks equal reports, parcel changes and digests, then the follow and a clear.
+- **Commit breakdown (fresh, 19:31-19:48, both locks, P-cores, 8 workers, release library
+  tests, no restic), C = `road` `4710f59b`, E = this round (`db992aa0`'s code), C E E C.**
+  `buildings`, ms per sample (samples 0 / 1 / 2):
+
+  | Run | 10k | 30k | 100k |
+  | --- | --- | --- | --- |
+  | C | 12.21 / 3.72 / 1.05, 11.84 / 3.79 / 0.98 | 8.16 / 2.54 / 1.51, 7.81 / 2.56 / 1.57 | 8.44 / 3.19 / 2.37, 8.38 / 3.10 / 2.20 |
+  | E | 10.70 / 4.40 / 1.06, 11.08 / 4.20 / 1.00 | 7.97 / 2.51 / 1.50, 7.75 / 2.58 / 1.50 | 8.42 / 3.08 / 2.12, 8.95 / 3.23 / 2.09 |
+
+  Lot and generated digests are equal in every tier and sample; gate G's determinism on E
+  shows no difference, `da3d23b6c8b63d20`. Medians C / E: 3.75 / 4.30 (10k), 2.55 / 2.55
+  (30k), 3.14 / 3.16 ms (100k). Outside C's spread: 10k sample 1 (+0.4-0.7 ms, the sample
+  rounds 4 and 5 found slow with persistent maps too) and one 100k first sample (+0.5 ms);
+  10k sample 0 is 0.8-1.5 ms faster. The tool snapshot (the publication) costs the follow:
+  samples 1-2, C 0.23-0.25 / 0.66-0.72 / 2.53-2.73 ms, E 0.32-0.35 / 0.77-0.82 / 2.63-2.95 ms
+  (10k / 30k / 100k). Each first sample replaced the view in this harness, which seeds the
+  shared view without the publisher, and so took E's whole copy (+2.3 / +6.7 / +36 ms); the
+  copy takes 2.4 / 7.5 / 30 ms at 10k / 30k / 100k. The commit's `surface` stage is
+  8-10 ms slower at 30k and 100k in E's first two samples, all of it in the legacy terrain
+  validation (E's sub-stages: roadbed 0.5-1.4 ms, overlap 0.01-0.1 ms), which this round does
+  not change; the same stage moved by 7-8 ms with the crate's codegen partition before
+  ([question 36](#road-68-open-questions)) and is `TERRAIN-07`'s.
+- **Harness: the first view through the publisher.** (fresh, 20:26-20:48, same harness, locks and
+  workers; C2 = `road` + this harness change, E2 = this round + it, as `f49f24ec`; C2 E2 E2 C2).
+  The harness seeded the shared view without the publisher, so each tier's first commit
+  replaced the view and carried the whole city build's cell journal; the game publishes its
+  first view at start-up, and the harness now does too. `buildings`, ms per sample:
+
+  | Run | 10k | 30k | 100k |
+  | --- | --- | --- | --- |
+  | C2 | 11.17 / 3.77 / 1.01, 11.48 / 3.89 / 1.05 | 7.78 / 2.68 / 1.62, 8.59 / 2.84 / 1.84 | 8.60 / 3.61 / 2.15, 8.75 / 3.67 / 2.14 |
+  | E2 | 11.34 / 3.95 / 1.05, 10.82 / 3.64 / 1.02 | 8.42 / 2.57 / 1.61, 7.91 / 2.48 / 1.78 | 8.53 / 3.11 / 2.10, 8.75 / 3.12 / 2.00 |
+
+  Medians C2 / E2: 3.83 / 3.80 (10k), 2.76 / 2.53 (30k), 3.64 / 3.11 ms (100k). Every E2
+  sample lies within C2's range or below it, except one 10k second sample 0.06 ms above C2's
+  higher run (C2's two runs differ by 0.12 ms there): the slow 10k second sample of rounds 4-6
+  came from the harness's first commit. Lot and generated digests are equal in every tier and
+  sample. `surface` is within C2's range: timing 1's 8-10 ms moved with the build's partition
+  (code layout, [question 36](#road-68-open-questions); no product or work changed).
+  - **The follow's cost, in the tool snapshot (samples 1-2 and the first):** C2 0.23-0.31 /
+    0.67-0.79 / 2.54-2.96 ms, E2 0.30-0.42 / 0.79-0.90 (one 1.63) / 2.60-3.02 ms at 10k / 30k
+    / 100k: about 0.1 ms at 10k and 30k, within C2's range at 100k. It is the copy of the
+    journaled entries the decision prescribes; not yet reduced (it could overlap the
+    publication's graph records and roadbed snapshot on the pool).
+  - **Render publication (`mesh`, no changed code):** medians 0.94 / 1.05, 1.60 / 1.76 and
+    2.21 / 2.48 ms (C2 / E2), with E2 samples up to 0.4 ms above C2's range at 30k and 100k;
+    timing 1 showed the same at 10k. Unattributed; needs a profile.
+  - **The view copy at 100k residents:** 175,055 entries; 16.5 MB of keys, values and lists,
+    about 20.7 MB with each entry's pointer and `Arc` header (map nodes not counted). The
+    resident set grew 1.9 MB while one more copy was alive (the allocator reuses freed pages,
+    so this is a floor). A whole copy takes 26-31 ms; only a load or a replaced view makes one.
+- **Preview stages (fresh, 19:26, 4 workers, C E E C).** Plan and terrain within C's range;
+  roadbed p50 0.322 / 0.325-0.333 ms (`sloped_t`) and 0.324-0.327 / 0.329-0.331 ms
+  (`sloped_branch`), payload 0.386-0.394 / 0.391-0.411 and 0.381 / 0.390-0.393 ms, C / E; the
+  pose total 5.83 / 5.72-5.84 and 5.97-6.00 / 5.98-6.00 ms. The fixtures paint no cells, so
+  the overlap test returns at its reservation check in both builds. A profile (21:12, both locks, P-cores, 4
+  workers, the whole benchmark at 4 kHz, user cycles and instructions, C against E) puts the
+  difference in inlining, not work: E calls out of line what C inlines (the chain clip
+  `rect_loops::clip_path` and `roadbed::terrain` iterator closures out of `terrain_loops`,
+  `emit_band` and `emit_chain_strips` out of `emit_piece_surfaces`, `rstar`'s point min/max
+  helpers, `spade`'s circumference test), each moved function's samples reappearing under its
+  caller in the other build; the roadbed functions' instructions differ by 1.0% and the render
+  ones' by 2.0%, the calls' own overhead. The fixtures plan no lots and test no reservation, so
+  this round runs no changed code in either stage: code layout under
+  [question 36](#road-68-open-questions)'s rule.
+- **Gate checks (fresh, on `7a8d1241`).** Clippy `--all-targets` (19:53): the baseline's
+  59-warning set, none new. `./run.sh --test` (19:53-20:19, `DISPLAY` and `WAYLAND_DISPLAY`
+  unset): exit 0, debug library 1,915 passed / 0 failed / 164 ignored, integration 4 passed,
+  every Godot script PASS, no SCRIPT ERROR; skipped only the display-only shader-global probe
+  and the rendered vegetation tests. No `ROAD-68-E` or `ROAD-68-F` ignore; four `TERRAIN-07`.
+  `roadbed/` has no change against `road`.
+- **The hover-validation flake, root-caused.** Round 5's 20-run loop failed 2 of 20 runs, both
+  at "hover validation keeps its prepared profile" with no reason. The hover path never waits
+  for the simulation lock (`try_lock_core`): while the sim thread holds it the answer is
+  pending (`is_pending`, not valid, no reason), and the test read that answer as invalid. The
+  road tool already asks again next frame; the test now does too (`_await_hover_validation`).
+  The 20-run loop on this round's library (20:19-21:11, run.sh's isolated profile layout)
+  passes 20 of 20. Closed. A hover answer can still be pending while the simulation holds its
+  lock, by design: the corridor's parcel clearance reads the live core (unlike `ROAD-54`'s
+  preview checks, a hover candidate cannot be evaluated ahead); a view-side parcel copy would
+  remove that, and waits with question 21 (b)'s preview half.
 
 ### `ROAD-68-F` — remaining families
 
