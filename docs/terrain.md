@@ -4289,7 +4289,14 @@ A's Kuopio acceptance is judged on the re-recorded reference
     2: 1.68 ms in its session).
   - **Point queries**: `base_height_at` 0.04-0.13 µs, `mask_at` 4.1-7.6, `surface_height_at`
     5.2-10.1, `ground_height_at` 7.5-13.2, `normal_at` 14.2-27.5 µs (round 2, another session:
-    3.8-7.2, 4.7-9.1, 6.6-11.9, 11.5-22.4); T19 unchanged.
+    3.8-7.2, 4.7-9.1, 6.6-11.9, 11.5-22.4). A same-conditions check against round 2's binary
+    (shared lock, P-cores, back to back; not acceptance) found this binary's one-lane path 3-20 %
+    slower (fixture means: `normal_at` 19.65 against 16.53 µs): it took the lanes' select form,
+    which projects every clamped seam. One lane now takes the scalar seam form (`c56f73b9`, the
+    same bits), and the same check gives 6.59, 8.26, 10.46 and 19.33 µs against round 2's 6.57,
+    8.54, 10.80 and 19.77 µs (`mask_at`, `surface_height_at`, `ground_height_at`, `normal_at`,
+    binary `907a5f21d733`, machine busier). T19 unchanged. The bake's timings above predate that
+    change, which touches only its one-point runs.
   - **Wall census on Kuopio** (`kuopio_wall_sites`, every seam, untimed): unchanged, 430 walled
     samples, 182.9 m, highest 43.9 m, the same five sites (on the old save, question 38).
 - **Lines** (production, tests excluded): `graded/` 2,684 (round 2: 2,419; `sample` +134 for the
