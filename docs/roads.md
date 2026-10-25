@@ -1389,9 +1389,12 @@ These need a user decision; work that does not depend on them continues.
       the pure-job deadlock is fixed and the new lanes are lifted on the pool again (done in
       part 5: median 19.3 ms before the rebase, about 13 ms expected with (c)). `ROAD-68-G`
       stays open until the commit fits a frame.
-    - **`ROAD-68-E` part 2 (2026-10-25):** option (b) is not started. The brief measures first
-      with gate G's harness once `ROAD-68-D` part 6 lets the 100k commit through; it has not
-      landed yet.
+    - **`ROAD-68-E` part 2 (2026-10-25):** option (b) is not started; it is measured first with
+      gate G's harness on this branch. Historical evidence (gate D part 6's own run on its final
+      binary, eight workers, not re-run here): click to acknowledgement at 100k residents takes
+      120 / 79 / 23 ms per sample, most of it the commit's terrain ([open question
+      29](#road-68-open-questions)), so the lots alone (3.5-8.9 ms) cannot make the commit fit;
+      the measurement must also cover part 2's reservation checks on the painted city.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
