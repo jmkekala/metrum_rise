@@ -356,13 +356,20 @@ impl SiteBuffer {
                 edge[1].min(edge[3]) - band - SURFACE_PAD_M,
                 edge[1].max(edge[3]) + band + SURFACE_PAD_M,
             );
-            for j in zs.partition_point(|&z| z < z0)..zs.partition_point(|&z| z <= z1) {
-                let z = zs[j];
+            let (j0, j1) = (
+                zs.partition_point(|&z| z < z0),
+                zs.partition_point(|&z| z <= z1),
+            );
+            for (j, &z) in zs.iter().enumerate().take(j1).skip(j0) {
                 let Some((x0, x1)) = band_span(edge, band, z) else {
                     continue;
                 };
-                for i in xs.partition_point(|&x| x < x0)..xs.partition_point(|&x| x <= x1) {
-                    visit(j * width + i, xs[i], z);
+                let (i0, i1) = (
+                    xs.partition_point(|&x| x < x0),
+                    xs.partition_point(|&x| x <= x1),
+                );
+                for (i, &x) in xs.iter().enumerate().take(i1).skip(i0) {
+                    visit(j * width + i, x, z);
                 }
             }
         }
@@ -461,9 +468,9 @@ fn for_each_point(
     } else {
         (0, xs.len(), 0, zs.len())
     };
-    for j in j0..j1 {
-        for i in i0..i1 {
-            visit(j * width + i, xs[i], zs[j]);
+    for (j, &z) in zs.iter().enumerate().take(j1).skip(j0) {
+        for (i, &x) in xs.iter().enumerate().take(i1).skip(i0) {
+            visit(j * width + i, x, z);
         }
     }
 }
