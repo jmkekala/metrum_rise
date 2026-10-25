@@ -3571,8 +3571,9 @@ On hills that reach is the cap: a steep cell anywhere in the 194 m window sets `
 window's roads lie many metres above its lowest, so a Kuopio `GL0` sample had 56 candidate seams
 and a tile cost 4.9 ms on one worker ([T18](#terrain-07-open-questions)).
 
-**Two passes** (`TERRAIN-07-A` round 2, T18 (a)). The tile's lattice is cut into 4 m bins. For a
-bin, `[β_lo, β_hi]` is the exact range of the bilinear base over it (on each piece within one cell
+**Two passes** (`TERRAIN-07-A` round 2, T18 (a)). The tile's lattice is cut into bins of
+`max(4 m, spacing)` (round 3: `GL3`'s band is 60 m, so 4 m bins each listed nearly every seam for
+one or two lattice points). For a bin, `[β_lo, β_hi]` is the exact range of the bilinear base over it (on each piece within one cell
 the base is linear along either axis, so the range is over the bin's corners, the crossings of its
 sides with the cell lines and the base lattice points inside it), and `D` is the distance from a
 seam's box to the bin, at most the distance from the seam to any of its samples.
@@ -3599,15 +3600,31 @@ lattice's whole base range, and `F >= H_lo` (at such a sample `g1 >= U1 >= H_lo`
 lists lie within the third term. 4 x 4 blocks of bins are tested before their bins, with the
 block's base range and distance, which pass whenever one of their bins does. Each bin's list is
 sorted by `D`, with the lowest and highest height of every seam from each entry on, and a sample
-stops at the first entry past which no seam can change `L` (`h_hi - k D <= L`), `U`
-(`h_lo + k D >= U`) or the nearest seam within the band (`D` beyond it), with the same margin; `L`,
-`U` and the nearest seam's total order are order-free, so the stop changes no bit. The queries and
-the unpruned reference give every seam `D = 0` and never stop. Cost per tile:
+stops at the first entry past which no seam can change its value or its nearest seam within the
+band (`D` beyond it), with the same margin. A covered sample reads only the nearest seam (the
+inside rule). A ground sample's value `g = max(L, min(b, U))` stays as it is when every later
+seam has `h_hi - k D < g` and `h_lo + k D > min(b, U)`: `min(b, U)` keeps its operand, `max`
+returns `g`, and the overlap rule then returns the same operand, bitwise (round 3; round 2 waited
+until `L` and `U` themselves were final, which on hills, where `L` lies far below a cut's `U`,
+took most of a list). A sample left below its base then carries partial first-pass cones into
+pass 2, which stays exact: `g1` is exact over the listed seams, and pass 2's seams have upper
+bounds of at least the base, so the result is `max(g1, L_2)`. The queries and the unpruned
+reference give every seam `D = 0` and never stop. Cost per tile:
 `O(S x blocks + listed pairs)` to list and `O(sum of the samples' list lengths)` to sample, where
 the second pass adds only the samples below their base. The bake's `conflicts` counter counts the
 conflicts among the evaluated cones; a fill's `L` above the upper bound of an unlisted seam is not
 evaluated and not counted (the ground is that `L` either way), and the wall census, which takes
 every seam, counts walls exactly.
+
+**Lanes** (round 3). The bake evaluates a row's points within one bin together, four at a time:
+each candidate seam is evaluated for the four points with the same operations per lane
+(`Seam::at_lanes`, its clamps as selects so the lanes compile to vector instructions), the cone
+bounds update by selects, and each lane stops where the evaluation of its point alone stops, so
+later candidates no longer touch it. Every lane's value, cones, nearest seam and count equal the
+one-point evaluation bitwise (the one-point evaluation is the single lane); a tie in the nearest
+seam's distance is broken by the scalar seam evaluation, whose distances are the same bits. On the
+`x86-64-v2` target (SSE4.1: two `f64` per register; no `unsafe`) part of the arithmetic compiles
+to two-wide instructions. The base stops and bin columns are computed once per lattice column.
 
 Correction of T18's wording: the floor of pass 2 is the bin's *lowest* first-pass ground below the
 base, not the tile's largest first-pass `L`. A seam must be listed wherever it can rise above
@@ -3902,7 +3919,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 
 | Gate | Status | Scope |
 | --- | --- | --- |
-| `TERRAIN-07-A` | round 2 2026-10-25 (branch `terrain07-A`, work in progress; [record](#terrain-07-a-record)): the two-pass pruning takes Kuopio's tiles from 4.86 to 0.50 ms, but 17 of 44 Kuopio edits still exceed 3.0 ms (worst 6.35 ms, T18 open) and the first 100k populated edit takes 3.25 ms; `GL3` regressed; `./run.sh --test` is pending | Grading core and queries in Rust, roads only, beside the legacy path |
+| `TERRAIN-07-A` | round 3 2026-10-25 (branch `terrain07-A`, work in progress; [record](#terrain-07-a-record)): `GL3` fixed, the populated edits all within 3.0 ms (worst 2.94 ms at 100k), 31 of 44 Kuopio edits within 3.0 ms (worst 5.30 ms, T18 open, T20 to the user); Kuopio is judged on the re-recorded reference (`roads.md` question 38); `./run.sh --test` see the record | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
@@ -3946,7 +3963,10 @@ Acceptance:
   and a removal on the reference save; and `kuopio_12`'s strokes, replayed after every other case,
   keep their tiles and bits. Added by the coordinator's ruling of 2026-10-25: the budget applies
   to the game, and Kuopio is the hilly reference world; the populated city is flat, so its edits
-  hid the conflict terms' cost (T18). The budget is never relaxed.
+  hid the conflict terms' cost (T18). The budget is never relaxed. It is judged on the reference
+  network re-recorded with today's code under the 1:3 grade limit
+  ([`roads.md` open questions 37 and 38](roads.md#road-68-open-questions)); the old save's edits
+  are round 3's evidence.
 - recorded for [T1](#terrain-07-open-questions), [T2](#terrain-07-open-questions),
   [T7](#terrain-07-open-questions) and [T8](#terrain-07-open-questions): reach and seams per sample
   with the conflict terms; conflict samples within one texel of a road seam on the populated
@@ -4163,6 +4183,12 @@ miss the 3.0 ms stage, so the gate stays open.
     TD7 (`h + γ d - k d > h` for grade `γ > k`), as a cut switchback would.
   Whether the exact cut showed something sensible at these sites is not checked here (renders of
   these sites are the next step); the same `kuopio_04` tiles are also the costliest Kuopio edit.
+  Since traced (`ROAD-68-K13`, [`roads.md` open question 38](roads.md#road-68-open-questions)):
+  sites 1-5 stand on the saved edges 13, 14 and 40, whose profiles the recorded session's legacy
+  stroke solve (2026-09-08) made and today's code does not; the user decided to re-record the
+  reference network with today's code (question 38) under a 1:3 hard grade limit
+  (`road_too_steep`, question 37). The census, the wall sites and the Kuopio edits change when that
+  lands; these figures stay as the evidence on the old save.
 - **The rest of `timing.sh`** on the same binary (both locks, P-cores, four workers, 18:17-18:23;
   restic skipped that day and absent at both ends; logs under `$ARTIFACTS`):
   - Populated commits (`graded_tiles` rows; exact cut `surface_ms` the same-run control):
@@ -4183,6 +4209,90 @@ miss the 3.0 ms stage, so the gate stays open.
   - Point queries: `base_height_at` 0.04-0.13 µs, `mask_at` 3.8-7.2, `surface_height_at`
     4.7-9.1, `ground_height_at` 6.6-11.9, `normal_at` 11.5-22.4 µs (T19 unchanged).
   - Not run: `./run.sh --test` (the run lock was taken by other gates' runs all evening).
+
+**Round 3** (2026-10-25, branch `terrain07-A` rebased onto `road` at `4710f59b`; fresh runs, kept
+apart from rounds 1 and 2). Work in progress: Kuopio's edits still miss the 3.0 ms stage, and gate
+A's Kuopio acceptance is judged on the re-recorded reference
+([`roads.md` open question 38](roads.md#road-68-open-questions)), so the gate stays open.
+
+- **What changed** ([the grading function](#the-grading-function)): bins of `max(4 m, spacing)`,
+  so `GL3` bins at its spacing; the per-sample early exit on the value (`g = max(L, min(b, U))`
+  and the nearest seam, the nearest seam alone under a road) instead of on final `L` and `U`;
+  lanes of four points of a bin row (`Seam::at_lanes`, `evaluate_lanes`, the one-point
+  evaluation being one lane); base stops and bin columns once per lattice column; and in the
+  roadbed accessor `for_each_grounded_top_triangle_in_bounds`, a piece inside the bounds visits
+  its top triangles once each instead of once per grid cell (the same set; coverage takes the
+  maximum and the inputs are sorted and unique).
+- **Exactness** (debug library tests, fresh): pruned equals unpruned bitwise at `GL0`, `GL2` and
+  now `GL3` (step 2) on the conflict fixtures and Kuopio's edge 43 block, in batches of 16 and 1,
+  reversed, on 1, 4 and 8 workers; the lanes equal one point at a time (texels, rows, inputs and
+  every `BakeStats` field) on all seven fixtures at all four levels
+  (`lanes_equal_one_point_at_a_time_on_every_fixture_and_level`) and on all 517 Kuopio road tiles
+  at `GL0` (in `kuopio_pruned_bake_equals_every_seam`); `a_seam_in_lanes_equals_the_seam_at_each_point`.
+- **Did round 1 under-select the 100k edit?** No. Round 1's rule (the four-term one-pass reach of
+  `71601ca5`'s `reached` plus the unchanged covering-triangle half), run on today's edits with
+  the coverage check (a temporary diagnostic, not committed): on the 100k city it selects the same
+  13, 10 and 7 tiles as round 2 and misses none of the 12, 6 and 5 tiles whose bits change; on the
+  44 Kuopio edits it selects 1,057 tiles against round 2's 476 and misses none of the 410 changed.
+  The 100k edit grew with the rebase instead: 464 changed segments (round 1: 386) and the same 36
+  pieces.
+- **Where the stage goes** (diagnostic build with per-phase timers, four workers, the machine
+  shared, untimed; CPU time summed over the 44 Kuopio edits): sampling 64 %, coverage
+  rasterization 22 %, first-pass listing 5 %, list building, bins, rows, gather, base window and
+  second pass 1-2 % each. Junction-heavy edits spend up to 37 % in rasterization (`kuopio_12`
+  attempt 36: 5.0 of 13.5 ms). The bake's wall time is a median 1.34 times its CPU time over four
+  workers (13 tiles on four workers leave the last worker four), and even a perfect split misses
+  on the worst edits: `kuopio_04` attempt 10 has 16.0 ms of CPU for 13 tiles (4.0 ms over four
+  workers before its 0.4 ms selection).
+- **Lanes on this target.** `x86-64-v2` has two `f64` per register; LLVM vectorizes part of the
+  lane arithmetic (7 `divpd` and 6 `sqrtpd` beside 21 `divsd` and 16 `sqrtsd` in `bake_tile`). The
+  value exit took Kuopio's evaluated seams per sample from 2.43 to 1.86 (census) and `kuopio_04`
+  attempt 10's from 7.63 to 5.74.
+- **`timing.sh`** (release library tests, both locks, P-cores, four workers, 20:19-20:25, binary
+  sha256 `39b969a84ad7` = the round 3 code on `road` at `bf7aebbd`, which differs from the rebased
+  tree only in `TERRAIN-07-B`'s roadbed skirts; load 11.9 at the start, restic absent at both ends;
+  logs under `$ARTIFACTS`):
+  - **Kuopio edits** (`benchmark_kuopio_graded_edits`): median 2.12 ms, p90 3.98 ms, worst
+    5.30 ms (`kuopio_04` attempt 10, 13 tiles); 31 of 44 within 3.0 ms (round 2: 27). Over 3.0 ms:
+    `kuopio_04` 10 (5.30), `kuopio_06` 17 (4.58, 19 tiles), `kuopio_11` 33 (4.36, 17), `kuopio_08`
+    22 (4.29, 10), the hillside T (3.98, 13), `kuopio_10` 27 (3.59) and 26 (3.49), `kuopio_09` 24
+    (3.46), `kuopio_11` 31 (3.38), `kuopio_12` attempt 36 (3.25), `kuopio_03` 8 (3.17) and 7
+    (3.14), the removal of edge 43 (3.01). Selection 0.19-0.69 ms; 476 tiles over the 44 edits, as
+    in round 2. `kuopio_12`'s strokes after the other cases (64 background edges) keep their tiles
+    and digests, at 1.36-2.90 ms.
+  - **The edits whose dirty tiles touch the saved edges 13, 14 or 40** (the tiles those edges'
+    polylines meet, grown 10 m: (4..6, -5..-3) and (-14..-13, -3..-2)): `kuopio_04` attempts 9
+    (2.03 ms) and 10 (5.30 ms), `kuopio_09` attempts 23 (1.32 ms) and 24 (3.46 ms); the other 40
+    edits: median 2.12 ms, worst 4.58 ms, 29 within 3.0 ms. The strokes replay on the source world
+    with today's solve, so the defect's save data is not in them; the re-recording and the 1:3
+    grade limit (`roads.md` questions 37 and 38) change these replays too.
+  - **The steep tiles** (edits above 4 evaluated seams per sample): `kuopio_04` attempt 10 1.51 ms
+    per tile per worker (5.74 seams per sample), `kuopio_08` attempt 22 1.58 ms (5.29), `kuopio_10`
+    attempt 27 1.66 ms (5.23), against the census mean of 0.43 ms (round 2: 1.69-1.92 ms).
+  - **Kuopio census** (`kuopio_graded_census`): `GL0` 517 tiles in 0.221 s on one worker (0.43 ms
+    per tile; round 2 0.50) and 0.089 s on four; 1.86 evaluated and 3.83 listed seams per sample,
+    2.2 % second-pass samples; `GL1` 0.102 s on one worker.
+  - **Populated commits** (`graded_tiles` rows; exact cut `surface_ms` the same-run control): 0:
+    1.89, 1.68, 1.34 ms (9, 10, 9 tiles; exact cut 6.7-20.2 ms); 2k: 2.47, 1.29, 1.41 (11, 7, 9;
+    14.0-99.1); 10k: 2.59, 1.52, 1.39 (11, 9, 9; 10.7-107.5); 30k: 2.19, 1.48, 1.10 (8, 8, 5;
+    12.3-112.4); 100k: **2.94**, 1.52, 1.24 (13, 10, 7; 9.4-94.0). Every edit within 3.0 ms, no
+    trend from 0 to 100k; the first 100k edit (3.25 ms in round 2) now takes 2.94 ms, 0.80 ms of
+    it selection. No walls and no conflict samples at any tier.
+  - **Locality** (`benchmark_graded_tiles_locality`): the same 4 tiles with bitwise equal texels at
+    3 to 4,707 edges, p50 0.47, 0.59, 0.95, 0.82 ms.
+  - **Reference fixtures** (16 tiles, p50 of 50): `GL0` 0.86-1.26 ms on the road fixtures,
+    `conflict_8` 1.51 ms; `GL1` 0.57-0.79, `GL2` 0.51-0.69, `GL3` 0.39-0.64 ms (round 2:
+    2.68-4.29; round 1: 0.51-0.82). Same-binary control, the exact cut's T bench: 1.83 ms (round
+    2: 1.68 ms in its session).
+  - **Point queries**: `base_height_at` 0.04-0.13 µs, `mask_at` 4.1-7.6, `surface_height_at`
+    5.2-10.1, `ground_height_at` 7.5-13.2, `normal_at` 14.2-27.5 µs (round 2, another session:
+    3.8-7.2, 4.7-9.1, 6.6-11.9, 11.5-22.4); T19 unchanged.
+  - **Wall census on Kuopio** (`kuopio_wall_sites`, every seam, untimed): unchanged, 430 walled
+    samples, 182.9 m, highest 43.9 m, the same five sites (on the old save, question 38).
+- **Lines** (production, tests excluded): `graded/` 2,684 (round 2: 2,419; `sample` +134 for the
+  lanes, the shared value, the nearest-seam tie and the base stops, `tile` +70 for the lattice
+  runs and the evaluation modes, `seams` +34 for `Seam::at_lanes`, `grade` +20, `prune` +5);
+  tests 1,229. Roadbed `query.rs` +14/−2 (the inside-piece triangle visit).
 
 #### `TERRAIN-07-B` — road skirts in the piece mesh
 
@@ -4450,8 +4560,8 @@ profile or `xvfb-run`. The idle frame uses the idle-frame matrix
 **Decided by the user, 2026-10-25: every recommendation below is adopted.** Where a
 recommendation hangs a later choice on a measurement (T2, T5, T6, T7, T8), the gate it names
 measures it and the recommendation's condition decides; T2 was decided by the user on
-2026-10-25: (c), retaining walls at the lower road. New questions continue from T20; T18 and T19
-(`TERRAIN-07-A`) are open.
+2026-10-25: (c), retaining walls at the lower road. New questions continue from T21; T18, T19 and
+T20 (`TERRAIN-07-A`) are open.
 
 1. **T1. Exact locality of the overlap rule.**
    - **Evidence.** The spike's reach `dev / (1/2 - s)` bounds where a seam's cone excludes the base.
@@ -4627,6 +4737,24 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       levers are SIMD seam evaluation and sub-tile selection (at most about 14 % fewer tiles);
       if they miss, T9 (b) (undo keeps its tiles; undo has no preview to reuse) or a definition
       of the edit size the budget covers goes to the user.
+    - **Round 3 (2026-10-25): bins at `max(4 m, spacing)`, the value early exit and lanes**
+      ([the grading function](#the-grading-function), [record](#terrain-07-a-record)), all exact:
+      the Kuopio edits take a median 2.12 ms and at worst 5.30 ms on four workers, 31 of 44
+      within 3.0 ms; the populated edits 1.10-2.94 ms (all within). Still open, not relaxed; the
+      user's question is [T20](#terrain-07-open-questions). Remaining cost per lever (a
+      diagnostic build with per-phase timers, the 44 edits' CPU time): sampling 64 % (the lanes
+      are two `f64` wide on `x86-64-v2`; a wider target is below Godot's minimum CPU and would need
+      runtime dispatch, which is `unsafe`), coverage rasterization 22 % (mostly the piece grids'
+      triangle walk, of which a piece inside the tile now visits each triangle once; a per-row
+      span from the predicate's own tolerance region, the triangle scaled by `1 + 3e-3` about its
+      centroid within its box grown 1 mm, would skip most point tests), first-pass listing 5 %,
+      everything else 1-2 % each; selection 0.19-0.69 ms of the stage. The bake's wall time is a
+      median 1.34 times its CPU time over four workers: splitting a tile's sampling across
+      workers would recover part of that, but even a perfect split leaves `kuopio_04` attempt 10
+      at about 4.4 ms (16.0 ms of CPU for 13 tiles in the diagnostic build, plus 0.4 ms of
+      selection). The steep tiles cost 1.51-1.66 ms per tile per worker against a 0.43 ms mean.
+      Kuopio's acceptance is judged on the re-recorded reference (`roads.md` question 38), whose
+      1:3 grade limit (question 37) removes the steepest replayed roads.
 19. **T19. Point queries for per-agent use.**
     - **Evidence** (`TERRAIN-07-A`). `ground_height_at` costs 6.9-12.5 µs, `normal_at`
       12.6-24.7 µs, `mask_at` 4.0-7.5 µs on one thread: one gather of every seam within the cap
@@ -4638,6 +4766,33 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       a derived cache (invariant 2). (c) Answer from resident tiles: Rust keeps none (invariant 2).
     - **Recommendation.** (a) in `TERRAIN-07-F`, measured against the consumers' loads; (b) only
       with a measurement that (a) misses.
+
+20. **T20. The edit size the 3.0 ms terrain stage covers on hills (`TERRAIN-07-A` round 3) —
+    open.**
+    - **Evidence** ([record](#terrain-07-a-record), round 3). Every exact lever tried so far
+      (rounds 2 and 3, T18) leaves 13 of the 44 Kuopio edits between 3.01 and 5.30 ms on four
+      workers; the populated city's edits take 1.10-2.94 ms. The misses are edits of 8-19 dirty
+      tiles: on steep ground a tile costs 1.51-1.66 ms per worker (up to 5.7 evaluated seams per
+      sample, 9 % second-pass samples), elsewhere 0.43 ms on average, and selection takes
+      0.19-0.69 ms of the stage. With four workers and about 2.5 ms left after selection, a
+      single-frame bake fits about six steep tiles or about twenty average ones. The remaining
+      exact levers (T18, round 3) are a split of each tile's sampling across workers (the bake's
+      wall time is 1.34 times its CPU time over four workers) and a row span for the coverage
+      test; by the diagnostic build's CPU time neither brings the worst edit within 3.0 ms.
+      Today every full-edit bake runs in one frame: the preview pose, the commit (which adopts
+      matching preview tiles, so only tiles whose inputs changed since the last pose rebake) and
+      the undo (T9 (a): a rebake of the edit's tiles from the restored inputs, with no preview to
+      adopt). The re-recorded Kuopio reference (`roads.md` question 38) and the 1:3 grade limit
+      (question 37) change these edits before gate A is judged.
+    - **Options.** (a) T9 (b): the undo record keeps the replaced tiles (about 3 MB per entry at
+      `GL0`) and undo swaps them back, so the full-edit bake is no longer on the undo path; the
+      preview poses and the commit keep their budget. (b) A definition of the largest edit that
+      must fit one frame (for example a number of dirty tiles or a stroke length on a given
+      slope), with larger edits finishing their terrain over the following frames, the old tiles
+      shown until then.
+    - **Recommendation.** None: the coordinator's brief puts the choice between (a) and (b) to the
+      user. Neither relaxes the 3.0 ms stage for the edits it covers; the exact levers stay open
+      under T18 either way.
 
 #### Superseded `ROAD-68` questions
 
