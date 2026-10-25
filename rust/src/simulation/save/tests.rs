@@ -2057,6 +2057,48 @@ fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     assert_eq!(crossing, [1]);
 }
 
+// A save whose junction a commit would reject fails the load with the typed error
+// (`ROAD-68-E`), whether the load's repair runs (every arm grounded) or not (a bridge arm). The
+// T's south arm is shorter than the profile solve's 2 m sample, which leaves a junction without
+// a plane; its layout fails first (`ArmTooShort`), so the load's plane check
+// (`unpinned_nodes`) finds no node whose piece built without a plane.
+#[test]
+fn a_saved_junction_a_commit_would_reject_fails_the_load() {
+    use crate::simulation::network::roadbed::fixtures::{connect, point};
+    use crate::simulation::network::types::{EdgeClass, NodeType};
+    for bridge in [false, true] {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(point(0.0, 0.0, true), NodeType::Junction);
+        let west = graph.add_node(point(-60.0, 0.0, true), NodeType::Junction);
+        let east = graph.add_node(point(60.0, 0.0, true), NodeType::Junction);
+        let south = graph.add_node(point(0.0, 1.5, true), NodeType::Junction);
+        connect(&mut graph, west, center, 7.0, true);
+        let east_edge = connect(&mut graph, center, east, 7.0, true);
+        connect(&mut graph, south, center, 7.0, true);
+        if bridge {
+            graph.edge_mut(east_edge).class = EdgeClass::Bridge;
+        }
+        graph.rebuild_intersection_clips();
+        let maps =
+            build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, &graph, &maps).unwrap();
+        tx.commit().unwrap();
+        let mut loaded = network::load_graph(&conn).unwrap();
+        let mut transit = TransitNetwork::new();
+        let error = network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit)
+            .expect_err("the junction fails the load")
+            .to_string();
+        assert!(
+            error.contains("node 0 piece did not build") && error.contains("ArmTooShort"),
+            "bridge {bridge}: {error}"
+        );
+        assert!(transit.roadbed.unpinned_nodes(&loaded).is_empty());
+    }
+}
+
 #[test]
 fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
