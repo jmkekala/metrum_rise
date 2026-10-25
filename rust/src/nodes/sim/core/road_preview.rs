@@ -320,7 +320,7 @@ impl RoadPreviewContext {
         };
         let mut roadbed = self.view.roadbed.snapshot();
         applied.mark_pieces(&mut roadbed);
-        let delta = roadbed.compile_delta(&self.replica);
+        let delta = roadbed.compile_delta_with(&self.replica, &mut self.roadbed_scratch);
         let (changed_chunks, _) = roadbed.install(&delta);
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_start = Instant::now();

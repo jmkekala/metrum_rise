@@ -86,6 +86,13 @@ pub struct RoadbedSystem {
     rebuilt: RebuiltOwners,
 }
 
+/// Span and node builders' buffers for compiles on the calling thread (`ROAD-68-E`).
+#[derive(Default)]
+pub(crate) struct RoadbedScratch {
+    span: SpanScratch,
+    node: NodeScratch,
+}
+
 /// Owners (nodes and edges) whose pieces were rebuilt, swapped or dropped since the last
 /// [`RoadbedSystem::take_rebuilt_owners`] (`ROAD-68-E`). Every graph edit that can change a
 /// piece marks its owners dirty and compiles, so these are the graph records a replica of the
@@ -287,6 +294,18 @@ impl RoadbedSystem {
     /// same closure, plans and parallel builds, so installing the delta equals that compile
     /// bitwise. Empty when nothing is pending.
     pub fn compile_delta(&self, graph: &RegionGraph) -> RoadbedDelta {
+        self.compile_delta_with(graph, &mut RoadbedScratch::default())
+    }
+
+    /// [`Self::compile_delta`] with the caller's scratch for a closure small enough to build on
+    /// the calling thread, so a caller that compiles every frame (the road preview) reuses its
+    /// buffers (`ROAD-68-E`). Larger closures build on the pool with per-worker scratch. The
+    /// builders clear what they use, so the pieces do not depend on the scratch's history.
+    pub(crate) fn compile_delta_with(
+        &self,
+        graph: &RegionGraph,
+        scratch: &mut RoadbedScratch,
+    ) -> RoadbedDelta {
         let mut delta = RoadbedDelta {
             base_generation: self.generation,
             base_compiled: self.compiled,
@@ -345,16 +364,15 @@ impl RoadbedSystem {
         };
         let (built_spans, built_nodes): (Vec<_>, Vec<_>) =
             if edges.len() + plans.len() <= INLINE_CLOSURE_PIECES {
-                let (mut span_scratch, mut node_scratch) = Default::default();
                 (
                     edges
                         .iter()
                         .zip(&span_mouths)
-                        .map(|item| span(&mut span_scratch, item))
+                        .map(|item| span(&mut scratch.span, item))
                         .collect(),
                     plans
                         .into_iter()
-                        .map(|item| node(&mut node_scratch, item))
+                        .map(|item| node(&mut scratch.node, item))
                         .collect(),
                 )
             } else {

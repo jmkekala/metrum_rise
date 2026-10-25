@@ -288,6 +288,9 @@ pub(crate) struct RoadPreviewContext {
     sequence: u64,
     // The latest preview; a click on the same stroke submits it with the commit.
     pub(crate) last_preview: Option<Arc<RoadPreview>>,
+    // The roadbed builders' buffers, reused by every pose's compile (guardrail: per-pose
+    // scratch lives in the preview context).
+    pub(crate) roadbed_scratch: crate::simulation::network::roadbed::RoadbedScratch,
 }
 
 impl RoadPreviewContext {
@@ -299,6 +302,7 @@ impl RoadPreviewContext {
             view,
             sequence: 0,
             last_preview: None,
+            roadbed_scratch: Default::default(),
         }
     }
 
