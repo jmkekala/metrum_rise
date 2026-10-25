@@ -585,7 +585,7 @@ fn kuopio_graded_census() {
 }
 
 // `TERRAIN-07-A` `T18` (a): the two-pass exact pruning on Kuopio's steepest road, the 4 x 4
-// tiles around edge 43 of the reference save (a dead end on a 1:2 side slope): pruned equals
+// tiles around the dead end on a 1:2 side slope (`KUOPIO_DEAD_END`): pruned equals
 // unpruned bitwise in any batch, order and worker count, with second-pass samples; and the
 // lanes equal one point at a time on every road tile.
 #[test]
@@ -621,8 +621,8 @@ fn kuopio_pruned_bake_equals_every_seam() {
 // (run on four workers). Every recorded stroke on the source world, each case alone; then
 // `kuopio_12`'s strokes again after every other case, the edited neighbourhood fixed and the
 // rest of the recorded city added, with the same tiles and texel bits; and on the reference
-// save a T up a 1:4 hillside from edge 69 and the removal of edge 43 (a dead end beside a 1:2
-// slope).
+// save a T up a 1:4 hillside (`KUOPIO_HILLSIDE_T`) and the removal of the dead end beside a 1:2
+// slope (`KUOPIO_DEAD_END`), both found by place.
 #[test]
 #[ignore = "controlled release timing: cargo test --release --lib benchmark_kuopio_graded_edits -- --ignored --nocapture"]
 fn benchmark_kuopio_graded_edits() {
@@ -685,22 +685,34 @@ fn benchmark_kuopio_graded_edits() {
     core.precompute_road_mesh_data();
     drop(core.transit_network.roadbed.take_terrain_changes());
     let saved_edges = core.region_graph.edge_count();
-    // The T: from edge 69's middle vertex 60 m up the slope across it.
+    // The T: from the hillside road's middle vertex 60 m up the slope across it.
+    let (road, ends) = KUOPIO_HILLSIDE_T;
+    let road = kuopio_edge_at(&core, road);
+    let start = Vector2::new(ends[0][0], ends[0][1]);
+    let off_road = core
+        .region_graph
+        .edge(road)
+        .physical_geometry
+        .iter()
+        .fold(f32::INFINITY, |d, p| {
+            d.min(Vector2::new(p.x, p.z).distance_to(start))
+        });
+    assert!(
+        off_road < 0.01,
+        "the T starts on a vertex of edge {road}: {off_road} m off"
+    );
     let before = core.transit_network.roadbed.snapshot();
-    let points = [(-1367.94, 2492.99), (-1427.83, 2489.35)]
-        .map(|(x, z): (f32, f32)| {
-            let y = core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE;
-            Vector3::new(x, y, z)
-        })
-        .to_vec();
+    let points = road_tool_points(&mut core, ends);
     commit_ready_with_lanes(&mut core, points, 1, 1);
     let mut record = stage(&core, &before);
-    record["edit"] = "hillside_t_edge_69".into();
+    record["edit"] = "hillside_t".into();
+    record["edge"] = road.into();
     record["background_edges"] = saved_edges.into();
     eprintln!("GRADED_KUOPIO_EDIT {record}");
-    // The removal of edge 43 (saved edge ids load unchanged).
+    // The removal of the dead end.
+    let dead_end = kuopio_edge_at(&core, KUOPIO_DEAD_END);
     let before = core.transit_network.roadbed.snapshot();
-    assert!(core.bulldoze_road_edge_for_test(43));
+    assert!(core.bulldoze_road_edge_for_test(dead_end));
     core.precompute_road_mesh_data();
     let changes = core.transit_network.roadbed.take_terrain_changes();
     let mut record = graded_stage(
@@ -709,7 +721,8 @@ fn benchmark_kuopio_graded_edits() {
         &core.transit_network.roadbed,
         &changes,
     );
-    record["edit"] = "remove_edge_43".into();
+    record["edit"] = "remove_dead_end".into();
+    record["edge"] = dead_end.into();
     record["background_edges"] = saved_edges.into();
     eprintln!("GRADED_KUOPIO_EDIT {record}");
 }
@@ -782,22 +795,60 @@ fn kuopio_source_core() -> SimCore {
     core
 }
 
-// One recorded stroke's points: its recovered XZ ends at the height the road tool picks there,
-// a road's surface where the end lies on one, else the ground. Roads in a cut or on a fill lie
-// off the terrain, and an end at terrain height beside them would read as a bridge or tunnel.
-fn recorded_stroke_points(core: &mut SimCore, stroke: &serde_json::Value) -> Vec<Vector3> {
+// A stroke's points at XZ `ends`, each at the height the road tool picks there: a road's surface
+// where the end lies on one, else the ground. Roads in a cut or on a fill lie off the terrain,
+// and an end at terrain height beside them would read as a bridge or tunnel.
+fn road_tool_points(core: &mut SimCore, ends: [[f32; 2]; 2]) -> Vec<Vector3> {
     core.precompute_road_mesh_data();
-    ["start_xz", "end_xz"]
-        .map(|key| {
-            let x = stroke[key][0].as_f64().unwrap() as f32;
-            let z = stroke[key][1].as_f64().unwrap() as f32;
-            Vector3::new(
-                x,
-                core.get_world_surface_height_internal(Vector2::new(x, z)),
-                z,
-            )
+    ends.map(|[x, z]| {
+        Vector3::new(
+            x,
+            core.get_world_surface_height_internal(Vector2::new(x, z)),
+            z,
+        )
+    })
+    .to_vec()
+}
+
+// One recorded stroke's points: its recovered XZ ends at the road tool's heights.
+fn recorded_stroke_points(core: &mut SimCore, stroke: &serde_json::Value) -> Vec<Vector3> {
+    let ends =
+        ["start_xz", "end_xz"].map(|key| [0, 1].map(|i| stroke[key][i].as_f64().unwrap() as f32));
+    road_tool_points(core, ends)
+}
+
+// The Kuopio edits `TERRAIN-07-A` makes on the reference save, by place rather than edge id, so a
+// re-recorded or replaced save keeps them (`ROAD-68` open question 38): each road's midpoint on
+// the network recorded 2026-09-08 (its edges 43 and 69; the re-recorded save of `ROAD-68-K14`
+// keeps every edge's id and midpoint).
+// The dead end beside a 1:2 side slope, removed.
+const KUOPIO_DEAD_END: [f32; 2] = [116.03, 1091.28];
+// The road a T climbs a 1:4 hillside from, and the T's ends: its middle vertex, then 60 m up.
+const KUOPIO_HILLSIDE_T: ([f32; 2], [[f32; 2]; 2]) = (
+    [-1366.95, 2476.65],
+    [[-1367.94, 2492.99], [-1427.83, 2489.35]],
+);
+
+// The live road whose midpoint lies nearest `midpoint`, asserted within 1 m. Test-only linear
+// scan.
+fn kuopio_edge_at(core: &SimCore, [x, z]: [f32; 2]) -> usize {
+    let graph = &core.region_graph;
+    let distance = |id: usize| {
+        BuildingAllocator::sample_pos_on_edge(graph, id, 0.5).distance_to(Vector2::new(x, z))
+    };
+    let edge = (0..graph.edge_count())
+        .filter(|&id| {
+            let edge = graph.edge(id);
+            !edge.deleted && edge.primary_type == TransitType::Road
         })
-        .to_vec()
+        .min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
+        .unwrap();
+    assert!(
+        distance(edge) < 1.0,
+        "no road at {x}, {z}: edge {edge} is {} m off",
+        distance(edge)
+    );
+    edge
 }
 
 // Commits one recorded stroke at the heights `recorded_stroke_points` picks.

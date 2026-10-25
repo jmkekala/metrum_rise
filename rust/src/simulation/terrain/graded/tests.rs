@@ -819,10 +819,15 @@ fn benchmark_graded_tiles_locality() {
     }
 }
 
+// The `GL0` slot's material edge capacity proposed in terrain.md "Data" (`TERRAIN-07-C` builds
+// the edges and confirms it).
+const GL0_EDGE_CAPACITY: usize = 256;
+
 /// The graded terrain stage of one road edit (`TERRAIN-07-A`; no commit runs it yet): dirty
 /// tile selection from the edit's terrain changes between `before` and `after`, then the `GL0`
 /// bake of those tiles on the shared pool. Median of 7 warm runs, as JSON with the tiles, their
-/// measurements and a digest of the texel bits (to compare builds and backgrounds).
+/// measurements, the undo record's slots under T20 (a) and a digest of the texel bits (to
+/// compare builds and backgrounds).
 pub(crate) fn graded_stage(
     terrain: &TerrainSystem,
     before: &RoadbedSystem,
@@ -850,6 +855,14 @@ pub(crate) fn graded_stage(
     runs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let (stage_ms, select_ms) = runs[3];
     let changed_tiles = assert_selection_covers(terrain, before, after, changes, &tiles);
+    // T20 (a): an undo record keeps the tiles the edit replaces, one `GL0` slot (the texels with
+    // apron and the rows at capacity, terrain.md "Data") per selected tile graded before it.
+    let replaced = bake(terrain, before, &tiles, Level::Gl0, Evaluation::Lanes);
+    let replaced = replaced.iter().filter(|payload| payload.graded);
+    let undo_bytes: usize = replaced
+        .clone()
+        .map(|payload| 16 * (payload.texels.len() + Level::Gl0.seam_capacity() + GL0_EDGE_CAPACITY))
+        .sum();
     let bits: Vec<Vec<[u32; 4]>> = payloads.iter().map(texel_bits).collect();
     let stats = payloads.iter().map(|p| p.stats);
     let samples = payloads
@@ -864,6 +877,7 @@ pub(crate) fn graded_stage(
         "tiles": tiles.len(), "tile_keys": tiles.iter().map(|t| (t.x, t.z)).collect::<Vec<_>>(),
         "changed_tiles": changed_tiles,
         "graded": payloads.iter().filter(|p| p.graded).count(),
+        "undo_tiles": replaced.count(), "undo_mb": undo_bytes as f64 / 1e6,
         "window_seams_max": stats.clone().map(|s| s.window_seams).max(),
         "reach_max_m": stats.clone().map(|s| s.reach_max_m).fold(0.0, f64::max),
         "seams_per_sample": stats.clone().map(|s| s.candidates).sum::<u64>() as f64 / samples,
