@@ -4531,9 +4531,29 @@ portal cutouts (the terrain side of `ROAD-61`), building sites, driveways and pa
   the display-only shader-global probe and rendered vegetation tests. Clippy `--all-targets`:
   the baseline's 59 warnings, none new; `cargo doc`: no missing docs. `ROAD-68-F` ignores left:
   none (the tunnel portal test is `TERRAIN-07`'s).
-- **Not run.** No benchmark: the changes remove the span taper's work, add `O(boundaries)` per
-  arm to the mouths and two profile builds per degree-two node, and narrow the field and cell
-  tests to the piece grid.
+- **Timing (fresh, 2026-10-25), regression open.** Release library tests, `taskset -c
+  0,2,4,6,8,10,12,14`, both timing locks, C F F C in one session (no restic running at start or
+  end): C = `road` `8c6f89e7`, F = `8b2ad9eb` (this part), two binaries built from those
+  sources in one target directory (identities in `$ARTIFACTS`). Native preview stages
+  (`benchmark_road_preview_stages`, 4 workers), p50 ms, C / F, samples C1 C2 against F1 F2:
+  `sloped_t` plan 0.464, 0.465 / 0.470, 0.471; roadbed 0.322, 0.320 / 0.326, 0.321; terrain
+  4.427, 4.385 / 4.413, 4.440; payload packing 0.351, 0.346 / 0.415, 0.408. `sloped_branch` plan
+  0.407, 0.404 / 0.408, 0.405; roadbed 0.323, 0.321 / 0.324, 0.326; terrain 4.708, 4.725 /
+  4.720, 4.701; payload packing 0.336, 0.335 / 0.392, 0.389. **Payload packing is 0.06 ms
+  (+16-18%) slower in F, against a C-against-C spread of 0.005 ms**; plan, roadbed and terrain
+  are within the spread. Within the 1.0 ms payload budget, but beyond the gate rule, so gate F
+  stays open until the cause is found (candidates: the preview payload now packs the family
+  pieces' additional spans and node pieces; part 1 measured 0.349 / 0.338 ms for the same
+  fixtures). `road68g_commit_determinism`: reference digest `6252b7ba71c5a6f1` in C and F, every
+  difference null (the probe re-records of part 2 do not reach the populated fixture). Commit
+  breakdown (`benchmark_populated_commit_breakdown`, tiers 0 / 10k / 30k / 100k, 8 workers,
+  medians of three samples per run, C F F C): lots and generated digests equal in every run and
+  tier. `commit_ms` C 15.06, 15.02 / F 14.81, 15.30 at 0; 27.78, 28.76 / 27.33, 27.36 at 10k;
+  71.16, 72.84 / 73.42, 74.82 at 30k; 82.57, 81.42 / 80.91, 81.01 at 100k. The `surface` stage
+  at 30k: C 61.69, 63.21 / F 63.74, 64.35 (F +1.1 to +2.7 ms over the C pair's 1.5 ms spread;
+  at 10k and 100k within the spread; the same 30k surface offset as part 1's note on the site
+  paving query's inlining). Other stages (plan, add, lanes, mesh, buildings, finalize, snapshot)
+  within the C-against-C spread at every tier.
 
 ### `ROAD-68-G` — commit consequences inside one frame
 
