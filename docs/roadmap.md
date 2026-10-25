@@ -125,7 +125,11 @@ terrain patches its pieces change with the commit's functions, the commit instal
 sources match, and undo puts the pre-edit terrain entries back. Round 4 made that terrain
 follow the edit: the CDT input names chain runs by geometry, so a split trunk's far half keeps
 its windows, and edits stamp only tiles near changed chain segments (or near changed pieces
-where a site grades); the stage still misses its 3.0 ms budget on the sloped fixtures (open).
+where a site grades); the stage still misses its 3.0 ms budget on the sloped fixtures (open,
+now with `ROAD-68-D` part 6). Round 5 rebased it onto `ROAD-68-G` parts 3-5 (on `road` as work
+in progress since 2026-10-25), fixed entrances left on old lane ids after a lane-local undo, and
+tests the terrain staging on the real terrain renderer; the stream at the CPU's idle clock
+misses 16.7 ms on 38 of 864 frames because of the terrain stage (question 27, open).
 Tests that need later gates are disabled until then (9 Rust tests, 1 Godot script).
 `ROAD-68-E`, `-F` and `-H` are open, and `roads.md` lists twenty-eight open questions; open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is decided for `ROAD-68-E`, 17 records footpath defaults to
@@ -133,7 +137,8 @@ confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and faile
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different
 frames, the yard test) and 24 (road surface pinholes on slopes) are decided under delegation and
 done in part 5, with question 23's straight-edge seam T-vertices still open, 25 (corridor checks
-at commit until `ROAD-68-E` part 2), 27 (stage budgets at the CPU's idle clock) and 28 (debug
+at commit until `ROAD-68-E` part 2), 27 (stage budgets at the CPU's idle clock; the idle-clock
+frame is an open miss since terrain is in the preview) and 28 (debug
 face sources name tile-local chain runs) are decided by the coordinator for review, and 26
 (preview payloads with crossings or signs, until `ROAD-68-F`) is an open miss. Design,
 bounds, budgets, product defaults and gates are in

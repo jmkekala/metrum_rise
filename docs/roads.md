@@ -1481,11 +1481,24 @@ These need a user decision; work that does not depend on them continues.
       wastes power to win a benchmark.
     - **Recommendation.** (a): the budgets describe work, and the end-to-end 16.7 ms holds even at
       the idle clock (_process max 9.7 ms). The idle-clock numbers stay recorded with every run.
-    - **Since terrain is in the preview (round 5, open).** The idle-clock stream exceeds 16.7 ms on
-      38 of 864 frames (`_process` max 21.1 ms, terrain 8.1-9.8 ms p50); back to back every frame
-      fits (max 8.8 ms). The idle-clock frame is an open miss with the terrain stage
-      ([gate E round 5](#progress-2026-10-24-branch-road68-e1-work-in-progress)), not a relaxed
-      target.
+    - **Since terrain is in the preview (round 5) — open, the 16.7 ms frame is missed at the idle
+      clock.**
+      - **Evidence.** Round 4's library in the stream test (gate E round 5 record): back to back,
+        every frame fits (864 of 864, `_process` max 8.8 ms, terrain 3.5-5.1 ms p50); with the
+        1/60 s timer, `_process` takes 11.8-13.5 ms p50 and 38 of 864 frames exceed 16.7 ms (max
+        21.1 ms). The terrain stage is what grew: 8.1-9.8 ms p50 (max 15.4) at the idle clock,
+        1.7-2.6 times its operating-clock time, while every other stage together stays at 3-4 ms
+        p50. The round-2 evidence above (max 9.7 ms) predates terrain in the preview.
+      - **Options.** (a) Meet the terrain stage's 3.0 ms budget at operating clock (gate D part 6,
+        its item (c): the terrain build cost) and measure the idle-clock stream again; at the
+        measured factor a 3.0 ms stage takes 5-8 ms p50 at the idle clock, a frame of about
+        9-12 ms p50, and whether the slowest frames fit needs the run. (b) A tighter terrain
+        budget, set from that idle-clock run. (c) Build terrain across frames: the
+        asynchrony the spec forbids without a measured reason, and a frame would show a road
+        without its terrain. (d) Keep the clock up while the road tool is active (question 27
+        (c)), which spends power to hide the cost.
+      - **Recommendation.** (a), then decide between (b) and (d) from the idle-clock stream on
+        gate D part 6's terrain code; the 16.7 ms target is not relaxed.
 28. **Debug face sources name tile-local chain runs (`ROAD-68-E` round 4) — decided by the
     coordinator under the user's delegation, 2026-10-25, for review: (a).**
     - **Evidence.** The CDT's `RoadBoundary` source named the graph piece, chain and segment of
@@ -3318,6 +3331,53 @@ Round 5 (part 1, 2026-10-25, work in progress; rebased on `road` `a4941bbf`, gat
   installed through the renderer's terrain transaction, releases the held preview inside the
   install call (`patch_render_will_change`), after which the resident node shows the commit's
   mesh. So no frame shows neither.
+- **Commit publication and snapshot, with gate G's breakdown.** `$TEST_BINARY
+  nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_breakdown
+  --exact --ignored --nocapture`, `METRUM_COMMIT_TIERS=0,10000,30000`, release, 8 workers as
+  gate G times it, P-cores, both timing locks; C = `road` `47432fb5` (gate G part 5), E = this
+  branch before the fix below (`abe1910c`), C E E C, three samples per tier (sample 0 is the
+  city's first commit). Lots digests equal in every sample. Warm samples 1-2, ms:
+
+  | Tier | `publish_ms` C | E | `snapshot_ms` C | E | click to acknowledgement C | E |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 0 | 0.07-0.15 | 0.03-0.06 | 0.02 | 0.03-0.05 | 13.4-17.8 | 14.6-16.3 |
+  | 10k | 0.23-0.70 | 0.04-0.11 | 0.25-0.28 | 0.83-4.99 | 21.6-30.3 | 22.8-35.0 |
+  | 30k | 0.49-1.66 | 0.07-0.21 | 0.72-0.77 | 1.22-9.36 | 62.7-76.4 | 66.6-91.2 |
+
+  The publication now frees replaced views on the pool, off the commit (round 4). The
+  snapshot rose: a probe in `publish_road_tool_view` put all of it in the terrain inputs'
+  refresh, about 0.1-0.13 ms per noted patch (36 patches at 10k, 4.8 ms; 60 at 30k, 6.4 ms;
+  4-6 patches, 0.55-0.6 ms), each re-running two building-site queries over the 512 m
+  building chunks around the patch, although most notes (acknowledgements, ledger stamps, cache
+  inserts) change no site; the site index preparation and the zoning grid snap measured 0. The
+  city's first commit also rebuilds every patch (4.5 ms at 10k, 7.0 ms at 30k), which in the
+  game the load's own publication pays. **Fix:** only patches noted for a site change
+  (`note_sites`) query the sites again; the others keep their shared site snapshot and site
+  ownership, and site ownership is read from the snapshot (the widest margin holds the local
+  one, under the same overlap rule), so a site-noted patch queries once.
+- **The commit's surface stage on this branch (for gate D part 6).** In the same session the
+  surface stage (`validate_staged_road_render`) took 71.5-73.5 / 58.9-61.9 ms on E against
+  62.2-62.8 / 54.6-55.0 ms on C at 30k (samples 1 / 2), and 1,856-1,943 against 1,722-1,758 ms
+  cold; at 10k they are level. Probably the commit's site test of the round-4 scope rule:
+  `road_terrain_tiles` asks the allocator's site index once per visited tile of each changed
+  piece, and each ask scans the 512 m building chunks; gate D part 6 owns that rule now.
+- **Native stages on the rebased tree.** `benchmark_road_preview_stages` as in part 1, D2 =
+  round 4's binary before the per-pose scratch (`608027cb`), E = this round (`abe1910c`), D2 E E
+  D2, ms p50: roadbed `sloped_t` 0.337-0.339 against 0.331-0.333, `sloped_branch` 0.340-0.342
+  against 0.327-0.329 (the per-pose scratch, a small consistent gain); plan level; road chunks
+  0.338-0.340 against 0.353-0.360 and terrain `sloped_t` 4.41-4.45 against 4.67, `sloped_branch`
+  4.71-4.72 against 4.88-4.90 (gate G parts 3-5 are in E and not in D2). Every native stage but
+  terrain is within budget at p95.
+- **Load.** `a_saved_junction_a_commit_would_reject_fails_the_load`: a saved T whose south arm
+  is shorter than the profile solve's 2 m sample fails the load with its typed error, with the
+  repair (every arm grounded) and without it (a bridge arm). That arm fails layout first
+  (`ArmTooShort`), and so did every shorter one tried: no saved graph was found whose junction
+  builds a piece without a plane, so the load's plane check (`unpinned_nodes`) mirrors the
+  commit's `check_node` without a fixture that reaches it. Its cost
+  (`populated_city::load_check::benchmark_load_node_check`, release, 8 workers, the economy
+  performance contract's cities, medians of five alternated runs): 0.18 ms for 247 nodes at
+  10k against the load's 17.3 ms piece compile, 0.29 ms for 642 nodes at 30k against 52.0 ms.
+  The check is new, so the load's own compile in the same process is the reference.
 
 ### `ROAD-68-F` — remaining families
 
