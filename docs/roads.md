@@ -887,6 +887,12 @@ re-stamped with the commit's patch generations, instead of building them
 inputs themselves, so a context that missed a change only costs the reuse, never a wrong patch.
 The road tool holds the terrain preview until the commit's own patches replace it: the terrain
 renderer's `patch_render_will_change` releases it in the call that installs them.
+Superseded by `TERRAIN-07-E` round 1 (2026-10-26): the commit has no terrain validation, so no
+terrain failure can refuse a road; it refuses only field and cell overlaps and failed node
+pieces. The preview stages its graded tiles and the commit adopts those whose inputs equal its
+own ([`terrain.md`](terrain.md#preview-commit-undo-and-load)); the preview still builds the
+exact cut's patches for Godot's preview until `TERRAIN-07-E`'s Godot half, but no commit reads
+them.
 
 **Undo.** The undo record holds the replaced pieces (`Arc`) and terrain patch revisions; undo
 restores them by swapping.
@@ -896,12 +902,12 @@ since, restores the graph in `O(delta records * log edges)`, and rebuilds the la
 restored closure as a commit does (the agents on them detach and reattach, the connection lanes
 of dropped nodes retire, and the entrances fronting the closure are derived again); a test
 checks the result equals a full lane rebuild. A dense terrain
-restore still rebuilds every lane, as it resets every road product. The record also keeps the
-refined terrain entries the edit's validation replaced and the patches' generations after the
-edit (round 3); when the roadbed swap held and no generation of those patches moved since,
-undo installs the pre-edit entries again at the swap's new generations (a patch that had none
-loses the edit's), so the restored terrain is the pre-edit terrain itself; otherwise the touched
-terrain rebuilds.
+restore still rebuilds every lane, as it resets every road product. The record kept the refined
+terrain entries the edit's validation replaced (round 3) until `TERRAIN-07-E` round 1 removed
+the validation; it keeps the graded tiles the commit replaced instead, which undo adopts where
+their inputs equal the restored ones ([`terrain.md`](terrain.md#preview-commit-undo-and-load)).
+A terrain record keeps the source terrain, and undo restores the source and the visual buffer
+from it (`TERRAIN-07-E`, authoritative terrain undo).
 
 **Load.** Load first checks every saved profile against the 1:3 maximum grade, with the check an
 edit meets: a road steeper fails the load with `road_too_steep` ([open question
@@ -2527,7 +2533,17 @@ These need a user decision; work that does not depend on them continues.
       `TERRAIN-07`'s). Recommendation, for the next gate: refuse the terrain edit as the
       rollback did, once the test sculpts a mound its road can follow or terrain undo restores
       the source terrain. Decided by the user, 2026-10-26: as recommended, in `TERRAIN-07-E`
-      once terrain undo restores the source terrain. (2) Old saves load as saved (reversed by the
+      once terrain undo restores the source terrain. **Built in `TERRAIN-07-E` round 1
+      (2026-10-26):** a terrain record keeps the source terrain, and undo restores the source
+      and the visual buffer from it; `finish_terrain_authoring_edit` records every road's grade
+      before the whole-graph sync and, when the sync leaves one steeper than 1:3 and steeper than
+      before (`steepened_profile`, the node edits' check), rolls the stroke back from its undo
+      record with `road_too_steep` (`O(edges)`, as the sync). Tests:
+      `a_terrain_edit_that_steepens_a_road_past_one_in_three_is_refused` (a 20 m mound under a
+      flat road: refused, source and visual terrain and the road restored bitwise), and
+      `terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility`, whose mound now
+      stands 10 m beyond the lot, away from the road (its old mound reached the road and is
+      refused), and whose undo restores the lot's feasibility. (2) Old saves load as saved (reversed by the
       user, 2026-10-26, below): a save with grades over 1:3 loads
       unchanged and only new edits are refused (recommended and taken: refusing the load would
       lose the player's city over a rule it predates, and every edit beside such a road stays
@@ -2581,7 +2597,8 @@ These need a user decision; work that does not depend on them continues.
       save and which is not small; and two economy cases outside this gate, the ledger slots of
       bare household records (`households/admission.rs`) and saved routes older than the turn
       rules (`agents/remap.rs`). Until `TERRAIN-07-E` refuses a terrain edit that leaves a road
-      over 1:3, such a city's save fails to load: [open question 48](#road-68-open-questions).
+      over 1:3, such a city's save fails to load: [open question 48](#road-68-open-questions)
+      (closed by `TERRAIN-07-E` round 1, which refuses it).
     - **Timing of the rule (`ROAD-68-K15`, fresh).** Release lib test binaries (`$TEST_BINARY`,
       16 codegen units): C = `road` `4710f59b` (before the rule), K = `d740a332` (the rule, built
       from `ac0480cc`, whose code is the same), F = `road68-K15`'s production code (its two test
@@ -3508,7 +3525,7 @@ These need a user decision; work that does not depend on them continues.
       rendered vegetation tests (headless). Disabled tests: 4, all `TERRAIN-07`. `roadbed/` is
       unchanged by `ROAD-68-K16`.
 48. **A terrain edit can leave a city whose save does not load (`ROAD-68-K21`, from question 37) —
-    open, recommendation (a), taken pending the user's review, 2026-10-26.**
+    closed by `TERRAIN-07-E` round 1 (2026-10-26): option (c) is built.**
     - **Evidence.** Since `ROAD-68-K21` a load refuses any road steeper than 1:3 (question 37,
       "Save compatibility"). The whole-graph terrain sync (`RegionGraph::sync_to_terrain`) builds a
       re-graded road at the least grade its source band allows where the ground leaves none
@@ -3525,6 +3542,11 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (a): the gap exists only on the `road` branch, where saves may break,
       and `TERRAIN-07-E` closes it at its cause; (b) would block saving over a road the player
       did not make that steep, and (c) is `TERRAIN-07-E` itself.
+    - **Closed (`TERRAIN-07-E` round 1).** A terrain edit that would leave a road steeper than
+      1:3, and steeper than before, is refused with `road_too_steep` and rolled back from its
+      undo record, which now restores the source terrain (question 37, K15 (1)). Road commits, node
+      edits and terrain strokes all refuse a road steeper than 1:3 now, so none of them can
+      leave a city whose save fails to load.
 50. **The commit breakdown runs the test build's whole-city checks (`ROAD-68-K22`) — decided by the
     user, 2026-10-26: (a), measured first.**
     - **Evidence.** The economy runners switch off the test-only checks (`contract::timing_mode`:
