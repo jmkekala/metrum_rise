@@ -37,7 +37,6 @@ struct CandidateScratch {
     xs: Vec<f64>,
     zs: Vec<f64>,
     sites: SiteBuffer,
-    pads: Vec<Seam>,
     // The candidate's lattice rectangle.
     rect: [f64; 4],
 }
@@ -49,8 +48,8 @@ thread_local! {
 /// The tiles at `level` whose bake a road change from `before` to `after` can alter, sorted
 /// and unique, into `out`:
 /// - every tile where a changed segment may be listed by either pass of the bake's pruning:
-///   pass 1 by the bake's own bin test (its cone may bind a bin's base, or it lies within the
-///   band), pass 2 where its lower bound may rise above the tile's floor, the lowest
+///   pass 1 by the bake's own bin test (its cone may bind a bin's base, or it is a road seam
+///   within the band), pass 2 where its lower bound may rise above the tile's floor, the lowest
 ///   `h + k D` over the window's seams before and after the change, the sites' pad seams
 ///   among them (`D` the distance from a seam's box to the lattice), which lies under every
 ///   first-pass ground below the base; so a removed seam counts;
@@ -303,13 +302,12 @@ fn reached(
     roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b]| {
         floor = floor.min(lowest(&road_seam(a, b)));
     });
-    scratch.pads.clear();
     if sites.ready() {
-        scratch.sites.gather(sites, window);
-        scratch.sites.push_pad_seams(&mut scratch.pads);
-        for seam in &scratch.pads {
-            floor = floor.min(lowest(seam));
-        }
+        // The floor is a minimum, so the sites need no canonical order.
+        scratch.sites.gather_unordered(sites, window);
+        scratch
+            .sites
+            .for_each_pad_seam(|seam| floor = floor.min(lowest(&seam)));
     } else {
         floor = f64::NEG_INFINITY;
     }

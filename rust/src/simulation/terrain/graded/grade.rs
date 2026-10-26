@@ -184,8 +184,8 @@ pub(super) fn settled(
 
 /// Pass 1 of the exact pruning: whether a seam with heights `seam` may change a value at points
 /// at least `distance` from it whose base lies in `base`, because its cone can bind that base or
-/// it lies within the band `band`. Where it is false the cone holds the base there and the seam
-/// is not the nearest. `O(1)`.
+/// it lies within the band `band` (a road seam's; a pad seam takes none). Where it is false the
+/// cone holds the base there and the seam is not the nearest. `O(1)`.
 pub(super) fn may_bind(seam: (f64, f64), base: (f64, f64), distance: f64, band: f64) -> bool {
     distance <= bind_reach(seam, base).max(band_reach(band))
 }

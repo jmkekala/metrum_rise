@@ -133,13 +133,20 @@ impl SiteBuffer {
     /// Gathers the sites meeting `rect` from a ready `source` in canonical order, with their
     /// edges. `O(sites log sites + edges log edges)`.
     pub(super) fn gather(&mut self, source: &(impl SiteSource + ?Sized), rect: [f64; 4]) {
+        self.gather_unordered(source, rect);
+        self.canonicalize();
+    }
+
+    /// Gathers the sites meeting `rect` from a ready `source` in the source's order, without the
+    /// canonical order and the material edges: only [`Self::for_each_pad_seam`] may read them,
+    /// whose seams do not depend on the order (the selection's floor). `O(sites)`.
+    pub(super) fn gather_unordered(&mut self, source: &(impl SiteSource + ?Sized), rect: [f64; 4]) {
         debug_assert!(
             source.ready(),
             "graded terrain sites read from an unready source"
         );
         self.clear();
         source.sites_in_bounds(rect, self);
-        self.canonicalize();
     }
 
     // Orders the sites by content and builds the material edge list.
@@ -212,14 +219,21 @@ impl SiteBuffer {
         &self.edges
     }
 
-    /// Appends the `Pad` seams of every site in canonical order: each footprint side at the
+    /// Appends the `Pad` seams of every site, sorted by key. `O(corners log corners)`.
+    pub(super) fn push_pad_seams(&mut self, out: &mut Vec<Seam>) {
+        let start = out.len();
+        self.for_each_pad_seam(|seam| out.push(seam));
+        // Sorted by key, the gathered order is gone: seams with equal keys are equal.
+        out[start..].sort_unstable_by_key(Seam::key);
+    }
+
+    /// Visits the `Pad` seams of every site in the buffer's order: each footprint side at the
     /// support height, oriented counter-clockwise (positive signed area in XZ), each site's
     /// sides from its first corner. A footprint of fewer than three corners holds no point and
     /// gives none. `O(corners)`.
-    pub(super) fn push_pad_seams(&mut self, out: &mut Vec<Seam>) {
-        let start = out.len();
-        for rank in 0..self.sites.len() {
-            let site = *self.ranked(rank);
+    pub(super) fn for_each_pad_seam(&mut self, mut visit: impl FnMut(Seam)) {
+        for index in 0..self.sites.len() {
+            let site = self.sites[index];
             let height = f64::from(site.height);
             if site.footprint.1 - site.footprint.0 < 3 {
                 continue;
@@ -228,14 +242,13 @@ impl SiteBuffer {
             let n = self.ring.len();
             for i in 0..n {
                 let ([ax, az], [bx, bz]) = (self.ring[i], self.ring[(i + 1) % n]);
-                out.push(Seam {
+                visit(Seam {
                     a: [ax, height, az],
                     b: [bx, height, bz],
                     kind: SeamKind::Pad,
                 });
             }
         }
-        out[start..].sort_unstable_by_key(Seam::key);
     }
 
     /// The canonical position of the first site whose support footprint holds the world point

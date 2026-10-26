@@ -4,18 +4,30 @@
 //! a tile's lattice must evaluate, bins of `max(4 m, the level's spacing)`.
 //!
 //! Pass 1 lists in a bin the seams whose cone can bind the base there, over the bin's exact base
-//! range, and the seams within the band. Every other seam's cone holds the base at the bin's
-//! samples, so a sample whose first-pass ground is at least its base is final. A sample left
-//! below its base (a cut's upper bound binds) can still be lifted by such a seam's lower bound:
-//! pass 2 lists, in each bin holding such samples, the seams whose lower bound can rise above
-//! the lowest of them. Dirty tile selection asks the same bins.
+//! range, and the road seams within the band (a sample there may name one as its nearest; no
+//! sample names a pad seam). Every other seam's cone holds the base at the bin's samples, so a
+//! sample whose first-pass ground is at least its base is final. A sample left below its base (a
+//! cut's upper bound binds) can still be lifted by such a seam's lower bound: pass 2 lists, in
+//! each bin holding such samples, the seams whose lower bound can rise above the lowest of them.
+//! Dirty tile selection asks the same bins.
 
 use super::grade::{
     CAP_M, Cones, ReachBounds, band_reach, base_reach, bind_reach, lift_reach, may_bind, may_lift,
 };
 use super::sample::{BaseWindow, Listed};
-use super::seams::Seam;
+use super::seams::{Seam, SeamKind};
 use super::tile::{BakeStats, grown, meets};
+
+// The band within which pass 1 lists `seam` whatever its cone: the level's band `band` for a
+// road seam, which a sample within it may name as its nearest, and none for a pad seam, which no
+// sample names (`TERRAIN-07-C`), so its bind and lift reaches alone decide. The bake's two
+// passes and the selection take every seam's band from here, so they list alike.
+fn listing_band(seam: &Seam, band: f64) -> f64 {
+    match seam.kind {
+        SeamKind::Road => band,
+        SeamKind::Pad => 0.0,
+    }
+}
 
 // Smallest seam bin side over a tile's lattice, metres. A level whose spacing is wider bins at
 // its spacing: its band and reaches grow with the spacing, so finer bins would each list nearly
@@ -120,8 +132,9 @@ impl BinGrid {
 
     /// The bins pass 1 visits for `seam`: its box grown by the smaller of its Lipschitz base
     /// reach over the window (`slope`, `base`) and its bind reach over the lattice's base range,
-    /// and at least the band. No bin outside lists the seam under the one-pass rule either.
-    /// Returns the range and the reach. `O(cells under the seam)`.
+    /// and at least its band (`listing_band` of the level's `band`). No bin outside lists the
+    /// seam under the one-pass rule either. Returns the range and the reach. `O(cells under the
+    /// seam)`.
     pub(super) fn first_range(
         &self,
         seam: &Seam,
@@ -136,11 +149,12 @@ impl BinGrid {
             slope,
         })
         .min(bind_reach(heights, self.lattice_base));
+        let band = listing_band(seam, band);
         (self.range(grown(area, reach.max(band_reach(band)))), reach)
     }
 
     /// Whether pass 1 lists `seam` (visited over `range`) in bin `(bx, bz)`, `distance` from its
-    /// box: its cone may bind the bin's base, or it lies within the band. `O(1)`.
+    /// box: its cone may bind the bin's base, or it lies within its band. `O(1)`.
     fn first_lists(
         &self,
         seam: &Seam,
@@ -155,7 +169,7 @@ impl BinGrid {
                 seam.height_range(),
                 self.base[self.index(bx, bz)],
                 distance,
-                band,
+                listing_band(seam, band),
             )
     }
 
@@ -174,6 +188,7 @@ impl BinGrid {
             return false;
         }
         let (heights, area) = (seam.height_range(), seam.box_xz());
+        let band = listing_band(seam, band);
         for cz in range[2] / BLOCK..=range[3] / BLOCK {
             for cx in range[0] / BLOCK..=range[1] / BLOCK {
                 let block = self.block_base[(cz * self.blocks[0] + cx) as usize];
