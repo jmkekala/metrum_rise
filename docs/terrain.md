@@ -3705,6 +3705,16 @@ in every pass that runs the fragment shader (depth prepass, shadows), so cut-awa
 shadow on the road. Cost: at most four segment distances per fragment in the band; its cost at full
 screen is an acceptance measurement.
 
+**Outer-band overlap** ([T24](#terrain-07-open-questions) (a), decided by the user 2026-10-26).
+The road and the terrain reach the screen through different `f32` frames (the road chunk's, the
+patch's and the tile's), so the same exact edge rounds apart by about 1e-4 m at 1 km offsets, and a
+pixel centre in that gap showed the sky. Within one pixel inside a road seam (`-w < sdf < 0`, `w`
+the fragment's size from the derivatives of its tile-local position), a fragment is kept where its
+terrain height lies at or below the road top at the seam's nearest point (the seam's end heights,
+packed after the edge row and interpolated), so the road hides it in depth; where the terrain
+stands above the road top it is discarded as before, so no terrain shows over a sidewalk. The
+overlap is rendering only: the payload, coverage and every query stay exact.
+
 The material class uses the same pattern with the material edges: away from an edge the nearest
 sample's class; near one, the class of a surrounding sample on the fragment's side of the nearest
 edge. A hidden edge inside another surface then has the same class on both sides and draws nothing.
@@ -6499,8 +6509,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       layer uploads.
     - **Recommendation.** (a): graded tiles exist only where roads and sites are, so real cities
       use a fraction of the worst case; (b) if the measured maxima exceed 2,048.
-24. **T24. Pinholes along a road's outer edge in plan view (`TERRAIN-07-D` round 6; open, for the
-    user).**
+24. **T24. Pinholes along a road's outer edge in plan view (`TERRAIN-07-D` round 6) — decided by
+    the user, 2026-10-26: (a).** Built in round 6 as the [outer-band overlap](#the-exact-seam-mask);
+    the exact cut keeps its pinhole (deleted in `TERRAIN-07-G`).
     - **Evidence.** `kuopio_t2_wall`'s `plan_terrain` (orthographic, 0.0375 m per pixel, centred
       at `(-16.3, 1182.8)`): exact cut 1 pinhole, B 3, every one a single pixel on the same
       straight outer sidewalk edge of the diagonal road (world about `(-27.7, 1171.6)`,
@@ -6518,8 +6529,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       chunks and terrain cells in one shared frame per 512 m chunk with the same `f32` arithmetic,
       which closes the exact cut's join but not a per-fragment mask against a rasterized edge.
       (c) Accept sub-pixel pinholes and drop the plan-view count from the acceptance.
-    - **Recommendation.** (a), measured with the plan-view count and the close views' "no terrain
-      over a sidewalk" check; not taken (the acceptance's "sky pinholes 0" is the user's).
+    - **Recommendation.** (a), measured with the plan-view count (target 0 in B) and the close
+      views' "no terrain over a sidewalk" check.
 25. **T25. Cell sets prewarmed per grid patch (`TERRAIN-07-D` round 6; taken pending the user's
     review, 2026-10-26).**
     - **Evidence.** Round 5's populated edit created 16 materials and 24 `MultiMesh`es: cell sets

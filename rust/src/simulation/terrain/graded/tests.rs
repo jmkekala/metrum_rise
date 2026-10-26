@@ -884,10 +884,6 @@ fn benchmark_graded_tiles_locality() {
     }
 }
 
-// The `GL0` slot's material edge capacity proposed in terrain.md "Data" (`TERRAIN-07-C` builds
-// the edges and confirms it).
-const GL0_EDGE_CAPACITY: usize = 256;
-
 /// The graded terrain stage of one road edit (`TERRAIN-07-A`; no commit runs it yet): dirty
 /// tile selection from the edit's terrain changes between `before` and `after`, then the `GL0`
 /// bake of those tiles on the shared pool. Median of 7 warm runs, as JSON with the tiles, their
@@ -928,7 +924,7 @@ pub(crate) fn graded_stage(
     let replaced = replaced.iter().filter(|payload| payload.graded);
     let undo_bytes: usize = replaced
         .clone()
-        .map(|payload| 16 * (payload.texels.len() + Level::Gl0.seam_capacity() + GL0_EDGE_CAPACITY))
+        .map(|payload| 16 * (payload.texels.len() + super::slot_row_texels(Level::Gl0)))
         .sum();
     let bits: Vec<Vec<[u32; 4]>> = payloads.iter().map(texel_bits).collect();
     let stats = payloads.iter().map(|p| p.stats);

@@ -282,8 +282,8 @@ fn bake_level(
 impl SimulationNode {
     /// The graded tile slot layout Godot sizes its pools by: `tile_m`, and per level code
     /// (0-2 `GL0`-`GL2`, 3 `GL3`) a dictionary with `spacing_m` (`GL3`: at its finest step),
-    /// `side` (texel layer side, apron included), `row_texels` (seam row then edge row),
-    /// `seam_capacity` and `band_m`; plus `gl3_steps`.
+    /// `side` (texel layer side, apron included), `row_texels` (seam row, edge row, then the
+    /// seams' heights), `seam_capacity`, `edge_capacity` and `band_m`; plus `gl3_steps`.
     #[func]
     pub fn get_graded_tile_layout(&self) -> VarDictionary {
         let cell_m = f64::from(self.snapshot.read().unwrap().terrain_cell_m);
@@ -298,6 +298,7 @@ impl SimulationNode {
             dict.set("side", slot_side(level, cell_m) as i64);
             dict.set("row_texels", slot_row_texels(level) as i64);
             dict.set("seam_capacity", level.seam_capacity() as i64);
+            dict.set("edge_capacity", level.edge_capacity() as i64);
             dict.set("band_m", level.band_m(cell_m));
             levels.push(&dict.to_variant());
         }

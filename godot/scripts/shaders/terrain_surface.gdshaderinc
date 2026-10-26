@@ -594,9 +594,15 @@ void fragment() {
 #ifdef TERRAIN_GRADED
 	// Terrain is discarded exactly inside the road footprint, in every pass that runs this shader
 	// (the depth prepass and shadows included), so cut-away ground casts no shadow on the road.
+	// Within one pixel inside a road seam it is kept where it lies below the road top, hidden by
+	// the road in depth: the road and the terrain reach the screen through different f32 frames,
+	// so their shared edge rounds apart by about 1e-4 m at 1 km offsets and showed the sky through
+	// single pixels (T24 (a), a rendering overlap only; the geometry and queries stay exact).
+	float cell_pixel_m = max(fwidth(var_cell_local_m.x), fwidth(var_cell_local_m.y));
 	CellMask cell_mask_here = cell_mask(
 		cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m);
-	if (cell_mask_here.sdf < 0.0) {
+	if (cell_mask_here.sdf < 0.0
+			&& !(cell_mask_here.sdf > -cell_pixel_m && var_world_pos.y <= cell_mask_here.road_top)) {
 		discard;
 	}
 	vec4 graded_debug = vec4(var_cell_delta, cell_mask_here.sdf, float(var_cell.y), float(var_cell.x));

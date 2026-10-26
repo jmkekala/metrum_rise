@@ -24,11 +24,12 @@ instance uniform ivec2 cell_lattice_anchor_hm = ivec2(0);
 #ifdef TERRAIN_GRADED
 // The slot pool of the material's level (one graded material per level and patch, so a draw
 // binds two samplers: the GLES3 link of the base set plus eight failed, TERRAIN-07-D round 2):
-// texels with apron, and the rows (seams from 0, material edges from the level's seam capacity),
-// one layer per slot.
+// texels with apron, and the rows (seams from 0, material edges from the level's seam capacity,
+// the seams' end heights after the edges), one layer per slot.
 uniform sampler2DArray graded_texels : filter_nearest, repeat_disable;
 uniform sampler2DArray graded_rows : filter_nearest, repeat_disable;
 uniform int graded_seam_capacity = 512;
+uniform int graded_edge_capacity = 256;
 #endif
 
 const int CELL_SIDE_HM = 128;
@@ -289,6 +290,8 @@ struct CellSeamHit {
 	float line_distance;
 	float signed_distance;
 	int index;
+	// The nearest point's parameter along the segment, 0 at a and 1 at b.
+	float along;
 };
 
 // One row segment (tile-frame [ax, az, bx, bz]) at a point: the nearest point with the clamps
@@ -300,14 +303,15 @@ CellSeamHit cell_segment_at(vec4 seg, vec2 p, int index) {
 	float len2 = dot(ab, ab);
 	vec2 q = a;
 	float cross_z = 0.0;
+	float t = 0.0;
 	if (len2 > 0.0) {
-		float t = dot(p - a, ab) / len2;
+		t = dot(p - a, ab) / len2;
 		cross_z = ab.x * (p.y - a.y) - ab.y * (p.x - a.x);
 		q = t <= 0.0 ? a : (t >= 1.0 ? seg.zw : a + ab * t);
 	}
 	float d = length(p - q);
 	float line = len2 > 0.0 ? abs(cross_z) / sqrt(len2) : 0.0;
-	return CellSeamHit(d, line, cross_z > 0.0 ? -d : d, index);
+	return CellSeamHit(d, line, cross_z > 0.0 ? -d : d, index, clamp(t, 0.0, 1.0));
 }
 
 // The nearest-seam total order of seams.rs `nearer_than`: smaller distance, then the larger
@@ -325,6 +329,9 @@ bool cell_nearer(CellSeamHit a, CellSeamHit b) {
 struct CellMask {
 	float sdf;
 	int class_id;
+	// The road top at the nearest seam's nearest point (world metres) where the exact distance
+	// was taken, else -1e30: what the outer-band overlap compares the terrain with (T24 (a)).
+	float road_top;
 };
 
 // The exact seam mask and the material class at a fragment of a graded cell (docs/terrain.md
@@ -341,9 +348,10 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 	}
 	CellMask mask;
 	mask.sdf = mix(mix(t[0].g, t[1].g, sx.y), mix(t[2].g, t[3].g, sx.y), sz.y);
+	mask.road_top = -1e30;
 	float spacing_m = float(min(frame.spacing.x, frame.spacing.y)) * 0.5;
 	if (abs(mask.sdf) < 2.0 * spacing_m) {
-		CellSeamHit best = CellSeamHit(1e30, 0.0, 1e30, 1 << 30);
+		CellSeamHit best = CellSeamHit(1e30, 0.0, 1e30, 1 << 30, 0.0);
 		for (int c = 0; c < 4; c++) {
 			int index = int(t[c].b);
 			if (index < 0) {
@@ -356,12 +364,14 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 		}
 		if (best.index < (1 << 30)) {
 			mask.sdf = best.signed_distance;
+			vec4 heights = cell_row(graded_seam_capacity + graded_edge_capacity + best.index, frame.slot);
+			mask.road_top = mix(heights.x, heights.y, best.along);
 		}
 	}
 	// The material word: 16 (edge + 1) + class.
 	int nearest = (sx.y < 0.5 ? 0 : 1) + (sz.y < 0.5 ? 0 : 2);
 	mask.class_id = int(t[nearest].a) & 15;
-	CellSeamHit edge = CellSeamHit(1e30, 0.0, 1e30, 1 << 30);
+	CellSeamHit edge = CellSeamHit(1e30, 0.0, 1e30, 1 << 30, 0.0);
 	for (int c = 0; c < 4; c++) {
 		int index = int(t[c].a) / 16 - 1;
 		if (index < 0) {

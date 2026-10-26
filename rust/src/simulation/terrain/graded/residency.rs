@@ -188,15 +188,16 @@ pub fn slot_side(level: Level, cell_m: f64) -> usize {
 }
 
 /// Row texels of a level's slot: the seam row, then the material edge row from
-/// [`Level::seam_capacity`].
+/// [`Level::seam_capacity`], then the seams' heights from the seam and edge capacities.
 pub fn slot_row_texels(level: Level) -> usize {
-    level.seam_capacity() + level.edge_capacity()
+    2 * level.seam_capacity() + level.edge_capacity()
 }
 
 /// Packs a baked tile into its level's slot layers for upload, as little-endian `f32` RGBA:
 /// `texels` is `side x side` texels (`side` from [`slot_side`]), rows along +z, the tile's
 /// lattice in the lower corner and the rest zero; `rows` is [`slot_row_texels`] texels, the
-/// seams from 0 and the material edges from the level's seam capacity, unused texels zero.
+/// seams from 0, the material edges from the level's seam capacity and each seam's end heights
+/// `(a, b, 0, 0)` from the seam and edge capacities, unused texels zero.
 /// The buffers are resized and overwritten. `O(side^2 + row texels)`.
 pub fn pack_slot(payload: &TilePayload, side: usize, texels: &mut Vec<u8>, rows: &mut Vec<u8>) {
     const TEXEL_BYTES: usize = 16;
@@ -213,16 +214,25 @@ pub fn pack_slot(payload: &TilePayload, side: usize, texels: &mut Vec<u8>, rows:
         }
     }
     let seam_capacity = payload.level.seam_capacity();
+    let heights_at = seam_capacity + payload.level.edge_capacity();
     rows.clear();
     rows.resize(slot_row_texels(payload.level) * TEXEL_BYTES, 0);
-    let row_texels = payload.seams.iter().enumerate().chain(
-        payload
-            .edges
-            .iter()
-            .enumerate()
-            .map(|(index, edge)| (seam_capacity + index, edge)),
-    );
-    for (index, &texel) in row_texels {
+    let heights = payload.seam_heights.iter().map(|&[a, b]| [a, b, 0.0, 0.0]);
+    let row_texels = payload
+        .seams
+        .iter()
+        .copied()
+        .enumerate()
+        .chain(
+            payload
+                .edges
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, edge)| (seam_capacity + index, edge)),
+        )
+        .chain(heights.enumerate().map(|(index, texel)| (heights_at + index, texel)));
+    for (index, texel) in row_texels {
         let at = index * TEXEL_BYTES;
         put_texel(&mut rows[at..at + TEXEL_BYTES], texel);
     }

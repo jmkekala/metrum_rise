@@ -622,6 +622,13 @@ fn packed_slots_hold_the_payload_bitwise() {
                     edge.map(f32::to_bits)
                 );
             }
+            assert_eq!(payload.seam_heights.len(), payload.seams.len());
+            for (index, &[a, b]) in payload.seam_heights.iter().enumerate() {
+                assert_eq!(
+                    read(&rows, level.seam_capacity() + level.edge_capacity() + index),
+                    [a, b, 0.0, 0.0].map(f32::to_bits)
+                );
+            }
         }
     }
 }

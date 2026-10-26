@@ -932,6 +932,7 @@ func _new_cells() -> Dictionary:
 		material.set_shader_parameter("graded_texels", pools[code]["texels"])
 		material.set_shader_parameter("graded_rows", pools[code]["rows"])
 		material.set_shader_parameter("graded_seam_capacity", int(levels[code]["seam_capacity"]))
+		material.set_shader_parameter("graded_edge_capacity", int(levels[code]["edge_capacity"]))
 		(nodes[code] as GeometryInstance3D).material_override = material
 		materials.append(material)
 	var wall_multimesh := MultiMesh.new()

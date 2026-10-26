@@ -184,6 +184,10 @@ pub struct TilePayload {
     /// origin), road on the left, in key order, then the bore seams they name, the deck on the
     /// left, in key order.
     pub seams: Vec<[f32; 4]>,
+    /// Each named seam's heights at its ends `a` and `b` (world metres), in [`Self::seams`]'
+    /// order: the road top along the seam, which the cells' outer-band overlap compares the
+    /// terrain with (T24 (a)).
+    pub seam_heights: Vec<[f32; 2]>,
     /// The material edges the texels name, tile-local `[ax, az, bx, bz]`, the surface on the
     /// left, in key order.
     pub edges: Vec<[f32; 4]>,
@@ -738,6 +742,7 @@ fn bake_tile(
         }
     }
     out.seams.clear();
+    out.seam_heights.clear();
     for (index, row) in row_of.iter_mut().enumerate() {
         if *row != NO_SEAM {
             *row = out.seams.len() as u32;
@@ -748,6 +753,7 @@ fn bake_tile(
                 (seam.b[0] - origin[0]) as f32,
                 (seam.b[2] - origin[1]) as f32,
             ]);
+            out.seam_heights.push([seam.a[1] as f32, seam.b[1] as f32]);
         }
     }
     for (texel, &named) in out.texels.iter_mut().zip(nearest.iter()) {
