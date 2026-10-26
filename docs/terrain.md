@@ -4045,7 +4045,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); open: the portal opening (T22 5, detailed for round 5); T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3; open: the wall meshes, the water reflection proxy, the 100k city's slot maxima and the GPU idle-frame matrix with the user) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3; open: graded terrain draws nothing in a GPU session (round 3 defect), the wall meshes, the water reflection proxy, the 100k city's slot maxima and the GPU idle-frame matrix with the user) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5494,17 +5494,21 @@ one frame, with nothing created (2.05 ms on the debug library and the dummy rend
 acceptance). `plot_material_lighting_test.gd` and `plot_dawn_lighting_test.gd`
 (GPU) are queued behind the renders, not yet run.
 
-**Reference renders (fresh, round 3; incomplete).** Compare mode's first runs in Godot found two
-harness defects, both fixed in the test. (1) `terrain.gd` uploads no patch while the published
-network generation is unacknowledged, which `network_renderer.gd` does in the game: the first
-session drew no terrain in either mode and never settled (every view waited 60 s, the session hit
-`screenshots-C.sh`'s 360 s). (2) With the acknowledgement once per fixture, the exact cut renders
-(`t_flat`: oblique, the three close views, plan and the four distance views), but B, built after
-it in the same session, again drew nothing (plan: 1,075,466 background pixels): the exact half
-leaves a newer network generation. The test now acknowledges before each mode's terrain; that run,
-the structure fixtures (B only) and the Kuopio wall site were queued behind another gate's timing
-run when the round ended. No B image of the round shows terrain yet, so none of the spec's
-render acceptance (gaps, sidewalks, slivers, pinholes, cracks, hidden roads, skirts) is recorded.
+**Reference renders (fresh, round 3; incomplete).** Compare mode's first runs in Godot found a
+harness defect: `terrain.gd` uploads no patch while the published network generation is
+unacknowledged, which `network_renderer.gd` does in the game, so the first session drew no terrain
+in either mode and never settled (every view waited 60 s, the session hit `screenshots-C.sh`'s
+360 s). With the acknowledgement the exact cut renders (`t_flat`: oblique, the three close views,
+plan and the four distance views). **Open defect (validated):** B draws no terrain in a GPU session.
+Built after the exact half it drew nothing (plan: 1,075,466 background pixels), and with the test
+acknowledging before each mode's terrain, `bridge_t` (B only, the first and only terrain of its
+session, the generation acknowledged) again drew no terrain anywhere and never settled, patches with
+no graded tile included, with no script error. So the production renderer with graded tiles on,
+the game's default since round 2, installs no patch; the headless suites check no drawing. Lead: in
+graded mode the road-touched patches request plain payloads (step 0) too, and the dirty patches
+install as one batch, so one payload that never completes holds every patch back. No B image of the
+round shows terrain, so none of the spec's render acceptance (gaps, sidewalks, slivers, pinholes,
+cracks, hidden roads, skirts) is recorded; the remaining groups were stopped.
 
 **Release install of a populated edit, pools, video memory, load.** Not measured: the probe
 (`graded_edit_probe.gd` on the release library, gamescope's headless backend, the Kuopio
