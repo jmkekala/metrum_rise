@@ -304,6 +304,9 @@ pub struct SimCore {
     /// The site changes of the last publication of pending site changes, kept for the graded
     /// terrain's dirty tile selection (`TERRAIN-07-C` measures it; `TERRAIN-07-E` consumes it).
     pub(crate) last_site_terrain_changes: Vec<crate::simulation::buildings::allocator::SiteChange>,
+    /// What the edits published since Godot's last residency poll changed for the graded
+    /// tiles (`TERRAIN-07-D` item 5), with the snapshots their dirty tile selection reads.
+    pub(crate) graded_edits: crate::nodes::sim::core::GradedEditJournal,
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
@@ -453,6 +456,7 @@ impl SimCore {
             last_road_edit_metrics: Default::default(),
             last_road_terrain_changes: Default::default(),
             last_site_terrain_changes: Vec::new(),
+            graded_edits: Default::default(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
@@ -503,6 +507,7 @@ impl SimCore {
     pub(crate) fn bump_global_terrain_payload_generation(&mut self) {
         self.terrain_payload_global_generation = self.next_terrain_payload_generation();
         self.road_terrain_inputs.note_all();
+        self.record_graded_reset();
     }
 
     pub(crate) fn bump_terrain_payload_patch_generations(&mut self, patch_keys: &[(usize, usize)]) {
@@ -1869,6 +1874,9 @@ impl SimCore {
             &mut self.last_site_terrain_changes,
             &mut self.allocator.graded_site_changes,
         );
+        let changes = std::mem::take(&mut self.last_site_terrain_changes);
+        self.record_graded_site_edit(&changes);
+        self.last_site_terrain_changes = changes;
         self.publish_pending_production_site_removals();
         crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         while let Some(bounds) = self.allocator.pop_pending_cell_site_dirty_bounds() {

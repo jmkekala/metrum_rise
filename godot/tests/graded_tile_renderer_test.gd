@@ -3,7 +3,8 @@
 ## Graded tile renderer (TERRAIN-07-D): residency requests and async bakes through the bridge,
 ## installs into the prewarmed slot pools within the install budget, the cell instances and
 ## their stitching codes, eviction, and a populated edit's reinstall creating no texture, image,
-## material, mesh or MultiMesh (the pool counters).
+## material, mesh or MultiMesh (the pool counters): only the installed tiles Rust selects for the
+## commit rebake, all in one frame, each into its own slot (item 5).
 extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -55,16 +56,33 @@ func _run() -> void:
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 
-	# A populated edit: another road beside the junction bumps the patch generations, so the
-	# tiles are baked and installed again into the same pools.
-	await _add_road(simulation, [Vector3(-120.0, 0.0, 70.0), Vector3(-10.0, 0.0, 70.0)])
+	# A populated edit: another road beside the junction. Rust selects the commit's dirty tiles;
+	# the installed ones among them rebake and install together in one frame, each into its own
+	# slot, while the patch lists refresh with the patches' new generations.
+	var before_edit: Dictionary = graded.installed.duplicate(true)
 	var uploads_before := int(graded.get_pool_counters()["uploads"])
+	await _add_road(simulation, [Vector3(-120.0, 0.0, 70.0), Vector3(-10.0, 0.0, 70.0)])
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1
 	graded.counters["install_ms_max"] = 0.0
-	_expect(await _settle(graded, camera, resident), "the edit's tiles must install again")
+	_expect(await _settle_edit(graded, camera, resident), "the edit's tiles must install again")
 	counters = graded.get_pool_counters()
 	_expect(int(counters["uploads"]) > uploads_before, "the edit must upload its tiles again")
+	_expect(int(counters["edits"]) >= 1 and int(counters["edit_batches"]) == 1, "one edit installs as one batch: %s" % counters)
+	var batch := int(counters["edit_tiles_last"])
+	var rebaked := 0
+	for tile: Vector2i in before_edit.keys():
+		if not graded.installed.has(tile):
+			continue
+		var was: Dictionary = before_edit[tile]
+		var now: Dictionary = graded.installed[tile]
+		if int(now["token"]) == int(was["token"]):
+			continue
+		rebaked += 1
+		if int(now["level"]) == int(was["level"]):
+			_expect(int(now["slot"]) == int(was["slot"]), "tile %s rebakes into its own slot" % tile)
+	_expect(batch > 0 and rebaked == batch, "the batch is the rebaked installed tiles: %d of %d" % [rebaked, batch])
+	_expect(rebaked < before_edit.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [rebaked, before_edit.size()])
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
 		if name == "materials_created" or name == "multimeshes_created":
@@ -72,9 +90,10 @@ func _run() -> void:
 		_expect(after[name] == created[name], "an edit must create no %s: %s -> %s" % [name, created[name], after[name]])
 	# Each pooled cell set holds five MultiMeshes and the four graded levels' materials.
 	_expect(int(after["materials_created"]) * 5 == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
-	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d" % [
+	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d, edit %d tiles in %.3f ms" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
-		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"])])
+		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
+		int(counters["edit_tiles_last"]), float(counters["edit_install_ms_last"])])
 
 	# Far away every tile is evicted and every slot freed.
 	var far := _resident_patches(host, layout, world_size, 1)
@@ -134,6 +153,15 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
 		if stable >= 3:
 			return true
+	return false
+
+# Waits for the edit batch's install, then for the residency to settle.
+func _settle_edit(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
+	for frame in TIMEOUT_FRAMES:
+		graded.process(camera, resident)
+		await process_frame
+		if int(graded.counters["edit_batches"]) > 0:
+			return await _settle(graded, camera, resident)
 	return false
 
 # Every tile meeting the patch is one instance, graded where installed and a base cell

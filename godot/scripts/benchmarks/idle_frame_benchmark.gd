@@ -11,6 +11,8 @@
 ## frame pacing can be compared against the display refresh rather than measured as throughput.
 ## METRUM_IDLE_BENCH_CANOPY_DENSITY starts a new game on the pinned world at that many canopy stems
 ## per hectare instead of loading it with the default forest.
+## METRUM_IDLE_BENCH_TERRAIN=exact renders the exact cut (refined patches) instead of the graded
+## tiles (TERRAIN-07-D's same-session comparison, until TERRAIN-07-G retires the exact cut).
 extends RefCounted
 
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
@@ -92,6 +94,9 @@ func run(bench: Node) -> void:
 	}
 	bench._metrics = _report
 
+	# Read when the world loads (terrain.gd rebuild_from_simulation_state).
+	_terrain.graded_tiles_enabled = OS.get_environment("METRUM_IDLE_BENCH_TERRAIN") != "exact"
+	_report["terrain"] = "graded" if _terrain.graded_tiles_enabled else "exact"
 	var load_start_us := Time.get_ticks_usec()
 	print("[IDLE_BENCH] LOAD_BEGIN t_us=%d" % load_start_us)
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")

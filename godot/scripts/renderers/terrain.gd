@@ -288,6 +288,8 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_grass_textures()
 	_ensure_border_visuals()
 	_prewarm_terrain_patch_resource_pool()
+	# _clear_patches released the previous world's tiles; with the switch off none draw.
+	graded_tiles = null
 	if graded_tiles_enabled:
 		graded_tiles = TerrainGradedTiles.new()
 		graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)

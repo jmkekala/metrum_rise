@@ -9,7 +9,7 @@ use super::prune::{BinGrid, bin_side, box_distance};
 use super::sample::{BaseGrid, BaseWindow};
 use super::seams::{Seam, road_seam};
 use super::sites::{SiteBuffer, SiteSource, box_seam};
-use super::tile::{Level, TileKey, grown, lattice, meets, window};
+use super::tile::{Level, TILE_M, TileKey, grown, lattice, meets, window};
 use crate::simulation::buildings::allocator::SiteChange;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
@@ -305,6 +305,39 @@ pub fn dirty_tiles_for_base_change(
     ];
     push_tiles(grown(support, level.spacing_m(grid.cell_m)), out);
     sort_unique(out);
+}
+
+/// [`dirty_tiles_for_base_change`] for every base sample inside the world rectangle `rect`
+/// (`TERRAIN-07-D`: a terrain brush records the rectangle it wrote). Sorted.
+pub fn dirty_tiles_for_base_area(
+    terrain: &TerrainSystem,
+    rect: [f64; 4],
+    level: Level,
+    out: &mut Vec<TileKey>,
+) {
+    let grid = BaseGrid::of(terrain);
+    // Rounded outward: a sample more only adds tiles.
+    let index = |axis: usize, value: f64, round: fn(f64) -> f64| {
+        round((value + grid.half[axis]) / grid.cell_m).max(0.0) as usize
+    };
+    let samples = [
+        index(0, rect[0], f64::floor),
+        index(0, rect[2], f64::ceil),
+        index(1, rect[1], f64::floor),
+        index(1, rect[3], f64::ceil),
+    ];
+    dirty_tiles_for_base_change(terrain, samples, level, out);
+}
+
+/// How far beyond a change's bounds the road and site selections at `level` read building
+/// sites (`TERRAIN-07-D`): a candidate tile meets the change's bounds grown by the cap or band
+/// and an apron, its lattice lies within the tile and an apron, and the floor reads that
+/// lattice's [`window`]. A site snapshot of the bounds grown by this answers every query of the
+/// selection.
+pub fn selection_site_reach_m(level: Level, cell_m: f64) -> f64 {
+    let (reach, apron) = (CAP_M.max(level.band_m(cell_m)), level.spacing_m(cell_m));
+    // The window's pad and the piece pad are below 2 m.
+    reach + apron + TILE_M + apron + reach + 2.0
 }
 
 // Whether a changed seam may change a value of the tile's lattice: the bake's pass 1 lists it

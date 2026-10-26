@@ -31,8 +31,8 @@ pub use query::{GradedSurface, GroundClass, QueryScratch};
 pub use residency::{PatchTilesScratch, graded_tiles_in_rect, pack_slot, slot_row_texels, slot_side};
 pub use seams::{Seam, SeamKind};
 pub use select::{
-    SelectScratch, dirty_tiles_for_base_change, dirty_tiles_for_road_changes,
-    dirty_tiles_for_site_changes,
+    SelectScratch, dirty_tiles_for_base_area, dirty_tiles_for_base_change,
+    dirty_tiles_for_road_changes, dirty_tiles_for_site_changes, selection_site_reach_m,
 };
 pub use sites::{NoSites, SiteBuffer, SiteSource};
 pub use tile::{BakeError, BakeStats, Level, TILE_M, TileInputs, TileKey, TilePayload, bake_tiles};

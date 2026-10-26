@@ -258,6 +258,9 @@ impl SimCore {
 
     fn mark_terrain_authoring_payload_bounds(&mut self, pos: Vector2, radius: f32) {
         let radius = radius.max(0.0) + self.heightmap.render_patch_border_margin_m();
+        self.record_graded_base_edit(
+            [pos.x - radius, pos.y - radius, pos.x + radius, pos.y + radius].map(f64::from),
+        );
         self.zoning
             .mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds {
                 min: glam::DVec2::new(f64::from(pos.x - radius), f64::from(pos.y - radius)),
@@ -2326,6 +2329,7 @@ impl SimCore {
         let (changed_chunks, restore) = roadbed.install(delta);
         let terrain_changes = self.transit_network.roadbed.take_terrain_changes();
         let road_terrain_patches = self.bump_road_terrain_payload_generations(&terrain_changes);
+        self.record_graded_road_edit(&terrain_changes);
         self.last_road_terrain_changes = terrain_changes;
         // Generated trees keep clear of walkways and poles beside them, possibly from a
         // neighboring terrain patch; the canopy margin covers both setbacks.

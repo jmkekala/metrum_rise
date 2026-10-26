@@ -7,12 +7,17 @@
 //! shared chunks, the sites of the requested windows copied), work off the lock and publish the
 //! lists and the packed slot bytes, which Godot polls within its install budget. Rust keeps no
 //! result once it is polled; eviction is Godot freeing the slot.
+//!
+//! Edits (item 5): the poll takes the core's graded edit journal under `try_lock` and a worker
+//! selects each edit's dirty tiles at every level from the edit's own snapshots; Godot rebakes
+//! the dirty tiles it holds at those levels and installs them together.
 
 use super::*;
+use crate::nodes::sim::core::GradedEditSelection;
 use crate::simulation::buildings::allocator::SiteSnapshot;
 use crate::simulation::terrain::graded::{
-    BakeError, CAP_M, Level, PatchTilesScratch, TILE_M, TileKey, TilePayload, bake_tiles,
-    graded_tiles_in_rect, pack_slot, slot_row_texels, slot_side,
+    BakeError, CAP_M, Level, PatchTilesScratch, SelectScratch, TILE_M, TileKey, TilePayload,
+    bake_tiles, graded_tiles_in_rect, pack_slot, slot_row_texels, slot_side,
 };
 use std::cell::RefCell;
 
@@ -69,6 +74,7 @@ pub(crate) struct GradedResidencyJobs {
     patches_in_flight: HashSet<(usize, usize)>,
     tiles: Vec<TileResult>,
     patches: Vec<(GradedPatchRequest, Vec<TileKey>)>,
+    edits: Vec<GradedEditSelection>,
     failed_tiles: Vec<(GradedTileRequest, Failure)>,
     failed_patches: Vec<(GradedPatchRequest, Failure)>,
     buffers: Vec<Vec<u8>>,
@@ -85,6 +91,7 @@ thread_local! {
     // Per pool thread, reused between batches.
     static BAKED: RefCell<Vec<TilePayload>> = RefCell::default();
     static LISTS: RefCell<PatchTilesScratch> = RefCell::default();
+    static SELECT: RefCell<SelectScratch> = RefCell::default();
 }
 
 fn level_code(level: Level) -> (i64, i64) {
@@ -432,7 +439,9 @@ impl SimulationNode {
         accepted
     }
 
-    /// Returns finished graded residency work: `patches` (per list `patch_x`, `patch_z`,
+    /// Returns finished graded residency work: `edits` (per published edit its `serial`, `all`
+    /// for a reset, and per level `level`, `step` and the dirty `tiles`, flat `(x, z)` pairs in
+    /// key order; Godot rebakes the tiles it holds at that level), `patches` (per list `patch_x`, `patch_z`,
     /// `token` and `tiles`, flat `(x, z)` pairs in key order), at most `max_tiles` baked tiles in
     /// `tiles` (per tile `tile_x`, `tile_z`, `level`, `step`, `token`, `samples_x`, `samples_z`,
     /// `graded`, `seam_count`, `edge_count`, `wall_count`, and the slot layers' little-endian
@@ -440,7 +449,26 @@ impl SimulationNode {
     /// failure its kind, keys, `token`, `reason` and `retry`). The rest stays queued.
     #[func]
     pub fn poll_graded_tile_results(&mut self, max_tiles: i32) -> VarDictionary {
+        self.spawn_graded_edit_selection();
         let mut jobs = self.graded_jobs.lock().unwrap();
+        let mut edits = VarArray::new();
+        for edit in std::mem::take(&mut jobs.edits) {
+            let mut dict = VarDictionary::new();
+            dict.set("serial", edit.serial as i64);
+            dict.set("all", edit.all);
+            let mut levels = VarArray::new();
+            for (level, tiles) in &edit.levels {
+                let (code, step) = level_code(*level);
+                let mut entry = VarDictionary::new();
+                entry.set("level", code);
+                entry.set("step", step);
+                let flat: Vec<i32> = tiles.iter().flat_map(|tile| [tile.x, tile.z]).collect();
+                entry.set("tiles", PackedInt32Array::from(flat.as_slice()));
+                levels.push(&entry.to_variant());
+            }
+            dict.set("levels", levels);
+            edits.push(&dict.to_variant());
+        }
         let mut patches = VarArray::new();
         for (request, tiles) in std::mem::take(&mut jobs.patches) {
             let mut dict = VarDictionary::new();
@@ -519,6 +547,7 @@ impl SimulationNode {
             failed.push(&dict.to_variant());
         }
         let mut out = VarDictionary::new();
+        out.set("edits", edits);
         out.set("patches", patches);
         out.set("tiles", tiles);
         out.set("failed", failed);
@@ -526,5 +555,26 @@ impl SimulationNode {
         out.set("tiles_in_flight", jobs.tiles_in_flight.len() as i64);
         out.set("patches_in_flight", jobs.patches_in_flight.len() as i64);
         out
+    }
+}
+
+impl SimulationNode {
+    // Takes the core's graded edit journal (starting it on the first call) without waiting for
+    // the core, and selects the edits' dirty tiles on a payload worker.
+    fn spawn_graded_edit_selection(&self) {
+        let Some(edits) =
+            Self::try_lock_shared_core(&self.core).map(|mut core| core.take_graded_edits())
+        else {
+            return;
+        };
+        if edits.is_empty() {
+            return;
+        }
+        let jobs = Arc::clone(&self.graded_jobs);
+        self.async_jobs.spawn(move || {
+            let selections: Vec<GradedEditSelection> = SELECT
+                .with_borrow_mut(|scratch| edits.iter().map(|edit| edit.select(scratch)).collect());
+            jobs.lock().unwrap().edits.extend(selections);
+        });
     }
 }
