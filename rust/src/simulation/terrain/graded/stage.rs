@@ -172,7 +172,7 @@ impl StageScratch {
         self.baked.clear();
         let mut kept = 0;
         for index in 0..self.retired.len() {
-            let payload = std::mem::replace(&mut self.retired[index], Arc::default());
+            let payload = std::mem::take(&mut self.retired[index]);
             match Arc::try_unwrap(payload) {
                 Ok(payload) => self.baked.push(payload),
                 Err(shared) => {
@@ -257,9 +257,13 @@ pub fn stage_tiles(
             )?;
         }
         let mut baked = scratch.baked.drain(..);
-        for index in start..end {
-            let tile = wanted[index].1;
-            let payload = match scratch.adopted[index].take() {
+        let run = scratch.adopted[start..end].iter_mut();
+        for ((&(_, tile), adopted), inputs) in wanted[start..end]
+            .iter()
+            .zip(run)
+            .zip(&scratch.inputs[start..end])
+        {
+            let payload = match adopted.take() {
                 Some(payload) => {
                     stats.adopted += 1;
                     payload
@@ -268,7 +272,7 @@ pub fn stage_tiles(
                     stats.baked += 1;
                     let payload = baked.next().expect("one bake per rebaked tile");
                     debug_assert_eq!(
-                        payload.inputs, scratch.inputs[index],
+                        payload.inputs, *inputs,
                         "a bake records the inputs its gather finds"
                     );
                     Arc::new(payload)

@@ -695,6 +695,7 @@ impl TerrainSystem {
     }
 
     /// Returns a dense row-major snapshot of the visual terrain buffer.
+    #[cfg(test)]
     pub(crate) fn clone_visual_dense(&self) -> Vec<f32> {
         self.data.clone_dense()
     }
@@ -714,6 +715,7 @@ impl TerrainSystem {
     }
 
     /// Replaces the visual terrain buffer from a dense row-major snapshot.
+    #[cfg(test)]
     pub(crate) fn replace_visual_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.data.replace_from_dense(dense)?;
         self.visual_generation = self.visual_generation.wrapping_add(1);
