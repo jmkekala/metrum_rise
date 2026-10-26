@@ -941,6 +941,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             &path,
             SaveGameView {
                 camera: Some(camera),
+                saved_at_unix: 0,
                 config: &config,
                 vegetation_edits: &vegetation_edits,
                 vegetation: &vegetation,
@@ -1724,6 +1725,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         &path,
         SaveGameView {
             camera: None,
+            saved_at_unix: 0,
             config: &config,
             vegetation_edits: &Default::default(),
             vegetation: &crate::simulation::vegetation::VegetationConfig::default(),

@@ -180,6 +180,28 @@ slot is crossed exactly when the minute is.
     revision (`JobFunding` books, route and workplace caches). These are the owning store's
     own derived state.
 
+## Save bytes (`ROAD-68-K16`)
+
+A save is a function of the city and of the one value it takes from outside it, the header's
+save time (`save_meta.saved_at_unix`), so the same city saves the same bytes, twice and after a
+load:
+
+- Every table is written in an order the state fixes: store order, id order, or sorted keys.
+  Rows gathered from a hash map are sorted at the save boundary. `lane_connections` was the one
+  exception: it was written in the iteration order of the save's node map and of each node's
+  connection map, which differs between two saves of the same city (a new map's hash keys each
+  time, and different capacities after a load), so the rows' order and the file's bytes
+  differed; it is now written in its key order, the order the load reads it in.
+- The save time is an input of the save (`SaveGameView::saved_at_unix`): the game passes the
+  clock (`SimCore::save_game_settled`), fixture recorders and tests a fixed value
+  (`save_game_settled_at`). The Kuopio recorder keeps the reference save's own, so its pinned
+  hash changes only when its city does ([`roads.md`](roads.md#road-68-open-questions) question
+  38).
+- `a_town_saves_the_same_bytes_twice_and_after_a_load` saves the eight-day starter town twice
+  and the game loaded from it once, and compares the files byte for byte; on a difference it
+  names the tables whose rows differ in storage order. Before the fix it failed on
+  `lane_connections` alone.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

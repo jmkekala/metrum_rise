@@ -110,9 +110,11 @@ pub(super) fn save_network(
         }
     }
 
-    // 4. Lane Connections
+    // 4. Lane Connections, in the saved key order the load reads them in: the node map and
+    // each node's connection map iterate in hash order, which differs between processes and
+    // after a load, so rows written in it made the same city save different bytes.
     {
-        let mut stmt = tx.prepare("INSERT INTO lane_connections(node_id, from_edge, from_lane, to_edge, to_lane) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+        let mut rows = Vec::new();
         for (&old_node, &saved_node) in &maps.node_old_to_new {
             let node = graph.node(old_node);
             for (&(from_e, from_l), targets) in &node.lane_connections {
@@ -123,15 +125,20 @@ pub(super) fn save_network(
                     let Some(&saved_to) = maps.edge_old_to_new.get(&to_e) else {
                         continue;
                     };
-                    stmt.execute(params![
-                        i64::from(saved_node),
-                        usize_to_i64(saved_from)?,
-                        i64::from(from_l),
-                        usize_to_i64(saved_to)?,
-                        i64::from(to_l)
-                    ])?;
+                    rows.push((saved_node, saved_from, from_l, saved_to, to_l));
                 }
             }
+        }
+        rows.sort_unstable();
+        let mut stmt = tx.prepare("INSERT INTO lane_connections(node_id, from_edge, from_lane, to_edge, to_lane) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+        for (saved_node, saved_from, from_l, saved_to, to_l) in rows {
+            stmt.execute(params![
+                i64::from(saved_node),
+                usize_to_i64(saved_from)?,
+                i64::from(from_l),
+                usize_to_i64(saved_to)?,
+                i64::from(to_l)
+            ])?;
         }
     }
     Ok(())

@@ -12,6 +12,7 @@ use crate::simulation::save::{
     save_to_sqlite,
 };
 use crate::simulation::vegetation::VegetationGenerator;
+use chrono::Utc;
 use std::path::PathBuf;
 
 impl SimCore {
@@ -25,8 +26,20 @@ impl SimCore {
         path: &str,
         camera: Option<SavedCameraState>,
     ) -> Result<(), String> {
+        self.save_game_settled_at(path, camera, Utc::now().timestamp())
+    }
+
+    /// [`Self::save_game_settled`] with the header's save time given (Unix seconds), the one
+    /// value a save takes from outside the city: the same city then saves the same bytes, as
+    /// fixture recorders and the save determinism tests need.
+    pub(crate) fn save_game_settled_at(
+        &mut self,
+        path: &str,
+        camera: Option<SavedCameraState>,
+        saved_at_unix: i64,
+    ) -> Result<(), String> {
         self.transit_network.settle_cch();
-        self.save_game_internal(path, camera)
+        self.save_game_at(path, camera, saved_at_unix)
     }
 
     /// Saves the current simulation state into a single-file SQLite snapshot. No routing
@@ -35,6 +48,15 @@ impl SimCore {
         &self,
         path: &str,
         camera: Option<SavedCameraState>,
+    ) -> Result<(), String> {
+        self.save_game_at(path, camera, Utc::now().timestamp())
+    }
+
+    fn save_game_at(
+        &self,
+        path: &str,
+        camera: Option<SavedCameraState>,
+        saved_at_unix: i64,
     ) -> Result<(), String> {
         debug_assert!(
             !self.transit_network.cch_result_pending(),
@@ -46,6 +68,7 @@ impl SimCore {
             &path,
             SaveGameView {
                 camera,
+                saved_at_unix,
                 config: &self.config,
                 vegetation: &self.vegetation.config,
                 vegetation_edits: &self.vegetation_edits,

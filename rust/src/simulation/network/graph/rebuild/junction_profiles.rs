@@ -900,15 +900,17 @@ impl RegionGraph {
     // stroke's pins do (`grade::source_bounds`). A profile within 33% and the band is left as it
     // is. Where the held points, the band and the 1:3 maximum leave no profile, the blends are
     // built inside the band at the least grade that allows them, which placement refuses as
-    // steeper than the maximum (`road_too_steep`). O(points); that least grade O(points^2).
+    // steeper than the maximum (`road_too_steep`). O(points); that least grade O(points^2). The
+    // construction runs in this thread's grade scratch, so it allocates nothing once that has
+    // grown to the profile (`ROAD-68-K16`).
     fn build_within_grade(
         points: &mut [Vector3],
         blends: &[Option<(EndpointPin, f32)>; 2],
         terrain: Option<&TerrainSystem>,
     ) {
         use crate::simulation::network::grade::{
-            ROAD_GRADE_BUILT, SourcePoint, construct_within_bounds, source_bounds, source_ground_m,
-            steepest_grade, within_source_band,
+            GradeScratch, ROAD_GRADE_BUILT, SourcePoint, construct_within_bounds, source_bounds,
+            source_ground_m, steepest_grade, within_source_band,
         };
         if points.len() < 3 || blends.iter().all(Option::is_none) {
             return;
@@ -925,68 +927,80 @@ impl RegionGraph {
         {
             return;
         }
-        let runs: Vec<f32> = points
-            .windows(2)
-            .map(|pair| Self::edge_profile_point_distance_m(pair[0], pair[1]))
-            .collect();
-        // The stretch of each end its blend moves, measured as the blend above measures it: past
-        // the mouth knot, which `ensure_profile_support` reuses within its 1 cm, up to the blend's
-        // end.
-        let blended_m = blends.map(|blend| {
-            blend.map(|(pin, blend_end_m)| {
-                (pin.hard_zone_m + JUNCTION_PROFILE_SUPPORT_EPS_M, blend_end_m)
-            })
-        });
-        let from = [true, false].map(|at_start| Self::profile_endpoint_distances(points, at_start));
-        let held: Vec<bool> = (0..points.len())
-            .map(|index| {
+        GradeScratch::with(|scratch| {
+            let GradeScratch {
+                runs,
+                sources,
+                bounds,
+                envelope,
+                heights,
+                backward,
+            } = scratch;
+            runs.clear();
+            runs.extend(
+                points
+                    .windows(2)
+                    .map(|pair| Self::edge_profile_point_distance_m(pair[0], pair[1])),
+            );
+            // The stretch of each end its blend moves, measured as the blend above measures it:
+            // past the mouth knot, which `ensure_profile_support` reuses within its 1 cm, up to
+            // the blend's end. Distances from the start accumulate forwards, from the end in
+            // `heights`, as `profile_endpoint_distances` sums them.
+            let blended_m = blends.map(|blend| {
+                blend.map(|(pin, blend_end_m)| {
+                    (
+                        pin.hard_zone_m + JUNCTION_PROFILE_SUPPORT_EPS_M,
+                        blend_end_m,
+                    )
+                })
+            });
+            Self::profile_endpoint_distances_into(points, false, heights);
+            let mut from_start = 0.0;
+            // Each point's bounds: a held point at its height, a blended one inside the band,
+            // or anywhere on a road without one. On a road with a band they are its
+            // `source_bounds`, which `sources` hands each point's ground and held height.
+            bounds.clear();
+            sources.clear();
+            for (index, point) in points.iter().enumerate() {
+                if index > 0 {
+                    from_start += runs[index - 1];
+                }
+                let from = [from_start, heights[index]];
                 let blended = |end: usize| {
-                    blended_m[end].is_some_and(|(held_m, end_m)| {
-                        from[end][index] > held_m && from[end][index] < end_m
-                    })
+                    blended_m[end]
+                        .is_some_and(|(held_m, end_m)| from[end] > held_m && from[end] < end_m)
                 };
-                index == 0 || index + 1 == points.len() || !(blended(0) || blended(1))
-            })
-            .collect();
-        // Each point's bounds: a held point at its height, a blended one inside the band, or
-        // anywhere on a road without one.
-        let bounds: Vec<(f32, f32)> = match terrain {
-            Some(terrain) => {
-                let sources: Vec<SourcePoint> = points
-                    .iter()
-                    .zip(&held)
-                    .map(|(point, &held)| SourcePoint {
+                let held = index == 0 || index + 1 == points.len() || !(blended(0) || blended(1));
+                match terrain {
+                    Some(terrain) => sources.push(SourcePoint {
                         ground_m: source_ground_m(terrain, point.x, point.z),
                         held_m: held.then_some(point.y),
-                    })
-                    .collect();
-                source_bounds(&sources, &runs)
-            }
-            None => points
-                .iter()
-                .zip(&held)
-                .map(|(point, &held)| {
-                    if held {
+                    }),
+                    None => bounds.push(if held {
                         (point.y, point.y)
                     } else {
                         (f32::NEG_INFINITY, f32::INFINITY)
-                    }
-                })
-                .collect(),
-        };
-        if !steep
-            && points
-                .iter()
-                .zip(&bounds)
-                .all(|(point, &(low, high))| (low..=high).contains(&point.y))
-        {
-            return;
-        }
-        let mut heights: Vec<f32> = points.iter().map(|point| point.y).collect();
-        construct_within_bounds(&mut heights, &bounds, &runs);
-        for (point, height) in points.iter_mut().zip(heights) {
-            point.y = height;
-        }
+                    }),
+                }
+            }
+            if terrain.is_some() {
+                source_bounds(sources, runs, bounds);
+            }
+            if !steep
+                && points
+                    .iter()
+                    .zip(&*bounds)
+                    .all(|(point, &(low, high))| (low..=high).contains(&point.y))
+            {
+                return;
+            }
+            heights.clear();
+            heights.extend(points.iter().map(|point| point.y));
+            construct_within_bounds(heights, bounds, runs, envelope, backward);
+            for (point, &height) in points.iter_mut().zip(&*heights) {
+                point.y = height;
+            }
+        });
     }
 
     fn endpoint_profile_support_delta_m(
@@ -1139,9 +1153,21 @@ impl RegionGraph {
     }
 
     fn profile_endpoint_distances(points: &[Vector3], at_start: bool) -> Vec<f32> {
-        let mut distances = vec![0.0; points.len()];
+        let mut distances = Vec::new();
+        Self::profile_endpoint_distances_into(points, at_start, &mut distances);
+        distances
+    }
+
+    // `profile_endpoint_distances` into `distances`, which allocates only to grow.
+    fn profile_endpoint_distances_into(
+        points: &[Vector3],
+        at_start: bool,
+        distances: &mut Vec<f32>,
+    ) {
+        distances.clear();
+        distances.resize(points.len(), 0.0);
         if points.len() < 2 {
-            return distances;
+            return;
         }
 
         if at_start {
@@ -1155,6 +1181,5 @@ impl RegionGraph {
                     + Self::edge_profile_point_distance_m(points[index + 1], points[index]);
             }
         }
-        distances
     }
 }

@@ -968,17 +968,21 @@ fn replay_kuopio_accepted_strokes_in_one_world(
 
 // Re-records the Kuopio reference save (`ROAD-68` open question 38): the recorded session's
 // accepted strokes replayed in one world with today's code and saved with `save_game_settled`,
-// at the camera the current save holds. An interim reference until the user's new save replaces
+// at the camera and the header time the current save holds, so a re-record of the same city
+// writes the same bytes (`ROAD-68-K16`). An interim reference until the user's new save replaces
 // it; either save is then pinned by the steps roads.md lists under question 38.
 #[test]
 #[ignore = "manual fixture recorder: rewrites benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"]
 fn record_kuopio_reference_save() {
-    let camera = {
-        let connection = rusqlite::Connection::open_with_flags(
-            KUOPIO_REFERENCE_SAVE,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
+    let connection = rusqlite::Connection::open_with_flags(
+        KUOPIO_REFERENCE_SAVE,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let saved_at_unix: i64 = connection
+        .query_row("SELECT saved_at_unix FROM save_meta", [], |row| row.get(0))
         .unwrap();
+    let camera = {
         connection
             .query_row(
                 "SELECT pivot_x, pivot_y, pivot_z, yaw, pitch, distance, orthogonal FROM camera_state WHERE singleton = 1",
@@ -995,18 +999,20 @@ fn record_kuopio_reference_save() {
             )
             .ok()
     };
+    drop(connection);
     let mut replayed = replay_kuopio_accepted_strokes_in_one_world(|_, _| {});
     // Saved once and loaded, so the load builds the lanes and their connections the replay's bulk
     // commits defer, then saved as the game saves.
     let path = temp_save_path("kuopio_reference");
     replayed
-        .save_game_settled(path.to_str().unwrap(), None)
+        .save_game_settled_at(path.to_str().unwrap(), None, saved_at_unix)
         .unwrap();
     let mut core = test_core();
     core.load_game_internal(path.to_str().unwrap()).unwrap();
     let _ = std::fs::remove_file(&path);
     core.precompute_road_mesh_data();
-    core.save_game_settled(KUOPIO_REFERENCE_SAVE, camera).unwrap();
+    core.save_game_settled_at(KUOPIO_REFERENCE_SAVE, camera, saved_at_unix)
+        .unwrap();
 }
 
 // Every recorded stroke commits and leaves every node solved. `kuopio_05` attempt 14 ends on a

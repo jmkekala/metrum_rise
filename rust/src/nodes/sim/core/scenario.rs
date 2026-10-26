@@ -18,6 +18,8 @@ use std::time::Instant;
 mod balance_cases;
 #[cfg(test)]
 mod census_cases;
+#[cfg(test)]
+mod save_cases;
 mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};
 

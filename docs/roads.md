@@ -2433,8 +2433,76 @@ These need a user decision; work that does not depend on them continues.
       0 reads 110.0-115.3 ms for C in session 1 and 111.5 and 149.8 ms for C in session 2 (K 147.2
       and 148.9 in session 1, F 114.5 and 117.1 in session 2), and F's surface reads 5-10 ms above
       C at 10k sample 0, 30k sample 1 and 100k sample 0 with equal digests and a flat city whose
-      profiles take the allocation-free path; attributed to layout (question 36) on that evidence,
-      for review, with no per-function profile of the commit window yet.
+      profiles take the allocation-free path. Recorded here first as layout, without a profile;
+      corrected by the coordinator's ruling on the `ROAD-68-K15` report: question 36 counts a stage
+      change as layout only when a profile shows identical work, so the rise was unattributed
+      until `ROAD-68-K16` profiled the commit window (below).
+    - **The allocation-free stroke solve (`ROAD-68-K16`).** The stroke solve runs on every preview
+      pose, so its per-solve vectors were a hot-path allocation (the coordinator's ruling on the
+      `ROAD-68-K15` report). Its buffers now stay with each thread and are reused between solves
+      (`StrokeScratch` in `road_edit/input.rs`: the simplified alignment, the samples, the smooth
+      solve's span limits and heights, and a `grade::GradeScratch` with the runs, held points,
+      bounds, envelope, heights and the construction's second pass); the grade functions write
+      into caller buffers (`source_bounds` keeps the band's excess in its output), the junction
+      blend construction takes the thread's `GradeScratch` (its end distances included), and the
+      terrain sync one per sync. Taken for a solve rather than borrowed, so a solve nested on the
+      same thread starts from empty buffers instead of failing a borrow. Heaptrack (release lib
+      test binaries, the preview stages benchmark on 4 workers, not timing): the stroke solve's
+      own allocations fall from 11,812 for C's 1,928 solves (the alignment, the samples' growth
+      and the smooth solve's two vectors; `ROAD-68-K15`'s band added about eight a solve) to 41,
+      each a buffer's first growth on its thread. A solve still allocates the polyline it returns
+      (1,928) and the support's list of the pieces it read (960, `StrokeSupport::height_at`,
+      question 16); the junction profile solve's own allocations (`pinned_physical_profile`, the
+      profile copy, endpoint distances and support knots: 84,242 in C and in F alike) predate the
+      rule and stay open. Products are bitwise equal: both probes, both Kuopio quality tests, and
+      the re-recorded reference, whose every saved profile point keeps its bits and storage order
+      (question 39).
+    - **Timing (`ROAD-68-K16`, fresh, 2026-10-26).** Release lib test binaries (`$TEST_BINARY`,
+      16 codegen units): C = `road` `4710f59b` (before the rule), F15 = `ROAD-68-K15`'s timed binary
+      (`road68-K15` on `ac0480cc`, with its since-dropped rollback), R = `road` `b3627ada` (gate
+      E, `TERRAIN-07-A`, the rule without `ROAD-68-K15`), F = `road68-K16`'s final code (built
+      before two whitespace-only edits). Both locks, `taskset -c 0,2,4,6,8,10,12,14`, no restic,
+      `METRUM_DEBUG=0`; 02:33-03:05: `benchmark_road_preview_stages` with `RAYON_NUM_THREADS=4`,
+      C F15 F R R F F15 C twice, then `benchmark_populated_commit_breakdown` with
+      `METRUM_COMMIT_TIERS=0,10000,30000,100000` and `RAYON_NUM_THREADS=8`, C F R R F C. Every
+      payload vertex count and every breakdown digest is equal across the binaries.
+      | Preview stage p50, ms | C | F15 | R | F |
+      | --- | --- | --- | --- | --- |
+      | `sloped_t` plan | 0.461-0.471 | 0.476-0.494 | 0.489-0.491 | 0.482-0.486 |
+      | `sloped_branch` plan | 0.403-0.413 | 0.421-0.425 | 0.425-0.427 | 0.421-0.422 |
+      | `sloped_t` payload | 0.382-0.383 | 0.417-0.457 | 0.378-0.387 | 0.381-0.384 |
+      | `sloped_t` terrain | 4.607-4.640 | 4.497-4.604 | 4.471-4.521 | 4.342-4.412 |
+      | `sloped_t` total | 5.759-5.818 | 5.732-5.858 | 5.683-5.730 | 5.530-5.619 |
+      F's plan stage is 0.003-0.009 ms below R's: what `ROAD-68-K15`'s band and this solve add
+      on today's `road` is gone. Its rise over C, 0.015-0.021 ms on `sloped_t` and 0.008-0.019 ms
+      on `sloped_branch` per pose, is the rule's own work, measured per pose by profile: the
+      preview stages under `perf record -c 200000` (user cycles and instructions, LBR call
+      stacks, the same binaries and workers, not acceptance), each sample's leaf and caller frames
+      resolved with their inlined frames (`llvm-addr2line -i`), count as the rule's when one lies
+      in `network/grade.rs` or in `build_within_grade`, `grade_violation` or `record_edit_grade`:
+      F 320 cycle samples (64 M cycles, all under `plan_road_edit`), C none, over 800 previewed
+      poses: 0.016 ms per pose at the P-cores' 4.9 GHz. That is the band's terrain samples, the
+      envelope and construction, and the grade of every derived profile; no allocation is left in
+      it. The commit's plan shows no rise beyond its spread at any tier (10k sample 0: C
+      0.473/0.477, R 0.474/0.490, F 0.465/0.416 ms).
+    - **The commit's `surface` rise, attributed (`ROAD-68-K16`).** The breakdown above does not
+      reproduce it with F: at `ROAD-68-K15`'s three samples the surface stage reads 10k sample 0
+      C 89.4/89.9, R 91.8/87.7, F 88.4/85.0 ms; 30k sample 1 C 52.0/51.9, R 55.6/51.4, F 50.5/51.0;
+      100k sample 0 C 76.8/76.0, R 74.4/76.4, F 76.0/74.9. A profile of the commit windows only
+      (the breakdown at 10k, 30k and 100k, 8 workers, `perf record -D -1 --control` driven by the
+      benchmark's `METRUM_ECON_PERF_CONTROL` fifo around each commit, `-c 200000` user cycles and
+      instructions, nine commits per binary, not acceptance) attributes F15's: over the surface
+      stage's functions (the legacy terrain CDT and grading, site paving, `rstar`, `spade`) F15
+      retires 10.4% more instructions than C (+2,336 samples) and spends 8.1% more cycles;
+      +2,175 of those samples lie in one inlining boundary of the site paving R-tree's envelope
+      query, code `ROAD-68-K15` does not touch: `rstar`'s `SelectInEnvelopeFuncIntersecting` for
+      `PavingRegion` is out of line in F15 alone (+1,876), its caller `SelectionIterator` has
+      1,238 fewer, `rstar`'s point generators +1,154 and the line R-tree's selection +292; the
+      other functions net +161. The same queries with the same products, the envelope test called
+      instead of inlined: the codegen-unit partition, question 36's part 1 case in the same
+      function, so layout by the profile, and gone in F (surface functions 4.7% fewer
+      instructions than C and 1.2% fewer than R; all commit-window functions 2.8% fewer than C
+      and 0.6% more than R).
 38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
     decided 2026-10-25 (user): (a), re-record the reference network with today's code, after
     question 37. The re-recorded network is interim: the user will provide a new Kuopio save once
@@ -2498,7 +2566,9 @@ These need a user decision; work that does not depend on them continues.
          accepted strokes in attempt order on the source world in one core
          (`replay_kuopio_accepted_strokes_in_one_world`, each end at the height the road tool
          picks there), saves, loads (which builds the lanes the bulk commits defer) and saves
-         again at the camera the old save held. The user's save is copied to the path; it must be
+         again at the camera and the header save time the old save held (`save_game_settled_at`),
+         so re-recording the same city writes the same bytes and the pinned hash changes only
+         with the city (`ROAD-68-K16`). The user's save is copied to the path; it must be
          played on the manifest's source world.
       2. `python3 tools/road_terrain_replay.py --pin-reference --output
          benchmarks/fixtures/kuopio-terrain/placements.json` checks the save's terrain against
@@ -2599,6 +2669,24 @@ These need a user decision; work that does not depend on them continues.
       `kuopio_saved_reference_terrain_builds_clean`, the 8 replay-tool tests and every
       `building_site_terrain` test pass (18 passed, 4 ignored, as before); `TERRAIN-07-A` re-runs
       its Kuopio census and edits on this save.
+    - **Landed with `ROAD-68-K16`** (branch `road68-K16`, `ROAD-68-K15`'s commit rebased onto
+      `road` `b3627ada`, gate E and `TERRAIN-07-A`; only `roadmap.md`'s status paragraph
+      conflicted, both sides kept). The `lane_connections` row order that differed between two
+      re-records came from the save itself: it wrote the rows in hash-map iteration order, which
+      differs between two saves of the same city ([`simulation.md`](simulation.md#save-bytes-road-68-k16));
+      the save now writes them in key order. The reference is re-recorded by question 38's steps:
+      two re-records give the same bytes, `3c1dbc27…` (was `1607f880…`); against `1607f880…`,
+      written by `ROAD-68-K15`'s solve, every table holds the same rows in the same storage order
+      except `lane_connections`, the same 1,416 rows now sorted, so every saved profile point is
+      bitwise unchanged by `ROAD-68-K16`'s allocation-free solve (question 37). The 8 replay-tool
+      tests, the saved-reference tests and every `building_site_terrain` test pass (18 passed, 4
+      ignored).
+    - **Gate checks (`ROAD-68-K16`, fresh, on its final code).** `cargo clippy --all-targets`: the
+      baseline's 59 warnings, none added. `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY`
+      unset: exit 0; debug lib 1,935 passed, 0 failed, 171 ignored; integration 4 passed; every
+      Godot script passes, no `SCRIPT ERROR`; skipped only the shader global probe and the
+      rendered vegetation tests (headless). Disabled tests: 4, all `TERRAIN-07`. `roadbed/` is
+      unchanged by `ROAD-68-K16`.
 
 Spec corrections in `ROAD-68-A`:
 

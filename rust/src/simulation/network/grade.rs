@@ -9,6 +9,7 @@ use super::validate::visit_grades;
 use crate::config;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+use std::cell::RefCell;
 
 /// The steep-street warning: the stroke solve's design grade, above which the road tool warns
 /// without refusing.
@@ -44,6 +45,43 @@ pub(crate) struct SourcePoint {
     pub(crate) ground_m: f32,
     /// The height of a point the construction keeps (a pin); `None` for one it may move.
     pub(crate) held_m: Option<f32>,
+}
+
+/// The buffers of one construction within the grade and the source band, reused between
+/// constructions so that one allocates nothing once the buffers have grown to its profile
+/// (`ROAD-68-K16`): the stroke solve keeps one per thread beside its own buffers, the junction
+/// profile solve takes this thread's ([`GradeScratch::with`]) and the terrain sync one per sync.
+#[derive(Default)]
+pub(crate) struct GradeScratch {
+    /// The horizontal run from each point to the next.
+    pub(crate) runs: Vec<f32>,
+    /// The points the band bounds ([`source_bounds`]).
+    pub(crate) sources: Vec<SourcePoint>,
+    /// Each point's height bounds.
+    pub(crate) bounds: Vec<(f32, f32)>,
+    /// The envelope within the grade built to ([`maximum_envelope`]).
+    pub(crate) envelope: Vec<(f32, f32)>,
+    /// The heights a construction moves.
+    pub(crate) heights: Vec<f32>,
+    /// The construction's last-to-first pass ([`construct_within_grade`]).
+    pub(crate) backward: Vec<f32>,
+}
+
+thread_local! {
+    // One per thread: pool workers keep theirs between solves.
+    static SCRATCH: RefCell<GradeScratch> = RefCell::default();
+}
+
+impl GradeScratch {
+    /// Runs `construct` with this thread's scratch. The scratch is taken for the call, not
+    /// borrowed, so a construction nested on the same thread (a pool job stolen while it waits)
+    /// starts from empty buffers instead of failing a borrow.
+    pub(crate) fn with<R>(construct: impl FnOnce(&mut Self) -> R) -> R {
+        let mut scratch = SCRATCH.take();
+        let result = construct(&mut scratch);
+        SCRATCH.set(scratch);
+        result
+    }
 }
 
 /// The steepest segment of a profile ([`steepest_grade`]).
@@ -107,10 +145,13 @@ fn source_band(ground: f32, (below, above): (f32, f32)) -> (f32, f32) {
 /// at that grade or steeper and only the ground between the held points can force a profile
 /// past the maximum. A band shrinking at the grade the profile is built to would leave a profile
 /// leaving such a point on flat ground exactly on its edge, where `f32` rounding decides
-/// feasibility. Two passes carry the nearest held points' excess. O(points).
-pub(crate) fn source_bounds(points: &[SourcePoint], runs: &[f32]) -> Vec<(f32, f32)> {
+/// feasibility. Two passes carry the nearest held points' excess into `bounds`, which then
+/// takes each point's bounds. O(points), no allocation beyond `bounds` growing.
+pub(crate) fn source_bounds(points: &[SourcePoint], runs: &[f32], bounds: &mut Vec<(f32, f32)>) {
     let count = points.len();
-    let mut excess = vec![(0.0_f32, 0.0_f32); count];
+    bounds.clear();
+    bounds.resize(count, (0.0, 0.0));
+    let excess = bounds;
     for backward in [false, true] {
         // The excess below and above the band the nearest held point on this side leaves here.
         let mut carried = (0.0_f32, 0.0_f32);
@@ -134,54 +175,62 @@ pub(crate) fn source_bounds(points: &[SourcePoint], runs: &[f32]) -> Vec<(f32, f
             *widest = (widest.0.max(carried.0), widest.1.max(carried.1));
         }
     }
-    points
-        .iter()
-        .zip(excess)
-        .map(|(point, excess)| match point.held_m {
+    for (bound, point) in excess.iter_mut().zip(points) {
+        *bound = match point.held_m {
             Some(held_m) => (held_m, held_m),
-            None => source_band(point.ground_m, excess),
-        })
-        .collect()
+            None => source_band(point.ground_m, *bound),
+        };
+    }
 }
 
-/// The envelope ([`grade_envelope`]) of the profiles through `bounds` within 33%, or else within
-/// the 1:3 maximum, with the grade it holds; `None` when no profile there keeps the maximum.
-/// O(points).
+/// The grade of the envelope ([`grade_envelope`]) of the profiles through `bounds` within 33%,
+/// or else within the 1:3 maximum, left in `envelope`; `None` when no profile there keeps the
+/// maximum. O(points), no allocation beyond `envelope` growing.
 pub(crate) fn maximum_envelope(
     bounds: &[(f32, f32)],
     runs: &[f32],
-) -> Option<(f32, Vec<(f32, f32)>)> {
+    envelope: &mut Vec<(f32, f32)>,
+) -> Option<f32> {
     [ROAD_GRADE_BUILT, ROAD_GRADE_MAX]
         .into_iter()
-        .find_map(|grade| {
-            let mut envelope = bounds.to_vec();
-            grade_envelope(&mut envelope, runs, grade).then_some((grade, envelope))
-        })
+        .find(|&grade| envelope_within(bounds, runs, grade, envelope))
+}
+
+// `bounds` narrowed into `envelope` by `grade_envelope`.
+fn envelope_within(
+    bounds: &[(f32, f32)],
+    runs: &[f32],
+    max_grade: f32,
+    envelope: &mut Vec<(f32, f32)>,
+) -> bool {
+    envelope.clear();
+    envelope.extend_from_slice(bounds);
+    grade_envelope(envelope, runs, max_grade)
 }
 
 /// Builds `heights` inside `bounds` ([`source_bounds`]) within 33%, else within the 1:3 maximum,
 /// to the heights nearest their own ([`construct_within_grade`]); where neither exists, at the
 /// least grade the bounds allow, which is steeper than the maximum, so placement refuses the
 /// edit that produces it (`road_too_steep`). Returns the grade built to. O(points); that least
-/// grade O(points^2).
+/// grade O(points^2). `envelope` and `backward` are working buffers; no allocation beyond their
+/// growing.
 pub(crate) fn construct_within_bounds(
     heights: &mut [f32],
     bounds: &[(f32, f32)],
     runs: &[f32],
+    envelope: &mut Vec<(f32, f32)>,
+    backward: &mut Vec<f32>,
 ) -> f32 {
-    let (max_grade, envelope) = maximum_envelope(bounds, runs).unwrap_or_else(|| {
+    let max_grade = maximum_envelope(bounds, runs, envelope).unwrap_or_else(|| {
         // From the pairwise bound up, an ulp at a time, to the first `f32` grade whose envelope
         // `f32` reads as feasible.
         let mut grade = least_grade(bounds, runs).max(ROAD_GRADE_MAX.next_up());
-        loop {
-            let mut envelope = bounds.to_vec();
-            if grade_envelope(&mut envelope, runs, grade) {
-                break (grade, envelope);
-            }
+        while !envelope_within(bounds, runs, grade, envelope) {
             grade = grade.next_up();
         }
+        grade
     });
-    construct_within_grade(heights, &envelope, runs, max_grade);
+    construct_within_grade(heights, envelope, runs, max_grade, backward);
     max_grade
 }
 
@@ -230,13 +279,14 @@ pub(crate) fn grade_envelope(bounds: &mut [(f32, f32)], runs: &[f32], max_grade:
 /// nearest its own inside its interval and within `max_grade` of the point before it in that
 /// pass. Both passes are feasible and the constraints are convex, so their mean is too, and it
 /// does not depend on the profile's direction. A profile already inside every bound is left as
-/// it is, and a point whose interval is one height takes it exactly. O(points); allocates one
-/// copy of the heights.
+/// it is, and a point whose interval is one height takes it exactly. O(points); the
+/// last-to-first pass runs in `backward`, which allocates only to grow.
 pub(crate) fn construct_within_grade(
     heights: &mut [f32],
     envelope: &[(f32, f32)],
     runs: &[f32],
     max_grade: f32,
+    backward: &mut Vec<f32>,
 ) {
     let nearest = |height: f32, (low, high): (f32, f32), previous: Option<(f32, f32)>| {
         let (low, high) = previous.map_or((low, high), |(previous, run)| {
@@ -245,7 +295,8 @@ pub(crate) fn construct_within_grade(
         });
         height.max(low).min(high)
     };
-    let mut backward = heights.to_vec();
+    backward.clear();
+    backward.extend_from_slice(heights);
     for index in (0..backward.len()).rev() {
         let previous = (index + 1 < backward.len()).then(|| (backward[index + 1], runs[index]));
         backward[index] = nearest(backward[index], envelope[index], previous);
@@ -254,7 +305,7 @@ pub(crate) fn construct_within_grade(
         let previous = (index > 0).then(|| (heights[index - 1], runs[index - 1]));
         heights[index] = nearest(heights[index], envelope[index], previous);
     }
-    for ((height, backward), &(low, high)) in heights.iter_mut().zip(backward).zip(envelope) {
+    for ((height, &backward), &(low, high)) in heights.iter_mut().zip(&*backward).zip(envelope) {
         *height = if low == high {
             low
         } else {

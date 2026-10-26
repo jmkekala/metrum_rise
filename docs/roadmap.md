@@ -234,7 +234,13 @@ whole-graph terrain sync builds roads by the same rule (refusing a terrain edit 
 road past 1:3 is open, `roads.md` question 37). The Kuopio reference is re-recorded and re-pinned (5 edges move by at most
 0.36 m) and both Kuopio quality tests pass again. Its timing of the grade rule and the remaining
 `ROAD-68-K14` items (old saves load as saved; the first planning pass) are recorded under
-`roads.md` question 37.
+`roads.md` question 37. `ROAD-68-K16` (branch `road68-K16`) lands it on `road` after gate E and
+`TERRAIN-07-A`, makes the stroke solve allocation-free with bitwise-equal products, profiles the
+commit window for the `surface` rise `ROAD-68-K15` had recorded as layout without a profile, and
+makes saves byte-deterministic (lane connections were written in hash-map order; `simulation.md`
+"Save bytes"); the Kuopio reference is re-pinned for that row order alone (`roads.md` questions
+37 and 39). `TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
+re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
 `ROAD-68-E`, `ROAD-68-F` or `ROAD-68-K14` one, no Godot script).
 `ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists thirty-eight open questions (1-33 and 35-39); open question 16 (strokes pinned to the

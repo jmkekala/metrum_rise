@@ -10,11 +10,12 @@ use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::network::types::TransitType;
 use crate::simulation::network::grade::{
-    ROAD_GRADE_MAX, ROAD_GRADE_WARNING, SourcePoint, construct_within_grade, least_grade,
-    maximum_envelope, source_bounds, source_ground_m,
+    GradeScratch, ROAD_GRADE_MAX, ROAD_GRADE_WARNING, SourcePoint, construct_within_grade,
+    least_grade, maximum_envelope, source_bounds, source_ground_m,
 };
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+use std::cell::RefCell;
 
 // Road profile preparation thresholds shared by preview and committed placement.
 const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
@@ -53,6 +54,23 @@ struct RoadVerticalProfileSample {
     ground_y: f32,
     y: f32,
     pinned: bool,
+}
+
+// The stroke solve's buffers, reused between solves so that a solve allocates only the polyline
+// it returns once they have grown to its stroke (`ROAD-68-K16`): the solve runs on every
+// preview pose.
+#[derive(Default)]
+struct StrokeScratch {
+    alignment: Vec<Vector3>,
+    samples: Vec<RoadVerticalProfileSample>,
+    grade_limits: Vec<f32>,
+    previous_y: Vec<f32>,
+    grade: GradeScratch,
+}
+
+thread_local! {
+    // One per thread: pool workers keep theirs between solves.
+    static STROKE_SCRATCH: RefCell<StrokeScratch> = RefCell::default();
 }
 
 // Prepares road-tool input into the physical geometry used by preview and committed roads.
@@ -189,12 +207,40 @@ fn snap_road_endpoints_to_existing_nodes(prepared_points: &mut [Vector3], graph:
 fn prepare_road_input_points_with_support(
     raw_points: &[Vector3],
     terrain: &TerrainSystem,
-    mut visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
+    visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
     end_heights: [Option<f32>; 2],
 ) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
-    let simplified_points = simplify_road_alignment_points(raw_points);
+    // Taken for the solve, not borrowed: a solve nested on this thread (a pool job stolen while
+    // a support query waits) starts from empty buffers instead of failing a borrow.
+    let mut scratch = STROKE_SCRATCH.take();
+    let prepared = prepare_road_input_points_in(
+        raw_points,
+        terrain,
+        visible_support_height_at,
+        end_heights,
+        &mut scratch,
+    );
+    STROKE_SCRATCH.set(scratch);
+    prepared
+}
+
+fn prepare_road_input_points_in(
+    raw_points: &[Vector3],
+    terrain: &TerrainSystem,
+    mut visible_support_height_at: impl FnMut(f32, f32) -> Option<f32>,
+    end_heights: [Option<f32>; 2],
+    scratch: &mut StrokeScratch,
+) -> (Vec<Vector3>, EdgeClass, Option<f32>) {
+    let StrokeScratch {
+        alignment: simplified_points,
+        samples,
+        grade_limits,
+        previous_y,
+        grade,
+    } = scratch;
+    simplify_road_alignment_points(raw_points, simplified_points);
     if simplified_points.len() < 2 {
-        return (simplified_points, EdgeClass::Standard, None);
+        return (simplified_points.clone(), EdgeClass::Standard, None);
     }
 
     let mut endpoint_above_clearance = false;
@@ -222,13 +268,14 @@ fn prepare_road_input_points_with_support(
     };
 
     if class != EdgeClass::Standard {
-        return (simplified_points, class, None);
+        return (simplified_points.clone(), class, None);
     }
 
-    let mut samples = build_standard_road_profile_samples(
-        &simplified_points,
+    build_standard_road_profile_samples(
+        simplified_points,
         terrain,
         &mut visible_support_height_at,
+        samples,
     );
     // The two ends are pinned already; a joined node's graph height replaces their support.
     let last = samples.len().saturating_sub(1);
@@ -238,9 +285,9 @@ fn prepare_road_input_points_with_support(
             sample.y = height_m;
         }
     }
-    let forced_grade = solve_standard_road_profile(&mut samples);
+    let forced_grade = solve_standard_road_profile(samples, grade_limits, previous_y, grade);
     let prepared_points = samples
-        .into_iter()
+        .iter()
         .map(|sample| Vector3::new(sample.x, sample.y, sample.z))
         .collect();
 
@@ -337,8 +384,9 @@ fn solve_structural_transition_profile(points: &mut [Vector3]) {
     }
 }
 
-fn simplify_road_alignment_points(points: &[Vector3]) -> Vec<Vector3> {
-    let mut simplified_points = Vec::with_capacity(points.len());
+// Into `simplified_points`, which allocates only to grow.
+fn simplify_road_alignment_points(points: &[Vector3], simplified_points: &mut Vec<Vector3>) {
+    simplified_points.clear();
     if !points.is_empty() {
         simplified_points.push(points[0]);
         for point in points.iter().skip(1) {
@@ -355,15 +403,16 @@ fn simplify_road_alignment_points(points: &[Vector3]) -> Vec<Vector3> {
             simplified_points.push(*points.last().unwrap());
         }
     }
-    simplified_points
 }
 
+// Into `samples`, which allocates only to grow.
 fn build_standard_road_profile_samples(
     alignment_points: &[Vector3],
     terrain: &TerrainSystem,
     visible_support_height_at: &mut impl FnMut(f32, f32) -> Option<f32>,
-) -> Vec<RoadVerticalProfileSample> {
-    let mut samples = Vec::new();
+    samples: &mut Vec<RoadVerticalProfileSample>,
+) {
+    samples.clear();
     for segment in alignment_points.windows(2) {
         let a = segment[0];
         let b = segment[1];
@@ -373,7 +422,7 @@ fn build_standard_road_profile_samples(
         }
         if samples.is_empty() {
             push_standard_road_profile_sample(
-                &mut samples,
+                samples,
                 terrain,
                 visible_support_height_at,
                 a.x,
@@ -385,7 +434,7 @@ fn build_standard_road_profile_samples(
         for step in 1..=segment_count {
             let t = step as f32 / segment_count as f32;
             push_standard_road_profile_sample(
-                &mut samples,
+                samples,
                 terrain,
                 visible_support_height_at,
                 a.x + (b.x - a.x) * t,
@@ -401,7 +450,6 @@ fn build_standard_road_profile_samples(
     if let Some(last) = samples.last_mut() {
         last.pinned = true;
     }
-    samples
 }
 
 fn push_standard_road_profile_sample(
@@ -444,37 +492,56 @@ fn road_profile_support_height(
 // carriageways the stroke meets) and the source-delta limit bound where the profile may lie; when
 // a profile within 33% (else within the 1:3 maximum) exists there, the solve constructs one: the
 // smoothing solve below, then the nearest heights inside those bounds (`ROAD-68` open question
-// 37).
-fn solve_standard_road_profile(samples: &mut [RoadVerticalProfileSample]) -> Option<f32> {
-    let runs: Vec<f32> = samples
-        .windows(2)
-        .map(|span| profile_sample_run_m(span[0], span[1]))
-        .collect();
+// 37). The other arguments are working buffers; O(samples), no allocation beyond their growing.
+fn solve_standard_road_profile(
+    samples: &mut [RoadVerticalProfileSample],
+    grade_limits: &mut Vec<f32>,
+    previous_y: &mut Vec<f32>,
+    scratch: &mut GradeScratch,
+) -> Option<f32> {
+    let GradeScratch {
+        runs,
+        sources,
+        bounds,
+        envelope,
+        heights,
+        backward,
+    } = scratch;
+    runs.clear();
+    runs.extend(
+        samples
+            .windows(2)
+            .map(|span| profile_sample_run_m(span[0], span[1])),
+    );
     // A pinned sample at its target, any other within the source-delta limit of the ground.
-    let sources: Vec<SourcePoint> = samples
-        .iter()
-        .map(|sample| SourcePoint {
-            ground_m: sample.ground_y,
-            held_m: sample.pinned.then_some(sample.target_y),
-        })
-        .collect();
-    let bounds = source_bounds(&sources, &runs);
+    sources.clear();
+    sources.extend(samples.iter().map(|sample| SourcePoint {
+        ground_m: sample.ground_y,
+        held_m: sample.pinned.then_some(sample.target_y),
+    }));
+    source_bounds(sources, runs, bounds);
     // Built within 33% where the constraints allow it, else within the 1:3 maximum.
-    let Some((max_grade, envelope)) = maximum_envelope(&bounds, &runs) else {
-        let forced_grade = least_grade(&bounds, &runs);
-        solve_smooth_road_profile(samples, ROAD_GRADE_MAX);
+    let Some(max_grade) = maximum_envelope(bounds, runs, envelope) else {
+        let forced_grade = least_grade(bounds, runs);
+        solve_smooth_road_profile(samples, ROAD_GRADE_MAX, grade_limits, previous_y);
         return Some(forced_grade);
     };
-    solve_smooth_road_profile(samples, max_grade);
-    let mut heights: Vec<f32> = samples.iter().map(|sample| sample.y).collect();
-    construct_within_grade(&mut heights, &envelope, &runs, max_grade);
-    for (sample, height) in samples.iter_mut().zip(heights) {
+    solve_smooth_road_profile(samples, max_grade, grade_limits, previous_y);
+    heights.clear();
+    heights.extend(samples.iter().map(|sample| sample.y));
+    construct_within_grade(heights, envelope, runs, max_grade, backward);
+    for (sample, &height) in samples.iter_mut().zip(&*heights) {
         sample.y = height;
     }
     None
 }
 
-fn solve_smooth_road_profile(samples: &mut [RoadVerticalProfileSample], max_grade: f32) {
+fn solve_smooth_road_profile(
+    samples: &mut [RoadVerticalProfileSample],
+    max_grade: f32,
+    grade_limits: &mut Vec<f32>,
+    previous_y: &mut Vec<f32>,
+) {
     if samples.len() <= 2 {
         return;
     }
@@ -485,14 +552,13 @@ fn solve_smooth_road_profile(samples: &mut [RoadVerticalProfileSample], max_grad
     // Local bounds also avoid lending one steep section's allowance to the entire
     // road. Each span relaxes only up to `max_grade`, so steeper ground is cut or
     // filled. Compute once in O(P); the fixed-pass smoothing/curvature solve stays O(P).
-    let grade_limits: Vec<_> = samples
-        .windows(2)
-        .map(|span| {
-            ((span[1].target_y - span[0].target_y).abs() / profile_sample_run_m(span[0], span[1]))
-                .clamp(ROAD_PROFILE_MAX_GRADE, max_grade)
-        })
-        .collect();
-    let mut previous_y = vec![0.0; samples.len()];
+    grade_limits.clear();
+    grade_limits.extend(samples.windows(2).map(|span| {
+        ((span[1].target_y - span[0].target_y).abs() / profile_sample_run_m(span[0], span[1]))
+            .clamp(ROAD_PROFILE_MAX_GRADE, max_grade)
+    }));
+    previous_y.clear();
+    previous_y.resize(samples.len(), 0.0);
     for _ in 0..ROAD_PROFILE_SOLVER_ITERS {
         for (dst, sample) in previous_y.iter_mut().zip(samples.iter()) {
             *dst = sample.y;
@@ -510,11 +576,11 @@ fn solve_smooth_road_profile(samples: &mut [RoadVerticalProfileSample], max_grad
                 + terrain_delta * ROAD_PROFILE_TERRAIN_WEIGHT;
         }
         restore_road_profile_pins(samples);
-        enforce_road_profile_grade(samples, &grade_limits);
+        enforce_road_profile_grade(samples, grade_limits);
         restore_road_profile_pins(samples);
         enforce_road_profile_curvature(samples);
         restore_road_profile_pins(samples);
-        enforce_road_profile_grade(samples, &grade_limits);
+        enforce_road_profile_grade(samples, grade_limits);
         restore_road_profile_pins(samples);
     }
 }
@@ -617,7 +683,13 @@ mod tests {
                     }
                 })
                 .collect();
-            solve_standard_road_profile(&mut samples);
+            let mut scratch = StrokeScratch::default();
+            solve_standard_road_profile(
+                &mut samples,
+                &mut scratch.grade_limits,
+                &mut scratch.previous_y,
+                &mut scratch.grade,
+            );
             for sample in &samples {
                 assert!(
                     (sample.y - sample.target_y).abs() < 0.2,

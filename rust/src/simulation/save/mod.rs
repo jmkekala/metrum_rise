@@ -30,7 +30,6 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::vegetation::{VegetationConfig, edits::VegetationEdits};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
-use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
@@ -56,10 +55,15 @@ pub mod world;
 pub(crate) use camera::SavedCameraState;
 use schema::*;
 
-/// View of the live simulation state for serialization.
+/// View of the live simulation state for serialization. A save is a function of this view
+/// alone: every table is written in an order that the state, not a hash map's iteration, fixes,
+/// so equal views save byte-equal files (`ROAD-68-K16`).
 pub(crate) struct SaveGameView<'a> {
     /// Active orbit camera, absent for simulation-only snapshots.
     pub camera: Option<SavedCameraState>,
+    /// The header's save time, in Unix seconds: the save's one wall-clock value, which the game
+    /// takes from the clock and fixture recorders and tests fix.
+    pub saved_at_unix: i64,
     pub config: &'a WorldConfig,
     pub vegetation: &'a VegetationConfig,
     /// Player placements and generated-cell tombstones.
@@ -381,11 +385,7 @@ fn write_snapshot(
     }
     tx.execute(
         "INSERT INTO save_meta(version, saved_at_unix, game_build) VALUES (?1, ?2, ?3)",
-        params![
-            SAVE_VERSION,
-            Utc::now().timestamp(),
-            env!("CARGO_PKG_VERSION")
-        ],
+        params![SAVE_VERSION, view.saved_at_unix, env!("CARGO_PKG_VERSION")],
     )?;
     tx.execute(
         "INSERT INTO world_config(width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",

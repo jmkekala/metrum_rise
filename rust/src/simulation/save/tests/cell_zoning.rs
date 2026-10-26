@@ -95,6 +95,7 @@ fn write_snapshot(
         path,
         SaveGameView {
             camera: None,
+            saved_at_unix: 0,
             config,
             graph,
             zoning,

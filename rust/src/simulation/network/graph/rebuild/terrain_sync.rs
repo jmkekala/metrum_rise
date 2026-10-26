@@ -4,7 +4,7 @@
 
 use super::super::data::RegionGraph;
 use crate::simulation::network::grade::{
-    SourcePoint, construct_within_bounds, source_bounds, source_ground_m,
+    GradeScratch, SourcePoint, construct_within_bounds, source_bounds, source_ground_m,
 };
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
@@ -44,8 +44,16 @@ impl RegionGraph {
         }
 
         // 2. Re-interpolate edge geometry and smooth grades.
-        let mut temporary_heights = Vec::new();
-        let (mut runs, mut sources) = (Vec::new(), Vec::new());
+        // One construction's buffers for the whole sync.
+        let mut scratch = GradeScratch::default();
+        let GradeScratch {
+            runs,
+            sources,
+            bounds,
+            envelope,
+            heights: temporary_heights,
+            backward,
+        } = &mut scratch;
         for edge in &mut self.edges {
             if edge.deleted {
                 continue;
@@ -113,11 +121,11 @@ impl RegionGraph {
                     held_m: (index == 0 || index + 1 == count).then_some(point.y),
                 }
             }));
-            let bounds = source_bounds(&sources, &runs);
+            source_bounds(sources, runs, bounds);
             temporary_heights.clear();
             temporary_heights.extend(edge.geometry.iter().map(|point| point.y));
-            construct_within_bounds(&mut temporary_heights, &bounds, &runs);
-            for (point, &height) in edge.geometry.iter_mut().zip(&temporary_heights) {
+            construct_within_bounds(temporary_heights, bounds, runs, envelope, backward);
+            for (point, &height) in edge.geometry.iter_mut().zip(&*temporary_heights) {
                 point.y = height;
             }
             // Terrain authoring changes both source and physical heights explicitly. Clip
