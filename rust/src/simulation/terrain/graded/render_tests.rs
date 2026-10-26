@@ -638,10 +638,13 @@ fn packed_walls_hold_the_faces_bitwise() {
                 let mut bytes = Vec::new();
                 pack_walls(&payload, &mut bytes);
                 assert_eq!(bytes.len(), payload.walls.len() * WALL_FACE_BYTES, "{name}");
-                for (face, packed) in payload.walls.iter().zip(bytes.chunks_exact(WALL_FACE_BYTES)) {
+                let packed = bytes.as_chunks::<WALL_FACE_BYTES>().0;
+                for (face, packed) in payload.walls.iter().zip(packed) {
                     let read: Vec<u32> = packed
-                        .chunks_exact(4)
-                        .map(|value| u32::from_le_bytes(value.try_into().unwrap()))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|value| u32::from_le_bytes(*value))
                         .collect();
                     let want = [
                         face.a[0], face.a[1], face.b[0], face.b[1], face.bottom[0],
