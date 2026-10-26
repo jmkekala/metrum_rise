@@ -29,18 +29,19 @@ const LEVEL_HYSTERESIS_M := 32.0
 # Slots per level. GL0 and GL1 follow the memory table; GL2 and GL3 stop at 2,048 layers, the
 # smallest Texture2DArray depth Vulkan guarantees (TERRAIN-07 open question T23).
 const DEFAULT_POOL_SLOTS := [64, 192, 2048, 2048]
-# Patch cells: one 510 m patch meets at most 9 x 9 tiles. A tile's place in its patch is
+# Patch cells: a patch meets at most (ceil(span / 64 m) + 1)^2 tiles (9 x 9 on a 510 m patch),
+# the instances of each cell MultiMesh (_cells_per_patch). A tile's place in its patch is
 # column + PATCH_TILE_ROW * row in one instance channel (terrain_cells.gdshaderinc).
-const MAX_CELLS_PER_PATCH := 100
 const PATCH_TILE_ROW := 32
 const REQUESTS_PER_FRAME := 24
 const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
 const CELL_MESHES := 5
 const CELL_BASE := 4
-# Wall face instances per patch, prewarmed with its cells: the Kuopio census's walls are a few
-# hundred faces in all. A patch with more draws the first ones and counts the rest.
-const MAX_WALLS_PER_PATCH := 1024
+# Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
+# Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
+# patch with more draws the first ones and counts and logs the rest.
+const MAX_WALLS_PER_PATCH := 256
 # A visibility range no camera is within (metres): a patch's PlaneMesh while its cells draw it.
 const HIDDEN_RANGE_M := 0.001
 const WALL_FACE_FLOATS := 8
@@ -72,10 +73,18 @@ var last_edit_batch: Array = []
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
 var patch_lists: Dictionary = {}
 var patch_lists_requested: Dictionary = {}
+# Requests Rust refused by contract (retry false), by request key ("x,z,level,step" for a tile,
+# the patch key for a list) -> the token refused: never asked again at that token, so a refusal
+# is counted and logged once instead of being re-asked every frame (round 5's populated save).
+var refused: Dictionary = {}
+var patch_lists_refused: Dictionary = {}
 # Patch key -> {nodes: Array[MultiMeshInstance3D], materials: Array[ShaderMaterial] (GL0-GL3),
 # watched: Array}.
 var patch_cells: Dictionary = {}
 var _cells_pool: Array[Dictionary] = []
+var _cells_per_patch := 81
+# The cell MultiMeshes' initial buffer (identity transforms, zero custom data), shared.
+var _identity_cells := PackedFloat32Array()
 var _meshes: Dictionary = {}
 var _wall_mesh: ArrayMesh = null
 var _wall_material: ShaderMaterial = null
@@ -83,21 +92,23 @@ var _dirty_patches: Dictionary = {}
 # Patches whose wall instances must be rewritten (a tile rewritten in place changed its faces).
 var _dirty_walls: Dictionary = {}
 var _uniform_names: PackedStringArray = PackedStringArray()
-# The desired levels are recomputed when the camera moved or the lists or residency changed.
+# Tile key -> {level: Vector2i(code, step), token, distance}: every tile a resident patch's list
+# names. It follows the changes: a patch entering, leaving or getting a new list adds and
+# removes its own tiles (each tile counts the lists naming it, in _tile_lists, and the patch's
+# counted tiles are kept in _counted), and a camera move of 8 m re-levels the desired tiles.
 var _desired: Dictionary = {}
+var _tile_lists: Dictionary = {}
+var _counted: Dictionary = {}
 var _desired_camera := Vector3(INF, INF, INF)
-var _desired_dirty := true
-# The revisions of the resident patches and of their materials last processed (terrain.gd's):
-# a change refreshes the patch lists, the desired tiles and the cells' materials; an idle frame
-# does none of it.
-var _resident_revision := -1
-var _material_revision := -1
-# Whether a patch list or a tile may need a request: the residency or the desired tiles changed,
-# a request failed, or the last requests did not all go out (the per-frame budget or Rust's
-# in-flight bound).
-var _lists_dirty := true
-var _requests_dirty := true
+# The tiles and patch lists that may need a request: a tile whose desire, level or token
+# changed, whose request failed or did not go out (the per-frame budget or Rust's in-flight
+# bound); a patch that changed or whose list arrived, failed or was not accepted. An idle frame
+# has none.
+var _wanted: Dictionary = {}
+var _lists_wanted: Dictionary = {}
 const DESIRED_REFRESH_MOVE_M := 8.0
+# Patch list requests per frame: Rust holds at most 32 in flight.
+const LIST_REQUESTS_PER_FRAME := 32
 var counters := {
 	"textures_created": 0,
 	"images_created": 0,
@@ -147,6 +158,15 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	_wall_material = ShaderMaterial.new()
 	_wall_material.shader = WALL_SHADER
 	counters["materials_created"] += 1
+	# One cell set per patch of the world's grid, the most patches that can draw cells at once
+	# (every resident patch may hold a graded tile), so neither streaming nor an edit creates one.
+	var tiles_per_side := int(ceil(span_m / TILE_M)) + 1
+	_cells_per_patch = tiles_per_side * tiles_per_side
+	_identity_cells = PackedFloat32Array()
+	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
+	_cells_pool.clear()
+	for _patch in grid.x * grid.y:
+		_cells_pool.append(_new_cells())
 
 func _new_pool(level: Dictionary, slots: int) -> Dictionary:
 	var side := int(level["side"])
@@ -249,62 +269,58 @@ func clear() -> void:
 	_edit_staged.clear()
 	patch_lists.clear()
 	patch_lists_requested.clear()
+	refused.clear()
+	patch_lists_refused.clear()
 	_dirty_walls.clear()
 	for key in patch_cells.keys():
 		release_patch(key, null)
-	_resident_revision = -1
-	_material_revision = -1
 	_desired.clear()
-	_desired_dirty = true
-	_lists_dirty = true
-	_requests_dirty = true
+	_tile_lists.clear()
+	_counted.clear()
+	_desired_camera = Vector3(INF, INF, INF)
+	_wanted.clear()
+	_lists_wanted.clear()
 
 ## One frame: polls finished work and installs it within the install budget, keeps the tiles of
 ## `resident_patches` (patch key -> {node, material, rect: Rect2, step, generation}) at their
 ## distance's level, evicts the rest and rewrites the instances of the patches that changed.
-## `resident_revision` advances whenever `resident_patches` changes and `material_revision`
-## whenever a patch material may have; with neither, nor a camera move, nor finished work, the
-## frame only polls. O(changes) per frame.
-func process(camera_position: Vector3, resident_patches: Dictionary, resident_revision: int, material_revision: int) -> void:
+## `changed_patches` holds the keys whose entry was added, rewritten or removed since the last
+## call and `changed_materials` the keys whose material parameters may have changed (the caller
+## clears both); with neither, nor a camera move, nor finished work, the frame only polls.
+## O(changes) per frame: a changed patch or an arriving list costs its own tiles.
+func process(camera_position: Vector3, resident_patches: Dictionary, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
 	var start_us := Time.get_ticks_usec()
 	_frame_sync_us = 0
 	_frame_walls_us = 0
 	_frame_lists = 0
 	_frame_lists_same = 0
+	# A camera move re-levels the desired tiles first, so the tiles this frame adds take the
+	# camera's position too. O(desired tiles) per 8 m.
+	if camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M:
+		_desired_camera = camera_position
+		_relevel_desired()
 	_poll_and_install(start_us, resident_patches)
 	var polled_us := Time.get_ticks_usec()
 	var batch_tiles := _install_edit_batch(resident_patches)
 	var batch_us := Time.get_ticks_usec()
 	counters["install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
-	var resident_changed := resident_revision != _resident_revision
-	if resident_changed:
-		_resident_revision = resident_revision
-		_lists_dirty = true
-		_desired_dirty = true
-	if _lists_dirty:
+	for key: Vector2i in changed_patches.keys():
+		_patch_changed(key, resident_patches)
+	if not _lists_wanted.is_empty():
 		_request_patch_lists(resident_patches)
-	if _desired_dirty or camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M:
-		_desired = _desired_tiles(camera_position, resident_patches)
-		_desired_camera = camera_position
-		_desired_dirty = false
-		_evict(_desired)
-		_requests_dirty = true
-	if _requests_dirty:
-		_request_tiles(_desired)
+	if not _wanted.is_empty():
+		_request_tiles()
 	var residency_us := Time.get_ticks_usec()
-	# A patch's cells follow its LOD step and its material's parameters.
-	if resident_changed or material_revision != _material_revision:
-		_material_revision = material_revision
-		for key: Vector2i in patch_cells.keys():
-			if not resident_patches.has(key):
-				continue
-			var patch: Dictionary = resident_patches[key]
-			var cells: Dictionary = patch_cells[key]
-			if int(cells.get("step", -1)) != int(patch["step"]):
-				_dirty_patches[key] = true
-			elif _watched_parameters(patch["material"]) != cells["watched"]:
-				_sync_material(cells, patch["material"])
+	# A patch's cells follow its material's parameters (a changed patch's LOD step in
+	# _patch_changed). O(changed materials).
+	for key: Vector2i in changed_materials.keys():
+		if not patch_cells.has(key) or not resident_patches.has(key):
+			continue
+		var material: ShaderMaterial = resident_patches[key]["material"]
+		var cells: Dictionary = patch_cells[key]
+		if _watched_parameters(material) != cells["watched"]:
+			_sync_material(cells, material)
 	var watched_us := Time.get_ticks_usec()
 	var cell_patches := _dirty_patches.size()
 	for key: Vector2i in _dirty_patches.keys():
@@ -359,24 +375,11 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 			if not patch_cells.has(key) or previous.is_empty() != tiles.is_empty():
 				_dirty_patches[key] = true
 			patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
-			_desired_dirty = true
+			_recount(key, resident_patches)
 			# A list baked for an older generation is asked again.
-			_lists_dirty = true
+			_lists_wanted[key] = true
 		for failure: Dictionary in result.get("failed", []):
-			var keys: PackedInt64Array = failure["keys"]
-			if String(failure["kind"]) == "patch":
-				patch_lists_requested.erase(Vector2i(keys[0], keys[1]))
-				_lists_dirty = true
-			else:
-				requested.erase("%d,%d,%d,%d" % [keys[0], keys[1], keys[2], keys[3]])
-				_requests_dirty = true
-				if not bool(failure["retry"]):
-					# The tile stays as it was; the edit installs without it.
-					_edit_batch.erase(Vector2i(keys[0], keys[1]))
-					_edit_staged.erase(Vector2i(keys[0], keys[1]))
-			if not bool(failure["retry"]):
-				counters["bake_failures"] += 1
-				MetrumDebug.log("terrain", "graded %s %s failed: %s" % [failure["kind"], str(keys), failure["reason"]])
+			_failed(failure)
 		var tiles: Array = result.get("tiles", [])
 		for tile: Dictionary in tiles:
 			_install(tile, resident_patches)
@@ -384,6 +387,35 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 			return
 		if float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS:
 			return
+
+# A failed request: a transient one (busy core, unready site index) is asked again; one Rust
+# refuses by contract is recorded with its token, counted and logged once, and not asked again
+# until its token changes (an edit, a new patch generation).
+func _failed(failure: Dictionary) -> void:
+	var keys: PackedInt64Array = failure["keys"]
+	var token := int(failure["token"])
+	var retry := bool(failure["retry"])
+	if String(failure["kind"]) == "patch":
+		var key := Vector2i(keys[0], keys[1])
+		if int(patch_lists_requested.get(key, -2)) == token:
+			patch_lists_requested.erase(key)
+		if not retry:
+			patch_lists_refused[key] = token
+		_lists_wanted[key] = true
+	else:
+		var tile := Vector2i(keys[0], keys[1])
+		var request_key := "%d,%d,%d,%d" % [keys[0], keys[1], keys[2], keys[3]]
+		if int(requested.get(request_key, -1)) == token:
+			requested.erase(request_key)
+		if not retry:
+			refused[request_key] = token
+			# The tile stays as it was; the edit installs without it.
+			_edit_batch.erase(tile)
+			_edit_staged.erase(tile)
+		_wanted[tile] = true
+	if not retry:
+		counters["bake_failures"] += 1
+		MetrumDebug.log("terrain", "graded %s %s token %d refused: %s" % [failure["kind"], str(keys), token, failure["reason"]])
 
 func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
 	var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
@@ -416,7 +448,7 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 			# The pool sizes make this impossible within the distance rules; counted, the tile
 			# stays as it was.
 			counters["pool_exhausted"] += 1
-			_requests_dirty = true
+			_wanted[key] = true
 			MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(key)])
 			return
 		slot = free.pop_back()
@@ -435,6 +467,10 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 		_free_slot(current)
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
 	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls}
+	# A bake of an older level or token (the camera moved, an edit dirtied it) still wants one.
+	var want: Dictionary = _desired.get(key, {})
+	if not want.is_empty() and (want["level"] != Vector2i(code, step) or int(want["token"]) != token):
+		_wanted[key] = true
 	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites the cells
 	# that show it or stitch to it, and changed faces the walls of the patches that draw them.
 	if current.is_empty() or int(current["slot"]) != slot or int(current["code"]) != cell_code:
@@ -463,7 +499,7 @@ func _apply_edit(edit: Dictionary) -> void:
 	if bool(edit["all"]):
 		for tile: Vector2i in installed.keys():
 			_dirty_tile(tile, serial)
-		for request_key: String in requested.keys():
+		for request_key: String in requested.keys() + refused.keys():
 			var parts := request_key.split(",")
 			_dirty_tile(Vector2i(int(parts[0]), int(parts[1])), serial)
 		return
@@ -475,20 +511,27 @@ func _apply_edit(edit: Dictionary) -> void:
 			var tile := Vector2i(flat[index], flat[index + 1])
 			var current: Dictionary = installed.get(tile, {})
 			var held := not current.is_empty() and int(current["level"]) == code and int(current["step"]) == step
-			if held or requested.has("%d,%d,%d,%d" % [tile.x, tile.y, code, step]):
+			var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, code, step]
+			# A refused tile is held too: the edit may have changed what refused it.
+			if held or requested.has(request_key) or refused.has(request_key):
 				_dirty_tile(tile, serial)
 
 # A dirty tile takes the edit's serial as its token, so a bake in flight with an older one is
-# dropped and the tile is requested again; an installed tile joins the edit batch.
+# dropped and the tile is requested again, a refused one too; an installed tile joins the edit
+# batch.
 func _dirty_tile(tile: Vector2i, serial: int) -> void:
 	var token: int = max(int(tile_tokens.get(tile, 0)), serial)
 	tile_tokens[tile] = token
 	for level: Vector2i in LEVEL_STEPS:
-		requested.erase("%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y])
+		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
+		requested.erase(request_key)
+		refused.erase(request_key)
 	_edit_staged.erase(tile)
 	if installed.has(tile):
 		_edit_batch[tile] = token
-	_desired_dirty = true
+	if _desired.has(tile):
+		_desired[tile]["token"] = token
+		_wanted[tile] = true
 
 func _free_slot(entry: Dictionary) -> void:
 	var pool: Dictionary = pools[int(entry["level"])]
@@ -512,15 +555,101 @@ func _mark_tile_patches(key: Vector2i, resident_patches: Dictionary) -> void:
 		if resident_patches.has(patch_key):
 			_dirty_patches[patch_key] = true
 
+# A resident patch entry was added, rewritten or removed: its counted tiles follow its residency,
+# its list is asked again if its generation moved, and its cells follow its LOD step.
+func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
+	_recount(key, resident_patches)
+	if not resident_patches.has(key):
+		_lists_wanted.erase(key)
+		return
+	_lists_wanted[key] = true
+	var cells: Dictionary = patch_cells.get(key, {})
+	if not cells.is_empty() and int(cells.get("step", -1)) != int(resident_patches[key]["step"]):
+		_dirty_patches[key] = true
+
+# The tiles patch `key` adds to the desired set: its list while it is resident (a patch whose
+# list is being refreshed keeps its last one until the new one arrives, so an edit's patch shows
+# its tiles meanwhile). A tile enters the desired set with the first list naming it and leaves
+# with the last. O(the patch's old and new tiles).
+func _recount(key: Vector2i, resident_patches: Dictionary) -> void:
+	var tiles: Array = []
+	if resident_patches.has(key):
+		tiles = patch_lists.get(key, {}).get("tiles", [])
+	var old: Array = _counted.get(key, [])
+	if old == tiles:
+		return
+	# The new list counts first, so a tile on both lists never leaves.
+	for tile: Vector2i in tiles:
+		var count := int(_tile_lists.get(tile, 0)) + 1
+		_tile_lists[tile] = count
+		if count == 1:
+			_desire(tile)
+	for tile: Vector2i in old:
+		var count := int(_tile_lists[tile]) - 1
+		if count > 0:
+			_tile_lists[tile] = count
+			continue
+		_tile_lists.erase(tile)
+		_undesire(tile)
+	if tiles.is_empty():
+		_counted.erase(key)
+	else:
+		_counted[key] = tiles
+
+# A tile some resident patch lists: its level at the camera's distance, with hysteresis around
+# the level it is installed at.
+func _desire(tile: Vector2i) -> void:
+	var distance := ((Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M).distance_to(Vector2(_desired_camera.x, _desired_camera.z))
+	var current_code := int(installed.get(tile, {}).get("level", -1))
+	_desired[tile] = {"level": desired_level(distance, current_code), "token": int(tile_tokens.get(tile, 0)), "distance": distance}
+	_wanted[tile] = true
+
+# A tile no resident patch lists any more: its slot is freed and its requests, token and
+# refusals dropped (only held tiles keep a token).
+func _undesire(tile: Vector2i) -> void:
+	_desired.erase(tile)
+	_wanted.erase(tile)
+	if installed.has(tile):
+		_free_slot(installed[tile])
+		installed.erase(tile)
+		counters["evictions"] += 1
+		_dirty_patches_around(tile)
+	_edit_batch.erase(tile)
+	_edit_staged.erase(tile)
+	for level: Vector2i in LEVEL_STEPS:
+		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
+		requested.erase(request_key)
+		refused.erase(request_key)
+	tile_tokens.erase(tile)
+
+# Every desired tile's distance and level at the camera's new position; a tile whose level
+# changed wants a bake at it. O(desired tiles).
+func _relevel_desired() -> void:
+	var camera_xz := Vector2(_desired_camera.x, _desired_camera.z)
+	for tile: Vector2i in _desired.keys():
+		var want: Dictionary = _desired[tile]
+		var distance := ((Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M).distance_to(camera_xz)
+		var level := desired_level(distance, int(installed.get(tile, {}).get("level", -1)))
+		want["distance"] = distance
+		if level != want["level"]:
+			want["level"] = level
+			_wanted[tile] = true
+
+# Asks for the lists of the wanted patches whose list is not of their generation, not in flight
+# and not refused at it, within Rust's in-flight bound; the rest stay wanted.
 func _request_patch_lists(resident_patches: Dictionary) -> void:
-	_lists_dirty = false
 	var flat := PackedInt64Array()
-	for key: Vector2i in resident_patches.keys():
+	for key: Vector2i in _lists_wanted.keys():
+		if flat.size() >= LIST_REQUESTS_PER_FRAME * 3:
+			break
+		_lists_wanted.erase(key)
+		if not resident_patches.has(key):
+			continue
 		var generation := int(resident_patches[key]["generation"])
 		var list: Dictionary = patch_lists.get(key, {})
 		if not list.is_empty() and int(list["token"]) == generation:
 			continue
-		if int(patch_lists_requested.get(key, -2)) == generation:
+		if int(patch_lists_requested.get(key, -2)) == generation or int(patch_lists_refused.get(key, -2)) == generation:
 			continue
 		patch_lists_requested[key] = generation
 		flat.append_array(PackedInt64Array([key.x, key.y, generation]))
@@ -529,85 +658,50 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 	var accepted: PackedByteArray = simulation_node.request_graded_patch_tiles(flat)
 	for index in accepted.size():
 		if accepted[index] == 0:
-			patch_lists_requested.erase(Vector2i(flat[index * 3], flat[index * 3 + 1]))
-			_lists_dirty = true
+			var key := Vector2i(flat[index * 3], flat[index * 3 + 1])
+			patch_lists_requested.erase(key)
+			_lists_wanted[key] = true
 
-# Tile key -> {level: Vector2i(code, step), token, distance} for every listed tile of a resident
-# patch. A patch whose list is being refreshed keeps its last one until the new one arrives, so
-# an edit's patch shows its tiles meanwhile instead of dropping them.
-func _desired_tiles(camera_position: Vector3, resident_patches: Dictionary) -> Dictionary:
-	var desired := {}
-	var camera_xz := Vector2(camera_position.x, camera_position.z)
-	for key: Vector2i in resident_patches.keys():
-		var list: Dictionary = patch_lists.get(key, {})
-		if list.is_empty():
-			continue
-		for tile: Vector2i in list["tiles"]:
-			var token := int(tile_tokens.get(tile, 0))
-			if desired.has(tile):
-				continue
-			var centre := (Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M
-			var distance := centre.distance_to(camera_xz)
-			var current: Dictionary = installed.get(tile, {})
-			var current_code := int(current.get("level", -1))
-			desired[tile] = {"level": desired_level(distance, current_code), "token": token, "distance": distance}
-	return desired
-
-func _request_tiles(desired: Dictionary) -> void:
-	_requests_dirty = false
+# Asks for the wanted tiles that are not installed at their level and token, not in flight and
+# not refused at that token, closest first within the per-frame budget. O(wanted tiles).
+func _request_tiles() -> void:
 	var wanted: Array = []
-	for tile: Vector2i in desired.keys():
-		var want: Dictionary = desired[tile]
+	for tile: Vector2i in _wanted.keys():
+		var want: Dictionary = _desired.get(tile, {})
+		if want.is_empty():
+			_wanted.erase(tile)
+			continue
 		var level: Vector2i = want["level"]
+		var token := int(want["token"])
 		var current: Dictionary = installed.get(tile, {})
 		if (
 			not current.is_empty()
 			and int(current["level"]) == level.x
 			and int(current["step"]) == level.y
-			and int(current["token"]) == int(want["token"])
+			and int(current["token"]) == token
 		):
+			_wanted.erase(tile)
 			continue
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
-		if int(requested.get(request_key, -1)) == int(want["token"]):
+		if int(requested.get(request_key, -1)) == token or int(refused.get(request_key, -1)) == token:
+			_wanted.erase(tile)
 			continue
-		wanted.append([float(want["distance"]), tile, level, int(want["token"]), request_key])
-	# Closest first, within the per-frame request budget.
+		wanted.append([float(want["distance"]), tile, level, token, request_key])
+	if wanted.is_empty():
+		return
 	wanted.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
-	_requests_dirty = wanted.size() > REQUESTS_PER_FRAME
+	var sent := wanted.slice(0, REQUESTS_PER_FRAME)
 	var flat := PackedInt64Array()
-	for entry: Array in wanted.slice(0, REQUESTS_PER_FRAME):
+	for entry: Array in sent:
 		var tile: Vector2i = entry[1]
 		var level: Vector2i = entry[2]
 		flat.append_array(PackedInt64Array([tile.x, tile.y, level.x, level.y, entry[3]]))
-	if flat.is_empty():
-		return
-	# Rust queues what fits its in-flight budget; the rest is asked again on a later frame.
+	# Rust queues what fits its in-flight budget; the rest stays wanted for a later frame.
 	var accepted: PackedByteArray = simulation_node.request_graded_tiles(flat)
-	var sent := wanted.slice(0, REQUESTS_PER_FRAME)
 	for index in sent.size():
 		if index < accepted.size() and accepted[index] != 0:
 			requested[sent[index][4]] = sent[index][3]
-		else:
-			_requests_dirty = true
-
-func _evict(desired: Dictionary) -> void:
-	for tile: Vector2i in installed.keys():
-		if desired.has(tile):
-			continue
-		_free_slot(installed[tile])
-		installed.erase(tile)
-		counters["evictions"] += 1
-		_dirty_patches_around(tile)
-		_edit_batch.erase(tile)
-		_edit_staged.erase(tile)
-	for request_key: String in requested.keys():
-		var parts := request_key.split(",")
-		if not desired.has(Vector2i(int(parts[0]), int(parts[1]))):
-			requested.erase(request_key)
-	# Only held tiles keep a token.
-	for tile: Vector2i in tile_tokens.keys():
-		if not desired.has(tile):
-			tile_tokens.erase(tile)
+			_wanted.erase(sent[index][1])
 
 func _dirty_patches_around(tile: Vector2i) -> void:
 	var rect := Rect2(Vector2(tile) * TILE_M - Vector2.ONE * TILE_M, Vector2.ONE * TILE_M * 3.0)
@@ -793,27 +887,36 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	cells["node_parent"] = null
 	_cells_pool.append(cells)
 
+# A pooled cell set, bounded to the patch's culling box. The pool holds one per patch of the
+# grid (setup), so this creates none; an empty pool would mean more patches than the grid.
 func _acquire_cells(patch: Dictionary) -> Dictionary:
-	if not _cells_pool.is_empty():
-		return _cells_pool.pop_back()
-	var nodes: Array = []
+	var cells: Dictionary = _cells_pool.pop_back() if not _cells_pool.is_empty() else _new_cells()
 	var aabb: AABB = patch["aabb"]
+	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
+		node.multimesh.custom_aabb = aabb
+		node.custom_aabb = aabb
+	return cells
+
+# One patch's cell resources: five cell MultiMeshes (GL0-GL3 and the base cells), the four
+# graded levels' materials and the wall MultiMesh.
+func _new_cells() -> Dictionary:
+	var nodes: Array = []
+	# New instances start with a zero transform; the shader places the vertices, so every
+	# instance keeps the identity: per instance the transform's three rows, then custom data.
+	if _identity_cells.is_empty():
+		for instance in _cells_per_patch:
+			_identity_cells.append_array(PackedFloat32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]))
 	for index in CELL_MESHES:
 		var multimesh := MultiMesh.new()
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
 		multimesh.use_custom_data = true
-		multimesh.instance_count = MAX_CELLS_PER_PATCH
-		# New instances start with a zero transform; the shader places the vertices, so every
-		# instance keeps the identity.
-		for instance in MAX_CELLS_PER_PATCH:
-			multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
-		multimesh.custom_aabb = aabb
+		multimesh.instance_count = _cells_per_patch
+		multimesh.buffer = _identity_cells
 		multimesh.visible_instance_count = 0
 		counters["multimeshes_created"] += 1
 		var node := MultiMeshInstance3D.new()
 		node.name = "GradedCells%d" % index
 		node.multimesh = multimesh
-		node.custom_aabb = aabb
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		node.visible = false
 		nodes.append(node)
@@ -832,13 +935,11 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 	wall_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	wall_multimesh.mesh = _wall_mesh
 	wall_multimesh.instance_count = MAX_WALLS_PER_PATCH
-	wall_multimesh.custom_aabb = aabb
 	wall_multimesh.visible_instance_count = 0
 	counters["multimeshes_created"] += 1
 	var walls := MultiMeshInstance3D.new()
 	walls.name = "GradedWalls"
 	walls.multimesh = wall_multimesh
-	walls.custom_aabb = aabb
 	walls.material_override = _wall_material
 	walls.visible = false
 	return {"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null}
@@ -881,4 +982,7 @@ func get_pool_counters() -> Dictionary:
 	out["pool_bytes"] = bytes
 	out["installed"] = installed.size()
 	out["patches_with_cells"] = patch_cells.size()
+	out["cell_sets_free"] = _cells_pool.size()
+	out["refused"] = refused.size() + patch_lists_refused.size()
+	out["desired"] = _desired.size()
 	return out

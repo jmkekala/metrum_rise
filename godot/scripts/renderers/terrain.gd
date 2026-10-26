@@ -133,12 +133,12 @@ var overlay_mode: int = 0
 var graded_tiles_enabled := true
 var graded_tiles: TerrainGradedTiles = null
 # The resident patches the graded tiles read (key -> {node, material, rect, step, generation,
-# aabb}), kept as patches change rather than rebuilt per frame, with a revision that advances
-# with every change; and a revision that advances whenever a patch material parameter the
-# graded cells copy may have changed. An idle frame hands them over in O(1).
+# aabb}), kept as patches change rather than rebuilt per frame, with the keys changed since the
+# last frame (the graded tiles follow those patches only), and the keys whose material
+# parameters the graded cells copy may have changed since. An idle frame hands them over in O(1).
 var _graded_resident: Dictionary = {}
-var _graded_resident_revision := 0
-var _patch_material_revision := 0
+var _graded_changed: Dictionary = {}
+var _graded_materials_changed: Dictionary = {}
 var terrain_world_size: Vector2 = Vector2.ZERO
 var terrain_cell_m: float = 1.0
 var patch_cols: int = 0
@@ -511,14 +511,22 @@ func _process(delta: float) -> void:
 		)
 		_reset_terrain_resource_pool_perf_counters()
 
-# Hands the resident patches to the graded tile renderer with their revisions.
+# Hands the resident patches to the graded tile renderer with the keys changed since last frame.
 func _process_graded_tiles() -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return
 	graded_tiles.process(
-		camera.global_position, _graded_resident, _graded_resident_revision, _patch_material_revision
+		camera.global_position, _graded_resident, _graded_changed, _graded_materials_changed
 	)
+	_graded_changed.clear()
+	_graded_materials_changed.clear()
+
+# A material parameter of patch `key` the graded cells copy may have changed (`key` null for a
+# patch dictionary without one: nothing to sync).
+func _graded_material_changed(key: Variant) -> void:
+	if graded_tiles != null and key is Vector2i:
+		_graded_materials_changed[key] = true
 
 # Rewrites the graded tiles' entry of patch `key` (its node, material, rectangle, LOD step and
 # payload generation) after its residency, payload or LOD step changed; a patch that is not
@@ -526,7 +534,7 @@ func _process_graded_tiles() -> void:
 func _graded_patch_changed(key: Vector2i) -> void:
 	if graded_tiles == null:
 		return
-	_graded_resident_revision += 1
+	_graded_changed[key] = true
 	var patch: Dictionary = patches.get(key, {})
 	var data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
 	if not resident_patch_lookup.has(key) or patch.is_empty() or data.is_empty():
@@ -978,7 +986,7 @@ func _terrain_patch_cull_far_m(camera: Camera3D) -> float:
 	return maxf(PATCH_RESIDENCY_CULL_FAR_M, height_scaled_far)
 
 func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
-	_patch_material_revision += 1
+	_graded_material_changed(key)
 	if patches.has(key):
 		return
 	var patch_data: Dictionary = _terrain_patch_data_for_key(key, false, allow_async)
@@ -1130,6 +1138,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	_terrain_debug_patch_creates += 1
 
 	patches[key] = {
+		"key": key,
 		"node": patch_node,
 		"retaining_wall_node": retaining_wall_node,
 		"material": material,
@@ -1356,7 +1365,7 @@ func _commit_staged_patch_data(
 	total_start_us: int = 0,
 	fetch_ms: float = 0.0
 ) -> void:
-	_patch_material_revision += 1
+	_graded_material_changed(key)
 	patch_render_will_change.emit(key)
 	if total_start_us <= 0:
 		total_start_us = Time.get_ticks_usec()
@@ -1618,7 +1627,7 @@ func _clear_patches() -> void:
 	patches.clear()
 	resident_patch_lookup.clear()
 	_graded_resident.clear()
-	_graded_resident_revision += 1
+	_graded_changed.clear()
 	patch_payload_requested.clear()
 	patch_payload_requested_generation.clear()
 	patch_payload_ready.clear()
@@ -1793,7 +1802,7 @@ func _stage_patch_land_cover(key: Vector2i, patch: Dictionary, force: bool = fal
 	return spare
 
 func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
-	_patch_material_revision += 1
+	_graded_material_changed(patch.get("key"))
 	if stage == patch.get("land_cover", {}):
 		return
 	patch["spare_land_cover"] = patch.get("land_cover", {})
@@ -2735,7 +2744,7 @@ func _terrain_patch_mask_image(patch_data: Dictionary) -> Image:
 func _apply_patch_masks(
 	key: Vector2i, material: ShaderMaterial, image: Image, texture_width: int, texture_height: int
 ) -> void:
-	_patch_material_revision += 1
+	_graded_material_changed(key)
 	var slot := key.y * patch_cols + key.x
 	if (
 		image == null or key.x < 0 or key.x >= patch_cols or slot < 0 or slot >= patch_cols * patch_rows
@@ -3527,7 +3536,8 @@ func mark_field_overlay_dirty() -> void:
 	field_overlay_dirty = true
 
 func _apply_overlay_mode() -> void:
-	_patch_material_revision += 1
+	for key in _graded_resident.keys():
+		_graded_material_changed(key)
 	for key in patches.keys():
 		var material: ShaderMaterial = patches[key]["material"]
 		material.set_shader_parameter("overlay_mode", overlay_mode)
@@ -3563,7 +3573,7 @@ func _ensure_grass_textures() -> void:
 		grain_albedo_texture = WorldMaterials.load_texture_or_solid(TERRAIN_GRAIN_ALBEDO_PATH, FIELD_OVERLAY_FALLBACK_COLOR)
 
 func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
-	_patch_material_revision += 1
+	_graded_material_changed(patch.get("key"))
 	if patch.get("water_texture", null) != empty_water_texture:
 		material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("watermap_texture_size", Vector2(2, 2))
@@ -3774,7 +3784,7 @@ func _bind_water_texture_from_binding(
 	sample_width: int,
 	sample_height: int
 ) -> void:
-	_patch_material_revision += 1
+	_graded_material_changed(patch.get("key"))
 	var texture_changed: bool = patch.get("water_texture", null) != water_texture
 	var texture_layout_changed: bool = (
 		int(patch.get("water_texture_width", 0)) != texture_width

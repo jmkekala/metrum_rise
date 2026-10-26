@@ -15,9 +15,9 @@ const WORLD_M := 1020.0
 const CELL_M := 10.0
 
 var _failures := 0
-# The resident patches' revision handed to the renderer (terrain.gd's): advanced with every
-# change of the resident dictionary.
-var _revision := 0
+# The resident patch keys changed since the renderer's last frame (terrain.gd's): every key of a
+# rewritten or dropped resident dictionary.
+var _changed := {}
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -43,13 +43,15 @@ func _run() -> void:
 	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [24, 24, 24, 24])
 	var created := _creation_counters(graded)
 	_expect(int(created["textures_created"]) == 8, "the pools are 4 levels x (texels, rows): %s" % created)
+	_expect(int(created["multimeshes_created"]) == 6 * 4, "one cell set per patch of the 2 x 2 grid: %s" % created)
 
 	var resident := _resident_patches(host, layout, world_size, 1)
+	_mark_changed(resident)
 	var camera := Vector3(0.0, 120.0, 10.0)
 	_expect(await _settle(graded, camera, resident), "the junction's tiles must install")
 	var counters: Dictionary = graded.get_pool_counters()
 	_expect(int(counters["installed"]) > 0, "graded tiles must be installed: %s" % counters)
-	_expect(int(counters["bake_failures"]) == 0, "no bake may fail: %s" % counters)
+	_expect(int(counters["bake_failures"]) == 0 and int(counters["refused"]) == 0, "no bake may fail: %s" % counters)
 	_expect(int(counters["pool_exhausted"]) == 0, "the pools must not run out: %s" % counters)
 	# The tiles under the junction are graded and, 120 m above it, at GL0.
 	var junction := Vector2i(0, 0)
@@ -68,7 +70,7 @@ func _run() -> void:
 	await _add_road(simulation, [Vector3(-120.0, 0.0, 70.0), Vector3(-10.0, 0.0, 70.0)])
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1
-	_revision += 1
+	_mark_changed(resident)
 	graded.counters["install_ms_max"] = 0.0
 	_expect(await _settle_edit(graded, camera, resident), "the edit's tiles must install again")
 	counters = graded.get_pool_counters()
@@ -94,11 +96,12 @@ func _run() -> void:
 			_expect(int(now["slot"]) == int(was["slot"]), "tile %s rebakes into its own slot" % tile)
 	_expect(rebaked > 0, "the edit rebakes installed tiles")
 	_expect(batch.size() < graded.installed.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [batch.size(), graded.installed.size()])
+	# Nothing is created after setup, neither while streaming nor by the edit: the cell sets are
+	# prewarmed, one per patch of the grid (round 5's populated edit created 16 materials and 24
+	# MultiMeshes for patches newly drawing cells).
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
-		if name == "materials_created" or name == "multimeshes_created":
-			continue
-		_expect(after[name] == created[name], "an edit must create no %s: %s -> %s" % [name, created[name], after[name]])
+		_expect(after[name] == created[name], "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
 	# Each pooled cell set holds five cell MultiMeshes, the wall MultiMesh and the four graded
 	# levels' materials; the wall material is one, made at setup.
 	_expect((int(after["materials_created"]) - 1) * 6 == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
@@ -111,20 +114,88 @@ func _run() -> void:
 	var far := _resident_patches(host, layout, world_size, 1)
 	for key: Vector2i in far.keys():
 		far[key]["generation"] = int(resident[key]["generation"])
-	_revision += 1
+	_mark_changed(resident)
 	for frame in 4:
-		graded.process(Vector3(0.0, 120.0, 10.0), {}, _revision, 0)
+		_frame(graded, Vector3(0.0, 120.0, 10.0), {})
 		await process_frame
 	counters = graded.get_pool_counters()
 	_expect(int(counters["installed"]) == 0, "no tile may stay installed without resident patches")
 	for code in 4:
 		_expect(int(counters["free_%d" % code]) == int(counters["slots_%d" % code]), "level %d must free its slots" % code)
 	graded.clear()
+	await _check_refusals_are_asked_once(host, simulation, layout, world_size)
 	await _check_production_renderer(host, simulation)
 	host.queue_free()
 	await process_frame
 	print("Graded tile renderer tests: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
+
+# A stand-in bridge that refuses every tile bake by contract (retry false), as Rust refused round
+# 5's populated GL2 tiles: each patch lists tiles (0, 0) and (1, 0).
+class RefusingBridge extends Node:
+	var layout: Dictionary
+	# Request key -> how many times it was asked.
+	var asked: Dictionary = {}
+	var _lists: Array = []
+	var _failed: Array = []
+
+	func get_graded_tile_layout() -> Dictionary:
+		return layout
+
+	func request_graded_patch_tiles(flat: PackedInt64Array) -> PackedByteArray:
+		var accepted := PackedByteArray()
+		for index in range(0, flat.size(), 3):
+			_lists.append({"patch_x": flat[index], "patch_z": flat[index + 1], "token": flat[index + 2], "tiles": PackedInt32Array([0, 0, 1, 0])})
+			accepted.append(1)
+		return accepted
+
+	func request_graded_tiles(flat: PackedInt64Array) -> PackedByteArray:
+		var accepted := PackedByteArray()
+		for index in range(0, flat.size(), 5):
+			var keys := PackedInt64Array([flat[index], flat[index + 1], flat[index + 2], flat[index + 3]])
+			var key := "%d,%d,%d,%d" % [keys[0], keys[1], keys[2], keys[3]]
+			asked[key] = int(asked.get(key, 0)) + 1
+			_failed.append({"kind": "tile", "keys": keys, "token": flat[index + 4], "reason": "edge_capacity", "retry": false})
+			accepted.append(1)
+		return accepted
+
+	func poll_graded_tile_results(_max_tiles: int) -> Dictionary:
+		var out := {"edits": [], "patches": _lists, "tiles": [], "failed": _failed}
+		_lists = []
+		_failed = []
+		return out
+
+# A request Rust refuses by contract is asked once at its token and counted, never again every
+# frame (round 5's populated save re-asked 827,447 refusals and never settled); an edit that
+# dirties the tile asks it once more, at the edit's token.
+func _check_refusals_are_asked_once(host: Node3D, simulation: SimulationNode, layout: Dictionary, world_size: Vector2) -> void:
+	var bridge := RefusingBridge.new()
+	bridge.layout = simulation.get_graded_tile_layout()
+	host.add_child(bridge)
+	var graded := GradedTiles.new()
+	graded.setup(bridge, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [8, 8, 8, 8])
+	var resident := _resident_patches(host, layout, world_size, 1)
+	_mark_changed(resident)
+	var camera := Vector3(0.0, 120.0, 10.0)
+	for frame in 30:
+		_frame(graded, camera, resident)
+		await process_frame
+	var once := bridge.asked.size() == 2
+	for key: String in bridge.asked.keys():
+		once = once and int(bridge.asked[key]) == 1
+	_expect(once, "each refused tile is asked once: %s" % bridge.asked)
+	_expect(int(graded.counters["bake_failures"]) == 2 and int(graded.get_pool_counters()["refused"]) == 2,
+		"each refusal is counted once: %s" % graded.get_pool_counters())
+	graded._apply_edit({"serial": 1, "all": true, "levels": []})
+	for frame in 30:
+		_frame(graded, camera, resident)
+		await process_frame
+	var twice := bridge.asked.size() == 2
+	for key: String in bridge.asked.keys():
+		twice = twice and int(bridge.asked[key]) == 2
+	_expect(twice, "an edit asks each refused tile once more: %s" % bridge.asked)
+	graded.clear()
+	bridge.queue_free()
 
 # The production renderer (terrain.gd, graded tiles on, as the game runs) over the same roads:
 # every patch it makes resident installs its plain payload, the road's patches included (Rust
@@ -158,6 +229,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		_expect(false, "patch %s still waits for its payload" % key)
 	# A request Rust refuses by contract is a bug, reported apart from the retries.
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused: %s" % terrain.patch_payload_refused)
+	_expect(int(graded.get_pool_counters()["refused"]) == 0, "no graded request is refused: %s" % graded.refused)
 	_expect(graded.installed.has(Vector2i(0, 0)), "the junction's tile installs graded")
 	_expect(graded.patch_cells.has(junction_patch), "the junction's patch draws cells")
 
@@ -244,10 +316,19 @@ func _resident_patches(host: Node3D, layout: Dictionary, world_size: Vector2, ge
 			}
 	return resident
 
+func _mark_changed(resident: Dictionary) -> void:
+	for key: Vector2i in resident.keys():
+		_changed[key] = true
+
+# One renderer frame with the changes since the last, as terrain.gd hands them over.
+func _frame(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
+	graded.process(camera, resident, _changed, {})
+	_changed.clear()
+
 func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
 	var stable := 0
 	for frame in TIMEOUT_FRAMES:
-		graded.process(camera, resident, _revision, 0)
+		_frame(graded, camera, resident)
 		await process_frame
 		var idle: bool = graded.requested.is_empty() and graded.patch_lists_requested.is_empty()
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
@@ -258,7 +339,7 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 # Waits for the edit batch's install, then for the residency to settle.
 func _settle_edit(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
 	for frame in TIMEOUT_FRAMES:
-		graded.process(camera, resident, _revision, 0)
+		_frame(graded, camera, resident)
 		await process_frame
 		if int(graded.counters["edit_batches"]) > 0:
 			return await _settle(graded, camera, resident)

@@ -584,6 +584,89 @@ fn kuopio_graded_census() {
     }
 }
 
+// `TERRAIN-07-D` (`T7`): the slot rows of every tile a save's patches list, at every level and
+// `GL3` step, baked one tile at a time as the residency bakes them: the largest seam and edge
+// rows and every tile a level cannot represent. The save comes from `METRUM_GRADED_ROWS_SAVE`.
+#[test]
+#[ignore = "TERRAIN-07-D census: METRUM_GRADED_ROWS_SAVE=<save> cargo test --release --lib graded_slot_rows_census -- --ignored --nocapture"]
+fn graded_slot_rows_census() {
+    use crate::simulation::terrain::graded::{
+        BakeError, Level, PatchTilesScratch, bake_tiles, graded_tiles_in_rect,
+    };
+    let path = std::env::var("METRUM_GRADED_ROWS_SAVE").expect("METRUM_GRADED_ROWS_SAVE");
+    let mut core = test_core();
+    // The sites' surfaces come from their assets: the bootstrap packs, as the game loads them.
+    crate::nodes::sim::core::scenario::install_bootstrap_assets(&mut core);
+    core.load_game_internal(&path).unwrap();
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let (terrain, roadbed, sites) = (
+        &core.heightmap,
+        &core.transit_network.roadbed,
+        &core.allocator,
+    );
+    let (mut scratch, mut listed, mut tiles) = (PatchTilesScratch::default(), Vec::new(), Vec::new());
+    let mut patch_lists = Vec::new();
+    for z in 0..terrain.render_patch_rows() {
+        for x in 0..terrain.render_patch_cols() {
+            let (a, b, c, d) = terrain.render_patch_world_bounds(x, z).unwrap();
+            let rect = [a, b, c, d].map(f64::from);
+            graded_tiles_in_rect(terrain, roadbed, sites, rect, &mut scratch, &mut listed).unwrap();
+            tiles.extend_from_slice(&listed);
+            patch_lists.push(listed.clone());
+        }
+    }
+    tiles.sort();
+    tiles.dedup();
+    let levels = [
+        Level::Gl0,
+        Level::Gl1,
+        Level::Gl2,
+        Level::Gl3 { step: 2 },
+        Level::Gl3 { step: 4 },
+        Level::Gl3 { step: 8 },
+    ];
+    let mut out = Vec::new();
+    for level in levels {
+        let (mut seams_max, mut edges_max, mut failures) = (0usize, 0usize, Vec::new());
+        // Wall faces per tile, then per patch over the tiles it lists (an upper bound of the
+        // faces the patch draws: each face draws in the patch holding its midpoint).
+        let mut faces = std::collections::HashMap::new();
+        for &tile in &tiles {
+            match bake_tiles(terrain, roadbed, sites, &[tile], level, &mut out) {
+                Ok(()) => {
+                    seams_max = seams_max.max(out[0].seams.len());
+                    edges_max = edges_max.max(out[0].edges.len());
+                    faces.insert(tile, out[0].walls.len());
+                }
+                Err(BakeError::SeamCapacity { count, .. }) => {
+                    seams_max = seams_max.max(count);
+                    failures.push((tile.x, tile.z, "seams", count));
+                }
+                Err(BakeError::EdgeCapacity { count, .. }) => {
+                    edges_max = edges_max.max(count);
+                    failures.push((tile.x, tile.z, "edges", count));
+                }
+                Err(error) => panic!("{error:?}"),
+            }
+        }
+        eprintln!(
+            "GRADED_ROWS {}",
+            serde_json::json!({
+                "level": format!("{level:?}"), "tiles": tiles.len(),
+                "seam_capacity": level.seam_capacity(), "edge_capacity": level.edge_capacity(),
+                "row_seams_max": seams_max, "row_edges_max": edges_max,
+                "patches": patch_lists.len(),
+                "patches_listed": patch_lists.iter().filter(|list| !list.is_empty()).count(),
+                "patch_wall_faces_max": patch_lists.iter().map(|list| list.iter().map(|tile| faces.get(tile).copied().unwrap_or(0)).sum::<usize>()).max(),
+                "tile_wall_faces_max": faces.values().max(),
+                "failures": failures.len(), "first_failures": &failures[..failures.len().min(12)],
+            })
+        );
+    }
+}
+
 // `TERRAIN-07-A` `T18` (a): the two-pass exact pruning on Kuopio's steepest road, the 4 x 4
 // tiles around the dead end on a 1:2 side slope (`KUOPIO_DEAD_END`): pruned equals
 // unpruned bitwise in any batch, order and worker count, with second-pass samples; and the

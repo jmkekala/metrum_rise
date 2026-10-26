@@ -90,25 +90,24 @@ impl Level {
     }
 
     /// Seam row capacity of one slot (`T7`): at least twice the measured maximum (`GL0` 245 in
-    /// the 100k city, `GL1` 221 on Kuopio, `GL2` 120 on the reference fixtures). `GL3`'s 128 is
-    /// its largest lattice (at most 11 x 11 points on a base of 8 m cells, each naming one seam)
-    /// rounded up.
+    /// the 100k city, `GL1` 244 and `GL2` 212 in the 14,000-resident populated save). `GL3`'s
+    /// 128 is its largest lattice (at most 11 x 11 points on a base of 8 m cells, each naming one
+    /// seam) rounded up.
     pub fn seam_capacity(self) -> usize {
         match self {
-            Self::Gl0 | Self::Gl1 => 512,
-            Self::Gl2 => 256,
+            Self::Gl0 | Self::Gl1 | Self::Gl2 => 512,
             Self::Gl3 { .. } => 128,
         }
     }
 
-    /// Material edge row capacity of one slot (`T7`, `TERRAIN-07-C`): the proposed 256 at
-    /// `GL0`, 128 at `GL1` and 64 at `GL2`; `GL3` takes its lattice bound like its seams (each
+    /// Material edge row capacity of one slot (`T7`, `TERRAIN-07-C`): at least twice the
+    /// measured maximum (`GL0` 113 in the 100k city, `GL1` 108 and `GL2` 119 in the populated
+    /// save: a wider band names more edges); `GL3` takes its lattice bound like its seams (each
     /// lattice point names at most one edge).
     pub fn edge_capacity(self) -> usize {
         match self {
-            Self::Gl0 => 256,
-            Self::Gl1 | Self::Gl3 { .. } => 128,
-            Self::Gl2 => 64,
+            Self::Gl0 | Self::Gl1 | Self::Gl2 => 256,
+            Self::Gl3 { .. } => 128,
         }
     }
 }
