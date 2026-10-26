@@ -825,6 +825,85 @@ fn structure_mouths_wall_the_graded_ground() {
     }
 }
 
+// test (`TERRAIN-07-D` round 5, the `bridge_t` mouth): a road on a fill continued by a bridge
+// over a valley. The hidden inside rule stands up to the capped fill arm above the road, and
+// before the fix the rendered cut edge along the mouth row and the terrain beyond it rose to it
+// (0.354 m over the carriageway, a dark face above the deck). Along every wall seam, sampled
+// each 5 cm at every level, the rendered surface and the terrain 0.25 m beyond the row stand
+// below the deck, and every face along the row is an abutment, its top the seam's height.
+#[test]
+fn a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck() {
+    use crate::simulation::network::types::EdgeClass;
+    let (graph, terrain) = structure_mouth(EdgeClass::Bridge, -0.5);
+    let roadbed = compiled(&graph);
+    let surface = GradedSurface {
+        terrain: &terrain,
+        roadbed: &roadbed,
+        sites: &NoSites,
+    };
+    let mut scratch = QueryScratch::default();
+    let (mut sampled, mut faces) = (0, 0);
+    for level in LEVELS {
+        let payloads = bake_with(
+            &terrain,
+            &roadbed,
+            &NoSites,
+            &window_tiles(),
+            level,
+            Evaluation::Lanes,
+        );
+        for payload in &payloads {
+            let origin = payload.tile.origin();
+            let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
+            let (mut pieces, mut segments, mut walls) = (Vec::new(), Vec::new(), Vec::new());
+            roadbed.grounded_seams_in_bounds(rect, &mut pieces, &mut segments);
+            roadbed.wall_seams_in_bounds(rect, &pieces, &mut walls);
+            for [a, b] in &walls {
+                let (dx, dz) = (b.x - a.x, b.z - a.z);
+                let length = dx.hypot(dz);
+                // Beyond the row: the seam's right, the road being on its left.
+                let (rx, rz) = (dz / length, -dx / length);
+                let steps = (length / 0.05).ceil().max(1.0) as usize;
+                for step in 0..=steps {
+                    let t = step as f64 / steps as f64;
+                    let (x, z, h) = (a.x + dx * t, a.z + dz * t, a.y + (b.y - a.y) * t);
+                    if level == Level::Gl0 && TileKey::at(x, z) == payload.tile {
+                        let edge = surface.ground_height_at(x, z, &mut scratch);
+                        let beyond = surface.ground_height_at(x + 0.25 * rx, z + 0.25 * rz, &mut scratch);
+                        assert!(
+                            edge <= h && beyond < h,
+                            "at ({x}, {z}): cut edge {edge}, beyond {beyond}, deck {h}"
+                        );
+                        sampled += 1;
+                    }
+                }
+                // Where a face's end lies along this wall seam, if on it.
+                let along = |p: [f32; 2]| {
+                    let (px, pz) = (f64::from(p[0]) + origin[0], f64::from(p[1]) + origin[1]);
+                    let s = ((px - a.x) * dx + (pz - a.z) * dz) / (length * length);
+                    let off = ((px - a.x) * dz - (pz - a.z) * dx).abs() / length;
+                    (off < 2e-3 && (-1e-4..=1.0 + 1e-4).contains(&s)).then_some(s)
+                };
+                for face in payload.walls.iter() {
+                    let (Some(sa), Some(sb)) = (along(face.a), along(face.b)) else {
+                        continue;
+                    };
+                    for (s, top) in [(sa, face.top[0]), (sb, face.top[1])] {
+                        let (px, pz) = (a.x + dx * s, a.z + dz * s);
+                        let h = a.y + (b.y - a.y) * s.clamp(0.0, 1.0);
+                        assert!(
+                            (f64::from(top) - h).abs() < 1e-4,
+                            "{level:?}: a face at ({px}, {pz}) tops at {top} over the deck {h}"
+                        );
+                    }
+                    faces += 1;
+                }
+            }
+        }
+    }
+    assert!(sampled > 100 && faces > 20, "{sampled} sampled, {faces} faces");
+}
+
 // The site fixture's high pad walls the road beside it, closed like a road's.
 #[test]
 fn a_pad_above_a_road_walls_it() {

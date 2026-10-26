@@ -10,10 +10,10 @@
 //! reads it. Allocation-free once the scratch is warm.
 
 use super::coverage::covered_height_at;
-use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE};
+use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE, continues_ground};
 use super::portal::{PortalWindow, cuts};
-use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
-use super::seams::{Seam, SeamScratch, gather_road_seams};
+use super::sample::{BaseGrid, BaseWindow, Listed, Value, evaluate};
+use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::tile::{Level, TILE_M, grown};
 use crate::assets::SiteSurfaceMaterial;
@@ -49,6 +49,8 @@ pub enum GroundClass {
 pub struct QueryScratch {
     seams: SeamScratch,
     window: Vec<Seam>,
+    // The structure mouths' wall seams of the window (`TERRAIN-07-C`).
+    walls: Vec<Seam>,
     base: BaseWindow,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
@@ -219,7 +221,7 @@ impl GradedSurface<'_> {
     }
 
     // Gathers the seams and sites within the cap of `rect` (road seams in key order, then the
-    // pad seams) and the base samples one base cell around it, which every base read of the
+    // pad seams), the wall seams there and the base samples one base cell around it, which every base read of the
     // callers lies in (`normal_at`'s central differences reach one cell out): a point's base
     // reads only its four samples, so the window's extent changes no value.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
@@ -230,6 +232,7 @@ impl GradedSurface<'_> {
             &mut scratch.seams,
             &mut scratch.window,
         );
+        gather_wall_seams(self.roadbed, window, &mut scratch.seams, &mut scratch.walls);
         scratch.sites.gather(self.sites, window);
         scratch.sites.push_pad_seams(&mut scratch.window);
         let cell_m = BaseGrid::of(self.terrain).cell_m;
@@ -245,7 +248,8 @@ impl GradedSurface<'_> {
     }
 
     // The graded value at a point of the prepared window, over every gathered seam, with its
-    // pad from the gathered sites.
+    // pad from the gathered sites; under a road at a structure mouth the ground's
+    // ([`continues_ground`]).
     fn evaluate(
         &self,
         x: f64,
@@ -254,12 +258,24 @@ impl GradedSurface<'_> {
         road: Option<f32>,
         scratch: &QueryScratch,
     ) -> f64 {
+        let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
+        let value = self.value(x, z, base, road, scratch);
+        if road.is_some()
+            && continues_ground(&scratch.walls, x, z, value.nearest_distance, band)
+        {
+            return self.value(x, z, base, None, scratch).height;
+        }
+        value.height
+    }
+
+    // [`evaluate`] at a point of the prepared window over every gathered seam.
+    fn value(&self, x: f64, z: f64, base: f64, road: Option<f32>, scratch: &QueryScratch) -> Value {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
         let all = (0..seams.len() as u32).map(Listed::unbounded);
         let site = scratch.sites.pad_at(x, z);
         let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
-        evaluate(x, z, base, road, pad, seams, all, band).height
+        evaluate(x, z, base, road, pad, seams, all, band)
     }
 
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake

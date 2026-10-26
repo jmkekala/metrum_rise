@@ -9,6 +9,8 @@
 //! and the lower road gets a retaining wall. At a seam its own cone gives `L >= h >= U`, so the
 //! graded ground never lies below a seam.
 
+use super::seams::Seam;
+
 /// Tie-in slope ratio `k` of every seam kind: 1:2.
 pub const TIE_IN_SLOPE: f64 = 0.5;
 /// The cap `C`: a seam farther than this from a point never affects it, metres.
@@ -93,6 +95,27 @@ pub(super) fn inside_deep(base: f64, road: f64) -> f64 {
     } else {
         road + TIE_IN_SLOPE * FILL_ARM_MAX_M
     }
+}
+
+/// Whether a point under a road, `road_distance` from its nearest road seam (`+∞` with none
+/// within the band), takes the ground's value instead of the inside rule: where a wall seam of a
+/// structure mouth (`TERRAIN-07-C`, `docs/terrain.md` T22 4 (a)) lies strictly nearer, within
+/// the band `band`. Along a road seam the inside rule's arm continues the seam's cone, so the
+/// rendered cut edge is the seam; a mouth row has no cone to continue, and a hidden inside value
+/// there (up to the capped fill arm above the road) would lift the cut edge and the terrain
+/// beyond the row above the deck (`TERRAIN-07-D` round 5). With the ground's value on both sides
+/// the cut edge along the row is the graded ground the structure walls close. `O(walls)`.
+pub(super) fn continues_ground(
+    walls: &[Seam],
+    x: f64,
+    z: f64,
+    road_distance: f64,
+    band: f64,
+) -> bool {
+    walls.iter().any(|wall| {
+        let distance = wall.at(x, z).distance;
+        distance < band && distance < road_distance
+    })
 }
 
 /// What bounds one seam's base reach over a window: the seam's own height range, the base range

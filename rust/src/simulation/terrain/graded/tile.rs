@@ -8,7 +8,7 @@
 //! bytes never depend on the batch, tile order or worker count.
 
 use super::coverage::rasterize;
-use super::grade::CAP_M;
+use super::grade::{CAP_M, continues_ground};
 use super::portal::{Finished, PortalWindow, open};
 use super::prune::{
     BinGrid, BinLists, Lifted, bin_side, finish_second_pass, list_first_pass, list_second_pass,
@@ -247,9 +247,11 @@ impl BakeError {
 pub(super) struct BakeScratch {
     seams: SeamScratch,
     window: Vec<Seam>,
-    // The wall seams meeting the lattice, in key order (`TERRAIN-07-C`): no cone, so outside
-    // the window's grading seams.
+    // The wall seams within the band of the lattice, in key order (`TERRAIN-07-C`): no cone,
+    // so outside the window's grading seams.
     wall_seams: Vec<Seam>,
+    // The covered lattice points that continue the ground across a structure mouth.
+    mouth_points: Vec<u32>,
     base: BaseWindow,
     xs: Vec<f64>,
     zs: Vec<f64>,
@@ -423,6 +425,56 @@ struct Inputs<'a, S> {
     sites: &'a S,
 }
 
+// The covered lattice points that continue the ground across a structure mouth
+// ([`continues_ground`]) take the ground's value, evaluated over every window seam, so a pruned
+// bake equals the unpruned one by construction; their `sdf` and nearest seam stay the road's,
+// so the mask is unchanged. Visits the lattice points within the band of each wall seam's box.
+// `O(points within the band of the wall seams x (walls + window seams))`.
+#[allow(clippy::too_many_arguments)]
+fn continue_ground_at_mouths(
+    (seams, walls): (&[Seam], &[Seam]),
+    (xs, zs): (&[f64], &[f64]),
+    road: &[f32],
+    pad: impl Fn(usize) -> Option<f64>,
+    base_at: impl Fn(usize, usize) -> f64,
+    (nearest, band): (&[u32], f64),
+    points: &mut Vec<u32>,
+    texels: &mut [[f32; 4]],
+) {
+    let span = |lines: &[f64], lo: f64, hi: f64| {
+        lines.partition_point(|&v| v < lo - band)..lines.partition_point(|&v| v <= hi + band)
+    };
+    points.clear();
+    for wall in walls {
+        let area = wall.box_xz();
+        for j in span(zs, area[1], area[3]) {
+            for i in span(xs, area[0], area[2]) {
+                let index = j * xs.len() + i;
+                if road[index] == f32::NEG_INFINITY {
+                    continue;
+                }
+                let (x, z) = (xs[i], zs[j]);
+                let road_distance = match nearest[index] {
+                    NO_SEAM => f64::INFINITY,
+                    seam => seams[seam as usize].at(x, z).distance,
+                };
+                if continues_ground(walls, x, z, road_distance, band) {
+                    points.push(index as u32);
+                }
+            }
+        }
+    }
+    points.sort_unstable();
+    points.dedup();
+    for &index in points.iter() {
+        let (i, j) = (index as usize % xs.len(), index as usize / xs.len());
+        let base = base_at(i, j);
+        let all = (0..seams.len() as u32).map(Listed::unbounded);
+        let ground = evaluate(xs[i], zs[j], base, None, pad(index as usize), seams, all, band);
+        texels[index as usize][0] = (ground.height - base) as f32;
+    }
+}
+
 // Bakes one tile with `evaluation`.
 fn bake_tile(
     inputs: &Inputs<'_, impl SiteSource>,
@@ -437,6 +489,7 @@ fn bake_tile(
         seams: seam_scratch,
         window: seams,
         wall_seams,
+        mouth_points,
         base,
         xs,
         zs,
@@ -469,7 +522,7 @@ fn bake_tile(
     let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
     let window = window(rect, band);
     gather_road_seams(roadbed, window, seam_scratch, seams);
-    gather_wall_seams(roadbed, rect, seam_scratch, wall_seams);
+    gather_wall_seams(roadbed, grown(rect, band), seam_scratch, wall_seams);
     // Road seams first (indices `0..road_count`, in key order, the rows the texels name), then
     // the sites' pad seams in key order.
     let road_count = seams.len();
@@ -632,6 +685,23 @@ fn bake_tile(
         list_second_pass(seams, bins, band, bin_floor, seam_bins, pairs);
         second.build(bins.len(), pairs);
         graded |= finish_second_pass(seams, second, lifted, &mut out.texels, &mut stats);
+    }
+    if !wall_seams.is_empty() {
+        let pad = |index: usize| {
+            let site = pads.get(index).copied().unwrap_or(NO_SITE);
+            (site != NO_SITE).then(|| sites.height(site))
+        };
+        let base_at = |i: usize, j: usize| base.at_stops(&columns[i].1, &base.stop(1, zs[j]));
+        continue_ground_at_mouths(
+            (seams, wall_seams),
+            (xs, zs),
+            road,
+            pad,
+            base_at,
+            (nearest, band),
+            mouth_points,
+            &mut out.texels,
+        );
     }
     // The portal opening, on the final values (T22 5 (a)).
     if !portals.is_empty() {
