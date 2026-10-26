@@ -392,8 +392,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   stage (worst 6.70 ms); under T20 (a), decided by the coordinator under the user's delegation for
   review, no frame bakes a whole edit (undo keeps the replaced tiles, about 1.4 MB per entry;
   previews bake only what changed since the last pose; the commit adopts), and gate
-  `TERRAIN-07-E` accepts those frame paths against 3.0 ms. Gate `TERRAIN-07-C` round 1 (work in
-  progress) makes building sites terrain clients: the terrain is each pad at its support height,
+  `TERRAIN-07-E` accepts those frame paths against 3.0 ms. Gate `TERRAIN-07-C` round 1 (gate done
+  2026-10-26 in round 5) makes building sites terrain clients: the terrain is each pad at its support height,
   the yard paving is a material class equal to the legacy partition's, site changes select only
   the tiles within their reach, and retaining walls close the step where a road's embankment
   stands over a lower road; bridge and tunnel ends follow in round 2. Open: with the pads grading
@@ -409,7 +409,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the opening over the tunnel's bore are round 4's, with T21. Round 4 hangs the abutment face
   below a bridge's slab where it meets a road, so the bridge's road chunks close there; the
   opening over a tunnel's bore is designed for round 5, and the site-dense full-edit budget is
-  carried to gate E's frame paths for review (T21). See the
+  carried to gate E's frame paths for review (T21). Round 5 opens the ground over a tunnel's
+  deck near its mouth wherever it stands less than 5 m above it, with walls along the tunnel's
+  sides and none across the opening; with it gate C is done, its whole acceptance re-run, and the
+  site-dense full-edit budget stays carried to gate E for review. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
 
@@ -1167,6 +1170,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TERRAIN-07-C` (branch `terrain07-C`, five rounds): building sites and structure ends on the graded terrain, still read by no consumer. The terrain is each building's pad at its support height, bitwise; yard and frontage paving are material classes equal to the legacy paving partition's; a placement or removal rebakes only the tiles within its reach (0.7-2.8 ms, flat from 0 to 100k background sites); retaining walls close the step where one road's embankment stands over a lower road or a pad over a road. Bridges and tunnels can be built from a road in play again: a road closes its edge across a structure's mouth, a bridge's free end and slab ends are closed, the terrain walls the step under a bridge's mouth, and near a tunnel's mouth the ground over the deck opens wherever it stands less than 5 m above it, with walls along the tunnel's sides. Every value stays bitwise equal to the evaluation over every seam. Decided under the user's delegation for review: the structure-end shapes (`terrain.md` T22) and one narrowed rule of the opening. Open for review: with the city's sites as grading inputs the first road commit beside built-up blocks takes 3.1-4.1 ms of terrain against 3.0 ms, carried to gate E's frame paths under T20 (a) (T21). See [`terrain.md`](terrain.md#terrain-07-c-record).
 - `ROAD-68-K18` (branch `road68-K18`): the check that every junction the road tool touches still lays out and sits on its plane, which runs on every preview pose, no longer allocates working memory: the junction's arms, layout and mouth stations are built in buffers that stay with each worker thread, and the check no longer builds the mouth sections it threw away. In the preview benchmark its allocations fall from 222,520 to 69 and the plan stage's from 450,320 to 227,693; the roadbed's own plans allocate only what they keep. Every road, junction and save is bit for bit the same. The R-tree queries whose results depend on the tree's internal order are recorded (only two pickers' ties, which no fixture exercises), with the recommendation, open for review, to sort those two by edge id when the tree's re-index is narrowed ([`roads.md`](roads.md#road-68-open-questions) question 37).
 - `ROAD-68-K17` (branch `road68-K17`): the solve that fits each junction's plane and eases its roads onto it, which runs twice on every preview pose and on every commit, no longer allocates working memory: its buffers stay with each worker thread, as the road tool's height solve's do since `ROAD-68-K16`. In the preview benchmark its allocations fall from 163,224 to 11,619 (the R-tree's own bookkeeping and the profiles it writes), and every road, junction and save is bit for bit the same ([`roads.md`](roads.md#road-68-open-questions) question 37).
 - `ROAD-68-K16` (branch `road68-K16`): `ROAD-68-K15` lands on `road` after gate E and `TERRAIN-07-A`. The road tool's height solve, which runs on every preview pose, no longer allocates working memory per stroke: its buffers stay with each worker thread, and every road it builds is bit for bit the same. Saves are now byte-for-byte reproducible: lane connections were written in hash-map order, so two saves of the same city differed; they are written in key order, and the save time is the save's only outside input. The Kuopio reference save is re-recorded (only that row order changes) and re-pinned. The commit's `surface` stage rise that `ROAD-68-K15` had put down to code layout without a profile is now attributed by profile: in `ROAD-68-K15`'s build the site paving query's envelope test was compiled out of line (the same queries, more instructions), and the rebased build has no rise. What the grade rule still costs the preview's plan, about 0.016 ms a pose, is its own work, measured by profile (`roads.md` question 37).

@@ -505,7 +505,12 @@ roadbed side stays as the contract terrain consumes:
 - the pieces' top triangles and the point-in-triangle predicate `height_at` uses, which `TERRAIN-07`
   takes as the footprint's coverage (no loops, so an open end flips no region; question 19)
 - `take_terrain_changes`, which since `TERRAIN-07-A` also returns the changed grounded chain
-  segments themselves (`TerrainChanges::segments`, endpoints with heights)
+  segments themselves (`TerrainChanges::segments`, endpoints with heights), and since
+  `TERRAIN-07-C` round 5 the bounds of the changed pieces with a portal row
+  (`TerrainChanges::portals`)
+- the portal rows of a tunnel span whose mouth a grounded piece shares
+  (`PieceMesh::portal_rows`, `TERRAIN-07-C`) and `for_each_portal_part_in_bounds` (rows, top
+  triangles and outer-chain segments of those spans), no terrain height
 - the accessors `TERRAIN-07-A` reads them through, in `roadbed/query.rs`, no new geometry:
   `grounded_seams_in_bounds` (sorted by the bits of the start then the end) and its unsorted
   visitor, `grounded_pieces_in_bounds`, `for_each_grounded_top_triangle_in_bounds` and
@@ -1591,6 +1596,14 @@ These need a user decision; work that does not depend on them continues.
       (a), the bottom edge taken pending the user's review), so the family chunk check runs
       without its concrete-row exemption. The terrain over a tunnel past its mouth row is not
       opened yet (T22 5, detailed for round 5).
+    - **`TERRAIN-07-C` round 5 (2026-10-26):** the graded terrain opens over a tunnel's deck at a
+      mouth on the ground (the portal opening, [T22](terrain.md#terrain-07-open-questions) 5 (a)):
+      the tunnel span marks the row it shares with a grounded piece a portal row
+      (`PieceMesh::portal_rows`), and the bake cuts the ground over the deck within 10 m of it
+      wherever the ground stands less than 5 m above the deck, with side walls along the
+      tunnel's outer chains and no headwall where it opens. The roadbed reads no terrain height.
+      With it the structure half of this question is closed in gate C; a failed node's gap still
+      fails its rectangle.
     - **Until `TERRAIN-07` (measured by `ROAD-68-F` part 2, 2026-10-25).** Abutments and portals
       moved to `TERRAIN-07`, so the error stands on the legacy terrain: a bridge or tunnel stroke
       that joins a grounded road is rejected at the commit (`render_geometry_invalid

@@ -3230,10 +3230,10 @@ path in `simulation/terrain/graded/`, read by no consumer yet) are done; `TERRAI
 sites, pads, paving and conflict walls; round 2: two exact levers, free structure ends capped and
 structure-only node pieces off the terrain; round 3: wall runs at structure mouths, so bridges
 and tunnels are built from roads in play, and the terrain's abutment and headwall faces; round
-4: the roadbed's abutment face) is work in progress, with the portal opening
-([T22](#terrain-07-open-questions) 5, detailed for round 5) open and the populated full-edit
-budget miss carried to `TERRAIN-07-E`'s frame paths under T20 (a)
-([T21](#terrain-07-open-questions), for review).**
+4: the roadbed's abutment face; round 5: the portal opening over a tunnel's bore,
+[T22](#terrain-07-open-questions) 5) is done, with the populated full-edit budget miss
+carried to `TERRAIN-07-E`'s frame paths under T20 (a) ([T21](#terrain-07-open-questions), for
+review).**
 `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
@@ -3485,9 +3485,12 @@ lattice sample:
   because `clamp` returns the base itself there.
 - G, `sdf`: distance to the nearest road seam, clamped to the band `B = max(2 m, 3 × spacing)`
   (2 m at `GL0`, as in the spike), negative where the sample is covered by a road top triangle.
+  Near a tunnel's portal row it is the nearer of that and the nearest bore seam, negative where
+  the portal opening cuts the sample ([T22](#terrain-07-open-questions) 5 (a), `TERRAIN-07-C`).
   The band grows with the spacing so that the four samples around any fragment within two texels
   of an edge name a seam. A level's bake reads the tile grown by `max(C, B)`.
-- B: the nearest road seam's index in the tile's seam row when `|sdf| < B`, else `-1`.
+- B: the nearest road seam's index in the tile's seam row when `|sdf| < B`, else `-1`; the row
+  lists the named bore seams after the named road seams, each group in key order.
 - A: `16 × (e + 1) + class`, integer-valued: `class` the material class (0 none, 1 asphalt,
   2 concrete), `e` the nearest material edge's index in the tile's edge row within `B`, else `-1`.
   The nearest edge takes the seams' total order (distance, then the larger distance to its line,
@@ -3727,7 +3730,8 @@ to point).
 - Site surfaces, the yard paving and its frontage extension to the road, are material classes the
   terrain shader paints with the paving include. Outside the pad they follow the graded ground, as
   today's paving triangles do.
-- For consumers, `mask_at` reports `Pad` inside the footprint and `Paved` on a surface.
+- For consumers, `mask_at` reports `Pad` inside the footprint and `Paved` on a surface. `Road`
+  comes first: covered by a grounded top triangle, or cut by a portal opening (T22 5 (a)).
   Clarification (`TERRAIN-07-C`): `Pad` wins over `Paved`, so `Pad` is exactly the footprint
   test that the `sample_building_site_height(..).is_some()` consumers make, and `Paved` is the
   paving outside footprints (frontage, aprons); the texels carry the material inside pads too,
@@ -3769,8 +3773,12 @@ to point).
   against it (the space under the bridge on the left) for an abutment. Below the bridge's slab
   the roadbed's own abutment face closes the road chunk down to the skirt depth
   ([skirts](#skirts), round 4); the abutment wall overlaps it there in the same plane (a
-  `TERRAIN-07-D` risk, [record](#terrain-07-c-record)). Ordinary grounded roads get no
-  structural walls.
+  `TERRAIN-07-D` risk, [record](#terrain-07-c-record)). At a tunnel's portal row the terrain
+  beyond is cut where it stands less than `H` above the deck (the portal opening,
+  [T22](#terrain-07-open-questions) 5 (a), round 5), so the headwall keeps only faces with an end
+  at or above `h + H`; the opening's sides are structure walls along the bore seams, from the
+  deck's edge to the surface where it stands below `h + H` within the reach. Ordinary grounded
+  roads get no structural walls.
 - **Conflict walls** ([T2](#terrain-07-open-questions) (c), built in `TERRAIN-07-C` round 1 as
   payload data, rendered in `TERRAIN-07-D`). Along every road seam of a tile (its part in the
   tile), the vertices are the seam's crossings with the level's lattice lines and cell diagonals,
@@ -3922,8 +3930,8 @@ the road, one site chunk lookup and the seams near the point
 | `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
 | `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
 | `normal_at(x, z)` | the rendered `GL0` normal: per lattice point the central difference of base plus delta over its four neighbours, interpolated over the `GL0` triangle (`TERRAIN-07-D`'s shader mirrors it, base gradient included) | (new) | vegetation slope tests |
-| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }` | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
-| `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles) | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
+| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }`; `Road` also where a portal opening cuts the ground (T22 5 (a)) | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
+| `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles), never ground a road covers or a portal opening cuts | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
 
 `Graded` means `delta != 0` outside footprints. Consumer caches keep keying on the existing
@@ -4016,7 +4024,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | --- | --- | --- |
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
-| `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); open: the portal opening (T22 5, detailed for round 5); T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
+| `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
@@ -5028,6 +5036,150 @@ abutment wall at the skirt depth, which needs a wall seam to know its structure 
 **Open (round 5).** The portal opening (T22 5 (a)) as detailed there, then gate C's final
 commit; T21's populated full-edit budget stays carried to gate E under T20 (a), for review.
 
+Round 5, 2026-10-26, on round 4 (`road` at `83ca16fb`, unmoved): T22 5 (a), the portal opening,
+then gate C's acceptance re-run whole.
+
+**What landed.**
+
+- [T22](#terrain-07-open-questions) 5 (a) as recorded there (round 5), with the rule for the
+  ground beside the opening narrowed, taken pending the user's review, 2026-10-26: the roadbed's
+  `SpanEnd::Portal`, portal rows and portal part query; the terrain's portal window, deck raster
+  and opening post-pass (`graded/portal.rs`), the bore seams in the seam row, the opening's side
+  walls and the portal row's dropped headwall (`walls::build_structure_walls`, one per-seam
+  routine for mouths and bores), `mask_at` and `raycast_surface` on the cut, the selection's
+  portal comparison near the replaced portal pieces the roadbed lists
+  (`TerrainChanges::portals`) and the tile inputs. Road coverage and the decks share one raster
+  (`coverage::raise_covered`).
+- Tests (`graded/portal_tests.rs`): `a_tunnel_portal_opens_the_graded_ground` and
+  `portal_edits_select_every_tile_they_alter`; `structure_mouths_wall_the_graded_ground` now
+  asserts the tunnel's mouth row open (no face on the row where the ground stands below the
+  clearance) and the bridge's abutment as before.
+
+**Portal acceptance (debug library tests, fresh, on `444f1242`).**
+
+- Exactness: `assert_exact_pruning` on the tunnel continuing a level road into a 1:2 hill (16
+  tiles at `GL0`, `GL2` and `GL3`, two `GL0` reference tiles): texels, seam rows, walls and
+  inputs of the pruned bake equal the evaluation over every seam, in batches of 16 and 1,
+  reversed, on 1, 4 and 8 workers, and the lanes equal one point at a time. At `GL0` more than
+  100 samples are cut and more than 20 ground samples beside the opening name a bore seam.
+- Mask: at every `GL0` lattice point within 6 m before and 16 m past the mouth row and 10 m of
+  the axis, `mask_at` is `Road` exactly where the baked `sdf` is negative; over the deck 5 m in
+  the point is cut, 15 m in it is the crown, 2.5 m beside the side it is ground.
+- Side walls: along the bore seams, every point sampled each 5 cm within the reach where the
+  rendered ground stands below the clearance and off the deck's edge is covered by a face of its
+  tile from the seam's height to the ground (1 mm), the deck on its left (more than 50 points,
+  over 2 m high). On the mouth row no face covers a point where the ground stands below the
+  clearance, the row's whole headwall of round 3 (up to 1.0 m).
+- Selection: a bridge into the hill turned tunnel and back (the chains and wall run keep their
+  bits, so only the portal parts change) and a road turned tunnel, at `GL0` and `GL2`: every
+  tile whose texels, seam row or walls change is selected, and fewer than all. Negative control
+  (on the first build: the opening's post-pass and the selection's portal comparison left out):
+  the opening test finds 0 cut samples and the selection misses a changed tile.
+
+**Benchmarks** (release library tests, both locks, P-cores, four workers, 2026-10-26; control
+`de95f23595dc`, round 3's timed binary (`09b5549f`, the graded code rounds 3 and 4 share);
+commands as in round 1; logs under `$ARTIFACTS`; restic absent throughout).
+
+- **The full set**, C X X C 10:05-10:29 (load 12.1 at the start), on `6a629c8724d6`
+  (`49db4dd5`: the opening, its selection then comparing both roadbeds' portal windows at every
+  candidate near a changed piece):
+  - Populated commits: every tier's texel digests equal the control's (no tunnel in those
+    cities). First edits of the built-up tiers 2k 3.16/3.26, 10k 3.28/3.36, 30k 2.87/2.91,
+    100k 4.01/3.98 ms (control 3.31/3.25, 3.07/3.19, 2.82/2.90, 4.03/3.71); the selection on
+    those edits 0.71-0.96 ms against 0.62-0.95, every other edit's about 0.08 ms over the
+    control's: the comparison gathered two portal windows per candidate.
+  - A building's removal in the city 0.92-1.13 ms (control 0.97-1.13);
+    `benchmark_graded_site_placement` 0.69-1.12 ms at every background size, one digest; the
+    six Kuopio yard placements 1.17-2.84 ms.
+  - Kuopio edits median 2.31/2.32 ms, p90 3.83/3.90, worst 6.77/6.71, 30 and 32 of 44 within
+    3.0 ms (control 2.28/2.31, 3.82/3.74, 6.75/6.75, 32/30). Census `GL0` 0.396/0.406 ms per
+    tile per worker (control 0.416/0.439).
+  - Reference fixtures (p50 of 50): `GL0` 0.86-1.31 ms on the road fixtures, `conflict_8`
+    1.73/1.59 (control 0.88-1.32, 1.56/1.57); `GL1` 0.62-0.82 (0.56-0.77) and `GL2` 0.51-0.76
+    (0.50-0.71): each tile walks the pieces within 10 m of its lattice for portal spans.
+  - Locality: the same 4 tiles bitwise at 3 to 4,707 edges, p50 0.51-0.95 ms (control
+    0.49-0.90), the middle sizes 0.1 ms over the control (the selection, above).
+- **The selection's cost, found and removed.** Two intermediate builds, each re-timed on the road
+  selection's benches (populated commits, locality, Kuopio edits), C X X C against the same
+  control: reading a portal window only where a changed piece meets a portal piece of either
+  roadbed (`b022e60b4b68`, 10:37-11:00), then ruling the changed pieces out with one query over
+  their union (`c510028d0522`, 11:06-11:32), left the selection about 0.07 ms over the
+  control's on every edit (first edits 0.64-0.99 ms against 0.60-0.90). Both asked the roadbed
+  about the changed pieces' own bounds, and a long changed span (a split trunk) spans more query
+  cells than the city has pieces, where `any_piece_in_bounds` visits every published piece: a
+  city scan. The roadbed now lists the changed portal pieces' bounds itself
+  (`TerrainChanges::portals`, two pushes in `replace_published`), and the selection reads
+  nothing else for the opening: no work at all for an edit that replaces no portal piece, which
+  `portal_edits_select_every_tile_they_alter` checks still selects every changed tile near one.
+  On that final build (`1b21e5810ccb`, `444f1242`, 11:41-12:05, load 8.3 at the start) the
+  first edits of the built-up tiers take 2k 3.10/3.15, 10k 3.12/3.32, 30k 2.92/2.92, 100k
+  4.13/3.85 ms (control 3.28/3.12, 3.20/3.06, 2.80/2.88, 3.96/3.75), the tier without lots
+  2.03/2.05 (2.27/1.97), every digest the control's; Kuopio edits median 2.29/2.37 ms, p90
+  4.16/3.84, worst 6.84/6.91, 32 and 30 of 44 within 3.0 ms (control 2.40/2.31, 3.72/3.86,
+  6.71/6.67, 33/32); locality p50 0.54-1.10 ms (control 0.52-1.24, its first pass perturbed).
+  The selection still reads 0.05-0.08 ms over the control's (first edits 0.68-0.98 ms against
+  0.62-0.94) although it now runs the control's code plus an empty-slice test on these edits:
+  not attributed. The control is round 3's binary, so round 4's roadbed (the abutment storage
+  in `PieceMesh`) and this round's portal rows lie between them; an A/B of round 4's binary
+  against this one separates the two (next step, `TERRAIN-07-E`'s timing).
+
+**Gate C's acceptance, re-run whole** (fresh: the debug library suite of `./run.sh --test` on
+the gate's code, and the benchmarks above):
+
+- Samples inside pads at their support height, bitwise, and material classes equal to the legacy
+  `SitePavingPartition`'s: `pads_hold_their_support_height_and_surfaces_their_partition_class`
+  (all four levels), `kuopio_yards_bake_as_pads_with_the_partition_materials` and
+  `hillside_houses_terrain_builds_clean` pass.
+- The hillside houses and the Kuopio yards bake without errors at all four levels (the same two
+  tests).
+- Placement locality: `site_changes_select_every_tile_they_alter` (a placement, a removal and a
+  height change at `GL0` and `GL2`); every removal in the populated city selects only tiles
+  within the cap and band of the removed site (1-2 tiles). Timing: a placement 0.69-1.12 ms at 0
+  to 100,100 background sites with one digest, the Kuopio yards 1.17-2.84 ms, a removal
+  0.92-1.13 ms.
+- Walls close every step: `walls_close_the_step_at_the_lower_road`, `a_pad_above_a_road_walls_it`,
+  `kuopio_conflict_wall_closes_the_step`, `structure_mouths_wall_the_graded_ground` and the
+  opening's side walls in `a_tunnel_portal_opens_the_graded_ground`.
+- Structure ends: `a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo` (eight cases, every
+  piece bitwise after undo) and `structure_and_rural_road_chunks_are_watertight` without the
+  free-end or concrete-row exemption pass; a tunnel's sides stay the bore's in that road chunk
+  check, and the opening's side walls close them on the terrain where it exposes them.
+- Exactness: gate A's suite, `site_bakes_prune_exactly`, the Kuopio exactness and yard tests and
+  the opening's `assert_exact_pruning` pass.
+- The populated budget, carried to gate E under T20 (a) as recorded
+  ([T21](#terrain-07-open-questions), for review): the first edits beside built-up blocks
+  2k 3.10-3.26, 10k 3.12-3.36, 100k 3.85-4.13 ms on the full-set and the final builds (control
+  3.12-3.31, 3.06-3.20, 3.71-4.03), 30k 2.87-2.92 (control 2.80-2.90), every texel digest the
+  control's.
+
+**Gate checks** (fresh, on `444f1242`, the code timed as `1b21e5810ccb`): `cargo clippy
+--all-targets` gives the 59-warning baseline set exactly (file and message compared). `./run.sh
+--test` (DISPLAY and WAYLAND_DISPLAY unset, 12:05-12:23) exits 0: the debug library suite 1,949
+passed, 0 failed, 171 ignored (round 4: 1,947 and 171; the two portal tests are new), the
+integration tests 4 passed, every Godot bridge and asset test passing without a SCRIPT ERROR,
+and the same two skips (the headless shader global probe, the Forward+ vegetation tests); its
+tmpfs profile removed. Disabled tests unchanged: two legacy-pipeline `TERRAIN-07` tests of
+`road_terrain_plan` (the refined patches) and gate A's two census runners. Gate C is done.
+
+**Lines** (production, tests excluded): `roadbed/` 8,709 (round 4 8,612, +97): `query` +55
+(`PortalPart`, the portal part visitor and piece lookup), `mesh` +21 (`SpanEnd::Portal`, the
+portal rows), `system` +15 and `terrain` +4 (the changed portal pieces' bounds), `arms` +2.
+`graded/` 4,865 (round 4 4,274, +591): the new `portal` 389 (the window, deck raster, opening
+post-pass and its rules' documentation), `tile` +55 (the opening's call, the extended seam row,
+inputs and stats), `walls` +52 (the per-seam structure wall routine with the headwall and
+side-wall rules), `select` +44 (portal candidates and comparison), `query` +33 (the opening in
+`mask_at` and `raycast_surface`), `coverage` +9 (the shared raster), `seams` +5, the router +4.
+Tests +269 (`portal_tests` 226, `site_tests` +43). The growth is the opening itself: a rule set
+of its own (cut, naming, walls, selection) over three new roadbed parts, kept apart from the
+grading core.
+
+**Open.** T21's populated full-edit budget stays carried to gate E under T20 (a), for review. For
+the user's review: T22 (decided under the delegation) and its round 5 narrowing of the rule for
+the ground beside the opening. For `TERRAIN-07-D`: bore seams in the seam row (after the road
+seams; the shader's exact test treats them as road seams, the deck on their left) and the
+opening's side walls after the structure walls; the crown's cut edge seen from the portal (the
+T22 risk); the abutment band of round 4.
+
 #### `TERRAIN-07-D` — residency, payloads and the Godot tile renderer
 
 1. Residency requests by tile and level, async bakes on the payload workers, per-frame request and
@@ -5318,6 +5470,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       a shared mouth and the portal opening over the bore stay open (T22).
     - **Round 4:** the roadbed's abutment face is built; the portal opening stays open (T22 5,
       detailed for round 5).
+    - **Round 5:** the portal opening is built (T22 5 (a), one rule narrowed, taken pending the
+      user's review): the terrain over a tunnel's deck opens near its portal row, with side walls
+      along the bore and no headwall where the opening cuts.
 15. **T15. Coal pits.**
     - **Options.** (a) Keep the overlay. (b) An excavation client: a lowered pad with a 1:1 seam.
     - **Recommendation.** (a); (b) is a product change for its own item.
@@ -5636,6 +5791,59 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         H`, bilinear) meets a side, the exact test of the bore seam a cut sample names decides
         within one cell. Until round 5 the terrain covers a tunnel past its mouth row and the
         headwall closes the step at the row.
+    - **Round 5 (2026-10-26).** Built 5 (a) as detailed in round 4, with one rule narrowed (taken
+      pending the user's review, 2026-10-26; reversible on the branch):
+      - *Roadbed.* `SpanEnd::Portal`, a tunnel's end whose node another standard edge meets
+        (`arms::span_end`, the tunnel's counterpart of `Abutment`); the span keeps the row's first
+        and last vertices (`PieceMesh::portal_rows`: the row corner to corner, bitwise the
+        vertices of the grounded piece's wall run across that mouth);
+        `RoadbedSystem::for_each_portal_part_in_bounds` visits, per tunnel span with a portal row
+        whose bounds meet a rectangle, its rows, its top triangles and its outer-chain segments
+        (the bore seams). No terrain height.
+      - *Terrain* (`graded/portal.rs`). `PORTAL_CLEARANCE_M` (`H` = 5.0 m) and `PORTAL_REACH_M`
+        (`R = H / k` = 10 m). A tile's portal window, from the portal spans meeting its lattice
+        grown by `max(R, B)`: the rows within `R` of the lattice, the deck triangles meeting it
+        within `R` of a row, the bore seams within `B` of it and `R + B` of a row, each sorted by
+        bits. The deck raster is the highest covering deck triangle (the roadbed's predicate) at
+        each lattice point within `R` of a row of the window. The opening (`portal::open`) runs
+        after both passes: a point with a deck `t` and no road coverage whose rendered ground
+        (the base plus the packed `f32` delta, the value the mesh draws) stands below `t + H` is
+        cut, as designed; its delta is kept. The seam row lists the named bore seams after the
+        named road seams (`SeamKind::Bore`: no cone, never listed by either pass). Pruned equals
+        unpruned by construction, and `BakeStats` counts the cut and the named samples.
+      - *Narrowed rule, the ground beside the opening.* As written in round 4, every ground point
+        within the band of a bore seam on its right takes it into its nearest seam. Along a
+        tunnel's side past the opening that is a hole the length of the tunnel: the shader's
+        exact test takes the nearest of a fragment's four samples' seams, the crown samples
+        across the seam name none, so the test would discard the crown left of the bore seam
+        wherever the ground point beside it names it. A ground point therefore names its nearest
+        bore seam (the nearest-seam order) only when it lies on that seam's right, within `R` of
+        a portal row, and its rendered ground stands below the seam's height at its nearest point
+        plus `H`: the cut's own test, with the deck's edge for the deck. Where that and the cut
+        of the samples across the seam disagree, at the opening's far corners, the exact test
+        decides within one cell, the known limit recorded above.
+      - *Walls.* Along a wall seam both of whose ends are vertices of one portal row
+        (`PortalWindow::opens`, bitwise) no face where the surface at both ends stands below
+        `h + H`; along each bore seam's part in the tile, faces from the seam's height to the
+        surface where a vertex within `R` of a row has the surface below `h + H` and off `h`
+        (`walls::build_structure_walls`, one per-seam routine for both), the deck on the left
+        where the ground beside stands higher. They follow the payload's structure walls.
+      - *Queries.* `mask_at` returns `Road` where the opening cuts (pointwise: the ground's
+        rendered value at the point, the deck there, the reach); `raycast_surface` skips that
+        ground too, since the mask discards it (an addition to the design);
+        `ground_height_at` is unchanged, and `surface_height_at` already answers the deck there
+        (`height_at` sees tunnel triangles).
+      - *Selection and inputs.* The roadbed's terrain changes list the bounds of the replaced
+        pieces with a portal row (`TerrainChanges::portals`; a portal window holds only those
+        pieces' parts). Each widens its candidate tiles by `max(R, B)`, and a candidate whose
+        lattice lies within `max(R, B)` of one is dirty where its portal windows differ between
+        the roadbeds, bitwise. An edit that replaces no portal piece reads no window.
+        The tile inputs list the deck triangles after the covering ones and the rows' corner
+        segments and the bore seams after the wall seams.
+      - *Known limits, recorded.* The far corners (above). A node piece where only tunnels meet
+        is no portal span: a tunnel junction within `R` of a portal is not opened over that
+        piece. A road more than `2 R` wide has ground up to `H` above the deck at the middle of
+        its row, which stays closed there by a headwall.
 
 #### Superseded `ROAD-68` questions
 
