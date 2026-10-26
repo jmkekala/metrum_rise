@@ -70,7 +70,8 @@ func _run() -> void:
 		if name == "materials_created" or name == "multimeshes_created":
 			continue
 		_expect(after[name] == created[name], "an edit must create no %s: %s -> %s" % [name, created[name], after[name]])
-	_expect(int(after["materials_created"]) <= graded.patch_cells.size() + 4, "cell materials are pooled per patch")
+	# Each pooled cell set holds five MultiMeshes and the four graded levels' materials.
+	_expect(int(after["materials_created"]) * 5 == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
 	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"])])
@@ -152,8 +153,11 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
 		total += written.size()
 		for data in written:
-			var tile := Vector2i(int(data.r), int(data.b))
-			var codes := int(data.a)
+			# The tile's place in the patch (column + 32 row) and the codes in two channels.
+			var place := int(data.r)
+			var tile: Vector2i = tiles[0] + Vector2i(place % GradedTiles.PATCH_TILE_ROW, place / GradedTiles.PATCH_TILE_ROW)
+			var codes := int(data.b) | (int(data.a) << 9)
+			_expect(data.r < 2048.0 and data.b < 2048.0 and data.a < 2048.0, "custom channels are exact as half floats")
 			var own := codes & 7
 			var entry: Dictionary = graded.installed.get(tile, {})
 			if index < 4:

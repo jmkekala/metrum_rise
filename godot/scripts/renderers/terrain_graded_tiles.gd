@@ -4,7 +4,8 @@
 ## graded 64 m tiles of the resident patches by camera distance, the slot pools (per level one
 ## Texture2DArray of RGBAF layers for the texels and one for the rows, prewarmed), in-place
 ## uploads from one pooled Image per level, and per patch one MultiMesh per cell mesh (the base
-## cells and GL0-GL3) whose instances carry the tile key, slot and stitching codes. It does no
+## cells and GL0-GL3) whose instances carry the tile's place in the patch, slot and stitching
+## codes, each graded level with its own material binding that level's pools. It does no
 ## geometry: positions, stitching, clamping and the mask are terrain_cells.gdshaderinc's, the
 ## values Rust's. Nothing is created per edit; the counters in get_pool_counters() prove it.
 ##
@@ -22,8 +23,10 @@ const LEVEL_HYSTERESIS_M := 32.0
 # Slots per level. GL0 and GL1 follow the memory table; GL2 and GL3 stop at 2,048 layers, the
 # smallest Texture2DArray depth Vulkan guarantees (TERRAIN-07 open question T23).
 const DEFAULT_POOL_SLOTS := [64, 192, 2048, 2048]
-# Patch cells: one 510 m patch meets at most 9 x 9 tiles.
+# Patch cells: one 510 m patch meets at most 9 x 9 tiles. A tile's place in its patch is
+# column + PATCH_TILE_ROW * row in one instance channel (terrain_cells.gdshaderinc).
 const MAX_CELLS_PER_PATCH := 100
+const PATCH_TILE_ROW := 32
 const REQUESTS_PER_FRAME := 24
 const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
@@ -46,7 +49,8 @@ var requested: Dictionary = {}
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
 var patch_lists: Dictionary = {}
 var patch_lists_requested: Dictionary = {}
-# Patch key -> {nodes: Array[MultiMeshInstance3D], material: ShaderMaterial, watched: Array}.
+# Patch key -> {nodes: Array[MultiMeshInstance3D], materials: Array[ShaderMaterial] (GL0-GL3),
+# watched: Array}.
 var patch_cells: Dictionary = {}
 var _cells_pool: Array[Dictionary] = []
 var _meshes: Dictionary = {}
@@ -481,6 +485,8 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	var instances: Array[PackedColorArray] = []
 	for index in CELL_MESHES:
 		instances.append(PackedColorArray())
+	# The tile holding the patch rectangle's lower corner, as the shader finds it.
+	var first: Vector2i = tiles[0] if not tiles.is_empty() else Vector2i.ZERO
 	for tile in tiles:
 		var own := _cell_code(tile, step)
 		var entry: Dictionary = installed.get(tile, {})
@@ -493,7 +499,10 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		codes |= _side_code(own, tile, tile + Vector2i(0, 1), origin.y + TILE_M, patch, resident_patches, 1) << 12
 		var slot := int(entry["slot"]) if not entry.is_empty() else -1
 		var multimesh: MultiMesh = (nodes[mesh_index] as MultiMeshInstance3D).multimesh
-		var custom := Color(tile.x, slot, tile.y, codes)
+		# Every channel an integer below 2048: the Compatibility renderer keeps instance custom
+		# data as half floats.
+		var place := tile - first
+		var custom := Color(place.x + PATCH_TILE_ROW * place.y, slot, codes & 511, codes >> 9)
 		multimesh.set_instance_custom_data(counts[mesh_index], custom)
 		instances[mesh_index].append(custom)
 		counts[mesh_index] += 1
@@ -562,20 +571,18 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		node.visible = false
 		nodes.append(node)
-	var material := ShaderMaterial.new()
-	material.shader = GRADED_SHADER
-	counters["materials_created"] += 1
-	for index in CELL_MESHES:
-		if index != CELL_BASE:
-			(nodes[index] as GeometryInstance3D).material_override = material
+	# One material per graded level, so a draw binds only its level's two pool samplers.
+	var materials: Array[ShaderMaterial] = []
 	for code in pools.size():
-		material.set_shader_parameter("graded_texels_%d" % code, pools[code]["texels"])
-		material.set_shader_parameter("graded_rows_%d" % code, pools[code]["rows"])
-	material.set_shader_parameter("graded_seam_capacity", Vector4i(
-		int(levels[0]["seam_capacity"]), int(levels[1]["seam_capacity"]),
-		int(levels[2]["seam_capacity"]), int(levels[3]["seam_capacity"])
-	))
-	return {"nodes": nodes, "material": material, "watched": [], "node_parent": null}
+		var material := ShaderMaterial.new()
+		material.shader = GRADED_SHADER
+		counters["materials_created"] += 1
+		material.set_shader_parameter("graded_texels", pools[code]["texels"])
+		material.set_shader_parameter("graded_rows", pools[code]["rows"])
+		material.set_shader_parameter("graded_seam_capacity", int(levels[code]["seam_capacity"]))
+		(nodes[code] as GeometryInstance3D).material_override = material
+		materials.append(material)
+	return {"nodes": nodes, "materials": materials, "watched": [], "node_parent": null}
 
 # The patch material parameters whose change means the graded material must be synced: the
 # textures and per-patch values terrain.gd swaps on commits, masks, water and overlays.
@@ -592,14 +599,14 @@ func _watched_parameters(material: ShaderMaterial) -> Array:
 	]
 
 func _sync_material(cells: Dictionary, source: ShaderMaterial) -> void:
-	var material: ShaderMaterial = cells["material"]
 	if _uniform_names.is_empty():
 		for uniform: Dictionary in source.shader.get_shader_uniform_list():
 			var name := String(uniform["name"])
 			if not name.begins_with("graded_") and not name.begins_with("cell_"):
 				_uniform_names.append(name)
-	for name in _uniform_names:
-		material.set_shader_parameter(name, source.get_shader_parameter(name))
+	for material: ShaderMaterial in cells["materials"]:
+		for name in _uniform_names:
+			material.set_shader_parameter(name, source.get_shader_parameter(name))
 	cells["watched"] = _watched_parameters(source)
 
 ## Pool sizes, use and creation counters, for tests and the memory record.

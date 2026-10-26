@@ -6,10 +6,14 @@
 // and a border vertex two cells share gets the same bits on both. rust/src/simulation/terrain/
 // graded/render_tests.rs ports this arithmetic and checks it against the bake: change both.
 //
-// INSTANCE_CUSTOM: x, z the tile key; y the slot layer (-1 for a base cell); w the lattice codes,
-// 3 bits each: the cell's own (bits 0-2), then the west (x = 0), east (x = 128), south (z = 0)
-// and north (z = 128) sides' coarser neighbour. A code below 3 is GL0-GL2 (1, 2, 4 hm); from 3
-// the base lattice at 2^(code - 3) cells (base cells, GL3, a neighbouring PlaneMesh patch).
+// The lattice codes, 3 bits each: the cell's own (bits 0-2), then the west (x = 0), east
+// (x = 128), south (z = 0) and north (z = 128) sides' coarser neighbour. A code below 3 is
+// GL0-GL2 (1, 2, 4 hm); from 3 the base lattice at 2^(code - 3) cells (base cells, GL3, a
+// neighbouring PlaneMesh patch).
+// INSTANCE_CUSTOM, every channel an integer below 2048, which the Compatibility renderer's
+// half-float instance data holds exactly: x the tile's column plus 32 times its row among the
+// patch's tiles (from the tile holding the patch rectangle's lower corner); y the slot layer
+// (-1 for a base cell); z the codes' bits 0-8; w their bits 9-14.
 
 // Per node (instance uniforms, so the base cells share the patch's material): 0 a PlaneMesh
 // patch, 1 a PlaneMesh whose cells draw it (collapsed), 2 a node of cells. The patch rectangle
@@ -18,17 +22,13 @@ instance uniform float cell_mode = 0.0;
 instance uniform ivec4 cell_patch_rect_hm = ivec4(0);
 instance uniform ivec2 cell_lattice_anchor_hm = ivec2(0);
 #ifdef TERRAIN_GRADED
-// Graded slot pools per level (GL0, GL1, GL2, GL3): texels with apron, and the rows (seams from
-// 0, material edges from the level's seam capacity), one layer per slot.
-uniform sampler2DArray graded_texels_0 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_texels_1 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_texels_2 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_texels_3 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_rows_0 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_rows_1 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_rows_2 : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_rows_3 : filter_nearest, repeat_disable;
-uniform ivec4 graded_seam_capacity = ivec4(512, 512, 256, 128);
+// The slot pool of the material's level (one graded material per level and patch, so a draw
+// binds two samplers: the GLES3 link of the base set plus eight failed, TERRAIN-07-D round 2):
+// texels with apron, and the rows (seams from 0, material edges from the level's seam capacity),
+// one layer per slot.
+uniform sampler2DArray graded_texels : filter_nearest, repeat_disable;
+uniform sampler2DArray graded_rows : filter_nearest, repeat_disable;
+uniform int graded_seam_capacity = 512;
 #endif
 
 const int CELL_SIDE_HM = 128;
@@ -134,41 +134,14 @@ int cell_index_hm(int code, int idx, int spacing, int phase) {
 		: first + cell_inner_lines(spacing, phase) * spacing;
 }
 
-// The graded variant's slot reads.
+// The graded variant's slot reads, from the material's level.
 #ifdef TERRAIN_GRADED
-vec4 cell_texel(int level, ivec2 index, int slot) {
-	ivec3 at = ivec3(index, slot);
-	if (level == 0) {
-		return texelFetch(graded_texels_0, at, 0);
-	} else if (level == 1) {
-		return texelFetch(graded_texels_1, at, 0);
-	} else if (level == 2) {
-		return texelFetch(graded_texels_2, at, 0);
-	}
-	return texelFetch(graded_texels_3, at, 0);
+vec4 cell_texel(ivec2 index, int slot) {
+	return texelFetch(graded_texels, ivec3(index, slot), 0);
 }
 
-int cell_seam_capacity(int level) {
-	if (level == 0) {
-		return graded_seam_capacity.x;
-	} else if (level == 1) {
-		return graded_seam_capacity.y;
-	} else if (level == 2) {
-		return graded_seam_capacity.z;
-	}
-	return graded_seam_capacity.w;
-}
-
-vec4 cell_row(int level, int index, int slot) {
-	ivec3 at = ivec3(index, 0, slot);
-	if (level == 0) {
-		return texelFetch(graded_rows_0, at, 0);
-	} else if (level == 1) {
-		return texelFetch(graded_rows_1, at, 0);
-	} else if (level == 2) {
-		return texelFetch(graded_rows_2, at, 0);
-	}
-	return texelFetch(graded_rows_3, at, 0);
+vec4 cell_row(int index, int slot) {
+	return texelFetch(graded_rows, ivec3(index, 0, slot), 0);
 }
 #endif
 
@@ -190,20 +163,27 @@ float cell_base_height_m(ivec2 world_hm, int cell_hm) {
 
 struct CellFrame {
 	int code;
-	int level;
 	int slot;
 	ivec2 origin_hm;
 	ivec2 spacing;
 	ivec2 phase;
 };
 
+// The lattice codes from their two INSTANCE_CUSTOM channels.
+int cell_codes(vec4 custom) {
+	return int(round(custom.z)) | (int(round(custom.w)) << 9);
+}
+
 CellFrame cell_frame(vec4 custom, int cell_hm) {
 	CellFrame frame;
-	int codes = int(custom.w + 0.5);
-	frame.code = codes & 7;
-	frame.level = frame.code < 3 ? frame.code : 3;
+	frame.code = cell_codes(custom) & 7;
 	frame.slot = int(round(custom.y));
-	frame.origin_hm = ivec2(int(round(custom.x)), int(round(custom.z))) * CELL_SIDE_HM;
+	int place = int(round(custom.x));
+	ivec2 first = ivec2(
+		cell_floor_div(cell_patch_rect_hm.x, CELL_SIDE_HM),
+		cell_floor_div(cell_patch_rect_hm.y, CELL_SIDE_HM)
+	);
+	frame.origin_hm = (first + ivec2(place % 32, place / 32)) * CELL_SIDE_HM;
 	int spacing = cell_code_spacing_hm(frame.code, cell_hm);
 	frame.spacing = ivec2(spacing);
 	frame.phase = ivec2(
@@ -218,7 +198,6 @@ CellFrame cell_frame_from(ivec4 packed, int cell_hm) {
 	CellFrame frame;
 	frame.slot = packed.x;
 	frame.code = packed.y;
-	frame.level = frame.code < 3 ? frame.code : 3;
 	frame.origin_hm = ivec2(0);
 	frame.spacing = ivec2(cell_code_spacing_hm(frame.code, cell_hm));
 	frame.phase = packed.zw;
@@ -266,13 +245,13 @@ float cell_delta_m(CellFrame frame, ivec2 p) {
 		cell_index_hm(frame.code, i0.y + 1, frame.spacing.y, frame.phase.y)
 	);
 	vec2 f = vec2(p - p0) / vec2(max(p1 - p0, ivec2(1)));
-	float d00 = cell_texel(frame.level, i0, frame.slot).r;
+	float d00 = cell_texel(i0, frame.slot).r;
 	if (f == vec2(0.0)) {
 		return d00;
 	}
-	float d10 = cell_texel(frame.level, i0 + ivec2(1, 0), frame.slot).r;
-	float d01 = cell_texel(frame.level, i0 + ivec2(0, 1), frame.slot).r;
-	float d11 = cell_texel(frame.level, i0 + ivec2(1, 1), frame.slot).r;
+	float d10 = cell_texel(i0 + ivec2(1, 0), frame.slot).r;
+	float d01 = cell_texel(i0 + ivec2(0, 1), frame.slot).r;
+	float d11 = cell_texel(i0 + ivec2(1, 1), frame.slot).r;
 	return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
 }
 
@@ -282,10 +261,10 @@ vec2 cell_delta_gradient(CellFrame frame, ivec2 p) {
 		cell_index_at(frame.code, p.x, frame.spacing.x, frame.phase.x),
 		cell_index_at(frame.code, p.y, frame.spacing.y, frame.phase.y)
 	);
-	float dx = cell_texel(frame.level, i + ivec2(1, 0), frame.slot).r
-		- cell_texel(frame.level, i - ivec2(1, 0), frame.slot).r;
-	float dz = cell_texel(frame.level, i + ivec2(0, 1), frame.slot).r
-		- cell_texel(frame.level, i - ivec2(0, 1), frame.slot).r;
+	float dx = cell_texel(i + ivec2(1, 0), frame.slot).r
+		- cell_texel(i - ivec2(1, 0), frame.slot).r;
+	float dz = cell_texel(i + ivec2(0, 1), frame.slot).r
+		- cell_texel(i - ivec2(0, 1), frame.slot).r;
 	int wx = cell_index_hm(frame.code, i.x + 1, frame.spacing.x, frame.phase.x)
 		- cell_index_hm(frame.code, i.x - 1, frame.spacing.x, frame.phase.x);
 	int wz = cell_index_hm(frame.code, i.y + 1, frame.spacing.y, frame.phase.y)
@@ -358,7 +337,7 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 	ivec2 i0 = ivec2(int(sx.x), int(sz.x));
 	vec4 t[4];
 	for (int c = 0; c < 4; c++) {
-		t[c] = cell_texel(frame.level, i0 + ivec2(c & 1, c >> 1), frame.slot);
+		t[c] = cell_texel(i0 + ivec2(c & 1, c >> 1), frame.slot);
 	}
 	CellMask mask;
 	mask.sdf = mix(mix(t[0].g, t[1].g, sx.y), mix(t[2].g, t[3].g, sx.y), sz.y);
@@ -370,7 +349,7 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 			if (index < 0) {
 				continue;
 			}
-			CellSeamHit hit = cell_segment_at(cell_row(frame.level, index, frame.slot), p, index);
+			CellSeamHit hit = cell_segment_at(cell_row(index, frame.slot), p, index);
 			if (cell_nearer(hit, best)) {
 				best = hit;
 			}
@@ -388,14 +367,14 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 		if (index < 0) {
 			continue;
 		}
-		vec4 seg = cell_row(frame.level, cell_seam_capacity(frame.level) + index, frame.slot);
+		vec4 seg = cell_row(graded_seam_capacity + index, frame.slot);
 		CellSeamHit hit = cell_segment_at(seg, p, index);
 		if (cell_nearer(hit, edge)) {
 			edge = hit;
 		}
 	}
 	if (edge.index < (1 << 30)) {
-		vec4 seg = cell_row(frame.level, cell_seam_capacity(frame.level) + edge.index, frame.slot);
+		vec4 seg = cell_row(graded_seam_capacity + edge.index, frame.slot);
 		bool inside = edge.signed_distance <= 0.0;
 		float best_d = 1e30;
 		for (int c = 0; c < 4; c++) {

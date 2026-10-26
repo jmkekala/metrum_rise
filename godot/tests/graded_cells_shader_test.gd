@@ -53,9 +53,8 @@ func _material(shader_path: String, pools: Array[Texture2DArray]) -> ShaderMater
 	material.set_shader_parameter("world_size", Vector2(64.0, 64.0))
 	material.set_shader_parameter("patch_world_size_m", Vector2(64.0, 64.0))
 	material.set_shader_parameter("ground_shadow_ambient", 1.0)
-	for code in 4:
-		material.set_shader_parameter("graded_texels_%d" % code, pools[0])
-		material.set_shader_parameter("graded_rows_%d" % code, pools[1])
+	material.set_shader_parameter("graded_texels", pools[0])
+	material.set_shader_parameter("graded_rows", pools[1])
 	return material
 
 func _cells(mesh: Mesh, material: ShaderMaterial, custom: Color, mode: float) -> MultiMeshInstance3D:
@@ -142,16 +141,11 @@ func _run() -> void:
 			if _failures > 8:
 				break
 	_expect(road_px > 0 and ground_px > 0, "both sides must be sampled")
-	# A base cell (base variant, the patch material's shader) draws the whole tile. In the
-	# Compatibility renderer that program fails to link ("too many fragment shader texture
-	# samplers", TERRAIN-07-D round 1, open): checked in Forward+ only until round 2 fixes it.
-	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
-		print("Graded cells shader tests: base cell skipped in the Compatibility renderer (open)")
-		print("Graded cells shader tests: %d failures" % _failures)
-		quit(0 if _failures == 0 else 1)
-		return
+	# A base cell (base variant, the patch material's shader) draws the whole tile. Its codes
+	# (every side the base code) travel in two channels below 2048: the Compatibility renderer
+	# keeps instance custom data as half floats.
 	var base_code := GradedTiles.base_code(1)
-	var base := _cells(tiles._meshes[base_code], _material("res://assets/materials/terrain.gdshader", pools), Color(0.0, -1.0, 0.0, base_code * 4681), 2.0)
+	var base := _cells(tiles._meshes[base_code], _material("res://assets/materials/terrain.gdshader", pools), Color(0.0, -1.0, base_code * 73, base_code * 9), 2.0)
 	image = await _render(base)
 	for y in range(4, 60, 7):
 		for x in range(4, 60, 7):

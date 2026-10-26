@@ -534,7 +534,7 @@ void vertex() {
 		cell = cell_frame(INSTANCE_CUSTOM, cell_hm);
 		// VERTEX.xz holds the mesh vertex's lattice index; the instance transform is identity.
 		ivec2 k = ivec2(round(VERTEX.xz));
-		cell_p = cell_vertex_position_hm(cell, k, int(INSTANCE_CUSTOM.w + 0.5), cell_hm);
+		cell_p = cell_vertex_position_hm(cell, k, cell_codes(INSTANCE_CUSTOM), cell_hm);
 		ivec2 patch_centre_hm = (cell_patch_rect_hm.xy + cell_patch_rect_hm.zw) / 2;
 		VERTEX = vec3(vec2(cell.origin_hm + cell_p - patch_centre_hm) * 0.5, 0.0).xzy;
 		var_cell_local_m = vec2(cell_p) * 0.5;
