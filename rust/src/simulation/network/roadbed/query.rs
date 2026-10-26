@@ -68,6 +68,25 @@ fn top_at(
     best
 }
 
+// Visits the segments of `chains` (a piece's outer chains or wall runs) whose XZ bounds touch
+// `bounds_xz`, in chain order.
+fn for_each_segment_in_bounds(
+    mesh: &PieceMesh,
+    chains: &[super::OuterChain],
+    bounds_xz: [f64; 4],
+    visit: &mut impl FnMut([RoadVec3; 2]),
+) {
+    for chain in chains {
+        for pair in chain.vertices().windows(2) {
+            let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+            let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
+            if bounds_intersect(segment, bounds_xz) {
+                visit([a, b]);
+            }
+        }
+    }
+}
+
 fn bounds_intersect(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
@@ -327,16 +346,31 @@ impl RoadbedSystem {
         self.grounded_pieces_in_bounds(bounds_xz, pieces);
         for id in pieces.iter() {
             let mesh = self.pieces[id].mesh();
-            for chain in mesh.outer_chains() {
-                for pair in chain.vertices().windows(2) {
-                    let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
-                    let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
-                    if bounds_intersect(segment, bounds_xz) {
-                        visit([a, b]);
-                    }
-                }
-            }
+            for_each_segment_in_bounds(mesh, mesh.outer_chains(), bounds_xz, &mut visit);
         }
+    }
+
+    /// The wall-run segments ([`PieceMesh::wall_runs`], `TERRAIN-07-C`) of `pieces`, the
+    /// grounded pieces [`Self::grounded_pieces_in_bounds`] found for the same bounds, whose own
+    /// XZ bounds touch them, sorted and deduplicated by key like
+    /// [`Self::grounded_seams_in_bounds`]: the structure mouths' wall seams. `O(V + S log S)`
+    /// for the pieces' wall-run vertices `V` and the `S` segments kept.
+    pub fn wall_seams_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &[PieceId],
+        out: &mut Vec<[RoadVec3; 2]>,
+    ) {
+        out.clear();
+        for id in pieces {
+            let mesh = self.pieces[id].mesh();
+            for_each_segment_in_bounds(mesh, mesh.wall_runs(), bounds_xz, &mut |segment| {
+                out.push(segment)
+            });
+        }
+        let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
+        out.sort_unstable_by_key(key);
+        out.dedup_by_key(|segment| key(segment));
     }
 
     /// Visits the top triangles of the grounded pieces whose bounds touch the XZ bounds, whose

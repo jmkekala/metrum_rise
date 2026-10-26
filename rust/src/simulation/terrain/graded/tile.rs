@@ -15,9 +15,9 @@ use super::prune::{
 use super::sample::{
     AxisStop, BaseGrid, BaseWindow, Listed, NO_SEAM, Value, evaluate, evaluate_lanes,
 };
-use super::seams::{Seam, SeamScratch, gather_road_seams};
+use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
-use super::walls::{WallFace, WallScratch, build_walls};
+use super::walls::{WallFace, WallScratch, build_structure_walls, build_walls};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
@@ -117,7 +117,8 @@ impl Level {
 /// sorted, and the base revisions of the 512 m chunks under the window.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TileInputs {
-    /// Seam keys, sorted.
+    /// The road seam keys, sorted, then the wall seam keys the structure walls read, sorted
+    /// (`TERRAIN-07-C`).
     pub seams: Vec<[u64; 6]>,
     /// Top triangle vertex bits, sorted and unique.
     pub triangles: Vec<[u64; 9]>,
@@ -179,7 +180,8 @@ pub struct TilePayload {
     /// left, in key order.
     pub edges: Vec<[f32; 4]>,
     /// The conflict walls along the road seams in the tile (`T2` (c)), seam by seam in key
-    /// order, each seam's faces along it.
+    /// order, each seam's faces along it; then the structure walls along its wall seams
+    /// (`TERRAIN-07-C`, T22 4 (a)), likewise.
     pub walls: Vec<WallFace>,
     /// Whether any sample is graded, covered, in a pad, paved or within the band of a seam or
     /// a material edge.
@@ -235,6 +237,9 @@ impl BakeError {
 pub(super) struct BakeScratch {
     seams: SeamScratch,
     window: Vec<Seam>,
+    // The wall seams meeting the lattice, in key order (`TERRAIN-07-C`): no cone, so outside
+    // the window's grading seams.
+    wall_seams: Vec<Seam>,
     base: BaseWindow,
     xs: Vec<f64>,
     zs: Vec<f64>,
@@ -416,6 +421,7 @@ fn bake_tile(
     let BakeScratch {
         seams: seam_scratch,
         window: seams,
+        wall_seams,
         base,
         xs,
         zs,
@@ -445,6 +451,7 @@ fn bake_tile(
     let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
     let window = window(rect, band);
     gather_road_seams(roadbed, window, seam_scratch, seams);
+    gather_wall_seams(roadbed, rect, seam_scratch, wall_seams);
     // Road seams first (indices `0..road_count`, in key order, the rows the texels name), then
     // the sites' pad seams in key order.
     let road_count = seams.len();
@@ -683,6 +690,7 @@ fn bake_tile(
         walls,
         &mut out.walls,
     );
+    build_structure_walls(wall_seams, tile, (xs, zs), heights, walls, &mut out.walls);
 
     out.tile = tile;
     out.level = level;
@@ -691,6 +699,7 @@ fn bake_tile(
     out.stats = stats;
     out.inputs.seams.clear();
     out.inputs.seams.extend(seams[..road_count].iter().map(Seam::key));
+    out.inputs.seams.extend(wall_seams.iter().map(Seam::key));
     sites.inputs(&mut out.inputs.sites);
     base_revisions(terrain, window, &mut out.inputs.base_revisions);
     let capacity = level.seam_capacity();

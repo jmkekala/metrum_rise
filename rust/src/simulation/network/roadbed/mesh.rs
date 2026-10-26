@@ -70,6 +70,29 @@ impl OuterChain {
     }
 }
 
+/// The wall run over a mouth row's vertices `row`, given from one outer chain's end corner to the
+/// next chain's start corner: a curb pair (two consecutive vertices with equal XZ) once, at its
+/// lower vertex. `O(row)`.
+pub(super) fn wall_run(positions: &[RoadVec3], row: impl Iterator<Item = u32>) -> OuterChain {
+    let mut vertices: Vec<u32> = Vec::new();
+    for vertex in row {
+        let point = positions[vertex as usize];
+        if let Some(last) = vertices.last_mut() {
+            let previous = positions[*last as usize];
+            if (previous.x, previous.z) == (point.x, point.z) {
+                if point.y < previous.y {
+                    *last = vertex;
+                }
+                continue;
+            }
+        }
+        vertices.push(vertex);
+    }
+    OuterChain {
+        vertices: vertices.into_boxed_slice(),
+    }
+}
+
 /// Immutable mesh of one roadbed piece.
 #[derive(Debug, PartialEq)]
 pub struct PieceMesh {
@@ -80,6 +103,8 @@ pub struct PieceMesh {
     triangles: Vec<[u32; 3]>,
     group_starts: [u32; GROUPS + 1],
     outer_chains: Vec<OuterChain>,
+    // The wall runs across the structure mouths a grounded piece meets (`TERRAIN-07-C`).
+    wall_runs: Vec<OuterChain>,
     // The strips below the outer chains; a tunnel's road piece has none.
     strips: Option<StripKind>,
     // The caps closing a structure's free ends (`TERRAIN-07-C`): triangles over `(vertex,
@@ -140,6 +165,15 @@ impl PieceMesh {
     /// Footprint boundary chains.
     pub fn outer_chains(&self) -> &[OuterChain] {
         &self.outer_chains
+    }
+
+    /// The wall runs across the structure mouths a grounded piece meets (`TERRAIN-07-C`,
+    /// `docs/terrain.md` T22 3 (a)): per mouth row where a bridge or tunnel begins, its vertices
+    /// from the end corner of one outer chain to the start corner of the next, a curb pair once
+    /// at its lower vertex, so the road lies on the left like the chains'. With the outer chains
+    /// they close the grounded footprint; the graded terrain reads their segments as wall seams.
+    pub fn wall_runs(&self) -> &[OuterChain] {
+        &self.wall_runs
     }
 
     /// The kind of strips hanging from the outer chains, `None` for a tunnel's road piece.
@@ -389,16 +423,17 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
 }
 
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
-/// mouth sections, with `strips` below its two outer chains and, at each end `caps` names a kind
-/// for (a structure's free end, `TERRAIN-07-C`), a cap ([`end_cap`]) down to that kind's depth.
-/// `O(sections * bands)`; allocates only the mesh.
+/// mouth sections, with `strips` below its two outer chains, at each end `caps` names a kind
+/// for (a structure's free end, `TERRAIN-07-C`) a cap ([`end_cap`]) down to that kind's depth,
+/// and at each end `walls` marks (a grounded span's shared mouth with a structure) a wall run
+/// across the end row. `O(sections * bands)`; allocates only the mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
-    start_mouth: &MouthSection,
-    end_mouth: &MouthSection,
+    (start_mouth, end_mouth): (&MouthSection, &MouthSection),
     layout: &RowLayout,
     strips: Option<StripKind>,
     caps: [Option<StripKind>; 2],
+    walls: [bool; 2],
 ) -> PieceMesh {
     let rows = sections.len();
     let stride = layout.stride();
@@ -476,6 +511,17 @@ pub(super) fn build_span_mesh(
                 .collect(),
         },
     ];
+    // The start row runs from chain 1's end (the last slot) back to chain 0's start, the end row
+    // from chain 0's end (slot 0) to chain 1's start.
+    let stride_u32 = stride as u32;
+    let mut wall_runs = Vec::new();
+    if walls[0] {
+        wall_runs.push(wall_run(&positions, (0..stride_u32).rev()));
+    }
+    if walls[1] {
+        let first = (rows as u32 - 1) * stride_u32;
+        wall_runs.push(wall_run(&positions, first..first + stride_u32));
+    }
     let mut cap_triangles = Vec::new();
     for (end, kind) in caps.iter().enumerate() {
         let Some(kind) = kind else {
@@ -500,7 +546,7 @@ pub(super) fn build_span_mesh(
         road_space,
         triangles,
         group_starts,
-        outer_chains,
+        (outer_chains, wall_runs),
         strips,
         (cap_triangles, caps[0].or(caps[1])),
     )
@@ -561,12 +607,13 @@ fn end_cap(
 impl PieceMesh {
     /// Assembles a node piece's mesh from its triangle groups (band kinds in declaration order,
     /// then curb faces), hanging `strips` from its chains: skirts where it stands on the terrain,
-    /// none where only structures meet.
+    /// none where only structures meet. `wall_runs` close the chains across its structure
+    /// mouths ([`Self::wall_runs`]).
     pub(super) fn from_groups(
         positions: Vec<RoadVec3>,
         road_space: Vec<[f32; 2]>,
         groups: &[Vec<[u32; 3]>; GROUPS],
-        outer_chains: Vec<Box<[u32]>>,
+        (outer_chains, wall_runs): (Vec<Box<[u32]>>, Vec<OuterChain>),
         strips: Option<StripKind>,
     ) -> Self {
         let group_starts = group_starts(groups.each_ref().map(|group| group.len() as u32));
@@ -580,7 +627,7 @@ impl PieceMesh {
             road_space,
             triangles,
             group_starts,
-            outer_chains,
+            (outer_chains, wall_runs),
             strips,
             (Vec::new(), None),
         )
@@ -592,7 +639,7 @@ impl PieceMesh {
         road_space: Vec<[f32; 2]>,
         triangles: Vec<[u32; 3]>,
         group_starts: [u32; GROUPS + 1],
-        outer_chains: Vec<OuterChain>,
+        (outer_chains, wall_runs): (Vec<OuterChain>, Vec<OuterChain>),
         strips: Option<StripKind>,
         (caps, cap_kind): (Vec<[(u32, bool); 3]>, Option<StripKind>),
     ) -> Self {
@@ -610,6 +657,7 @@ impl PieceMesh {
             triangles,
             group_starts,
             outer_chains,
+            wall_runs,
             strips,
             caps,
             cap_kind,

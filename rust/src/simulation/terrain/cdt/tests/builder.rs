@@ -457,31 +457,6 @@ fn cdt_bridge_omitted_tie_in_source_does_not_promote_grade_compliant_faces() {
     );
 }
 
-#[test]
-#[ignore = "TERRAIN-07: tunnel portal boundaries require walls where widened samples cannot tie in; portals are part of the terrain surface rewrite (moved from ROAD-68-F)"]
-fn cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall() {
-    let source = test_tunnel_span_boundary_source(1, 0);
-    let input = high_delta_omitted_tie_in_input(source);
-
-    let mesh = build_road_touched_terrain_patch(input)
-        .expect("high-delta tunnel tie-in widening should triangulate");
-
-    assert_eq!(mesh.stats.tie_in_widened_source_samples, 1);
-    assert!(mesh.stats.retaining_wall_faces > 0);
-    assert!(
-        mesh.retaining_wall_triangle_sources
-            .iter()
-            .any(|sources| sources.contains(&source)),
-        "source-required retaining walls must preserve the omitted tunnel portal source"
-    );
-    assert!(
-        mesh.emitted_faces.iter().any(|face| {
-            face.kind == TerrainCdtTieInKind::RetainingWall && face.sources.contains(&source)
-        }),
-        "first-class emitted retaining-wall faces must carry the required tunnel source"
-    );
-}
-
 fn high_delta_omitted_tie_in_input(source: TerrainCdtRoadBoundarySource) -> TerrainCdtInput {
     let road = vec![
         TerrainCdtVertex::new(48.0, 1.2, 48.0),

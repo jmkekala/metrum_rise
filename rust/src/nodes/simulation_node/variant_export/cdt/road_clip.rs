@@ -143,19 +143,21 @@ impl SimulationNode {
             .enumerate()
             .filter_map(|(edge, (segment, label))| {
                 let (segment, (run, place)) = ((*segment)?, (*label)?);
+                // A wall run across a structure mouth (`TERRAIN-07-C`) is a structure source,
+                // whose retaining-wall policy closes the cut at the abutment or portal.
+                let structure = |grounded: bool| {
+                    if grounded && !segment.wall {
+                        TerrainCdtRoadSupport::Grounded
+                    } else {
+                        TerrainCdtRoadSupport::Structure
+                    }
+                };
                 let (piece, support) = match segment.piece {
                     PieceId::Span(edge_idx) => (
                         TerrainCdtRoadPiece::Span(u64::from(run)),
-                        if graph.edge(edge_idx).class == EdgeClass::Standard {
-                            TerrainCdtRoadSupport::Grounded
-                        } else {
-                            TerrainCdtRoadSupport::Structure
-                        },
+                        structure(graph.edge(edge_idx).class == EdgeClass::Standard),
                     ),
-                    PieceId::Node(_) => (
-                        TerrainCdtRoadPiece::Node(run),
-                        TerrainCdtRoadSupport::Grounded,
-                    ),
+                    PieceId::Node(_) => (TerrainCdtRoadPiece::Node(run), structure(true)),
                 };
                 Some(TerrainCdtRoadLoopSourceEdge {
                     start: vertex(terrain_loop.points[edge]),
@@ -349,7 +351,7 @@ fn vertex_bits(point: crate::simulation::network::roadbed::RoadVec3) -> (u64, u6
 // segment numbers (`ROAD-68-E`).
 fn road_run_labels(loops: &[TerrainLoop]) -> Vec<Vec<Option<(u32, u32)>>> {
     let same_chain = |a: Option<ChainSegment>, b: Option<ChainSegment>| match (a, b) {
-        (Some(a), Some(b)) => a.piece == b.piece && a.chain == b.chain,
+        (Some(a), Some(b)) => a.piece == b.piece && a.chain == b.chain && a.wall == b.wall,
         _ => false,
     };
     // (first two vertices, loop, first edge, length)

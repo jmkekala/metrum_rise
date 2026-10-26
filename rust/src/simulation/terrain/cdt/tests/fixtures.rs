@@ -138,14 +138,6 @@ pub(super) fn test_structural_span_boundary_source(
     )
 }
 
-// Tunnel portals are structures; their portal-specific wall rule is `ROAD-68-F`.
-pub(super) fn test_tunnel_span_boundary_source(
-    edge_idx: u64,
-    chain: u32,
-) -> TerrainCdtRoadBoundarySource {
-    test_structural_span_boundary_source(edge_idx, chain)
-}
-
 pub(super) fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {
     road_loop_from_centerline(
         TerrainCdtVertex::new(8.0, 0.0, 12.0),

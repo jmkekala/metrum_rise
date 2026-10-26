@@ -35,6 +35,7 @@ use super::layout::{
 };
 use super::mesh::{
     CURB_FACE_GROUP, GROUPS, PieceMesh, RowLayout, StripKind, push_section_row_at, row_slots,
+    wall_run,
 };
 use super::profile::{Level, RoadProfile};
 use super::span::{MouthSection, edge_points};
@@ -671,7 +672,7 @@ pub(super) fn build_node_piece(
             triangulate_ring(&mut builder, ring, kind, outside, stack)?;
         }
     }
-    let outer_chains = chains
+    let outer_chains: Vec<Box<[u32]>> = chains
         .into_iter()
         .map(|mut chain| {
             chain.dedup();
@@ -687,7 +688,41 @@ pub(super) fn build_node_piece(
         .collect();
     let grounded = plan.arms.grounded();
     let strips = grounded.then_some(StripKind::Skirt);
-    let mesh = PieceMesh::from_groups(positions, road_space, &groups, outer_chains, strips);
+    // A grounded node closes its chains across each structure mouth with a wall run
+    // (`TERRAIN-07-C`, T22 3 (a)): the mouth row from the corner where one chain ends to the
+    // corner where the next starts.
+    let id =
+        |point: RoadVec3| vertex_ids[&[point.x.to_bits(), point.y.to_bits(), point.z.to_bits()]];
+    let wall_runs = (0..plan.mouths.len())
+        .filter(|&arm| grounded && plan.arms.is_structure(arm))
+        .map(|arm| {
+            let row = &plan.mouths[arm].1.vertices;
+            let first = id(row[0]);
+            let forward = outer_chains
+                .iter()
+                .any(|chain| chain.last() == Some(&first));
+            let ids = row.iter().map(|&point| id(point));
+            let run = if forward {
+                wall_run(&positions, ids)
+            } else {
+                wall_run(&positions, ids.rev())
+            };
+            debug_assert!(
+                outer_chains
+                    .iter()
+                    .any(|chain| chain.first() == run.vertices().last()),
+                "a structure mouth's wall run ends where an outer chain starts"
+            );
+            run
+        })
+        .collect();
+    let mesh = PieceMesh::from_groups(
+        positions,
+        road_space,
+        &groups,
+        (outer_chains, wall_runs),
+        strips,
+    );
     let footprint = PieceFootprint::of_bounds(mesh.bounds_xz(), grid, footprint);
     Ok(NodePiece {
         node: plan.arms.node,

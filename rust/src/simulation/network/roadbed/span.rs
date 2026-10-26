@@ -26,7 +26,7 @@ pub(super) use model::{
     WIDTH_CHANGE_TAPER_WIDTH_FACTOR, edge_points, is_surface_edge,
 };
 
-use super::arms::is_structure_end;
+use super::arms::{is_structure_end, passes_into_structure};
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::mesh::{PieceMesh, StripKind, build_span_mesh};
@@ -207,13 +207,19 @@ pub(crate) fn build_span_piece(
     };
     let caps = [edge.start_node, edge.end_node]
         .map(|node| cap.filter(|_| is_structure_end(graph, graph.get_valid_node(node))));
+    // A grounded span whose end passes through into a bridge or tunnel closes its chains across
+    // the shared mouth row with a wall run (`TERRAIN-07-C`, T22 3 (a)).
+    let walls = [edge.start_node, edge.end_node].map(|node| {
+        edge.class == EdgeClass::Standard
+            && passes_into_structure(graph, graph.get_valid_node(node), edge_idx)
+    });
     let mesh = build_span_mesh(
         &sections,
-        &start_mouth,
-        &end_mouth,
+        (&start_mouth, &end_mouth),
         model.layout(),
         strips,
         caps,
+        walls,
     );
     let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the

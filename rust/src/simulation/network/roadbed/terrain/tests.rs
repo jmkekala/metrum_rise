@@ -178,8 +178,11 @@ fn clipped_rectangles_reuse_chain_vertices_and_tile_the_footprint() {
     }
 }
 
+// `TERRAIN-07-C` (T22 3 (a)): a road continued straight on by a bridge closes its chains across
+// the shared mouth row with its span's wall run, whose segments bound the loop as structure
+// sources.
 #[test]
-fn a_chain_ending_at_a_structure_span_is_an_open_end() {
+fn a_chain_ending_at_a_structure_span_closes_across_its_mouth() {
     let mut graph = RegionGraph::new();
     let a = graph.add_node(point(-80.0, 0.0, false), NodeType::Junction);
     let b = graph.add_node(point(0.0, 0.0, false), NodeType::Junction);
@@ -195,14 +198,24 @@ fn a_chain_ending_at_a_structure_span_is_an_open_end() {
     graph.add_edge(bridge);
     graph.rebuild_intersection_clips();
     let roadbed = compiled(&graph);
-    let error = terrain_loops(&roadbed, &graph, [-20.0, -20.0, 20.0, 20.0]).unwrap_err();
-    assert!(matches!(
-        error,
-        TerrainLoopError::OpenEnd {
-            piece: PieceId::Span(0),
-            ..
-        }
-    ));
+    let runs = roadbed
+        .span_piece(0)
+        .expect("the road's span")
+        .mesh()
+        .wall_runs();
+    assert_eq!(runs.len(), 1, "one wall run across the shared mouth row");
+    let loops = terrain_loops(&roadbed, &graph, [-20.0, -20.0, 20.0, 20.0]).unwrap();
+    let walls: Vec<ChainSegment> = loops
+        .iter()
+        .flat_map(|terrain_loop| terrain_loop.edges.iter().flatten().copied())
+        .filter(|segment| segment.wall)
+        .collect();
+    assert_eq!(walls.len(), runs[0].vertices().len() - 1);
+    assert!(
+        walls
+            .iter()
+            .all(|segment| segment.piece == PieceId::Span(0))
+    );
     // Away from the bridge the road's own loops close.
     assert!(terrain_loops(&roadbed, &graph, [-100.0, -20.0, -20.0, 20.0]).is_ok());
 }

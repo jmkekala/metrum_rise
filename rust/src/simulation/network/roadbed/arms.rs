@@ -49,6 +49,8 @@ struct ArmRecord {
     max_station_m: f64,
     crossable: bool,
     attached: bool,
+    // A bridge or tunnel: at a grounded node its mouth is a structure mouth (`TERRAIN-07-C`).
+    structure: bool,
 }
 
 /// The arms of one node, owning the knot and band buffers their [`ArmInput`]s borrow.
@@ -166,6 +168,7 @@ impl NodeArms {
             max_station_m: 0.5 * station_m,
             crossable,
             attached,
+            structure: edge.class != EdgeClass::Standard,
         });
     }
 
@@ -232,6 +235,12 @@ impl NodeArms {
             crossable: arm.crossable,
             attached: arm.attached,
         }
+    }
+
+    /// Whether arm `index` is a bridge or tunnel: at a grounded node its mouth row closes the
+    /// grounded chains with a wall run (`TERRAIN-07-C`, `docs/terrain.md` T22 3 (a)).
+    pub(super) fn is_structure(&self, index: usize) -> bool {
+        self.arms[index].structure
     }
 
     /// Whether arm `index` is a footpath attached to a road node's sidewalk ring (D5), whose
@@ -410,6 +419,19 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 /// `O(degree)`.
 pub(super) fn is_structure_end(graph: &RegionGraph, node: u32) -> bool {
     node_incidents(graph, node).is_some_and(|incidents| ends_a_structure(graph, &incidents))
+}
+
+/// Whether a standard edge's end at `node` meets a structure without a node piece: `node` is a
+/// pass-through pair whose other arm is a bridge or tunnel, so the two spans share the mouth row
+/// and the grounded span closes its chains across it with a wall run (`TERRAIN-07-C`).
+/// `O(degree)`.
+pub(super) fn passes_into_structure(graph: &RegionGraph, node: u32, edge_idx: usize) -> bool {
+    node_incidents(graph, node).is_some_and(|incidents| {
+        passes_through(graph, &incidents)
+            && incidents.iter().any(|(key, _)| {
+                key.edge != edge_idx && graph.edge(key.edge).class != EdgeClass::Standard
+            })
+    })
 }
 
 fn ends_a_structure(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {

@@ -12,6 +12,8 @@
 use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::terrain_seams::open_road_edges_where;
 use super::*;
+use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+use crate::simulation::network::roadbed::PieceId;
 use crate::simulation::network::types::{EdgeClass, TransitFlags};
 use godot::prelude::Vector2;
 use std::collections::HashSet;
@@ -184,6 +186,102 @@ fn structure_and_rural_road_chunks_are_watertight() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// Every published piece's vertices by owner: what an undo must put back bitwise.
+fn piece_positions(core: &SimCore) -> Vec<(PieceId, Vec<[u64; 3]>)> {
+    let roadbed = &core.transit_network.roadbed;
+    let graph = &core.region_graph;
+    let spans = (0..graph.edge_count()).map(PieceId::Span);
+    let nodes = (0..graph.node_count() as u32).map(PieceId::Node);
+    spans
+        .chain(nodes)
+        .filter_map(|id| {
+            let mesh = roadbed.piece_mesh(id)?;
+            let bits = mesh
+                .positions()
+                .iter()
+                .map(|p| [p.x, p.y, p.z].map(f64::to_bits));
+            Some((id, bits.collect()))
+        })
+        .collect()
+}
+
+// `TERRAIN-07-C` structure-end acceptance (T22 3 (a)): a bridge and a tunnel drawn in play from a
+// road, at a T's side road end (a node piece's mouth) and straight on from the through road's end
+// (a pass-through's shared mouth row), flat and sloped, commit through the player's path: the
+// grounded piece closes its chains across the structure's mouth with a wall run, so the exact
+// cut's loops join and question 19's `roadbed_chain_open_end` rejection is gone. Undo puts the
+// graph and every piece back.
+#[test]
+fn a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo() {
+    let cases = [
+        (
+            "side_road_end",
+            vec![THROUGH, SIDE],
+            SIDE.0[1],
+            Vector2::new(0.0, 2.0 * ARM_M),
+        ),
+        ("straight_on", vec![THROUGH], THROUGH.0[1], ON.0[1]),
+    ];
+    for sloped in [false, true] {
+        for (rise, class) in [(6.0, EdgeClass::Bridge), (-6.0, EdgeClass::Tunnel)] {
+            for (name, strokes, from, to) in &cases {
+                let case = format!("{name}/{class:?}/{sloped}");
+                let order: Vec<usize> = (0..strokes.len()).collect();
+                let mut core = committed(strokes, &order, sloped);
+                core.benchmark_mode = false;
+                core.precompute_road_mesh_data();
+                let (edges, pieces) = (core.region_graph.edge_count(), piece_positions(&core));
+                let at = |core: &SimCore, point: Vector2, rise: f32| {
+                    Vector3::new(
+                        point.x,
+                        core.get_world_surface_height_internal(point) + rise,
+                        point.y,
+                    )
+                };
+                let points = vec![at(&core, *from, 0.0), at(&core, *to, rise)];
+                let outcome = core.commit_road(
+                    RoadCommitRequest {
+                        points,
+                        fwd_lanes: 1,
+                        bkw_lanes: 1,
+                        snap_to_existing_roads: true,
+                        preview: None,
+                    },
+                    std::time::Instant::now(),
+                    Default::default(),
+                );
+                assert!(outcome.committed, "{case}: {}", outcome.rejection);
+                let structure = edge_ending_at(&core, *to);
+                assert_eq!(core.region_graph.edge(structure).class, class, "{case}");
+                core.precompute_road_mesh_data();
+                let roadbed = &core.transit_network.roadbed;
+                assert!(
+                    roadbed.is_current() && roadbed.failed_nodes().is_empty(),
+                    "{case}"
+                );
+                let walls = (0..core.region_graph.edge_count())
+                    .map(PieceId::Span)
+                    .chain((0..core.region_graph.node_count() as u32).map(PieceId::Node))
+                    .filter_map(|id| roadbed.piece_mesh(id))
+                    .map(|mesh| mesh.wall_runs().len())
+                    .sum::<usize>();
+                assert_eq!(
+                    walls, 1,
+                    "{case}: one wall run closes the structure's mouth"
+                );
+                assert!(core.undo_action_internal(), "{case}");
+                core.precompute_road_mesh_data();
+                assert_eq!(core.region_graph.edge_count(), edges, "{case}");
+                assert!(structure >= edges || core.region_graph.edge(structure).deleted);
+                assert!(
+                    piece_positions(&core) == pieces,
+                    "{case}: undo restores every piece"
+                );
+            }
+        }
+    }
 }
 
 // `ROAD-68` open question 17, roads without sidewalks: the walking planner's whole-network proof

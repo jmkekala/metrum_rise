@@ -14,6 +14,10 @@ pub enum SeamKind {
     /// One side of a building site's support footprint at its support height, oriented
     /// counter-clockwise (positive signed area in XZ), the pad on its left (`TERRAIN-07-C`).
     Pad,
+    /// One segment of a wall run across a structure mouth (`TERRAIN-07-C`, `docs/terrain.md`
+    /// T22 4 (a)), the grounded road on its left: no cone, never a sample's nearest seam; the
+    /// bake builds wall faces along it from its height to the graded ground.
+    Wall,
 }
 
 /// One seam segment in world metres `[x, height, z]`, its height linear along it.
@@ -184,7 +188,25 @@ pub(super) fn road_seam(a: RoadVec3, b: RoadVec3) -> Seam {
     }
 }
 
-/// Reused buffers of [`gather_road_seams`].
+/// The wall seams whose XZ bounds touch `rect`, sorted by key: the wall-run segments of the
+/// grounded pieces the preceding [`gather_road_seams`] over a rectangle holding `rect` found
+/// ([`RoadbedSystem::wall_seams_in_bounds`]). `O(V + S log S)` for the pieces' wall-run
+/// vertices and the segments kept.
+pub(super) fn gather_wall_seams(
+    roadbed: &RoadbedSystem,
+    rect: [f64; 4],
+    scratch: &mut SeamScratch,
+    out: &mut Vec<Seam>,
+) {
+    roadbed.wall_seams_in_bounds(rect, &scratch.pieces, &mut scratch.segments);
+    out.clear();
+    out.extend(scratch.segments.iter().map(|[a, b]| Seam {
+        kind: SeamKind::Wall,
+        ..road_seam(*a, *b)
+    }));
+}
+
+/// Reused buffers of [`gather_road_seams`] and [`gather_wall_seams`].
 #[derive(Default)]
 pub(super) struct SeamScratch {
     pub(super) pieces: Vec<PieceId>,

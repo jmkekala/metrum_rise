@@ -23,9 +23,12 @@ use super::tile::{TILE_M, TileKey};
 // exactly.
 const SETTER_SLACK_M: f64 = 1.0e-6;
 
-/// One wall face along a road seam: from `a` to `b` (tile-local XZ, metres from the tile
-/// origin, the road on the left of `a -> b`), standing from `bottom` (the seam's height at each
-/// end) to `top` (world heights, metres). Faces along a seam share their ends bitwise.
+/// One wall face along a seam: from `a` to `b` (tile-local XZ, metres from the tile origin, the
+/// lower side on the left of `a -> b`: the road for a conflict wall and a portal's headwall, the
+/// space under the bridge for an abutment), standing from `bottom` to `top` (world heights,
+/// metres): a conflict wall from the seam's height up to the wall top, a structure wall
+/// (`TERRAIN-07-C`, T22 4 (a)) between the seam's height and the graded ground. Faces along a
+/// seam share their ends bitwise.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WallFace {
     /// Start, tile-local XZ.
@@ -245,6 +248,77 @@ pub(super) fn build_walls(
                 bottom: [v.bottom as f32, w.bottom as f32],
                 top: [v.top as f32, w.top as f32],
             });
+        }
+    }
+}
+
+/// Builds the structure walls of `tile` (`TERRAIN-07-C`, `docs/terrain.md` T22 4 (a)) onto
+/// `out`, after its conflict walls: along every wall seam (`walls`, key order) its part in the
+/// tile, with vertices at its crossings with the lattice `xs` x `zs` and its cell diagonals,
+/// and where the lattice surface crosses the seam's height between two of them (both are linear
+/// there, so the crossing is exact). A face joins two consecutive vertices where the surface
+/// differs from the seam's height at either end, between the two: a portal's headwall where the
+/// graded ground stands above a tunnel's mouth, an abutment where it stands below a bridge's.
+/// The terrain is masked on the road's side of the seam, so the faces close its cut edge
+/// against the structure's mouth row. A headwall runs along the seam (the road on its left), an
+/// abutment against it (the space under the bridge on its left). `heights(i, j)` is the
+/// finished sample at lattice point `(i, j)`. `O(wall seams x their crossings)`.
+pub(super) fn build_structure_walls(
+    walls: &[Seam],
+    tile: TileKey,
+    (xs, zs): (&[f64], &[f64]),
+    heights: impl Fn(usize, usize) -> f64,
+    scratch: &mut WallScratch,
+    out: &mut Vec<WallFace>,
+) {
+    let origin = tile.origin();
+    let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
+    let local = |v: WallVertex| [(v.x - origin[0]) as f32, (v.z - origin[1]) as f32];
+    // Each vertex's `bottom` is the seam's height and its `top` the lattice surface there.
+    let face = |v: WallVertex, w: WallVertex| WallFace {
+        a: local(v),
+        b: local(w),
+        bottom: [v.bottom.min(v.top) as f32, w.bottom.min(w.top) as f32],
+        top: [v.bottom.max(v.top) as f32, w.bottom.max(w.top) as f32],
+    };
+    for seam in walls {
+        let Some(range) = clip(seam, rect) else {
+            continue;
+        };
+        crossings(seam, range, xs, zs, &mut scratch.params);
+        scratch.vertices.clear();
+        for (k, &t) in scratch.params.iter().enumerate() {
+            let (x, z, h) = point_at(seam, t);
+            let surface = surface_at(xs, zs, &heights, x, z);
+            if let Some(&last) = scratch.vertices.last() {
+                let (fa, fb) = (last.top - last.bottom, surface - h);
+                if (fa < 0.0 && fb > 0.0) || (fa > 0.0 && fb < 0.0) {
+                    let previous = scratch.params[k - 1];
+                    let (cx, cz, ch) = point_at(seam, previous + (t - previous) * (fa / (fa - fb)));
+                    scratch.vertices.push(WallVertex {
+                        x: cx,
+                        z: cz,
+                        bottom: ch,
+                        top: ch,
+                        walled: false,
+                    });
+                }
+            }
+            scratch.vertices.push(WallVertex {
+                x,
+                z,
+                bottom: h,
+                top: surface,
+                walled: surface != h,
+            });
+        }
+        for pair in scratch.vertices.windows(2) {
+            let [v, w] = [pair[0], pair[1]];
+            if !(v.walled || w.walled) {
+                continue;
+            }
+            let above = v.top > v.bottom || w.top > w.bottom;
+            out.push(if above { face(v, w) } else { face(w, v) });
         }
     }
 }

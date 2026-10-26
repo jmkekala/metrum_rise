@@ -676,6 +676,112 @@ fn walls_close_the_step_at_the_lower_road() {
     }
 }
 
+// `TERRAIN-07-C` T22 4 (a), the graded wall test that replaces the exact cut's tunnel portal CDT
+// test: a road running into a hill continued by a tunnel, and into a valley by a bridge, both
+// level at the mouth. Along every wall seam of the structure's mouth row, every point sampled
+// each 5 cm where the rendered `GL0` ground differs from the seam is covered by a face of its
+// tile between the seam's height and that ground (1 mm), its lower side on the face's left: a
+// headwall along the seam over the tunnel, an abutment against it under the bridge. Pruned walls
+// equal the walls over every seam.
+#[test]
+fn structure_mouths_wall_the_graded_ground() {
+    use crate::simulation::network::types::EdgeClass;
+    for (class, slope) in [(EdgeClass::Tunnel, 0.5f32), (EdgeClass::Bridge, -0.5)] {
+        let mut graph = RegionGraph::new();
+        let nodes = [-90.0f32, 0.0, 90.0]
+            .map(|x| graph.add_node(Vector3::new(x, 0.0, 0.0), NodeType::Junction));
+        let polyline = |from: f32| {
+            (0..=9)
+                .map(|i| Vector3::new(from + 10.0 * i as f32, 0.0, 0.0))
+                .collect()
+        };
+        graph.add_edge(road_edge(nodes[0], nodes[1], polyline(-90.0), 7.0));
+        let mut structure = road_edge(nodes[1], nodes[2], polyline(0.0), 7.0);
+        structure.class = class;
+        graph.add_edge(structure);
+        graph.rebuild_intersection_clips();
+        let roadbed = compiled(&graph);
+        // Level to 20 m before the mouth, then a 1:2 hill or valley.
+        let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
+        for z in 0..53 {
+            for x in 0..53 {
+                let wx = x as f32 * 10.0 - 260.0;
+                terrain.set_height(x, z, slope * (wx + 20.0).max(0.0) / HEIGHT_SCALE);
+            }
+        }
+        let tiles = window_tiles();
+        let bake =
+            |evaluation| bake_with(&terrain, &roadbed, &NoSites, &tiles, Level::Gl0, evaluation);
+        let payloads = bake(Evaluation::Lanes);
+        let surface = GradedSurface {
+            terrain: &terrain,
+            roadbed: &roadbed,
+            sites: &NoSites,
+        };
+        let mut scratch = QueryScratch::default();
+        let (mut walled, mut highest) = (0, 0.0f64);
+        for payload in &payloads {
+            let origin = payload.tile.origin();
+            let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
+            let (mut pieces, mut segments, mut walls) = (Vec::new(), Vec::new(), Vec::new());
+            roadbed.grounded_seams_in_bounds(rect, &mut pieces, &mut segments);
+            roadbed.wall_seams_in_bounds(rect, &pieces, &mut walls);
+            for [a, b] in &walls {
+                let steps = ((b.x - a.x).hypot(b.z - a.z) / 0.05).ceil().max(1.0) as usize;
+                for step in 0..=steps {
+                    let t = step as f64 / steps as f64;
+                    let along = |p: f64, q: f64| p + (q - p) * t;
+                    let (x, z, h) = (along(a.x, b.x), along(a.z, b.z), along(a.y, b.y));
+                    if TileKey::at(x, z) != payload.tile {
+                        continue;
+                    }
+                    let ground = surface.ground_height_at(x, z, &mut scratch);
+                    if (ground - h).abs() <= 1e-3 {
+                        continue;
+                    }
+                    let (lx, lz) = ((x - origin[0]) as f32, (z - origin[1]) as f32);
+                    let (face, s) = payload
+                        .walls
+                        .iter()
+                        .find_map(|face| {
+                            let (dx, dz) = (face.b[0] - face.a[0], face.b[1] - face.a[1]);
+                            let s = ((lx - face.a[0]) * dx + (lz - face.a[1]) * dz)
+                                / (dx * dx + dz * dz);
+                            let off = (face.a[0] + dx * s - lx).hypot(face.a[1] + dz * s - lz);
+                            ((-1e-4..=1.0 + 1e-4).contains(&s) && off < 2e-3)
+                                .then_some((face, s.clamp(0.0, 1.0)))
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("{class:?}: no wall face at ({x}, {z}), wall {}", ground - h)
+                        });
+                    let lerp = |pair: [f32; 2]| f64::from(pair[0] + (pair[1] - pair[0]) * s);
+                    let (bottom, top) = (lerp(face.bottom), lerp(face.top));
+                    assert!(
+                        (bottom - h.min(ground)).abs() < 1e-3 && (top - h.max(ground)).abs() < 1e-3,
+                        "{class:?} at ({x}, {z}): face {bottom}..{top}, seam {h}, ground {ground}"
+                    );
+                    let forward = f64::from(face.b[0] - face.a[0]) * (b.x - a.x)
+                        + f64::from(face.b[1] - face.a[1]) * (b.z - a.z)
+                        > 0.0;
+                    assert_eq!(forward, ground > h, "{class:?}: the lower side on the left");
+                    walled += 1;
+                    highest = highest.max((ground - h).abs());
+                }
+            }
+        }
+        // The rendered surface on the row interpolates the samples beside it: the hidden inside
+        // rule's on the road's side, the cones of the chains' end corners beyond (1.0 m above
+        // the tunnel's mouth, 0.47 m below the bridge's).
+        assert!(
+            walled > 50 && highest > 0.25,
+            "{class:?}: {walled} walled points, highest {highest}"
+        );
+        for (pruned, full) in payloads.iter().zip(&bake(Evaluation::Unpruned)) {
+            assert_eq!(pruned.walls, full.walls, "{class:?} {:?}", pruned.tile);
+        }
+    }
+}
+
 // The site fixture's high pad walls the road beside it, closed like a road's.
 #[test]
 fn a_pad_above_a_road_walls_it() {

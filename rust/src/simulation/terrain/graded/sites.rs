@@ -569,28 +569,52 @@ fn for_each_span_point(
     }
 }
 
-// The x range of lattice row `z` within which a point can lie within `band` of the edge: the
-// x range of the edge's part within `band` of the row in z, grown by `band`, and padded. A
-// point of the row within `band` of the edge has its nearest point there, at most `band` away
-// in x. `None` where no part of the edge comes that close in z.
+// The x range of lattice row `z` within which a point can lie within `band` of the edge
+// (`TERRAIN-07-C` round 3, T21): the row's chord through the edge's band, the capsule of the
+// segment's discs at its ends and the strip between them. The capsule is convex, so its chord
+// is the hull of the three parts' chords. Padded for rounding: every point the exact test
+// `segment_at(..).distance < band` accepts lies inside, so the span only bounds the pairs
+// visited. `None` where the row misses the band.
 fn band_span(edge: &[f64; 4], band: f64, z: f64) -> Option<(f64, f64)> {
     let [ax, az, bx, bz] = *edge;
-    let (lo, hi) = (z - band, z + band);
-    let (t0, t1) = if az == bz {
-        if az < lo || az > hi {
-            return None;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut hull = |a: f64, b: f64| {
+        if a <= b {
+            (lo, hi) = (lo.min(a), hi.max(b));
         }
-        (0.0, 1.0)
-    } else {
-        let (ta, tb) = ((lo - az) / (bz - az), (hi - az) / (bz - az));
-        (ta.min(tb).max(0.0), ta.max(tb).min(1.0))
     };
-    if t0 > t1 {
-        return None;
+    // The discs at the ends.
+    for (cx, cz) in [(ax, az), (bx, bz)] {
+        let dz = z - cz;
+        if dz.abs() <= band {
+            let half = (band * band - dz * dz).sqrt();
+            hull(cx - half, cx + half);
+        }
     }
-    let (xa, xb) = (ax + (bx - ax) * t0, ax + (bx - ax) * t1);
-    let pad = band + SURFACE_PAD_M + 1.0e-9 * (ax.abs().max(bx.abs()));
-    Some((xa.min(xb) - pad, xa.max(xb) + pad))
+    // The strip: projection parameter in [0, 1] and distance to the line within the band, both
+    // linear in x along the row.
+    let (dx, dz) = (bx - ax, bz - az);
+    let len2 = dx * dx + dz * dz;
+    if len2 > 0.0 {
+        let range = |offset: f64, slope: f64, low: f64, high: f64| {
+            if slope == 0.0 {
+                return (low..=high)
+                    .contains(&offset)
+                    .then_some((f64::NEG_INFINITY, f64::INFINITY));
+            }
+            let (p, q) = ((low - offset) / slope, (high - offset) / slope);
+            Some((p.min(q), p.max(q)))
+        };
+        // `t (x) = ((x - ax) dx + (z - az) dz) / len2`, `cross (x) = dx (z - az) - dz (x - ax)`.
+        let reach = band * len2.sqrt();
+        let along = range((-ax * dx + (z - az) * dz) / len2, dx / len2, 0.0, 1.0);
+        let across = range(dx * (z - az) + dz * ax, -dz, -reach, reach);
+        if let (Some((a0, a1)), Some((c0, c1))) = (along, across) {
+            hull(a0.max(c0), a1.min(c1));
+        }
+    }
+    let pad = SURFACE_PAD_M + 1.0e-9 * (ax.abs().max(bx.abs()).max(band));
+    (lo <= hi).then_some((lo - pad, hi + pad))
 }
 
 fn inside_box(area: [f64; 4], x: f64, z: f64, pad: f64) -> bool {

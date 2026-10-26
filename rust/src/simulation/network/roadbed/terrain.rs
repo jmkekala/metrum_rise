@@ -4,8 +4,9 @@
 //! loops, road on the left, from the outer chains of the pieces it touches. Chains join at their
 //! bit-identical mouth corners; the generic [`crate::simulation::terrain::rect_loops`] cuts the
 //! joined paths to the rectangle and joins their runs along its boundary, and orientation tells
-//! holes from outer boundaries. Bridge and tunnel spans publish no chains (`ROAD-68-F`).
-//! `O(S log S)` for `S` chain segments.
+//! holes from outer boundaries. Bridge and tunnel spans publish no chains (`ROAD-68-F`); a
+//! grounded piece closes its chains across each structure mouth it meets with a wall run
+//! (`TERRAIN-07-C`), which joins like a chain. `O(S log S)` for `S` chain segments.
 
 use super::query::PieceId;
 use super::system::{Piece, PublishedPiece};
@@ -20,10 +21,14 @@ use std::collections::BTreeMap;
 pub struct ChainSegment {
     /// The piece that owns the chain.
     pub piece: PieceId,
-    /// Index into the piece's [`super::PieceMesh::outer_chains`].
+    /// Index into the piece's [`super::PieceMesh::outer_chains`], or into its
+    /// [`super::PieceMesh::wall_runs`] for a wall segment.
     pub chain: u32,
     /// Segment index along the chain.
     pub segment: u32,
+    /// Whether the segment lies on a wall run across a structure mouth (`TERRAIN-07-C`): a
+    /// structure source, which may tie in with a retaining wall.
+    pub wall: bool,
 }
 
 /// One closed boundary of the grounded footprint inside a rectangle, road on its left: chain
@@ -34,9 +39,9 @@ pub type TerrainLoop = RectLoop<ChainSegment>;
 /// Why the loops of a rectangle cannot be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerrainLoopError {
-    /// A chain inside the rectangle ends (or starts) where no published grounded chain
-    /// continues: a failed node's gap, a node without a piece (bridge or tunnel terminal), or a
-    /// bridge or tunnel span (`ROAD-68-F`).
+    /// A chain inside the rectangle ends (or starts) where no published grounded chain or wall
+    /// run continues: a failed node's gap (a structure mouth's wall run closes the chains that
+    /// end at a bridge or tunnel, `TERRAIN-07-C`).
     OpenEnd {
         /// The piece whose chain is open.
         piece: PieceId,
@@ -97,7 +102,7 @@ impl ChainChanges {
             Piece::Span(span) => (span.mesh(), false),
             Piece::Node(node) => (node.mesh(), true),
         };
-        for chain in mesh.outer_chains() {
+        for chain in mesh.outer_chains().iter().chain(mesh.wall_runs()) {
             let vertices = chain.vertices();
             let segments = vertices.len().saturating_sub(1).max(1);
             for index in 0..segments {
@@ -139,10 +144,11 @@ fn segment_bits(mesh: &PieceMesh, start: u32, end: u32) -> [u64; 6] {
     [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits)
 }
 
-// One piece chain: its vertex range in the gathered points and its owner.
+// One piece chain or wall run: its vertex range in the gathered points and its owner.
 struct Chain {
     piece: PieceId,
     index: u32,
+    wall: bool,
     start: usize,
     end: usize,
 }
@@ -167,7 +173,10 @@ pub fn terrain_loops(
             continue;
         }
         let mesh = roadbed.pieces[&id].mesh();
-        for (index, chain) in mesh.outer_chains().iter().enumerate() {
+        let chain_runs = mesh.outer_chains().iter().map(|chain| (chain, false));
+        let wall_runs = mesh.wall_runs().iter().map(|run| (run, true));
+        let walls = mesh.outer_chains().len();
+        for (index, (chain, wall)) in chain_runs.chain(wall_runs).enumerate() {
             let start = points.len();
             points.extend(
                 chain
@@ -175,9 +184,11 @@ pub fn terrain_loops(
                     .iter()
                     .map(|&v| mesh.positions()[v as usize]),
             );
+            let index = if wall { index - walls } else { index };
             chains.push(Chain {
                 piece: id,
                 index: index as u32,
+                wall,
                 start,
                 end: points.len(),
             });
@@ -233,6 +244,7 @@ pub fn terrain_loops(
                     piece: record.piece,
                     chain: record.index,
                     segment: (vertex - record.start) as u32,
+                    wall: record.wall,
                 });
                 (points[vertex], segment)
             }));
