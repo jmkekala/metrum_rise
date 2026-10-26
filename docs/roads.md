@@ -2465,7 +2465,11 @@ These need a user decision; work that does not depend on them continues.
       `METRUM_DEBUG=0`; 02:33-03:05: `benchmark_road_preview_stages` with `RAYON_NUM_THREADS=4`,
       C F15 F R R F F15 C twice, then `benchmark_populated_commit_breakdown` with
       `METRUM_COMMIT_TIERS=0,10000,30000,100000` and `RAYON_NUM_THREADS=8`, C F R R F C. Every
-      payload vertex count and every breakdown digest is equal across the binaries.
+      payload vertex count and every breakdown digest is equal across the binaries. A
+      `cargo check` run without the build slot or timing lock (`TERRAIN-07-C` round 2,
+      02:50:40-02:51:30) overlapped one of these breakdown runs, so that run's timings are not
+      acceptance evidence; the commit-breakdown conclusion rests on the other runs, and
+      `ROAD-68-K17`'s same-session timing on `road` `ef12bf26` re-measures it.
       | Preview stage p50, ms | C | F15 | R | F |
       | --- | --- | --- | --- | --- |
       | `sloped_t` plan | 0.461-0.471 | 0.476-0.494 | 0.489-0.491 | 0.482-0.486 |
