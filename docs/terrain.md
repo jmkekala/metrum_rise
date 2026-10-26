@@ -3571,6 +3571,16 @@ For a world point `p`, in `f64`:
    levels' bands differ, so the uncorrected rule made a covered sample's value depend on the bins
    and the level. Only coarse levels' triangles reach such samples (deeper than 2 m), and the mask
    discards them.
+   Correction (`TERRAIN-07-D` round 5): at a structure mouth a covered sample strictly nearer a
+   wall seam ([T22](#terrain-07-open-questions) 4 (a)) than to every road seam, within the
+   level's band, takes the ground's value `max(L, min(b, U))` instead (`grade::continues_ground`;
+   in the bake a post-pass over every window seam, so pruned equals unpruned by construction; its
+   distance and nearest seam stay the road's, so the mask is unchanged). Along a road seam the
+   arm continues the seam's cone, so the cut edge is the seam; a mouth row has no cone, and the
+   arm (up to 0.354 m above the road on a fill) lifted the cut edge along `bridge_t`'s row and the
+   terrain beyond it above the deck, where the structure wall then stood as a dark face. With the
+   ground's value on both sides of the row the cut edge is the graded ground the abutment closes.
+   Within one cell of a row's corner, a covered vertex nearer the side road seam keeps the arm.
 8. **Delta.** `delta = g - b`, rounded to `f32` once.
 9. **Footprint distance.** The distance to the nearest road seam within the level's band `B`
    (`B` where there is none), negative for `Road`. Pads are not part of the mask.
@@ -3857,6 +3867,13 @@ to point).
   within the terrain share of `ROAD-68`'s 2.0 ms Godot stage: the rebaked tiles of an edit wait
   until the last of them arrives. Streaming installs closest first, within 1.0 ms of the main
   thread, like the existing patch installs.
+- **Work on changes, not frames** (`TERRAIN-07-D` round 5). `terrain.gd` keeps the renderer's
+  resident patch entries (node, material, rectangle, LOD step, payload generation) as patches
+  become resident, leave, commit a payload or change LOD step, with a residency revision, and a
+  material revision that advances wherever a parameter the cells copy is set. The renderer
+  refreshes patch lists, desired tiles, evictions, requests and material syncs only when a
+  revision, a camera move of 8 m or finished work (a list, a failure, a request left over) asks
+  for it, so an idle frame polls Rust once and compares two numbers: `O(changes)` per frame.
 - **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
