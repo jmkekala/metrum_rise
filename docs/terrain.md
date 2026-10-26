@@ -5292,10 +5292,20 @@ seam's side and drawn on the other, and a base cell of the base variant draws it
 failures, so both variants compile and draw. Clippy `--all-targets`: the 59-warning baseline set
 exactly. `terrain_overlay_shader_test.gd` under Forward+ fails two canopy assertions with
 `road`'s unsplit shader as well (same run, control): renderer-dependent and not a regression;
-`run.sh` runs it in the Compatibility renderer.
+`run.sh` runs it in the Compatibility renderer, where it passes. Open: in the Compatibility
+renderer (`run.sh`'s rendered block, Mesa under Xvfb) a program of the cell shaders fails to link
+with too many fragment texture samplers and the base cells draw nothing; the graded cell's half of
+the test passes there, the base cell's is checked in Forward+ only until round 2 fixes it (the
+game renders with Forward+). The graded samplers are declared only in the graded variant.
 Fixed on the way: packing slots under the jobs lock stalled Godot's poll for 18.7 ms in the debug
 library (the bake now packs off the lock), and `MultiMesh` instances start with a zero transform
 (the cells now set the identity).
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/`: 4,370 (4,117 on `road`;
+`residency.rs` 235, `query.rs` +14). Godot renderer: `terrain_graded_tiles.gd` 618,
+`terrain_cells.gdshaderinc` 409, `terrain_surface.gdshaderinc` 1,002 (the 908-line shader it
+replaces, plus the cell vertex path, the mask call and the four debug views), `terrain.gd` +41.
+The node bridge `graded_tiles_api.rs` 530.
 
 **Finding (open, roadbed).** At the sloped T's east road end the grounded top triangles reach
 1.09 mm past the outer chain (tile (1, 0), tile-local (0.011, 2.977)): coverage and the chain

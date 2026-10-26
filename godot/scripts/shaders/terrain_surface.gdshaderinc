@@ -518,8 +518,9 @@ void vertex() {
 #ifdef TERRAIN_GRADED
 	bool cells = true;
 #else
-	bool cells = cell_mode == 2;
-	if (cell_mode == 1) {
+	// A float: the Compatibility renderer drew no base cell with an int instance uniform.
+	bool cells = cell_mode > 1.5;
+	if (cell_mode > 0.5 && !cells) {
 		// This patch's cells draw it: the PlaneMesh collapses to one point and draws nothing.
 		VERTEX = vec3(0.0);
 	}

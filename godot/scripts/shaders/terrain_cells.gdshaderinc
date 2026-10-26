@@ -14,9 +14,10 @@
 // Per node (instance uniforms, so the base cells share the patch's material): 0 a PlaneMesh
 // patch, 1 a PlaneMesh whose cells draw it (collapsed), 2 a node of cells. The patch rectangle
 // and the base lattice's world origin (the negative half extents), world hm.
-instance uniform int cell_mode = 0;
+instance uniform float cell_mode = 0.0;
 instance uniform ivec4 cell_patch_rect_hm = ivec4(0);
 instance uniform ivec2 cell_lattice_anchor_hm = ivec2(0);
+#ifdef TERRAIN_GRADED
 // Graded slot pools per level (GL0, GL1, GL2, GL3): texels with apron, and the rows (seams from
 // 0, material edges from the level's seam capacity), one layer per slot.
 uniform sampler2DArray graded_texels_0 : filter_nearest, repeat_disable;
@@ -28,6 +29,7 @@ uniform sampler2DArray graded_rows_1 : filter_nearest, repeat_disable;
 uniform sampler2DArray graded_rows_2 : filter_nearest, repeat_disable;
 uniform sampler2DArray graded_rows_3 : filter_nearest, repeat_disable;
 uniform ivec4 graded_seam_capacity = ivec4(512, 512, 256, 128);
+#endif
 
 const int CELL_SIDE_HM = 128;
 
@@ -132,6 +134,8 @@ int cell_index_hm(int code, int idx, int spacing, int phase) {
 		: first + cell_inner_lines(spacing, phase) * spacing;
 }
 
+// The graded variant's slot reads.
+#ifdef TERRAIN_GRADED
 vec4 cell_texel(int level, ivec2 index, int slot) {
 	ivec3 at = ivec3(index, slot);
 	if (level == 0) {
@@ -166,6 +170,7 @@ vec4 cell_row(int level, int index, int slot) {
 	}
 	return texelFetch(graded_rows_3, at, 0);
 }
+#endif
 
 // The base b(p) at a world point in hm, bilinear over the patch heightmap's texels in f32: the
 // exact sample on a base lattice point, the same expression for every cell of every variant.
@@ -244,6 +249,7 @@ ivec2 cell_vertex_position_hm(CellFrame frame, ivec2 k, int codes, int cell_hm) 
 	return clamp(p, cell_patch_rect_hm.xy - frame.origin_hm, cell_patch_rect_hm.zw - frame.origin_hm);
 }
 
+#ifdef TERRAIN_GRADED
 // The graded delta at a tile-frame position (hm): the texel itself on a lattice point (every
 // vertex but a GL3 one clamped to a patch side), else bilinear between the samples around it.
 float cell_delta_m(CellFrame frame, ivec2 p) {
@@ -407,3 +413,4 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 	}
 	return mask;
 }
+#endif

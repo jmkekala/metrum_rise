@@ -510,7 +510,7 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		node.set_instance_shader_parameter("cell_patch_rect_hm", rect_hm)
 		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
 	(nodes[CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
-	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2)
+	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
 	if cells.get("node_parent", null) != patch_node:
 		for node: Node in nodes:
 			if node.get_parent() != null:
@@ -519,7 +519,7 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		cells["node_parent"] = patch_node
 	_sync_material(cells, patch["material"])
 	# The PlaneMesh collapses while the cells draw the patch.
-	patch_node.set_instance_shader_parameter("cell_mode", 1)
+	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
 
 ## Returns a patch to its PlaneMesh and its cell resources to the pool. Called when the patch
 ## recycles or loses its last graded tile.
@@ -527,7 +527,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	var cells: Dictionary = patch_cells.get(key, {})
 	patch_cells.erase(key)
 	if patch_node != null:
-		patch_node.set_instance_shader_parameter("cell_mode", 0)
+		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
 	if cells.is_empty():
 		return
 	for node: MultiMeshInstance3D in cells["nodes"]:
