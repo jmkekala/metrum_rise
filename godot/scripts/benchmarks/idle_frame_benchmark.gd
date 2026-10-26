@@ -95,8 +95,9 @@ func run(bench: Node) -> void:
 	bench._metrics = _report
 
 	# Read when the world loads (terrain.gd rebuild_from_simulation_state).
-	_terrain.graded_tiles_enabled = OS.get_environment("METRUM_IDLE_BENCH_TERRAIN") != "exact"
-	_report["terrain"] = "graded" if _terrain.graded_tiles_enabled else "exact"
+	var graded := OS.get_environment("METRUM_IDLE_BENCH_TERRAIN") != "exact"
+	_terrain.set("graded_tiles_enabled", graded)
+	_report["terrain"] = "graded" if graded else "exact"
 	var load_start_us := Time.get_ticks_usec()
 	print("[IDLE_BENCH] LOAD_BEGIN t_us=%d" % load_start_us)
 	var save_path := OS.get_environment("METRUM_IDLE_BENCH_SAVE_PATH")
