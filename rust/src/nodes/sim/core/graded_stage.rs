@@ -153,6 +153,10 @@ impl GradedPreview {
 /// whose inputs equal the restored ones; until the job finishes it has none to adopt and bakes.
 pub(crate) struct GradedUndo {
     kept: Arc<OnceLock<Result<TileStage, BakeError>>>,
+    // When the job started and finished (benchmarks: the frames after the commit share the
+    // pool with it).
+    #[cfg(test)]
+    span: Arc<OnceLock<(Instant, Instant)>>,
 }
 
 impl GradedUndo {
@@ -165,6 +169,12 @@ impl GradedUndo {
     #[cfg(test)]
     pub(crate) fn wait(&self) -> Result<&TileStage, BakeError> {
         self.kept.wait().as_ref().map_err(|error| *error)
+    }
+
+    /// When the job started and finished, once it has.
+    #[cfg(test)]
+    pub(crate) fn span(&self) -> Option<(Instant, Instant)> {
+        self.span.get().copied()
     }
 }
 
@@ -261,7 +271,14 @@ impl SimCore {
         let terrain = self.heightmap.clone();
         let kept = Arc::new(OnceLock::new());
         let result = Arc::clone(&kept);
+        #[cfg(test)]
+        let (span, job_span) = {
+            let span = Arc::new(OnceLock::new());
+            (Arc::clone(&span), span)
+        };
         crate::thread_pools::spawn(move || {
+            #[cfg(test)]
+            let started = Instant::now();
             let staged = match &sites {
                 Some(sites) => stage_tiles(
                     &terrain,
@@ -274,9 +291,15 @@ impl SimCore {
                 .map(|(stage, _)| stage),
                 None => Err(BakeError::SitesUnavailable),
             };
+            #[cfg(test)]
+            let _ = job_span.set((started, Instant::now()));
             let _ = result.set(staged);
         });
-        Some(GradedUndo { kept })
+        Some(GradedUndo {
+            kept,
+            #[cfg(test)]
+            span,
+        })
     }
 
     /// Undo's graded tiles once the roadbed is restored and published (`TERRAIN-07-E`): the

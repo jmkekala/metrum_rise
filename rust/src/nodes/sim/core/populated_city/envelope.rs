@@ -716,7 +716,7 @@ fn road_commit_run(
     let mut city = PopulatedCity::build(residents);
     city.core.transit_network.delay_cch_jobs_for_test(delay);
     let start = trunk_branch_starts(&city.core)[0];
-    let outcome = commit_trunk_branch(&mut city.core, start, std::time::Instant::now());
+    let outcome = commit_trunk_branch(&mut city.core, start, std::time::Instant::now(), None);
     assert!(outcome.committed, "{}", outcome.rejection_reason);
     assert!(city.core.transit_network.cch_adoption_pending());
     if save_in_hold {
