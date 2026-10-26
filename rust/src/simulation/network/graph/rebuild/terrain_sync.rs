@@ -8,6 +8,7 @@ use crate::simulation::network::grade::{
 };
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
+use std::collections::HashSet;
 
 const TERRAIN_SYNC_SMOOTH_ITERATIONS: usize = 50;
 const TERRAIN_SYNC_SMOOTH_LAMBDA: f32 = 0.5;
@@ -137,6 +138,6 @@ impl RegionGraph {
         // from the re-graded control polylines, as an edit's solve does (`ROAD-68` invariant 6,
         // open question 11 (c)). O(nodes + edges), like the sync.
         let nodes = (0..self.nodes.len() as u32).collect();
-        self.finalize_junction_endpoint_profiles(&nodes, Some(terrain));
+        self.finalize_junction_endpoint_profiles(&nodes, Some(terrain), &mut HashSet::new());
     }
 }

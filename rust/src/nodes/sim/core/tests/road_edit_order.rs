@@ -13,7 +13,7 @@ use super::*;
 use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::simulation::network::roadbed::{PieceMesh, RoadVec3};
 use godot::prelude::Vector2;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) const ARM_M: f32 = 80.0;
 
@@ -181,7 +181,7 @@ fn assert_profiles_fresh(name: &str, core: &SimCore) {
     let mut fresh = core.region_graph.clone();
     fresh.rebuild_intersection_clips();
     let nodes = (0..fresh.node_count() as u32).collect();
-    fresh.finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap));
+    fresh.finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap), &mut HashSet::new());
     for index in 0..fresh.edge_count() {
         let (edge, solved) = (core.region_graph.edge(index), fresh.edge(index));
         if edge.deleted {

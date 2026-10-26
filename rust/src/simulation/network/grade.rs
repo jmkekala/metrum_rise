@@ -9,7 +9,6 @@ use super::validate::visit_grades;
 use crate::config;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
-use std::cell::RefCell;
 
 /// The steep-street warning: the stroke solve's design grade, above which the road tool warns
 /// without refusing.
@@ -49,8 +48,8 @@ pub(crate) struct SourcePoint {
 
 /// The buffers of one construction within the grade and the source band, reused between
 /// constructions so that one allocates nothing once the buffers have grown to its profile
-/// (`ROAD-68-K16`): the stroke solve keeps one per thread beside its own buffers, the junction
-/// profile solve takes this thread's ([`GradeScratch::with`]) and the terrain sync one per sync.
+/// (`ROAD-68-K16`): the stroke solve and the junction profile solve keep one per thread beside
+/// their own buffers (`ROAD-68-K17`), and the terrain sync one per sync.
 #[derive(Default)]
 pub(crate) struct GradeScratch {
     /// The horizontal run from each point to the next.
@@ -65,23 +64,6 @@ pub(crate) struct GradeScratch {
     pub(crate) heights: Vec<f32>,
     /// The construction's last-to-first pass ([`construct_within_grade`]).
     pub(crate) backward: Vec<f32>,
-}
-
-thread_local! {
-    // One per thread: pool workers keep theirs between solves.
-    static SCRATCH: RefCell<GradeScratch> = RefCell::default();
-}
-
-impl GradeScratch {
-    /// Runs `construct` with this thread's scratch. The scratch is taken for the call, not
-    /// borrowed, so a construction nested on the same thread (a pool job stolen while it waits)
-    /// starts from empty buffers instead of failing a borrow.
-    pub(crate) fn with<R>(construct: impl FnOnce(&mut Self) -> R) -> R {
-        let mut scratch = SCRATCH.take();
-        let result = construct(&mut scratch);
-        SCRATCH.set(scratch);
-        result
-    }
 }
 
 /// The steepest segment of a profile ([`steepest_grade`]).

@@ -49,7 +49,12 @@ impl RegionGraph {
             return;
         }
 
-        let reindex_ids = self.surface_edges_touching_nodes(affected_nodes);
+        let mut reindex_ids = Vec::new();
+        self.surface_edges_touching_nodes_into(
+            affected_nodes.iter().copied(),
+            |node| affected_nodes.contains(&node),
+            &mut reindex_ids,
+        );
         for &edge_idx in &reindex_ids {
             self.remove_from_spatial_index(edge_idx);
         }
@@ -125,9 +130,17 @@ impl RegionGraph {
         (clip(true), clip(false))
     }
 
-    pub(super) fn surface_edges_touching_nodes(&self, affected_nodes: &HashSet<u32>) -> Vec<usize> {
-        let mut edge_ids = HashSet::new();
-        for &node_id in affected_nodes {
+    // The live road and footpath edges in the adjacency of each of `nodes` (as its valid node)
+    // with an end whose valid node `affected` accepts, sorted and unique, into `edge_ids`, which
+    // allocates only to grow.
+    pub(super) fn surface_edges_touching_nodes_into(
+        &self,
+        nodes: impl IntoIterator<Item = u32>,
+        affected: impl Fn(u32) -> bool,
+        edge_ids: &mut Vec<usize>,
+    ) {
+        edge_ids.clear();
+        for node_id in nodes {
             let valid_node = self.get_valid_node(node_id);
             let Some(adjacency) = self.adjacency.get(valid_node as usize) else {
                 continue;
@@ -143,15 +156,13 @@ impl RegionGraph {
                 }
                 let start_node = self.get_valid_node(edge.start_node);
                 let end_node = self.get_valid_node(edge.end_node);
-                if affected_nodes.contains(&start_node) || affected_nodes.contains(&end_node) {
-                    edge_ids.insert(edge_idx);
+                if affected(start_node) || affected(end_node) {
+                    edge_ids.push(edge_idx);
                 }
             }
         }
-
-        let mut edge_ids = edge_ids.into_iter().collect::<Vec<_>>();
         edge_ids.sort_unstable();
-        edge_ids
+        edge_ids.dedup();
     }
 
     pub(super) fn edge_profile_length_m(edge: &Edge) -> f32 {

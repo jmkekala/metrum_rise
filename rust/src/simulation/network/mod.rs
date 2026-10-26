@@ -411,9 +411,7 @@ impl TransitNetwork {
             // gameplay commits are bulk and finalize with the source terrain
             // (`finalize_road_geometry`), so these blends have no source band.
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            let profile_changed_edges =
-                graph.finalize_junction_endpoint_profiles(&affected_nodes, None);
-            affected_edges.extend(profile_changed_edges);
+            graph.finalize_junction_endpoint_profiles(&affected_nodes, None, &mut affected_edges);
             zoning.mark_cell_lots_for_roads(graph, affected_edges.iter().copied());
             self.lane_system
                 .rebuild_edges_incremental(graph, &affected_edges);

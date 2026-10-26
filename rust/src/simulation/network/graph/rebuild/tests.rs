@@ -51,7 +51,11 @@ fn corridor_ranking_does_not_depend_on_edge_creation_order() {
             ids.iter().all(|&id| graph.edge(id).start_clip > 0.0),
             "the Y lays out"
         );
-        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
+        graph.finalize_junction_endpoint_profiles(
+            &HashSet::from([center]),
+            None,
+            &mut HashSet::new(),
+        );
         ids.map(|id| graph.edge(id).physical_geometry.clone())
     };
     assert_eq!(physical([0, 1, 2]), physical([2, 1, 0]));
@@ -75,7 +79,11 @@ fn final_junction_profile_preserves_a_supported_hillside_corridor() {
             graph.add_edge(edge);
         }
         graph.rebuild_intersection_clips();
-        graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
+        graph.finalize_junction_endpoint_profiles(
+            &HashSet::from([center]),
+            None,
+            &mut HashSet::new(),
+        );
         let plane = graph
             .solved_junction_endpoint_profile_plane(center)
             .unwrap();
@@ -108,7 +116,7 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
     }
     let nodes = HashSet::from([center]);
     graph.rebuild_intersection_clips();
-    graph.finalize_junction_endpoint_profiles(&nodes, None);
+    graph.finalize_junction_endpoint_profiles(&nodes, None, &mut HashSet::new());
     let solved: Vec<_> = graph
         .edges()
         .iter()
@@ -126,7 +134,7 @@ fn topology_only_dirtiness_does_not_reblend_solved_junction_profiles() {
         .map(|edge| (edge.geometry.clone(), edge.physical_geometry.clone()))
         .collect();
     for _ in 0..3 {
-        graph.finalize_junction_endpoint_profiles(&nodes, None);
+        graph.finalize_junction_endpoint_profiles(&nodes, None, &mut HashSet::new());
         for (edge, (control, physical)) in graph.edges().iter().zip(&solved) {
             assert_eq!(&edge.geometry, control);
             assert_eq!(edge.physical_geometry.len(), physical.len());
@@ -474,7 +482,8 @@ fn final_junction_profile_limits_small_source_adjustments_and_materializes_suppo
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
     let controls_before = [0, 1].map(|edge| graph.edge(edge).geometry.clone());
-    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
+    let mut changed_edges = HashSet::new();
+    graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None, &mut changed_edges);
 
     assert_eq!(changed_edges.len(), 2);
     let plane = graph
@@ -664,7 +673,11 @@ fn pass_through_bridge_approach_profile_does_not_exceed_authored_grade_cap() {
     graph.rebuild_intersection_clips();
     let authored_profile = graph.edge(approach_idx).physical_geometry.clone();
 
-    graph.finalize_junction_endpoint_profiles(&HashSet::from([center, east]), None);
+    graph.finalize_junction_endpoint_profiles(
+        &HashSet::from([center, east]),
+        None,
+        &mut HashSet::new(),
+    );
 
     assert_eq!(
         graph.edge(approach_idx).physical_geometry,
@@ -745,7 +758,8 @@ fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
     graph.add_edge(opposite_edge);
     // Clips come from the junction layouts and set the solve's hard zones.
     graph.rebuild_intersection_clips();
-    let changed_edges = graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None);
+    let mut changed_edges = HashSet::new();
+    graph.finalize_junction_endpoint_profiles(&HashSet::from([center]), None, &mut changed_edges);
     assert!(
         changed_edges.contains(&2) && changed_edges.contains(&3),
         "both branch surfaces must meet the preserved primary corridor; unchanged control authority does not imply unchanged physical geometry"

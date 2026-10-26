@@ -742,7 +742,11 @@ impl SimCore {
             let graph = &mut core.region_graph;
             graph.delete_edge_locally(edge_idx);
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            graph.finalize_junction_endpoint_profiles(&ends, Some(&core.heightmap));
+            graph.finalize_junction_endpoint_profiles(
+                &ends,
+                Some(&core.heightmap),
+                &mut HashSet::new(),
+            );
             HashSet::new()
         });
         if let Err(rejection) = tried {
@@ -774,9 +778,12 @@ impl SimCore {
             .rebuild_intersection_clips_for_nodes(&affected_nodes);
         // The arms left at both ends re-derive their profiles (`ROAD-68` invariant 6); every
         // edge the solve derives touches one of them, so it is in the undo record and rebuilt.
-        let changed = self
-            .region_graph
-            .finalize_junction_endpoint_profiles(&ends, Some(&self.heightmap));
+        let mut changed = HashSet::new();
+        self.region_graph.finalize_junction_endpoint_profiles(
+            &ends,
+            Some(&self.heightmap),
+            &mut changed,
+        );
         debug_assert!(changed.is_subset(&affected_edges));
         for chunk in old_chunks {
             self.transit_network.cch_dirty_chunks.insert(chunk);
@@ -1910,9 +1917,12 @@ impl SimCore {
         self.region_graph.move_node(node_id, pos);
         self.region_graph
             .rebuild_intersection_clips_for_nodes(affected_nodes);
-        let changed = self
-            .region_graph
-            .finalize_junction_endpoint_profiles(affected_nodes, Some(&self.heightmap));
+        let mut changed = HashSet::new();
+        self.region_graph.finalize_junction_endpoint_profiles(
+            affected_nodes,
+            Some(&self.heightmap),
+            &mut changed,
+        );
         debug_assert!(changed.is_subset(affected_edges));
     }
 
@@ -2231,8 +2241,13 @@ impl SimCore {
             core.region_graph
                 .rebuild_intersection_clips_for_nodes(&nodes);
             // A crossing moves the mouths, so the node's arms re-derive their profiles.
-            core.region_graph
-                .finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap))
+            let mut changed = HashSet::new();
+            core.region_graph.finalize_junction_endpoint_profiles(
+                &nodes,
+                Some(&core.heightmap),
+                &mut changed,
+            );
+            changed
         };
         let checkpoint =
             match self.try_graph_edit(&edges, &HashSet::from([node_id, node]), toggle) {

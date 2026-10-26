@@ -294,7 +294,8 @@ pub(super) fn rebuild_loaded_graph_runtime(
         // Saves before `ROAD-68-C` hold clips from the legacy setback rule; the solve pins each
         // arm up to its layout mouth, which the clip must hold first.
         graph.rebuild_intersection_clips_for_nodes(&nodes);
-        let changed = graph.finalize_junction_endpoint_profiles(&nodes, terrain);
+        let mut changed = std::collections::HashSet::new();
+        graph.finalize_junction_endpoint_profiles(&nodes, terrain, &mut changed);
         transit_network.mark_surface_dirty_from_sets(&changed, &nodes);
         transit_network.roadbed.compile_dirty(graph);
         crate::debug_log!(

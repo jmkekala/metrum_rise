@@ -239,7 +239,11 @@ road past 1:3 is open, `roads.md` question 37). The Kuopio reference is re-recor
 commit window for the `surface` rise `ROAD-68-K15` had recorded as layout without a profile, and
 makes saves byte-deterministic (lane connections were written in hash-map order; `simulation.md`
 "Save bytes"); the Kuopio reference is re-pinned for that row order alone (`roads.md` questions
-37 and 39). `TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
+37 and 39). `ROAD-68-K17` (branch `road68-K17`) makes the junction profile solve, which runs
+on every preview pose and commit, allocation-free the same way: its working collections stay
+with each thread (163,224 allocations in the preview benchmark before, 11,619 after, none of
+them working memory), with bitwise-equal products (`roads.md` question 37).
+`TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
 re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
 `ROAD-68-E`, `ROAD-68-F` or `ROAD-68-K14` one, no Godot script).

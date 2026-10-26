@@ -49,7 +49,7 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
     }
     let graph = &mut core.region_graph;
     graph.rebuild_intersection_clips();
-    graph.finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap));
+    graph.finalize_junction_endpoint_profiles(&nodes, Some(&core.heightmap), &mut HashSet::new());
     core.transit_network
         .mark_surface_dirty_for_nodes(&core.region_graph, &nodes);
     core.transit_network

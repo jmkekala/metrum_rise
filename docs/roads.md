@@ -372,7 +372,12 @@ compute no crossing or corner geometry of their own
   before. A road edit plan solves on a local excerpt of the graph, which must hold that 2-ring:
   every edge near the stroke and two rings of incidence around them, and a plan whose affected
   nodes or the far nodes of the edges they re-derive lack an arm in the excerpt is refused
-  (`ROAD-68-E` part 2 round 3; with one ring a far node lost its pin, open question 8).
+  (`ROAD-68-E` part 2 round 3; with one ring a far node lost its pin, open question 8). The solve,
+  and the single-node solves of `check_node` and the plane readers, run in each thread's buffers
+  (`ProfileSolveScratch`: the derived edges, the incidents by node, the samples, the pins, the
+  profile being derived, its end distances and a `grade::GradeScratch`), taken for a solve, so
+  once they have grown a solve allocates only where a changed profile outgrows its edge's
+  buffer, and in the R-tree's re-index (`ROAD-68-K17`, [open question 37](#road-68-open-questions)).
 - **Grade (`ROAD-68-K14`, [open questions 37 and 39](#road-68-open-questions)).** The stroke
   solve relaxes each 6 m span's 16% design grade towards the ground's slope only up to 33%, and
   builds the profile inside the bounds of its pins (its ends and the carriageways it meets) and
@@ -2454,9 +2459,9 @@ These need a user decision; work that does not depend on them continues.
       (1,928) and the support's list of the pieces it read (960, `StrokeSupport::height_at`,
       question 16); the junction profile solve's own allocations (`pinned_physical_profile`, the
       profile copy, endpoint distances and support knots: 84,242 in C and in F alike) predate the
-      rule and stay open. Products are bitwise equal: both probes, both Kuopio quality tests, and
-      the re-recorded reference, whose every saved profile point keeps its bits and storage order
-      (question 39).
+      rule and stay open (removed by `ROAD-68-K17`, below). Products are bitwise equal: both
+      probes, both Kuopio quality tests, and the re-recorded reference, whose every saved profile
+      point keeps its bits and storage order (question 39).
     - **Timing (`ROAD-68-K16`, fresh, 2026-10-26).** Release lib test binaries (`$TEST_BINARY`,
       16 codegen units): C = `road` `4710f59b` (before the rule), F15 = `ROAD-68-K15`'s timed binary
       (`road68-K15` on `ac0480cc`, with its since-dropped rollback), R = `road` `b3627ada` (gate
@@ -2469,7 +2474,9 @@ These need a user decision; work that does not depend on them continues.
       `cargo check` run without the build slot or timing lock (`TERRAIN-07-C` round 2,
       02:50:40-02:51:30) overlapped one of these breakdown runs, so that run's timings are not
       acceptance evidence; the commit-breakdown conclusion rests on the other runs, and
-      `ROAD-68-K17`'s same-session timing on `road` `ef12bf26` re-measures it.
+      `ROAD-68-K17`'s same-session timing on `road` `ef12bf26` re-measures it (below: P, before
+      `ROAD-68-K15`, against C, `ROAD-68-K16`'s code, shows no commit stage beyond the same code's
+      run-to-run spread).
       | Preview stage p50, ms | C | F15 | R | F |
       | --- | --- | --- | --- | --- |
       | `sloped_t` plan | 0.461-0.471 | 0.476-0.494 | 0.489-0.491 | 0.482-0.486 |
@@ -2507,6 +2514,112 @@ These need a user decision; work that does not depend on them continues.
       function, so layout by the profile, and gone in F (surface functions 4.7% fewer
       instructions than C and 1.2% fewer than R; all commit-window functions 2.8% fewer than C
       and 0.6% more than R).
+    - **The allocation-free junction profile solve (`ROAD-68-K17`).** The junction profile solve
+      runs twice on every preview pose (both planning passes) and on every commit, and
+      `check_node` solves each checked bend and junction again, so its per-solve collections were
+      the same hot-path bug as the stroke solve's. Heaptrack (release lib test binaries, the
+      preview stages benchmark on 4 workers, 962 previewed poses and 1,928 solves; allocation
+      counts, not timing), C = `road` `ef12bf26`, F = `road68-K17`: the solve and the node checks'
+      single-node solves allocate 163,224 times in C (170 a pose): the support knots' end
+      distances 58,604, the endpoint samples' distances 17,332, the surface-edge sets 16,378, the
+      incident lists and their node map 16,376, the pin map, node ids, phase partition and changed
+      set 12,524, the node solves' samples, corridor list, authority set and plane offsets 11,556,
+      the profile copy and the changed profiles 8,668, the knot inserts 8,304, the R-tree's
+      removals 6,742 and the blend distances 6,740. F allocates 11,619 (12.1 a pose), none of them
+      a working collection: 6,742 in `rstar`'s removal (its traversal stack, one per edge the solve
+      takes out of the R-tree and puts back), 3,736 where a changed profile outgrows its edge's
+      buffer (the preview's excerpt copies each profile at its length, so the edge a stroke adds
+      grows by its support knots), 1,084 where the caller's dirty-edge set grows to take the
+      changed edges (counted under the caller in C), and 57 first growths of the threads'
+      buffers; the node checks allocate nothing. The solve's buffers stay with each thread
+      (`ProfileSolveScratch` in `graph/rebuild/junction_profiles.rs`, taken for a solve as the
+      stroke solve's are): the derived edges and their nodes as sorted lists instead of hash
+      sets, the incidents of all nodes in one list sorted by node, attachment and incident order
+      instead of a map of per-node lists, the pins in a slot per derived edge end instead of a map,
+      the samples, the profile being derived with its end distances, and the blend construction's
+      `GradeScratch` (now the solve's, so `GradeScratch::with` and its thread-local are gone);
+      the best authority corridor is kept as the candidates are ranked instead of sorting a list,
+      a sample's distance is accumulated along the control polyline instead of building the end
+      distances, and a changed profile is copied into the edge's own buffer. The finalizer
+      inserts the changed edges into the caller's set (`finalize_junction_endpoint_profiles(nodes,
+      terrain, changed)`) instead of returning a new one. The plan as a whole allocates 450,266
+      times in F against 604,765 in C. Left: the R-tree removals (re-indexing only the changed
+      edges would change the tree's shape, whose traversal order `get_edges_near_aabb`'s callers
+      use, so it is not behaviour-preserving), the changed profiles (output), and in the callers
+      the clip rebuild's edge list, mouth map and R-tree removals (13,680) and `check_node`'s node
+      plans (224,448 in `junction_rejection`, roadbed code; 247,558 in C). Products are bitwise
+      equal (debug, fresh): both probes, the narrow-marks digest, the Kuopio quality tests (9
+      passed, 7 ignored), the save determinism test, and the Kuopio reference re-recorded twice
+      at `3c1dbc27…` with the fixture unchanged; every payload vertex count and breakdown digest
+      below is equal.
+    - **Timing (`ROAD-68-K17`, fresh, 2026-10-26).** Release lib test binaries (`$TEST_BINARY`,
+      16 codegen units): P = `road` `5b138f8e` (before `ROAD-68-K15` and `ROAD-68-K16`), C =
+      `road` `ef12bf26`, F = `road68-K17`'s final code. Both locks, `taskset -c
+      0,2,4,6,8,10,12,14`, no restic, `METRUM_DEBUG=0`, no compiler, cargo or Godot process at any
+      10 s sample of the session; 05:22-05:54: `benchmark_road_preview_stages` with
+      `RAYON_NUM_THREADS=4`, C F F C twice, then `benchmark_populated_commit_breakdown` with
+      `METRUM_COMMIT_TIERS=0,10000,30000,100000` and `RAYON_NUM_THREADS=8`, P C F F C P. Every
+      payload vertex count and every breakdown digest is equal across the binaries.
+      | Preview stage p50, ms | C | F |
+      | --- | --- | --- |
+      | `sloped_t` plan | 0.470-0.480 | 0.474-0.480 |
+      | `sloped_branch` plan | 0.417-0.424 | 0.410-0.416 |
+      | `sloped_t` roadbed | 0.319-0.331 | 0.322-0.327 |
+      | `sloped_t` payload | 0.378-0.404 | 0.378-0.381 |
+      | `sloped_t` terrain | 4.242-4.367 | 4.444-4.453 |
+      | `sloped_branch` terrain | 4.570-4.604 | 4.644-4.707 |
+      | `sloped_t` total | 5.413-5.559 | 5.614-5.623 |
+      The plan stage, which holds the solve, is unchanged on `sloped_t` and 0.001-0.014 ms lower
+      on `sloped_branch`, about what the 158 allocations a pose it no longer makes cost. The
+      terrain stage reads 0.08-0.21 ms higher on `sloped_t` and 0.04-0.14 ms on `sloped_branch` in
+      every run, in code no gate changed (the legacy terrain CDT, which `TERRAIN-07` deletes).
+      Attributed by profile
+      (the preview stages under `perf record -c 200000`, user cycles and instructions, the same
+      binaries and workers, C F C F, not acceptance; each leaf sample counted at its innermost
+      inlined source function, `llvm-addr2line -i`, so a function counts the same inlined or
+      not): F retires 6,950 / 7,516 more instruction samples and spends 6,042 / 8,065 more cycle
+      samples than C over the run; 4,440 / 4,485 of those cycle samples lie in `rstar`'s point
+      generators (the envelope arithmetic of the terrain CDT's line R-trees: `rstar`'s `point.rs`
+      with `core`'s array drain and `try_trait`, out of line and scalar in F, inline as SSE2
+      intrinsics in C, which retire 7,227 / 7,096 fewer instruction samples there), and another
+      1,292 / 1,715 in `core`'s pointer, iterator and slice helpers whose inlining moved; the
+      terrain CDT's, `spade`'s and `robust`'s own code takes 167 / 519 more cycle samples (0.2%,
+      0.5%) and 2,722 / 2,151 fewer instruction samples. The same work with the same products
+      compiled differently: the codegen-unit partition under question 36, which keeps this
+      layout case as recorded and leaves the legacy CDT to `TERRAIN-07`.
+      | Commit breakdown, ms (two runs each) | P | C | F |
+      | --- | --- | --- | --- |
+      | 10k sample 0 plan | 0.437 / 0.489 | 0.425 / 0.578 | 0.435 / 0.438 |
+      | 10k sample 0 surface | 87.34 / 86.00 | 84.75 / 86.56 | 84.61 / 89.61 |
+      | 10k sample 0 commit | 107.36 / 107.17 | 105.21 / 106.72 | 105.00 / 109.34 |
+      | 30k sample 1 plan | 0.408 / 0.452 | 0.406 / 0.425 | 0.490 / 0.398 |
+      | 30k sample 1 surface | 52.31 / 49.90 | 53.54 / 54.01 | 50.24 / 53.99 |
+      | 30k sample 1 commit | 58.49 / 55.98 | 59.98 / 60.71 | 56.64 / 60.39 |
+      | 100k sample 0 plan | 0.542 / 0.565 | 0.593 / 0.460 | 0.564 / 0.547 |
+      | 100k sample 0 surface | 75.99 / 72.30 | 76.96 / 74.62 | 75.42 / 76.79 |
+      | 100k sample 0 commit | 95.63 / 92.12 | 96.86 / 92.41 | 95.65 / 96.25 |
+      The commit's plan stage shows no change beyond C's spread at any tier for F, and none for C
+      against P. The clean re-measure of `ROAD-68-K15` and `ROAD-68-K16`'s commit stages (P
+      against C; the coordinator's addition, since an unlocked `cargo check` overlapped one of
+      `ROAD-68-K16`'s breakdown runs, above): no stage rises beyond the same code's run-to-run
+      spread. At `ROAD-68-K15`'s three samples the surface stage reads 10k sample 0 C at or below
+      P, 100k sample 0 C 74.62-76.96 against P 72.30-75.99, and 30k sample 1 C 53.54-54.01
+      against P 49.90-52.31, where F, whose surface code is C's, reads 50.24 and 53.99; the 30k
+      sample 0 surface is bimodal in every binary (P 83.66 / 126.51, C 121.79 / 125.96, F 121.80
+      / 84.81). F's surface lies within C's spread except one 10k sample 0 run (89.61; its other
+      run 84.61, below C's).
+    - **Gate checks (`ROAD-68-K17`, fresh).** `cargo clippy --all-targets`: the baseline's 59
+      warnings, none added (run before a token-identical reformat of the new code). `./run.sh
+      --test` on the final code with `DISPLAY` and `WAYLAND_DISPLAY` unset (06:00-06:19): exit 0;
+      debug lib 1,944 passed, 0 failed, 172 ignored; integration 4 passed; every Godot script
+      passes, no `SCRIPT ERROR`; skipped only the shader global probe and the rendered vegetation
+      tests (headless). The ignored gate tests are `road`'s (`TERRAIN-07` only), and `roadbed/`'s
+      production code is unchanged (its test fixtures take the finalizer's new argument).
+      `graph/rebuild/junction_profiles.rs` grows from 1,185 to 1,357 lines: the scratch and its
+      incident list (about 90 with their comments), the per-end pin slots, the single-node solve
+      shared by `check_node` and the plane readers, and the test-only copy of the profile
+      derivation that returns a vector; `grade.rs` loses `GradeScratch::with` and its
+      thread-local.
 38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
     decided 2026-10-25 (user): (a), re-record the reference network with today's code, after
     question 37. The re-recorded network is interim: the user will provide a new Kuopio save once
