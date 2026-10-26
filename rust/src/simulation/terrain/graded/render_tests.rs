@@ -27,11 +27,19 @@ fn imod(a: i32, b: i32) -> i32 {
 }
 
 fn code_spacing_hm(code: i32, cell_hm: i32) -> i32 {
-    if code < 3 { 1 << code } else { cell_hm << (code - 3) }
+    if code < 3 {
+        1 << code
+    } else {
+        cell_hm << (code - 3)
+    }
 }
 
 fn code_phase_hm(code: i32, spacing: i32, anchor_hm: i32, origin_hm: i32) -> i32 {
-    if code < 3 { 0 } else { imod(anchor_hm - origin_hm, spacing) }
+    if code < 3 {
+        0
+    } else {
+        imod(anchor_hm - origin_hm, spacing)
+    }
 }
 
 fn vertex_hm(code: i32, k: i32, spacing: i32, phase: i32) -> i32 {
@@ -55,7 +63,11 @@ fn first_line_hm(spacing: i32, phase: i32) -> i32 {
 
 fn inner_lines(spacing: i32, phase: i32) -> i32 {
     let first = first_line_hm(spacing, phase);
-    if first < SIDE_HM { (SIDE_HM - 1 - first) / spacing + 1 } else { 0 }
+    if first < SIDE_HM {
+        (SIDE_HM - 1 - first) / spacing + 1
+    } else {
+        0
+    }
 }
 
 fn index_at(code: i32, p: i32, spacing: i32, phase: i32) -> i32 {
@@ -79,7 +91,11 @@ fn index_hm(code: i32, idx: i32, spacing: i32, phase: i32) -> i32 {
     let first = first_line_hm(spacing, phase);
     let end_index = 2 + inner_lines(spacing, phase);
     if idx <= 0 {
-        if phase == 0 { -spacing } else { phase - spacing }
+        if phase == 0 {
+            -spacing
+        } else {
+            phase - spacing
+        }
     } else if idx == 1 {
         0
     } else if idx < end_index {
@@ -126,12 +142,20 @@ fn vertex_position_hm(
     if p[0] == 0 || p[0] == SIDE_HM {
         let side = if p[0] == 0 { sides[0] } else { sides[1] };
         let s = code_spacing_hm(side, cell_hm);
-        p[1] = snap_hm(p[1], s, code_phase_hm(side, s, anchor_hm[1], frame.origin_hm[1]));
+        p[1] = snap_hm(
+            p[1],
+            s,
+            code_phase_hm(side, s, anchor_hm[1], frame.origin_hm[1]),
+        );
     }
     if p[1] == 0 || p[1] == SIDE_HM {
         let side = if p[1] == 0 { sides[2] } else { sides[3] };
         let s = code_spacing_hm(side, cell_hm);
-        p[0] = snap_hm(p[0], s, code_phase_hm(side, s, anchor_hm[0], frame.origin_hm[0]));
+        p[0] = snap_hm(
+            p[0],
+            s,
+            code_phase_hm(side, s, anchor_hm[0], frame.origin_hm[0]),
+        );
     }
     p
 }
@@ -200,7 +224,11 @@ fn segment_at(seg: [f32; 4], p: [f32; 2], index: i32) -> Hit {
     }
     let (ex, ez) = (p[0] - q[0], p[1] - q[1]);
     let d = (ex * ex + ez * ez).sqrt();
-    let line = if len2 > 0.0 { cross.abs() / len2.sqrt() } else { 0.0 };
+    let line = if len2 > 0.0 {
+        cross.abs() / len2.sqrt()
+    } else {
+        0.0
+    };
     Hit {
         distance: d,
         line_distance: line,
@@ -269,8 +297,16 @@ fn bake_level(
     level: Level,
 ) -> Vec<TilePayload> {
     let mut out = Vec::new();
-    bake_tiles_with(terrain, roadbed, &NoSites, tiles, level, Evaluation::Lanes, &mut out)
-        .expect("tiles bake");
+    bake_tiles_with(
+        terrain,
+        roadbed,
+        &NoSites,
+        tiles,
+        level,
+        Evaluation::Lanes,
+        &mut out,
+    )
+    .expect("tiles bake");
     out
 }
 
@@ -285,13 +321,19 @@ fn cell_lattices_are_the_bake_lattices() {
     for (name, _, terrain) in fixtures() {
         let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
         let (mut xs, mut zs) = (Vec::new(), Vec::new());
-        for level in LEVELS.into_iter().chain([2, 4, 8].map(|step| Level::Gl3 { step })) {
+        for level in LEVELS
+            .into_iter()
+            .chain([2, 4, 8].map(|step| Level::Gl3 { step }))
+        {
             let code = level_code(level);
             for tile in window_tiles() {
                 lattice(&terrain, tile, level, &mut xs, &mut zs);
                 let frame = frame(code, tile, anchor, cell);
                 let [ox, oz] = tile.origin();
-                assert!(xs.len() <= slot_side(level, f64::from(cell) * 0.5), "{name}: slot side");
+                assert!(
+                    xs.len() <= slot_side(level, f64::from(cell) * 0.5),
+                    "{name}: slot side"
+                );
                 for (axis, coords, origin) in [(0, &xs, ox), (1, &zs, oz)] {
                     for (idx, &world) in coords.iter().enumerate() {
                         let hm = (world - origin) * 2.0;
@@ -403,9 +445,10 @@ fn the_exact_mask_equals_coverage() {
                         // agree to the f32 tile frame except at the sloped T's east road end,
                         // where the triangles reach 1.09 mm past the chain (2026-10-26, open in
                         // the gate D record): points within 2 mm of a chain are the chain's.
-                        let near_chain = payload.seams.iter().any(|&s| {
-                            segment_at(s, p, 0).distance < 2e-3
-                        });
+                        let near_chain = payload
+                            .seams
+                            .iter()
+                            .any(|&s| segment_at(s, p, 0).distance < 2e-3);
                         if near_chain {
                             continue;
                         }
@@ -438,7 +481,10 @@ fn the_exact_mask_equals_coverage() {
                 }
             }
             assert!(tested > 0);
-            assert_eq!(wrong, 0, "{name} {level:?}: {wrong} of {tested} points; first: {first}");
+            assert_eq!(
+                wrong, 0,
+                "{name} {level:?}: {wrong} of {tested} points; first: {first}"
+            );
         }
     }
 }
@@ -451,8 +497,15 @@ fn patch_tile_lists_hold_every_tile_that_renders_graded() {
         let roadbed = compiled(&graph);
         // Two patch-like rectangles, one on tile borders and one off them.
         for rect in [[-128.0, -128.0, 128.0, 128.0], [-110.0, -97.0, 93.0, 121.0]] {
-            graded_tiles_in_rect(&terrain, &roadbed, &NoSites, rect, &mut scratch, &mut listed)
-                .expect("list");
+            graded_tiles_in_rect(
+                &terrain,
+                &roadbed,
+                &NoSites,
+                rect,
+                &mut scratch,
+                &mut listed,
+            )
+            .expect("list");
             assert!(listed.is_sorted(), "{name}: sorted");
             for level in LEVELS {
                 let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
@@ -504,7 +557,11 @@ fn site_tiles_are_listed() {
     .expect("bake");
     for payload in &payloads {
         if payload.texels.iter().any(|&texel| texel_renders(texel)) {
-            assert!(listed.contains(&payload.tile), "{:?} not listed", payload.tile);
+            assert!(
+                listed.contains(&payload.tile),
+                "{:?} not listed",
+                payload.tile
+            );
         }
     }
 }
@@ -530,14 +587,20 @@ fn packed_slots_hold_the_payload_bitwise() {
             let [width, depth] = payload.samples;
             for j in 0..depth {
                 for i in 0..width {
-                    assert_eq!(read(&texels, j * side + i), payload.texels[j * width + i].map(f32::to_bits));
+                    assert_eq!(
+                        read(&texels, j * side + i),
+                        payload.texels[j * width + i].map(f32::to_bits)
+                    );
                 }
             }
             for (index, seam) in payload.seams.iter().enumerate() {
                 assert_eq!(read(&rows, index), seam.map(f32::to_bits));
             }
             for (index, edge) in payload.edges.iter().enumerate() {
-                assert_eq!(read(&rows, level.seam_capacity() + index), edge.map(f32::to_bits));
+                assert_eq!(
+                    read(&rows, level.seam_capacity() + index),
+                    edge.map(f32::to_bits)
+                );
             }
         }
     }

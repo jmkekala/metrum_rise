@@ -107,10 +107,7 @@ pub fn graded_tiles_in_rect(
     let edges = scratch.sites.edges();
     for tile in scratch.tiles.iter_mut().filter(|tile| !tile.graded) {
         tile.graded = edges.iter().any(|&[ax, az, bx, bz]| {
-            meets(
-                [ax.min(bx), az.min(bz), ax.max(bx), az.max(bz)],
-                tile.rect,
-            )
+            meets([ax.min(bx), az.min(bz), ax.max(bx), az.max(bz)], tile.rect)
         });
     }
     for tile in scratch.tiles.iter_mut().filter(|tile| !tile.graded) {
@@ -209,23 +206,22 @@ pub fn pack_slot(payload: &TilePayload, side: usize, texels: &mut Vec<u8>, rows:
     for j in 0..depth.min(side) {
         for i in 0..width.min(side) {
             let at = (j * side + i) * TEXEL_BYTES;
-            put_texel(&mut texels[at..at + TEXEL_BYTES], payload.texels[j * width + i]);
+            put_texel(
+                &mut texels[at..at + TEXEL_BYTES],
+                payload.texels[j * width + i],
+            );
         }
     }
     let seam_capacity = payload.level.seam_capacity();
     rows.clear();
     rows.resize(slot_row_texels(payload.level) * TEXEL_BYTES, 0);
-    let row_texels = payload
-        .seams
-        .iter()
-        .enumerate()
-        .chain(
-            payload
-                .edges
-                .iter()
-                .enumerate()
-                .map(|(index, edge)| (seam_capacity + index, edge)),
-        );
+    let row_texels = payload.seams.iter().enumerate().chain(
+        payload
+            .edges
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| (seam_capacity + index, edge)),
+    );
     for (index, &texel) in row_texels {
         let at = index * TEXEL_BYTES;
         put_texel(&mut rows[at..at + TEXEL_BYTES], texel);

@@ -71,9 +71,9 @@ func _run() -> void:
 			continue
 		_expect(after[name] == created[name], "an edit must create no %s: %s -> %s" % [name, created[name], after[name]])
 	_expect(int(after["materials_created"]) <= graded.patch_cells.size() + 4, "cell materials are pooled per patch")
-	print("graded tile install ms max %.3f, uploads %d, installed %d, pool bytes %d" % [
-		float(counters["install_ms_max"]), int(counters["uploads"]), int(counters["installed"]),
-		int(counters["pool_bytes"])])
+	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d" % [
+		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
+		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"])])
 
 	# Far away every tile is evicted and every slot freed.
 	var far := _resident_patches(host, layout, world_size, 1)
@@ -143,11 +143,15 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	var tiles: Array[Vector2i] = GradedTiles._patch_tiles(patch["rect"])
 	var total := 0
 	var nodes: Array = cells["nodes"]
+	# The headless renderer keeps no MultiMesh custom data; the renderer's own record of what it
+	# wrote stands for it.
+	var instances: Array = cells["instances"]
 	for index in nodes.size():
 		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
-		total += multimesh.visible_instance_count
-		for instance in multimesh.visible_instance_count:
-			var data := multimesh.get_instance_custom_data(instance)
+		var written: PackedColorArray = instances[index]
+		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
+		total += written.size()
+		for data in written:
 			var tile := Vector2i(int(data.r), int(data.b))
 			var codes := int(data.a)
 			var own := codes & 7

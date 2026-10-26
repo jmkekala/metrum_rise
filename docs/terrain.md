@@ -5247,8 +5247,10 @@ matrix are round 2's; the gate commit follows them. Fresh runs on this branch.
   discard) and `terrain_graded.gdshader` (`TERRAIN_GRADED`), and `terrain_cells.gdshaderinc`
   (lattices, stitching, clamping, the exact base, delta reads, the exact mask, the material
   class). Pools: per level a `Texture2DArray` for the texels and one for the rows, prewarmed at
-  setup, with one pooled `Image` per level rewritten by `set_data` and uploaded by
-  `update_layer`. Cells: per patch with graded tiles five `MultiMeshInstance3D` (the base cells
+  setup with 64, 192, 2,048 and 2,048 slots (`GL2` and `GL3` capped at the guaranteed array
+  depth, [T23](#terrain-07-open-questions)): 18.4, 15.8, 50.6 and 10.5 MB, 95 MB in all on 10 m
+  cells, with one pooled `Image` per level rewritten by `set_data` and uploaded by
+  `update_layer`; an exhausted pool is counted and logged and leaves the tile as it was. Cells: per patch with graded tiles five `MultiMeshInstance3D` (the base cells
   and `GL0`-`GL3`), instance custom data `(tile x, slot, tile z, codes)`, identity transforms; the
   base cells share the patch's material through instance uniforms (`cell_mode`, the patch
   rectangle and the base lattice anchor), the PlaneMesh collapses while its cells draw, and the

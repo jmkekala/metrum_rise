@@ -122,12 +122,14 @@ fn failure_label(failure: Failure) -> &'static str {
 // or the band, the bake's own window pad.
 fn tile_window(tile: TileKey, level: Level, cell_m: f64) -> [f64; 4] {
     let [x, z] = tile.origin();
-    let grow =
-        level.spacing_m(cell_m) + CAP_M.max(level.band_m(cell_m)) + 1.0 + SNAPSHOT_PAD_M;
+    let grow = level.spacing_m(cell_m) + CAP_M.max(level.band_m(cell_m)) + 1.0 + SNAPSHOT_PAD_M;
     [x - grow, z - grow, x + TILE_M + grow, z + TILE_M + grow]
 }
 
-fn patch_rect(terrain: &crate::simulation::terrain::TerrainSystem, patch: (usize, usize)) -> Option<[f64; 4]> {
+fn patch_rect(
+    terrain: &crate::simulation::terrain::TerrainSystem,
+    patch: (usize, usize),
+) -> Option<[f64; 4]> {
     terrain
         .render_patch_world_bounds(patch.0, patch.1)
         .map(|(a, b, c, d)| [a, b, c, d].map(f64::from))
@@ -136,13 +138,23 @@ fn patch_rect(terrain: &crate::simulation::terrain::TerrainSystem, patch: (usize
 impl GradedInputs {
     // Takes the snapshot under `try_lock`: `None` when the core is busy, its roadbed does not
     // match the graph yet, or its site index is being rebuilt.
-    fn take(core: &Mutex<SimCore>, windows: impl Fn(&crate::simulation::terrain::TerrainSystem) -> Vec<[f64; 4]>) -> Option<Self> {
-        let core = SimulationNode::try_lock_shared_core(core)?;
-        let roadbed = &core.transit_network.roadbed;
-        if !roadbed.is_current() {
+    fn take(
+        core: &Mutex<SimCore>,
+        windows: impl Fn(&crate::simulation::terrain::TerrainSystem) -> Vec<[f64; 4]>,
+    ) -> Option<Self> {
+        let mut core = SimulationNode::try_lock_shared_core(core)?;
+        if !core.transit_network.roadbed.is_current() {
             return None;
         }
-        let sites = core.allocator.graded_site_snapshot(windows(&core.heightmap))?;
+        // The site chunk index is derived and rebuilt on demand, as the refined terrain
+        // payloads prepare it.
+        let zone_cell_m = core.config.zone_cell_m;
+        core.allocator
+            .prepare_building_site_query_index(zone_cell_m);
+        let sites = core
+            .allocator
+            .graded_site_snapshot(windows(&core.heightmap))?;
+        let roadbed = &core.transit_network.roadbed;
         Some(Self {
             terrain: core.heightmap.clone(),
             roadbed: roadbed.clone(),
@@ -174,7 +186,14 @@ fn bake_level(
     let side = slot_side(pool_level, cell_m);
     BAKED.with_borrow_mut(|baked| {
         let mut outcomes: Vec<Result<(), BakeError>> = Vec::with_capacity(tiles.len());
-        match bake_tiles(&inputs.terrain, &inputs.roadbed, &inputs.sites, &tiles, level, baked) {
+        match bake_tiles(
+            &inputs.terrain,
+            &inputs.roadbed,
+            &inputs.sites,
+            &tiles,
+            level,
+            baked,
+        ) {
             Ok(()) => outcomes.resize(tiles.len(), Ok(())),
             Err(_) => {
                 // Rare: a representation error. Bake one by one to tell the failing tiles apart.
@@ -195,15 +214,32 @@ fn bake_level(
                 *baked = payloads;
             }
         }
+        // Pack off the jobs lock, which Godot's poll takes on the main thread: only taking the
+        // pooled buffers and publishing the results hold it.
+        let mut buffers: Vec<(Vec<u8>, Vec<u8>)> = {
+            let mut state = jobs.lock().unwrap();
+            (0..requests.len())
+                .map(|_| (state.buffer(), state.buffer()))
+                .collect()
+        };
+        for ((outcome, payload), (texels, rows)) in
+            outcomes.iter().zip(baked.iter()).zip(buffers.iter_mut())
+        {
+            if outcome.is_ok() {
+                pack_slot(payload, side, texels, rows);
+            }
+        }
         let mut state = jobs.lock().unwrap();
-        for ((request, outcome), payload) in requests.iter().zip(outcomes).zip(baked.iter()) {
+        for (((request, outcome), payload), (texels, rows)) in
+            requests.iter().zip(outcomes).zip(baked.iter()).zip(buffers)
+        {
             state.tiles_in_flight.remove(&(request.tile, request.level));
             if let Err(error) = outcome {
                 state.failed_tiles.push((*request, Failure::Bake(error)));
+                state.buffers.push(texels);
+                state.buffers.push(rows);
                 continue;
             }
-            let (mut texels, mut rows) = (state.buffer(), state.buffer());
-            pack_slot(payload, side, &mut texels, &mut rows);
             state.tiles.push(TileResult {
                 request: *request,
                 samples: payload.samples,
@@ -255,7 +291,10 @@ impl SimulationNode {
     /// token)` triples. Returns one byte per request, 1 where it was queued; a patch already in
     /// flight, or one beyond the in-flight budget, is not, and Godot asks again later.
     #[func]
-    pub fn request_graded_patch_tiles(&mut self, flat_requests: PackedInt64Array) -> PackedByteArray {
+    pub fn request_graded_patch_tiles(
+        &mut self,
+        flat_requests: PackedInt64Array,
+    ) -> PackedByteArray {
         let mut requests = Vec::new();
         let mut accepted = Vec::new();
         {
@@ -301,17 +340,18 @@ impl SimulationNode {
                     let inputs = inputs.as_ref().ok_or(Failure::Busy)?;
                     let rect = patch_rect(&inputs.terrain, request.patch).ok_or(Failure::Busy)?;
                     let mut tiles = Vec::new();
-                    LISTS.with_borrow_mut(|scratch| {
-                        graded_tiles_in_rect(
-                            &inputs.terrain,
-                            &inputs.roadbed,
-                            &inputs.sites,
-                            rect,
-                            scratch,
-                            &mut tiles,
-                        )
-                    })
-                    .map_err(Failure::Bake)?;
+                    LISTS
+                        .with_borrow_mut(|scratch| {
+                            graded_tiles_in_rect(
+                                &inputs.terrain,
+                                &inputs.roadbed,
+                                &inputs.sites,
+                                rect,
+                                scratch,
+                                &mut tiles,
+                            )
+                        })
+                        .map_err(Failure::Bake)?;
                     Ok(tiles)
                 })
                 .collect();
@@ -411,7 +451,9 @@ impl SimulationNode {
             dict.set("tiles", PackedInt32Array::from(flat.as_slice()));
             patches.push(&dict.to_variant());
         }
-        let take = usize::try_from(max_tiles).unwrap_or(0).min(jobs.tiles.len());
+        let take = usize::try_from(max_tiles)
+            .unwrap_or(0)
+            .min(jobs.tiles.len());
         let mut tiles = VarArray::new();
         let ready: Vec<TileResult> = jobs.tiles.drain(..take).collect();
         for result in ready {
@@ -441,23 +483,26 @@ impl SimulationNode {
                 let (code, step) = level_code(request.level);
                 (
                     "tile",
-                    [i64::from(request.tile.x), i64::from(request.tile.z), code, step],
+                    [
+                        i64::from(request.tile.x),
+                        i64::from(request.tile.z),
+                        code,
+                        step,
+                    ],
                     request.token,
                     failure,
                 )
             })
-            .chain(
-                std::mem::take(&mut jobs.failed_patches)
-                    .into_iter()
-                    .map(|(request, failure)| {
-                        (
-                            "patch",
-                            [request.patch.0 as i64, request.patch.1 as i64, 0, 0],
-                            request.token,
-                            failure,
-                        )
-                    }),
-            );
+            .chain(std::mem::take(&mut jobs.failed_patches).into_iter().map(
+                |(request, failure)| {
+                    (
+                        "patch",
+                        [request.patch.0 as i64, request.patch.1 as i64, 0, 0],
+                        request.token,
+                        failure,
+                    )
+                },
+            ));
         for (kind, keys, token, failure) in failures {
             let mut dict = VarDictionary::new();
             dict.set("kind", kind);

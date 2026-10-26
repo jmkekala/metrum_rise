@@ -64,6 +64,7 @@ func _cells(mesh: Mesh, material: ShaderMaterial, custom: Color, mode: int) -> M
 	multimesh.use_custom_data = true
 	multimesh.instance_count = 1
 	multimesh.mesh = mesh
+	multimesh.set_instance_transform(0, Transform3D.IDENTITY)
 	multimesh.set_instance_custom_data(0, custom)
 	multimesh.custom_aabb = AABB(Vector3(-40.0, -10.0, -40.0), Vector3(80.0, 20.0, 80.0))
 	var node := MultiMeshInstance3D.new()

@@ -70,6 +70,8 @@ var counters := {
 	"bake_failures": 0,
 	"install_ms_last": 0.0,
 	"install_ms_max": 0.0,
+	"poll_ms_max": 0.0,
+	"upload_ms_max": 0.0,
 }
 
 ## Reads the slot layout and prewarms the pools and cell meshes. `pool_slots` overrides the
@@ -222,7 +224,9 @@ func process(camera_position: Vector3, resident_patches: Dictionary) -> void:
 
 func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 	while true:
+		var poll_start_us := Time.get_ticks_usec()
 		var result: Dictionary = simulation_node.poll_graded_tile_results(POLL_BATCH)
+		counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(Time.get_ticks_usec() - poll_start_us) / 1000.0)
 		for list: Dictionary in result.get("patches", []):
 			var key := Vector2i(int(list["patch_x"]), int(list["patch_z"]))
 			patch_lists_requested.erase(key)
@@ -268,6 +272,7 @@ func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
 		MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(key)])
 		return
 	var slot: int = free.pop_back()
+	var upload_start_us := Time.get_ticks_usec()
 	var side := int(pool["side"])
 	var texel_image: Image = pool["texel_image"]
 	texel_image.set_data(side, side, false, Image.FORMAT_RGBAF, tile["texels"])
@@ -275,6 +280,7 @@ func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
 	var row_image: Image = pool["row_image"]
 	row_image.set_data(int(pool["row_texels"]), 1, false, Image.FORMAT_RGBAF, tile["rows"])
 	(pool["rows"] as Texture2DArray).update_layer(row_image, slot)
+	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
 	counters["uploads"] += 1
 	if installed.has(key):
 		_free_slot(installed[key])
@@ -471,6 +477,10 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	var counts := PackedInt32Array()
 	counts.resize(CELL_MESHES)
 	var nodes: Array = cells["nodes"]
+	# What each MultiMesh holds, kept beside it: per mesh the instance custom data written.
+	var instances: Array[PackedColorArray] = []
+	for index in CELL_MESHES:
+		instances.append(PackedColorArray())
 	for tile in tiles:
 		var own := _cell_code(tile, step)
 		var entry: Dictionary = installed.get(tile, {})
@@ -483,8 +493,11 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		codes |= _side_code(own, tile, tile + Vector2i(0, 1), origin.y + TILE_M, patch, resident_patches, 1) << 12
 		var slot := int(entry["slot"]) if not entry.is_empty() else -1
 		var multimesh: MultiMesh = (nodes[mesh_index] as MultiMeshInstance3D).multimesh
-		multimesh.set_instance_custom_data(counts[mesh_index], Color(tile.x, slot, tile.y, codes))
+		var custom := Color(tile.x, slot, tile.y, codes)
+		multimesh.set_instance_custom_data(counts[mesh_index], custom)
+		instances[mesh_index].append(custom)
 		counts[mesh_index] += 1
+	cells["instances"] = instances
 	for index in CELL_MESHES:
 		var node: MultiMeshInstance3D = nodes[index]
 		var multimesh := node.multimesh
@@ -535,6 +548,10 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
 		multimesh.use_custom_data = true
 		multimesh.instance_count = MAX_CELLS_PER_PATCH
+		# New instances start with a zero transform; the shader places the vertices, so every
+		# instance keeps the identity.
+		for instance in MAX_CELLS_PER_PATCH:
+			multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
 		multimesh.custom_aabb = aabb
 		multimesh.visible_instance_count = 0
 		counters["multimeshes_created"] += 1
