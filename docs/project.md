@@ -363,8 +363,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   road families without terrain: roads without sidewalks, mixed widths and profiles (a straight
   width or sidewalk change now gets a node piece with a taper, and the old span taper is gone),
   bridge decks and tunnel road pieces, and one triangle walk for the zoning and field overlap
-  checks. Bridge abutments, tunnel portals and building sites moved to `TERRAIN-07`; until then a
-  bridge or tunnel cannot be built from a road. Tests that need later gates are disabled until
+  checks. Bridge abutments, tunnel portals and building sites moved to `TERRAIN-07`; since
+  `TERRAIN-07-C` round 3 a bridge or tunnel can be built from a road again. Tests that need later gates are disabled until
   then. A road's grade is at most 1:3 (refused as `road_too_steep`, warned from 16%), and
   profiles, junction blends and terrain-synced roads are built within it inside the 5 m
   source-delta band where their pins allow; the Kuopio reference save is re-recorded with today's
@@ -402,8 +402,11 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   exact levers (2.86-3.86 ms on the edits beside built-up blocks, still a miss at 2k, 10k and
   100k residents: `terrain.md` T21, open) and starts the structure ends
   (T22, decided under the user's delegation for review): a structure's free end is capped and a
-  node piece where only structures meet stands off the terrain; building a bridge or tunnel from a
-  road in play still waits for round 3's wall runs. See the
+  node piece where only structures meet stands off the terrain. Round 3 lets a bridge or tunnel be
+  built from a road in play: the road closes its edge across the structure's mouth with a wall
+  run, so the commit no longer rejects it, and the graded terrain walls the step there (an
+  abutment under a bridge's end, a headwall over a tunnel's); the bridge's own abutment face and
+  the opening over the tunnel's bore are round 4's, with T21. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
 

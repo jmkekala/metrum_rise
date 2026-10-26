@@ -540,8 +540,13 @@ The road side is rewritten:
   one outer loop).
 - **Open ends.** A chain end inside the rectangle with no published grounded chain to continue it
   fails the rectangle with `TerrainLoopError::OpenEnd` (`roadbed_chain_open_end`): a failed
-  node's gap (which also rejects the edit), a node without a piece (bridge and tunnel terminals)
-  and a bridge or tunnel span (open question 19). There is no repair.
+  node's gap (which also rejects the edit). There is no repair. Where a grounded piece meets a
+  bridge or tunnel (a node piece's mouth, or a pass-through's shared mouth row) it publishes a
+  wall run across the mouth row (`PieceMesh::wall_runs`, `TERRAIN-07-C` round 3,
+  [T22](terrain.md#terrain-07-open-questions) 3 (a)): the row's vertices from the end corner of
+  one chain to the start corner of the next, a curb pair once at its lower vertex. The loops join
+  through it like a chain, and its segments are structure sources with the retaining-wall policy
+  (`ChainSegment::wall`), so a structure built from a road commits (open question 19).
 - **Source tags.** `TerrainCdtRoadBoundarySource` keeps `BuildingSiteBoundary`. Its span, node and
   handoff variants are replaced by one `RoadBoundary { piece, chain, segment, support }`, where
   `support` is grounded or structure (from the edge class) and carries the retaining-wall policy:
@@ -641,8 +646,9 @@ The road side is rewritten:
   count.
 - **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts belong to
   the terrain surface rewrite `TERRAIN-07` (user, 2026-10-25; its wall seams,
-  [T14](terrain.md#terrain-07-open-questions)); on the legacy terrain a road edit that joins a
-  structure is rejected with `roadbed_chain_open_end` (open question 19).
+  [T14](terrain.md#terrain-07-open-questions)). The grounded chains that end at a structure close
+  across its mouth with a wall run (open ends above), so the legacy terrain builds those patches
+  and the edit commits (`TERRAIN-07-C` round 3, open question 19).
 - **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
   terrain edits.
 
@@ -1559,6 +1565,16 @@ These need a user decision; work that does not depend on them continues.
       stands off the terrain; the grounded chains that end at a structure close across its mouth
       row through a wall run the roadbed publishes (T22 3 (a)), built in round 3, so until then
       the rejection below still stands.
+    - **`TERRAIN-07-C` round 3 (2026-10-26): the rejection is gone for bridges and tunnels.** A
+      grounded piece publishes a wall run across each structure mouth it meets
+      (`PieceMesh::wall_runs`: a node piece at a bridge or tunnel arm's mouth, a standard span at
+      a pass-through's shared mouth row), `terrain_loops` joins through it, and its segments are
+      structure sources. `a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo` draws a bridge
+      (6 m rise) and a tunnel (6 m fall) through the player's path from a T's side road end and
+      straight on from a road end, flat and on the 2.5% slope: all eight commit, publish one wall
+      run, and undo restores every piece bitwise. With the wall runs left out of the loops the
+      first case fails as before (`render_geometry_invalid roadbed_chain_open_end patch=(1,2)`).
+      A failed node's gap still fails its rectangle; that error stays.
     - **Until `TERRAIN-07` (measured by `ROAD-68-F` part 2, 2026-10-25).** Abutments and portals
       moved to `TERRAIN-07`, so the error stands on the legacy terrain: a bridge or tunnel stroke
       that joins a grounded road is rejected at the commit (`render_geometry_invalid
