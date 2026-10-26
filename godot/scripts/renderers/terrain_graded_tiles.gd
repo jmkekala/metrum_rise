@@ -350,10 +350,15 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 			for index in range(0, flat.size(), 2):
 				tiles.append(Vector2i(flat[index], flat[index + 1]))
 			_frame_lists += 1
-			if patch_lists.has(key) and patch_lists[key]["tiles"] == tiles:
+			var previous: Array = patch_lists.get(key, {}).get("tiles", [])
+			if patch_lists.has(key) and previous == tiles:
 				_frame_lists_same += 1
+			# The cells show the installed tiles of the patch's rectangle, not its list: a list
+			# rewrites them only when the patch has none yet or the list empties or fills
+			# (_rebuild_patch_cells); listed tiles install or evict on their own.
+			if not patch_cells.has(key) or previous.is_empty() != tiles.is_empty():
+				_dirty_patches[key] = true
 			patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
-			_dirty_patches[key] = true
 			_desired_dirty = true
 			# A list baked for an older generation is asked again.
 			_lists_dirty = true
