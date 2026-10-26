@@ -954,9 +954,12 @@ fn benchmark_populated_work_counts() {
 // `ROAD-68-K22`: each populated tier loads its city from this binary's saved snapshot
 // (`commit_city`); `COMMIT_FIXTURE` says where each city came from, `COMMIT_SETUP` where the
 // untimed setup went, and `COMMIT_PRODUCTS` lists the products two runs must share bitwise.
+// `ROAD-68-K24` (open question 50): the test-only checks are off, as in the economy runners, so
+// the reported stages and frames hold no verification work.
 #[test]
 #[ignore = "release ROAD-68-G commit breakdown; loads or builds the requested cities outside timing"]
 fn benchmark_populated_commit_breakdown() {
+    super::contract::timing_mode();
     for residents in commit_tiers() {
         let started = Instant::now();
         let (mut core, mut fixture) = commit_city(residents);

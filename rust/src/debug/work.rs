@@ -173,7 +173,8 @@ static CITY_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// Switches the operational hour's test-build consistency checks: the freight reservations
 /// against a fresh build, the household member lists against a rebuild and the published
 /// census's input supply. Ordinary tests keep them; the serialized timing runners
-/// (`PERF-01`, `PERF-07`) switch them off, so test-only work stays out of the timed frames.
+/// (`PERF-01`, `PERF-07`, the `ROAD-68-G` commit breakdown) switch them off, so test-only work
+/// stays out of the timed frames.
 #[cfg(test)]
 pub(crate) fn set_city_checks(enabled: bool) {
     CITY_CHECKS.store(enabled, std::sync::atomic::Ordering::Relaxed);

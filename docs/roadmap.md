@@ -264,6 +264,18 @@ with households on their way in planned the rest of its hour differently: save f
 them and the Kuopio reference is re-recorded (`roads.md` "Saved cities for the commit breakdown",
 `simulation.md` "Save bytes"). Open question 50: the breakdown runs the test build's whole-city
 checks.
+`ROAD-68-K24` (branch `road68-K24`) builds question 50's decision (a): the breakdown switches the
+test-only checks off through the economy runners' `contract::timing_mode`. Its landing session:
+products bitwise unchanged, the frames' agent time down by the lane check (up to 3.0 ms at 100k),
+no commit stage moved consistently, and the 100k commit meets 16.7 ms only in sample 2 (open). The
+populated city could not house the breakdown's default 1,300 and 13,000 tiers, at no commit
+since the fixture's first: its grid's width is floored to whole blocks, which can lose more area
+than its headroom; such a tier is now built one block wider and every other tier is unchanged
+(open question 55, decided by the coordinator under the user's delegation, for review). The
+wider 13,000 city exposed a fixture defect, fixed: carriers moved in at once kept a stale lane
+bucket entry. The loaded city's cell store holds fewer entries than a built one only because a
+build keeps empty generated chunks that a load rebuilds on demand; the products now count the
+store without them (`roads.md` "Commit breakdown without test-only checks").
 `ROAD-68-K19` (branch `road68-K19`)
 makes the roadbed's coverage predicate exact, the defect `TERRAIN-07-D` round 2 found: exact
 orientation tests on the `f64` positions, the closed triangle held (edges and vertices by every
@@ -288,7 +300,7 @@ coordinator under the user's delegation, 2026-10-26, for review; `roads.md` ques
 re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
 `ROAD-68-E`, `ROAD-68-F` or `ROAD-68-K14` one, no Godot script).
-`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists forty open questions (1-33, 35-39, 48 and 50); open question 16 (strokes pinned to the
+`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists forty-one open questions (1-33, 35-39, 48, 50 and 55); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different

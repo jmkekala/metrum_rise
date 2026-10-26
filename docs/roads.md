@@ -3540,7 +3540,46 @@ These need a user decision; work that does not depend on them continues.
     - **Decision (the user, 2026-10-26): (a).** The breakdown switches the test-only checks off as
       the economy runners do. One session against a control without the switch records which
       reported stages move and by how much; later sessions build every binary with the switch.
-      Not built yet.
+    - **Implemented (`ROAD-68-K24`).** `benchmark_populated_commit_breakdown` calls
+      `contract::timing_mode`, as its prepare test already did: no book fingerprints after the
+      planning passes, and `debug::work::set_city_checks(false)`, which also stops the agent
+      tick's lane bucket check. No second switch; every other test keeps the checks. The
+      products are bitwise unchanged; the frames' agent time falls by the lane check (up to
+      3.0 ms at 100k), in the frame after the adoption frame rather than in it, and no commit
+      stage moves consistently. The landing session and the products are under
+      [Commit breakdown without test-only checks](#commit-breakdown-without-test-only-checks-road-68-k24-2026-10-26).
+55. **The populated city could not house the breakdown's default tiers (`ROAD-68-K24`) — decided
+    by the coordinator under the user's delegation, 2026-10-26: (a), for review.**
+    - **Evidence** (fresh, release, `ROAD-68-K24`). `PopulatedCity::build` sizes a square side
+      for its residents with 8% headroom and floors the grid's width to whole 400 m blocks
+      between cross streets. Where the side falls just short of a block, the floor loses more
+      area than the headroom keeps: 1,300 residents get a 400 m by 700 m grid, 54% of the side's
+      square, which houses 819; 1,536 house 898 and 13,000 house 12,723, while 1,537 (side
+      800.2 m, a third cross street) builds. The 1,300 tier fails at the fixture's first commit
+      (`3cbdc4af`, 826 housed), at `b75e03c9`, at `7425f1a9`, which set the breakdown's default
+      tiers (0, 1,300, 13,000), and on `road` `bcf865a2` (819 each), so no commit was good and
+      there was nothing to bisect. No rule changed: the flat fixture meets every grade rule.
+      Every recorded session names its tiers (0, 10k, 30k, 100k), all of which the floored grid
+      houses.
+    - **Options.** (a) A tier the floored grid cannot house is built once more one block wider,
+      covering its side, and fails only if that grid cannot house it either; a tier the floored
+      grid houses is built exactly as before. (b) Always round the width up: every populated
+      city changes, so the economy contract's fixtures and every recorded breakdown and economy
+      number re-baseline. (c) Make the breakdown's defaults tiers the fixture houses (for example
+      2,000 and 10,000) and leave the fixture unable to build some tiers.
+    - **Recommendation.** (a): it removes the lost area at its cause without moving a city
+      anyone has measured; (b) is a re-baseline for the user to choose, and (c) leaves the
+      defect for the next tier anyone picks.
+    - **Implemented (`ROAD-68-K24`).** `PopulatedCity::build_timed` tries the floored grid,
+      then one more cross street; the breakdown's tier 0 keeps the floored 1,300 grid. The
+      1,300 and 13,000 cities build on three and seven cross streets. The wider 13,000 city
+      then failed the test build's lane bucket check (2,404 live lane agents patched against
+      2,403 rebuilt): the fixture moved its arrival carriers in by writing their transit
+      before they left the lane buckets, so a carrier a swap-remove had moved into the lane
+      snapshot kept its entry. The fixture now moves them in through
+      `AgentSystem::place_arrival_carrier_at_home`, which leaves the buckets first (test
+      `arrival_carrier_placed_at_home_leaves_the_lane_snapshot`). Carriers in the game drive in
+      and enter their homes through the tick, which keeps the buckets.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -7361,7 +7400,8 @@ breakdown now loads each populated tier from a saved snapshot ([method](#method)
 - **Equivalence** (fresh). On `road68-K22` before the format fix (built against loaded, 0 / 10k
   / 30k; 100k could not be saved yet): every product is bitwise equal. The cell store's entry
   count is not (17,720 / 17,696 at 10k, 48,333 / 48,304 at 30k): it follows the store's edit
-  history, and the store's digests are equal, so it is left out of the products. On the final
+  history, and the store's digests are equal, so it is left out of the products (explained in
+  `ROAD-68-K24`, which adds the count without empty chunk entries back). On the final
   production code (release binary F2; the final commit differs only in an ignored test's tier and
   the re-pinned fixture hash that `placements.json` carries): the session's two runs below
   print identical `COMMIT_PRODUCTS` lines at all four tiers, 100k included, and their digests
@@ -7392,6 +7432,96 @@ breakdown now loads each populated tier from a saved snapshot ([method](#method)
   `roadbed/` is untouched: 8,815 production lines. No timed path changed: the commit window,
   the stages and the frames run the same code; the breakdown reads the payload's vertex counts
   after a sample's timings.
+
+#### Commit breakdown without test-only checks (`ROAD-68-K24`, 2026-10-26)
+
+Question 50's decision (a), with two fixture defects the work found. The four commits change
+no game code: the breakdown's harness, its fixture city and a test-only count.
+
+- **The switch.** `benchmark_populated_commit_breakdown` calls `contract::timing_mode`, as its
+  prepare test and the economy runners do: the planning passes skip their book fingerprints and
+  `debug::work::set_city_checks(false)` stops the operational hour's whole-city checks and the
+  agent tick's lane bucket check against a rebuild from every agent. Every other test keeps
+  them.
+- **The landing session** (fresh, 2026-10-27 00:42-00:46: both locks, P-cores, `METRUM_DEBUG=0`,
+  no restic, compiler, cargo or Godot process at its start or after any run). Control C =
+  `road68-K24~1` (every fix below, no switch; binary `d6cd84ee…`), change F = `road68-K24` (binary
+  `d37954d0…`), release library tests built in one worktree, each binary's cities prepared before
+  the session (generation 10.8 / 32.4 / 155.8 s for C, 10.9 / 32.2 / 159.3 s for F; peak
+  resident set 5.9 / 6.0 GB). Preview stages (four workers) C F F C twice; breakdown (eight
+  workers, 0 / 10k / 30k / 100k, saved cities: every populated tier `loaded`) C F F C, 49.8 /
+  47.7 / 47.4 / 49.7 s a run. Medians over the three samples of each sample's two runs, ms,
+  C / F:
+
+  | Reported number | 0 | 10k | 30k | 100k |
+  | --- | --- | --- | --- | --- |
+  | click → ack | 11.53 / 12.07 | 19.91 / 19.70 | 58.01 / 58.04 | 20.63 / 20.45 |
+  | commit | 11.49 / 12.02 | 19.88 / 19.66 | 57.96 / 58.00 | 20.58 / 20.40 |
+  | roadbed and terrain (`surface`) | 9.34 / 9.89 | 14.17 / 13.92 | 51.98 / 52.41 | 10.68 / 10.46 |
+  | entrances (`buildings`) | 0.00 | 3.67 / 3.64 | 2.29 / 2.31 | 3.06 / 3.07 |
+  | `finalize` | 0.21 | 4.07 / 4.03 | 3.11 / 2.85 | 4.30 / 4.28 |
+  | render publication (`mesh`) | 1.40 / 1.56 | 0.85 | 1.41 / 1.36 | 2.25 / 2.26 |
+  | tool snapshot | 0.04 | 0.24 / 0.23 | 0.62 | 2.37 / 2.41 |
+  | reference frame (agents) | 0.00 | 1.00 / 0.89 (0.52 / 0.46) | 3.22 / 2.27 (2.13 / 1.22) | 14.69 / 12.63 (8.24 / 5.41) |
+  | adoption frame agents | 0.00 | 1.50 / 1.53 | 4.54 / 4.52 | 29.77 / 29.54 |
+  | adoption frame minute | 0.00 | 0.40 | 7.71 / 6.92 | 81.64 / 78.11 |
+  | following frame agents | 0.00 | 0.40 | 2.09 / 1.27 | 7.68 / 4.72 |
+
+  - **What moves.** The checks' cost sits in the frames, not the commit. The agent time of every
+    frame whose tick patched the lane buckets falls by the lane bucket check: the reference
+    frame by 0.9 ms at 30k and 2.8 ms at 100k, the frame after the adoption frame by 0.8-0.9 ms
+    at 30k and 2.7-3.0 ms at 100k in all three samples (both F runs below both C runs); at 10k
+    it is under 0.1 ms. The adoption frame's agent time does not move (spreads overlap in 11 of
+    12 samples; 10k sample 0 reads 0.41 ms lower): its tick rebuilds the buckets the commit
+    invalidated, and the check runs only after a patch, so question 50's evidence placed it one
+    frame early. The adoption frame's minute systems differ by -0.8, -0.1 and -0.2 ms per sample
+    at 30k (only sample 0's spreads are apart) and by +0.9, +0.7 and -3.5 ms at 100k (sample 2's
+    C spread is 79.1-84.2 ms): no consistent move. The two untimed setup frames take 0.42 / 0.03 s
+    at 100k. No commit stage moves consistently: tier 0, which has no agent to check, differs by
+    up to 0.6 ms (`surface`), the run-to-run noise. The first commit reads higher in F at 10k
+    (107.1 / 114.1 against 102.9 / 103.5 ms, `mesh` 6.5-6.8 against 4.0-4.3) and in `surface` at
+    100k sample 0 (+4.4 ms), and no later sample does; a likely cause, not verified, is that the
+    checks' per-tick allocations had left freed memory the first commit reused. The preview
+    stages do not change.
+  - **The 100k commit against 16.7 ms** (F): 97.9 / 101.8 ms at sample 0 (the legacy terrain
+    stage, about 80 ms of it), 20.9 / 19.9 at sample 1, 15.3 / 14.0 at sample 2; only sample 2
+    meets the target, which stays open.
+  - **Products.** The four runs print bitwise identical `COMMIT_PRODUCTS` lines at every tier,
+    so the switch changes no product, and apart from the new `cell_entries` they equal
+    `ROAD-68-K25`'s change (`road`'s Rust): the fixture fixes below change no city that built
+    before. Later sessions build every binary with the switch, so these numbers start the new
+    series; records before `ROAD-68-K24` hold the checks.
+- **The 1,300 tier** (question 55). It never built: `PopulatedCity::build(1300)` houses 819
+  residents on `road` and 826 at the fixture's first commit, because the grid's floored width
+  keeps 54% of the side's square. A tier the floored grid cannot house is now built one block
+  wider; 1,300 and 13,000 build, and every city that built before is built by the same calls.
+  The wider 13,000 city then failed the lane bucket check, a stale entry the fixture left by
+  writing a carrier's transit before it left the buckets; fixed in the fixture
+  (`AgentSystem::place_arrival_carrier_at_home`, with a unit test).
+- **The loaded cell store** (fresh, release, a temporary census of every entry, built against
+  saved and loaded in one process). The only entries that differ are chunk entries that hold
+  no block and no curve source and say only that their chunk was generated: 24 in the built
+  2,000 city (3,501 entries against 3,477) and 26 at 10k (17,669 against 17,643), none in the
+  loaded city alone, before and after two frames, with equal digests. A build's lot passes generate
+  every chunk their queued regions touch, including chunks beyond any road's reach and past the
+  world's edge; a load warms only the chunks near its roads (`warm_loaded_cells`) and leaves the
+  rest cold, so a later request generates them, finds no cell and records the entry. These are
+  rebuilt caches, not dropped state, so the save is unchanged. `COMMIT_PRODUCTS` now carries
+  `cell_entries`, the store's entries less its empty chunk entries
+  (`CellStore::empty_chunk_entries`, test-only), and `COMMIT_CELL_COPY` both counts.
+- **Equivalence** (fresh, release F). `commit_breakdown_products_survive_the_snapshot` (2,000
+  residents) passes in 28.5 s with `cell_entries` in the products (built 3,552 - 30 empty,
+  loaded 3,536 - 14). The breakdown on the 10k city built in the run (`METRUM_COMMIT_CITIES=built`)
+  prints the session's loaded products bitwise, `cell_entries` 17,688 (17,720 - 32 against
+  17,696 - 8). `PopulatedCity::build` at 1,300 and 13,000 now passes with the test build's checks
+  on (3.3 and 31.8 s).
+- **Gate checks** (fresh, on the final code). `cargo clippy --all-targets`: the baseline's 59
+  warnings, none added. `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset (ended
+  01:09): exit 0; debug lib 1,959 passed, 0 failed, 173 ignored (`ROAD-68-K23`'s 1,958 and the
+  new lane snapshot test); integration 4 passed; every Godot script passes, no `SCRIPT ERROR`;
+  skipped only the shader global probe and the rendered vegetation tests (headless). The
+  gate-tagged ignored tests are unchanged (4, `TERRAIN-07`). `roadbed/` is untouched: 8,909
+  production lines. The fixture source change re-keys the economy contract's snapshots once.
 
 ### `ROAD-68-H` — acceptance and cleanup
 
@@ -7490,8 +7620,11 @@ METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=0,10000,30000,10000
   the binary's key and the run built, checked and saved one first (minutes at 100k, so prepare
   first); or `built`, for tier 0 and with `METRUM_COMMIT_CITIES=built`, which builds every city
   in the run as before `ROAD-68-K22`. `COMMIT_SETUP` times the untimed setup's phases.
+- Since `ROAD-68-K24` the breakdown, like its prepare test, runs without the test build's
+  checks (`contract::timing_mode`, question 50); compare it only with binaries that have it.
 - `COMMIT_PRODUCTS` lists what two runs must share bitwise: the city's counts and road payload
-  vertices, the graded census and walls, each sample's lots and generated-cell digests,
+  vertices, the cell store's entries without its empty chunk entries (`ROAD-68-K24`), the
+  graded census and walls, each sample's lots and generated-cell digests,
   republished chunks, payload vertices, graded tile digest and keys, and the site removal's
   digest. `diff <(grep ^COMMIT_PRODUCTS a.log) <(grep ^COMMIT_PRODUCTS b.log)` compares two
   runs. Binaries from before `ROAD-68-K22` build their cities in the run and print the same

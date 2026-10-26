@@ -903,7 +903,10 @@ cities sit beside the others'. Generation runs the same exact-continuation check
 next day; the 30k building-mutation assertion stays with the economy fixtures. At 100k the check
 found that saves dropped the pending arrivals, fixed in save format 108
 ([`simulation.md`](simulation.md#save-bytes-road-68-k16)). The
-`snapshot.rs` change and the format bump re-key the economy snapshots once.
+`snapshot.rs` change and the format bump re-key the economy snapshots once. Since `ROAD-68-K24`
+the breakdown, like its prepare test, switches the test-only checks off through the same
+`contract::timing_mode` as the economy runners ([`roads.md`](roads.md#road-68-open-questions)
+question 50); its `populated_city.rs` change re-keys the economy snapshots once more.
 
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
@@ -1773,7 +1776,9 @@ Performance acceptance uses matched, unprofiled release runs at 10k residents. T
 deferred.
 
 - **Fixture:** `PopulatedCity::build(residents)` (`nodes/sim/core/populated_city.rs`):
-  - a square grid with streets every 50 m and cross streets every 400 m;
+  - a square grid with streets every 50 m and cross streets every 400 m, its width floored to
+    whole blocks; a tier that grid cannot house is built one block wider (`ROAD-68-K24`:
+    1,300 and 13,000 residents; every other tier is unchanged);
   - zoning in eight-row repeats of six residential, one commercial and one industrial row;
   - every lot built through the demand spawn executor;
   - households admitted through demand admission, with carriers placed at home;
