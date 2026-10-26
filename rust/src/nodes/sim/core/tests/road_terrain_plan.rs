@@ -667,6 +667,73 @@ fn graded_slot_rows_census() {
     }
 }
 
+// `TERRAIN-07-D` round 6, T24: at `kuopio_t2_wall`'s plan-view pinholes, the nearest outer
+// chain point, the road top there, and the hidden graded ground just inside and outside the
+// chain: whether the terrain lies below the road top (the overlap's condition).
+#[test]
+#[ignore = "TERRAIN-07-D diagnostic: cargo test --release --lib kuopio_plan_pinhole_sides -- --ignored --nocapture"]
+fn kuopio_plan_pinhole_sides() {
+    use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let roadbed = &core.transit_network.roadbed;
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed,
+        sites: &core.allocator,
+    };
+    let mut scratch = QueryScratch::default();
+    let mut segments = Vec::new();
+    let spans = (0..core.region_graph.edge_count()).filter_map(|edge| roadbed.span_piece(edge));
+    let nodes = (0..core.region_graph.node_count() as u32).filter_map(|node| roadbed.node_piece(node));
+    for mesh in spans.map(|p| p.mesh()).chain(nodes.map(|p| p.mesh())) {
+        for chain in mesh.outer_chains() {
+            for pair in chain.vertices().windows(2) {
+                let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                segments.push([a.x, a.y, a.z, b.x, b.y, b.z]);
+            }
+        }
+    }
+    // Pixel centres of the B pinholes (plan view: 0.0375 m per pixel, centre (-16.3, 1182.8)).
+    for (px, py) in [(496.0, 200.0), (768.0, 468.0), (1176.0, 870.0), (1230.0, 914.0)] {
+        let p = [-16.3 + (px + 0.5 - 800.0) * 0.0375, 1182.8 + (py + 0.5 - 500.0) * 0.0375];
+        let mut best = (f64::INFINITY, [0.0; 6], 0.0);
+        for s in &segments {
+            let (ax, az, bx, bz) = (s[0], s[2], s[3], s[5]);
+            let (dx, dz) = (bx - ax, bz - az);
+            let len2 = dx * dx + dz * dz;
+            let t = if len2 > 0.0 { (((p[0] - ax) * dx + (p[1] - az) * dz) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let d = ((p[0] - ax - t * dx).powi(2) + (p[1] - az - t * dz).powi(2)).sqrt();
+            if d < best.0 {
+                best = (d, *s, t);
+            }
+        }
+        let (d, s, t) = best;
+        let q = [s[0] + t * (s[3] - s[0]), s[2] + t * (s[5] - s[2])];
+        let top = s[1] + t * (s[4] - s[1]);
+        // The road lies on the chain's left.
+        let len = ((s[3] - s[0]).powi(2) + (s[5] - s[2]).powi(2)).sqrt();
+        let left = [-(s[5] - s[2]) / len, (s[3] - s[0]) / len];
+        let mut probes = Vec::new();
+        for offset in [-0.04, -0.01, 0.0, 0.01, 0.04] {
+            let x = q[0] + left[0] * offset;
+            let z = q[1] + left[1] * offset;
+            let ground = surface.ground_height_at(x, z, &mut scratch);
+            let road = roadbed.height_at(x as f32, z as f32);
+            probes.push(serde_json::json!({"inside_m": offset, "ground_minus_top": ground - top,
+                "road_top": road, "base": surface.base_height_at(x, z, &mut scratch)}));
+        }
+        eprintln!(
+            "PINHOLE {}",
+            serde_json::json!({"pixel": [px, py], "world": p, "chain_distance": d,
+                "chain_point": q, "road_top": top, "segment": s, "probes": probes})
+        );
+    }
+}
+
 // `TERRAIN-07-A` `T18` (a): the two-pass exact pruning on Kuopio's steepest road, the 4 x 4
 // tiles around the dead end on a 1:2 side slope (`KUOPIO_DEAD_END`): pruned equals
 // unpruned bitwise in any batch, order and worker count, with second-pass samples; and the
