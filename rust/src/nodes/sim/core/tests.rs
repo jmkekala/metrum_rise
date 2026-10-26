@@ -9,6 +9,7 @@ mod construction_throughput;
 mod graded_edits;
 mod graded_queries;
 pub(super) mod fields;
+mod graded_stage;
 mod road_edit_order;
 mod road_families;
 mod road_reference_probe;

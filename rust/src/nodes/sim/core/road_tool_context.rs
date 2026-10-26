@@ -334,6 +334,10 @@ pub(crate) struct RoadPreviewContext {
     // The roadbed builders' buffers, reused by every pose's compile (guardrail: per-pose
     // scratch lives in the preview context).
     pub(crate) roadbed_scratch: crate::simulation::network::roadbed::RoadbedScratch,
+    // The last pose's staged graded tiles and their buffers (`TERRAIN-07-E`): a pose bakes only
+    // the tiles whose inputs differ from them. Kept across publications: inputs, not the
+    // view's generation, decide reuse.
+    pub(crate) graded: crate::nodes::sim::core::GradedPreview,
 }
 
 impl RoadPreviewContext {
@@ -346,6 +350,7 @@ impl RoadPreviewContext {
             sequence: 0,
             last_preview: None,
             roadbed_scratch: Default::default(),
+            graded: Default::default(),
         }
     }
 

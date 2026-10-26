@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use godot::prelude::Vector3;
 
+use super::graded_stage::{GradedPose, PreviewSites};
 use super::road_edit_plan::{ReservedOverlap, RoadEditPlan};
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
@@ -214,6 +215,9 @@ pub(crate) struct RoadPreviewTimes {
     pub(crate) payload_ms: f64,
     /// The refined terrain patches the pieces touch, built on the shared pool.
     pub(crate) terrain_ms: f64,
+    /// The graded tiles of the pose (`TERRAIN-07-E`): the dirty tile selection, the input
+    /// gathers and the bakes of the tiles whose inputs differ from the last pose's.
+    pub(crate) graded_ms: f64,
 }
 
 /// The pieces a preview compiled for its dirty closure.
@@ -228,6 +232,9 @@ pub(crate) struct RoadPreviewPieces {
     /// the reason the commit's terrain validation would refuse the edit. A commit installs the
     /// entries only when its own sources have the same signatures.
     pub(crate) terrain: Result<RoadPreviewTerrain, String>,
+    /// The pose's staged graded tiles (`TERRAIN-07-E`): the commit adopts those whose inputs
+    /// equal its own.
+    pub(crate) graded: GradedPose,
     /// The changed chunks' meshes as the commit publishes them, without the lane-derived layers
     /// (crosswalk paint, road signs) of the rebuilt pieces; a changed chunk missing here is
     /// empty. Sealed (render-validated) as the commit publishes them. `None` if the published
@@ -351,9 +358,10 @@ impl RoadPreviewContext {
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let terrain_start = Instant::now();
         let inputs = &self.view.terrain_inputs;
+        let terrain_changes = roadbed.take_terrain_changes();
         let tiles = road_terrain_tiles(
             &self.view.terrain,
-            &roadbed.take_terrain_changes(),
+            &terrain_changes,
             |patch, [min_x, min_z, max_x, max_z], sites| {
                 if let Some(inputs) = inputs.patch(patch) {
                     inputs
@@ -371,6 +379,15 @@ impl RoadPreviewContext {
             &tiles,
         );
         times.terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
+        let graded_start = Instant::now();
+        let graded = self.graded.stage_pose(
+            &self.view.terrain,
+            &self.view.roadbed,
+            &roadbed,
+            &PreviewSites::new(&self.view.terrain, &self.view.terrain_inputs),
+            &terrain_changes,
+        );
+        times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         let payload_start = Instant::now();
         let target_chunks: BTreeSet<_> = changed_chunks.iter().copied().collect();
         let built_after = self.view.roadbed.generation();
@@ -401,6 +418,7 @@ impl RoadPreviewContext {
             roadbed,
             changed_chunks,
             terrain,
+            graded,
             chunks,
             overlap,
         })

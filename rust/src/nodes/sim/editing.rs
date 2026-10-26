@@ -87,7 +87,7 @@ impl SimCore {
     /// restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None, &mut Default::default())
+        self.validate_staged_road_render_installing(None, None, None, &mut Default::default())
             .is_some()
     }
 
@@ -96,15 +96,19 @@ impl SimCore {
     /// (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells (`ROAD-68`
     /// open question 1). The undo record keeps what the install replaced. `Some(adopted)` when the
     /// edit is accepted, telling whether the preview's terrain was installed. `metrics` receives
-    /// the three sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`,
-    /// `surface_terrain_ms`).
+    /// the sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_terrain_ms`,
+    /// `surface_graded_ms`). An accepted edit stages its graded tiles (`TERRAIN-07-E`),
+    /// adopting the preview's `graded` tiles whose inputs equal the committed ones.
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
         terrain: Option<&RoadPreviewTerrain>,
+        graded: Option<&crate::simulation::terrain::graded::TileStage>,
         metrics: &mut RoadEditMetrics,
     ) -> Option<bool> {
         let roadbed_start = Instant::now();
+        // The graded selection reads the roadbeds before and after the install (`O(1)`).
+        let roadbed_before = self.transit_network.roadbed.snapshot();
         let (patches, restore, installed) = self.publish_network_surface(false, delta);
         // What undo puts back: the entries before the edit, at the edit's generations.
         let step_m = crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
@@ -161,11 +165,21 @@ impl SimCore {
         match validation {
             Ok((entries, adopted)) => {
                 self.insert_refined_terrain_patch_cache_entries(entries);
+                let graded_start = Instant::now();
+                let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
+                metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
+                let stats = self.last_graded_stats;
+                metrics.graded_select_ms = stats.select_ms;
+                metrics.graded_inputs_ms = stats.inputs_ms;
+                metrics.graded_bake_ms = stats.bake_ms;
+                metrics.graded_adopted = stats.adopted;
+                metrics.graded_baked = stats.baked;
                 if self.transit_network.road_edit_is_staged()
                     && let Some(record) = self.undo_stack.back_mut()
                 {
                     record.roadbed = Some(restore);
                     record.refined_terrain = Some(replaced);
+                    record.graded = graded;
                 }
                 self.accept_staged_road_edit();
                 Some(adopted)

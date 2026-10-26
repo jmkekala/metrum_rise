@@ -3,7 +3,10 @@
 //! Spatial lookup and ray-query operations for derived building sites.
 
 use super::geometry::{point_in_polygon_slice, site_lot_center, update_site_plane_ray_hit};
-use super::model::{BuildingSiteClient, SiteChange};
+use super::model::{
+    BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot, SiteChange,
+    site_surface_bounds,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
@@ -83,8 +86,9 @@ impl BuildingAllocator {
     }
 
     /// Copies the sites the graded terrain bakes and tile lists of rectangles inside `rects`
-    /// read, so they can run off the simulation lock (`TERRAIN-07-D`); `None` while the site
-    /// index is being rebuilt. `O(sites meeting each rectangle)`, each site copied once.
+    /// read, so they can run off the simulation lock (`TERRAIN-07-D`, `TERRAIN-07-E`'s undo
+    /// record); `None` while the site index is being rebuilt. `O(sites meeting each rectangle)`,
+    /// each site copied once.
     pub(crate) fn graded_site_snapshot(&self, rects: Vec<[f64; 4]>) -> Option<SiteSnapshot> {
         if !self.building_site_query_index_ready() {
             return None;
@@ -139,16 +143,101 @@ impl SiteRectQuery {
         }
     }
 
+    fn holds(&self, site: &BuildingSiteClient) -> bool {
+        self.holds_parts(site_lot_center(site), site.bounds())
+    }
+
     // Every footprint, surface and planting corner lies within the maximum site radius of its
     // lot centre, so a lot centre farther from the rectangle (plus the polygon test's slack)
-    // rules the site out before its polygons are read, as `site_at` does.
-    fn holds(&self, site: &BuildingSiteClient) -> bool {
+    // rules the site out before its polygons are read, as `site_at` does; the rest are the
+    // sites whose footprint and surface bounds meet it.
+    fn holds_parts(&self, centre: Vector2, bounds: (f32, f32, f32, f32)) -> bool {
         let [min_x, min_z, max_x, max_z] = self.rect;
-        let centre = site_lot_center(site);
         let dx = (min_x - centre.x).max(centre.x - max_x).max(0.0);
         let dz = (min_z - centre.y).max(centre.y - max_z).max(0.0);
+        let (site_min_x, site_min_z, site_max_x, site_max_z) = bounds;
         dx * dx + dz * dz <= self.reach * self.reach
-            && site.overlaps_bounds(min_x, min_z, max_x, max_z)
+            && site_min_x <= max_x
+            && site_max_x >= min_x
+            && site_min_z <= max_z
+            && site_max_z >= min_z
+    }
+}
+
+impl BuildingSiteTerrainSnapshot {
+    /// Pushes to `out` the captured sites of `snapshots` that a graded terrain site query of
+    /// `rect` reads (`TERRAIN-07-E`, the road tool's preview): the allocator's own test
+    /// ([`SiteRectQuery`]) at each snapshot's captured radius, a site captured by several
+    /// snapshots once (by content: snapshots taken at different times may number it
+    /// differently). For a rectangle inside the union of the snapshots' bounds whose sites have
+    /// not changed since, these are the allocator's sites, so the bake's inputs are the
+    /// allocator's. `O(captured sites of the snapshots + n log n)` for the `n` sites kept.
+    pub(crate) fn push_graded_sites(
+        snapshots: &[&BuildingSiteTerrainSnapshot],
+        rect: [f64; 4],
+        out: &mut SiteBuffer,
+    ) {
+        thread_local! {
+            static CANDIDATES: std::cell::RefCell<Vec<(u32, u32)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let client =
+            |&(snapshot, site): &(u32, u32)| &snapshots[snapshot as usize].sites[site as usize];
+        CANDIDATES.with_borrow_mut(|candidates| {
+            candidates.clear();
+            for (index, snapshot) in snapshots.iter().enumerate() {
+                let query = SiteRectQuery::new(rect, snapshot.max_site_radius_m);
+                candidates.extend(
+                    snapshot
+                        .sites
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, site)| {
+                            query.holds_parts(
+                                site.lot_center,
+                                site_surface_bounds(&site.footprint_world, &site.surfaces),
+                            )
+                        })
+                        .map(|(site, _)| (index as u32, site as u32)),
+                );
+            }
+            candidates.sort_unstable_by(|a, b| client(a).graded_content_cmp(client(b)));
+            candidates.dedup_by(|a, b| client(a).graded_content_cmp(client(b)).is_eq());
+            for candidate in candidates.iter() {
+                let site = client(candidate);
+                out.push_site(&site.footprint_world, site.support_height_m);
+                for surface in &site.surfaces {
+                    out.push_surface(surface.material, &surface.vertices_world);
+                }
+            }
+        });
+    }
+}
+
+impl BuildingSiteTerrainClient {
+    // A total order on what the graded terrain reads of a site (support height, footprint and
+    // surfaces, by bits), so equal content sorts together whatever the building index.
+    fn graded_content_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn bits(points: &[Vector2]) -> impl Iterator<Item = [u32; 2]> + '_ {
+            points.iter().map(|p| [p.x.to_bits(), p.y.to_bits()])
+        }
+        self.support_height_m
+            .to_bits()
+            .cmp(&other.support_height_m.to_bits())
+            .then_with(|| bits(&self.footprint_world).cmp(bits(&other.footprint_world)))
+            .then_with(|| self.surfaces.len().cmp(&other.surfaces.len()))
+            .then_with(|| {
+                self.surfaces
+                    .iter()
+                    .zip(&other.surfaces)
+                    .map(|(a, b)| {
+                        (a.material as u8)
+                            .cmp(&(b.material as u8))
+                            .then_with(|| bits(&a.vertices_world).cmp(bits(&b.vertices_world)))
+                    })
+                    .find(|order| order.is_ne())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     }
 }
 
@@ -178,7 +267,10 @@ impl SiteSource for SiteSnapshot {
     fn sites_in_bounds(&self, rect: [f64; 4], out: &mut SiteBuffer) {
         debug_assert!(
             self.rects.iter().any(|outer| {
-                rect[0] >= outer[0] && rect[1] >= outer[1] && rect[2] <= outer[2] && rect[3] <= outer[3]
+                rect[0] >= outer[0]
+                    && rect[1] >= outer[1]
+                    && rect[2] <= outer[2]
+                    && rect[3] <= outer[3]
             }),
             "graded site snapshot queried outside its rectangles"
         );

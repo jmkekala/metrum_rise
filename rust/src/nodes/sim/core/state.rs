@@ -307,6 +307,16 @@ pub struct SimCore {
     /// What the edits published since Godot's last residency poll changed for the graded
     /// tiles (`TERRAIN-07-D` item 5), with the snapshots their dirty tile selection reads.
     pub(crate) graded_edits: crate::nodes::sim::core::GradedEditJournal,
+    /// The graded tiles the last road commit or undo staged (`TERRAIN-07-E`): what the Godot
+    /// install swaps in, or the representation error (`T7`) of a tile it could not bake.
+    pub(crate) last_graded_tiles: Result<
+        std::sync::Arc<crate::simulation::terrain::graded::TileStage>,
+        crate::simulation::terrain::graded::BakeError,
+    >,
+    /// What that staging did, with its phases' times.
+    pub(crate) last_graded_stats: crate::simulation::terrain::graded::StageStats,
+    /// Buffers of the commit's and undo's graded staging; scratch, not state.
+    pub(crate) graded_scratch: crate::simulation::terrain::graded::StageScratch,
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
@@ -457,6 +467,9 @@ impl SimCore {
             last_road_terrain_changes: Default::default(),
             last_site_terrain_changes: Vec::new(),
             graded_edits: Default::default(),
+            last_graded_tiles: Ok(Default::default()),
+            last_graded_stats: Default::default(),
+            graded_scratch: Default::default(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),

@@ -31,6 +31,15 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) surface_roadbed_ms: f64,
     pub(crate) surface_overlap_ms: f64,
     pub(crate) surface_terrain_ms: f64,
+    // The commit's graded tiles (`TERRAIN-07-E`), after the terrain validation: their
+    // selection, input gathers and bakes, and how many tiles were adopted from the preview
+    // and baked.
+    pub(crate) surface_graded_ms: f64,
+    pub(crate) graded_select_ms: f64,
+    pub(crate) graded_inputs_ms: f64,
+    pub(crate) graded_bake_ms: f64,
+    pub(crate) graded_adopted: usize,
+    pub(crate) graded_baked: usize,
     // Children of add_ms: undo record, topology mutation (graph and parcels), cell-lot marks.
     pub(crate) undo_ms: f64,
     pub(crate) topology_ms: f64,
@@ -69,6 +78,10 @@ impl RoadEditMetrics {
             surface_roadbed_ms,
             surface_overlap_ms,
             surface_terrain_ms,
+            surface_graded_ms,
+            graded_select_ms,
+            graded_inputs_ms,
+            graded_bake_ms,
             undo_ms,
             topology_ms,
             zoning_ms,
@@ -80,6 +93,8 @@ impl RoadEditMetrics {
             snapshot_ms,
             refined_state_ms
         );
+        result.set("graded_adopted", self.graded_adopted as i64);
+        result.set("graded_baked", self.graded_baked as i64);
         result.set("dirty_edges", self.dirty_edges as i64);
         result.set("rebuilt_surface_chunks", self.rebuilt_surface_chunks as i64);
         result.set("rebuilt_terrain_chunks", self.rebuilt_terrain_chunks as i64);

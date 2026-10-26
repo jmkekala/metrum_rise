@@ -486,6 +486,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
         sites: vec![BuildingSiteTerrainClient {
             surfaces: Vec::new(),
             building_idx: 0,
+            lot_center: Vector2::new(60.0, 12.0),
             footprint_world: vec![
                 Vector2::new(58.0, 10.0),
                 Vector2::new(62.0, 10.0),
@@ -494,6 +495,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
             ],
             support_height_m: 4.0,
         }],
+        max_site_radius_m: 3.0,
     };
     let mut samples = Vec::new();
     let mut sample_keys = HashSet::new();

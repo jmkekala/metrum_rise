@@ -9,8 +9,9 @@
 //! Every value is a pure function of its world position, the base heightmap, the grounded road
 //! seams and top triangles and the building sites within the cap: `f64` geometry, exact pruning,
 //! seams and sites in canonical order, so a tile's bytes never depend on the batch, the order,
-//! the worker count or the edit history. Nothing here is cached; baked tiles are the caller's to keep. `TERRAIN-07-A` runs
-//! beside the legacy exact cut and no consumer reads it yet.
+//! the worker count or the edit history. Nothing here is cached; baked tiles are the caller's to
+//! keep (`stage`: the road tool's poses, the commit and undo, `TERRAIN-07-E`). `TERRAIN-07-A`
+//! runs beside the legacy exact cut.
 
 mod coverage;
 mod grade;
@@ -22,6 +23,7 @@ mod sample;
 mod seams;
 mod select;
 mod sites;
+mod stage;
 mod tile;
 mod walls;
 
@@ -38,7 +40,11 @@ pub use select::{
     dirty_tiles_for_road_changes, dirty_tiles_for_site_changes, selection_site_reach_m,
 };
 pub use sites::{NoSites, SiteBuffer, SiteSource};
-pub use tile::{BakeError, BakeStats, Level, TILE_M, TileInputs, TileKey, TilePayload, bake_tiles};
+pub use stage::{StageScratch, StageStats, StagedTile, TileStage, stage_selected, stage_tiles};
+pub use tile::{
+    BakeError, BakeStats, Level, TILE_M, TileInputs, TileKey, TilePayload, bake_tiles, bake_window,
+    gather_inputs, tile_inputs,
+};
 pub use walls::WallFace;
 
 #[cfg(test)]

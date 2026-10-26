@@ -680,7 +680,8 @@ fn benchmark_road_preview_stages() {
         let strokes: Vec<Vec<Vector3>> = (0..8)
             .map(|index| stroke(&core, [start, pose(index as f32 / 8.0)]))
             .collect();
-        let mut stages = [(); 5].map(|()| Vec::new());
+        let mut stages = [(); 6].map(|()| Vec::new());
+        let (mut graded_tiles, mut graded_adopted, mut graded_baked) = (0, 0, 0);
         let mut terrain_patches = 0;
         // Payload vertices over the first repetition's poses, all layers and the skirts'.
         let (mut payload_vertices, mut skirt_vertices) = (0, 0);
@@ -709,13 +710,22 @@ fn benchmark_road_preview_stages() {
                         skirt_vertices += mesh.skirt_vertices.len();
                     }
                 }
+                let graded = &preview.pieces.as_ref().unwrap().graded;
+                assert!(
+                    graded.stage.is_ok(),
+                    "{name}: every pose bakes its graded tiles"
+                );
                 if repetition >= 10 {
                     let times = preview.times;
+                    graded_tiles += graded.stats.wanted;
+                    graded_adopted += graded.stats.adopted;
+                    graded_baked += graded.stats.baked;
                     for (samples, ms) in stages.iter_mut().zip([
                         times.plan_ms,
                         times.roadbed_ms,
                         times.payload_ms,
                         times.terrain_ms,
+                        times.graded_ms,
                         total_ms,
                     ]) {
                         samples.push(ms);
@@ -723,7 +733,7 @@ fn benchmark_road_preview_stages() {
                 }
             }
         }
-        let [plan, roadbed, payload, terrain, total] = stages.map(|mut samples| {
+        let [plan, roadbed, payload, terrain, graded, total] = stages.map(|mut samples| {
             (percentile(&mut samples, 0.5), percentile(&mut samples, 0.95))
         });
         // One commit of the first pose: its graph copy and the context refresh it publishes.
@@ -739,7 +749,7 @@ fn benchmark_road_preview_stages() {
         assert!(context.apply(&publication));
         let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} terrain_adopted={} edges={}",
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} terrain_adopted={} edges={}",
             crate::thread_pools::install(rayon::current_num_threads),
             8 * 50,
             payload_vertices / 8,
@@ -753,6 +763,14 @@ fn benchmark_road_preview_stages() {
             terrain.0,
             terrain.1,
             terrain_patches,
+            graded.0,
+            graded.1,
+            graded_tiles as f64 / 400.0,
+            graded_adopted as f64 / 400.0,
+            graded_baked as f64 / 400.0,
+            core.last_road_edit_metrics.surface_graded_ms,
+            core.last_road_edit_metrics.graded_adopted,
+            core.last_road_edit_metrics.graded_baked,
             total.0,
             total.1,
             outcome.snapshot_ms,

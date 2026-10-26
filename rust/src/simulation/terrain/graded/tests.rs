@@ -15,6 +15,7 @@ use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::network::types::NodeType;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(super) const LEVELS: [Level; 4] = [Level::Gl0, Level::Gl1, Level::Gl2, Level::Gl3 { step: 2 }];
@@ -679,6 +680,72 @@ fn road_changes_select_every_tile_they_alter() {
             }
             assert!(changed > 0 && dirty.len() < tiles.len(), "{name} {level:?}");
         }
+    }
+}
+
+// `TERRAIN-07-E`: the inputs gathered without sampling are the bake's own on every fixture and
+// level, and a stage adopts exactly the held tiles whose inputs are unchanged: after a node
+// piece's removal every staged tile is the fresh bake, and the tiles beyond its reach are adopted.
+#[test]
+fn gathered_inputs_are_the_bakes_and_a_stage_adopts_by_inputs() {
+    let tiles: Vec<TileKey> = (-3..3)
+        .flat_map(|x| (-3..3).map(move |z| TileKey { x, z }))
+        .collect();
+    for (name, graph, terrain) in fixtures() {
+        let roadbed = compiled(&graph);
+        for level in LEVELS {
+            for payload in bake(&terrain, &roadbed, &tiles, level, Evaluation::Lanes) {
+                let mut inputs = TileInputs::default();
+                tile_inputs(
+                    &terrain,
+                    &roadbed,
+                    &NoSites,
+                    payload.tile,
+                    level,
+                    &mut inputs,
+                )
+                .expect("the inputs gather");
+                assert_eq!(
+                    inputs, payload.inputs,
+                    "{name} {level:?} {:?}",
+                    payload.tile
+                );
+            }
+        }
+        let wanted: Vec<(Level, TileKey)> = tiles.iter().map(|&tile| (Level::Gl0, tile)).collect();
+        let mut scratch = StageScratch::default();
+        let none = TileStage::default();
+        let (first, stats) =
+            stage_tiles(&terrain, &roadbed, &NoSites, &wanted, &none, &mut scratch).unwrap();
+        assert_eq!((stats.adopted, stats.baked), (0, tiles.len()), "{name}");
+        let (again, stats) =
+            stage_tiles(&terrain, &roadbed, &NoSites, &wanted, &first, &mut scratch).unwrap();
+        assert_eq!(
+            (stats.adopted, stats.baked),
+            (tiles.len(), 0),
+            "{name}: equal inputs adopt"
+        );
+        scratch.retire(first, &again);
+        let mut edited = roadbed.clone();
+        edited.remove_piece_for_test(PieceId::Node(0));
+        let (staged, stats) =
+            stage_tiles(&terrain, &edited, &NoSites, &wanted, &again, &mut scratch).unwrap();
+        let fresh = bake(&terrain, &edited, &tiles, Level::Gl0, Evaluation::Lanes);
+        for (held, fresh) in staged.tiles().iter().zip(&fresh) {
+            assert_same(
+                &held.payload,
+                fresh,
+                &format!("{name}: staged after the removal"),
+            );
+            let kept = again.get(Level::Gl0, held.tile).unwrap();
+            assert_eq!(
+                Arc::ptr_eq(kept, &held.payload),
+                kept.inputs == fresh.inputs,
+                "{name}: {:?} is adopted exactly when its inputs are unchanged",
+                held.tile
+            );
+        }
+        assert!(stats.adopted > 0 && stats.baked > 0, "{name}: {stats:?}");
     }
 }
 

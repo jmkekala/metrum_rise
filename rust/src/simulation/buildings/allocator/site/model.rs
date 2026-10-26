@@ -64,12 +64,17 @@ pub struct SiteChange {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BuildingSiteTerrainSnapshot {
     pub(super) sites: Vec<BuildingSiteTerrainClient>,
+    // The allocator's largest lot radius when the snapshot was taken: the reach of its graded
+    // terrain site queries (`TERRAIN-07-E`).
+    pub(super) max_site_radius_m: f32,
 }
 
 /// One stable building-site footprint detached from the authoritative allocator.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct BuildingSiteTerrainClient {
     pub(super) building_idx: usize,
+    // The lot centre the graded terrain's site test reads (`TERRAIN-07-E`).
+    pub(super) lot_center: Vector2,
     pub(super) footprint_world: Vec<Vector2>,
     pub(super) support_height_m: f32,
     pub(super) surfaces: Vec<BuildingSiteSurfaceClient>,

@@ -7,7 +7,7 @@
 //! A bake reads only its tile's window (the lattice grown by the cap or the band), so a tile's
 //! bytes never depend on the batch, tile order or worker count.
 
-use super::coverage::rasterize;
+use super::coverage::{rasterize, visited_triangles};
 use super::grade::{CAP_M, continues_ground};
 use super::portal::{Finished, PortalWindow, open};
 use super::prune::{
@@ -54,8 +54,8 @@ impl TileKey {
     }
 }
 
-/// A sampling level of a tile.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+/// A sampling level of a tile, ordered finest first.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Level {
     /// 0.5 m, to 256 m from the camera.
     #[default]
@@ -916,18 +916,15 @@ fn bake_tile(
     out.samples = [xs.len(), zs.len()];
     out.graded = graded;
     out.stats = stats;
-    out.inputs.seams.clear();
-    out.inputs.seams.extend(seams[..road_count].iter().map(Seam::key));
-    out.inputs.seams.extend(wall_seams.iter().map(Seam::key));
-    out.inputs.seams.extend(
-        wall_seams
-            .iter()
-            .zip(wall_bottoms.iter())
-            .filter_map(|(seam, bottom)| bottom.map(|bottom| abutment_bottom(seam, bottom).key())),
+    finish_inputs(
+        terrain,
+        window,
+        &seams[..road_count],
+        (wall_seams, wall_bottoms),
+        portals,
+        sites,
+        &mut out.inputs,
     );
-    portals.inputs(&mut out.inputs.triangles, &mut out.inputs.seams);
-    sites.inputs(&mut out.inputs.sites);
-    base_revisions(terrain, window, &mut out.inputs.base_revisions);
     let capacity = level.seam_capacity();
     if out.seams.len() > capacity {
         return Err(BakeError::SeamCapacity {
@@ -947,6 +944,145 @@ fn bake_tile(
         });
     }
     Ok(())
+}
+
+/// The inputs a bake of `tile` at `level` records ([`TilePayload::inputs`]), gathered without
+/// sampling (`TERRAIN-07-E`): the window's seams, the coverage's visited triangles, the portal
+/// parts, the sites and the base revisions, by the bake's own gathers and assembly, so they
+/// equal the bake's inputs exactly. A preview, commit or undo compares them with a held tile's
+/// to adopt it. `O(P + S log S + T + sites)` for the window, without the lattice's samples.
+pub fn tile_inputs(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
+    tile: TileKey,
+    level: Level,
+    out: &mut TileInputs,
+) -> Result<(), BakeError> {
+    if !sites.ready() {
+        return Err(BakeError::SitesUnavailable);
+    }
+    let inputs = Inputs {
+        terrain,
+        roadbed,
+        sites,
+    };
+    SCRATCH.with_borrow_mut(|scratch| gather_tile_inputs(&inputs, tile, level, scratch, out));
+    Ok(())
+}
+
+/// The rectangle `[min_x, min_z, max_x, max_z]` a bake of `tile` at `level` reads its seams and
+/// sites from: the lattice grown by the cap or the band, the window of [`tile_inputs`]. A site
+/// snapshot holding it serves the bake.
+pub fn bake_window(terrain: &TerrainSystem, tile: TileKey, level: Level) -> [f64; 4] {
+    SCRATCH.with_borrow_mut(|scratch| {
+        let band = level.band_m(BaseGrid::of(terrain).cell_m);
+        lattice(terrain, tile, level, &mut scratch.xs, &mut scratch.zs);
+        let (xs, zs) = (&scratch.xs, &scratch.zs);
+        window([xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]], band)
+    })
+}
+
+/// [`tile_inputs`] of every `(level, tile)` of `wanted` into `out` (one per entry, in order,
+/// its buffers reused), in parallel on the shared pool.
+pub fn gather_inputs(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
+    wanted: &[(Level, TileKey)],
+    out: &mut Vec<TileInputs>,
+) -> Result<(), BakeError> {
+    if !sites.ready() {
+        return Err(BakeError::SitesUnavailable);
+    }
+    out.resize_with(wanted.len(), TileInputs::default);
+    let inputs = Inputs {
+        terrain,
+        roadbed,
+        sites,
+    };
+    crate::thread_pools::install(|| {
+        out.par_iter_mut()
+            .zip(wanted.par_iter())
+            .for_each(|(out, &(level, tile))| {
+                SCRATCH.with_borrow_mut(|scratch| {
+                    gather_tile_inputs(&inputs, tile, level, scratch, out)
+                })
+            })
+    });
+    Ok(())
+}
+
+// The bake's gathers of one tile's window, without its samples.
+fn gather_tile_inputs(
+    inputs: &Inputs<'_, impl SiteSource>,
+    tile: TileKey,
+    level: Level,
+    scratch: &mut BakeScratch,
+    out: &mut TileInputs,
+) {
+    let (terrain, roadbed) = (inputs.terrain, inputs.roadbed);
+    let BakeScratch {
+        seams: seam_scratch,
+        window: seams,
+        wall_seams,
+        wall_bottoms,
+        xs,
+        zs,
+        pieces,
+        sites,
+        portals,
+        ..
+    } = scratch;
+    let band = level.band_m(BaseGrid::of(terrain).cell_m);
+    lattice(terrain, tile, level, xs, zs);
+    let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
+    let window = window(rect, band);
+    gather_road_seams(roadbed, window, seam_scratch, seams);
+    gather_wall_seams(
+        roadbed,
+        grown(rect, band),
+        seam_scratch,
+        (wall_seams, wall_bottoms),
+    );
+    sites.gather(inputs.sites, window);
+    visited_triangles(roadbed, xs, zs, pieces, &mut out.triangles);
+    portals.gather(roadbed, rect, band, pieces);
+    finish_inputs(
+        terrain,
+        window,
+        seams,
+        (wall_seams, wall_bottoms),
+        portals,
+        sites,
+        out,
+    );
+}
+
+// The inputs once the window's road and wall seams, portal parts and sites are gathered and
+// `out.triangles` holds the coverage's visited triangles: one assembly for the bake and
+// [`tile_inputs`].
+fn finish_inputs(
+    terrain: &TerrainSystem,
+    window: [f64; 4],
+    road_seams: &[Seam],
+    (wall_seams, wall_bottoms): (&[Seam], &[Option<[f64; 2]>]),
+    portals: &PortalWindow,
+    sites: &SiteBuffer,
+    out: &mut TileInputs,
+) {
+    out.seams.clear();
+    out.seams.extend(road_seams.iter().map(Seam::key));
+    out.seams.extend(wall_seams.iter().map(Seam::key));
+    out.seams.extend(
+        wall_seams
+            .iter()
+            .zip(wall_bottoms.iter())
+            .filter_map(|(seam, bottom)| bottom.map(|bottom| abutment_bottom(seam, bottom).key())),
+    );
+    portals.inputs(&mut out.triangles, &mut out.seams);
+    sites.inputs(&mut out.sites);
+    base_revisions(terrain, window, &mut out.base_revisions);
 }
 
 // The base revisions of the 512 m chunks under `window`, in key order.

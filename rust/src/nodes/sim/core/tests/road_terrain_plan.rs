@@ -979,6 +979,134 @@ fn benchmark_kuopio_graded_edits() {
     eprintln!("GRADED_KUOPIO_EDIT {record}");
 }
 
+// `TERRAIN-07-E`'s frame paths on Kuopio (T20 (a)): every stroke of
+// `benchmark_kuopio_graded_edits`'s cases replayed as a drag of eight poses growing from its
+// start to its end on the road tool's preview, then the commit of the last pose and its undo.
+// Per pose the graded stage (selection, input gathers, the bakes of the tiles whose inputs
+// differ from the last pose's), the commit's (the last pose's tiles adopted where their inputs
+// equal the committed ones, the rest baked) and the undo's (the kept tiles adopted), each the
+// stage's wall-clock time on the shared pool. The stroke is then committed again (untimed) and
+// the case goes on. Set the workers with RAYON_NUM_THREADS.
+#[test]
+#[ignore = "controlled release timing: cargo test --release --lib benchmark_kuopio_graded_drags -- --ignored --nocapture"]
+fn benchmark_kuopio_graded_drags() {
+    let manifest = kuopio_manifest();
+    let workers = crate::thread_pools::install(rayon::current_num_threads);
+    let (mut worst, mut over) = ([0.0f64; 3], [0usize; 3]);
+    for case in manifest["cases"].as_array().unwrap() {
+        let mut core = kuopio_source_core();
+        for stroke in case["segments"].as_array().unwrap() {
+            let mut record = graded_drag(&mut core, stroke);
+            record["case"] = case["case_id"].clone();
+            record["attempt"] = stroke["attempt"].clone();
+            record["workers"] = workers.into();
+            for (path, key) in ["pose_max_ms", "commit_ms", "undo_ms"].iter().enumerate() {
+                let ms = record[key].as_f64().unwrap();
+                worst[path] = worst[path].max(ms);
+                over[path] += usize::from(ms > 3.0);
+            }
+            eprintln!("GRADED_KUOPIO_DRAG {record}");
+        }
+    }
+    eprintln!(
+        "GRADED_KUOPIO_DRAG_SUMMARY {}",
+        serde_json::json!({
+            "workers": workers,
+            "pose_max_ms": worst[0], "commit_max_ms": worst[1], "undo_max_ms": worst[2],
+            "strokes_with_a_pose_over_3ms": over[0], "commits_over_3ms": over[1],
+            "undos_over_3ms": over[2],
+        })
+    );
+}
+
+// One recorded stroke as a timed drag, commit and undo, then committed again (see
+// `benchmark_kuopio_graded_drags`).
+fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Value {
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    use std::sync::Arc;
+    let ends =
+        ["start_xz", "end_xz"].map(|key| [0, 1].map(|i| stroke[key][i].as_f64().unwrap() as f32));
+    let lanes = ["fwd_lanes", "bkw_lanes"].map(|key| stroke[key].as_i64().unwrap() as i32);
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"));
+    let mut poses = Vec::new();
+    let mut pose_max_ms = 0.0f64;
+    let mut last = None;
+    for step in 1..=8 {
+        let u = step as f32 / 8.0;
+        let end = [0, 1].map(|i| ends[0][i] + (ends[1][i] - ends[0][i]) * u);
+        let points = road_tool_points(core, [ends[0], end]);
+        let surface_generation = context.view.surface_generation;
+        let preview = context.preview_road(RoadPreviewRequest {
+            surface_generation,
+            points: points.clone(),
+            fwd_lanes: lanes[0],
+            bkw_lanes: lanes[1],
+            snap_to_existing_roads: true,
+        });
+        match preview.pieces.as_ref() {
+            Some(pieces) => {
+                let stats = pieces.graded.stats;
+                pose_max_ms = pose_max_ms.max(stats.total_ms());
+                poses.push(serde_json::json!({
+                    "u": u, "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
+                    "inputs_ms": stats.inputs_ms, "bake_ms": stats.bake_ms,
+                    "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
+                    "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
+                }));
+            }
+            None => poses.push(serde_json::json!({
+                "u": u, "invalid": preview.validation.invalid_reason,
+            })),
+        }
+        last = Some((points, Arc::new(preview)));
+    }
+    let (points, preview) = last.expect("eight poses");
+    core.benchmark_mode = false;
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points,
+            fwd_lanes: lanes[0],
+            bkw_lanes: lanes[1],
+            snap_to_existing_roads: true,
+            preview: Some(preview),
+        },
+        std::time::Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+    let commit = core.last_graded_stats;
+    let metrics = &core.last_road_edit_metrics;
+    let (preview_reused, surface_graded_ms) =
+        (metrics.preview_plan_reused, metrics.surface_graded_ms);
+    let kept = core
+        .undo_stack
+        .back()
+        .and_then(|record| record.graded.as_ref())
+        .expect("the commit keeps its replaced tiles")
+        .wait()
+        .map(|kept| (kept.len(), kept.payload_bytes()))
+        .expect("the kept tiles bake");
+    assert!(core.undo_action_internal(), "undo");
+    let undo = core.last_graded_stats;
+    core.benchmark_mode = true;
+    commit_recorded_stroke(core, stroke);
+    serde_json::json!({
+        "poses": poses, "pose_max_ms": pose_max_ms,
+        "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
+        "commit_inputs_ms": commit.inputs_ms, "commit_bake_ms": commit.bake_ms,
+        "commit_tiles": commit.wanted, "commit_adopted": commit.adopted,
+        "commit_baked": commit.baked, "commit_surface_graded_ms": surface_graded_ms,
+        "preview_reused": preview_reused,
+        "undo_ms": undo.total_ms(), "undo_tiles": undo.wanted, "undo_adopted": undo.adopted,
+        "undo_baked": undo.baked, "kept_tiles": kept.0, "kept_mb": kept.1 as f64 / 1e6,
+    })
+}
+
 // `TERRAIN-07-A` `T2` (c): the conflict walls on Kuopio and the five worst sites by wall height.
 // With `METRUM_CONFLICT_DUMP_DIR` set, each site's graded samples, seams and top triangles are
 // written there as `site-<rank>.json` for renders.

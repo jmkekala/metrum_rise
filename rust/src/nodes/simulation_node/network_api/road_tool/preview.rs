@@ -266,6 +266,12 @@ impl SimulationNode {
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);
         dict.set("terrain_ms", preview.times.terrain_ms);
+        dict.set("graded_ms", preview.times.graded_ms);
+        if let Some(pieces) = &preview.pieces {
+            let stats = pieces.graded.stats;
+            dict.set("graded_adopted", stats.adopted as i64);
+            dict.set("graded_baked", stats.baked as i64);
+        }
         let packing_start = std::time::Instant::now();
         let mut chunks = PackedInt32Array::new();
         let mut road_chunks = VarArray::new();

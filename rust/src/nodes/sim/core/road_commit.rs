@@ -178,6 +178,9 @@ impl SimCore {
             let accepted = self.validate_staged_road_render_installing(
                 preview_pieces.map(|pieces| &pieces.delta),
                 preview_pieces.and_then(|pieces| pieces.terrain.as_ref().ok()),
+                preview_pieces
+                    .and_then(|pieces| pieces.graded.stage.as_ref().ok())
+                    .map(|stage| stage.as_ref()),
                 &mut edit_metrics,
             );
             road_add.committed = accepted.is_some();

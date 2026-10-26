@@ -2,6 +2,7 @@
 
 //! Terrain-patch invalidation and authoritative CDT exclusion loops for building sites.
 
+use super::geometry::site_lot_center;
 use super::model::{BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::terrain::TerrainSystem;
@@ -28,6 +29,7 @@ impl BuildingAllocator {
                 site.overlaps_bounds(min_x, min_z, max_x, max_z).then(|| {
                     BuildingSiteTerrainClient {
                         building_idx,
+                        lot_center: site_lot_center(site),
                         footprint_world: site.footprint_world.clone(),
                         support_height_m: site.support_height_m,
                         surfaces: site.surfaces.clone(),
@@ -35,7 +37,10 @@ impl BuildingAllocator {
                 })
             })
             .collect();
-        BuildingSiteTerrainSnapshot { sites }
+        BuildingSiteTerrainSnapshot {
+            sites,
+            max_site_radius_m: self.max_site_radius_m,
+        }
     }
 
     /// Returns whether the chunk-index candidates contain a site overlapping the bounds.
@@ -126,6 +131,7 @@ impl BuildingSiteTerrainSnapshot {
                 .filter(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
                 .cloned()
                 .collect(),
+            max_site_radius_m: self.max_site_radius_m,
         }
     }
 
