@@ -74,7 +74,9 @@ fn roadbed_fixture_products_match_the_probe() {
 // standard spans stand on the terrain and hang skirts, bridges hang fascias and tunnels none.
 // Two triangles per chain segment; their top points are the chain's positions bitwise, their
 // bottoms the same points lowered by the strip's depth, and each faces away from the road (the
-// right of the chain).
+// right of the chain). Then, on a structure's span with a free end only (`TERRAIN-07-C`), the
+// cap: top points of its end rows, bottoms below their corners at the cap kind's depth, facing
+// out of the span.
 #[test]
 fn strips_hang_from_the_outer_chains_bitwise() {
     let mut triangles = Vec::new();
@@ -99,12 +101,10 @@ fn strips_hang_from_the_outer_chains_bitwise() {
             assert_eq!(mesh.strip_kind(), kind, "{name} {id:?}");
             triangles.clear();
             mesh.for_each_strip_triangle(|points, bottoms| triangles.push((points, bottoms)));
-            let Some(kind) = kind else {
-                assert!(triangles.is_empty(), "{name} {id:?}");
-                continue;
-            };
             let mut strip = triangles.iter();
-            for chain in mesh.outer_chains() {
+            let chains = if kind.is_some() { mesh.outer_chains() } else { &[] };
+            for chain in chains {
+                let kind = kind.unwrap();
                 for pair in chain.vertices().windows(2) {
                     let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
                     let below = |p: RoadVec3| RoadVec3::new(p.x, p.y - kind.depth_m(), p.z);
@@ -129,7 +129,44 @@ fn strips_hang_from_the_outer_chains_bitwise() {
                     }
                 }
             }
-            assert!(strip.next().is_none(), "{name} {id:?}: one strip per chain");
+            let caps: Vec<_> = strip.collect();
+            let PieceId::Span(edge) = id else {
+                assert!(caps.is_empty(), "{name} {id:?}: one strip per chain");
+                continue;
+            };
+            let span = roadbed.span_piece(edge).unwrap();
+            assert_eq!(caps.is_empty(), mesh.cap_kind().is_none(), "{name} {id:?}");
+            let Some(cap) = mesh.cap_kind() else {
+                continue;
+            };
+            assert_ne!(graph.edge(edge).class, EdgeClass::Standard, "{name} {id:?}");
+            for &(points, bottoms) in caps {
+                for (point, bottom) in points.iter().zip(bottoms) {
+                    // On an end row, or below one of its corners.
+                    let on_row = |mouth: &MouthSection| {
+                        let row = &mouth.vertices;
+                        let corners = [row[0], row[row.len() - 1]];
+                        if bottom {
+                            corners.iter().any(|&c| bits(cap.bottom(c)) == bits(*point))
+                        } else {
+                            row.iter().any(|&p| bits(p) == bits(*point))
+                        }
+                    };
+                    assert!(
+                        on_row(span.start_mouth()) || on_row(span.end_mouth()),
+                        "{name} {id:?}: a cap vertex off the end rows"
+                    );
+                }
+                // Out of the span: away from the centroid of its vertices.
+                let [p, q, r] = points;
+                let normal = -(q - p).cross(r - p);
+                let positions = mesh.positions();
+                let centroid = positions.iter().copied().sum::<RoadVec3>() / positions.len() as f64;
+                assert!(
+                    normal.dot((p + q + r) / 3.0 - centroid) > 0.0,
+                    "{name} {id:?}: a cap faces into the span"
+                );
+            }
         }
     }
 }
@@ -1853,7 +1890,9 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 ];
 
 // Recorded by `TERRAIN-07-B`: the strip layer is new, so every entry is new; the seven
-// top-surface hashes above are unchanged.
+// top-surface hashes above are unchanged. Re-recorded by `TERRAIN-07-C` round 2: the 18 entries
+// with a structure whose far end is free (the bridge and tunnel families and `mixed_profiles`)
+// change with its end cap; every other entry and the top-surface hashes are unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
@@ -1896,7 +1935,7 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("pass_through_south_north/false", 0x6bf47f9b50153147),
     ("pass_through_bent/false", 0x7eaa93e7bed6f463),
     ("t_junction/false", 0x1deed8b4b6144fcf),
-    ("mixed_profiles/false", 0xbe8a07d02b2bcfdf),
+    ("mixed_profiles/false", 0x2030c8d4490b81bd),
     ("bend_15_120/false", 0xa94c7a07fb616e46),
     ("rural_t/false", 0x1a30591260f5fc65),
     ("rural_four_way/false", 0xe682cf22d5dcaeac),
@@ -1912,14 +1951,14 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("band_four_way/false", 0xa924a30d7cce27a4),
     ("band_pass_through/false", 0x8bab719977233f20),
     ("width_pass_through/false", 0xed996583094f5512),
-    ("width_bridge_pass_through/false", 0x760bd55d6dd62319),
-    ("bridge_t/false", 0x0189b6e4d4f6cf6b),
-    ("bridge_bend/false", 0x01385450b6cc4184),
-    ("bridge_pass_through/false", 0xdd45c04fcee8b31a),
-    ("bridge_rural_t/false", 0x28aaa08e8c474faf),
-    ("tunnel_t/false", 0xbe2aae88b0da0173),
-    ("tunnel_bend/false", 0xc032675147ecb8b3),
-    ("tunnel_pass_through/false", 0xc79d16581db4d58c),
+    ("width_bridge_pass_through/false", 0x89e9262a67209a4c),
+    ("bridge_t/false", 0xc883e1f1c99ca933),
+    ("bridge_bend/false", 0x8068311a7e637744),
+    ("bridge_pass_through/false", 0x9824ea1e7f137ba0),
+    ("bridge_rural_t/false", 0x2c3f444e1d36ec83),
+    ("tunnel_t/false", 0xd8ec837c4448802f),
+    ("tunnel_bend/false", 0xa50d2f231833253f),
+    ("tunnel_pass_through/false", 0x303c028108500646),
     ("band_step_curved/false", 0x37629ac5df89e879),
     ("band_width_step_curved/false", 0xd3bc48a4d792eb19),
     ("t/true", 0x8e5e0a77ca65c074),
@@ -1963,7 +2002,7 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("pass_through_south_north/true", 0x4d00bde0841481a1),
     ("pass_through_bent/true", 0x11f7ac1b667b8c7e),
     ("t_junction/true", 0xbf9842a3adcc264e),
-    ("mixed_profiles/true", 0x23be1356f9dacfe5),
+    ("mixed_profiles/true", 0x934042eac0940c53),
     ("bend_15_120/true", 0x4f5af8b174f39f2b),
     ("rural_t/true", 0x998efb476023843d),
     ("rural_four_way/true", 0x0440935ab1ca8a1c),
@@ -1979,14 +2018,14 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("band_four_way/true", 0xa522d71baf1fd2a3),
     ("band_pass_through/true", 0x4b2a4edda48c1540),
     ("width_pass_through/true", 0x7f273f7e88ee3dae),
-    ("width_bridge_pass_through/true", 0x752c9b5039b7e2e2),
-    ("bridge_t/true", 0xccbb789074b25b1f),
-    ("bridge_bend/true", 0x1ade54608d8b4cb9),
-    ("bridge_pass_through/true", 0x431d850047ae1d72),
-    ("bridge_rural_t/true", 0xee3d2b1d4a7dd669),
-    ("tunnel_t/true", 0x9c9a82ee3bd6f8ed),
-    ("tunnel_bend/true", 0x8f58fc13a8005ca0),
-    ("tunnel_pass_through/true", 0xc43bfb5edf0a70c4),
+    ("width_bridge_pass_through/true", 0x52ac105760c28384),
+    ("bridge_t/true", 0xfd32193f4459827c),
+    ("bridge_bend/true", 0x5540871d05b18b4c),
+    ("bridge_pass_through/true", 0x1ee6bfde0c4115cb),
+    ("bridge_rural_t/true", 0xabfb72cd77fd04ee),
+    ("tunnel_t/true", 0xe4b18086f4548d51),
+    ("tunnel_bend/true", 0x104995dd584ad084),
+    ("tunnel_pass_through/true", 0x51e1a348b4ccbc48),
     ("band_step_curved/true", 0x023fc8a5bc92c4b7),
     ("band_width_step_curved/true", 0x673bc994f267b9d6),
     ("short_link_10", 0x0288e54ed509e89b),
