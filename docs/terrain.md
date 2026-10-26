@@ -5921,11 +5921,27 @@ round 6 library `d3b998d1` (Rust of `3ddfbfd8`), round 6 scripts:
 | Populated: graded settles | no (600 s; 808,895 refusals; 145 tiles) | 2,132 ms (1,610 tiles, 36 patches with cells, 0 refused) |
 | Populated: edit install frame | 4.63 ms (residency 3.10, poll 0.63, cells 0.51) | 0.73 ms (12 tiles; batch 0.71, residency 0.003) |
 | Populated: created by the edit | 40 | 0 |
-{KPAIR}
+| Kuopio: edit install frame | 3.31 ms (residency 2.18, material check 0.42, poll 0.57) | 0.34 ms (6 tiles; batch 0.23, material check 0.09) |
+| Kuopio: created by the edit | 0 | 0 |
+| Kuopio: video memory, graded (exact) | 589 MiB (455) | 712 MiB (474) |
 
-On the rebased tip ({TIP}).
+On the rebased tip (`e4b905f1`, library `00d4dba0`, the re-recorded Kuopio save `8fa19a1e` and
+the populated save regenerated on it): Kuopio settles in 2,384 ms graded against 2,693 ms exact,
+301 tiles, the edit commits in 16.6 ms and installs its 6 tiles in one frame two frames later in
+**0.28 ms** (batch 0.19, material check 0.08, residency 0.001), nothing created; populated
+settles in 1,467 ms graded against 2,065 ms exact (1,610 tiles: `GL0` 31, `GL1` 79, `GL2` 1,050,
+`GL3` 450; 36 patches with cells; 0 refused), the edit commits in 102 ms and installs 12 tiles in
+**0.37 ms**, nothing created. Video memory graded (exact): Kuopio 712 MiB (455), populated 552 MiB
+(699). Observed, not the edit acceptance: the worst streaming install frame is 1.08 ms on Kuopio
+and 1.45 ms on the populated save (round 5's 0.87 ms): the poll checks the 1.0 ms budget between
+batches of four tiles, and the rows are larger (open).
 
-**T25's cost.** {T25}
+**T25's cost** (for the user's review). Prewarm at setup: Kuopio 1,296 cell sets in 104-137 ms
+(7,776 `MultiMesh`es, 5,185 materials), the populated save 49 sets in 27.6 ms. Video memory against
+round 5 in one session on Kuopio: 712 against 589 MiB (+123): buffers 84 against 35 MiB (the
+prewarmed `MultiMesh`es), textures 444 against 408 MiB (the pools' larger rows: 127 against 91 MiB,
+the `T7` capacities and T24's heights). On the populated save the grid is 49 patches and graded
+uses less video memory than the exact cut (552 against 699 MiB).
 
 **Tests (fresh, round 6).** {TESTS}
 
