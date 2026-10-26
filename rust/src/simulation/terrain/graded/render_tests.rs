@@ -423,6 +423,24 @@ fn stitched_borders_share_vertices_and_texels_bitwise() {
     assert!(shared > 0);
 }
 
+// Whether a grounded top triangle holds the point, edges included, by exact orientation.
+fn inside_a_top_triangle(
+    roadbed: &RoadbedSystem,
+    x: f64,
+    z: f64,
+    pieces: &mut Vec<PieceId>,
+) -> bool {
+    let at = robust::Coord { x, y: z };
+    let mut inside = false;
+    roadbed.for_each_grounded_top_triangle_in_bounds([x, z, x, z], pieces, |triangle| {
+        let [a, b, c] = triangle.map(|v| robust::Coord { x: v.x, y: v.z });
+        let area = robust::orient2d(a, b, c);
+        let sides = [(a, b), (b, c), (c, a)].map(|(p, q)| robust::orient2d(p, q, at) * area);
+        inside |= area != 0.0 && sides.iter().all(|&side| side >= 0.0);
+    });
+    inside
+}
+
 #[test]
 fn the_exact_mask_equals_coverage() {
     let mut pieces: Vec<PieceId> = Vec::new();
@@ -431,7 +449,7 @@ fn the_exact_mask_equals_coverage() {
         let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
         for level in [Level::Gl0, Level::Gl1] {
             let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
-            let (mut tested, mut wrong) = (0, 0);
+            let (mut tested, mut wrong, mut past_edges) = (0, 0, 0);
             let mut first = String::new();
             for payload in &payloads {
                 let frame = frame(level_code(level), payload.tile, anchor, cell);
@@ -441,18 +459,16 @@ fn the_exact_mask_equals_coverage() {
                     for i in 0..173 {
                         let p = [i as f32 * 0.37 + 0.011, j as f32 * 0.37 + 0.017];
                         let (x, z) = (ox + f64::from(p[0]), oz + f64::from(p[1]));
-                        // The mask follows the outer chains; coverage is the top triangles. They
-                        // agree to the f32 tile frame except at the sloped T's east road end,
-                        // where the triangles reach 1.09 mm past the chain (2026-10-26, open in
-                        // the gate D record): points within 2 mm of a chain are the chain's.
-                        let near_chain = payload
-                            .seams
-                            .iter()
-                            .any(|&s| segment_at(s, p, 0).distance < 2e-3);
-                        if near_chain {
+                        let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
+                        // The roadbed's coverage predicate also covers points up to 0.1% of a
+                        // triangle's height past its edges (a `roads.md` defect, held by
+                        // `the_coverage_predicate_covers_no_point_outside_its_triangle`); the
+                        // mask follows the edges. Those points, covered but inside no top
+                        // triangle, are the defect's; every other point compares exactly.
+                        if covered && !inside_a_top_triangle(&roadbed, x, z, &mut pieces) {
+                            past_edges += 1;
                             continue;
                         }
-                        let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
                         let sdf = mask_sdf(frame, payload, p);
                         let discarded = sdf < 0.0;
                         tested += 1;
@@ -481,6 +497,10 @@ fn the_exact_mask_equals_coverage() {
                 }
             }
             assert!(tested > 0);
+            assert!(
+                past_edges < 8,
+                "{name} {level:?}: {past_edges} points past the edges"
+            );
             assert_eq!(
                 wrong, 0,
                 "{name} {level:?}: {wrong} of {tested} points; first: {first}"
