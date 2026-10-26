@@ -41,6 +41,8 @@ const CELL_BASE := 4
 # Wall face instances per patch, prewarmed with its cells: the Kuopio census's walls are a few
 # hundred faces in all. A patch with more draws the first ones and counts the rest.
 const MAX_WALLS_PER_PATCH := 1024
+# A visibility range no camera is within (metres): a patch's PlaneMesh while its cells draw it.
+const HIDDEN_RANGE_M := 0.001
 const WALL_FACE_FLOATS := 8
 # Every (level code, GL3 step) a tile can be requested at.
 const LEVEL_STEPS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 2), Vector2i(3, 4), Vector2i(3, 8)]
@@ -725,8 +727,11 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	_rebuild_patch_walls(cells, patch)
 	_frame_sync_us += walls_us - sync_us
 	_frame_walls_us += Time.get_ticks_usec() - walls_us
-	# The PlaneMesh collapses while the cells draw the patch.
+	# The PlaneMesh collapses while the cells draw the patch, and is not drawn at all: its
+	# visibility range ends before any camera, so its vertices do not run (TERRAIN-07-D round 5).
+	# It stays visible, since grass and the water reflection read the patch node's visibility.
 	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
+	patch_node.visibility_range_end = HIDDEN_RANGE_M
 
 # The wall faces of the patch's installed tiles, each drawn by the patch holding its midpoint
 # (a face of a tile two patches share draws once), as one instance whose transform carries
@@ -772,6 +777,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	patch_cells.erase(key)
 	if patch_node != null:
 		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
+		patch_node.visibility_range_end = 0.0
 	if cells.is_empty():
 		return
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:

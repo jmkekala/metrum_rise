@@ -5686,6 +5686,104 @@ assume 2,048, which desktop drivers report.
 `async_terrain/node_jobs.rs` -3. Godot: `terrain_graded_tiles.gd` 806 (+87: the wall instances,
 `last_edit_batch`), `terrain_graded_walls.gdshader` 48 (new). `roadbed/` production unchanged.
 
+Round 5, 2026-10-26, the same branch rebased onto `road` at `d581a9f6` (`ROAD-68-K21` landed; no
+conflict): the GPU idle-frame matrix's findings, the change-driven renderer, the bridge mouth, the
+plot suites, a populated save. Fresh runs on this branch unless marked.
+
+- **GPU idle-frame matrix (fresh, a miss; run by the coordinator on the user's display,
+  17:48-17:56).** Tree `4607be47` (round 4's tip), release library `6c396f3d…`, RX 7900 XTX
+  (RADV), Kuopio and saved poses (no town save yet), two rounds, p50 frame / GPU in ms:
+
+  | Pose | Exact | Graded |
+  |---|---|---|
+  | `overview` | 1.89-1.90 / 1.23-1.24 | 6.45-6.70 / 2.12 |
+  | `close` | 1.70-1.78 / 1.08-1.09 | 5.70-5.83 / 1.79-1.83 |
+  | `ground` | 1.65-1.77 / 0.99-1.00 | 5.75-6.09 / 1.69-1.71 |
+  | `saved` | 4.72-4.85 / 2.13 | 9.95 / 3.07 |
+
+  Draws and primitives are identical on the three Kuopio poses (1,182 / 600,990, 1,439 /
+  829,698, 1,194 / 1,210,024); on `saved` graded draws 2,779 and 3,765,596 against 2,767 and
+  1,759,724. The acceptance (graded GPU p50 not above exact) misses on every pose by 0.70-0.94 ms
+  and the frame grows 4-5 ms. `t07d3/tools/matrix_summary.py` crashed on the camera paths'
+  samples, which name a `path` instead of a `pose`; fixed.
+- **The idle frame's +4-5 ms (attributed, fixed).** `diag/idle_cost.gd` (the production
+  `terrain.gd` over the Kuopio reference save, 150 m over the probe's focus, release library of
+  the tip's Rust, gamescope): with graded tiles `_process_graded_tiles()` took 4.65 ms p50 per
+  idle frame, of which `graded_tiles.process()` 1.11 ms and the rest the resident dictionary
+  `terrain.gd` rebuilt every frame for all 1,296 resident patches; `process()` itself walked
+  every resident patch (the signature, the list requests, the material check), every desired tile
+  (requests) and every installed one (eviction) each frame. The exact cut runs none of it. Both
+  now work on changes ([renderer rules](#godot-tile-renderer)): `terrain.gd` keeps the entries as
+  patches become resident, leave, commit a payload or change LOD step, with a residency and a
+  material revision. After, same session and library: `_process_graded_tiles()` 0.050 ms p50
+  per idle frame, `process()` 0.014 ms (the 301 installed tiles, 30 patches with cells and 1,296
+  lists unchanged).
+- **The GPU's +0.7-0.9 ms (attributed: frame pacing, not extra work).** On the Kuopio poses the
+  graded frames draw exactly what the exact cut's do. In gamescope's headless backend, which paces
+  both modes at 60 Hz, the GPU p50 is the same in both modes and the same as graded's on the
+  display: exact 2.13 / 1.82 / 1.71 ms, graded (the change-driven renderer) 2.14 / 1.83 / 1.70 ms
+  for `overview` / `close` / `ground` (same session, tip's release library). The GPU's time per
+  frame grows when frames come slower (its clocks fall with its load), so exact at about 530 fps
+  measured 1.24 / 1.08 / 0.99 ms and graded, CPU-bound at 150-170 fps, 2.12 / 1.83 / 1.70 ms. The
+  matrix re-run with the CPU fix decides it. Where cells draw the cost is real: over the Kuopio
+  reference save at 150 m (30 patches with cells) the diagnostic measured 1.10 ms exact against
+  2.51 ms graded, both paced. The `saved` pose's extra primitives are the graded
+  cells (a `GL0` tile is 32,768 triangles) and the collapsed `PlaneMesh` of each patch with cells,
+  whose vertices still run (it collapses rather than hides because grass and the water reflection
+  read the patch node's visibility); recorded, not changed.
+- **"Too many instances using shader instance variables" (attributed; outside gate D).** Godot
+  reserves 16 vec4 slots per instance whose material has instance uniforms; the default
+  `rendering/limits/global_shader_variables/buffer_size` of 65,536 slots holds 4,096 such
+  instances. The errors come only during the camera paths of the saved sessions, from the water
+  reflection's tree impostor proxies (`water_reflection.gd` `_free_tree_proxies` 3,223 of 3,782,
+  `_sync_proxy` 55), whose `vegetation_wind` material has an instance uniform, as do the trees
+  they mirror; the `instance_buffer_pos` errors are later allocations of instances whose first one
+  failed (Godot keeps the failed position). Capacity, both modes; graded adds its cell
+  `MultiMesh`es (the cells' instance uniforms), hence 4,181-4,535 errors against 3,782-3,808. The
+  levers (a larger buffer, or proxies without instance uniforms) are the water reflection's and
+  vegetation's, for the coordinator.
+- **The edit install frame (attributed; fixed by the same change).** The probe on the tip with
+  the frame's parts recorded (`edit_frame_parts`, kept): 4.10 ms, of which polling 0.73, the
+  batch's 6 uploads 0.17, the per-frame residency passes 2.34 and the per-frame material check
+  0.85; no patch's cells were rewritten. Round 4's lead (cell rewrites and `_sync_material`) was
+  wrong; the frame paid the idle frame's cost plus the batch.
+- **The bridge mouth (fixed at its cause).** A diagnostic bake of `bridge_t` (the mouth row at
+  `z = 10`, a lattice row; the hollow sculpted after) showed every structure-wall face along the
+  row standing from the deck (0) up to 0.354 m (0.474 m at the curbs, 0.12 + 0.354): the row's
+  lattice points are covered and took the inside rule's capped fill arm, and the terrain beyond
+  the row (0.25 m out: -0.06 m) rises to them. A bake rule, not a placement error: the inside rule
+  continues a road seam's cone, and a mouth row has none. The correction is recorded at the
+  [inside rule](#the-grading-function); after it every face along the row is an abutment from the
+  ground beyond (-0.38 to -0.46 m) up to the deck. `site_tests.rs`
+  `a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck` (every level, every face along
+  the row tops at the deck, and the cut edge and the terrain 0.25 m beyond lie below it, sampled
+  every 5 cm) fails without the fix (a face topping at 0.474 m) and passes with it. The 2-pixel
+  sky sliver under the face: see the re-render below.
+- **Plot suites (fixed; not `TERRAIN-08`).** Round 3's and round 4's runs failed behind exit code
+  0: gamescope exits 0 whatever its child returns (checked with a child exiting 3). Three causes,
+  none of them the Forward+ canopy: the suites captured the sidewalk with a white tag, which
+  `road_path.gdshader` reads as the footpath marker since `ROAD-56` (roadside sidewalks carry
+  `(0, 0, 0, 1)`); the native face came from the CDT export, which the preview has carried no
+  terrain for since `ROAD-68-A` and the game no longer draws; and `road_path.gdshader` lacked the
+  cloud shadow the yards' paving and the terrain receive, so a sidewalk stayed sunlit under clouds
+  (0.542 mean difference to the yard in full sun). The suites now use the sidewalk's colour and the
+  graded renderer's cell meshes (43,212 faces, none backwards); the sidewalk shader takes the
+  cloud shadow as `paving_surface.gdshaderinc` does (the Finnish carriageway,
+  `road_asphalt.gdshader`, lacks it too: `ROAD-56`'s, not changed here). `run.sh --test` runs both
+  suites, on `$DISPLAY` or in gamescope's headless backend, the status coming back through a file.
+  `plot_material_lighting_test.gd` passes (sidewalk 0.0, native paving 0.0).
+- **Populated save (made).** The populated-city fixture generator (`perf_contract_prepare`, with
+  its exact continuation check) on this build's release test binary at 14,000 residents (the grid
+  houses only 12,723 of 13,000 and 13,320 of 13,500 asked): 10,576 buildings, saved to
+  `$ARTIFACTS/populated_city_14000.sqlite`, generated in 66 s. A 60 m spur off the trunk in the
+  margin, `(-1300, 0) -> (-1300, 60)`, is the probe's edit; for the matrix's town poses the city
+  centre is `(0, 0)` (`METRUM_IDLE_BENCH_CENTRE=0,0`); its asset packs are the bootstrap packs.
+- **Renders (fresh, round 4's chain on its tip `4607be47`).** `kuopio_t2_wall` (before:
+  aborted): plan_terrain pinholes exact 1, B 3 (a miss, open): each a single pixel on the outer
+  sidewalk edge of the diagonal road against the grass, B at (496, 200), (768, 468) and
+  (1176, 870), exact at (1230, 914), so the crack is between the road's outer edge and the
+  terrain's discard edge in both modes.
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
