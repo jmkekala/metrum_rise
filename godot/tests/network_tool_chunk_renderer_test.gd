@@ -121,6 +121,11 @@ class TestTerrainRenderer:
 	extends TerrainRendererScript
 	var fail_next_stage: bool = false
 
+	# These cases check the exact cut's engineered patch transactions, which stay in terrain.gd
+	# beside the graded tiles until TERRAIN-07-G (T10).
+	func _init() -> void:
+		graded_tiles_enabled = false
+
 	func _ready() -> void:
 		pass
 
