@@ -970,6 +970,118 @@ fn benchmark_populated_commit_breakdown() {
     }
 }
 
+// `TERRAIN-07-E`'s populated frame paths (`terrain.md` T21): each tier's commit-breakdown edits
+// (the 120 m branches off the border trunk, `commit_trunk_branch`) replayed as drags of eight
+// poses on the road tool's preview, then committed with the last pose's preview and undone; per
+// pose the graded stage, then the commit's (the pose's tiles adopted by inputs) and the undo's
+// (the kept tiles), each the stage's wall clock. The stroke is then committed again, untimed,
+// and the next sample follows on that city. Cities as the breakdown loads them
+// (`METRUM_PERF_CACHE`, `METRUM_COMMIT_TIERS`). Set the workers with RAYON_NUM_THREADS.
+#[test]
+#[ignore = "release TERRAIN-07-E populated drags; loads or builds the requested cities outside timing"]
+fn benchmark_populated_graded_drags() {
+    for residents in commit_tiers() {
+        let started = Instant::now();
+        let (mut core, mut fixture) = commit_city(residents);
+        fixture["city_s"] = started.elapsed().as_secs_f64().into();
+        eprintln!("COMMIT_FIXTURE {fixture}");
+        core.precompute_road_mesh_data();
+        prepare_graded_sites(&mut core);
+        for (sample, start) in trunk_branch_starts(&core).into_iter().enumerate() {
+            let mut end = start + godot::prelude::Vector3::new(0.0, 0.0, 120.0);
+            end.y = core.heightmap.sample_height_world(end.x, end.z);
+            let mut record = graded_drag(&mut core, start, end);
+            record["residents"] = residents.into();
+            record["sample"] = sample.into();
+            record["buildings"] = core.allocator.buildings.len().into();
+            record["workers"] = crate::thread_pools::install(rayon::current_num_threads).into();
+            eprintln!("GRADED_POPULATED_DRAG {record}");
+        }
+    }
+}
+
+// One 1 + 1 stroke from `start` to `end` as a timed drag of eight poses, its commit with the
+// last pose's preview and that commit's undo, then committed again untimed (see
+// `benchmark_populated_graded_drags`). A pose's end lies on the ground under its point.
+fn graded_drag(
+    core: &mut crate::nodes::sim::core::state::SimCore,
+    start: godot::prelude::Vector3,
+    end: godot::prelude::Vector3,
+) -> serde_json::Value {
+    use crate::nodes::sim::core::road_commit::RoadCommitRequest;
+    use crate::nodes::sim::core::road_preview::{RoadPreviewRequest, road_tool_snapshot_from_core};
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    use std::sync::Arc;
+    core.refresh_road_terrain_inputs();
+    let mut context =
+        RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"));
+    let (mut poses, mut pose_max_ms, mut last) = (Vec::new(), 0.0f64, None);
+    for step in 1..=8 {
+        let mut point = start.lerp(end, step as f32 / 8.0);
+        point.y = core.heightmap.sample_height_world(point.x, point.z);
+        let points = vec![start, point];
+        let surface_generation = context.view.surface_generation;
+        let preview = context.preview_road(RoadPreviewRequest {
+            surface_generation,
+            points: points.clone(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        });
+        match preview.pieces.as_ref() {
+            Some(pieces) => {
+                let stats = pieces.graded.stats;
+                pose_max_ms = pose_max_ms.max(stats.total_ms());
+                poses.push(serde_json::json!({
+                    "step": step, "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
+                    "inputs_ms": stats.inputs_ms, "bake_ms": stats.bake_ms,
+                    "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
+                    "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
+                }));
+            }
+            None => poses.push(serde_json::json!({
+                "step": step, "invalid": preview.validation.invalid_reason,
+            })),
+        }
+        last = Some((points, Arc::new(preview)));
+    }
+    let (points, preview) = last.expect("eight poses");
+    let request = |preview| RoadCommitRequest {
+        points: points.clone(),
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        snap_to_existing_roads: true,
+        preview,
+    };
+    core.benchmark_mode = false;
+    let outcome = core.commit_road(request(Some(preview)), Instant::now(), Default::default());
+    assert!(outcome.committed, "{}", outcome.rejection);
+    let commit = core.last_graded_stats;
+    let reused = core.last_road_edit_metrics.preview_plan_reused;
+    let kept = core
+        .undo_stack
+        .back()
+        .and_then(|record| record.graded.as_ref())
+        .expect("the commit keeps its replaced tiles")
+        .wait()
+        .map(|kept| (kept.len(), kept.payload_bytes()))
+        .expect("the kept tiles bake");
+    assert!(core.undo_action_internal(), "undo");
+    let undo = core.last_graded_stats;
+    core.benchmark_mode = true;
+    let outcome = core.commit_road(request(None), Instant::now(), Default::default());
+    assert!(outcome.committed, "{}", outcome.rejection);
+    serde_json::json!({
+        "poses": poses, "pose_max_ms": pose_max_ms,
+        "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
+        "commit_inputs_ms": commit.inputs_ms, "commit_bake_ms": commit.bake_ms,
+        "commit_tiles": commit.wanted, "commit_adopted": commit.adopted,
+        "commit_baked": commit.baked, "preview_reused": reused,
+        "undo_ms": undo.total_ms(), "undo_tiles": undo.wanted, "undo_adopted": undo.adopted,
+        "undo_baked": undo.baked, "kept_tiles": kept.0, "kept_mb": kept.1 as f64 / 1e6,
+    })
+}
+
 // `ROAD-68-K22`: generates and checks this binary's saved commit-breakdown cities for
 // `METRUM_COMMIT_TIERS` in `METRUM_PERF_CACHE`, so a timing session only loads them.
 #[test]
@@ -1125,10 +1237,9 @@ fn profile_commits(
     let patches: Vec<(usize, usize)> = (0..core.heightmap.render_patch_rows())
         .flat_map(|z| (0..core.heightmap.render_patch_cols()).map(move |x| (x, z)))
         .collect();
-    let refined = crate::nodes::simulation_node::SimulationNode::build_road_terrain_patches(
-        core, &patches,
-    )
-    .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
+    let refined =
+        crate::nodes::simulation_node::SimulationNode::build_road_terrain_patches(core, &patches)
+            .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
     core.insert_refined_terrain_patch_cache_entries(refined);
     let refined_terrain_s = lap();
     // `TERRAIN-07-A` `T2` and `T7`: the whole city's road tiles at `GL0`, outside timing.
