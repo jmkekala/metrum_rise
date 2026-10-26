@@ -139,6 +139,7 @@ fn strips_hang_from_the_outer_chains_bitwise() {
                 continue;
             };
             let span = roadbed.span_piece(edge).unwrap();
+            check_abutments(&name, &graph, span, edge);
             assert_eq!(caps.is_empty(), mesh.cap_kind().is_none(), "{name} {id:?}");
             let Some(cap) = mesh.cap_kind() else {
                 continue;
@@ -172,6 +173,67 @@ fn strips_hang_from_the_outer_chains_bitwise() {
                 );
             }
         }
+    }
+}
+
+// `TERRAIN-07-C` (T22 4 (a)): a bridge span hangs one abutment face (two triangles) at each end
+// whose node another standard edge meets, so a grounded piece shares its mouth row; no other
+// span hangs one. Its top points are the fascias' bottoms below the row's two corners (the
+// slab's end edge, bitwise), its bottoms the skirt depth below them (the grounded skirts'
+// bottoms), and it faces the space under the bridge, into the span.
+fn check_abutments(name: &str, graph: &RegionGraph, span: &SpanPiece, edge: usize) {
+    let mesh = span.mesh();
+    let mut faces = Vec::new();
+    mesh.for_each_abutment_triangle(|points, bottoms| faces.push((points, bottoms)));
+    let record = graph.edge(edge);
+    let meets_ground = |node: u32| {
+        let node = graph.get_valid_node(node);
+        graph.node_adjacency(node).iter().any(|&other| {
+            other != edge
+                && graph
+                    .get_edge(other)
+                    .is_some_and(|other| !other.deleted && other.class == EdgeClass::Standard)
+        })
+    };
+    let ends: Vec<&MouthSection> = [
+        (record.start_node, span.start_mouth()),
+        (record.end_node, span.end_mouth()),
+    ]
+    .into_iter()
+    .filter(|&(node, _)| record.class == EdgeClass::Bridge && meets_ground(node))
+    .map(|(_, mouth)| mouth)
+    .collect();
+    assert_eq!(
+        faces.len(),
+        2 * ends.len(),
+        "{name} span {edge}: abutment faces"
+    );
+    let positions = mesh.positions();
+    let centroid = positions.iter().copied().sum::<RoadVec3>() / positions.len() as f64;
+    for (points, bottoms) in faces {
+        for (point, bottom) in points.iter().zip(bottoms) {
+            let kind = if bottom {
+                StripKind::Skirt
+            } else {
+                StripKind::Fascia
+            };
+            let below_a_corner = ends.iter().any(|mouth| {
+                let row = &mouth.vertices;
+                [row[0], row[row.len() - 1]]
+                    .iter()
+                    .any(|&corner| bits(kind.bottom(corner)) == bits(*point))
+            });
+            assert!(
+                below_a_corner,
+                "{name} span {edge}: an abutment vertex off its corners"
+            );
+        }
+        let [p, q, r] = points;
+        let normal = -(q - p).cross(r - p);
+        assert!(
+            normal.dot(centroid - (p + q + r) / 3.0) > 0.0,
+            "{name} span {edge}: an abutment faces away from the bridge"
+        );
     }
 }
 
@@ -1897,6 +1959,10 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
 // top-surface hashes above are unchanged. Re-recorded by `TERRAIN-07-C` round 2: the 18 entries
 // with a structure whose far end is free (the bridge and tunnel families and `mixed_profiles`)
 // change with its end cap; every other entry and the top-surface hashes are unchanged.
+// Re-recorded by `TERRAIN-07-C` round 4: the ten bridge entries (`bridge_t`, `bridge_bend`,
+// `bridge_pass_through`, `bridge_rural_t` and `width_bridge_pass_through`, flat and sloped),
+// whose bridge meets a road at its hub end, change with the abutment face hung there; every
+// other entry, the tunnels' among them, and the top-surface hashes are unchanged.
 const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("t/false", 0x3a3196117e3f00f3),
     ("four_way/false", 0x694f53237d5dd070),
@@ -1955,11 +2021,11 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("band_four_way/false", 0xa924a30d7cce27a4),
     ("band_pass_through/false", 0x8bab719977233f20),
     ("width_pass_through/false", 0xed996583094f5512),
-    ("width_bridge_pass_through/false", 0x89e9262a67209a4c),
-    ("bridge_t/false", 0xc883e1f1c99ca933),
-    ("bridge_bend/false", 0x8068311a7e637744),
-    ("bridge_pass_through/false", 0x9824ea1e7f137ba0),
-    ("bridge_rural_t/false", 0x2c3f444e1d36ec83),
+    ("width_bridge_pass_through/false", 0xa061ac08a79003af),
+    ("bridge_t/false", 0x52d870975ff21fcd),
+    ("bridge_bend/false", 0x4e1d11e189af360f),
+    ("bridge_pass_through/false", 0xd8331298dd91b258),
+    ("bridge_rural_t/false", 0xd4b525b794ec9395),
     ("tunnel_t/false", 0xd8ec837c4448802f),
     ("tunnel_bend/false", 0xa50d2f231833253f),
     ("tunnel_pass_through/false", 0x303c028108500646),
@@ -2022,11 +2088,11 @@ const EXPECTED_STRIPS: &[(&str, u64)] = &[
     ("band_four_way/true", 0xa522d71baf1fd2a3),
     ("band_pass_through/true", 0x4b2a4edda48c1540),
     ("width_pass_through/true", 0x7f273f7e88ee3dae),
-    ("width_bridge_pass_through/true", 0x52ac105760c28384),
-    ("bridge_t/true", 0xfd32193f4459827c),
-    ("bridge_bend/true", 0x5540871d05b18b4c),
-    ("bridge_pass_through/true", 0x1ee6bfde0c4115cb),
-    ("bridge_rural_t/true", 0xabfb72cd77fd04ee),
+    ("width_bridge_pass_through/true", 0x116e064cb80cec02),
+    ("bridge_t/true", 0x90f933ef44f34eac),
+    ("bridge_bend/true", 0x65fa10b8e747d953),
+    ("bridge_pass_through/true", 0xf04c12c0e0dd199a),
+    ("bridge_rural_t/true", 0x416fcacf8292544e),
     ("tunnel_t/true", 0xe4b18086f4548d51),
     ("tunnel_bend/true", 0x104995dd584ad084),
     ("tunnel_pass_through/true", 0x51e1a348b4ccbc48),

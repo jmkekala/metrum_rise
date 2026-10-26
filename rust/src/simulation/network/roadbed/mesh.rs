@@ -55,6 +55,21 @@ impl StripKind {
     }
 }
 
+/// How a span closes one of its end rows (`TERRAIN-07-C`, `docs/terrain.md` T22), decided by
+/// the node's arms (`arms::span_end`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SpanEnd {
+    /// The row is shared with a piece that closes it, or with another structure.
+    Shared,
+    /// A structure's free end: capped down to the kind's depth ([`end_cap`]).
+    Cap(StripKind),
+    /// A grounded span's mouth shared with a bridge or tunnel: a wall run across the row.
+    WallRun,
+    /// A bridge's mouth shared with a grounded piece: the abutment face below the slab's end
+    /// edge ([`PieceMesh::for_each_abutment_triangle`]).
+    Abutment,
+}
+
 /// Footprint boundary polyline: vertex indices into its piece's positions, ordered so the road
 /// lies on the left in XZ (the counter-clockwise quarter turn from +x towards +z), from one
 /// mouth corner to the next.
@@ -111,6 +126,10 @@ pub struct PieceMesh {
     // bottom)` pairs, a mesh vertex or the bottom `cap_kind` puts below it.
     caps: Vec<[(u32, bool); 3]>,
     cap_kind: Option<StripKind>,
+    // The abutment faces at a bridge's mouths shared with a grounded piece (`TERRAIN-07-C`):
+    // per mouth its row's two corner vertices, the space under the bridge right of the first to
+    // the second.
+    abutments: Vec<[u32; 2]>,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -221,6 +240,27 @@ impl PieceMesh {
         };
         for triangle in &self.caps {
             visit(triangle.map(point), triangle.map(|(_, bottom)| bottom));
+        }
+    }
+
+    /// Visits the abutment faces' triangles (`TERRAIN-07-C`, `docs/terrain.md` T22 4 (a)): at
+    /// each mouth a bridge span shares with a grounded piece, the quad in the mouth row's
+    /// vertical plane from the slab's end edge (the fascias' bottoms below the row's two
+    /// corners, [`StripKind::Fascia`]) down to the skirt depth below the corners
+    /// ([`StripKind::Skirt`]), where the grounded piece's skirts end and the terrain's abutment
+    /// wall continues it to the graded ground. Each triangle comes with its points and, per
+    /// point, whether it is a bottom vertex (at the skirt depth), wound so that
+    /// `-(b - a) x (c - a)` faces the space under the bridge. `O(mouths)`, without allocation.
+    pub fn for_each_abutment_triangle(&self, mut visit: impl FnMut([RoadVec3; 3], [bool; 3])) {
+        for &corners in &self.abutments {
+            let [a, b] = corners.map(|vertex| self.positions[vertex as usize]);
+            let ([top_a, top_b], [bottom_a, bottom_b]) = (
+                [a, b].map(|corner| StripKind::Fascia.bottom(corner)),
+                [a, b].map(|corner| StripKind::Skirt.bottom(corner)),
+            );
+            // As a strip below the chain from `a` to `b`: facing right of it.
+            visit([top_a, bottom_a, bottom_b], [false, true, true]);
+            visit([top_a, bottom_b, top_b], [false, true, false]);
         }
     }
 
@@ -423,17 +463,15 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
 }
 
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
-/// mouth sections, with `strips` below its two outer chains, at each end `caps` names a kind
-/// for (a structure's free end, `TERRAIN-07-C`) a cap ([`end_cap`]) down to that kind's depth,
-/// and at each end `walls` marks (a grounded span's shared mouth with a structure) a wall run
-/// across the end row. `O(sections * bands)`; allocates only the mesh.
+/// mouth sections, with `strips` below its two outer chains, and each end row closed as `ends`
+/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run or an abutment face.
+/// `O(sections * bands)`; allocates only the mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
     (start_mouth, end_mouth): (&MouthSection, &MouthSection),
     layout: &RowLayout,
     strips: Option<StripKind>,
-    caps: [Option<StripKind>; 2],
-    walls: [bool; 2],
+    ends: [SpanEnd; 2],
 ) -> PieceMesh {
     let rows = sections.len();
     let stride = layout.stride();
@@ -511,35 +549,38 @@ pub(super) fn build_span_mesh(
                 .collect(),
         },
     ];
-    // The start row runs from chain 1's end (the last slot) back to chain 0's start, the end row
-    // from chain 0's end (slot 0) to chain 1's start.
-    let stride_u32 = stride as u32;
-    let mut wall_runs = Vec::new();
-    if walls[0] {
-        wall_runs.push(wall_run(&positions, (0..stride_u32).rev()));
-    }
-    if walls[1] {
-        let first = (rows as u32 - 1) * stride_u32;
-        wall_runs.push(wall_run(&positions, first..first + stride_u32));
-    }
-    let mut cap_triangles = Vec::new();
-    for (end, kind) in caps.iter().enumerate() {
-        let Some(kind) = kind else {
-            continue;
-        };
-        // The end row and the row next to it inside the span.
+    let (mut wall_runs, mut faces) = (Vec::new(), EndFaces::default());
+    for (end, closure) in ends.into_iter().enumerate() {
+        // The end row, the row next to it inside the span, and the end row's first and last
+        // vertices. A wall run lists the row with the span's road on its left: the start row
+        // from chain 1's end (the last slot) back to chain 0's start, the end row from chain
+        // 0's end (slot 0) to chain 1's start.
         let (row, inner) = if end == 0 {
             (0, 1)
         } else {
             (rows - 1, rows - 2)
         };
-        end_cap(
-            &positions,
-            (row * stride, inner * stride),
-            stride,
-            kind.depth_m(),
-            &mut cap_triangles,
-        );
+        let (first, last) = ((row * stride) as u32, (row * stride + stride - 1) as u32);
+        match closure {
+            SpanEnd::Shared => {}
+            SpanEnd::WallRun if end == 0 => {
+                wall_runs.push(wall_run(&positions, (first..=last).rev()))
+            }
+            SpanEnd::WallRun => wall_runs.push(wall_run(&positions, first..=last)),
+            SpanEnd::Cap(kind) => {
+                faces.cap_kind = Some(kind);
+                end_cap(
+                    &positions,
+                    (row * stride, inner * stride),
+                    stride,
+                    kind.depth_m(),
+                    &mut faces.caps,
+                );
+            }
+            // An abutment runs the other way, so the space under the bridge lies on its right.
+            SpanEnd::Abutment if end == 0 => faces.abutments.push([first, last]),
+            SpanEnd::Abutment => faces.abutments.push([last, first]),
+        }
     }
     PieceMesh::new(
         positions,
@@ -548,8 +589,17 @@ pub(super) fn build_span_mesh(
         group_starts,
         (outer_chains, wall_runs),
         strips,
-        (cap_triangles, caps[0].or(caps[1])),
+        faces,
     )
+}
+
+// The faces closing a span's end rows (`TERRAIN-07-C`): the free-end caps' triangles over
+// `(vertex, bottom)` pairs with the kind their bottoms take, and the abutment faces' corner pairs.
+#[derive(Default)]
+struct EndFaces {
+    caps: Vec<[(u32, bool); 3]>,
+    cap_kind: Option<StripKind>,
+    abutments: Vec<[u32; 2]>,
 }
 
 // The cap closing a structure's free end (`TERRAIN-07-C`): the polygon in the end row's vertical
@@ -629,7 +679,7 @@ impl PieceMesh {
             group_starts,
             (outer_chains, wall_runs),
             strips,
-            (Vec::new(), None),
+            EndFaces::default(),
         )
     }
 
@@ -641,7 +691,11 @@ impl PieceMesh {
         group_starts: [u32; GROUPS + 1],
         (outer_chains, wall_runs): (Vec<OuterChain>, Vec<OuterChain>),
         strips: Option<StripKind>,
-        (caps, cap_kind): (Vec<[(u32, bool); 3]>, Option<StripKind>),
+        EndFaces {
+            caps,
+            cap_kind,
+            abutments,
+        }: EndFaces,
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
         let grid = SurfaceTriangleGrid::from_triangles(
@@ -661,6 +715,7 @@ impl PieceMesh {
             strips,
             caps,
             cap_kind,
+            abutments,
             grid,
         }
     }

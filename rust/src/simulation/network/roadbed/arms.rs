@@ -21,6 +21,7 @@ use super::layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, CROSSWALK_DEPTH_M, EdgeEnd, JunctionLayout,
     LayoutError,
 };
+use super::mesh::{SpanEnd, StripKind};
 use super::profile::{Level, ProfileBand, RoadProfile};
 use super::span::{PASS_THROUGH_DOT_THRESHOLD, edge_points, incident_direction, is_surface_edge};
 use super::{BandKind, RoadVec2};
@@ -414,24 +415,44 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
     directions_pass_through(a.1, b.1) && RoadProfile::for_edge(a.0) == RoadProfile::for_edge(b.0)
 }
 
-/// Whether `node` is a structure's free end: a bridge or tunnel is its only surface arm. Such an
-/// end owns no node piece; the structure's span closes it with a cap (`TERRAIN-07-C`).
+/// How the span of `edge_idx` closes its end row at `node` (`TERRAIN-07-C`, `docs/terrain.md`
+/// T22), from the node's arms alone:
+/// - a structure's free end (a bridge or tunnel is the node's only surface arm, so the end owns
+///   no node piece) is capped, a bridge's down to its slab and a tunnel's to the skirt depth, a
+///   road end meeting the ground;
+/// - a standard edge passing through into a bridge or tunnel (a pass-through pair, so the two
+///   spans share the mouth row without a node piece) closes its chains across the row with a
+///   wall run;
+/// - a bridge whose mouth row a grounded piece shares (another standard edge meets the node, so
+///   the node's piece is grounded or the node passes through into a standard span) hangs its
+///   abutment face below the slab's end edge;
+/// - any other end is closed by the piece it shares the row with.
+///
 /// `O(degree)`.
-pub(super) fn is_structure_end(graph: &RegionGraph, node: u32) -> bool {
-    node_incidents(graph, node).is_some_and(|incidents| ends_a_structure(graph, &incidents))
-}
-
-/// Whether a standard edge's end at `node` meets a structure without a node piece: `node` is a
-/// pass-through pair whose other arm is a bridge or tunnel, so the two spans share the mouth row
-/// and the grounded span closes its chains across it with a wall run (`TERRAIN-07-C`).
-/// `O(degree)`.
-pub(super) fn passes_into_structure(graph: &RegionGraph, node: u32, edge_idx: usize) -> bool {
-    node_incidents(graph, node).is_some_and(|incidents| {
-        passes_through(graph, &incidents)
-            && incidents.iter().any(|(key, _)| {
-                key.edge != edge_idx && graph.edge(key.edge).class != EdgeClass::Standard
-            })
-    })
+pub(super) fn span_end(graph: &RegionGraph, node: u32, edge_idx: usize) -> SpanEnd {
+    let Some(incidents) = node_incidents(graph, node) else {
+        return SpanEnd::Shared;
+    };
+    let others = || {
+        incidents
+            .iter()
+            .filter(|(key, _)| key.edge != edge_idx)
+            .map(|(key, _)| graph.edge(key.edge).class)
+    };
+    match graph.edge(edge_idx).class {
+        EdgeClass::Standard
+            if passes_through(graph, &incidents)
+                && others().any(|class| class != EdgeClass::Standard) =>
+        {
+            SpanEnd::WallRun
+        }
+        EdgeClass::Bridge if ends_a_structure(graph, &incidents) => SpanEnd::Cap(StripKind::Fascia),
+        EdgeClass::Tunnel if ends_a_structure(graph, &incidents) => SpanEnd::Cap(StripKind::Skirt),
+        EdgeClass::Bridge if others().any(|class| class == EdgeClass::Standard) => {
+            SpanEnd::Abutment
+        }
+        _ => SpanEnd::Shared,
+    }
 }
 
 fn ends_a_structure(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {

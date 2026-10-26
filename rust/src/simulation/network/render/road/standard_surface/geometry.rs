@@ -7,7 +7,7 @@ use super::super::{
     MeshLayer, NetworkMeshData, push_triangle, push_triangle_preserving_winding_with_exact_normal,
     render_point, world_point,
 };
-use crate::simulation::network::roadbed::{PieceMesh, RoadSection};
+use crate::simulation::network::roadbed::{PieceMesh, RoadSection, RoadVec3};
 use godot::prelude::{Color, Vector2, Vector3};
 
 const BAND_EPSILON_M: f32 = 0.001;
@@ -98,14 +98,34 @@ pub(super) fn emit_chain_strips(
     color: Color,
 ) {
     piece.for_each_strip_triangle(|world, bottoms| {
-        let [a, b, c] = world.map(render_point);
-        push_triangle_preserving_winding_with_exact_normal(
-            mesh,
-            layer,
-            world,
-            bottoms.map(|bottom| Vector2::new(0.0, f32::from(u8::from(bottom)))),
-            color,
-            -((b - a).cross(c - a)),
-        );
+        emit_strip_triangle(mesh, layer, color, world, bottoms);
     });
+}
+
+// Emits a bridge span's abutment faces (`TERRAIN-07-C`) into the skirt layer as the piece wound
+// them, facing the space under the bridge, with the skirts' bottom-vertex attribute: their
+// bottoms are the grounded skirts' bottoms below the mouth row's corners and deepen with them.
+pub(super) fn emit_abutment_faces(mesh: &mut NetworkMeshData, piece: &PieceMesh, color: Color) {
+    piece.for_each_abutment_triangle(|world, bottoms| {
+        emit_strip_triangle(mesh, MeshLayer::Skirt, color, world, bottoms);
+    });
+}
+
+// One strip-layer triangle in its own winding, with UV `y` the bottom-vertex attribute.
+fn emit_strip_triangle(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    color: Color,
+    world: [RoadVec3; 3],
+    bottoms: [bool; 3],
+) {
+    let [a, b, c] = world.map(render_point);
+    push_triangle_preserving_winding_with_exact_normal(
+        mesh,
+        layer,
+        world,
+        bottoms.map(|bottom| Vector2::new(0.0, f32::from(u8::from(bottom)))),
+        color,
+        -((b - a).cross(c - a)),
+    );
 }

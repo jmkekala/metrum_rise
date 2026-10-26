@@ -248,11 +248,12 @@ fn open_road_edges(core: &mut SimCore) -> Vec<String> {
     open_road_edges_where(core, |_, _, _| false)
 }
 
-// As `open_road_edges`, without the single-face edges `exempt` admits by their layer (0 road, 1
-// sidewalk, 2 curb, 3 raised step, 4 concrete, 5 skirt) and two world points (x, y, z).
+// As `open_road_edges`, without the single-face edges `exempt` admits by whether they are a
+// skirt-layer bottom edge (both ends carry the bottom attribute) and their two world points (x,
+// y, z).
 pub(super) fn open_road_edges_where(
     core: &mut SimCore,
-    exempt: impl Fn(i32, (f64, f64, f64), (f64, f64, f64)) -> bool,
+    exempt: impl Fn(bool, (f64, f64, f64), (f64, f64, f64)) -> bool,
 ) -> Vec<String> {
     let (edges, thirds) = road_edges(core);
     let roadbed = &core.transit_network.roadbed;
@@ -267,9 +268,6 @@ pub(super) fn open_road_edges_where(
             continue;
         }
         let (face, (layer, _)) = users[0];
-        if exempt(layer, a, b) {
-            continue;
-        }
         let (dx, dz) = (b.0 - a.0, b.2 - a.2);
         let length = dx.hypot(dz);
         // A skirt's bottom edge meets the ground below the road's edge: its two ends carry the
@@ -279,7 +277,11 @@ pub(super) fn open_road_edges_where(
         let (points, attributes) = &thirds[face];
         let bottom =
             |k: &Key| attributes[points.iter().position(|point| key(*point) == *k).unwrap()] > 0.5;
-        if layer == SKIRT_LAYER && length > 0.0 && bottom(p) && bottom(q) {
+        let skirt_bottom = layer == SKIRT_LAYER && length > 0.0 && bottom(p) && bottom(q);
+        if exempt(skirt_bottom, a, b) {
+            continue;
+        }
+        if skirt_bottom {
             // It lies under the footprint's edge: road 5 mm to one side of it, none to the other.
             let road_across = |side: f64| {
                 let (x, z) = (

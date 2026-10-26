@@ -229,8 +229,9 @@ pub(crate) fn footpath_fixtures(sloped: bool) -> Vec<(String, RegionGraph)> {
 /// approaches, and errors by their `Debug` text without punctuation or field names), layouts
 /// (every product field, see [`Fnv::layout`]), span pieces, node walkways, lanes with their
 /// crossings, and surface queries; and apart from them, the strips every piece hangs from its
-/// outer chains (`TERRAIN-07-B`), a layer of its own that the seven top-surface hashes never
-/// read, checked by [`assert_strip_probes`].
+/// outer chains (`TERRAIN-07-B`) with the free-end caps and abutment faces (`TERRAIN-07-C`), a
+/// layer of its own that the seven top-surface hashes never read, checked by
+/// [`assert_strip_probes`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductProbe {
     pub(crate) graph: u64,
@@ -351,15 +352,18 @@ impl Fnv {
         self.debug(mesh.grid());
     }
 
-    // A piece's strip layer: its kind, then every strip triangle's points and bottom flags.
+    // A piece's strip layer: its kind, then every strip triangle's points and bottom flags, then
+    // the abutment faces' (`TERRAIN-07-C`).
     fn strips(&mut self, mesh: &PieceMesh) {
         self.debug(&mesh.strip_kind());
-        mesh.for_each_strip_triangle(|points, bottoms| {
+        let mut triangle = |points: [RoadVec3; 3], bottoms: [bool; 3]| {
             points.into_iter().for_each(|point| self.road3(point));
             bottoms
                 .into_iter()
                 .for_each(|bottom| self.word(u64::from(bottom)));
-        });
+        };
+        mesh.for_each_strip_triangle(&mut triangle);
+        mesh.for_each_abutment_triangle(triangle);
     }
 }
 

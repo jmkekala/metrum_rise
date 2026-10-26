@@ -5,7 +5,8 @@
 //! node piece or a pass-through's span mouth, and roads without sidewalks (shoulders) at a T. The
 //! published road chunks, skirts and bridge concrete included, are watertight as `terrain_seams`
 //! measures the reference junctions: a bridge's fascias (`TERRAIN-07-B`) close its deck's sides
-//! against the deck edge and the slab, and a structure's free end is capped (`TERRAIN-07-C`). The
+//! against the deck edge and the slab, a structure's free end is capped and a bridge's mouth
+//! shared with a grounded piece is closed below its slab by the abutment face (`TERRAIN-07-C`). The
 //! terrain side of structures (abutments and portals) is `TERRAIN-07`'s, so the terrain is not
 //! checked here.
 
@@ -144,17 +145,18 @@ fn structure_and_rural_road_chunks_are_watertight() {
             assert!(roadbed.is_current(), "{name}/{sloped}");
             assert!(roadbed.failed_nodes().is_empty(), "{name}/{sloped}");
             // A structure that ends without a continuation is capped there (`TERRAIN-07-C`). At
-            // a mouth row it shares with a grounded piece its slab and fascias end, and so do
-            // the skirts of the grounded piece; a tunnel's sides have no strips, since its bore
-            // is its portals'. Abutments and portals close them (`TERRAIN-07-C`). Everything
-            // else is watertight.
+            // a mouth row it shares with a grounded piece, a bridge's slab end edge is closed by
+            // its abutment face, whose bottom edge is a skirt bottom across the row that the
+            // terrain's abutment wall continues to the graded ground; the fascias, the abutment
+            // face and the grounded piece's skirts end in vertical edges on the row's corner
+            // lines, of different depths (T-vertices on one line, no gap). A tunnel's sides have
+            // no strips, since its bore is its portals'. Everything else is watertight.
             let (rows, chains) = match class {
                 Some(_) => structure_ends(&core, edges[0]),
                 None => Default::default(),
             };
             let tunnel = class == Some(2);
-            let problems = open_road_edges_where(&mut core, |layer, a, b| {
-                const CONCRETE: i32 = 4;
+            let problems = open_road_edges_where(&mut core, |skirt_bottom, a, b| {
                 // Chunk vertices are the pieces' f64 positions rounded to f32 in the chunk frame.
                 let near = |p: (f64, f64, f64), (x, z): (f64, f64)| {
                     (x - p.0).abs() < 1e-4 && (z - p.2).abs() < 1e-4
@@ -173,7 +175,7 @@ fn structure_and_rural_road_chunks_are_watertight() {
                         near(p, closest)
                     })
                 };
-                ((layer == CONCRETE || vertical) && rows.iter().any(on_both))
+                ((skirt_bottom || vertical) && rows.iter().any(on_both))
                     || (tunnel && on_chain(a) && on_chain(b))
             });
             if !problems.is_empty() {
