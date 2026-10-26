@@ -3118,7 +3118,8 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (a): the gap exists only on the `road` branch, where saves may break,
       and `TERRAIN-07-E` closes it at its cause; (b) would block saving over a road the player
       did not make that steep, and (c) is `TERRAIN-07-E` itself.
-50. **The commit breakdown runs the test build's whole-city checks (`ROAD-68-K22`) — open.**
+50. **The commit breakdown runs the test build's whole-city checks (`ROAD-68-K22`) — decided by the
+    user, 2026-10-26: (a), measured first.**
     - **Evidence.** The economy runners switch off the test-only checks (`contract::timing_mode`:
       the planning passes' book fingerprints and `debug::work::set_city_checks(false)`); the
       commit breakdown never did, so its city builds and every frame it steps run them. They are
@@ -3137,6 +3138,10 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (a), measured first: which reported stages move, and by how much, in
       one session against a control without it. Not taken in `ROAD-68-K22`, which changes no
       timed path.
+    - **Decision (the user, 2026-10-26): (a).** The breakdown switches the test-only checks off as
+      the economy runners do. One session against a control without the switch records which
+      reported stages move and by how much; later sessions build every binary with the switch.
+      Not built yet.
 
 Spec corrections in `ROAD-68-A`:
 
