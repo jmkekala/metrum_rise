@@ -4975,7 +4975,7 @@ land at `e372efa3`, above): T22 4 (a)'s roadbed half, the abutment face. The por
 **What landed.**
 
 - [T22](#terrain-07-open-questions) 4 (a), the roadbed's half (its bottom edge and the chunk
-  check's rule taken pending the user's review, 2026-10-26): at each mouth a bridge span shares
+  check's rule taken 2026-10-26, confirmed by the user 2026-10-26): at each mouth a bridge span shares
   with a grounded piece, the span hangs the abutment face, a quad in the mouth row's vertical
   plane from the slab's end edge (the fascias' bottoms below the row's two corners) down to the
   skirt depth below the corners (`PieceMesh::for_each_abutment_triangle`), emitted in the skirt
@@ -5042,7 +5042,7 @@ then gate C's acceptance re-run whole.
 **What landed.**
 
 - [T22](#terrain-07-open-questions) 5 (a) as recorded there (round 5), with the rule for the
-  ground beside the opening narrowed, taken pending the user's review, 2026-10-26: the roadbed's
+  ground beside the opening narrowed, taken 2026-10-26, confirmed by the user 2026-10-26: the roadbed's
   `SpanEnd::Portal`, portal rows and portal part query; the terrain's portal window, deck raster
   and opening post-pass (`graded/portal.rs`), the bore seams in the seam row, the opening's side
   walls and the portal row's dropped headwall (`walls::build_structure_walls`, one per-seam
@@ -5558,7 +5558,7 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       with a measurement that (a) misses.
 
 20. **T20. The edit size the 3.0 ms terrain stage covers on hills (`TERRAIN-07-A` round 3) —
-    decided by the coordinator under the user's delegation, 2026-10-25 night, for review: (a).**
+    decided by the coordinator under the user's delegation, 2026-10-25 night, confirmed by the user 2026-10-26: (a).**
     - **Evidence** ([record](#terrain-07-a-record), round 3). Every exact lever tried so far
       (rounds 2 and 3, T18) leaves 13 of the 44 Kuopio edits between 3.01 and 5.30 ms on four
       workers; the populated city's edits take 1.10-2.94 ms. The misses are edits of 8-19 dirty
@@ -5616,7 +5616,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 
 21. **T21. Building sites as grading clients in the populated commits (`TERRAIN-07-C` round 2) —
     open, not relaxed; round 3: the full-edit bake carried to gate E's frame paths under T20 (a)
-    by the coordinator under the user's delegation, for review.**
+    by the coordinator under the user's delegation, confirmed by the user 2026-10-26. If gate E's
+    frame paths still miss: (a) more exact levers first, then (c); not (b), which changes the
+    measurement (the user, 2026-10-26).**
     - **Evidence** ([record](#terrain-07-c-record), round 2, same session against gate A's
       binary, four workers). With the city's sites as grading inputs, the first road commit of
       each built-up tier branches beside zoned lots and takes 3.05-3.25 ms at 2k residents,
@@ -5672,9 +5674,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       user decides between the budget for site-dense edits and (c).
 
 22. **T22. The geometry of structure ends (`TERRAIN-07-C` round 2) — decided by the coordinator
-    under the user's delegation, 2026-10-26 night, for review: the recommendations; parts 1 and
-    2 built in round 2, 3 and 4 in rounds 3 and 4, part 5 detailed in round 4 (taken pending the
-    user's review) and open for round 5.** T14 (a) names `SeamKind::Wall` at
+    under the user's delegation, 2026-10-26 night, confirmed by the user 2026-10-26: the recommendations; parts 1 and
+    2 built in round 2, 3 and 4 in rounds 3 and 4, part 5 detailed in round 4 and built in round
+    5, its abutment edge and narrowed portal rule confirmed by the user 2026-10-26.** T14 (a) names `SeamKind::Wall` at
     abutments and portals but not their shapes.
     - **Evidence.** Bridge and tunnel spans publish no chains, coverage or skirts (`ROAD-68-F`
       part 2, `TERRAIN-07-B`). Where a structure meets a grounded piece (a node piece's mouth or a

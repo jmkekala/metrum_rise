@@ -1623,7 +1623,7 @@ These need a user decision; work that does not depend on them continues.
       it ends at (the exact boundary of the grounded footprint, but curb pairs share XZ with two
       heights, so the seam steps 12 cm at the curb).
 20. **Supplier work-count limits on `ROAD-68` cities (`ROAD-68-G` attribution; attributed
-    2026-10-25: correct topology, no defect; the re-baseline waits for the user).** In one
+    2026-10-25: correct topology, no defect; decided by the user, 2026-10-26: (a)).** In one
     session the last pre-`ROAD-68` code (`d6c80f91`) and the `ROAD-68-G` base (`c59955e6` plus
     the gate's test-only harness) ran the economy performance contract A B B A, each on its own
     generated cities ([attribution](#attribution-of-the-perf-contract-rise-road-68-g)). Five of the
@@ -1656,7 +1656,9 @@ These need a user decision; work that does not depend on them continues.
     the runner also reports, and keep the 1.2 × household-ratio limit; (b) keep raw counts with
     per-counter factors of at least 1.46 (searches, 4.16×) and 1.81 (routes, 5.15×) of the
     household ratio, which fit only the present cities; (c) keep the limits and list both
-    with the five known failures.
+    with the five known failures. **Decided by the user, 2026-10-26: (a).** The runner reports
+    each tier's census closure passes, and the two limits apply to the searches and routes per
+    pass. Not built yet; it lands with `ROAD-68-G`'s perf-contract run.
 
 21. **The commit's other stages exceed a frame (`ROAD-68-G` measurement) — cell lots decided
     2026-10-24 (user): profile and speed up lot regeneration first; if it still does not fit,
@@ -2407,7 +2409,7 @@ These need a user decision; work that does not depend on them continues.
       ([`ROAD-54`](#road-geometry-validation-road-54)); node edits refuse it in
       `SimCore::try_graph_edit`. The validator's grade tiers become 16% / 1:3 for streets and
       6% / 1:3 for bridges and tunnels: one maximum for every class (decided by the coordinator
-      under the user's delegation, 2026-10-25 night, for review: the user's 1:3 named no class,
+      under the user's delegation, 2026-10-25 night, confirmed by the user 2026-10-26: the user's 1:3 named no class,
       and `ROAD-54`'s structural 16% was never refused). Not covered in `ROAD-68-K14`:
       `RegionGraph::sync_to_terrain`, the whole-graph terrain sync, which re-graded control
       polylines to the ground without the rule (covered since `ROAD-68-K15`, below); and loads,
@@ -2434,7 +2436,7 @@ These need a user decision; work that does not depend on them continues.
       and failed its open chain end (attempt 17). The source-delta quality limit fails on 4
       edges, up to 0.36 m past 5 m in junction blends ([open question 39](#road-68-open-questions)).
     - **`ROAD-68-K14`'s open items (`ROAD-68-K15`; decided by the coordinator under the user's
-      delegation, 2026-10-25 night, for review).** (1) The whole-graph terrain sync applies the
+      delegation, 2026-10-25 night; (1) and (3) confirmed by the user 2026-10-26, (2) reversed).** (1) The whole-graph terrain sync applies the
       rule's construction: `RegionGraph::sync_to_terrain` builds each re-graded standard control
       inside the source band within 33%, else 1:3, its node ends held
       (`grade::construct_within_bounds`), and where the ground leaves none, at the least grade it
@@ -2447,7 +2449,9 @@ These need a user decision; work that does not depend on them continues.
       terrain but not the source terrain the lot reads (terrain.md, "authoritative terrain undo",
       `TERRAIN-07`'s). Recommendation, for the next gate: refuse the terrain edit as the
       rollback did, once the test sculpts a mound its road can follow or terrain undo restores
-      the source terrain. (2) Old saves load as saved: a save with grades over 1:3 loads
+      the source terrain. Decided by the user, 2026-10-26: as recommended, in `TERRAIN-07-E`
+      once terrain undo restores the source terrain. (2) Old saves load as saved (reversed by the
+      user, 2026-10-26, below): a save with grades over 1:3 loads
       unchanged and only new edits are refused (recommended and taken: refusing the load would
       lose the player's city over a rule it predates, and every edit beside such a road stays
       possible because placement refuses only a profile it makes steeper). (3) The first planning
@@ -2456,6 +2460,11 @@ These need a user decision; work that does not depend on them continues.
       it changes a verdict: a probe counting refused passes that read any carriageway found none in
       the debug `nodes::` (492 tests, the Kuopio replays and road tool tests included) and
       `simulation::` (1,294) suites, so it is left as is and recorded.
+    - **Save compatibility (decided by the user, 2026-10-26): not required.** This reverses (2).
+      A save with a road steeper than 1:3 is refused at load with `road_too_steep`, the same rule
+      an edit meets, rather than loaded as saved or re-graded. No migration or legacy-load path is
+      kept for older saves: an old save may fail to load. The re-recorded Kuopio reference
+      (question 38) is within the rule. Not built yet.
     - **Timing of the rule (`ROAD-68-K15`, fresh).** Release lib test binaries (`$TEST_BINARY`,
       16 codegen units): C = `road` `4710f59b` (before the rule), K = `d740a332` (the rule, built
       from `ac0480cc`, whose code is the same), F = `road68-K15`'s production code (its two test
@@ -2767,7 +2776,7 @@ These need a user decision; work that does not depend on them continues.
       8.15-9.13) in code `ROAD-68-K18` does not reach. Open: that reading needs a commit-window
       profile (question 36) before it can be put down to layout; the 10k commit-window profiles
       (C F C F, 09:09-09:10) are recorded but not yet analysed.
-    - **The R-tree's traversal order (`ROAD-68-K18`, record) — open, recommendation (b).**
+    - **The R-tree's traversal order (`ROAD-68-K18`, record) — decided by the user, 2026-10-26: (b).**
       `ROAD-68-K17` left the R-tree's removals because re-indexing only the changed edges would
       change the tree's shape, and with it the order in which `get_edges_near_aabb` returns edges.
       Recorded on `road` `062575d9` without changing behaviour (no number in this branch's range
@@ -2922,8 +2931,8 @@ These need a user decision; work that does not depend on them continues.
       a real TD7 conflict). Census, edits and the gate's acceptance:
       [terrain.md, the gate A record](terrain.md#terrain-07-a-record).
 39. **Junction blends beside arms cut to the source-delta limit (`ROAD-68-K14`, from question 37)
-    — decided by the coordinator under the user's delegation, 2026-10-25 night, for review: (a);
-    implemented in `ROAD-68-K15`.**
+    — decided by the coordinator under the user's delegation, 2026-10-25 night, confirmed by the
+    user 2026-10-26: (a); implemented in `ROAD-68-K15`.**
     - **Evidence (fresh, `ROAD-68-K14`).** With the grade rule, the recorded session in one world
       (36 accepted strokes) commits every stroke with no failed node and no edge over 1:3, but two
       edges leave the replay's 5 m source-delta quality limit beside a junction: edge 14
