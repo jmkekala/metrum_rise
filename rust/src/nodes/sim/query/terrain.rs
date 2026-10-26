@@ -5,6 +5,7 @@
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::NearbySites;
+use crate::simulation::terrain::graded::GradedSurface;
 use godot::prelude::*;
 mod engineered;
 
@@ -51,6 +52,48 @@ impl SimCore {
             .unwrap_or_else(|| {
                 self.heightmap.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE
             })
+    }
+
+    /// The visible surface the graded terrain renders (`TERRAIN-07-D`), at `pos`: the road's
+    /// height where a road covers the point, else the graded ground
+    /// ([`GradedSurface::surface_height_at`]), so Godot's queries agree with the graded tiles.
+    /// Readies the building-site index the surface reads, as
+    /// [`Self::intersect_world_surface_internal`] does.
+    pub fn graded_surface_height(&mut self, pos: Vector2) -> f32 {
+        self.allocator
+            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
+        let surface = GradedSurface {
+            terrain: &self.heightmap,
+            roadbed: &self.transit_network.roadbed,
+            sites: &self.allocator,
+        };
+        let (x, z) = (f64::from(pos.x), f64::from(pos.y));
+        surface.surface_height_at(x, z, &mut self.graded_query_scratch) as f32
+    }
+
+    /// The nearer of a ray's hits on the road and on the visible graded ground
+    /// ([`GradedSurface::raycast_surface`], `TERRAIN-07-D`). Readies the building-site index the
+    /// surface reads.
+    pub fn intersect_graded_surface(
+        &mut self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+    ) -> Option<Vector3> {
+        self.allocator
+            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
+        let surface = GradedSurface {
+            terrain: &self.heightmap,
+            roadbed: &self.transit_network.roadbed,
+            sites: &self.allocator,
+        };
+        let to_f64 = |v: Vector3| [v.x, v.y, v.z].map(f64::from);
+        surface
+            .raycast_surface(
+                to_f64(ray_origin),
+                to_f64(ray_dir),
+                &mut self.graded_query_scratch,
+            )
+            .map(|[x, y, z]| Vector3::new(x as f32, y as f32, z as f32))
     }
 
     /// Raycasts against the terrain heightmap.

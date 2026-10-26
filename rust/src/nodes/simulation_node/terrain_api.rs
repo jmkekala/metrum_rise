@@ -735,13 +735,11 @@ impl SimulationNode {
         self.lock_core().get_height_at_internal(pos)
     }
 
-    /// Returns the visible world-surface height at a position.
-    ///
-    /// This reads the already compiled roadbed when a road surface owns the queried XZ location
-    /// and otherwise falls back to the current visual terrain.
+    /// Returns the visible world-surface height at a position: the compiled roadbed where a
+    /// road covers it, else the graded ground the terrain renders (`TERRAIN-07-D`).
     #[func]
     pub fn get_world_surface_height(&self, pos: Vector2) -> f32 {
-        self.lock_core().get_world_surface_height_internal(pos)
+        self.lock_core().graded_surface_height(pos)
     }
 
     /// Raycasts against the terrain heightmap.
@@ -760,14 +758,14 @@ impl SimulationNode {
         }
     }
 
-    /// Raycasts against the visible world surface.
+    /// Raycasts against the visible world surface: the nearer of the road's hit and the
+    /// graded ground's, never ground a road covers (`TERRAIN-07-D`).
     ///
-    /// Uses `try_lock` for the same reason as `intersect_terrain`. The combined surface prefers
-    /// compiled roadbed ownership and otherwise falls back to the visible terrain surface.
+    /// Uses `try_lock` for the same reason as `intersect_terrain`.
     #[func]
     pub fn intersect_world_surface(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
         match self.try_lock_core() {
-            Some(mut core) => match core.intersect_world_surface_internal(ray_origin, ray_dir) {
+            Some(mut core) => match core.intersect_graded_surface(ray_origin, ray_dir) {
                 Some(p) => p.to_variant(),
                 None => Variant::nil(),
             },

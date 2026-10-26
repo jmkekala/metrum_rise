@@ -127,10 +127,10 @@ const FIELD_OVERLAY_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 @onready var water_node = $"../Water"
 
 var overlay_mode: int = 0
-## Graded terrain tiles (TERRAIN-07-D) drawn as cells over the patches that hold them. The exact
-## cut stays the default until TERRAIN-07-D round 2 stops requesting refined patches, and stays
-## renderable beside it for the reference comparison until TERRAIN-07-G (T10).
-var graded_tiles_enabled := false
+## Graded terrain tiles (TERRAIN-07-D) drawn as cells over the patches that hold them; every
+## patch then requests its plain payload, never a refined CDT cut. Only the reference test turns
+## this off, to render the exact cut beside the graded surface until TERRAIN-07-G (T10).
+var graded_tiles_enabled := true
 var graded_tiles: TerrainGradedTiles = null
 var terrain_world_size: Vector2 = Vector2.ZERO
 var terrain_cell_m: float = 1.0
@@ -2192,7 +2192,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 	return lines
 
 func _terrain_patch_payload_render_step_mm(key: Vector2i) -> int:
-	if engineered_patch_lookup.has(key):
+	if engineered_patch_lookup.has(key) and not graded_tiles_enabled:
 		return int(round(ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M * 1000.0))
 	return 0
 
@@ -2640,6 +2640,9 @@ func _terrain_patch_data_for_key(
 	return {}
 
 func _patch_requires_engineered_refinement(key: Vector2i, patch_data: Dictionary) -> bool:
+	# Graded tiles draw the roads' terrain over plain patches: no patch needs the exact cut.
+	if graded_tiles_enabled:
+		return false
 	return (
 		engineered_patch_lookup.has(key)
 		or bool(patch_data.get("terrain_requires_engineered_refinement", false))

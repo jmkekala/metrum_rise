@@ -6,6 +6,7 @@ mod building_lod_fixture;
 mod building_site_terrain;
 mod commute_bounds;
 mod construction_throughput;
+mod graded_queries;
 pub(super) mod fields;
 mod road_edit_order;
 mod road_families;
