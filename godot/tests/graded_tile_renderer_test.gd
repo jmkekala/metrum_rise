@@ -4,7 +4,8 @@
 ## installs into the prewarmed slot pools within the install budget, the cell instances and
 ## their stitching codes, eviction, and a populated edit's reinstall creating no texture, image,
 ## material, mesh or MultiMesh (the pool counters): only the installed tiles Rust selects for the
-## commit rebake, all in one frame, each into its own slot (item 5).
+## commit rebake, all in one frame, each into its own slot (item 5). Then the production renderer
+## (terrain.gd) with graded tiles on settles with every patch installed, the road's included.
 extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -69,7 +70,12 @@ func _run() -> void:
 	counters = graded.get_pool_counters()
 	_expect(int(counters["uploads"]) > uploads_before, "the edit must upload its tiles again")
 	_expect(int(counters["edits"]) >= 1 and int(counters["edit_batches"]) == 1, "one edit installs as one batch: %s" % counters)
-	var batch := int(counters["edit_tiles_last"])
+	# Every tile installed before the commit that rebaked did so in the batch, into its own slot.
+	# The batch may also hold tiles the patch lists' refresh installed after the commit, before the
+	# edit's selection arrived (they rebake once more): the two race, so the batch is compared
+	# with the tiles it installed, not with the tiles before the commit.
+	var batch: Array = graded.last_edit_batch
+	_expect(batch.size() > 0 and batch.size() == int(counters["edit_tiles_last"]), "the batch is its installed tiles: %s" % [batch])
 	var rebaked := 0
 	for tile: Vector2i in before_edit.keys():
 		if not graded.installed.has(tile):
@@ -79,17 +85,19 @@ func _run() -> void:
 		if int(now["token"]) == int(was["token"]):
 			continue
 		rebaked += 1
+		_expect(batch.has(tile), "tile %s rebakes in the batch" % tile)
 		if int(now["level"]) == int(was["level"]):
 			_expect(int(now["slot"]) == int(was["slot"]), "tile %s rebakes into its own slot" % tile)
-	_expect(batch > 0 and rebaked == batch, "the batch is the rebaked installed tiles: %d of %d" % [rebaked, batch])
-	_expect(rebaked < before_edit.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [rebaked, before_edit.size()])
+	_expect(rebaked > 0, "the edit rebakes installed tiles")
+	_expect(batch.size() < graded.installed.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [batch.size(), graded.installed.size()])
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
 		if name == "materials_created" or name == "multimeshes_created":
 			continue
 		_expect(after[name] == created[name], "an edit must create no %s: %s -> %s" % [name, created[name], after[name]])
-	# Each pooled cell set holds five MultiMeshes and the four graded levels' materials.
-	_expect(int(after["materials_created"]) * 5 == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
+	# Each pooled cell set holds five cell MultiMeshes, the wall MultiMesh and the four graded
+	# levels' materials; the wall material is one, made at setup.
+	_expect((int(after["materials_created"]) - 1) * 6 == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
 	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d, edit %d tiles in %.3f ms" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
@@ -107,10 +115,94 @@ func _run() -> void:
 	for code in 4:
 		_expect(int(counters["free_%d" % code]) == int(counters["slots_%d" % code]), "level %d must free its slots" % code)
 	graded.clear()
+	await _check_production_renderer(host, simulation)
 	host.queue_free()
 	await process_frame
 	print("Graded tile renderer tests: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
+
+# The production renderer (terrain.gd, graded tiles on, as the game runs) over the same roads:
+# every patch it makes resident installs its plain payload, the road's patches included (Rust
+# refused those, so no patch under a road ever installed and the terrain never settled, round
+# 4), and the junction's tile draws as a graded cell over its patch. Then the side road becomes a
+# bridge over a hollow: its mouth's structure walls draw as wall instances, one per face.
+func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> void:
+	var water := Node3D.new()
+	water.name = "Water"
+	host.add_child(water)
+	var camera := Camera3D.new()
+	host.add_child(camera)
+	camera.position = Vector3(0.0, 120.0, 60.0)
+	camera.rotation_degrees = Vector3(-60.0, 0.0, 0.0)
+	camera.current = true
+	await _acknowledge_network(simulation)
+	var terrain := TerrainRenderer.new()
+	terrain.name = "Terrain"
+	host.add_child(terrain)
+	var graded: GradedTiles = terrain.graded_tiles
+	_expect(graded != null, "graded tiles are the renderer's default")
+	if graded == null:
+		terrain.free()
+		return
+	_expect(await _settle_production(terrain, simulation), "the production terrain must settle: %s" % terrain.get_pending_render_work_counts())
+	var world_size: Vector2 = simulation.get_terrain_world_size()
+	var junction_patch := Vector2i(((Vector2(0.0, 10.0) + world_size * 0.5) / terrain.patch_span_m).floor())
+	_expect(terrain.patches.has(junction_patch) and terrain.resident_patch_lookup.has(junction_patch),
+		"the junction's patch %s installs: %d patches" % [junction_patch, terrain.patches.size()])
+	for key: Vector2i in terrain.patch_payload_requested.keys():
+		_expect(false, "patch %s still waits for its payload" % key)
+	_expect(graded.installed.has(Vector2i(0, 0)), "the junction's tile installs graded")
+	_expect(graded.patch_cells.has(junction_patch), "the junction's patch draws cells")
+
+	var edge: int = simulation.get_hovered_edge(0.0, 100.0)
+	_expect(edge >= 0, "the side road has an edge at (0, 100)")
+	simulation.set_edge_class(edge, 1)
+	simulation.sculpt_terrain(Vector2(0.0, 42.0), 26.0, -0.25)
+	await _acknowledge_network(simulation)
+	_expect(await _settle_production(terrain, simulation), "the bridge's terrain must settle: %s" % terrain.get_pending_render_work_counts())
+	var faces := 0
+	for tile: Vector2i in graded.installed.keys():
+		faces += (graded.installed[tile]["walls"] as PackedFloat32Array).size() / GradedTiles.WALL_FACE_FLOATS
+	var instances := 0
+	for key: Vector2i in graded.patch_cells.keys():
+		instances += ((graded.patch_cells[key]["walls"] as MultiMeshInstance3D).multimesh).visible_instance_count
+	_expect(faces > 0, "the bridge's mouth has wall faces")
+	_expect(instances == faces, "every wall face draws once: %d instances of %d faces" % [instances, faces])
+	_expect(int(graded.counters["walls_truncated"]) == 0, "no patch runs out of wall instances")
+	print("graded walls: %d faces over %d installed tiles" % [faces, graded.installed.size()])
+	terrain.free()
+	camera.free()
+	water.free()
+
+# terrain.gd uploads nothing while the network generation is unacknowledged
+# (network_renderer.gd acknowledges it in the game).
+func _acknowledge_network(simulation: SimulationNode) -> void:
+	for frame in 60:
+		if not simulation.is_network_dirty():
+			return
+		simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		await process_frame
+
+# No pending patch work and no tile list or bake in flight for three frames in a row.
+func _settle_production(terrain, simulation: SimulationNode) -> bool:
+	var graded: GradedTiles = terrain.graded_tiles
+	var stable := 0
+	for frame in TIMEOUT_FRAMES:
+		await process_frame
+		if simulation.is_network_dirty():
+			simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		var idle: bool = (
+			not terrain.has_pending_render_work(false)
+			and not simulation.is_network_dirty()
+			and not simulation.is_terrain_dirty()
+			and graded.requested.is_empty()
+			and graded.patch_lists_requested.is_empty()
+			and graded._edit_batch.is_empty()
+		)
+		stable = stable + 1 if idle else 0
+		if stable >= 3:
+			return true
+	return false
 
 func _creation_counters(graded: GradedTiles) -> Dictionary:
 	var counters: Dictionary = graded.get_pool_counters()

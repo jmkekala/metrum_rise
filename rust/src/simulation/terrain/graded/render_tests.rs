@@ -625,3 +625,34 @@ fn packed_slots_hold_the_payload_bitwise() {
         }
     }
 }
+
+// The wall instances' bytes (`TERRAIN-07-D` round 4): every face's eight values in order,
+// bitwise, on every fixture and level; the conflict fixture has faces to check.
+#[test]
+fn packed_walls_hold_the_faces_bitwise() {
+    let mut faces = 0;
+    for (name, graph, terrain) in fixtures() {
+        let roadbed = compiled(&graph);
+        for level in LEVELS {
+            for payload in bake_level(&terrain, &roadbed, &window_tiles(), level) {
+                let mut bytes = Vec::new();
+                pack_walls(&payload, &mut bytes);
+                assert_eq!(bytes.len(), payload.walls.len() * WALL_FACE_BYTES, "{name}");
+                for (face, packed) in payload.walls.iter().zip(bytes.chunks_exact(WALL_FACE_BYTES)) {
+                    let read: Vec<u32> = packed
+                        .chunks_exact(4)
+                        .map(|value| u32::from_le_bytes(value.try_into().unwrap()))
+                        .collect();
+                    let want = [
+                        face.a[0], face.a[1], face.b[0], face.b[1], face.bottom[0],
+                        face.bottom[1], face.top[0], face.top[1],
+                    ]
+                    .map(f32::to_bits);
+                    assert_eq!(read, want, "{name} {level:?} {:?}", payload.tile);
+                }
+                faces += payload.walls.len();
+            }
+        }
+    }
+    assert!(faces > 0, "some fixture walls its lower road");
+}

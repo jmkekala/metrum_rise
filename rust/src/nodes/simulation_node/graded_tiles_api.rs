@@ -17,7 +17,8 @@ use crate::nodes::sim::core::GradedEditSelection;
 use crate::simulation::buildings::allocator::SiteSnapshot;
 use crate::simulation::terrain::graded::{
     BakeError, CAP_M, Level, PatchTilesScratch, SelectScratch, TILE_M, TileKey, TilePayload,
-    bake_tiles, graded_tiles_in_rect, pack_slot, slot_row_texels, slot_side,
+    WALL_FACE_BYTES, bake_tiles, graded_tiles_in_rect, pack_slot, pack_walls, slot_row_texels,
+    slot_side,
 };
 use std::cell::RefCell;
 
@@ -54,16 +55,17 @@ enum Failure {
     Bake(BakeError),
 }
 
-// A baked tile packed for upload; the byte buffers return to the pool when polled.
+// A baked tile packed for upload (its wall faces as `pack_walls` packs them); the byte buffers
+// return to the pool when polled.
 struct TileResult {
     request: GradedTileRequest,
     samples: [usize; 2],
     graded: bool,
     seams: usize,
     edges: usize,
-    walls: usize,
     texels: Vec<u8>,
     rows: Vec<u8>,
+    walls: Vec<u8>,
 }
 
 /// The graded residency jobs of one node: requests in flight, finished results and failures
@@ -223,28 +225,28 @@ fn bake_level(
         }
         // Pack off the jobs lock, which Godot's poll takes on the main thread: only taking the
         // pooled buffers and publishing the results hold it.
-        let mut buffers: Vec<(Vec<u8>, Vec<u8>)> = {
+        let mut buffers: Vec<[Vec<u8>; 3]> = {
             let mut state = jobs.lock().unwrap();
             (0..requests.len())
-                .map(|_| (state.buffer(), state.buffer()))
+                .map(|_| [state.buffer(), state.buffer(), state.buffer()])
                 .collect()
         };
-        for ((outcome, payload), (texels, rows)) in
+        for ((outcome, payload), [texels, rows, walls]) in
             outcomes.iter().zip(baked.iter()).zip(buffers.iter_mut())
         {
             if outcome.is_ok() {
                 pack_slot(payload, side, texels, rows);
+                pack_walls(payload, walls);
             }
         }
         let mut state = jobs.lock().unwrap();
-        for (((request, outcome), payload), (texels, rows)) in
+        for (((request, outcome), payload), [texels, rows, walls]) in
             requests.iter().zip(outcomes).zip(baked.iter()).zip(buffers)
         {
             state.tiles_in_flight.remove(&(request.tile, request.level));
             if let Err(error) = outcome {
                 state.failed_tiles.push((*request, Failure::Bake(error)));
-                state.buffers.push(texels);
-                state.buffers.push(rows);
+                state.buffers.extend([texels, rows, walls]);
                 continue;
             }
             state.tiles.push(TileResult {
@@ -253,9 +255,9 @@ fn bake_level(
                 graded: payload.graded,
                 seams: payload.seams.len(),
                 edges: payload.edges.len(),
-                walls: payload.walls.len(),
                 texels,
                 rows,
+                walls,
             });
         }
     });
@@ -444,8 +446,9 @@ impl SimulationNode {
     /// key order; Godot rebakes the tiles it holds at that level), `patches` (per list `patch_x`, `patch_z`,
     /// `token` and `tiles`, flat `(x, z)` pairs in key order), at most `max_tiles` baked tiles in
     /// `tiles` (per tile `tile_x`, `tile_z`, `level`, `step`, `token`, `samples_x`, `samples_z`,
-    /// `graded`, `seam_count`, `edge_count`, `wall_count`, and the slot layers' little-endian
-    /// RGBAF bytes `texels` and `rows`, packed as `pack_slot` documents), and `failed` (per
+    /// `graded`, `seam_count`, `edge_count`, `wall_count`, the slot layers' little-endian
+    /// RGBAF bytes `texels` and `rows`, packed as `pack_slot` documents, and the wall faces'
+    /// bytes `walls`, packed as `pack_walls` documents), and `failed` (per
     /// failure its kind, keys, `token`, `reason` and `retry`). The rest stays queued.
     #[func]
     pub fn poll_graded_tile_results(&mut self, max_tiles: i32) -> VarDictionary {
@@ -497,11 +500,11 @@ impl SimulationNode {
             dict.set("graded", result.graded);
             dict.set("seam_count", result.seams as i64);
             dict.set("edge_count", result.edges as i64);
-            dict.set("wall_count", result.walls as i64);
+            dict.set("wall_count", (result.walls.len() / WALL_FACE_BYTES) as i64);
             dict.set("texels", PackedByteArray::from(result.texels.as_slice()));
             dict.set("rows", PackedByteArray::from(result.rows.as_slice()));
-            jobs.buffers.push(result.texels);
-            jobs.buffers.push(result.rows);
+            dict.set("walls", PackedByteArray::from(result.walls.as_slice()));
+            jobs.buffers.extend([result.texels, result.rows, result.walls]);
             tiles.push(&dict.to_variant());
         }
         let mut failed = VarArray::new();

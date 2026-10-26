@@ -28,7 +28,10 @@ mod walls;
 pub use grade::{CAP_M, FILL_ARM_MAX_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
 pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
-pub use residency::{PatchTilesScratch, graded_tiles_in_rect, pack_slot, slot_row_texels, slot_side};
+pub use residency::{
+    PatchTilesScratch, WALL_FACE_BYTES, graded_tiles_in_rect, pack_slot, pack_walls,
+    slot_row_texels, slot_side,
+};
 pub use seams::{Seam, SeamKind};
 pub use select::{
     SelectScratch, dirty_tiles_for_base_area, dirty_tiles_for_base_change,

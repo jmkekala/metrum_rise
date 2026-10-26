@@ -228,6 +228,33 @@ pub fn pack_slot(payload: &TilePayload, side: usize, texels: &mut Vec<u8>, rows:
     }
 }
 
+/// Bytes of one packed wall face: eight little-endian `f32`.
+pub const WALL_FACE_BYTES: usize = 32;
+
+/// Packs a baked tile's wall faces for the Godot wall instances, [`WALL_FACE_BYTES`] each as
+/// little-endian `f32`: `a.x, a.z, b.x, b.z` (tile-local metres), `bottom` at `a` and `b`, `top`
+/// at `a` and `b` (world heights), in the payload's order. The buffer is overwritten.
+/// `O(faces)`.
+pub fn pack_walls(payload: &TilePayload, out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(payload.walls.len() * WALL_FACE_BYTES);
+    for face in &payload.walls {
+        let values = [
+            face.a[0],
+            face.a[1],
+            face.b[0],
+            face.b[1],
+            face.bottom[0],
+            face.bottom[1],
+            face.top[0],
+            face.top[1],
+        ];
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
 fn put_texel(out: &mut [u8], texel: [f32; 4]) {
     for (channel, value) in texel.into_iter().enumerate() {
         out[channel * 4..channel * 4 + 4].copy_from_slice(&value.to_le_bytes());

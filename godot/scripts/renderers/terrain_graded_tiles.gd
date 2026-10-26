@@ -10,13 +10,16 @@
 ## values Rust's. Nothing is created per edit; the counters in get_pool_counters() prove it.
 ## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
 ## rebake with the edit's serial as their token and install together in one frame, each into
-## its own slot when its level is unchanged.
+## its own slot when its level is unchanged. The tiles' wall faces (conflict walls, abutments,
+## headwalls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
+## terrain_graded_walls.gdshader from the values in their instance transforms.
 ##
 ## Rust methods called: get_graded_tile_layout(), request_graded_patch_tiles(),
 ##   request_graded_tiles(), poll_graded_tile_results()
 extends RefCounted
 
 const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
+const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const TILE_M := 64.0
 # Level distances with their hysteresis (T5, TD10): GL0 to 256 m, GL1 to 512 m, GL2 to 2 km,
 # GL3 beyond, at the patch LOD rule's steps (2 to 5 km, 4 to 12 km, 8 beyond).
@@ -35,6 +38,10 @@ const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
 const CELL_MESHES := 5
 const CELL_BASE := 4
+# Wall face instances per patch, prewarmed with its cells: the Kuopio census's walls are a few
+# hundred faces in all. A patch with more draws the first ones and counts the rest.
+const MAX_WALLS_PER_PATCH := 1024
+const WALL_FACE_FLOATS := 8
 # Every (level code, GL3 step) a tile can be requested at.
 const LEVEL_STEPS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 2), Vector2i(3, 4), Vector2i(3, 8)]
 
@@ -58,6 +65,8 @@ var tile_tokens: Dictionary = {}
 # until every tile of the batch has one, then install in the same frame.
 var _edit_batch: Dictionary = {}
 var _edit_staged: Dictionary = {}
+# The tiles the last edit batch installed, for tests and the probe.
+var last_edit_batch: Array = []
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
 var patch_lists: Dictionary = {}
 var patch_lists_requested: Dictionary = {}
@@ -66,7 +75,11 @@ var patch_lists_requested: Dictionary = {}
 var patch_cells: Dictionary = {}
 var _cells_pool: Array[Dictionary] = []
 var _meshes: Dictionary = {}
+var _wall_mesh: ArrayMesh = null
+var _wall_material: ShaderMaterial = null
 var _dirty_patches: Dictionary = {}
+# Patches whose wall instances must be rewritten (a tile rewritten in place changed its faces).
+var _dirty_walls: Dictionary = {}
 var _uniform_names: PackedStringArray = PackedStringArray()
 # The desired levels are recomputed when the camera moved or the lists or residency changed.
 var _desired: Dictionary = {}
@@ -83,6 +96,7 @@ var counters := {
 	"uploads": 0,
 	"evictions": 0,
 	"pool_exhausted": 0,
+	"walls_truncated": 0,
 	"bake_failures": 0,
 	"edits": 0,
 	"edit_batches": 0,
@@ -112,6 +126,9 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	for code in levels.size():
 		pools.append(_new_pool(levels[code], int(pool_slots[code])))
 	_build_meshes()
+	_wall_material = ShaderMaterial.new()
+	_wall_material.shader = WALL_SHADER
+	counters["materials_created"] += 1
 
 func _new_pool(level: Dictionary, slots: int) -> Dictionary:
 	var side := int(level["side"])
@@ -172,6 +189,14 @@ func _build_meshes() -> void:
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		_meshes[code] = mesh
 		counters["meshes_created"] += 1
+	# The wall quad: x 0 at a face's end a and 1 at b, y 0 at its bottom and 1 at its top.
+	var quad := []
+	quad.resize(Mesh.ARRAY_MAX)
+	quad[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 0)])
+	quad[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 3, 0, 3, 2])
+	_wall_mesh = ArrayMesh.new()
+	_wall_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, quad)
+	counters["meshes_created"] += 1
 
 ## The lattice code of the base cells and GL3 at a patch LOD step: 3 + log2(step).
 static func base_code(step: int) -> int:
@@ -206,6 +231,7 @@ func clear() -> void:
 	_edit_staged.clear()
 	patch_lists.clear()
 	patch_lists_requested.clear()
+	_dirty_walls.clear()
 	for key in patch_cells.keys():
 		release_patch(key, null)
 
@@ -245,7 +271,12 @@ func process(camera_position: Vector3, resident_patches: Dictionary) -> void:
 	for key: Vector2i in _dirty_patches.keys():
 		if resident_patches.has(key):
 			_rebuild_patch_cells(key, resident_patches)
+		_dirty_walls.erase(key)
 	_dirty_patches.clear()
+	for key: Vector2i in _dirty_walls.keys():
+		if resident_patches.has(key) and patch_cells.has(key):
+			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
+	_dirty_walls.clear()
 	if batch_tiles > 0:
 		# The edit's frame: polls, its uploads and the cell rewrites they caused.
 		counters["edit_batches"] += 1
@@ -338,11 +369,15 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	var cell_code := code if code < 3 else base_code(step)
 	if not current.is_empty() and int(current["slot"]) != slot:
 		_free_slot(current)
-	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token}
+	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
+	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls}
 	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites the cells
-	# that show it or stitch to it.
+	# that show it or stitch to it, and changed faces the walls of the patches that draw them.
 	if current.is_empty() or int(current["slot"]) != slot or int(current["code"]) != cell_code:
 		_mark_tile_patches(key, resident_patches)
+	elif walls != current["walls"]:
+		for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
+			_dirty_walls[patch_key] = true
 
 # Installs the edit batch once every tile of it has its result, all in this frame. Returns how
 # many tiles it installed.
@@ -351,6 +386,7 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 		return 0
 	for key: Vector2i in _edit_staged.keys():
 		_upload(key, _edit_staged[key], resident_patches)
+	last_edit_batch = _edit_staged.keys()
 	var count := _edit_staged.size()
 	_edit_batch.clear()
 	_edit_staged.clear()
@@ -615,14 +651,52 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	(nodes[CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
 	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
 	if cells.get("node_parent", null) != patch_node:
-		for node: Node in nodes:
+		for node: Node in nodes + [cells["walls"]]:
 			if node.get_parent() != null:
 				node.get_parent().remove_child(node)
 			patch_node.add_child(node)
 		cells["node_parent"] = patch_node
 	_sync_material(cells, patch["material"])
+	_rebuild_patch_walls(cells, patch)
 	# The PlaneMesh collapses while the cells draw the patch.
 	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
+
+# The wall faces of the patch's installed tiles, each drawn by the patch holding its midpoint
+# (a face of a tile two patches share draws once), as one instance whose transform carries
+# the face (terrain_graded_walls.gdshader): basis column 0 (a.x, bottom at a, a.z), column 1
+# (b.x, bottom at b, b.z), both from the patch centre, column 2 (top at a, top at b, 0).
+# O(faces of the patch's tiles).
+func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
+	var node: MultiMeshInstance3D = cells["walls"]
+	var multimesh := node.multimesh
+	var rect: Rect2 = patch["rect"]
+	var centre := rect.get_center()
+	var count := 0
+	var truncated := 0
+	for tile in _patch_tiles(rect):
+		var entry: Dictionary = installed.get(tile, {})
+		if entry.is_empty():
+			continue
+		var faces: PackedFloat32Array = entry["walls"]
+		var tile_origin := Vector2(tile) * TILE_M
+		var origin := tile_origin - centre
+		for at in range(0, faces.size(), WALL_FACE_FLOATS):
+			var middle := tile_origin + Vector2(faces[at] + faces[at + 2], faces[at + 1] + faces[at + 3]) * 0.5
+			if not rect.has_point(middle):
+				continue
+			if count == MAX_WALLS_PER_PATCH:
+				truncated += 1
+				continue
+			multimesh.set_instance_transform(count, Transform3D(Basis(
+				Vector3(origin.x + faces[at], faces[at + 4], origin.y + faces[at + 1]),
+				Vector3(origin.x + faces[at + 2], faces[at + 5], origin.y + faces[at + 3]),
+				Vector3(faces[at + 6], faces[at + 7], 0.0)), Vector3.ZERO))
+			count += 1
+	if truncated > 0:
+		counters["walls_truncated"] += truncated
+		MetrumDebug.log("terrain", "graded walls: %d faces past the patch capacity %d" % [truncated, MAX_WALLS_PER_PATCH])
+	multimesh.visible_instance_count = count
+	node.visible = count > 0
 
 ## Returns a patch to its PlaneMesh and its cell resources to the pool. Called when the patch
 ## recycles or loses its last graded tile.
@@ -633,7 +707,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
 	if cells.is_empty():
 		return
-	for node: MultiMeshInstance3D in cells["nodes"]:
+	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.visible = false
 		node.multimesh.visible_instance_count = 0
 		if node.get_parent() != null:
@@ -676,7 +750,20 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 		material.set_shader_parameter("graded_seam_capacity", int(levels[code]["seam_capacity"]))
 		(nodes[code] as GeometryInstance3D).material_override = material
 		materials.append(material)
-	return {"nodes": nodes, "materials": materials, "watched": [], "node_parent": null}
+	var wall_multimesh := MultiMesh.new()
+	wall_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	wall_multimesh.mesh = _wall_mesh
+	wall_multimesh.instance_count = MAX_WALLS_PER_PATCH
+	wall_multimesh.custom_aabb = aabb
+	wall_multimesh.visible_instance_count = 0
+	counters["multimeshes_created"] += 1
+	var walls := MultiMeshInstance3D.new()
+	walls.name = "GradedWalls"
+	walls.multimesh = wall_multimesh
+	walls.custom_aabb = aabb
+	walls.material_override = _wall_material
+	walls.visible = false
+	return {"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null}
 
 # The patch material parameters whose change means the graded material must be synced: the
 # textures and per-patch values terrain.gd swaps on commits, masks, water and overlays.
