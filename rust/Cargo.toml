@@ -39,7 +39,9 @@ debug = 1
 
 [profile.test]
 opt-level = 1
-debug = true
+# Line tables only: backtraces keep files and lines, without full variable info, which cost
+# compile time and 22-25 GB per test build (2026-10-26). Release builds keep `debug = 1`.
+debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 
