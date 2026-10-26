@@ -5598,6 +5598,22 @@ branch unless marked.
   arrives, and that tile then joins the batch. The renderer is right (the tile rebakes once more);
   the check now compares the batch with the tiles it installed (`last_edit_batch`).
 
+**Tests (fresh, round 4).** Clippy `--all-targets`: the 59-warning baseline set exactly on
+`b95adb55` and on the refusal change (`97267b42`, whose Rust equals the rebased tip's). Debug
+`cargo test --lib` on `b95adb55`: 1,958 passed, 0 failed, 172 ignored. `./run.sh --test` on
+`7022111e` (the walls and both fixes before the refusal change; DISPLAY and WAYLAND_DISPLAY
+unset): exit 0, debug lib 1,958 passed, 0 failed, 172 ignored, integration 4 passed, every Godot
+bridge suite and the rendered block with 0 failures, among them `graded_tile_renderer_test.gd`
+with the production renderer and the bridge's walls, `network_tool_chunk_renderer_test.gd`,
+`road_junction_preview_test.gd`, `road_preview_stream_test.gd`, `surface_patch_debug_test.gd`,
+`vehicle_ground_support_test.gd`, `terrain_overlay_shader_test.gd` and
+`graded_cells_shader_test.gd`; skipped as before: the headless shader global probe and the
+Forward+ vegetation tests. On the refusal change: `nodes::simulation_node::` 147 passed, 7
+ignored (with `a_request_outside_the_world_is_refused_not_retried`), `simulation::terrain::graded`
+and the core's graded tests 31 passed, 4 ignored. `plot_material_lighting_test.gd` and
+`plot_dawn_lighting_test.gd` (GPU, round 3's queue on `8e2798a4`): exit 0 each. The headless
+regression check against the library without the fix: 8 failures; with it: 0.
+
 **Reference renders (fresh, round 4; tree `b95adb55`, before the re-entrancy fix).** In compare
 mode through `screenshots-C.sh` (gamescope's headless backend, Forward+). Every image of `t`
 (flat, 2.5% and 8%, exact and B, the five spike views and 200 m to 3 km) and of `bridge_t` and
