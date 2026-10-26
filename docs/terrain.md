@@ -5875,11 +5875,13 @@ libraries in gamescope's headless backend, P-cores.
   `GL0`-`GL2` (`GL2` held 256). Round 5's control could not tell: `METRUM_DEBUG=terrain` turns on
   the general channels, not `terrain` (`METRUM_DEBUG_TERRAIN=1`). Capacities now follow `T7`'s rule
   (twice the measured maximum): 512 seams and 256 edges at `GL0`-`GL2` ([rows](#data)); after it no
-  tile fails anywhere on the save, Kuopio or the 100k city ({CENSUS}). The debug suite checks it on a
+  tile fails anywhere on the save, Kuopio or the 100k city (`K22`'s 100k snapshot: 10,500 listed
+  tiles over 200 of 225 patches; rows up to 245 seams and 113 edges at `GL0` and `GL1`, 205 and 125
+  at `GL2`, 53 at `GL3`; no wall faces). The debug suite checks it on a
   populated world: `scenario/graded_cases.rs`
   `every_listed_tile_of_a_grown_town_bakes_at_every_level` (the starter town grown 8 days, 100
   buildings, 76 tiles: every tile bakes at every level and `GL3` step, and every row stays within
-  half its capacity; the town names 57 edges at `GL2`, so it fails on the old 64).
+  half its capacity; the town names 57 edges at `GL2`, which that check rejects for the old 64).
 - **A refused request was re-asked every frame (fixed).** Godot dropped a refused tile's request
   and asked for it again the next frame, and the closest refused tiles took the whole request
   budget, so nothing farther ever baked (808,895 refusals in 600 s in this round's control). A
@@ -5943,7 +5945,18 @@ prewarmed `MultiMesh`es), textures 444 against 408 MiB (the pools' larger rows: 
 the `T7` capacities and T24's heights). On the populated save the grid is 49 patches and graded
 uses less video memory than the exact cut (552 against 699 MiB).
 
-**Tests (fresh, round 6).** {TESTS}
+**Tests (fresh, round 6).** `./run.sh --test` on the code tip `e4b905f1` (DISPLAY and
+WAYLAND_DISPLAY unset): exit 0; debug lib 1,963 passed, 0 failed, 176 ignored (the two new
+ignored diagnostics among them), with `every_listed_tile_of_a_grown_town_bakes_at_every_level`;
+integration 4 passed; every Godot bridge suite and the rendered block with 0 failures, among them
+`graded_tile_renderer_test.gd` (the refusal stub, nothing created after setup),
+`graded_cells_shader_test.gd`, `network_tool_chunk_renderer_test.gd`,
+`road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`,
+`vehicle_ground_support_test.gd` and both plot lighting suites; skipped as before: the headless
+shader global probe and the Forward+ vegetation tests. Clippy `--all-targets` on the code tip: the
+59-warning baseline set exactly. The grown-town test was not run against the old capacities: its
+town names 57 edges at `GL2` (measured in a release run before the fix), which its half-capacity
+check rejects for 64.
 
 **Lines** (production, tests excluded). `simulation/terrain/graded/`: 5,320 (5,305 in round 5):
 `tile.rs` +5 (capacities, seam heights), `residency.rs` +10 (the heights in the rows). Godot:
@@ -6626,7 +6639,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       the hidden ground 1 cm inside the chain lies 5 mm to 28 cm above the road top, so (a) keeps
       them discarded (`kuopio_plan_pinhole_sides`). `t` (flat, 2.5%, 8%): 0 in both modes, no
       terrain over a sidewalk in the close views.
-    - **(a2), for the next round.** Keep the band's terrain whatever its height and write its
+    - **(a2), recommended for the next round** (under the user's night delegation of
+      2026-10-26 the next round takes it, for review). Keep the band's terrain whatever its height and write its
       depth pushed behind the road top by more than the band's height difference, so it shows
       only where no road fragment is drawn; costs the graded cells' early depth test (measure in
       the GPU matrix). The alternative is the road's: a one-pixel horizontal fringe of the
