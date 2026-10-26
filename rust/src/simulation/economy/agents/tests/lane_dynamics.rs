@@ -482,6 +482,27 @@ fn lane_buckets_kept_across_appends_and_swap_removes_equal_a_rebuild() {
     assert_eq!(run(false), run(true));
 }
 
+/// An agent appended after the snapshot and moved into it by a swap-remove leaves the lane
+/// buckets when the prepopulated city places it at home (`ROAD-68-K24`): writing its transit
+/// first left its entry behind, and the 13,000-resident city's lane check failed on it.
+#[test]
+fn arrival_carrier_placed_at_home_leaves_the_lane_snapshot() {
+    let (mut network, mut graph, lanes) = build_two_edge_road(2, 0);
+    let mut agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    for k in 0..4 {
+        place_on_lane(&mut agents, 0, lanes[k % 2], 10.0 + 9.0 * k as f32, 8.0);
+    }
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+    place_on_lane(&mut agents, 0, lanes[0], 2.0, 8.0);
+    agents.kill_agent(1, &mut allocator);
+    assert!(agents.lane_bucket_snapshot_valid);
+    assert_eq!(agents.lane_bucket_snapshot_agent_count, agents.agents.len());
+    agents.place_arrival_carrier_at_home(1);
+    // Compares the snapshot with a rebuild from every agent.
+    agents.prepare_lane_buckets_for_test(&network);
+}
+
 /// The scrub and lane buckets prepared at load leave the first tick nothing to build, and the
 /// ticks after it move every agent as without the preparation, bit for bit (`SIM-02-K`).
 #[test]

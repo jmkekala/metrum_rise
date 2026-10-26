@@ -97,6 +97,17 @@ impl AgentSystem {
         agent_idx
     }
 
+    /// Puts an arrival carrier inside its home at once, as if it had driven there: it leaves the
+    /// lane buckets while its lane state still names its entries, enters its home and has its
+    /// held departure released, so it then materializes as on an ordinary arrival. Only the
+    /// prepopulated economy city (`PopulatedCity`) skips the drive in. O(entries on its lanes).
+    pub(crate) fn place_arrival_carrier_at_home(&mut self, agent_idx: usize) {
+        self.leave_lane_buckets(agent_idx);
+        self.agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+        self.agents.current_building[agent_idx] = self.agents.home_building[agent_idx];
+        self.release_departure(agent_idx);
+    }
+
     /// Keeps an agent where it is until [`Self::release_departure`]: its next trip waits for a
     /// paced departure slot (`SIM-02-E`). Uses the replan gate every departure already obeys.
     pub(crate) fn hold_departure(&mut self, agent_idx: usize) {

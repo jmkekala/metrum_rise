@@ -39,7 +39,6 @@ use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
-use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
 use crate::simulation::economy::demand::DemandBuildingActionPlan;
 
 use crate::simulation::zoning::ZoneType;
@@ -238,13 +237,12 @@ impl PopulatedCity {
                     // This fixture explicitly prepopulates a city outside demand admission.
                     |_, _, _| true,
                 );
-            // Carriers arrive at once instead of driving in from the border, and move in.
+            // Carriers arrive at once instead of driving in from the border, and move in. One
+            // that a swap-remove moved into the lane snapshot leaves it first (`ROAD-68-K24`).
             core.agents.held_arrivals.clear();
             for i in 0..core.agents.len() {
                 if core.agents.pending_household_size[i] > 0 {
-                    core.agents.transit[i] = TRANSIT_IN_BUILDING;
-                    core.agents.current_building[i] = core.agents.home_building[i];
-                    core.agents.release_departure(i);
+                    core.agents.place_arrival_carrier_at_home(i);
                     core.households.materialize_arrival_carrier(
                         i,
                         &mut core.agents,
