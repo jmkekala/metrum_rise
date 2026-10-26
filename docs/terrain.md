@@ -4103,7 +4103,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause (the inside rule's mouth correction), the plot suites passing in `run.sh --test`, a populated save; open: the GPU matrix's miss (graded GPU p50 0.70-0.94 ms above exact; on the Kuopio poses attributed to frame pacing, a re-run decides), the edit install frame (3.44 ms), graded terrain not settling on the populated save, the `kuopio_t2_wall` pinholes, the abutment band, the water reflection proxy and the 100k city's slot maxima) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; open: the GPU matrix re-run, `kuopio_t2_wall`'s plan pinholes (B 3: T24 (a) does not reach them), the abutment band, the water reflection proxy, the undo swap test) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5861,6 +5861,81 @@ tests.
 Godot: `terrain_graded_tiles.gd` 879 (+73: the change flags, the edit frame's parts, the hidden
 plane), `terrain.gd` 4,592 (+31: the kept resident entries and revisions). `roadbed/` unchanged.
 
+Round 6, 2026-10-26, the same branch rebased onto `road` at `6c51cf00` (`ROAD-68-K22`: save
+format 108, the Kuopio reference save re-recorded): the populated save, the edit install frame,
+the plan pinholes, `WATER-05`. Fresh runs on this branch unless marked; probes on release
+libraries in gamescope's headless backend, P-cores.
+
+- **The populated save never settled (fixed at its cause).** The refusals were `GL2` tiles over
+  the material edge capacity: `GL2` held the proposed 64 edges, never measured at city scale
+  (gate C's census baked `GL0` only), and the widest band names the most edges. A census of every
+  tile the save's patches list, at every level, with the bootstrap packs' sites
+  (`graded_slot_rows_census`, ignored, `METRUM_GRADED_ROWS_SAVE`): 1,079 of 1,580 tiles over
+  capacity at `GL2` (up to 119 edges), `GL1` 108 of 128, seams up to 242, 244 and 212 at
+  `GL0`-`GL2` (`GL2` held 256). Round 5's control could not tell: `METRUM_DEBUG=terrain` turns on
+  the general channels, not `terrain` (`METRUM_DEBUG_TERRAIN=1`). Capacities now follow `T7`'s rule
+  (twice the measured maximum): 512 seams and 256 edges at `GL0`-`GL2` ([rows](#data)); after it no
+  tile fails anywhere on the save, Kuopio or the 100k city ({CENSUS}). The debug suite checks it on a
+  populated world: `scenario/graded_cases.rs`
+  `every_listed_tile_of_a_grown_town_bakes_at_every_level` (the starter town grown 8 days, 100
+  buildings, 76 tiles: every tile bakes at every level and `GL3` step, and every row stays within
+  half its capacity; the town names 57 edges at `GL2`, so it fails on the old 64).
+- **A refused request was re-asked every frame (fixed).** Godot dropped a refused tile's request
+  and asked for it again the next frame, and the closest refused tiles took the whole request
+  budget, so nothing farther ever baked (808,895 refusals in 600 s in this round's control). A
+  refusal is now recorded with its token, counted and logged once, and asked again only when an
+  edit dirties the tile or the patch generation moves ([refusals](#godot-tile-renderer)).
+  `graded_tile_renderer_test.gd` checks it with a bridge that refuses every bake (each tile asked
+  once, each refusal counted once, an edit asks once more) and fails the production renderer on any
+  refusal.
+- **Cell sets created by an edit (fixed at its cause).** Patches newly drawing cells created their
+  `MultiMesh`es and materials. Cell sets are prewarmed, one per patch of the grid
+  ([cell sets](#godot-tile-renderer), [T25](#terrain-07-open-questions), taken pending the user's
+  review): every probe and the headless suite now create nothing after setup.
+- **The edit install frame (fixed: within 1.0 ms).** The residency follows the changed patches
+  and arriving lists only (no scan of every resident list), the batch installs in a frame that
+  polls nothing, and a changed patch material syncs only the parameters that differ
+  ([work on changes](#godot-tile-renderer)). Round 5's cells skip (`7979f2bd`): the cells part
+  0.57 -> 0.001 ms (round 5's F3 probe, historical).
+- **Plan pinholes (T24 (a) built; still a miss in B, open).** The outer-band overlap
+  ([mask](#the-exact-seam-mask)) is built as the user decided. `kuopio_t2_wall`'s plan view still
+  has 3 pinholes in B (the same pixels) and 1 in the exact cut. A diagnostic at the pixels
+  (`kuopio_plan_pinhole_sides`, ignored): every pixel centre lies on the outer chain (within
+  0.1 mm), and at all three the hidden ground just inside the chain lies above the road top (by
+  5 mm, 28 cm and 1.4 cm, 1 cm inside), so the overlap's condition keeps them discarded. The
+  28 cm one is a stepped edge (the conflict wall's site); the other two lie on edges where the
+  inside rule's ground rises under the road. Not the roadbed's: the chain is exact; the join is
+  between two frames. Next: [T24](#terrain-07-open-questions) (a2).
+- **The bridge mouth's sky pixels** under the slab end (round 5): in the grass where the grounded
+  road meets the deck; the abutment band (waits for `ROAD-68-K23`), not investigated further.
+- **Instance-uniform overflow**: [`WATER-05`](roadmap.md#validated-bugs), not fixed here.
+- **Populated save** regenerated on the rebased tip (format 108): `$ARTIFACTS/t07d6/populated/populated_city_14000.sqlite`,
+  same generator and size (10,576 buildings, 59 s).
+
+**Probes (fresh).** One session against round 5's tip (round 5's scripts at `9c04998b`, library
+`b3972ecc`), both on the old-format saves (Kuopio `3c1dbc27`, round 5's populated save), the
+round 6 library `d3b998d1` (Rust of `3ddfbfd8`), round 6 scripts:
+
+| | Round 5 tip | Round 6 |
+|---|---|---|
+| Populated: graded settles | no (600 s; 808,895 refusals; 145 tiles) | 2,132 ms (1,610 tiles, 36 patches with cells, 0 refused) |
+| Populated: edit install frame | 4.63 ms (residency 3.10, poll 0.63, cells 0.51) | 0.73 ms (12 tiles; batch 0.71, residency 0.003) |
+| Populated: created by the edit | 40 | 0 |
+{KPAIR}
+
+On the rebased tip ({TIP}).
+
+**T25's cost.** {T25}
+
+**Tests (fresh, round 6).** {TESTS}
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/`: 5,320 (5,305 in round 5):
+`tile.rs` +5 (capacities, seam heights), `residency.rs` +10 (the heights in the rows). Godot:
+`terrain_graded_tiles.gd` 1,011 (+127: refusals, the counted residency, the prewarmed cell sets,
+the changed-only sync), `terrain.gd` 4,602 (+10), `terrain_cells.gdshaderinc` 405 (+10),
+`terrain_surface.gdshaderinc` 1,009 (+6). Node bridge `graded_tiles_api.rs` 600 (+1). `roadbed/`
+unchanged (8,959 lines on `road` `6c51cf00`, tests and fixtures excluded).
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
@@ -6531,6 +6606,15 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (c) Accept sub-pixel pinholes and drop the plan-view count from the acceptance.
     - **Recommendation.** (a), measured with the plan-view count (target 0 in B) and the close
       views' "no terrain over a sidewalk" check.
+    - **Round 6 result (a miss, open).** Built; `kuopio_t2_wall` B still 3 pinholes: at all three
+      the hidden ground 1 cm inside the chain lies 5 mm to 28 cm above the road top, so (a) keeps
+      them discarded (`kuopio_plan_pinhole_sides`). `t` (flat, 2.5%, 8%): 0 in both modes, no
+      terrain over a sidewalk in the close views.
+    - **(a2), for the next round.** Keep the band's terrain whatever its height and write its
+      depth pushed behind the road top by more than the band's height difference, so it shows
+      only where no road fragment is drawn; costs the graded cells' early depth test (measure in
+      the GPU matrix). The alternative is the road's: a one-pixel horizontal fringe of the
+      roadbed's outer edge under the terrain.
 25. **T25. Cell sets prewarmed per grid patch (`TERRAIN-07-D` round 6; taken pending the user's
     review, 2026-10-26).**
     - **Evidence.** Round 5's populated edit created 16 materials and 24 `MultiMesh`es: cell sets
