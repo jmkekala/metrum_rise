@@ -4056,7 +4056,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3; open: graded terrain draws nothing in a GPU session (round 3 defect), the wall meshes, the water reflection proxy, the 100k city's slot maxima and the GPU idle-frame matrix with the user) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches) and the wall meshes; open: the edit install frame (2.99 ms against 1.0 ms on Kuopio), refused payloads surfacing, the abutment band, the portal and bridge-mouth findings of the renders, the water reflection proxy, the 100k city's slot maxima, a populated save for the probe, and the GPU idle-frame matrix with the user) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5540,6 +5540,104 @@ Godot: a Rust census of the listed tiles per level by camera distance); the GPU 
 with the user; an undo test on the roadbed's swap path (the core tests' commits push no undo
 state); the plain patch payloads a road commit still re-requests (the patch generation bump also
 refreshes the tile lists).
+
+Round 4, 2026-10-26, the same branch rebased onto `road` at `fdf6c7a1` (gate C landed): the
+render defect, the wall meshes, the reference renders and the release probe. Fresh runs on this
+branch unless marked.
+
+- **The render defect (fixed at its cause).** Round 2's item 4 made Godot request every patch's
+  plain payload (step 0), but Rust still refused a plain payload for a road-owned patch, the exact
+  cut's contract (`terrain_patch_payload_build_source_for_request` returned no source when the
+  patch required engineered refinement). The request came back as a retry, Godot asked again the
+  next frame, and so on forever: no patch under a road installed, the terrain never settled, and
+  the graded tiles (listed only by installed patches) never baked. It showed on the dummy
+  renderer as well: on a 512 m world with the T, 12 of 16 patches installed and the 4 under the
+  road stayed requested at step 0 for 300 frames, on the GPU too; round 3's "patches with no
+  graded tile are missing too" was those views seeing only the road's patches. The plain payload
+  is the patch's heightmap and is now served for every patch; the exact cut still asks road-owned
+  patches at the refined step, so the reference test's exact half is unchanged. With the fix the
+  same world settles in 10 frames on the GPU with every patch installed, 10 graded tiles and 4
+  patches drawing cells. The Rust test that asserted the refusal
+  (`raw_terrain_payload_is_rejected_for_road_locked_patch`) now asserts the plain payload
+  (`plain_terrain_payload_is_served_for_road_locked_patch`). Regression check in the headless
+  suite `./run.sh --test` runs: `graded_tile_renderer_test.gd` now also runs the production
+  renderer (`terrain.gd`, graded on) over its roads and requires it to settle with every patch
+  installed, the junction's patch included, and the junction's tile drawn graded; against the
+  library without the fix it fails 8 assertions (0 patches installed), with it 0.
+- **A silent retry hid it (open, the coordinator's follow-up).** A request Rust refuses by
+  contract is a bug, not a transient: it should be logged once on the debug channel and fail the
+  headless suite instead of retrying forever. Not small: the refusal has to travel separately from
+  the transient retries (a busy core, a stale generation, an uncurrent roadbed, a terrain stroke)
+  from `terrain_patch_payload_build_source_for_request` (a reason per failure) through the
+  worker's failed list and `poll_ready_terrain_patch_payloads` (a `refused_requests` array) to
+  `terrain.gd` (no re-request, a logged and counted refusal that the suites assert zero).
+  Carried to round 5.
+- **Re-entrant scratch (fixed).** `kuopio_t2_wall`'s session aborted with "RefCell already
+  borrowed": a payload worker held its thread-local bake scratch (and the edit selection's)
+  borrowed across the bake's Rayon join, where it can steal another bake of the same kind. The
+  scratch is now taken out of the thread-local for the call and put back after
+  (`graded_tiles_api.rs` `with_scratch`).
+- **Wall meshes (built).** The poll hands each tile's wall faces packed (`pack_walls`, eight
+  little-endian `f32` per face; `packed_walls_hold_the_faces_bitwise` checks every face of every
+  fixture and level), and the renderer draws them as described in the
+  [renderer rules](#godot-tile-renderer): one pooled, prewarmed `MultiMesh` of a quad per cell
+  set, a face per instance in the patch holding its midpoint, placed by
+  `terrain_graded_walls.gdshader` from its instance transform and lit through
+  `standard_light.gdshaderinc`; nothing created per edit. The headless suite turns the T's side
+  road into a bridge over a hollow and requires one instance per face (22 faces over 6 installed
+  tiles). C round 5's portal side walls come after the structure walls in the payload and draw
+  the same way; its bore seams follow the road seams in the seam row and the shader's exact test
+  already treats every row seam alike (the deck on the bore seam's left, as the road on a road
+  seam's), so no shader change was needed. The abutment band (the terrain's abutment wall
+  starting at the skirt depth) is not done: a wall seam has to know its structure is a bridge
+  (the roadbed's mouth wall runs tagged with their structure, `SeamKind::Wall` split), which
+  touches the roadbed's mesh and query beside `ROAD-68-K19`; round 5, after K19 lands.
+- **Edit batch check (test).** The item 5 check failed once in five runs ("3 of 4"): the patch
+  lists' refresh after a commit can install a newly listed tile before the edit's selection
+  arrives, and that tile then joins the batch. The renderer is right (the tile rebakes once more);
+  the check now compares the batch with the tiles it installed (`last_edit_batch`).
+
+**Reference renders (fresh, round 4; tree `b95adb55`, before the re-entrancy fix).** In compare
+mode through `screenshots-C.sh` (gamescope's headless backend, Forward+). Every image of `t`
+(flat, 2.5% and 8%, exact and B, the five spike views and 200 m to 3 km) and of `bridge_t` and
+`tunnel_t` (B only, with `under_bridge`, `mouth_side` and `portal`): plan_terrain pinholes 0 in
+every B and exact half, no assertion failed; the 4x crops of `t`'s curb returns show no gap, no
+terrain over a sidewalk and no background sliver, exact and B alike; the distance views show no
+crack along cell or level borders, no road hidden and no skirt. Findings, open: `tunnel_t`'s
+portal view shows the sky through a sliver at the tunnel's mouth between the deck's end and the
+mound (the portal opening's far side or the headwall, for the C rules), and `bridge_t`'s
+`mouth_side` shows a dark face standing above the deck at the bridge's mouth and a 2-pixel sky
+sliver at the ground line under it; which faces they are (graded walls or the roadbed's abutment
+face) is not yet told apart. `kuopio_t2_wall` aborted (the re-entrancy above) after its exact
+half, which had 1 pinhole in plan_terrain. The other groups were still rendering at the handoff.
+
+**Release probe (fresh; release library of `b95adb55`, gamescope, Kuopio reference save, a
+60 m straight spur off the dead end at (31.5, -6.7)).** Exact then graded in one session:
+`load_game` 99.9 ms; settle 2,641.5 ms exact against 2,532.9 ms graded; video memory 474.8 MiB
+exact against 589.4 MiB graded (textures 288.1 against 408.4 MiB: the pools' 90.8 MiB and the
+cells); slots used after settling `GL0` 20 of 64, `GL1` 18 of 192, `GL2` 225 of 2,048, `GL3` 38 of
+2,048 (301 tiles installed, 30 patches with cells); the streaming install's worst frame 1.09 ms
+(poll 0.15 ms, upload 0.04 ms). The edit committed in 21.0 ms and installed its 6 tiles in one
+frame, nothing created (every created-resource delta 0), but that frame took **2.99 ms against
+the 1.0 ms acceptance (a miss, open)**: the frame also rewrites the cells of every patch whose
+tile list the commit refreshed, and `_sync_material` copies every uniform into four materials per
+rewritten patch; round 5 measures the frame's parts first. The town save
+(`zoned-city-26-days.sqlite`, copied) no longer loads ("version mismatch", a save from before
+ROAD-68), so neither the populated probe nor the matrix's town poses can run on it: a populated
+save re-made on this build is needed (the user's, or a generated city).
+
+**Not done.** The water reflection proxy: by reading, the reflection world mirrors each patch's
+PlaneMesh as a separate RenderingServer instance without the `cell_mode` instance uniform, so the
+mirror draws the full base patch, not nothing as round 1 noted; graded deltas are not mirrored
+(unverified by a render). The 100k city's slot census and item 5's follow-ups (the undo test on
+the swap path, the plain payloads a commit re-requests) are round 5's. T23's evidence: Vulkan 1.0
+guarantees 256 array layers (`maxImageArrayLayers`), the 2022 roadmap profile 2,048; the pools
+assume 2,048, which desktop drivers report.
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/`: 5,196 (4,865 on `road`);
+`residency.rs` +27 this round (`pack_walls`). Node bridge `graded_tiles_api.rs` 599 (+19),
+`async_terrain/node_jobs.rs` -3. Godot: `terrain_graded_tiles.gd` 806 (+87: the wall instances,
+`last_edit_batch`), `terrain_graded_walls.gdshader` 48 (new). `roadbed/` production unchanged.
 
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
