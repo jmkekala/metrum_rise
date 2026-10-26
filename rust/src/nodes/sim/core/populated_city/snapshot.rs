@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Reusable populated-city SQLite fixtures for short economy performance checks.
+//! Reusable populated-city SQLite fixtures for short economy performance checks, and the
+//! `ROAD-68-K22` commit breakdown's saved cities.
 
 use super::PopulatedCity;
 use crate::nodes::sim::core::scenario::install_bootstrap_assets;
@@ -26,13 +27,18 @@ const SNAPSHOT_MINUTE: u16 = 0;
 enum Fixture {
     Baseline,
     FiscalStress,
+    // The commit breakdown's city as `PopulatedCity::build` leaves it, at the build's own clock
+    // (`ROAD-68-K22`): the breakdown on it equals the breakdown on a city built in the run.
+    CommitCity,
 }
 
 impl Fixture {
-    fn day(self) -> u32 {
+    // The clock the fixture is saved at, when it is a fixed boundary.
+    fn boundary(self) -> Option<(u32, u16)> {
         match self {
-            Self::Baseline => SNAPSHOT_DAY,
-            Self::FiscalStress => 16,
+            Self::Baseline => Some((SNAPSHOT_DAY, SNAPSHOT_MINUTE)),
+            Self::FiscalStress => Some((16, SNAPSHOT_MINUTE)),
+            Self::CommitCity => None,
         }
     }
 
@@ -40,6 +46,18 @@ impl Fixture {
         match self {
             Self::Baseline => "populated_city",
             Self::FiscalStress => "fiscal_stress",
+            Self::CommitCity => "commit_city",
+        }
+    }
+
+    // The economy fixtures are keyed by their sources and data inputs, and simulation changes
+    // that alter them bump the marker. The commit city is built by the road, zoning and building
+    // code that the branches it times change, so its key adds this binary's digest: two binaries
+    // share a commit city only when they are the same build.
+    fn revision(self) -> String {
+        match self {
+            Self::Baseline | Self::FiscalStress => fixture_revision(),
+            Self::CommitCity => commit_city_revision(),
         }
     }
 }
@@ -54,18 +72,33 @@ pub(super) fn ensure_fiscal_snapshot(residents: u32, cache_dir: &Path) -> Option
     ensure_fixture(residents, cache_dir, Fixture::FiscalStress)
 }
 
+/// Ensures a valid commit-breakdown city snapshot of this binary exists (`ROAD-68-K22`) and
+/// returns its generation time when it was built, with the snapshot's key.
+pub(super) fn ensure_commit_snapshot(
+    residents: u32,
+    cache_dir: &Path,
+) -> (Option<Duration>, String) {
+    let generation = ensure_fixture(residents, cache_dir, Fixture::CommitCity);
+    (generation, Fixture::CommitCity.revision())
+}
+
+/// Loads this binary's validated commit-breakdown city snapshot.
+pub(super) fn load_commit_snapshot(residents: u32, cache_dir: &Path) -> PopulatedCity {
+    load_fixture(residents, cache_dir, Fixture::CommitCity)
+}
+
 fn ensure_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Option<Duration> {
     fs::create_dir_all(cache_dir)
         .unwrap_or_else(|error| panic!("could not create performance snapshot directory: {error}"));
     let path = snapshot_path(residents, cache_dir, fixture);
-    let fixture_revision = fixture_revision();
+    let fixture_revision = fixture.revision();
     if snapshot_metadata_matches(&path, residents, &fixture_revision, fixture) {
         return None;
     }
 
     let started = Instant::now();
     let mut city = match fixture {
-        Fixture::Baseline => PopulatedCity::build_timed(residents).0,
+        Fixture::Baseline | Fixture::CommitCity => PopulatedCity::build_timed(residents).0,
         Fixture::FiscalStress => fiscal_stress_city(residents, cache_dir),
     };
     warm_to_snapshot_boundary(&mut city, fixture);
@@ -83,7 +116,7 @@ fn ensure_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Option<
         residents,
         city.departures,
         &fixture_revision,
-        fixture,
+        (city.core.time.day_index, city.core.time.minute_of_day),
     );
 
     // A cache is accepted only after a fresh load produces the same next daily record as the
@@ -92,8 +125,9 @@ fn ensure_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Option<
     let building_revision = city.core.allocator.building_ref_revision();
     assert_exact_continuation(&mut city, &mut loaded, fixture);
     // At 10k the healthy city has almost no failed businesses to rebuild since settlement moved to
-    // each building's own phase (`SIM-02-G`), so the 30k tier carries this check.
-    if residents == 30_000 {
+    // each building's own phase (`SIM-02-G`), so the 30k tier carries this check. The commit city
+    // times road commits, not churn.
+    if residents == 30_000 && !matches!(fixture, Fixture::CommitCity) {
         assert_ne!(
             city.core.allocator.building_ref_revision(),
             building_revision,
@@ -133,7 +167,7 @@ pub(super) fn fiscal_stress_city(residents: u32, cache_dir: &Path) -> PopulatedC
 
 fn load_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> PopulatedCity {
     let path = snapshot_path(residents, cache_dir, fixture);
-    let fixture_revision = fixture_revision();
+    let fixture_revision = fixture.revision();
     assert!(
         snapshot_metadata_matches(&path, residents, &fixture_revision, fixture),
         "populated-city snapshot is missing or stale: {}",
@@ -143,7 +177,18 @@ fn load_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Populated
 }
 
 fn snapshot_path(residents: u32, cache_dir: &Path, fixture: Fixture) -> PathBuf {
-    cache_dir.join(format!("{}_{residents}.sqlite", fixture.name()))
+    match fixture {
+        // Each binary's commit cities sit beside the others', so a control and a candidate
+        // timed in one session each keep their own.
+        Fixture::CommitCity => cache_dir.join(format!(
+            "{}_{residents}_{}.sqlite",
+            fixture.name(),
+            &fixture.revision()[..16]
+        )),
+        Fixture::Baseline | Fixture::FiscalStress => {
+            cache_dir.join(format!("{}_{residents}.sqlite", fixture.name()))
+        }
+    }
 }
 
 fn temporary_snapshot_path(residents: u32, cache_dir: &Path, fixture: Fixture) -> PathBuf {
@@ -159,7 +204,7 @@ fn annotate_snapshot(
     residents: u32,
     departures: u32,
     fixture_revision: &str,
-    fixture: Fixture,
+    (day, minute): (u32, u16),
 ) {
     let mut connection = Connection::open(path)
         .unwrap_or_else(|error| panic!("could not reopen populated-city snapshot: {error}"));
@@ -183,8 +228,8 @@ fn annotate_snapshot(
             rusqlite::params![
                 fixture_revision,
                 i64::from(residents),
-                i64::from(fixture.day()),
-                i64::from(SNAPSHOT_MINUTE),
+                i64::from(day),
+                i64::from(minute),
                 i64::from(departures),
             ],
         )
@@ -225,28 +270,35 @@ fn snapshot_metadata_matches(
         )
         .ok();
     save_version == Some(SAVE_VERSION)
-        && metadata
-            == Some((
-                fixture_revision.to_owned(),
-                i64::from(residents),
-                i64::from(fixture.day()),
-                i64::from(SNAPSHOT_MINUTE),
-            ))
+        && metadata.is_some_and(|(revision, saved_residents, day, minute)| {
+            revision == fixture_revision
+                && saved_residents == i64::from(residents)
+                && fixture
+                    .boundary()
+                    .is_none_or(|boundary| (day, minute) == clock_columns(boundary))
+        })
+}
+
+fn clock_columns((day, minute): (u32, u16)) -> (i64, i64) {
+    (i64::from(day), i64::from(minute))
 }
 
 fn warm_to_snapshot_boundary(city: &mut PopulatedCity, fixture: Fixture) {
+    let Some((day, minute)) = fixture.boundary() else {
+        return;
+    };
     city.core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
-    while city.core.time.day_index < fixture.day() {
+    while city.core.time.day_index < day {
         city.advance_hour();
     }
     assert_eq!(
         (city.core.time.day_index, city.core.time.minute_of_day),
-        (fixture.day(), SNAPSHOT_MINUTE)
+        (day, minute)
     );
 }
 
 fn load_snapshot_from_path(residents: u32, path: &Path, fixture: Fixture) -> PopulatedCity {
-    let metadata = read_departures(path, residents, fixture);
+    let (departures, clock) = read_departures(path, residents, fixture);
     let mut core = SimCore {
         benchmark_mode: true,
         ..SimCore::new(WorldConfig::new(2048.0, 2048.0, 40.0, 10.0))
@@ -258,18 +310,16 @@ fn load_snapshot_from_path(residents: u32, path: &Path, fixture: Fixture) -> Pop
     )
     .unwrap_or_else(|error| panic!("could not load populated-city snapshot: {error}"));
     assert_eq!(
-        (core.time.day_index, core.time.minute_of_day),
-        (fixture.day(), SNAPSHOT_MINUTE),
+        clock_columns((core.time.day_index, core.time.minute_of_day)),
+        clock,
         "saved clock does not match the fixture boundary",
     );
     core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
-    PopulatedCity {
-        core,
-        departures: metadata,
-    }
+    PopulatedCity { core, departures }
 }
 
-fn read_departures(path: &Path, residents: u32, fixture: Fixture) -> u32 {
+// The saved departures and clock columns, after checking the metadata against the fixture.
+fn read_departures(path: &Path, residents: u32, fixture: Fixture) -> (u32, (i64, i64)) {
     let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .unwrap_or_else(|error| panic!("could not open populated-city snapshot: {error}"));
     let metadata: (String, i64, i64, i64, i64) = connection
@@ -287,15 +337,55 @@ fn read_departures(path: &Path, residents: u32, fixture: Fixture) -> u32 {
             },
         )
         .unwrap_or_else(|error| panic!("invalid populated-city metadata: {error}"));
-    assert_eq!(metadata.0, fixture_revision());
+    assert_eq!(metadata.0, fixture.revision());
     assert_eq!(metadata.1, i64::from(residents));
-    assert_eq!(metadata.2, i64::from(fixture.day()));
-    assert_eq!(metadata.3, i64::from(SNAPSHOT_MINUTE));
-    u32::try_from(metadata.4).expect("snapshot departures must fit u32")
+    if let Some(boundary) = fixture.boundary() {
+        assert_eq!((metadata.2, metadata.3), clock_columns(boundary));
+    }
+    (
+        u32::try_from(metadata.4).expect("snapshot departures must fit u32"),
+        (metadata.2, metadata.3),
+    )
 }
 
 fn fixture_revision() -> String {
     fixture_revision_at(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+}
+
+// The economy fixtures' revision and the running binary's SHA-256, hashed once per process
+// (a release test binary is about 0.8 GB, about half a second).
+fn commit_city_revision() -> String {
+    static REVISION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    REVISION
+        .get_or_init(|| {
+            let binary = std::env::current_exe()
+                .unwrap_or_else(|error| panic!("could not locate the test binary: {error}"));
+            let mut file = fs::File::open(&binary).unwrap_or_else(|error| {
+                panic!(
+                    "could not open the test binary {}: {error}",
+                    binary.display()
+                )
+            });
+            let mut hasher = Sha256::new();
+            hasher.update(b"commit-city-revision-v1");
+            hasher.update(fixture_revision().as_bytes());
+            let mut buffer = vec![0; 1 << 20];
+            loop {
+                let read = std::io::Read::read(&mut file, &mut buffer).unwrap_or_else(|error| {
+                    panic!(
+                        "could not read the test binary {}: {error}",
+                        binary.display()
+                    )
+                });
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            let digest = hasher.finalize();
+            digest.iter().map(|byte| format!("{byte:02x}")).collect()
+        })
+        .clone()
 }
 
 fn fixture_revision_at(repository: &Path) -> String {
@@ -401,7 +491,13 @@ fn snapshot_revision_rejects_changed_economy_demand_and_assets() {
             .execute("INSERT INTO save_meta VALUES (?1)", [SAVE_VERSION])
             .unwrap();
     }
-    annotate_snapshot(&saved, 10_000, 0, &revision, Fixture::Baseline);
+    annotate_snapshot(
+        &saved,
+        10_000,
+        0,
+        &revision,
+        Fixture::Baseline.boundary().unwrap(),
+    );
     assert!(snapshot_metadata_matches(
         &saved,
         10_000,

@@ -18,8 +18,9 @@ use crate::simulation::economy::demand::{
     DemandSystem, SpawnPermit,
 };
 use crate::simulation::economy::households::{
-    DestinationRoll, Household, HouseholdSystem, JobBoardRoll, SavedDestination,
-    SavedDestinationRoll, SavedDestinationSweep, SavedJobBoard, SavedJobBoardSweep,
+    DestinationRoll, Household, HouseholdSystem, JobBoardRoll, PendingHouseholdArrivals,
+    SavedDestination, SavedDestinationRoll, SavedDestinationSweep, SavedJobBoard,
+    SavedJobBoardSweep,
 };
 use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequest, FreightRequestFailure, FreightRequestKey, FreightRequestKind,
@@ -618,7 +619,7 @@ pub(super) fn save_household_queue_state(
         None => (NONE_REF, 0, 0),
     };
     tx.execute(
-        "INSERT INTO household_queue_state(singleton, visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        "INSERT INTO household_queue_state(singleton, visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate, pending_households, pending_adults, pending_elders, pending_children) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             i64::from(households.visit_credit),
             u64_to_i64(first_minute)?,
@@ -635,6 +636,10 @@ pub(super) fn save_household_queue_state(
             job_sweep_next_chunk,
             i64::from(households.admission_credit),
             i64::from(households.admission_rate),
+            i64::from(households.pending_arrivals.households),
+            i64::from(households.pending_arrivals.adults),
+            i64::from(households.pending_arrivals.elders),
+            i64::from(households.pending_arrivals.children),
         ],
     )?;
     // The job board's members (buffer 0) and the sweep's (buffer 1), and the queued job
@@ -695,13 +700,15 @@ pub(super) fn save_household_queue_state(
 }
 
 // `household_queue_state`: the visit credit and shopper leveler, the destination roll's header,
-// the job board's hour and the admission credit (`SIM-02-J`).
+// the job board's hour, the admission credit (`SIM-02-J`) and the pending arrivals the last
+// operational hour counted, which demand planning reads until the next count.
 type QueueStateRow = (
     (i64, i64, Vec<u8>),
     (i64, i64, i64, i64),
     (i64, i64, i64),
     (i64, i64, i64),
     (i64, i64),
+    (i64, i64, i64, i64),
 );
 
 fn load_household_queue_state(
@@ -714,8 +721,9 @@ fn load_household_queue_state(
         (front_current, sweep_current, job_board_hour),
         (job_sweep_handles, job_sweep_hour, job_sweep_next_chunk),
         (admission_credit, admission_rate),
+        (pending_households, pending_adults, pending_elders, pending_children),
     ): QueueStateRow = conn.query_row(
-        "SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate FROM household_queue_state WHERE singleton = 1",
+        "SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate, pending_households, pending_adults, pending_elders, pending_children FROM household_queue_state WHERE singleton = 1",
         [],
         |row| {
             Ok((
@@ -724,12 +732,21 @@ fn load_household_queue_state(
                 (row.get(7)?, row.get(8)?, row.get(9)?),
                 (row.get(10)?, row.get(11)?, row.get(12)?),
                 (row.get(13)?, row.get(14)?),
+                (row.get(15)?, row.get(16)?, row.get(17)?, row.get(18)?),
             ))
         },
     )?;
     households.visit_credit = i64_to_u32(credit)?;
     households.admission_credit = i64_to_u32(admission_credit)?;
     households.admission_rate = i64_to_u32(admission_rate)?;
+    // The count stays as the last operational hour took it, plus the hour's admissions, until
+    // the next one recounts; a recount at load would drop the carriers that arrived since.
+    households.pending_arrivals = PendingHouseholdArrivals {
+        households: i64_to_u32(pending_households)?,
+        adults: i64_to_u32(pending_adults)?,
+        elders: i64_to_u32(pending_elders)?,
+        children: i64_to_u32(pending_children)?,
+    };
     let mut board_buffers = [Vec::new(), Vec::new()];
     let mut stmt = conn.prepare(
         "SELECT buffer, building_slot, building_generation FROM job_board_members ORDER BY buffer, position",

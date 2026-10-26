@@ -950,25 +950,136 @@ fn benchmark_populated_work_counts() {
 // (`METRUM_COMMIT_TIERS`, default 0,1300,13000); 0 is the 1,300-resident street grid without
 // lots. Each sample branches a 120 m road off a border trunk west of the grid, splitting the
 // trunk into a T junction, which changes the routing topology. City setup is never timed.
+// `ROAD-68-K22`: each populated tier loads its city from this binary's saved snapshot
+// (`commit_city`); `COMMIT_FIXTURE` says where each city came from, `COMMIT_SETUP` where the
+// untimed setup went, and `COMMIT_PRODUCTS` lists the products two runs must share bitwise.
 #[test]
-#[ignore = "release ROAD-68-G commit breakdown; builds the requested cities outside timing"]
+#[ignore = "release ROAD-68-G commit breakdown; loads or builds the requested cities outside timing"]
 fn benchmark_populated_commit_breakdown() {
-    let tiers: Vec<u32> = std::env::var("METRUM_COMMIT_TIERS")
-        .map(|value| value.split(',').map(|t| t.trim().parse().unwrap()).collect())
-        .unwrap_or_else(|_| vec![0, 1_300, 13_000]);
-    for residents in tiers {
-        let mut core = if residents == 0 {
-            super::street_grid(super::side_m_for(1_300)).0
-        } else {
-            PopulatedCity::build(residents).core
-        };
-        profile_commits(residents, &mut core);
+    for residents in commit_tiers() {
+        let started = Instant::now();
+        let (mut core, mut fixture) = commit_city(residents);
+        fixture["city_s"] = started.elapsed().as_secs_f64().into();
+        eprintln!("COMMIT_FIXTURE {fixture}");
+        let products = profile_commits(residents, &mut core);
+        eprintln!("COMMIT_PRODUCTS {products}");
     }
 }
 
-fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
+// `ROAD-68-K22`: generates and checks this binary's saved commit-breakdown cities for
+// `METRUM_COMMIT_TIERS` in `METRUM_PERF_CACHE`, so a timing session only loads them.
+#[test]
+#[ignore = "release ROAD-68-K22 commit breakdown city snapshots; generation and exact continuation"]
+fn benchmark_populated_commit_prepare() {
+    super::contract::timing_mode();
+    for residents in commit_tiers()
+        .into_iter()
+        .filter(|&residents| residents > 0)
+    {
+        let (generation, key) =
+            super::snapshot::ensure_commit_snapshot(residents, &super::contract::cache_dir());
+        eprintln!(
+            "COMMIT_PREPARE {}",
+            serde_json::json!({"residents": residents, "key": key,
+                "generation_s": generation.map(|value| value.as_secs_f64())})
+        );
+    }
+}
+
+// `ROAD-68-K22`: the breakdown on a city loaded from its snapshot has the products of the
+// breakdown on the city built in the run, bitwise, on the 2,000-resident city (the default
+// 1,300 tier no longer houses its residents).
+#[test]
+#[ignore = "release ROAD-68-K22 snapshot equivalence; builds the city twice and loads it"]
+// Runtime guard: the ignored check must still compile in a debug test build.
+#[allow(clippy::assertions_on_constants)]
+fn commit_breakdown_products_survive_the_snapshot() {
+    assert!(
+        !cfg!(debug_assertions),
+        "run the snapshot equivalence check in a release test build"
+    );
+    let residents = 2_000;
+    // Beside the other snapshots, not on the tmpfs temp directory.
+    let cache_dir = super::contract::cache_dir().join(format!(
+        "commit_snapshot_check_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_nanos()
+    ));
+    let built = profile_commits(residents, &mut PopulatedCity::build(residents).core);
+    let (generation, _) = super::snapshot::ensure_commit_snapshot(residents, &cache_dir);
+    assert!(generation.is_some());
+    let mut loaded = super::snapshot::load_commit_snapshot(residents, &cache_dir).core;
+    std::fs::remove_dir_all(&cache_dir).expect("remove the temporary snapshot directory");
+    assert_eq!(built, profile_commits(residents, &mut loaded));
+}
+
+fn commit_tiers() -> Vec<u32> {
+    std::env::var("METRUM_COMMIT_TIERS")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|t| t.trim().parse().unwrap())
+                .collect()
+        })
+        .unwrap_or_else(|_| vec![0, 1_300, 13_000])
+}
+
+// The tier's city and its `COMMIT_FIXTURE` record. Tier 0's street grid is built in the run. A
+// populated tier loads this binary's snapshot from `METRUM_PERF_CACHE` (the perf contract's
+// cache), generating and checking it first when there is none (`generated`, else `loaded`);
+// `METRUM_COMMIT_CITIES=built` builds every city in the run instead, as before `ROAD-68-K22`.
+fn commit_city(residents: u32) -> (crate::nodes::sim::core::state::SimCore, serde_json::Value) {
+    let built = || serde_json::json!({"residents": residents, "source": "built"});
+    if residents == 0 {
+        return (super::street_grid(super::side_m_for(1_300)).0, built());
+    }
+    match std::env::var("METRUM_COMMIT_CITIES").as_deref() {
+        Ok("built") => return (PopulatedCity::build(residents).core, built()),
+        Ok("saved") | Err(_) => {}
+        Ok(other) => panic!("METRUM_COMMIT_CITIES must be saved or built, not {other}"),
+    }
+    let cache_dir = super::contract::cache_dir();
+    let (generation, key) = super::snapshot::ensure_commit_snapshot(residents, &cache_dir);
+    let load = Instant::now();
+    let city = super::snapshot::load_commit_snapshot(residents, &cache_dir);
+    let fixture = serde_json::json!({
+        "residents": residents,
+        "source": if generation.is_some() { "generated" } else { "loaded" },
+        "key": key,
+        "generation_s": generation.map(|value| value.as_secs_f64()),
+        "load_s": load.elapsed().as_secs_f64(),
+    });
+    (city.core, fixture)
+}
+
+// The road payload's vertices over every chunk of the city's road mesh.
+fn road_vertices(core: &crate::nodes::sim::core::state::SimCore) -> usize {
+    core.cached_road_mesh_chunks
+        .values()
+        .map(|mesh| mesh.vertex_count())
+        .sum()
+}
+
+// The tier's commits, stage by stage; returns the products that must not depend on where the
+// city came from (`ROAD-68-K22`), and logs the untimed setup's phases as `COMMIT_SETUP`.
+fn profile_commits(
+    residents: u32,
+    core: &mut crate::nodes::sim::core::state::SimCore,
+) -> serde_json::Value {
     use crate::nodes::sim::core::frame::FRAME_DT_S;
 
+    // Seconds since the previous lap, for the setup record.
+    let mut lap = {
+        let mut last = Instant::now();
+        move || {
+            let seconds = last.elapsed().as_secs_f64();
+            last = Instant::now();
+            seconds
+        }
+    };
     core.transit_network
         .rebuild_pathing_if_dirty(&mut core.region_graph);
     if core.time.speed_multiplier <= 0.0 {
@@ -993,6 +1104,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         "reference_agent_ms": reference.agent_ms,
     });
     eprintln!("COMMIT_CITY {header}");
+    let frames_s = lap();
     // Godot uploaded and acknowledged the city's road chunks long before the click, so a commit
     // republishes only the chunks it changes (`acknowledge_network_render`).
     core.precompute_road_mesh_data();
@@ -1002,6 +1114,8 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     let published = crate::nodes::sim::core::RoadToolShared::from_publication(
         core.publish_road_tool_view().expect("the fixture roadbed is current"),
     );
+    let initial_road_vertices = road_vertices(core);
+    let mesh_s = lap();
     // Godot also requested and uploaded the refined terrain of the road patches it showed, so a
     // commit rebuilds only the tiles it changes. The fixture builds every road patch once here,
     // which also checks that the whole city's terrain builds (`ROAD-68-D` part 6).
@@ -1013,6 +1127,7 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
     )
     .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
     core.insert_refined_terrain_patch_cache_entries(refined);
+    let refined_terrain_s = lap();
     // `TERRAIN-07-A` `T2` and `T7`: the whole city's road tiles at `GL0`, outside timing.
     // The census and every graded stage below read the sites through the chunk index, which
     // is rebuilt only where a frame left it stale (its rebuild resets the vacancy order).
@@ -1024,12 +1139,21 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         crate::simulation::terrain::graded::Level::Gl0,
     );
     eprintln!("GRADED_CENSUS {}", serde_json::json!({"residents": residents, "census": census}));
+    let graded_census_s = lap();
     let walls = crate::simulation::terrain::graded::tests::wall_sites(
         &core.heightmap,
         &core.transit_network.roadbed,
         5,
     );
     eprintln!("GRADED_WALLS {}", serde_json::json!({"residents": residents, "walls": walls}));
+    let graded_walls_s = lap();
+    // The census's counts are products; its bake time is not.
+    let mut census_counts = census.clone();
+    if let Some(counts) = census_counts.as_object_mut() {
+        counts.remove("bake_s");
+        counts.remove("ms_per_tile_per_worker");
+    }
+    let mut sample_products = Vec::new();
     // `METRUM_COMMIT_PHASES` logs the commit's cell-lot regions (`economy_phases`).
     let phases = std::env::var_os("METRUM_COMMIT_PHASES").is_some();
     for (sample, start) in starts.into_iter().enumerate() {
@@ -1149,8 +1273,17 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
         });
         eprintln!("COMMIT_BREAKDOWN {record}");
         prepare_graded_sites(core);
-        graded_tiles(residents, sample, core, &before_roadbed);
+        let graded = graded_tiles(residents, sample, core, &before_roadbed);
+        sample_products.push(serde_json::json!({
+            "sample": sample, "published_chunks": published_chunks,
+            "road_vertices": road_vertices(core), "lanes_off_surface": lanes_off_surface,
+            "lots_digest": lots_digest, "generated_digest": format!("{generated:016x}"),
+            "graded_digest": graded["digest"], "graded_tile_keys": graded["tile_keys"],
+            "graded_changed_pieces": graded["changed_pieces"],
+            "graded_changed_segments": graded["changed_segments"],
+        }));
     }
+    let samples_s = lap();
     // After the timed commits: the road tool view's persistent cell copy (`ROAD-68` open
     // question 32), its entries and estimated bytes (each persistent entry also holds a
     // pointer and an `Arc` header, counted as 24 bytes), and the process's resident-set growth
@@ -1176,16 +1309,40 @@ fn profile_commits(residents: u32, core: &mut crate::nodes::sim::core::state::Si
             "copy_estimate_bytes": bytes + 24 * entries, "copy_resident_growth_bytes": grown,
             "copy_ms": copy_ms})
     );
-    graded_site_removal(residents, core);
+    let cell_copy_s = lap();
+    let removal = graded_site_removal(residents, core);
+    let site_removal_s = lap();
+    eprintln!(
+        "COMMIT_SETUP {}",
+        serde_json::json!({"residents": residents, "frames_s": frames_s, "mesh_s": mesh_s,
+            "refined_terrain_s": refined_terrain_s, "graded_census_s": graded_census_s,
+            "graded_walls_s": graded_walls_s, "samples_s": samples_s, "cell_copy_s": cell_copy_s,
+            "site_removal_s": site_removal_s})
+    );
+    // The cell store's size (`COMMIT_CELL_COPY`) is not a product: it follows the store's edit
+    // history, and a loaded store holds a few entries fewer than the built one with the same
+    // digests (`ROAD-68-K22`).
+    serde_json::json!({
+        "residents": residents, "buildings": header["buildings"],
+        "households": header["households"], "agents": header["agents"],
+        "nodes": header["nodes"], "edges": header["edges"], "lanes": header["lanes"],
+        "road_vertices": initial_road_vertices, "census": census_counts, "walls": walls,
+        "samples": sample_products,
+        "site_removal_digest": removal.as_ref().map(|record| record["digest"].clone()),
+        "site_removal_tile_keys": removal.map(|record| record["tile_keys"].clone()),
+    })
 }
 
 // `TERRAIN-07-C`: the graded terrain stage of one building's removal in the city (site change
 // selection and the `GL0` bake, median of 7, `site_stage`), with every selected tile within the
 // cap and band of the removed site's bounds, whatever the size of the city around it.
-fn graded_site_removal(residents: u32, core: &mut crate::nodes::sim::core::state::SimCore) {
+fn graded_site_removal(
+    residents: u32,
+    core: &mut crate::nodes::sim::core::state::SimCore,
+) -> Option<serde_json::Value> {
     use crate::simulation::terrain::graded::{CAP_M, TileKey};
     if core.allocator.buildings.is_empty() {
-        return;
+        return None;
     }
     let building_idx = core.allocator.buildings.len() / 2;
     assert!(core.bulldoze_building(building_idx), "the building is removed");
@@ -1219,6 +1376,7 @@ fn graded_site_removal(residents: u32, core: &mut crate::nodes::sim::core::state
     record["residents"] = residents.into();
     record["buildings"] = core.allocator.buildings.len().into();
     eprintln!("GRADED_SITE_REMOVAL {record}");
+    Some(record)
 }
 
 // The site chunk index the graded bakes read (`TERRAIN-07-C`), rebuilt only when stale.
@@ -1237,7 +1395,7 @@ fn graded_tiles(
     sample: usize,
     core: &crate::nodes::sim::core::state::SimCore,
     before: &crate::simulation::network::roadbed::RoadbedSystem,
-) {
+) -> serde_json::Value {
     let mut record = crate::simulation::terrain::graded::tests::graded_stage(
         &core.heightmap,
         before,
@@ -1249,6 +1407,7 @@ fn graded_tiles(
     record["sample"] = sample.into();
     record["surface_ms"] = core.last_road_edit_metrics.surface_ms.into();
     eprintln!("GRADED_TILES_COMMIT {record}");
+    record
 }
 
 /// Points on a west border trunk outside the painted grid, 100, 250 and 400 m west of it,

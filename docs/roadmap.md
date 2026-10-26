@@ -256,11 +256,19 @@ Loads repair nothing: question 8's junction repair and two dead missing-table br
 removed, the doubtful legacy-load branches listed (`roads.md` question 37). Open question 48 (a
 terrain edit can leave a road over 1:3, whose save then fails to load, until `TERRAIN-07-E`) is
 recommended (a), taken pending the user's review.
+`ROAD-68-K22` (branch `road68-K22`) lets the commit breakdown load its 10k, 30k and 100k cities
+from snapshots keyed by the test binary, through the economy contract's snapshot code with its
+exact-continuation check, prepared before a timing session; the products of a loaded and a built
+city are bitwise equal. The check found that saves dropped the pending arrivals, so a game saved
+with households on their way in planned the rest of its hour differently: save format 108 keeps
+them and the Kuopio reference is re-recorded (`roads.md` "Saved cities for the commit breakdown",
+`simulation.md` "Save bytes"). Open question 50: the breakdown runs the test build's whole-city
+checks.
 `TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
 re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
 `ROAD-68-E`, `ROAD-68-F` or `ROAD-68-K14` one, no Godot script).
-`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists thirty-nine open questions (1-33, 35-39 and 48); open question 16 (strokes pinned to the
+`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists forty open questions (1-33, 35-39, 48 and 50); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different

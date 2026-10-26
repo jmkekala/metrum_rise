@@ -27,7 +27,9 @@ mod tick;
 
 pub(crate) use admission::QueuedAdmission;
 pub(crate) use building_economy::{produce_building_hour, refresh_activity_floor};
-pub(crate) use data::{DailyPowerSettlementSummary, HouseholdBuildingUndo};
+pub(crate) use data::{
+    DailyPowerSettlementSummary, HouseholdBuildingUndo, PendingHouseholdArrivals,
+};
 pub use data::{Household, HouseholdSystem};
 pub(crate) use destinations::{
     DestinationRoll, SavedDestination, SavedDestinationRoll, SavedDestinationSweep,

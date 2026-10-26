@@ -1037,6 +1037,10 @@ fn assert_same_demand_queues(source: &SimCore, loaded: &SimCore, when: &str) {
         (b.admission_credit, b.admission_rate),
         "admission credit {when}"
     );
+    assert_eq!(
+        a.pending_arrivals, b.pending_arrivals,
+        "pending arrivals {when}"
+    );
     let admissions = |core: &SimCore| {
         core.households
             .admission_requests

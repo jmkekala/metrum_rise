@@ -3013,6 +3013,13 @@ These need a user decision; work that does not depend on them continues.
       24 (0.37 m, between edges 41 and 44, which leave node 50 at 1:3 in diverging directions:
       a real TD7 conflict). Census, edits and the gate's acceptance:
       [terrain.md, the gate A record](terrain.md#terrain-07-a-record).
+    - **Re-recorded in save format 108 (`ROAD-68-K22`, fresh).** The format keeps the pending
+      arrivals ([`simulation.md`](simulation.md#save-bytes-road-68-k16)). Two re-records give the
+      same bytes, `8fa19a1e…` (was `3c1dbc27…`); a dump of each differs only in
+      `save_meta.version` and `household_queue_state`'s four new columns, all zero, so every saved
+      control and physical point keeps its bits and storage order. The Kuopio tests (9 passed, 7
+      ignored), `road_terrain_plan` (21, 6 ignored), `building_site_terrain` (19, 5 ignored) and
+      the save byte test pass in debug.
 39. **Junction blends beside arms cut to the source-delta limit (`ROAD-68-K14`, from question 37)
     — decided by the coordinator under the user's delegation, 2026-10-25 night, confirmed by the
     user 2026-10-26: (a); implemented in `ROAD-68-K15`.**
@@ -3111,6 +3118,25 @@ These need a user decision; work that does not depend on them continues.
     - **Recommendation.** (a): the gap exists only on the `road` branch, where saves may break,
       and `TERRAIN-07-E` closes it at its cause; (b) would block saving over a road the player
       did not make that steep, and (c) is `TERRAIN-07-E` itself.
+50. **The commit breakdown runs the test build's whole-city checks (`ROAD-68-K22`) — open.**
+    - **Evidence.** The economy runners switch off the test-only checks (`contract::timing_mode`:
+      the planning passes' book fingerprints and `debug::work::set_city_checks(false)`); the
+      commit breakdown never did, so its city builds and every frame it steps run them. They are
+      large: with them the 10k / 30k cities build in 19.9 / 57.0 s, without them the snapshot
+      generation, which builds the same city and then steps it a further day twice for the
+      continuation check, takes 12.8 / 33.9 s (fresh, `ROAD-68-K22`, not a timing session). Some
+      run inside the frames the breakdown reports: after a commit's lane rebuild the next agent
+      tick checks the lane buckets against a rebuild from every agent
+      (`check_lane_buckets_match_rebuild`), O(agents), in the adoption frame whose agent time is
+      reported. The checks are verification and change no product (the snapshot cities, made
+      without them, give the built cities' products bitwise).
+    - **Options.** (a) Switch them off in the breakdown as the economy runners do; the reported
+      frame and stage times then hold no test-only work, and a session needs a control built with
+      the same switch. (b) Keep them; the reported frame times stay comparable with earlier
+      records and keep test-only work.
+    - **Recommendation.** (a), measured first: which reported stages move, and by how much, in
+      one session against a control without it. Not taken in `ROAD-68-K22`, which changes no
+      timed path.
 
 Spec corrections in `ROAD-68-A`:
 
@@ -6897,6 +6923,72 @@ warning (the baseline's 59); `roadbed/` holds 7,831 production lines, unchanged 
   still misses, question 21's (b), the tool snapshot's growth since `ROAD-68-E1`, and the
   buildings-by-edge index and agent lists above.
 
+#### Saved cities for the commit breakdown (`ROAD-68-K22`, 2026-10-26)
+
+A timing session stops every build and test run on the machine, and a breakdown run took about
+5 minutes, nearly all of it building the cities it then times commits on for milliseconds. The
+breakdown now loads each populated tier from a saved snapshot ([method](#method)).
+
+- **Where a run's time went** (fresh, `road68-K22` before the snapshots were used, cities built
+  in the run; a heavy run, not a timing session: `.run.lock`, the shared timing lock, P-cores,
+  eight workers, other agents' builds running). 355 s in all, peak resident set 19.3 GB. Building
+  the cities took 0.12 / 19.9 / 57.0 / 252.2 s at 0 / 10k / 30k / 100k, 93% of the run. The
+  rest at 100k: two reference frames 0.42 s, the road mesh and the tool view 0.79 s, the refined
+  terrain of every patch 6.22 s, the graded census 1.42 s, the wall census 0.85 s, the three
+  samples with their untimed work (the frames to adoption, the clones, a CCH build, the graded
+  stage) 7.28 s, the cell copy 0.05 s and the site removal 0.03 s; 24 s over all tiers.
+- **The snapshots.** They reuse the economy contract's snapshot code
+  ([`economy.md`](economy.md#performance-contract-perf-01perf-05), "Commit breakdown cities"): a
+  third fixture, the city as `PopulatedCity::build` leaves it at the build's own clock, saved in
+  the ordinary format with its revision, residents and clock, published only after the
+  exact-continuation check (the next day, hour by hour: records, building churn, the agents'
+  movement and schedule state). Its key adds the test binary's SHA-256 to the fixture revision,
+  so two binaries share a city only when they are the same build, and the file name carries the
+  key, so a control's and a candidate's cities coexist. A run that finds no matching snapshot
+  generates one and says so (`generated`). Nothing in the game or in a timed path reads them.
+  Tier 0, the street grid alone, builds in 0.12 s and is still built in the run.
+- **What the check found.** At 100k the first snapshot failed its continuation in the first
+  hour (vacant homes 3,732 against 3,641, open jobs 477 against 340): a save dropped the pending
+  arrivals the operational hour had counted (1,591 households in flight at 08:00; the loaded
+  game counted none until the next hour), which demand planning reads. Save format 108 keeps them
+  ([`simulation.md`](simulation.md#save-bytes-road-68-k16)); the 10k and 30k cities had none in
+  flight. With it the 100k city passes. The Kuopio reference is re-recorded in format 108
+  (question 38).
+- **Equivalence** (fresh). On `road68-K22` before the format fix (built against loaded, 0 / 10k
+  / 30k; 100k could not be saved yet): every product is bitwise equal. The cell store's entry
+  count is not (17,720 / 17,696 at 10k, 48,333 / 48,304 at 30k): it follows the store's edit
+  history, and the store's digests are equal, so it is left out of the products. On the final
+  production code (release binary F2; the final commit differs only in an ignored test's tier and
+  the re-pinned fixture hash that `placements.json` carries): the session's two runs below
+  print identical `COMMIT_PRODUCTS` lines at all four tiers, 100k included, and their digests
+  equal `ROAD-68-K18`'s (100k sample 2: lots `4c43d000…`, generated `a7bb4ce6…`). The ignored
+  release test `commit_breakdown_products_survive_the_snapshot` (2,000 residents; the default
+  1,300 tier no longer houses its residents, before this branch too) passes in 34 s.
+- **The gain** (fresh, F2, one session 20:36-20:42: both locks, P-cores, eight workers,
+  `METRUM_DEBUG=0`, no restic, compiler, cargo or Godot process at its start). The breakdown
+  with the cities built in the run (`METRUM_COMMIT_CITIES=built`) took **313.2 s**; with the
+  saved cities, prepared before the session, **50.7 s** (6.2 times shorter). The cities took
+  18.3 / 56.8 / 212.6 s to build and 2.3 / 4.9 / 18.8 s to load at 10k / 30k / 100k (the 10k
+  figure includes hashing the binary, about 0.4 s, once a run); the untimed setup after the
+  city stays about 17 s at 100k (the refined terrain of every patch 6.4 s of it). A session
+  of eight stage runs and C F F C breakdowns falls from about 22 to about 4-5 minutes.
+  Preparing a binary's three cities (`benchmark_populated_commit_prepare`, the exact-continuation
+  check included) took 256 s outside the session (generation 12.8 / 33.9 / 208.0 s), peak
+  resident set 6.0 GB; the built run's peak was 19.3 GB. The commits' stage times on a loaded
+  city lie within the built city's spread (for example `surface` at 100k sample 0: built
+  83.78, loaded 88.25 ms; at 30k sample 0, the legacy terrain stage's known bimodal sample,
+  137.72 and 93.94 ms), but a loaded city's heap differs from a built one's, so a session
+  compares binaries on cities from one source.
+- **Gate checks** (fresh, rebased on `road` `602f58ee`). `cargo clippy --all-targets`: the
+  baseline's 59 warnings, none added. `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY`
+  unset (ended 21:11): exit 0; debug lib 1,951 passed, 0 failed, 173 ignored (the two new
+  ignored tests, the prepare and the equivalence check, over `ROAD-68-K21`'s 171); integration
+  4 passed; every Godot script passes, no `SCRIPT ERROR`; skipped only the shader global probe
+  and the rendered vegetation tests (headless). The gate-tagged ignored tests are unchanged.
+  `roadbed/` is untouched: 8,815 production lines. No timed path changed: the commit window,
+  the stages and the frames run the same code; the breakdown reads the payload's vertex counts
+  after a sample's timings.
+
 ### `ROAD-68-H` — acceptance and cleanup
 
 1. The [rendered runs](#targets), with the simulation paused and active, and the populated
@@ -6970,6 +7062,38 @@ METRUM_GAMEPLAY_BENCHMARK_RUN_ID=<fresh-run-id> \
 ```
 
 For the cross fixtures, set the cases to `flat_cross,sloped_cross` and use a fresh run ID.
+
+**Commit breakdown** (`benchmark_populated_commit_breakdown`, [`ROAD-68-G`](#road-68-g--commit-consequences-inside-one-frame);
+saved cities since [`ROAD-68-K22`](#saved-cities-for-the-commit-breakdown-road-68-k22-2026-10-26)).
+Each populated tier loads its city from a snapshot keyed by the binary. Prepare every binary's
+cities before the session, as a heavy run (`.run.lock` and the shared timing lock, not the
+exclusive one), then time the breakdown under both locks:
+
+```bash
+# Once per binary, before the session: build, check and save the cities (about 4.5 min).
+METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=10000,30000,100000 \
+  RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
+  nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_prepare \
+  --exact --ignored --nocapture
+# In the session:
+METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=0,10000,30000,100000 \
+  RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
+  nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_commit_breakdown \
+  --exact --ignored --nocapture
+```
+
+- `COMMIT_FIXTURE` names each tier's source: `loaded`; `generated`, when no snapshot matched
+  the binary's key and the run built, checked and saved one first (minutes at 100k, so prepare
+  first); or `built`, for tier 0 and with `METRUM_COMMIT_CITIES=built`, which builds every city
+  in the run as before `ROAD-68-K22`. `COMMIT_SETUP` times the untimed setup's phases.
+- `COMMIT_PRODUCTS` lists what two runs must share bitwise: the city's counts and road payload
+  vertices, the graded census and walls, each sample's lots and generated-cell digests,
+  republished chunks, payload vertices, graded tile digest and keys, and the site removal's
+  digest. `diff <(grep ^COMMIT_PRODUCTS a.log) <(grep ^COMMIT_PRODUCTS b.log)` compares two
+  runs. Binaries from before `ROAD-68-K22` build their cities in the run and print the same
+  digests in `COMMIT_BREAKDOWN` and `GRADED_TILES_COMMIT` only.
+- A snapshot lives as long as its binary is in use; delete `commit_city_*` files with the
+  binaries they were made for (about 280 MB a binary).
 
 ## Pedestrian Junction Crossings
 

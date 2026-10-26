@@ -893,6 +893,18 @@ generated from different inputs. Meshes and textures are excluded because fixtur
 does not read them. Simulation changes that alter fixture generation still require a
 fixture-source change or an explicit algorithm-marker bump.
 
+**Commit breakdown cities (`ROAD-68-K22`).** The same snapshot code saves the cities of the road
+commit breakdown ([`roads.md`](roads.md#method)): the city as `PopulatedCity::build` leaves it, at
+the build's own clock with no warm-up to a boundary, as `commit_city_<residents>_<key>.sqlite`
+in the same cache. Its key is the fixture revision above plus the SHA-256 of the test binary,
+because the road, zoning and building code that builds the city changes on every branch the
+breakdown times: two binaries share a city only when they are the same build, and each binary's
+cities sit beside the others'. Generation runs the same exact-continuation check through the
+next day; the 30k building-mutation assertion stays with the economy fixtures. At 100k the check
+found that saves dropped the pending arrivals, fixed in save format 108
+([`simulation.md`](simulation.md#save-bytes-road-68-k16)). The
+`snapshot.rs` change and the format bump re-key the economy snapshots once.
+
 Fresh revision-guard validation (2026-10-14), release binary SHA-256
 `ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
 the isolated configuration/asset mutation test and lane-geometry regression pass, as do

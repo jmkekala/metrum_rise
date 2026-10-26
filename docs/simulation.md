@@ -202,6 +202,17 @@ load:
   names the tables whose rows differ in storage order. Before the fix it failed on
   `lane_connections` alone.
 
+Save format 108 (`ROAD-68-K22`, 2026-10-26) keeps the pending arrivals in
+`household_queue_state` (`pending_households`, `pending_adults`, `pending_elders`,
+`pending_children`). Demand planning reads them as the operational hour's recount left them, plus
+the hour's admissions, until the next recount; a load started from none, so a game saved while
+households were on their way in planned the rest of its hour differently. The commit breakdown's
+exact-continuation check found it at 100k residents (1,591 households in flight at 08:00; the
+loaded game's vacancies and open jobs left the saved game's within the hour), and the growth
+reload tests now compare the counts at load and after every frame. A load does not recount them:
+a recount drops the carriers that arrived since the hour's count. The Kuopio fixture is
+re-recorded in format 108; only the version and the four zero counts change.
+
 ## Scheduler
 
 Every system registers a declaration. The dispatcher runs declarations in one fixed order per

@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 107;
+pub const SAVE_VERSION: i64 = 108;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -451,7 +451,11 @@ CREATE TABLE household_queue_state(
     job_sweep_hour INTEGER NOT NULL,
     job_sweep_next_chunk INTEGER NOT NULL,
     admission_credit INTEGER NOT NULL,
-    admission_rate INTEGER NOT NULL
+    admission_rate INTEGER NOT NULL,
+    pending_households INTEGER NOT NULL,
+    pending_adults INTEGER NOT NULL,
+    pending_elders INTEGER NOT NULL,
+    pending_children INTEGER NOT NULL
 );
 CREATE TABLE admission_requests(
     sequence INTEGER PRIMARY KEY,
