@@ -338,6 +338,16 @@ pedestrian corner routes all read the layout. `graph/rebuild/clips.rs` and
 compute no crossing or corner geometry of their own
 ([Pedestrian Junction Crossings](#pedestrian-junction-crossings)).
 
+**Cost.** Placement validation plans every affected node on every preview pose (`check_node`)
+and the roadbed compile plans every closure node, so neither builds working collections per
+node: the arms are collected, the layout is rebuilt in place and the mouth stations are kept in
+the thread's buffers (`NodePlanScratch` in `roadbed/node.rs`, taken for a plan as the profile
+solve's are; `NodeArms::collect_into`, `NodeArms::layout_into` and `JunctionLayout::rebuild` with
+a `LayoutScratch`). Once they have grown to the node, `check_node` and `terminal_plane` allocate
+nothing, and `check_node` evaluates each mouth's centre on the plane without building its
+section; a plan allocates only what it owns: copies of the arms and layout, and its mouth and
+approach sections (`ROAD-68-K18`, [open question 37](#road-68-open-questions)).
+
 ### Heights
 
 - `Bend` and `JunctionN` use their solved plane `P`. The profile finalizer pins each incident
@@ -2648,6 +2658,152 @@ These need a user decision; work that does not depend on them continues.
       shared by `check_node` and the plane readers, and the test-only copy of the profile
       derivation that returns a vector; `grade.rs` loses `GradeScratch::with` and its
       thread-local.
+    - **The allocation-free node plan (`ROAD-68-K18`).** `check_node` checks every affected node
+      on both planning passes of every preview pose, and did so by planning it as the roadbed
+      compile does: arms collected into new vectors, a layout built with its working lists, the
+      mouth stations, and every mouth and approach section, all dropped again. Heaptrack (release
+      lib test binaries, the preview stages benchmark on 4 workers, 962 previewed poses;
+      allocation counts, not timing), C = `road` `062575d9`, F = `road68-K18`: `check_node`
+      allocates 222,520 times in C (5,784 checks, 38.5 a check, 231 a pose) and 69 in F, the
+      threads' first growths. In C the node plans of all callers (9,219) allocated 350,680 times:
+      the arms' records, knots, centrelines and bands with the incident and road lists 139,966,
+      the layout's working lists and output vectors 129,957, the mouth sections 58,539, the
+      approach sections 12,999 and the station list 9,219. The plan stage as a whole
+      (`plan_road_edit`) allocates 227,693 times in F against 450,320 in C. The buffers stay with
+      each thread (`NodePlanScratch` in `roadbed/node.rs`, taken for a plan as the profile
+      solve's are): the arms are collected into reused vectors (`NodeArms::collect_into`, the
+      incident and road lists in an `ArmsScratch`), the layout is rebuilt in place
+      (`JunctionLayout::rebuild`, whose `LayoutScratch` holds the attached arms, a sector's sample
+      inserts and outer samples, a boundary's emitted samples, the core loop's runs and pieces,
+      and the attachments' path, ribbon, spans and reordering), the layout inputs keep one vector
+      across lifetimes (std's in-place collection, `arms.rs` `recycle`), and `check_node` places
+      each mouth's centre on the plane (`ArmCentre`, which the mouth sections use too) instead of
+      building the sections; `terminal_plane` shares the buffers. The allocating `layout()` that
+      the clip layouts and walkways still call keeps the original capacity hints, so it allocates
+      no more than before (`layout_mouth_stations` 167,510 in F against 173,294 in C). The roadbed
+      compile's 3,435 plans allocate 56,335 times in F (16.4 a plan):
+      what a plan owns, copies of the arms (four vectors) and the layout (up to six), its mouth
+      sections (the `Arc`, the row's vertices and the section's bands) and its approach
+      sections. Left: `junction_rejection`'s sorted node list (one a call, 1,928) and those owned
+      copies, which the compile keeps until it builds the pieces. The checks, their order and
+      every product are unchanged (fresh, in a debug build of F before a formatting-only change,
+      a lint attribute and the capacity hints, and again in the final code's release build): the
+      roadbed fixture and reference junction product probes, the
+      narrow-marks digest, the Kuopio quality tests (9 passed, 7 ignored), the watertightness
+      tests (8, the reference junction's road chunks among them), the save determinism
+      test, `road_preview` (15, the preview-equals-commit fixtures), `roadbed::` (60), `editing`
+      (28), the clip tests (6), and the Kuopio reference re-recorded twice at `3c1dbc27…` with the
+      fixture unchanged.
+    - **Timing (`ROAD-68-K18`, fresh, 2026-10-26).** Release lib test binaries (`$TEST_BINARY`),
+      C = `road` `062575d9` (built in its own worktree and target directory), F = `road68-K18`'s
+      code before the capacity hints of the allocating `layout()` (five `reserve` calls, no
+      effect on reused buffers). Both locks, `taskset -c 0,2,4,6,8,10,12,14`, no restic, `METRUM_DEBUG=0`, no
+      compiler, cargo, Godot or heaptrack process at any 10 s sample of the session; 07:25-07:48:
+      `benchmark_road_preview_stages` with `RAYON_NUM_THREADS=4`, C F F C twice, then
+      `benchmark_populated_commit_breakdown` with `METRUM_COMMIT_TIERS=0,10000,30000,100000` and
+      `RAYON_NUM_THREADS=8`, C F F C. Every payload vertex count and every breakdown digest is
+      equal across the binaries.
+      | Preview stage p50, ms | C | F |
+      | --- | --- | --- |
+      | `sloped_t` plan | 0.474-0.479 | 0.453-0.456 |
+      | `sloped_branch` plan | 0.413-0.417 | 0.395-0.399 |
+      | `sloped_t` roadbed | 0.321-0.325 | 0.320-0.323 |
+      | `sloped_branch` roadbed | 0.325-0.328 | 0.323-0.326 |
+      | `sloped_t` payload | 0.381-0.389 | 0.382-0.389 |
+      | `sloped_branch` payload | 0.379-0.384 | 0.383-0.388 |
+      | `sloped_t` terrain | 4.380-4.451 | 4.395-4.463 |
+      | `sloped_branch` terrain | 4.686-4.769 | 4.681-4.751 |
+      | `sloped_t` total | 5.533-5.628 | 5.536-5.609 |
+      | `sloped_branch` total | 5.812-5.879 | 5.763-5.845 |
+      The plan stage, which holds both planning passes' node checks, falls by 0.014-0.026 ms in
+      every run, about what the 231 allocations and frees a pose it no longer makes cost; the
+      roadbed stage, whose compile plans the closure nodes, reads 0.000-0.005 ms lower. The
+      payload stage, which no `ROAD-68-K18` code reaches, reads up to 0.004 ms above C's spread
+      on `sloped_branch` in two of four runs. Profiled (the preview stages under `perf record -c
+      200000`, user cycles and instructions with LBR call chains, the same binaries and workers,
+      C F C F, 08:10-08:11, not acceptance; samples whose chain passes
+      `RoadRenderer::generate_preview_chunks`): F retires 6% fewer and 1% more instruction
+      samples than C (434 / 453 against 462 / 450) and spends 5% more and 1% fewer cycle samples
+      (1,007 / 915 against 955 / 928), the same work; the chunk splice
+      (`NetworkMeshData::splice_owners`, `push_street_light`, `reserve_layer`) is inlined into
+      `generate_preview_chunks` in F and out of line in C. Layout, question 36's case, not work
+      this change adds.
+      | Commit breakdown, ms (two runs each) | C | F |
+      | --- | --- | --- |
+      | 10k sample 0 plan | 0.463 / 0.436 | 0.418 / 0.425 |
+      | 10k sample 0 surface | 84.42 / 85.03 | 84.40 / 91.60 |
+      | 10k sample 0 commit | 103.73 / 104.90 | 104.16 / 112.58 |
+      | 30k sample 1 plan | 0.410 / 0.382 | 0.390 / 0.367 |
+      | 30k sample 1 surface | 52.57 / 51.34 | 51.86 / 52.52 |
+      | 30k sample 1 commit | 58.84 / 58.05 | 58.19 / 58.62 |
+      | 100k sample 0 plan | 0.521 / 0.486 | 0.489 / 0.553 |
+      | 100k sample 0 surface | 81.12 / 76.94 | 78.26 / 75.97 |
+      | 100k sample 0 commit | 99.90 / 96.70 | 98.60 / 96.32 |
+      The commit's plan stage, which checks the edit's nodes once, reads at or below C's spread
+      in 20 of 24 F samples over all tiers; the other four are single runs whose pair lies within
+      it (10k samples 1 and 2 by 0.012 and 0.003 ms, 100k samples 0 and 1 by 0.032 and 0.073 ms),
+      and every F plan sample of the 10k re-measure below lies at or below C's. The roadbed
+      sub-stage of the surface stage, whose compile plans the closure nodes, lies within C's
+      spread. The second F
+      run read higher in all three 10k samples, in the legacy terrain sub-stage (10k sample 0
+      surface 91.60 against C 84.42-85.03). Re-measured at 10k alone, C F F C (08:13-08:15, both
+      locks, the profile analysis paused, no compiler, cargo or Godot process): sample 0 surface
+      C 89.09 / 89.63, F 85.30 / 84.72; sample 1 C 14.06 / 13.92, F 13.81 / 13.94; sample 2 C
+      8.86 / 8.15, F 8.77 / 10.45, so the sample 0 reading was noise, while 10k sample 2's
+      terrain sub-stage reads above C's spread in two of F's four runs (9.74 and 10.45 against C's
+      8.15-9.13) in code `ROAD-68-K18` does not reach. Open: that reading needs a commit-window
+      profile (question 36) before it can be put down to layout; the 10k commit-window profiles
+      (C F C F, 09:09-09:10) are recorded but not yet analysed.
+    - **The R-tree's traversal order (`ROAD-68-K18`, record) — open, recommendation (b).**
+      `ROAD-68-K17` left the R-tree's removals because re-indexing only the changed edges would
+      change the tree's shape, and with it the order in which `get_edges_near_aabb` returns edges.
+      Recorded on `road` `062575d9` without changing behaviour (no number in this branch's range
+      35-39 was free, so the question is recorded here). Of the collecting query's 13 production
+      call sites (`get_edges_near_aabb` and `get_edges_near_point`, which wraps it), eight sort
+      their result first (cell generation's neighbourhood, the stroke's snap candidates in
+      `topology.rs`, the validation excerpt, the buildable frontage projection, site grading, the
+      service and repaired frontages, and the building renderer's frontage) and three reduce it in
+      an order-free way (the parcel road overlap's `any`, the service site overlap, whose rejection
+      is the same whichever edge overlaps first and only its debug log names the edge, and the undo
+      capture's hash set). Two depend on the order: the road tool's cursor snap (`interaction.rs`
+      `snap_to_network`, its edge pass) keeps the first edge at the smallest snap distance, so on an
+      exact tie it snaps to whichever edge the tree yields first; and the bulldozer's road pick
+      (`editing.rs`) breaks ties within `f32::EPSILON` by edge id, a tolerance that makes the
+      comparison intransitive, so a chain of nearly equal distances can still pick by order. The
+      visiting query (`visit_edges_near_aabb`, 7 sites) has no order-dependent caller: sorted
+      intervals, a boolean, a minimum, or a best candidate with an edge-id or render-id tie-break.
+      Sorting the collecting query's result by edge id (experiment S: that one change on `062575d9`,
+      debug, not committed) changes no tested product: every K18 product test above passes with its
+      pinned products and the Kuopio reference re-records at `3c1dbc27…` twice. The full debug suite
+      on S, which checks the zoning and building products the sorted callers feed, was not run (the
+      run lock went to another branch's suite). So, for these products, the tree's order reaches a
+      product only through the two pickers' exact or near ties, which no fixture exercises. Options:
+      (a) sort in `get_edges_near_aabb` (`O(K log K)` for every caller, eight of which sort again);
+      (b) sort the two pickers' candidates by edge id, as the eight callers do, and document the
+      collecting query's order as unspecified; (c) keep the tree's shape fixed, as today's removal
+      and re-insertion of every touched edge does. Recommended: (b), landed with the gate that
+      re-indexes only changed edges (`ROAD-68-K17`'s first open item); for those two callers it is
+      experiment S's order, so it changes no tested product, and it also removes a save/load hazard
+      the order is today: a loaded graph builds its tree in edge order, an edited graph by its edit
+      history, so the two pickers can choose differently on an exact tie in the same city. Left open
+      for the user's review: nothing in `ROAD-68-K18` depends on it (record only).
+    - **Gate checks (`ROAD-68-K18`, fresh).** `cargo clippy --all-targets` on the final code (09:08): the
+      baseline's 59 warnings, none added (the in-place collection's `filter_map` carries a
+      justified `allow`, since `filter` cannot change the item's lifetime). `./run.sh --test`
+      on the code before the capacity hints, with `DISPLAY` and `WAYLAND_DISPLAY` unset
+      (08:30-08:49): exit 0; debug
+      lib 1,944 passed, 0 failed, 172 ignored; integration 4 passed; every Godot script passes,
+      no `SCRIPT ERROR`; skipped only the shader global probe and the rendered vegetation tests
+      (headless). The ignored gate tests are `road`'s (`TERRAIN-07` only). `roadbed/`'s
+      production lines (every line of each non-test file under `roadbed/` and `roadbed.rs`,
+      without `tests/`, `tests.rs`, `fixtures.rs` and `#[cfg(test)]` items) grow from 8,026 to
+      8,331 (+305): `node.rs` +132 (the plan buffers with their thread-local, `lay_out` and
+      `plan` shared by `plan_node`, `check_node` and `terminal_plane`, and `ArmCentre`, the mouth
+      centre that the check and the mouth sections share), `layout.rs` +100 (`LayoutScratch`,
+      `rebuild` beside `build`, and the steps writing into the layout's own vectors) and
+      `arms.rs` +73 (`ArmsScratch`, `collect_into` and `layout_into` beside the allocating
+      `collect` and `layout`, and `recycle`). Of the 492 lines added (187 removed), 69 are
+      comments and 74 the parameter lines of signatures that no longer fit on one line.
 38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
     decided 2026-10-25 (user): (a), re-record the reference network with today's code, after
     question 37. The re-recorded network is interim: the user will provide a new Kuopio save once

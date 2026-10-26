@@ -15,11 +15,14 @@
 //! edge's [`RoadProfile`]: for an arm leaving from its edge's start, the layout's left is the
 //! profile's positive lateral side; at the edge's end both the axis and the sides swap.
 //!
-//! Collection is `O(degree * arm points)` and allocates only the returned buffers.
+//! Collection is `O(degree * arm points)`. [`NodeArms::collect`] and [`NodeArms::layout`]
+//! allocate the returned buffers; collecting and laying out again in reused arms, layout and
+//! `ArmsScratch` (`NodeArms::collect_into`, `NodeArms::layout_into`) allocates nothing once
+//! they have grown to the node (`ROAD-68-K18`).
 
 use super::layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmSide, CROSSWALK_DEPTH_M, EdgeEnd, JunctionLayout,
-    LayoutError,
+    LayoutError, LayoutScratch,
 };
 use super::mesh::{SpanEnd, StripKind};
 use super::profile::{Level, ProfileBand, RoadProfile};
@@ -55,7 +58,7 @@ struct ArmRecord {
 }
 
 /// The arms of one node, owning the knot and band buffers their [`ArmInput`]s borrow.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct NodeArms {
     /// Node id.
     pub(super) node: u32,
@@ -75,6 +78,19 @@ pub(crate) struct NodeArms {
     grounded: bool,
 }
 
+// The buffers arms are collected and laid out in, reused between nodes (`ROAD-68-K18`).
+#[derive(Default)]
+pub(super) struct ArmsScratch {
+    // The node's live surface edge ends, sorted by key, with their directions away from it.
+    incidents: Vec<(ArmKey, RoadVec2)>,
+    // The road arms' input indices and incidents.
+    roads: Vec<usize>,
+    road_incidents: Vec<(ArmKey, RoadVec2)>,
+    // Empty between layouts: kept only for its allocation (`recycle`).
+    inputs: Vec<ArmInput<'static>>,
+    layout: LayoutScratch,
+}
+
 impl NodeArms {
     /// Arms of `node`, or `None` when the node has no layout in this gate: merged into another
     /// node, no surface arm, a pass-through pair (its spans share one bisected section), or a
@@ -82,48 +98,68 @@ impl NodeArms {
     /// they bound no sector and join the sidewalk ring; where only footpaths meet, they are
     /// ordinary arms. The crossing rule counts road arms only.
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
-        let incidents = node_incidents(graph, node)?;
+        let mut arms = Self::default();
+        arms.collect_into(graph, node, &mut ArmsScratch::default())
+            .then_some(arms)
+    }
+
+    // `collect` in place: refills these arms with `node`'s, in their own vectors and `scratch`'s
+    // incident lists, and returns false where `collect` returns `None` (the arms are then stale).
+    pub(super) fn collect_into(
+        &mut self,
+        graph: &RegionGraph,
+        node: u32,
+        scratch: &mut ArmsScratch,
+    ) -> bool {
+        let ArmsScratch {
+            incidents,
+            roads,
+            road_incidents,
+            ..
+        } = scratch;
+        if !node_incidents_into(graph, node, incidents) {
+            return false;
+        }
         if incidents.is_empty()
-            || passes_through(graph, &incidents)
-            || ends_a_structure(graph, &incidents)
+            || passes_through(graph, incidents)
+            || ends_a_structure(graph, incidents)
         {
-            return None;
+            return false;
         }
         let pos = graph.node(node).pos;
         // Input indices of the road arms, which alone cross and, at a road node, bound sectors.
-        let roads: Vec<usize> = (0..incidents.len())
-            .filter(|&index| is_road(graph, incidents[index].0))
-            .collect();
-        let road_incidents: Vec<_> = roads.iter().map(|&index| incidents[index]).collect();
+        roads.clear();
+        roads.extend((0..incidents.len()).filter(|&index| is_road(graph, incidents[index].0)));
+        road_incidents.clear();
+        road_incidents.extend(roads.iter().map(|&index| incidents[index]));
         let degree_two = match road_incidents[..] {
             [a, b] => Some(degree_two_crossings(graph, node, [a, b], false)),
             _ => None,
         };
-        let mut arms = Self {
-            node,
-            position: RoadVec2::new(f64::from(pos.x), f64::from(pos.z)),
-            arms: Vec::with_capacity(incidents.len()),
-            knots: Vec::new(),
-            centreline: Vec::new(),
-            bands: Vec::new(),
-            crossing_fallback: degree_two
-                .as_ref()
-                .and_then(|crossings| crossings.fallback)
-                .map(|pair| pair.map(|road| roads[road])),
-            grounded: incidents
-                .iter()
-                .any(|(key, _)| graph.edge(key.edge).class == EdgeClass::Standard),
-        };
+        self.node = node;
+        self.position = RoadVec2::new(f64::from(pos.x), f64::from(pos.z));
+        self.arms.clear();
+        self.arms.reserve(incidents.len());
+        self.knots.clear();
+        self.centreline.clear();
+        self.bands.clear();
+        self.crossing_fallback = degree_two
+            .as_ref()
+            .and_then(|crossings| crossings.fallback)
+            .map(|pair| pair.map(|road| roads[road]));
+        self.grounded = incidents
+            .iter()
+            .any(|(key, _)| graph.edge(key.edge).class == EdgeClass::Standard);
         for (index, &(key, _)) in incidents.iter().enumerate() {
             let road = roads.iter().position(|&input| input == index);
             let crossable = road.is_some_and(|road| match &degree_two {
                 Some(crossings) => crossings.crosses[road],
-                None => junction_arm_crosses(graph, node, &road_incidents, road),
+                None => junction_arm_crosses(graph, node, road_incidents, road),
             });
             let attached = road.is_none() && !roads.is_empty();
-            arms.push_arm(key, graph.edge(key.edge), crossable, attached);
+            self.push_arm(key, graph.edge(key.edge), crossable, attached);
         }
-        Some(arms)
+        true
     }
 
     fn push_arm(&mut self, key: ArmKey, edge: &Edge, crossable: bool, attached: bool) {
@@ -267,8 +303,20 @@ impl NodeArms {
     /// error, or the same on the other arm, fails the node with the first arm's error (D8,
     /// `ROAD-68` open question 13). Node pieces, clips and lanes all lay out through here.
     pub(crate) fn layout(&mut self) -> Result<JunctionLayout, LayoutError> {
-        let error = match self.build_layout() {
-            Ok(layout) => return Ok(layout),
+        let mut layout = JunctionLayout::empty();
+        self.layout_into(&mut layout, &mut ArmsScratch::default())?;
+        Ok(layout)
+    }
+
+    // `layout` in place, into `layout` and `scratch`'s buffers; on failure `layout` holds a
+    // partial layout.
+    pub(super) fn layout_into(
+        &mut self,
+        layout: &mut JunctionLayout,
+        scratch: &mut ArmsScratch,
+    ) -> Result<(), LayoutError> {
+        let error = match self.build_layout(layout, scratch) {
+            Ok(()) => return Ok(()),
             Err(error) => error,
         };
         let Some([from, to]) = self.crossing_fallback else {
@@ -281,11 +329,11 @@ impl NodeArms {
             return Err(error);
         }
         self.cross_on([from, to], to);
-        let layout = self.build_layout();
-        if layout.is_err() {
+        let built = self.build_layout(layout, scratch);
+        if built.is_err() {
             self.cross_on([from, to], from);
         }
-        layout.map_err(|_| error)
+        built.map_err(|_| error)
     }
 
     // Puts a bend's default crossing on `onto` of `[from, to]`; the fallback is the other arm.
@@ -295,9 +343,16 @@ impl NodeArms {
         self.crossing_fallback = (onto == from).then_some([from, to]);
     }
 
-    fn build_layout(&self) -> Result<JunctionLayout, LayoutError> {
-        let inputs: Vec<_> = (0..self.len()).map(|index| self.input(index)).collect();
-        JunctionLayout::build(self.position, &inputs)
+    fn build_layout(
+        &self,
+        layout: &mut JunctionLayout,
+        scratch: &mut ArmsScratch,
+    ) -> Result<(), LayoutError> {
+        let mut inputs = recycle(std::mem::take(&mut scratch.inputs));
+        inputs.extend((0..self.len()).map(|index| self.input(index)));
+        let built = layout.rebuild(self.position, &inputs, &mut scratch.layout);
+        scratch.inputs = recycle(inputs);
+        built
     }
 
     /// Where horizontal station `station_m` of arm `index` lies on its edge's centreline points
@@ -327,6 +382,14 @@ impl NodeArms {
     pub(super) fn node_height_m(&self, index: usize) -> f64 {
         self.centreline[self.arms[index].centreline.start].2
     }
+}
+
+// `inputs` emptied, on the same allocation, for arms of another lifetime: collecting a vector's
+// own `IntoIter` reuses its allocation when the item layouts match (std's in-place collection),
+// and these items differ only in lifetime. `filter` cannot change the item's lifetime.
+#[allow(clippy::unnecessary_filter_map)]
+fn recycle<'a>(inputs: Vec<ArmInput<'_>>) -> Vec<ArmInput<'a>> {
+    inputs.into_iter().filter_map(|_| None).collect()
 }
 
 // An edge's points walked away from the node at `end`, with their indices.
@@ -365,10 +428,20 @@ fn set_span_frame_laterals(knots: &mut [ArmKnot]) {
 // The live surface edge ends at `node`, sorted by key, each with its direction away from the
 // node; `None` for a node merged into another.
 fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec2)>> {
+    let mut incidents = Vec::with_capacity(4);
+    node_incidents_into(graph, node, &mut incidents).then_some(incidents)
+}
+
+// `node_incidents` into `incidents`; false for a node merged into another.
+fn node_incidents_into(
+    graph: &RegionGraph,
+    node: u32,
+    incidents: &mut Vec<(ArmKey, RoadVec2)>,
+) -> bool {
     if graph.get_valid_node(node) != node || node as usize >= graph.node_adjacency_count() {
-        return None;
+        return false;
     }
-    let mut incidents: Vec<(ArmKey, RoadVec2)> = Vec::with_capacity(4);
+    incidents.clear();
     for &edge_idx in graph.node_adjacency(node) {
         let Some(edge) = graph
             .get_edge(edge_idx)
@@ -395,7 +468,7 @@ fn node_incidents(graph: &RegionGraph, node: u32) -> Option<Vec<(ArmKey, RoadVec
     }
     incidents.sort_by_key(|(key, _)| *key);
     incidents.dedup_by_key(|(key, _)| *key);
-    Some(incidents)
+    true
 }
 
 /// Whether two arm directions away from one node ([`incident_direction`]) are close enough to

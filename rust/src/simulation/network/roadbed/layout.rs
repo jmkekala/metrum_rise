@@ -78,7 +78,9 @@
 //! radius bisection. The core simplicity check tests segment pairs only between loop pieces
 //! whose bounds overlap: linear on product junctions, quadratic in the worst case.
 //!
-//! The layout allocates only its output vectors and one per-call list of core-loop pieces.
+//! [`JunctionLayout::build`] allocates its output vectors and working buffers. Rebuilding a layout
+//! in place (`JunctionLayout::rebuild`) with a reused [`LayoutScratch`] allocates nothing once
+//! both have grown to the node's degree and samples (`ROAD-68-K18`).
 
 use super::span::{
     WIDTH_CHANGE_TAPER_MAX_M, WIDTH_CHANGE_TAPER_MIN_M, WIDTH_CHANGE_TAPER_WIDTH_FACTOR,
@@ -601,6 +603,31 @@ pub struct JunctionLayout {
     pub attachments: Vec<Attachment>,
 }
 
+// The working buffers of a layout build, reused between builds (`ROAD-68-K18`): placement
+// validation lays out every affected node on every preview pose. Each step clears what it uses,
+// so a layout does not depend on the buffers' history.
+#[derive(Default)]
+pub(super) struct LayoutScratch {
+    // The attached arms, in sorted order, before they are placed.
+    attached: Vec<ArmLayout>,
+    // One sector's (segment, fraction, attachment, edge, attached station), in boundary order.
+    inserts: Vec<(usize, f64, usize, usize, f64)>,
+    // One sector's outermost samples, where unplaced attached edges meet them.
+    outer: Vec<RoadVec2>,
+    // One boundary's emitted samples, before the inserts go in.
+    emitted: Vec<RoadVec2>,
+    // One carriageway-edge run of the core loop.
+    run: Vec<CoreVertex>,
+    // Core loop pieces by first vertex.
+    pieces: Vec<usize>,
+    // A sector's outer path and an attached arm's ribbon.
+    path: Vec<PathPoint>,
+    ring: Vec<PathPoint>,
+    // Per attached arm: its sector, the path positions of its two edge points, and its index.
+    spans: Vec<(usize, usize, usize, usize)>,
+    attachments: Vec<Attachment>,
+}
+
 impl ArmKnot {
     fn offset(&self, lateral_m: f64) -> RoadVec2 {
         self.position + self.lateral * lateral_m
@@ -745,40 +772,68 @@ impl JunctionLayout {
     /// The result does not depend on the order of `arms`. Degenerate input and constructions that
     /// cannot satisfy the layout rules return a [`LayoutError`]; nothing is repaired.
     pub fn build(node: RoadVec2, arms: &[ArmInput<'_>]) -> Result<Self, LayoutError> {
+        let mut layout = Self::empty();
+        layout.rebuild(node, arms, &mut LayoutScratch::default())?;
+        Ok(layout)
+    }
+
+    // A layout without arms, for `rebuild` to fill.
+    pub(super) fn empty() -> Self {
+        Self {
+            node: RoadVec2::ZERO,
+            kind: NodeKind::Terminal,
+            arms: Vec::new(),
+            sectors: Vec::new(),
+            boundaries: Vec::new(),
+            samples: Vec::new(),
+            core: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    // `build` in place, in this layout's vectors and `scratch`'s buffers. On success the layout
+    // equals what `build` returns; on failure it returns the same error and holds a partial
+    // layout, which no caller reads.
+    pub(super) fn rebuild(
+        &mut self,
+        node: RoadVec2,
+        arms: &[ArmInput<'_>],
+        scratch: &mut LayoutScratch,
+    ) -> Result<(), LayoutError> {
         if !node.is_finite() {
             return Err(LayoutError::NonFiniteNode);
         }
         if arms.is_empty() {
             return Err(LayoutError::NoArms);
         }
-        let (sorted, attached): (Vec<_>, Vec<_>) = sort_arms(node, arms)?
-            .into_iter()
-            .partition(|arm| !arms[arm.input_index].attached);
-        if sorted.is_empty() {
+        self.node = node;
+        sort_arms(node, arms, &mut self.arms)?;
+        // The attached arms leave the sorted list, both keeping their order.
+        let is_attached = |arm: &ArmLayout| arms[arm.input_index].attached;
+        scratch.attached.clear();
+        let attached = self.arms.iter().filter(|arm| is_attached(arm)).cloned();
+        scratch.attached.extend(attached);
+        self.arms.retain(|arm| !is_attached(arm));
+        if self.arms.is_empty() {
             return Err(LayoutError::NoArms);
         }
-        let (sectors, boundaries) = plan_sectors(node, arms, &sorted)?;
-        let attachments = attach_to_runs(arms, &sorted, &sectors, &boundaries, attached)?;
-        let kind = match sorted.len() {
+        let (sorted, sectors, boundaries) = (&self.arms, &mut self.sectors, &mut self.boundaries);
+        plan_sectors(node, arms, sorted, sectors, boundaries)?;
+        let (sectors, boundaries) = (&self.sectors, &self.boundaries);
+        let placed = &mut self.attachments;
+        attach_to_runs(arms, sorted, sectors, boundaries, &scratch.attached, placed)?;
+        self.kind = match self.arms.len() {
             1 => NodeKind::Terminal,
             2 => NodeKind::Bend,
             _ => NodeKind::Junction,
         };
-        let mut layout = Self {
-            node,
-            kind,
-            arms: sorted,
-            sectors,
-            boundaries,
-            samples: Vec::new(),
-            core: Vec::new(),
-            attachments,
-        };
-        assign_mouths(arms, &mut layout)?;
-        sample_sectors(arms, &mut layout)?;
-        core_loop(arms, &mut layout)?;
-        layout.finish_attachments(arms)?;
-        Ok(layout)
+        self.samples.clear();
+        self.core.clear();
+        assign_mouths(arms, self)?;
+        sample_sectors(arms, self, scratch)?;
+        core_loop(arms, self, scratch)?;
+        self.finish_attachments(arms, scratch)?;
+        Ok(())
     }
 
     /// The run of `boundary` (the `index`-th of its sector) along `side` of arm `arm` (sorted
@@ -894,10 +949,19 @@ impl JunctionLayout {
     // Mouths of the attached arms, beyond their farther edge point; their ribbon outlines must
     // be simple. The arms are then ordered by sector and along its outer path, where the ribbons
     // of one sector must follow each other without touching.
-    fn finish_attachments(&mut self, arms: &[ArmInput<'_>]) -> Result<(), LayoutError> {
-        let (mut path, mut ring) = (Vec::new(), Vec::new());
-        // Per attached arm: its sector and the path positions of its two edge points.
-        let mut spans = Vec::with_capacity(self.attachments.len());
+    fn finish_attachments(
+        &mut self,
+        arms: &[ArmInput<'_>],
+        scratch: &mut LayoutScratch,
+    ) -> Result<(), LayoutError> {
+        let LayoutScratch {
+            path,
+            ring,
+            spans,
+            attachments,
+            ..
+        } = scratch;
+        spans.clear();
         let mut path_sector = None;
         for index in 0..self.attachments.len() {
             let attachment = &mut self.attachments[index];
@@ -912,43 +976,48 @@ impl JunctionLayout {
             }
             let sector = attachment.sector;
             if path_sector != Some(sector) {
-                self.outer_path(arms, sector, &mut path);
+                self.outer_path(arms, sector, path);
                 path_sector = Some(sector);
             }
             let (start, end) = self
-                .ribbon(input, index, &path, &mut ring)
+                .ribbon(input, index, path, ring)
                 .ok_or(LayoutError::FootpathDoesNotJoin { arm })?;
-            spans.push((sector, start, end));
-            if !loop_is_simple(&ring, &[0], |point| point.xz)
-                || signed_area(&ring, |point| point.xz) == 0.0
+            spans.push((sector, start, end, index));
+            if !loop_is_simple(ring, &[0], |point| point.xz)
+                || signed_area(ring, |point| point.xz) == 0.0
             {
                 return Err(LayoutError::FootpathDoesNotJoin { arm });
             }
         }
         // A terminal's sector, and any sector that wraps through angle zero, holds its arms out
-        // of angle order, so the path order is taken from the path itself.
-        let mut ordered: Vec<_> = spans
-            .into_iter()
-            .zip(std::mem::take(&mut self.attachments))
-            .collect();
-        ordered.sort_by_key(|&((sector, start, _), _)| (sector, start));
-        for pair in ordered.windows(2) {
-            let ((sector, _, end), (next_sector, start, _)) = (pair[0].0, pair[1].0);
+        // of angle order, so the path order is taken from the path itself. The sort is stable:
+        // ties keep attachment order.
+        spans.sort_by_key(|&(sector, start, _, _)| (sector, start));
+        for pair in spans.windows(2) {
+            let ((sector, _, end, _), (next_sector, start, _, next)) = (pair[0], pair[1]);
             if sector == next_sector && start <= end {
-                return Err(LayoutError::FootpathDoesNotJoin { arm: pair[1].1.key });
+                let arm = self.attachments[next].key;
+                return Err(LayoutError::FootpathDoesNotJoin { arm });
             }
         }
-        self.attachments = ordered
-            .into_iter()
-            .map(|(_, attachment)| attachment)
-            .collect();
+        attachments.clear();
+        let ordered = spans
+            .iter()
+            .map(|&(.., index)| self.attachments[index].clone());
+        attachments.extend(ordered);
+        std::mem::swap(&mut self.attachments, attachments);
         Ok(())
     }
 }
 
-// Validates every arm and returns them sorted counter-clockwise, ties by key.
-fn sort_arms(node: RoadVec2, arms: &[ArmInput<'_>]) -> Result<Vec<ArmLayout>, LayoutError> {
-    let mut sorted = Vec::with_capacity(arms.len());
+// Validates every arm and lists them in `sorted`, counter-clockwise, ties by key.
+fn sort_arms(
+    node: RoadVec2,
+    arms: &[ArmInput<'_>],
+    sorted: &mut Vec<ArmLayout>,
+) -> Result<(), LayoutError> {
+    sorted.clear();
+    sorted.reserve(arms.len());
     for (input_index, arm) in arms.iter().enumerate() {
         arm.validate(node)?;
         // Degree is a handful of arms; the pairwise key check is cheaper than any index.
@@ -970,7 +1039,7 @@ fn sort_arms(node: RoadVec2, arms: &[ArmInput<'_>]) -> Result<Vec<ArmLayout>, La
         });
     }
     sorted.sort_by(|a, b| a.angle_rad.total_cmp(&b.angle_rad).then(a.key.cmp(&b.key)));
-    Ok(sorted)
+    Ok(())
 }
 
 // A crossing of two offset curves at stations `a_station` and `b_station`.
@@ -987,12 +1056,15 @@ impl Crossing {
     }
 }
 
-// Classifies every sector and records its boundary stations; concave corners are fitted here.
+// Classifies every sector into `sectors` and records its boundary stations in `boundaries`;
+// concave corners are fitted here.
 fn plan_sectors(
     node: RoadVec2,
     arms: &[ArmInput<'_>],
     sorted: &[ArmLayout],
-) -> Result<(Vec<SectorLayout>, Vec<SectorBoundary>), LayoutError> {
+    sectors: &mut Vec<SectorLayout>,
+    boundaries: &mut Vec<SectorBoundary>,
+) -> Result<(), LayoutError> {
     let count = sorted.len();
     for arm in sorted {
         let input = &arms[arm.input_index];
@@ -1000,8 +1072,9 @@ fn plan_sectors(
             return Err(LayoutError::ArmTooShort { arm: arm.key });
         }
     }
-    let mut sectors = Vec::with_capacity(count);
-    let mut boundaries = Vec::new();
+    sectors.clear();
+    sectors.reserve(count);
+    boundaries.clear();
     for from_arm in 0..count {
         let to_arm = (from_arm + 1) % count;
         let angle_rad = match count {
@@ -1030,7 +1103,7 @@ fn plan_sectors(
         let corner = match kind {
             SectorKind::Concave => {
                 let (radius_m, crossing) = fit_corner(a, b)?;
-                push_boundaries(&mut boundaries, a, b, None, |_, _| {
+                push_boundaries(boundaries, a, b, None, |_, _| {
                     Some((crossing.a_station, crossing.b_station))
                 })?;
                 Some(Corner {
@@ -1042,7 +1115,7 @@ fn plan_sectors(
                 // Bisects the two station-zero lateral lines; it points into the sector.
                 let bisector = (a.knots[0].lateral - b.knots[0].lateral).normalize();
                 let taper_m = straight_taper_m(a, b)?;
-                push_boundaries(&mut boundaries, a, b, taper_m, |from_offset, to_offset| {
+                push_boundaries(boundaries, a, b, taper_m, |from_offset, to_offset| {
                     Some((
                         bisector_station(a, from_offset, node, bisector, 1.0)?,
                         bisector_station(b, to_offset, node, bisector, -1.0)?,
@@ -1051,7 +1124,7 @@ fn plan_sectors(
                 None
             }
             SectorKind::Convex => {
-                push_boundaries(&mut boundaries, a, b, None, |_, _| Some((0.0, 0.0)))?;
+                push_boundaries(boundaries, a, b, None, |_, _| Some((0.0, 0.0)))?;
                 None
             }
         };
@@ -1064,7 +1137,7 @@ fn plan_sectors(
             boundaries: start..boundaries.len(),
         });
     }
-    Ok((sectors, boundaries))
+    Ok(())
 }
 
 // Bands beyond the carriageway edge match by position; the core bands must agree too.
@@ -1369,14 +1442,16 @@ const UNPLACED: BoundaryPoint = BoundaryPoint::Sample(usize::MAX);
 // outermost runs of that sector's two arm sides (the right edge tries the from-arm first, the
 // left edge the to-arm). A run point lies at or beyond the run's reach, where it holds its arm's
 // own offset (D4); edges that meet neither run are left `UNPLACED` for the sector's samples.
+// Lists them in `placed`, in `attached`'s order, up to the first that fails.
 fn attach_to_runs(
     arms: &[ArmInput<'_>],
     sorted: &[ArmLayout],
     sectors: &[SectorLayout],
     boundaries: &[SectorBoundary],
-    attached: Vec<ArmLayout>,
-) -> Result<Vec<Attachment>, LayoutError> {
-    let attach = |arm: ArmLayout| {
+    attached: &[ArmLayout],
+    placed: &mut Vec<Attachment>,
+) -> Result<(), LayoutError> {
+    let attach = |arm: &ArmLayout| {
         let input = &arms[arm.input_index];
         let sector = sectors
             .iter()
@@ -1429,7 +1504,11 @@ fn attach_to_runs(
             ],
         })
     };
-    attached.into_iter().map(attach).collect()
+    placed.clear();
+    for arm in attached {
+        placed.push(attach(arm)?);
+    }
+    Ok(())
 }
 
 // Sets each arm's mouth and crosswalk stations and copies its corner tangents. The zebra stays
@@ -1576,10 +1655,20 @@ impl PolarCurve {
 // Samples every sector boundary with one sample count per sector. Attached edges that met no
 // run meet the sector's outermost samples: each meeting point is inserted there, and the same
 // fraction of the same segment into every other boundary of the sector.
-fn sample_sectors(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(), LayoutError> {
+fn sample_sectors(
+    arms: &[ArmInput<'_>],
+    layout: &mut JunctionLayout,
+    scratch: &mut LayoutScratch,
+) -> Result<(), LayoutError> {
     let (node, sorted, samples) = (layout.node, &layout.arms, &mut layout.samples);
     let (sectors, boundaries) = (&mut layout.sectors, &mut layout.boundaries);
     let attachments = &mut layout.attachments;
+    let LayoutScratch {
+        inserts,
+        outer,
+        emitted,
+        ..
+    } = scratch;
     let half_turn = sorted.len() == 1;
     for (sector_index, sector) in sectors.iter_mut().enumerate() {
         let a = &arms[sorted[sector.from_arm].input_index];
@@ -1608,19 +1697,18 @@ fn sample_sectors(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<
             }
             segments = segments.max(curve.segment_count());
         }
-        // (segment, fraction, attachment, edge, attached station), in boundary order.
-        let mut inserts = Vec::new();
-        let mut outer = Vec::new();
+        inserts.clear();
+        outer.clear();
         for (attachment, layout) in attachments.iter().enumerate() {
             for (edge, placed) in layout.edges.iter().enumerate() {
                 if layout.sector != sector_index || placed.on != UNPLACED {
                     continue;
                 }
                 if outer.is_empty() {
-                    curve(&boundaries[range.end - 1]).emit(segments, &mut outer);
+                    curve(&boundaries[range.end - 1]).emit(segments, outer);
                 }
                 let input = &arms[layout.input_index];
-                let (segment, u, station_m) = polyline_crossing(input, placed.offset_m, &outer)
+                let (segment, u, station_m) = polyline_crossing(input, placed.offset_m, outer)
                     .ok_or(LayoutError::FootpathDoesNotJoin { arm: layout.key })?;
                 inserts.push((segment, u, attachment, edge, station_m));
             }
@@ -1634,7 +1722,8 @@ fn sample_sectors(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<
                 boundary.samples = start..samples.len();
                 continue;
             }
-            let emitted = samples.split_off(start);
+            emitted.clear();
+            emitted.extend(samples.drain(start..));
             let mut next = inserts.iter().peekable();
             for (i, &sample) in emitted.iter().enumerate() {
                 samples.push(sample);
@@ -1686,14 +1775,26 @@ fn polyline_crossing(
 }
 
 // Builds the counter-clockwise carriageway core loop and checks that it is simple.
-fn core_loop(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(), LayoutError> {
+fn core_loop(
+    arms: &[ArmInput<'_>],
+    layout: &mut JunctionLayout,
+    scratch: &mut LayoutScratch,
+) -> Result<(), LayoutError> {
     let (sorted, sectors) = (&layout.arms, &layout.sectors);
     let (boundaries, samples) = (&layout.boundaries, &layout.samples);
     let count = sorted.len();
-    let mut core: Vec<CoreVertex> = Vec::with_capacity(samples.len() + 8 * count);
-    let mut run_scratch: Vec<CoreVertex> = Vec::new();
+    // Capacity hints: a reused layout already has them, a fresh one allocates once.
+    let core = &mut layout.core;
+    core.clear();
+    core.reserve(samples.len() + 8 * count);
+    let LayoutScratch {
+        run: run_scratch,
+        pieces,
+        ..
+    } = scratch;
     // Loop pieces (each arm's edges and mouth, each sector's curve), by first vertex.
-    let mut pieces = Vec::with_capacity(2 * count);
+    pieces.clear();
+    pieces.reserve(2 * count);
     let push = |core: &mut Vec<CoreVertex>, position: RoadVec2, source: CoreVertexSource| {
         if core.last().is_none_or(|last| last.position != position) {
             core.push(CoreVertex { position, source });
@@ -1726,29 +1827,28 @@ fn core_loop(arms: &[ArmInput<'_>], layout: &mut JunctionLayout) -> Result<(), L
         };
         pieces.push(core.len());
         run_scratch.clear();
-        run(right_edge, Side::Right, &mut run_scratch);
+        run(right_edge, Side::Right, run_scratch);
         for vertex in run_scratch.drain(..) {
-            push(&mut core, vertex.position, vertex.source);
+            push(core, vertex.position, vertex.source);
         }
         for (side, offset) in [(Side::Right, right), (Side::Left, left)] {
             let source = CoreVertexSource::Mouth { arm: index, side };
-            push(&mut core, input.offset_point(mouth, offset), source);
+            push(core, input.offset_point(mouth, offset), source);
         }
-        run(left_edge, Side::Left, &mut run_scratch);
+        run(left_edge, Side::Left, run_scratch);
         for vertex in run_scratch.drain(..).rev() {
-            push(&mut core, vertex.position, vertex.source);
+            push(core, vertex.position, vertex.source);
         }
         pieces.push(core.len());
         for sample in boundaries[left_sector.boundaries.start].samples.clone() {
-            push(&mut core, samples[sample], CoreVertexSource::Sample(sample));
+            push(core, samples[sample], CoreVertexSource::Sample(sample));
         }
     }
     if core.len() > 1 && core[0].position == core[core.len() - 1].position {
         core.pop();
     }
-    let simple = loop_is_simple(&core, &pieces, |vertex| vertex.position)
-        && signed_area(&core, |vertex| vertex.position) > 0.0;
-    layout.core = core;
+    let simple = loop_is_simple(core, pieces, |vertex| vertex.position)
+        && signed_area(core, |vertex| vertex.position) > 0.0;
     simple.then_some(()).ok_or(LayoutError::CoreNotSimple)
 }
 

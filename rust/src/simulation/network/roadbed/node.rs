@@ -10,7 +10,10 @@
 //! use the plane the profile solve pinned their arms to; a terminal's plane runs through the road
 //! end and its mouth centreline point, with the end grade and no crossfall. A finalized
 //! centreline more than 1 mm from `P` at a mouth is a profile-solve defect, reported as
-//! [`NodeError::MouthOffPlane`].
+//! [`NodeError::MouthOffPlane`]. Plans, node checks ([`check_node`]) and road-end planes
+//! ([`terminal_plane`]) collect and lay out in their thread's buffers (`NodePlanScratch`), so a
+//! check allocates nothing once they have grown to the node, and a plan allocates only what it
+//! owns: copies of the arms and layout, and the mouth and approach sections (`ROAD-68-K18`).
 //!
 //! The piece mesh ([`build_node_piece`]) holds:
 //! - the carriageway core: the layout's core loop, with each mouth row's interior carriageway
@@ -27,7 +30,7 @@
 //! vertex is the mouth section's own. `O(V + n log n)` for `V` emitted vertices and `n` core-loop
 //! vertices; allocates only the piece and reuses [`NodeScratch`].
 
-use super::arms::{CentrelinePosition, NodeArms};
+use super::arms::{ArmsScratch, CentrelinePosition, NodeArms};
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{
     ArmInput, ArmKey, BoundaryBand, CoreVertexSource, Crosswalk, EdgeEnd, JunctionLayout,
@@ -45,6 +48,7 @@ use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
 use godot::prelude::Vector3;
 use spade::handles::{FaceHandle, FixedFaceHandle, InnerTag, PossiblyOuterTag};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
@@ -214,50 +218,127 @@ pub(super) fn surface_height_m(
     plane.height_at_xz(xz.x as f32, xz.y as f32) + level.offset_m()
 }
 
-/// Plans `node`: `Ok(None)` when it has no piece in this gate (see [`NodeArms::collect`]).
-pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePlan>, NodeError> {
-    let Some(mut arms) = NodeArms::collect(graph, node) else {
-        return Ok(None);
-    };
-    let layout = arms.layout().map_err(NodeError::Layout)?;
-    let mut stations = vec![0.0; arms.len()];
-    for arm in &layout.arms {
-        stations[arm.input_index] = arm.mouth_station_m;
-    }
-    for attachment in &layout.attachments {
-        stations[attachment.input_index] = attachment.mouth_station_m;
-    }
-    let plane = match layout.kind {
-        NodeKind::Terminal => layout_terminal_plane(&arms, &layout),
-        NodeKind::Bend | NodeKind::Junction => {
-            graph.solved_junction_endpoint_profile_plane(arms.node)
+// The buffers of a node plan, reused between plans so that checking a node allocates nothing
+// once they have grown to its degree and samples (`ROAD-68-K18`): placement validation checks
+// every affected node on every preview pose, and the roadbed compile plans every closure node.
+struct NodePlanScratch {
+    arms: NodeArms,
+    collect: ArmsScratch,
+    layout: JunctionLayout,
+    // Each arm's mouth station, by input index.
+    stations: Vec<f64>,
+}
+
+impl Default for NodePlanScratch {
+    fn default() -> Self {
+        Self {
+            arms: NodeArms::default(),
+            collect: ArmsScratch::default(),
+            layout: JunctionLayout::empty(),
+            stations: Vec::new(),
         }
     }
-    .ok_or(NodeError::NoPlane)?;
-    let mouths = (0..arms.len())
-        .map(|index| {
-            let section = mouth_section(graph, &arms, index, stations[index], &plane)?;
-            Ok((arms.key(index), Arc::new(section)))
-        })
-        .collect::<Result<Vec<_>, NodeError>>()?;
-    let mut approaches: Vec<_> = layout
-        .arms
-        .iter()
-        .filter_map(|arm| {
-            let crosswalk = arm.crosswalk?;
-            let station_m = crosswalk.inner_station_m;
-            let (section, _) = section_at(graph, &arms, arm.input_index, station_m, &plane);
-            Some((arm.key, section))
-        })
-        .collect();
-    approaches.sort_unstable_by_key(|(key, _)| *key);
-    Ok(Some(NodePlan {
-        arms,
-        layout,
-        plane,
-        mouths,
-        approaches,
-    }))
+}
+
+thread_local! {
+    // One per thread: pool workers keep theirs between plans.
+    static NODE_PLAN_SCRATCH: RefCell<NodePlanScratch> = RefCell::default();
+}
+
+impl NodePlanScratch {
+    // Runs `plan` with this thread's scratch. Taken for the call, not borrowed, as the junction
+    // profile solve's is, so a plan nested on the same thread starts from empty buffers instead
+    // of failing a borrow.
+    fn with<R>(plan: impl FnOnce(&mut Self) -> R) -> R {
+        let mut scratch = NODE_PLAN_SCRATCH.take();
+        let result = plan(&mut scratch);
+        NODE_PLAN_SCRATCH.set(scratch);
+        result
+    }
+
+    // Collects and lays out `node` into these buffers; false when it has no piece in this gate
+    // (see [`NodeArms::collect`]).
+    fn lay_out(&mut self, graph: &RegionGraph, node: u32) -> Result<bool, LayoutError> {
+        if !self.arms.collect_into(graph, node, &mut self.collect) {
+            return Ok(false);
+        }
+        self.arms.layout_into(&mut self.layout, &mut self.collect)?;
+        Ok(true)
+    }
+
+    // Lays out `node` into these buffers, with its mouth stations, and returns its plane;
+    // `Ok(None)` when it has no piece in this gate.
+    fn plan(
+        &mut self,
+        graph: &RegionGraph,
+        node: u32,
+    ) -> Result<Option<JunctionEndpointProfilePlane>, NodeError> {
+        if !self.lay_out(graph, node).map_err(NodeError::Layout)? {
+            return Ok(None);
+        }
+        let Self {
+            arms,
+            layout,
+            stations,
+            ..
+        } = self;
+        stations.clear();
+        stations.resize(arms.len(), 0.0);
+        for arm in &layout.arms {
+            stations[arm.input_index] = arm.mouth_station_m;
+        }
+        for attachment in &layout.attachments {
+            stations[attachment.input_index] = attachment.mouth_station_m;
+        }
+        let plane = match layout.kind {
+            NodeKind::Terminal => layout_terminal_plane(arms, layout),
+            NodeKind::Bend | NodeKind::Junction => {
+                graph.solved_junction_endpoint_profile_plane(arms.node)
+            }
+        }
+        .ok_or(NodeError::NoPlane)?;
+        Ok(Some(plane))
+    }
+}
+
+/// Plans `node`: `Ok(None)` when it has no piece in this gate (see [`NodeArms::collect`]). The
+/// plan owns copies of this thread's arms and layout; its mouths and approaches are the piece's.
+pub(super) fn plan_node(graph: &RegionGraph, node: u32) -> Result<Option<NodePlan>, NodeError> {
+    NodePlanScratch::with(|scratch| {
+        let Some(plane) = scratch.plan(graph, node)? else {
+            return Ok(None);
+        };
+        let NodePlanScratch {
+            arms,
+            layout,
+            stations,
+            ..
+        } = scratch;
+        let mouths = (0..arms.len())
+            .map(|index| {
+                let section = mouth_section(graph, arms, index, stations[index], &plane)?;
+                Ok((arms.key(index), Arc::new(section)))
+            })
+            .collect::<Result<Vec<_>, NodeError>>()?;
+        let mut approaches: Vec<_> = layout
+            .arms
+            .iter()
+            .filter_map(|arm| {
+                let crosswalk = arm.crosswalk?;
+                let station_m = crosswalk.inner_station_m;
+                let (section, _) = section_at(graph, arms, arm.input_index, station_m, &plane);
+                Some((arm.key, section))
+            })
+            .collect();
+        approaches.sort_unstable_by_key(|(key, _)| *key);
+        Ok(Some(NodePlan {
+            arms: arms.clone(),
+            layout: layout.clone(),
+            plane,
+            mouths,
+            approaches,
+        }))
+    })
 }
 
 // A road end's plane: through the road end and its mouth centreline point, with the arm's end
@@ -282,24 +363,41 @@ pub(crate) fn terminal_plane(
     graph: &RegionGraph,
     node: u32,
 ) -> Option<JunctionEndpointProfilePlane> {
-    let mut arms = NodeArms::collect(graph, node)?;
-    let layout = arms.layout().ok()?;
-    (layout.kind == NodeKind::Terminal)
-        .then(|| layout_terminal_plane(&arms, &layout))
-        .flatten()
+    NodePlanScratch::with(|scratch| {
+        if !matches!(scratch.lay_out(graph, node), Ok(true)) {
+            return None;
+        }
+        let (arms, layout) = (&scratch.arms, &scratch.layout);
+        (layout.kind == NodeKind::Terminal)
+            .then(|| layout_terminal_plane(arms, layout))
+            .flatten()
+    })
 }
 
 /// Checks that `node` lays out, that the profile solve found its plane (a bend or junction that
 /// it pins), and that its mouths sit on that plane, as its piece would need; nodes without a
-/// piece pass. Placement validation runs it on the post-edit excerpt.
+/// piece pass. Placement validation runs it on the post-edit excerpt. The checks and their order
+/// are [`plan_node`]'s, on this thread's buffers: it builds no mouth sections and allocates
+/// nothing once the buffers have grown to the node.
 pub(crate) fn check_node(graph: &RegionGraph, node: u32) -> Result<(), NodeError> {
-    let plan = plan_node(graph, node)?;
-    if plan.is_some_and(|plan| plan.layout.kind != NodeKind::Terminal)
-        && graph.junction_profile_solve_fails(node)
-    {
-        return Err(NodeError::NoPlane);
-    }
-    Ok(())
+    NodePlanScratch::with(|scratch| {
+        let Some(plane) = scratch.plan(graph, node)? else {
+            return Ok(());
+        };
+        let NodePlanScratch {
+            arms,
+            layout,
+            stations,
+            ..
+        } = scratch;
+        for (index, &station_m) in stations.iter().enumerate() {
+            ArmCentre::at(arms, index, station_m, &plane).on_plane(arms.key(index))?;
+        }
+        if layout.kind != NodeKind::Terminal && graph.junction_profile_solve_fails(node) {
+            return Err(NodeError::NoPlane);
+        }
+        Ok(())
+    })
 }
 
 fn lateral_sign(end: EdgeEnd) -> f64 {
@@ -319,10 +417,8 @@ fn mouth_section(
     plane: &JunctionEndpointProfilePlane,
 ) -> Result<MouthSection, NodeError> {
     let key = arms.key(index);
-    let (section, centre_height_m) = section_at(graph, arms, index, station_m, plane);
-    if (centre_height_m - f64::from(section.center_height_m)).abs() > MOUTH_PLANE_TOLERANCE_M {
-        return Err(NodeError::MouthOffPlane { arm: key });
-    }
+    let (section, centre) = section_at(graph, arms, index, station_m, plane);
+    centre.on_plane(key)?;
     let profile = RoadProfile::for_edge(graph.edge(key.edge));
     let sign = lateral_sign(key.end);
     let input = arms.input(index);
@@ -337,32 +433,68 @@ fn mouth_section(
     })
 }
 
+// Arm `index`'s centre at a station, as its sections place it.
+struct ArmCentre {
+    // Where the station lies on the edge's centreline points, and the finalized centreline height
+    // there.
+    position: CentrelinePosition,
+    centreline_height_m: f64,
+    // The centre on the arm's offset curves, and its height on the node plane.
+    xz: RoadVec2,
+    height_m: f32,
+}
+
+impl ArmCentre {
+    fn at(
+        arms: &NodeArms,
+        index: usize,
+        station_m: f64,
+        plane: &JunctionEndpointProfilePlane,
+    ) -> Self {
+        let sign = lateral_sign(arms.key(index).end);
+        let (position, centreline_height_m) = arms.centreline_at(index, station_m);
+        let xz = arms.input(index).offset_point(station_m, sign * 0.0);
+        let level = arms.level_at_node(index, Level::Ground);
+        Self {
+            position,
+            centreline_height_m,
+            xz,
+            height_m: surface_height_m(plane, xz, level),
+        }
+    }
+
+    // The mouth check of arm `arm`: its finalized centreline within 1 mm of the node plane.
+    fn on_plane(&self, arm: ArmKey) -> Result<(), NodeError> {
+        if (self.centreline_height_m - f64::from(self.height_m)).abs() > MOUTH_PLANE_TOLERANCE_M {
+            return Err(NodeError::MouthOffPlane { arm });
+        }
+        Ok(())
+    }
+}
+
 // Arm `index`'s cross-section at `station_m`, in its edge's forward frame and span stations, on
-// the arm's offset curves with heights on the node plane; and the finalized centreline height
-// there.
+// the arm's offset curves with heights on the node plane; and its centre there.
 fn section_at(
     graph: &RegionGraph,
     arms: &NodeArms,
     index: usize,
     station_m: f64,
     plane: &JunctionEndpointProfilePlane,
-) -> (RoadSection, f64) {
+) -> (RoadSection, ArmCentre) {
     let key = arms.key(index);
     let edge = graph.edge(key.edge);
     let input = arms.input(index);
     let sign = lateral_sign(key.end);
     let xz = |lateral_m: f32| input.offset_point(station_m, sign * f64::from(lateral_m));
-    let (position, centre_height_m) = arms.centreline_at(index, station_m);
-    let center_xz = xz(0.0);
+    let centre = ArmCentre::at(arms, index, station_m, plane);
     let level = |level: Level| arms.level_at_node(index, level);
-    let center_height_m = surface_height_m(plane, center_xz, level(Level::Ground));
     let profile = RoadProfile::for_edge(edge);
-    let lateral_xz = ((input.offset_point(station_m, 1.0) - center_xz) * sign).normalize();
+    let lateral_xz = ((input.offset_point(station_m, 1.0) - centre.xz) * sign).normalize();
     let section = RoadSection {
         edge_idx: key.edge,
-        s_m: span_station_m(edge_points(edge), position),
-        center_xz,
-        center_height_m,
+        s_m: span_station_m(edge_points(edge), centre.position),
+        center_xz: centre.xz,
+        center_height_m: centre.height_m,
         tangent_xz: RoadVec2::new(lateral_xz.y, -lateral_xz.x),
         lateral_xz,
         bands: profile
@@ -377,7 +509,7 @@ fn section_at(
             })
             .collect(),
     };
-    (section, centre_height_m)
+    (section, centre)
 }
 
 // The span station of a centreline position: the span model's cumulative 3-D length in `f32`.

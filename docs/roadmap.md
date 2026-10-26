@@ -242,7 +242,12 @@ makes saves byte-deterministic (lane connections were written in hash-map order;
 37 and 39). `ROAD-68-K17` (branch `road68-K17`) makes the junction profile solve, which runs
 on every preview pose and commit, allocation-free the same way: its working collections stay
 with each thread (163,224 allocations in the preview benchmark before, 11,619 after, none of
-them working memory), with bitwise-equal products (`roads.md` question 37).
+them working memory), with bitwise-equal products (`roads.md` question 37). `ROAD-68-K18`
+(branch `road68-K18`) does the same for the roadbed's node plan, which placement validation's
+`check_node` ran for every affected node on every preview pose (222,520 allocations in the
+preview benchmark before, 69 after), with bitwise-equal products; it records which R-tree
+queries depend on the tree's traversal order (two pickers' ties), the precondition for
+re-indexing only changed edges (`roads.md` question 37).
 `TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
 re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
