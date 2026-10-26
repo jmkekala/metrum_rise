@@ -151,7 +151,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         .restore_parcel_from_attachment(1, edge_idx, 1, 0.85, 20.0, 20.0, 0, &graph)
         .unwrap();
     let mut network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut network, None).unwrap();
+    network::rebuild_loaded_graph_runtime(&graph, &mut network).unwrap();
     network.lane_system.rebuild(&mut graph);
     assert_eq!(graph.node(start).pos, points[0]);
     assert_eq!(graph.node(end).pos, points[1]);
@@ -2044,9 +2044,9 @@ fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
     let tx = conn.transaction().unwrap();
     network::save_network(&tx, &graph, &maps).unwrap();
     tx.commit().unwrap();
-    let mut loaded = network::load_graph(&conn).unwrap();
+    let loaded = network::load_graph(&conn).unwrap();
     let mut transit = TransitNetwork::new();
-    network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit, None).unwrap();
+    network::rebuild_loaded_graph_runtime(&loaded, &mut transit).unwrap();
     assert!(transit.roadbed.failed_nodes().is_empty());
     let piece = transit.roadbed.node_piece(0).expect("bend node piece");
     let crossing: Vec<usize> = piece
@@ -2060,8 +2060,8 @@ fn a_bend_whose_crossing_moved_to_its_second_arm_loads() {
 }
 
 // A save whose junction a commit would reject fails the load with the typed error
-// (`ROAD-68-E`), whether the load's repair runs (every arm grounded) or not (a bridge arm). The
-// T's south arm is shorter than the profile solve's 2 m sample, which leaves a junction without
+// (`ROAD-68-E`), with every arm grounded or with a bridge arm: a load repairs neither
+// (`ROAD-68` open question 37, save compatibility). The T's south arm is shorter than the profile solve's 2 m sample, which leaves a junction without
 // a plane; its layout fails first (`ArmTooShort`), so the load's plane check
 // (`unpinned_nodes`) finds no node whose piece built without a plane.
 #[test]
@@ -2088,9 +2088,9 @@ fn a_saved_junction_a_commit_would_reject_fails_the_load() {
         let tx = conn.transaction().unwrap();
         network::save_network(&tx, &graph, &maps).unwrap();
         tx.commit().unwrap();
-        let mut loaded = network::load_graph(&conn).unwrap();
+        let loaded = network::load_graph(&conn).unwrap();
         let mut transit = TransitNetwork::new();
-        let error = network::rebuild_loaded_graph_runtime(&mut loaded, &mut transit, None)
+        let error = network::rebuild_loaded_graph_runtime(&loaded, &mut transit)
             .expect_err("the junction fails the load")
             .to_string();
         assert!(
@@ -2101,43 +2101,45 @@ fn a_saved_junction_a_commit_would_reject_fails_the_load() {
     }
 }
 
+// A save holding a road steeper than the 1:3 maximum fails the load with `road_too_steep`, the
+// rule an edit meets, rather than loading as saved or re-graded (`ROAD-68` open question 37,
+// decided 2026-10-26); the same road at 30% loads. The climbing road is edge 1, beside a flat
+// edge 0.
 #[test]
-fn headlight_house_junction_full_load_compiles_with_terrain_earthwork() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
-    conn.execute_batch(include_str!("tests/data/headlight_house_junction.sql"))
-        .unwrap();
-    let config = WorldConfig::new(500.0, 500.0, 40.0, 10.0)
-        .with_terrain_resolution(10.0)
-        .with_chunking(512.0, 0.0);
-    let mut graph = network::load_graph(&conn).unwrap();
-    let saved_edges = graph.edges().to_vec();
-    let mut transit = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit, None).unwrap();
-    assert!(transit.roadbed.is_current());
-    assert!(transit.roadbed.failed_nodes().is_empty());
-    assert!(
-        transit
-            .roadbed
-            .pieces_in_bounds([f64::MIN, f64::MIN, f64::MAX, f64::MAX])
-            .any(|(piece, _)| piece == crate::simulation::network::roadbed::PieceId::Node(1))
-    );
-    // A save from before `ROAD-68-C` holds legacy clips and an unpinned footpath (D5), so the
-    // load repair re-solves node 1 (`ROAD-68` open question 8): profiles and clips change, the
-    // authored alignment only gains support knots.
-    for (edge, saved) in graph.edges().iter().zip(&saved_edges) {
-        let xz = |points: &[Vector3]| -> Vec<(u32, u32)> {
-            points.iter().map(|p| (p.x.to_bits(), p.z.to_bits())).collect()
-        };
-        let mut loaded = xz(&edge.geometry).into_iter();
-        assert!(
-            xz(&saved.geometry)
-                .into_iter()
-                .all(|point| loaded.any(|kept| kept == point)),
-            "the authored alignment is kept"
-        );
+fn a_saved_road_steeper_than_one_in_three_fails_the_load() {
+    use crate::simulation::network::roadbed::fixtures::road_edge;
+    use crate::simulation::network::types::NodeType;
+    for (grade, refused) in [(0.30_f32, false), (0.40, true)] {
+        let mut graph = RegionGraph::new();
+        for (z, rise) in [(0.0, 0.0), (100.0, grade)] {
+            let points: Vec<_> = (0..4)
+                .map(|i| {
+                    let x = 20.0 * i as f32;
+                    Vector3::new(x, rise * x, z)
+                })
+                .collect();
+            let start = graph.add_node(points[0], NodeType::Junction);
+            let end = graph.add_node(points[3], NodeType::Junction);
+            graph.add_edge(road_edge(start, end, points, 7.0));
+        }
+        let maps =
+            build_snapshot_maps(&graph, &BuildingAllocator::new(), &AgentSystem::new()).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, &graph, &maps).unwrap();
+        tx.commit().unwrap();
+        let loaded = network::load_graph(&conn).unwrap();
+        let mut transit = TransitNetwork::new();
+        let result = network::rebuild_loaded_graph_runtime(&loaded, &mut transit);
+        if refused {
+            let error = result.expect_err("the steep road fails the load").to_string();
+            assert!(
+                error.contains("edge 1 climbs at 40.0%") && error.contains("(road_too_steep)"),
+                "{error}"
+            );
+        } else {
+            result.unwrap();
+        }
     }
-    let footpath = graph.edge(1);
-    assert_eq!(footpath.primary_type, crate::simulation::network::types::TransitType::Foot);
-    assert!(footpath.start_clip > 0.0, "the footpath ends at its layout mouth");
 }

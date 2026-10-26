@@ -105,14 +105,20 @@ impl RegionGraph {
         }
     }
 
-    /// Finds all edges whose bounding boxes overlap the circle at `pos` with `radius`.
+    /// Finds all edges whose bounding boxes overlap the circle at `pos` with `radius`, in the
+    /// unspecified order of [`get_edges_near_aabb`](Self::get_edges_near_aabb).
     pub fn get_edges_near_point(&self, pos: godot::prelude::Vector3, radius: f32) -> Vec<usize> {
         let min = godot::prelude::Vector3::new(pos.x - radius, 0.0, pos.z - radius);
         let max = godot::prelude::Vector3::new(pos.x + radius, 0.0, pos.z + radius);
         self.get_edges_near_aabb(min, max)
     }
 
-    /// Finds all edges whose bounding boxes intersect the given AABB.
+    /// Finds all edges whose bounding boxes intersect the given AABB, each once.
+    ///
+    /// The order is unspecified: it is the R-tree's traversal order, which follows the tree's
+    /// shape and so its insertion and removal history (a loaded graph and the same graph built
+    /// by edits can differ). A caller whose result depends on the order sorts the edges first,
+    /// by edge id (`ROAD-68` open question 37, decided 2026-10-26).
     pub fn get_edges_near_aabb(
         &self,
         min: godot::prelude::Vector3,
@@ -134,7 +140,7 @@ impl RegionGraph {
     ) {
         let envelope = AABB::from_corners([min.x, min.z], [max.x, max.z]);
         // Internal iteration uses the call stack, avoiding the external iterator's SmallVec spill.
-        // Keep the collecting API above unchanged: its traversal order is used by existing callers.
+        // The visiting order is the tree's, unspecified as the collecting query's is.
         let _ = self
             .spatial_edge_rt
             .locate_in_envelope_intersecting_int(&envelope, |entry| {

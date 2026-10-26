@@ -558,10 +558,14 @@ impl SimCore {
     fn resolve_bulldoze_road_target(&self, pos: Vector2) -> Option<BulldozeTarget> {
         let query_pos = Vector3::new(pos.x, 0.0, pos.y);
         let mut best: Option<(usize, f32, Vector3)> = None;
-        for edge_idx in self
+        // The R-tree's order is unspecified, so the candidates ascend by edge id and the strict
+        // comparison below picks by exact distance, then the lowest edge id (`ROAD-68` open
+        // question 37).
+        let mut candidates = self
             .region_graph
-            .get_edges_near_point(query_pos, BULLDOZE_ROAD_PICK_RADIUS_M)
-        {
+            .get_edges_near_point(query_pos, BULLDOZE_ROAD_PICK_RADIUS_M);
+        candidates.sort_unstable();
+        for edge_idx in candidates {
             if edge_idx >= self.region_graph.edge_count() {
                 continue;
             }
@@ -584,14 +588,7 @@ impl SimCore {
                 if dist_sq > threshold_sq {
                     continue;
                 }
-                let replace = best
-                    .map(|(best_idx, best_dist_sq, _)| {
-                        dist_sq < best_dist_sq - f32::EPSILON
-                            || ((dist_sq - best_dist_sq).abs() <= f32::EPSILON
-                                && edge_idx < best_idx)
-                    })
-                    .unwrap_or(true);
-                if replace {
+                if best.is_none_or(|(_, best_dist_sq, _)| dist_sq < best_dist_sq) {
                     best = Some((edge_idx, dist_sq, closest));
                 }
             }
@@ -2870,6 +2867,47 @@ mod tests {
                 .get_edges_near_point(Vector3::new(0.0, 0.0, 0.0), 8.0)
                 .contains(&0)
         );
+    }
+
+    // `ROAD-68` open question 37 (b): the road pick compares distances exactly, then takes the
+    // lower edge id, whichever order the R-tree holds the edges in.
+    #[test]
+    fn bulldoze_road_pick_compares_exactly_and_ties_take_the_lowest_edge_id() {
+        let mut core = test_core();
+        // Edges 0 and 1 lie 2 m either side of x = 1000. Edge 3 lies 0.25 m from the origin and
+        // edge 2 three ulps further, its squared distance within `f32::EPSILON` of edge 3's.
+        let near = f32::from_bits(0.25_f32.to_bits() + 3);
+        for x in [998.0, 1002.0, -near, 0.25] {
+            let start = core
+                .region_graph
+                .add_node(Vector3::new(x, 0.0, -60.0), NodeType::Junction);
+            let end = core
+                .region_graph
+                .add_node(Vector3::new(x, 0.0, 60.0), NodeType::Junction);
+            add_test_road_edge(&mut core.region_graph, start, end);
+        }
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0]] {
+            for id in 0..4 {
+                core.region_graph.remove_from_spatial_index(id);
+            }
+            for id in order {
+                core.region_graph.add_to_spatial_index(id);
+            }
+            let pick = |x: f32| {
+                core.resolve_bulldoze_target(x, 0.0)
+                    .map(|target| (target.kind, target.id))
+            };
+            assert_eq!(
+                pick(1000.0),
+                Some((BulldozeTargetKind::Road, 0)),
+                "exact tie, tree insertion order {order:?}"
+            );
+            assert_eq!(
+                pick(0.0),
+                Some((BulldozeTargetKind::Road, 3)),
+                "nearer by less than f32::EPSILON, tree insertion order {order:?}"
+            );
+        }
     }
 
     #[test]

@@ -147,15 +147,6 @@ struct DemandStateRow {
     exit_eligible_today: bool,
 }
 
-fn sqlite_table_exists(conn: &Connection, table_name: &str) -> SaveLoadResult<bool> {
-    let exists: i64 = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        params![table_name],
-        |row| row.get(0),
-    )?;
-    Ok(exists != 0)
-}
-
 fn save_budget_history(
     tx: &rusqlite::Transaction<'_>,
     budget_history: &VecDeque<DailyBudgetLedgerEntry>,
@@ -206,10 +197,6 @@ fn save_budget_history(
 
 fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
     let mut history = VecDeque::new();
-    if !sqlite_table_exists(conn, "city_budget_history")? {
-        return Ok(history);
-    }
-
     let mut stmt = conn.prepare(
         "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost FROM city_budget_history ORDER BY sequence",
     )?;
@@ -755,7 +742,7 @@ pub(crate) fn load_from_sqlite(
     }
 
     let mut transit_network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, Some(&terrain))?;
+    network::rebuild_loaded_graph_runtime(&graph, &mut transit_network)?;
     transit_network.lane_system.rebuild(&mut graph);
     transit_network
         .lane_system
@@ -790,23 +777,15 @@ pub(crate) fn load_from_sqlite(
     desirability.tick(&pollution, &noise);
     desirability.compose_back_rows(0..desirability.back.height, &pollution, &noise);
 
-    let service_policy = if sqlite_table_exists(&conn, "city_service_policy")? {
-        match conn.query_row(
-            "SELECT electricity_funding FROM city_service_policy LIMIT 1",
-            [],
-            |r| {
-                Ok(CityServicePolicy {
-                    electricity_funding: r.get::<_, f32>(0)?.clamp(0.0, 1.0),
-                })
-            },
-        ) {
-            Ok(policy) => policy,
-            Err(rusqlite::Error::QueryReturnedNoRows) => CityServicePolicy::default(),
-            Err(err) => return Err(err.into()),
-        }
-    } else {
-        CityServicePolicy::default()
-    };
+    let service_policy = conn.query_row(
+        "SELECT electricity_funding FROM city_service_policy LIMIT 1",
+        [],
+        |r| {
+            Ok(CityServicePolicy {
+                electricity_funding: r.get::<_, f32>(0)?.clamp(0.0, 1.0),
+            })
+        },
+    )?;
     let fiscal_policy = load_fiscal_policy(&conn)?;
     let budget_history = load_budget_history(&conn)?;
     // Household member lists are derived, in canonical member order (`SIM-02-I`).

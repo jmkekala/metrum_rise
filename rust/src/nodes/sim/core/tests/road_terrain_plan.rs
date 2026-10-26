@@ -517,10 +517,9 @@ const KUOPIO_REFERENCE_SAVE: &str = concat!(
     "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
 );
 
-// Open question 8: the reference save is regenerated with `ROAD-68-E`'s load rebuild (loaded,
-// repaired and saved by `ROAD-68-E` part 2), so it loads as saved: no junction is repaired, every
-// saved control and physical point comes back bitwise and no node fails. The load repair itself
-// is `headlight_house_junction_full_load_compiles_with_terrain_earthwork`'s.
+// Open questions 8 and 37: the reference save is re-recorded with today's code (question 38) and
+// loads as saved: a load repairs nothing (save compatibility is not required, `ROAD-68-K21`),
+// every saved control and physical point comes back bitwise and no node fails.
 #[test]
 fn kuopio_saved_reference_loads_as_saved() {
     let fixture = KUOPIO_REFERENCE_SAVE;

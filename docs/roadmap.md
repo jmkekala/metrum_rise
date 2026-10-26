@@ -248,11 +248,19 @@ them working memory), with bitwise-equal products (`roads.md` question 37). `ROA
 preview benchmark before, 69 after), with bitwise-equal products; it records which R-tree
 queries depend on the tree's traversal order (two pickers' ties), the precondition for
 re-indexing only changed edges (`roads.md` question 37).
+`ROAD-68-K21` (branch `road68-K21`) builds the user's 2026-10-26 decisions on question 37: the
+road tool's cursor snap and the bulldozer's road pick sort their R-tree candidates by edge id and
+pick by exact distance, then edge id (the bulldozer's `f32::EPSILON` tie band is gone), and a save
+holding a road steeper than 1:3 fails the load with `road_too_steep`, the rule an edit meets.
+Loads repair nothing: question 8's junction repair and two dead missing-table branches are
+removed, the doubtful legacy-load branches listed (`roads.md` question 37). Open question 48 (a
+terrain edit can leave a road over 1:3, whose save then fails to load, until `TERRAIN-07-E`) is
+recommended (a), taken pending the user's review.
 `TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
 re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no
 `ROAD-68-E`, `ROAD-68-F` or `ROAD-68-K14` one, no Godot script).
-`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists thirty-eight open questions (1-33 and 35-39); open question 16 (strokes pinned to the
+`ROAD-68-E` is implemented with its acceptance open (the terrain stage, `TERRAIN-07`, and question 21 (b)'s paused preview half), `-H` is open (`ROAD-68-F` is done), and `roads.md` lists thirty-nine open questions (1-33, 35-39 and 48); open question 16 (strokes pinned to the
 pieces their edit rebuilds, on slopes) is implemented in `ROAD-68-E` part 2, 17 records footpath defaults to
 confirm, 18 (envelope cap) and 19 (open chain ends at bridges, tunnels and failed nodes) are
 decided, 22 (the 2 ms terrain stage) is resolved, 23 (seams between meshes in different

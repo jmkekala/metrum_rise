@@ -5,7 +5,9 @@
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::network::validate::{
+    RoadGeometryLimits, RoadGeometryTier, RoadGeometryViolation, grade_violation,
+};
 use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
@@ -257,55 +259,18 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
 }
 
 pub(super) fn rebuild_loaded_graph_runtime(
-    graph: &mut RegionGraph,
+    graph: &RegionGraph,
     transit_network: &mut TransitNetwork,
-    terrain: Option<&TerrainSystem>,
 ) -> SaveLoadResult<()> {
-    // Node positions, grades, physical lengths and junction clips are saved authority. Terrain
-    // synchronization is an edit: running it here moves roads away from their restored parcels
-    // and changes the boundary geometry consumed by the renderer.
+    // Node positions, grades, physical lengths and junction clips are saved authority, loaded
+    // as saved or refused, never repaired: save compatibility is not required (`ROAD-68` open
+    // question 37, decided 2026-10-26). Terrain synchronization is an edit: running it here
+    // moves roads away from their restored parcels and changes the boundary geometry consumed
+    // by the renderer.
+    refuse_steep_road(graph)?;
     transit_network.rebuild_roadbed(graph);
     // Every node is checked as a commit checks it (`ROAD-68-E`): its piece builds, and a bend
     // or junction has a profile plane.
-    let rejected = rejected_loaded_nodes(graph, transit_network);
-    if rejected.is_empty() {
-        return Ok(());
-    }
-    // Legacy saves can contain contradictory junction supports. Repair only rejected
-    // grounded junctions using the edit planner's finalizer, before lane/agent restoration
-    // (open question 8). The source SQLite and terrain are not rewritten; valid saved profiles
-    // stay authoritative.
-    let nodes = rejected
-        .into_iter()
-        .filter(|&node| {
-            graph.node_adjacency(node).iter().all(|&edge| {
-                graph.edge(edge).deleted
-                    || graph.edge(edge).class
-                        == crate::simulation::network::types::EdgeClass::Standard
-            })
-        })
-        .collect::<std::collections::HashSet<_>>();
-    let edges = nodes
-        .iter()
-        .flat_map(|&node| graph.node_adjacency(node).iter().copied())
-        .filter(|&edge| !graph.edge(edge).deleted)
-        .collect::<std::collections::HashSet<_>>();
-    if !edges.is_empty() {
-        // Saves before `ROAD-68-C` hold clips from the legacy setback rule; the solve pins each
-        // arm up to its layout mouth, which the clip must hold first.
-        graph.rebuild_intersection_clips_for_nodes(&nodes);
-        let mut changed = std::collections::HashSet::new();
-        graph.finalize_junction_endpoint_profiles(&nodes, terrain, &mut changed);
-        transit_network.mark_surface_dirty_from_sets(&changed, &nodes);
-        transit_network.roadbed.compile_dirty(graph);
-        crate::debug_log!(
-            "save",
-            "loaded_junction_profile_repair nodes={} changed_edges={} failed_nodes={}",
-            nodes.len(),
-            changed.len(),
-            transit_network.roadbed.failed_nodes().len()
-        );
-    }
     if let Some(&node) = transit_network.roadbed.failed_nodes().first() {
         return Err(SaveLoadError::custom(format!(
             "road surface load failed: node {node} piece did not build ({:?})",
@@ -320,14 +285,29 @@ pub(super) fn rebuild_loaded_graph_runtime(
     Ok(())
 }
 
-// Nodes whose piece failed or that the node check rejects, ascending and distinct.
-fn rejected_loaded_nodes(graph: &RegionGraph, transit_network: &TransitNetwork) -> Vec<u32> {
-    let roadbed = &transit_network.roadbed;
-    let mut nodes = roadbed.unpinned_nodes(graph);
-    nodes.extend_from_slice(roadbed.failed_nodes());
-    nodes.sort_unstable();
-    nodes.dedup();
-    nodes
+// A road steeper than the 1:3 maximum fails the load with `road_too_steep`, the rule an edit
+// meets (`ROAD-68` open question 37): the validator's grade check on every saved profile, the
+// first such edge in id order named. O(saved profile points), no allocation.
+fn refuse_steep_road(graph: &RegionGraph) -> SaveLoadResult<()> {
+    let limits = RoadGeometryLimits::default();
+    for edge in 0..graph.edge_count() {
+        if let Some(RoadGeometryViolation::Grade {
+            station_m,
+            measured,
+            limit,
+            tier: RoadGeometryTier::Illegal,
+            ..
+        }) = grade_violation(graph, edge, &limits)
+        {
+            return Err(SaveLoadError::custom(format!(
+                "road surface load failed: edge {edge} climbs at {:.1}% at {station_m:.1} m, \
+                 steeper than the {:.0}% (1:3) maximum grade (road_too_steep)",
+                measured * 100.0,
+                limit * 100.0
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> SaveLoadResult<u32> {

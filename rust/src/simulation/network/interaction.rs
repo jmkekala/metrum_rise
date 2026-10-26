@@ -163,8 +163,11 @@ pub(crate) fn get_closest_network_snap_xz(
         return closest_pos;
     }
 
-    // 2. Check nearby edges using Spatial Index
-    let nearby_edges = graph.get_edges_near_point(world_pos, max_dist.max(20.0));
+    // 2. Check nearby edges using Spatial Index. The R-tree's order is unspecified, so the
+    // candidates ascend by edge id and the strict comparison below keeps the lowest id among
+    // edges at exactly the same distance (`ROAD-68` open question 37).
+    let mut nearby_edges = graph.get_edges_near_point(world_pos, max_dist.max(20.0));
+    nearby_edges.sort_unstable();
 
     for edge_idx in nearby_edges {
         let edge = graph.edge(edge_idx);
@@ -534,6 +537,41 @@ mod tests {
             for id in [1, 0] {
                 graph.add_to_spatial_index(id);
             }
+        }
+    }
+
+    // `ROAD-68` open question 37 (b): on an exact tie the cursor snap takes the lower edge id,
+    // whichever order the R-tree holds the edges in.
+    #[test]
+    fn cursor_snap_ties_take_the_lowest_edge_id_in_any_tree_order() {
+        let mut graph = RegionGraph::new();
+        for x in [-2.0, 2.0] {
+            let start = graph.add_node(Vector3::new(x, 0.0, -20.0), NodeType::Junction);
+            let end = graph.add_node(Vector3::new(x, 0.0, 20.0), NodeType::Junction);
+            let points = vec![graph.node(start).pos, graph.node(end).pos];
+            graph.add_edge(super::super::build_surface_edge(
+                start,
+                end,
+                points,
+                1,
+                1,
+                EdgeClass::Standard,
+            ));
+        }
+        for order in [[0, 1], [1, 0]] {
+            for id in [0, 1] {
+                graph.remove_from_spatial_index(id);
+            }
+            for id in order {
+                graph.add_to_spatial_index(id);
+            }
+            assert_eq!(
+                get_closest_network_snap_xz(&graph, Vector3::ZERO, 3.0)
+                    .unwrap()
+                    .target,
+                NetworkSnapTarget::Edge(0),
+                "tree insertion order {order:?}"
+            );
         }
     }
 

@@ -376,8 +376,8 @@ approach sections (`ROAD-68-K18`, [open question 37](#road-68-open-questions)).
   end from the far node's own solve, so it reads the 2-ring of the affected nodes:
   `O(sum over touched edges of (points * inserted knots) + sum over their far nodes of degree * points)`,
   local but larger beside a high-degree hub. Every caller passes both ends of every edge whose
-  control polyline it changed: road edits (both ends of each dirty edge), the crossing toggle, the
-  load repair, and, since the pre-D review, node moves (the moved node and its arms' far nodes)
+  control polyline it changed: road edits (both ends of each dirty edge), the crossing toggle,
+  and, since the pre-D review, node moves (the moved node and its arms' far nodes)
   and road removals (the removed edge's two ends), which rebuilt clips without re-solving
   before. A road edit plan solves on a local excerpt of the graph, which must hold that 2-ring:
   every edge near the stroke and two rings of incidence around them, and a plan whose affected
@@ -835,8 +835,11 @@ undo installs the pre-edit entries again at the swap's new generations (a patch 
 loses the edit's), so the restored terrain is the pre-edit terrain itself; otherwise the touched
 terrain rebuilds.
 
-**Load.** Load compiles every piece from the graph in parallel. A junction that fails layout or
-the profile solve fails the load with its typed error.
+**Load.** Load first checks every saved profile against the 1:3 maximum grade, with the check an
+edit meets: a road steeper fails the load with `road_too_steep` ([open question
+37](#road-68-open-questions)). It then compiles every piece from the graph in parallel. A junction
+that fails layout or the profile solve fails the load with its typed error. A load repairs
+nothing: a save loads as saved or not at all (save compatibility is not required).
 
 ### Commit consequences
 
@@ -1306,6 +1309,12 @@ These need a user decision; work that does not depend on them continues.
    `2ec65ca9`), which the load rebuild re-derives from and cannot change; on 21 of its 70 edges
    they break the replay's quality limits, up to grade 4.56 and 37.6 m off the ground
    ([open question 38](#road-68-open-questions); no maximum grade, question 37).
+   **`ROAD-68-K21` (2026-10-26): the load repair is removed.** Save compatibility is not
+   required (question 37, decided by the user 2026-10-26: no legacy-load path is kept), so a
+   load re-clips and re-solves nothing: a save whose junction fails its piece or has no plane
+   fails the load with its typed error. The repair's only test,
+   `headlight_house_junction_full_load_compiles_with_terrain_earthwork`, and its pre-`ROAD-68-C`
+   fixture went with it (record in question 37, "Save compatibility").
 9. **Width steps on straight sectors (`ROAD-68-C`) — decided 2026-10-24 (user): build D4's taper at the start of
    `ROAD-68-D`.** D4's radial step has no face of its own. A
    straight sector between a narrower and a wider carriageway gets the generic strips, which are
@@ -2464,7 +2473,47 @@ These need a user decision; work that does not depend on them continues.
       A save with a road steeper than 1:3 is refused at load with `road_too_steep`, the same rule
       an edit meets, rather than loaded as saved or re-graded. No migration or legacy-load path is
       kept for older saves: an old save may fail to load. The re-recorded Kuopio reference
-      (question 38) is within the rule. Not built yet.
+      (question 38) is within the rule. **Built in `ROAD-68-K21`.** The load
+      (`save::network::rebuild_loaded_graph_runtime`, which `load_from_sqlite` runs before the
+      lanes and agents are restored) first checks every saved profile, as saved, with the check an
+      edit meets: the validator's `grade_violation` (the steepest segment, `steepest_grade`,
+      against its class's tiers in `RoadGeometryLimits::default()`, illegal above
+      `ROAD_GRADE_MAX`), which `validate::edit_violation` and the node edits'
+      `steepened_profile` refuse with. The first edge over 1:3 in id order fails the load before
+      any piece is compiled: `road surface load failed: edge N climbs at G% at S m, steeper than
+      the 33% (1:3) maximum grade (road_too_steep)`. O(saved profile points), no allocation. Test:
+      `a_saved_road_steeper_than_one_in_three_fails_the_load` (a road beside a flat edge 0, saved
+      and loaded: at 30% it loads, at 40% the load fails naming edge 1). In the game the error
+      takes the existing load failure path: `SimulationNode::load_game` logs `Load failed: …`
+      with `godot_error!` and returns `false`, the input manager reports the failed path, and the
+      live city stays as it was (checked headless, `ROAD-68-K21`'s gate checks below).
+      Legacy-load code, listed before deleting, removed as dead under this decision:
+      1. The question 8 load repair in `rebuild_loaded_graph_runtime` (re-clipped and re-solved the
+         rejected grounded junctions of pre-`ROAD-68-C` saves before the node checks; about 40
+         lines), with `rejected_loaded_nodes` and the `terrain` parameter only the repair read. Its
+         only test, `headlight_house_junction_full_load_compiles_with_terrain_earthwork`, and that
+         test's pre-`ROAD-68-C` fixture (`save/tests/data/headlight_house_junction.sql`) go with
+         it: without the repair the fixture fails the load with `node 1 piece did not build
+         (MouthOffPlane { arm: ArmKey { edge: 1, end: Start } })`. The
+         full debug lib suite with both removals (fresh, before the test's removal): 1,951 passed,
+         only that test failed, 171 ignored, so no other test reached the repair or the branches
+         below.
+      2. The missing-table branches of the service policy and budget history loads (and
+         `sqlite_table_exists`, which only they called): both tables are in the schema since
+         2026-07-25, every save writes them (the service policy's row included), and only
+         `SAVE_VERSION` 107 (2026-10-22) loads, so no loadable save lacks them.
+
+      Listed, not deleted (doubtful): the lane restore's legacy branches in `save/agents/lanes.rs`
+      (connectors where a footpath arm no longer splits the road, pedestrian connectors the
+      layout no longer routes, lane ids renumbered before `ROAD-65`), which also take a save whose
+      lanes were rebuilt differently, such as one written while bulk commits defer the lane
+      rebuild; the saved-parcel quarantine and repair in `save/world.rs`
+      (`legacy_saved_parcel_quarantine`, `repair_quarantined_loaded_parcels`, with the census and
+      workplace-quote paths that read the quarantine), which a road overlap may reach in a current
+      save and which is not small; and two economy cases outside this gate, the ledger slots of
+      bare household records (`households/admission.rs`) and saved routes older than the turn
+      rules (`agents/remap.rs`). Until `TERRAIN-07-E` refuses a terrain edit that leaves a road
+      over 1:3, such a city's save fails to load: [open question 48](#road-68-open-questions).
     - **Timing of the rule (`ROAD-68-K15`, fresh).** Release lib test binaries (`$TEST_BINARY`,
       16 codegen units): C = `road` `4710f59b` (before the rule), K = `d740a332` (the rule, built
       from `ac0480cc`, whose code is the same), F = `road68-K15`'s production code (its two test
@@ -2809,6 +2858,25 @@ These need a user decision; work that does not depend on them continues.
       the order is today: a loaded graph builds its tree in edge order, an edited graph by its edit
       history, so the two pickers can choose differently on an exact tie in the same city. Left open
       for the user's review: nothing in `ROAD-68-K18` depends on it (record only).
+      **Built in `ROAD-68-K21`.** The cursor snap's edge pass (`get_closest_network_snap_xz`) and
+      the bulldozer's road pick (`resolve_bulldoze_road_target`) sort their candidates by edge id,
+      as the eight sorting callers do, and keep the first edge at the smallest exact distance, so
+      an exact tie takes the lower edge id. The bulldozer's `f32::EPSILON` tie band is removed: it
+      picked the lower id over an edge nearer by less than the band, and made the comparison
+      intransitive. `get_edges_near_aabb` (and `get_edges_near_point`) document their order as
+      unspecified, the tree's traversal order, and `visit_edges_near_aabb` no longer asks to keep
+      it. Cost: one `sort_unstable` of the candidate list each query already returned, `O(K log K)`
+      for the `K` edges within the pick radius, nothing allocated. Tests, each building the tree
+      from two insertion orders: `cursor_snap_ties_take_the_lowest_edge_id_in_any_tree_order` and
+      `bulldoze_road_pick_compares_exactly_and_ties_take_the_lowest_edge_id`, which also places a
+      nearer edge with the higher id within `f32::EPSILON` of squared distance of a lower one
+      (the band picked the farther). Products unchanged (fresh, debug, `ROAD-68-K21` before the
+      legacy test's removal): the three `_probe` tests, the narrow-marks digest, the Kuopio tests
+      (9 passed, 7 ignored), the save byte test, and the Kuopio reference re-recorded twice at
+      `3c1dbc27…` with the fixture unchanged. Re-indexing only the changed edges (`ROAD-68-K17`'s
+      first open item) no longer reaches a product through these callers; it is not built here.
+      The bulldozer's building pick keeps its own `f32::EPSILON` band over site centres: its
+      candidates come from the building site index, not the R-tree, outside this decision.
     - **Gate checks (`ROAD-68-K18`, fresh).** `cargo clippy --all-targets` on the final code (09:08): the
       baseline's 59 warnings, none added (the in-place collection's `filter_map` carries a
       justified `allow`, since `filter` cannot change the item's lifetime). `./run.sh --test`
@@ -2826,6 +2894,21 @@ These need a user decision; work that does not depend on them continues.
       `arms.rs` +73 (`ArmsScratch`, `collect_into` and `layout_into` beside the allocating
       `collect` and `layout`, and `recycle`). Of the 492 lines added (187 removed), 69 are
       comments and 74 the parameter lines of signatures that no longer fit on one line.
+    - **Gate checks (`ROAD-68-K21`, fresh).** `cargo clippy --all-targets` on the final Rust code:
+      the baseline's 59 warnings, none added. The debug lib suite before the legacy test's
+      removal: 1,951 passed, only that test failed, 171 ignored. `./run.sh --test` on the final
+      code with `DISPLAY` and `WAYLAND_DISPLAY` unset (ended 18:23): exit 0; debug lib 1,951
+      passed, 0 failed, 171 ignored; integration 4 passed; every Godot script passes, no
+      `SCRIPT ERROR`; skipped only the shader global probe and the rendered vegetation tests
+      (headless). The gate-tagged ignored tests are unchanged (2 `TERRAIN-07`, 2 `TERRAIN-07-A`
+      census). The load failure in Godot (headless, an isolated profile, this build's debug
+      library; a one-off check, not a suite test): the Kuopio reference loads (80 nodes); a copy
+      whose edge 5 has one physical point raised 10 m logs `Load failed: road surface load
+      failed: edge 5 climbs at 512.1% at 48.3 m, steeper than the 33% (1:3) maximum grade
+      (road_too_steep)`, `load_game` returns `false` and the live city keeps its 80 nodes. No
+      timing: neither path is in a hot-path benchmark (the two pickers sort the few edges within
+      their pick radius once a query; `benchmark_load_node_check` times the node check alone).
+      `roadbed/` production lines: 8,815, unchanged.
 38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
     decided 2026-10-25 (user): (a), re-record the reference network with today's code, after
     question 37. The re-recorded network is interim: the user will provide a new Kuopio save once
@@ -3010,6 +3093,24 @@ These need a user decision; work that does not depend on them continues.
       Godot script passes, no `SCRIPT ERROR`; skipped only the shader global probe and the
       rendered vegetation tests (headless). Disabled tests: 4, all `TERRAIN-07`. `roadbed/` is
       unchanged by `ROAD-68-K16`.
+48. **A terrain edit can leave a city whose save does not load (`ROAD-68-K21`, from question 37) —
+    open, recommendation (a), taken pending the user's review, 2026-10-26.**
+    - **Evidence.** Since `ROAD-68-K21` a load refuses any road steeper than 1:3 (question 37,
+      "Save compatibility"). The whole-graph terrain sync (`RegionGraph::sync_to_terrain`) builds a
+      re-graded road at the least grade its source band allows where the ground leaves none
+      within 1:3, steeper than the maximum, and refusing such a terrain edit waits for
+      `TERRAIN-07-E` (question 37, decided by the user 2026-10-26). Until then a sculpt can leave
+      a road over 1:3; the city still saves, and that save fails to load with `road_too_steep`. No
+      fixture or recorded session does so (the re-recorded Kuopio reference has no edge over 1:3).
+    - **Options.** (a) Accept the gap until `TERRAIN-07-E` refuses such terrain edits; no code.
+      (b) Refuse the save too: `save_game` fails with `road_too_steep` while a road exceeds 1:3
+      (the same `grade_violation` check), so no unloadable file is written, but the player cannot
+      save until they rebuild a road the terrain, not they, steepened. (c) Refuse the terrain edit
+      now, as `ROAD-68-K15`'s measured rollback did, which first needs terrain undo to restore
+      the source terrain (`TERRAIN-07-E`'s precondition).
+    - **Recommendation.** (a): the gap exists only on the `road` branch, where saves may break,
+      and `TERRAIN-07-E` closes it at its cause; (b) would block saving over a road the player
+      did not make that steep, and (c) is `TERRAIN-07-E` itself.
 
 Spec corrections in `ROAD-68-A`:
 
