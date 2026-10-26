@@ -6696,7 +6696,10 @@ for `TERRAIN-07-D` to land on `road`. Fresh runs on this branch, kept apart from
   locality tests on the graded tiles, the terrain stroke test's mound; deleted with the removed
   paths: `preview_terrain_is_what_the_commit_installs`, `undo_puts_the_pre_edit_terrain_back`,
   `incremental_road_terrain_equals_a_fresh_build`. Benchmarks: `benchmark_kuopio_graded_drags`
-  (new), the graded stage in `benchmark_road_preview_stages` and the commit breakdown's records.
+  and `benchmark_populated_graded_drags` (new), the graded stage in
+  `benchmark_road_preview_stages` and the commit breakdown's records (the breakdown commits
+  without a preview, so its graded stage is the no-preview commit's full bake, not the game's
+  adoption path).
 - Production lines: `simulation/terrain/graded/` 4,877 to 5,325 (`stage.rs` 292, the input
   gathers in `tile.rs` and `coverage.rs`); `nodes/sim/core/graded_stage.rs` 293; `roadbed/`
   unchanged.
@@ -6716,7 +6719,9 @@ for `TERRAIN-07-D` to land on `road`. Fresh runs on this branch, kept apart from
 - Locality: the split trunk's T stages the same graded tiles on a 220 m and a 660 m trunk, and
   the first commit after a bulk road build the same tiles with background roads or without.
 - The frame paths on Kuopio and the preview stages, below. Not run in round 1: the populated
-  site-dense first edits as drags (T21), the commit breakdown session (0 to 100k, the commit's
+  site-dense first edits as drags (T21; `benchmark_populated_graded_drags` is built: the commit
+  breakdown's trunk branches as drags on its saved cities, committed with the last pose's preview
+  and undone), the commit breakdown session (0 to 100k, the commit's
   total against 16.7 ms and the number question 33's deferred lot regeneration starts from;
   question 50's test-only checks stay as they are, `ROAD-68-K24` builds the switch) and the
   0 to 100k timing of local tiles.
