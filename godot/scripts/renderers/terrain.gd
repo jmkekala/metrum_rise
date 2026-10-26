@@ -504,6 +504,10 @@ func _process(delta: float) -> void:
 		for key_variant in water_sync_perf_stats.keys():
 			var perf_key := str(key_variant)
 			perf_details[perf_key] = water_sync_perf_stats[key_variant]
+		if graded_tiles != null:
+			var graded_parts: Dictionary = graded_tiles.counters["frame_parts"]
+			for part: String in graded_parts.keys():
+				perf_details["graded_" + part] = float(graded_parts[part])
 		PerfDebug.record(
 			"terrain",
 			float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
@@ -511,14 +515,16 @@ func _process(delta: float) -> void:
 		)
 		_reset_terrain_resource_pool_perf_counters()
 
-# Hands the resident patches to the graded tile renderer with the keys changed since last frame.
+# Hands the resident patches to the graded tile renderer with the keys changed since last frame,
+# and the camera with its height above the ground under it, from which the tiles' levels take
+# their distance.
 func _process_graded_tiles() -> void:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return
-	graded_tiles.process(
-		camera.global_position, _graded_resident, _graded_changed, _graded_materials_changed
-	)
+	var eye := camera.global_position
+	eye.y -= float(simulation_node.get_world_surface_height(Vector2(eye.x, eye.z)))
+	graded_tiles.process(eye, _graded_resident, _graded_changed, _graded_materials_changed)
 	_graded_changed.clear()
 	_graded_materials_changed.clear()
 

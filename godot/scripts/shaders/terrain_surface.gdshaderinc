@@ -594,16 +594,37 @@ void fragment() {
 #ifdef TERRAIN_GRADED
 	// Terrain is discarded exactly inside the road footprint, in every pass that runs this shader
 	// (the depth prepass and shadows included), so cut-away ground casts no shadow on the road.
-	// Within one pixel inside a road seam it is kept where it lies below the road top, hidden by
-	// the road in depth: the road and the terrain reach the screen through different f32 frames,
-	// so their shared edge rounds apart by about 1e-4 m at 1 km offsets and showed the sky through
-	// single pixels (T24 (a), a rendering overlap only; the geometry and queries stay exact).
+	// Within one pixel inside a road seam it is kept, drawn behind the road: the road and the
+	// terrain reach the screen through different f32 frames, so their shared edge rounds apart by
+	// about 1e-4 m at 1 km offsets and showed the sky through single pixels. Ground at or below
+	// the road top keeps its depth (T24 (a)); ground above it takes the depth of its view ray
+	// where the ray has fallen below the road top by more than the ground's rise plus the pixel,
+	// so any road fragment of the pixel hides it and it shows only where none is drawn (T24 (a2),
+	// a drawing rule only; the geometry and queries stay exact). Pushed along the pass's own ray,
+	// the shadow and depth passes keep it behind the road too. A ray that does not fall cannot
+	// pass behind the road top, and that ground stays discarded.
 	float cell_pixel_m = max(fwidth(var_cell_local_m.x), fwidth(var_cell_local_m.y));
 	CellMask cell_mask_here = cell_mask(
 		cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m);
-	if (cell_mask_here.sdf < 0.0
-			&& !(cell_mask_here.sdf > -cell_pixel_m && var_world_pos.y <= cell_mask_here.road_top)) {
-		discard;
+	DEPTH = FRAGCOORD.z;
+	if (cell_mask_here.sdf < 0.0) {
+		if (cell_mask_here.sdf <= -cell_pixel_m || cell_mask_here.road_top < -1e29) {
+			discard;
+		}
+		float rise = var_world_pos.y - cell_mask_here.road_top;
+		if (rise > 0.0) {
+			float ray_fall = -(INV_VIEW_MATRIX * vec4(-VIEW, 0.0)).y;
+			if (ray_fall < 1e-3) {
+				discard;
+			}
+			vec3 behind = VERTEX - VIEW * ((2.0 * rise + cell_pixel_m) / ray_fall);
+			vec4 behind_clip = PROJECTION_MATRIX * vec4(behind, 1.0);
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+			DEPTH = behind_clip.z / behind_clip.w * 0.5 + 0.5;
+#else
+			DEPTH = behind_clip.z / behind_clip.w;
+#endif
+		}
 	}
 	vec4 graded_debug = vec4(var_cell_delta, cell_mask_here.sdf, float(var_cell.y), float(var_cell.x));
 #else

@@ -18,6 +18,7 @@
 ##   request_graded_tiles(), poll_graded_tile_results()
 extends RefCounted
 
+const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const TILE_M := 64.0
@@ -131,6 +132,8 @@ var counters := {
 	"upload_ms_max": 0.0,
 	# The last edit frame's parts (ms) and the patches whose cells or walls it rewrote.
 	"edit_frame_parts": {},
+	# Every frame's parts while the perf debug channel is on (terrain.gd reports them).
+	"frame_parts": {},
 	# The cell sets prewarmed at setup and the time it took (T25's load cost).
 	"cell_sets_prewarmed": 0,
 	"cell_prewarm_ms": 0.0,
@@ -290,6 +293,8 @@ func clear() -> void:
 ## One frame: polls finished work and installs it within the install budget, keeps the tiles of
 ## `resident_patches` (patch key -> {node, material, rect: Rect2, step, generation}) at their
 ## distance's level, evicts the rest and rewrites the instances of the patches that changed.
+## `camera_position` is the camera's XZ with, as `y`, its height above the ground under it: a
+## tile's distance is the camera's to the tile's centre on that ground.
 ## `changed_patches` holds the keys whose entry was added, rewritten or removed since the last
 ## call and `changed_materials` the keys whose material parameters may have changed (the caller
 ## clears both); with neither, nor a camera move, nor finished work, the frame only polls.
@@ -300,11 +305,14 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	_frame_walls_us = 0
 	_frame_lists = 0
 	_frame_lists_same = 0
+	var uploads_before := int(counters["uploads"])
+	var requests_before := requested.size()
 	# A camera move re-levels the desired tiles first, so the tiles this frame adds take the
 	# camera's position too. O(desired tiles) per 8 m.
 	if camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M:
 		_desired_camera = camera_position
 		_relevel_desired()
+	var relevel_us := Time.get_ticks_usec()
 	# An edit's batch installs in a frame of its own: the poll that completes it leaves it for
 	# the next frame, which installs it and polls nothing.
 	var batch_tiles := _install_edit_batch(resident_patches)
@@ -343,17 +351,39 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		if resident_patches.has(key) and patch_cells.has(key):
 			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
 	_dirty_walls.clear()
-	if batch_tiles > 0:
+	var perf := PerfDebug.is_enabled()
+	if batch_tiles > 0 or perf:
 		var end_us := Time.get_ticks_usec()
 		var ms := func(from_us: int, to_us: int) -> float: return float(to_us - from_us) / 1000.0
-		counters["edit_frame_parts"] = {
-			"batch_ms": ms.call(start_us, batch_us), "poll_ms": ms.call(batch_us, polled_us),
+		var parts := {
+			"relevel_ms": ms.call(start_us, relevel_us),
+			"batch_ms": ms.call(relevel_us, batch_us), "poll_ms": ms.call(batch_us, polled_us),
 			"residency_ms": ms.call(polled_us, residency_us), "watched_ms": ms.call(residency_us, watched_us),
 			"cells_ms": ms.call(watched_us, cells_us), "cells_sync_ms": float(_frame_sync_us) / 1000.0,
 			"cells_walls_ms": float(_frame_walls_us) / 1000.0, "walls_ms": ms.call(cells_us, end_us),
+			"total_ms": ms.call(start_us, end_us),
 			"cell_patches": cell_patches, "wall_patches": wall_patches,
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
+			"uploads": int(counters["uploads"]) - uploads_before,
+			"requested": requested.size() - requests_before, "wanted": _wanted.size(),
+			"desired": _desired.size(), "installed": installed.size(),
 		}
+		if perf:
+			# What the cells submit (before culling): instances and triangles per cell mesh.
+			for index in CELL_MESHES:
+				parts["cells_%d" % index] = 0
+				parts["cell_triangles_%d" % index] = 0
+			for cells: Dictionary in patch_cells.values():
+				for index in CELL_MESHES:
+					var node: MultiMeshInstance3D = cells["nodes"][index]
+					if node.visible and node.is_inside_tree():
+						var count := node.multimesh.visible_instance_count
+						parts["cells_%d" % index] += count
+						parts["cell_triangles_%d" % index] += count * node.multimesh.mesh.surface_get_array_index_len(0) / 3
+			counters["frame_parts"] = parts
+		if batch_tiles > 0:
+			counters["edit_frame_parts"] = parts
+	if batch_tiles > 0:
 		# The edit's frame: its uploads, the cell rewrites they caused and the frame's changes.
 		counters["edit_batches"] += 1
 		counters["edit_tiles_last"] = batch_tiles
@@ -608,7 +638,7 @@ func _recount(key: Vector2i, resident_patches: Dictionary) -> void:
 # A tile some resident patch lists: its level at the camera's distance, with hysteresis around
 # the level it is installed at.
 func _desire(tile: Vector2i) -> void:
-	var distance := ((Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M).distance_to(Vector2(_desired_camera.x, _desired_camera.z))
+	var distance := _tile_distance(tile)
 	var current_code := int(installed.get(tile, {}).get("level", -1))
 	_desired[tile] = {"level": desired_level(distance, current_code), "token": int(tile_tokens.get(tile, 0)), "distance": distance}
 	_wanted[tile] = true
@@ -631,13 +661,19 @@ func _undesire(tile: Vector2i) -> void:
 		refused.erase(request_key)
 	tile_tokens.erase(tile)
 
+# The camera's distance to a tile (docs/terrain.md "LOD and distant tiles"): to the tile's centre
+# on the ground under the camera, from the camera's height above that ground, so a camera high
+# over a tile takes the level of its distance, not of its offset along the ground.
+func _tile_distance(tile: Vector2i) -> float:
+	var centre := (Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M
+	return Vector3(centre.x, 0.0, centre.y).distance_to(_desired_camera)
+
 # Every desired tile's distance and level at the camera's new position; a tile whose level
 # changed wants a bake at it. O(desired tiles).
 func _relevel_desired() -> void:
-	var camera_xz := Vector2(_desired_camera.x, _desired_camera.z)
 	for tile: Vector2i in _desired.keys():
 		var want: Dictionary = _desired[tile]
-		var distance := ((Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M).distance_to(camera_xz)
+		var distance := _tile_distance(tile)
 		var level := desired_level(distance, int(installed.get(tile, {}).get("level", -1)))
 		want["distance"] = distance
 		if level != want["level"]:
