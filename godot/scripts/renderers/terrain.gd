@@ -290,7 +290,7 @@ func rebuild_from_simulation_state() -> void:
 	_prewarm_terrain_patch_resource_pool()
 	if graded_tiles_enabled:
 		graded_tiles = TerrainGradedTiles.new()
-		graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size)
+		graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
 	_refresh_engineered_patch_lookup()
 	_sync_patch_residency(true)
 	mark_overlay_dirty()

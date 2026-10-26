@@ -3929,9 +3929,9 @@ the road, one site chunk lookup and the seams near the point
 | `base_height_at(x, z)` | the base `b(p)` | `sample_height_world`, `get_height_at_internal` | terrain brushes and authoring tools, water depth ([T13](#terrain-07-open-questions)) |
 | `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
 | `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
-| `normal_at(x, z)` | the rendered `GL0` normal: per lattice point the central difference of base plus delta over its four neighbours, interpolated over the `GL0` triangle (`TERRAIN-07-D`'s shader mirrors it, base gradient included) | (new) | vegetation slope tests |
-| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }`; `Road` also where a portal opening cuts the ground (T22 5 (a)) | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
-| `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles), never ground a road covers or a portal opening cuts | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
+| `normal_at(x, z)` | the rendered `GL0` normal: per lattice point today's base gradient (the central difference of the base over one base cell either side) plus the central difference of the packed delta over its four neighbours, interpolated over the `GL0` triangle; the shader computes the same (correction, `TERRAIN-07-D`: the base term was the 0.5 m difference, which the [renderer rule](#godot-tile-renderer) does not draw and which would crease the shading at every graded cell's border with a base cell) | (new) | vegetation slope tests |
+| `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }` | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
+| `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles) | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
 
 `Graded` means `delta != 0` outside footprints. Consumer caches keep keying on the existing
@@ -4024,8 +4024,8 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | --- | --- | --- |
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
-| `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); open: the portal opening (T22 5, detailed for round 5); T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
+| `TERRAIN-07-D` | in progress (round 1 on branch `terrain07-D`: items 1-3, [record](#terrain-07-d-record); items 4-5, the reference renders and the GPU matrix are round 2's) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5213,6 +5213,90 @@ Acceptance:
   `road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`,
   `plot_material_lighting_test.gd` and `plot_dawn_lighting_test.gd`
 
+#### `TERRAIN-07-D` record
+
+Round 1, 2026-10-26, branch `terrain07-D` from `road` at `5b138f8e` (gate C round 1 landed);
+items 1-3. Items 4 and 5, the reference renders, the distance renders and the GPU idle-frame
+matrix are round 2's; the gate commit follows them. Fresh runs on this branch.
+
+**What landed.**
+
+- Residency (item 1), `nodes/simulation_node/graded_tiles_api.rs`: Godot requests patch tile
+  lists (`request_graded_patch_tiles`) and tile bakes by tile, level and `GL3` step
+  (`request_graded_tiles`), each with a token it compares on arrival; one byte per request says
+  whether it was queued (at most 96 tiles and 32 lists in flight, the bound on what Rust holds).
+  The payload workers take a bounded snapshot under `try_lock` (the roadbed and the heightmap,
+  whose chunks are shared, and the sites of the requested windows copied:
+  `BuildingAllocator::graded_site_snapshot`, which answers inside its rectangles with the
+  allocator's own filter, so the bake's bytes and inputs equal the live allocator's), bake off the
+  lock with `bake_tiles`, one batch per level, and pack the slot bytes into pooled buffers.
+  `poll_graded_tile_results` hands Godot at most the count it asks for; a busy core or an unready
+  site index is retried, a representation error (`T7`) is not and is counted. Rust keeps no
+  result once polled; eviction is Godot freeing the slot.
+- Patch tile lists (item 2), `graded/residency.rs` `graded_tiles_in_rect`: from the bake's inputs
+  (base, grounded seams and top triangles, sites within the cap), a tile is listed where some road
+  or pad seam's cone can exclude the base over its part of the patch, a grounded top triangle
+  meets it, or a site footprint or surface meets it. That is a superset of the tiles whose cells
+  render differently from the base at any level, with no reach parameter: `g = max(L, min(b, U))`
+  differs from `b` only where a cone excludes it. `O(P + S log S + S x tiles near each seam + T)`.
+- Packing: `slot_side` (131, 67, 35 and, at `GL3`, `ceil(64 m / spacing) + 4`: 8 on 10 m cells at
+  step 2), `slot_row_texels` (the seam row, then the material edges from the level's seam
+  capacity) and `pack_slot` (little-endian RGBAF, the tile's lattice in the layer's lower corner).
+- Godot (item 3): `terrain_graded_tiles.gd` (pools, residency, uploads, cells), the shader split
+  into `terrain_surface.gdshaderinc` with the two thin variants `terrain.gdshader` (base, no
+  discard) and `terrain_graded.gdshader` (`TERRAIN_GRADED`), and `terrain_cells.gdshaderinc`
+  (lattices, stitching, clamping, the exact base, delta reads, the exact mask, the material
+  class). Pools: per level a `Texture2DArray` for the texels and one for the rows, prewarmed at
+  setup, with one pooled `Image` per level rewritten by `set_data` and uploaded by
+  `update_layer`. Cells: per patch with graded tiles five `MultiMeshInstance3D` (the base cells
+  and `GL0`-`GL3`), instance custom data `(tile x, slot, tile z, codes)`, identity transforms; the
+  base cells share the patch's material through instance uniforms (`cell_mode`, the patch
+  rectangle and the base lattice anchor), the PlaneMesh collapses while its cells draw, and the
+  graded cells take one pooled graded material per patch, synced from the patch material when a
+  watched parameter (height texture, masks, water, land cover, overlays) changes. Debug views
+  `graded-delta`, `graded-sdf`, `graded-level` and `graded-slot` (`docs/debug.md`). The renderer
+  is off by default (`terrain.gd` `graded_tiles_enabled`): the exact cut renders until round 2
+  stops requesting refined patches (item 4), and stays renderable beside it for the reference
+  comparison (T10).
+- Rules fixed here: vertex positions are integer half-metres in the tile frame, the lattice codes
+  (`GL0`-`GL2`, then the base lattice at `2^(code-3)` cells) order coarseness, and each side
+  takes the coarser of its own and its neighbour's code, so the finer side snaps and the coarser
+  one keeps its vertices; the base is `f32` bilinear over the patch heightmap's texels by
+  `texelFetch` (exact on base lattice points), delta is the texel itself on lattice points (a
+  `GL3` vertex clamped to a patch side off the step lattice interpolates between its two
+  samples, the same on both patches); `GL3`'s step follows the tile's distance (2 to 5 km, 4 to
+  12 km, 8 beyond), its cells draw with the step-2 mesh; a tile's token is the sum of the payload
+  generations of the resident patches it meets. Shader integer division and remainder go through
+  an exact floor division (GLSL leaves `%` undefined for negative operands).
+- Correction recorded in the [query table](#queries-for-consumers): `normal_at` takes today's
+  base gradient, as the shader does.
+
+**Tests (fresh).** `graded/render_tests.rs`, a port of `terrain_cells.gdshaderinc` line by line
+checked against the bake: `cell_lattices_are_the_bake_lattices` (every level and `GL3` step on
+every fixture: the port's index-to-position and position-to-index equal `tile.rs`'s lattice
+bitwise, every mesh vertex on a lattice point), `stitched_borders_share_vertices_and_texels_bitwise`
+(every fine-coarse pair across a shared side: the same border vertex set, the same delta bits),
+`the_exact_mask_equals_coverage` (all seven fixtures at `GL0` and `GL1`, about 480k off-lattice
+points each: the port's discard equals the roadbed's coverage everywhere farther than 2 mm from a
+chain), `patch_tile_lists_hold_every_tile_that_renders_graded` (every level, two patch
+rectangles), `site_tiles_are_listed`, `packed_slots_hold_the_payload_bitwise`. Godot:
+`graded_tile_renderer_test.gd` (bridge round trip, installs, cells and codes, an edit reinstalling
+with no texture, image, mesh or material created, eviction freeing every slot).
+
+**Finding (open, roadbed).** At the sloped T's east road end the grounded top triangles reach
+1.09 mm past the outer chain (tile (1, 0), tile-local (0.011, 2.977)): coverage and the chain
+disagree there, so the mask (the chain) keeps terrain over 1 mm of road. Invisible, but it is a
+coverage/chain mismatch the roadbed should explain; the mask test treats points within 2 mm of a
+chain as the chain's.
+
+**Pending for round 2.** Items 4 and 5; the reference fixtures and views in
+`road_junction_reference_test.gd` with B against the exact cut, the distance renders, pinholes;
+the GPU idle-frame matrix (needs the user's awake display); the release-library install timing of
+a populated edit and the pool sizes and video memory on Kuopio and the 100k city; conflict wall
+meshes (`TilePayload::walls` is counted, not drawn); the water reflection's proxy of graded cells
+(the collapsed PlaneMesh shows no ground in reflections while cells draw); `GL3` delta normals use
+the lattice neighbours' positions, not a mirrored query (no consumer reads them).
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
@@ -5846,6 +5930,20 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         is no portal span: a tunnel junction within `R` of a portal is not opened over that
         piece. A road more than `2 R` wide has ground up to `H` above the deck at the middle of
         its row, which stays closed there by a headwall.
+
+23. **T23. Slot pools above the `Texture2DArray` depth limit (`TERRAIN-07-D`) — decided by the
+    coordinator under the user's delegation, 2026-10-26 night, for review: (a).**
+    - **Evidence.** The memory table sizes `GL2` at 3,200 slots and `GL3` at about 46,000 (every
+      tile within 8 km graded); Vulkan guarantees 2,048 layers per array texture
+      (`maxImageArrayLayers`), and Godot exposes no partial layer update, so packing many tiles per
+      layer would upload a whole layer per tile.
+    - **Options.** (a) 2,048 slots each for `GL2` and `GL3` (with rows 47 MB and 10 MB), an
+      exhausted pool a counted, logged error that leaves the tile as it was; measure the real
+      maxima on Kuopio and the 100k city in round 2. (b) Several arrays per level, a patch's
+      material binding the page its tiles live in, allocation per page. (c) Atlas layers with whole
+      layer uploads.
+    - **Recommendation.** (a): graded tiles exist only where roads and sites are, so real cities
+      use a fraction of the worst case; (b) if the measured maxima exceed 2,048.
 
 #### Superseded `ROAD-68` questions
 

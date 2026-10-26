@@ -600,7 +600,8 @@ void fragment() {
 	}
 	vec4 graded_debug = vec4(var_cell_delta, cell_mask_here.sdf, float(var_cell.y), float(var_cell.x));
 #else
-	vec4 graded_debug = vec4(0.0, 1e30, -1.0, -1.0);
+	// Base cells name their lattice code (PlaneMesh patches -1) and no slot.
+	vec4 graded_debug = vec4(0.0, 1e30, float(var_cell.y), -1.0);
 #endif
 #ifdef WATER_REFLECTION_PROXY
 	// Compiled only into the water reflection's copy of this shader (water_reflection.gd), so

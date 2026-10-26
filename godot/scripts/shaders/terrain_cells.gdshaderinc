@@ -144,6 +144,17 @@ vec4 cell_texel(int level, ivec2 index, int slot) {
 	return texelFetch(graded_texels_3, at, 0);
 }
 
+int cell_seam_capacity(int level) {
+	if (level == 0) {
+		return graded_seam_capacity.x;
+	} else if (level == 1) {
+		return graded_seam_capacity.y;
+	} else if (level == 2) {
+		return graded_seam_capacity.z;
+	}
+	return graded_seam_capacity.w;
+}
+
 vec4 cell_row(int level, int index, int slot) {
 	ivec3 at = ivec3(index, 0, slot);
 	if (level == 0) {
@@ -279,8 +290,8 @@ vec2 cell_delta_gradient(CellFrame frame, ivec2 p) {
 // The fragment's lattice cell on one axis: the index at or before x (tile-frame metres) and the
 // fraction towards the next sample.
 vec2 cell_axis_stop(CellFrame frame, float x_m, int axis) {
-	int spacing = frame.spacing[axis];
-	int phase = frame.phase[axis];
+	int spacing = axis == 0 ? frame.spacing.x : frame.spacing.y;
+	int phase = axis == 0 ? frame.phase.x : frame.phase.y;
 	int p = clamp(int(floor(x_m * 2.0)), 0, CELL_SIDE_HM - 1);
 	int index = cell_index_at(frame.code, p, spacing, phase);
 	float p0 = float(cell_index_hm(frame.code, index, spacing, phase)) * 0.5;
@@ -371,14 +382,14 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 		if (index < 0) {
 			continue;
 		}
-		vec4 seg = cell_row(frame.level, graded_seam_capacity[frame.level] + index, frame.slot);
+		vec4 seg = cell_row(frame.level, cell_seam_capacity(frame.level) + index, frame.slot);
 		CellSeamHit hit = cell_segment_at(seg, p, index);
 		if (cell_nearer(hit, edge)) {
 			edge = hit;
 		}
 	}
 	if (edge.index < (1 << 30)) {
-		vec4 seg = cell_row(frame.level, graded_seam_capacity[frame.level] + edge.index, frame.slot);
+		vec4 seg = cell_row(frame.level, cell_seam_capacity(frame.level) + edge.index, frame.slot);
 		bool inside = edge.signed_distance <= 0.0;
 		float best_d = 1e30;
 		for (int c = 0; c < 4; c++) {

@@ -166,7 +166,12 @@ fn bake_level(
 ) {
     let tiles: Vec<TileKey> = requests.iter().map(|request| request.tile).collect();
     let cell_m = f64::from(inputs.terrain.cell_size_m());
-    let side = slot_side(level, cell_m);
+    // One pool per level code: `GL3` layers are sized for its finest step.
+    let pool_level = match level {
+        Level::Gl3 { .. } => Level::Gl3 { step: GL3_STEPS[0] },
+        level => level,
+    };
+    let side = slot_side(pool_level, cell_m);
     BAKED.with_borrow_mut(|baked| {
         let mut outcomes: Vec<Result<(), BakeError>> = Vec::with_capacity(tiles.len());
         match bake_tiles(&inputs.terrain, &inputs.roadbed, &inputs.sites, &tiles, level, baked) {

@@ -35,7 +35,7 @@ func _run() -> void:
 	var layout: Dictionary = simulation.get_terrain_patch_layout()
 	var world_size: Vector2 = simulation.get_terrain_world_size()
 	var graded := GradedTiles.new()
-	graded.setup(simulation, CELL_M, world_size, [24, 24, 24, 24])
+	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [24, 24, 24, 24])
 	var created := _creation_counters(graded)
 	_expect(int(created["textures_created"]) == 8, "the pools are 4 levels x (texels, rows): %s" % created)
 

@@ -32,6 +32,9 @@ const CELL_BASE := 4
 
 var simulation_node: Node
 var terrain_cell_m := 10.0
+# The patch grid: patches of patch_span_m from the world's lower corner.
+var patch_span_m := 510.0
+var world_min := Vector2.ZERO
 var lattice_anchor_hm := Vector2i.ZERO
 var levels: Array[Dictionary] = []
 # Per level: texels/rows Texture2DArray, the pooled upload Images, the free slots.
@@ -49,6 +52,12 @@ var _cells_pool: Array[Dictionary] = []
 var _meshes: Dictionary = {}
 var _dirty_patches: Dictionary = {}
 var _uniform_names: PackedStringArray = PackedStringArray()
+# The desired levels are recomputed when the camera moved or the lists or residency changed.
+var _desired: Dictionary = {}
+var _desired_camera := Vector3(INF, INF, INF)
+var _desired_signature := -1
+var _desired_dirty := true
+const DESIRED_REFRESH_MOVE_M := 8.0
 var counters := {
 	"textures_created": 0,
 	"images_created": 0,
@@ -65,9 +74,11 @@ var counters := {
 
 ## Reads the slot layout and prewarms the pools and cell meshes. `pool_slots` overrides the
 ## per-level slot counts (tests use small pools).
-func setup(simulation: Node, cell_m: float, world_size: Vector2, pool_slots: Array = DEFAULT_POOL_SLOTS) -> void:
+func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, pool_slots: Array = DEFAULT_POOL_SLOTS) -> void:
 	simulation_node = simulation
 	terrain_cell_m = cell_m
+	patch_span_m = span_m
+	world_min = -world_size * 0.5
 	# The base lattice starts at the negative half extents (BaseGrid), in half-metres.
 	lattice_anchor_hm = Vector2i(int(round(-world_size.x)), int(round(-world_size.y)))
 	var layout: Dictionary = simulation_node.get_graded_tile_layout()
@@ -181,9 +192,20 @@ func process(camera_position: Vector3, resident_patches: Dictionary) -> void:
 	counters["install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
 	_request_patch_lists(resident_patches)
-	var desired := _desired_tiles(camera_position, resident_patches)
-	_request_tiles(desired)
-	_evict(desired)
+	var signature := resident_patches.size()
+	for key: Vector2i in resident_patches.keys():
+		signature = signature * 31 + int(resident_patches[key]["generation"]) + key.x * 7 + key.y * 13
+	if (
+		_desired_dirty
+		or signature != _desired_signature
+		or camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M
+	):
+		_desired = _desired_tiles(camera_position, resident_patches)
+		_desired_camera = camera_position
+		_desired_signature = signature
+		_desired_dirty = false
+	_request_tiles(_desired)
+	_evict(_desired)
 	for key: Vector2i in resident_patches.keys():
 		var patch: Dictionary = resident_patches[key]
 		var cells: Dictionary = patch_cells.get(key, {})
@@ -210,6 +232,7 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 				tiles.append(Vector2i(flat[index], flat[index + 1]))
 			patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
 			_dirty_patches[key] = true
+			_desired_dirty = true
 		for failure: Dictionary in result.get("failed", []):
 			var keys: PackedInt64Array = failure["keys"]
 			if String(failure["kind"]) == "patch":
@@ -261,13 +284,24 @@ func _install(tile: Dictionary, resident_patches: Dictionary) -> void:
 
 func _free_slot(entry: Dictionary) -> void:
 	var pool: Dictionary = pools[int(entry["level"])]
-	(pool["free"] as Array[int]).append(int(entry["slot"]))
+	var free: Array[int] = pool["free"]
+	free.append(int(entry["slot"]))
+
+# The patch keys whose rectangle meets `rect`, from the patch grid. O(patches met).
+func _patches_meeting(rect: Rect2) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	var first := ((rect.position - world_min) / patch_span_m).floor()
+	var last := ((rect.end - world_min) / patch_span_m).floor()
+	for z in range(int(first.y), int(last.y) + 1):
+		for x in range(int(first.x), int(last.x) + 1):
+			keys.append(Vector2i(x, z))
+	return keys
 
 # The patches whose cells show `key` or stitch to it.
 func _mark_tile_patches(key: Vector2i, resident_patches: Dictionary) -> void:
 	var rect := Rect2(Vector2(key) * TILE_M - Vector2.ONE * TILE_M, Vector2.ONE * TILE_M * 3.0)
-	for patch_key: Vector2i in resident_patches.keys():
-		if (resident_patches[patch_key]["rect"] as Rect2).intersects(rect):
+	for patch_key in _patches_meeting(rect):
+		if resident_patches.has(patch_key):
 			_dirty_patches[patch_key] = true
 
 func _request_patch_lists(resident_patches: Dictionary) -> void:
@@ -311,11 +345,11 @@ func _desired_tiles(camera_position: Vector3, resident_patches: Dictionary) -> D
 # A tile's token: the sum of its resident patches' payload generations, which grows whenever one
 # of them does.
 func _tile_token(tile: Vector2i, resident_patches: Dictionary) -> int:
-	var rect := Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)
+	# The tile's interior: a patch that only touches its side shows none of it.
+	var rect := Rect2(Vector2(tile) * TILE_M + Vector2.ONE * 0.01, Vector2.ONE * (TILE_M - 0.02))
 	var token := 0
-	for key: Vector2i in resident_patches.keys():
-		var patch_rect: Rect2 = resident_patches[key]["rect"]
-		if patch_rect.intersects(rect):
+	for key in _patches_meeting(rect):
+		if resident_patches.has(key):
 			token += int(resident_patches[key]["generation"])
 	return token
 
@@ -367,8 +401,8 @@ func _evict(desired: Dictionary) -> void:
 
 func _dirty_patches_around(tile: Vector2i) -> void:
 	var rect := Rect2(Vector2(tile) * TILE_M - Vector2.ONE * TILE_M, Vector2.ONE * TILE_M * 3.0)
-	for key: Vector2i in patch_cells.keys():
-		if (patch_cells[key]["rect"] as Rect2).intersects(rect):
+	for key in _patches_meeting(rect):
+		if patch_cells.has(key):
 			_dirty_patches[key] = true
 
 # The tiles whose interior meets a patch rectangle.
@@ -388,7 +422,7 @@ func _cell_code(tile: Vector2i, step: int) -> int:
 
 # The code a cell's side stitches to: the coarser of its own and its neighbour's, where the
 # neighbour shares the tile side (inside the patch, or across the patch border at a tile side).
-func _side_code(own: int, tile: Vector2i, neighbour: Vector2i, side_m: float, patch: Dictionary, resident_patches: Dictionary, axis: int) -> int:
+func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, patch: Dictionary, resident_patches: Dictionary, axis: int) -> int:
 	var rect: Rect2 = patch["rect"]
 	var lo := rect.position[axis]
 	var hi := rect.end[axis]
@@ -397,12 +431,15 @@ func _side_code(own: int, tile: Vector2i, neighbour: Vector2i, side_m: float, pa
 	if side_m != lo and side_m != hi:
 		# The cell is clamped to the patch here: its side is not the tile's.
 		return own
+	# Across the patch border: the neighbour patch's cell (or PlaneMesh) at its own step.
 	var probe := (Vector2(neighbour) + Vector2(0.5, 0.5)) * TILE_M
-	for key: Vector2i in resident_patches.keys():
-		var other: Dictionary = resident_patches[key]
-		if other == patch or not (other["rect"] as Rect2).has_point(probe):
-			continue
-		return max(own, _cell_code(neighbour, int(other["step"])))
+	if side_m == lo:
+		probe[axis] = lo - 0.5
+	else:
+		probe[axis] = hi + 0.5
+	for key in _patches_meeting(Rect2(probe, Vector2.ZERO)):
+		if resident_patches.has(key):
+			return max(own, _cell_code(neighbour, int(resident_patches[key]["step"])))
 	return own
 
 func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
@@ -555,7 +592,8 @@ func get_pool_counters() -> Dictionary:
 	for code in pools.size():
 		var pool: Dictionary = pools[code]
 		out["slots_%d" % code] = int(pool["slots"])
-		out["free_%d" % code] = (pool["free"] as Array[int]).size()
+		var free: Array[int] = pool["free"]
+		out["free_%d" % code] = free.size()
 		bytes += int(pool["slots"]) * (int(pool["side"]) * int(pool["side"]) + int(pool["row_texels"])) * 16
 	out["pool_bytes"] = bytes
 	out["installed"] = installed.size()

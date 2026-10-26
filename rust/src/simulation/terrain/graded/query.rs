@@ -96,17 +96,27 @@ impl GradedSurface<'_> {
         }
     }
 
-    /// The rendered `GL0` normal: per lattice point the central difference of the graded
-    /// height over its four neighbours, interpolated over the `GL0` triangle under the point and
-    /// normalized.
+    /// The rendered `GL0` normal, as the terrain shader's vertex stage computes it: per lattice
+    /// point the base gradient of the ungraded terrain (the central difference of the base over
+    /// one base cell either side) plus the central difference of the packed delta over its four
+    /// neighbours, interpolated over the `GL0` triangle under the point and normalized.
     pub fn normal_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> [f64; 3] {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(1), scratch);
+        let cell_m = scratch.base.grid().cell_m;
         let mut normal = [0.0; 3];
         for (weight, [i, j]) in cell.weights().into_iter().zip(cell.vertices()) {
-            let dx = self.vertex([i + 1, j], scratch) - self.vertex([i - 1, j], scratch);
-            let dz = self.vertex([i, j + 1], scratch) - self.vertex([i, j - 1], scratch);
-            let vertex = normalized([-dx / (2.0 * GL0_M), 1.0, -dz / (2.0 * GL0_M)]);
+            let (px, pz) = (i as f64 * GL0_M, j as f64 * GL0_M);
+            let base = &scratch.base;
+            let base_dx = (base.at(px + cell_m, pz) - base.at(px - cell_m, pz)) / (2.0 * cell_m);
+            let base_dz = (base.at(px, pz + cell_m) - base.at(px, pz - cell_m)) / (2.0 * cell_m);
+            let dx = base_dx
+                + (self.delta([i + 1, j], scratch) - self.delta([i - 1, j], scratch))
+                    / (2.0 * GL0_M);
+            let dz = base_dz
+                + (self.delta([i, j + 1], scratch) - self.delta([i, j - 1], scratch))
+                    / (2.0 * GL0_M);
+            let vertex = normalized([-dx, 1.0, -dz]);
             for axis in 0..3 {
                 normal[axis] += weight * vertex[axis];
             }
@@ -240,11 +250,15 @@ impl GradedSurface<'_> {
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake
     // packs there.
     fn vertex(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
+        scratch.base.at(i as f64 * GL0_M, j as f64 * GL0_M) + self.delta([i, j], scratch)
+    }
+
+    // The `f32` delta the bake packs at a `GL0` lattice point.
+    fn delta(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
         let road = covered_height_at(self.roadbed, x, z, &mut scratch.pieces);
         let base = scratch.base.at(x, z);
-        let delta = (self.evaluate(x, z, base, road, scratch) - base) as f32;
-        base + f64::from(delta)
+        f64::from((self.evaluate(x, z, base, road, scratch) - base) as f32)
     }
 
     // First `t` at which the ray meets the ground before `limit`: per 64 m tile, the base

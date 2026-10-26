@@ -105,7 +105,7 @@ launch variable sets only the starting value, and the console switches every mod
 
 | Mode | Values | Launch | Shows |
 |------|--------|--------|-------|
-| `terrain_visual` | `off`, `patch`, `lod`, `height`, `relief`, `shore`, `water-depth`, `water-lod`, `water-patch`, `water-material`, `lighting` | `METRUM_DEBUG_TERRAIN_VISUAL` | Terrain and water material views ([modes](#terrain--water-visual-modes)). |
+| `terrain_visual` | `off`, `patch`, `lod`, `height`, `relief`, `shore`, `water-depth`, `water-lod`, `water-patch`, `water-material`, `lighting`, `graded-delta`, `graded-sdf`, `graded-level`, `graded-slot` | `METRUM_DEBUG_TERRAIN_VISUAL` | Terrain and water material views ([modes](#terrain--water-visual-modes)). |
 | `terrain_grass` | `off`, `raw`, `macro`, `mid`, `micro`, `fades`, `material`, `height`, `mask`, `luminance`, `footprint` | `METRUM_DEBUG_TERRAIN_GRASS` | Terrain grass layers ([modes](#terrain-grass-visual-modes)). |
 | `building_sites_visual` | `off`, `material` | `METRUM_DEBUG_BUILDING_SITES_VISUAL` | Site ground, asphalt and concrete tinted by material source ([modes](#building-site-visual-modes)). |
 | `pedestrian_vat` | `off`, `rest`, `uv`, `offsets` | `METRUM_DEBUG_PEDESTRIAN_VAT`, overridden by `--pedestrian-vat-debug` | `rest`: no VAT animation, so rigid sliding is expected. `uv`: vertex-ID UVs. `offsets`: VAT offset magnitude while offsets apply. |
@@ -1032,6 +1032,10 @@ Values of the `terrain_visual` visual mode: `visual terrain_visual <mode>` in th
 | `water-patch` | | Water patch identity colors. |
 | `water-material` | `water-mat`, `material-water` | Water material bands: depth tint, alpha, Fresnel, foam, and normal strength. |
 | `lighting` | `light`, `sun` | Sun-facing strength, shadow/cascade bands, and water specular mask. |
+| `graded-delta` | `delta` | Graded terrain cells (`TERRAIN-07-D`): the grading, raised orange and lowered blue over grey. |
+| `graded-sdf` | `sdf` | Graded cells' footprint distance: red where masked under a road, green fading over the band. |
+| `graded-level` | | Each terrain cell's lattice: `GL0`-`GL2` green, base cells and `GL3` by step; base cells dimmed. |
+| `graded-slot` | | Each graded cell's slot-pool layer as an identity colour; base cells grey. |
 
 ### Building-Site Visual Modes
 

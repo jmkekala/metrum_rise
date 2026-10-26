@@ -409,10 +409,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the opening over the tunnel's bore are round 4's, with T21. Round 4 hangs the abutment face
   below a bridge's slab where it meets a road, so the bridge's road chunks close there; the
   opening over a tunnel's bore is designed for round 5, and the site-dense full-edit budget is
-  carried to gate E's frame paths for review (T21). Round 5 opens the ground over a tunnel's
-  deck near its mouth wherever it stands less than 5 m above it, with walls along the tunnel's
-  sides and none across the opening; with it gate C is done, its whole acceptance re-run, and the
-  site-dense full-edit budget stays carried to gate E for review. See the
+  carried to gate E's frame paths for review (T21). Gate `TERRAIN-07-D` round 1 (work in progress) builds the graded tiles' residency and the Godot tile renderer behind a switch: the payload workers bake requested tiles off the simulation lock, Godot uploads them in place into prewarmed slot pools and draws each patch's 64 m cells as instances whose borders stitch exactly; the game still renders the exact cut until round 2. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
 

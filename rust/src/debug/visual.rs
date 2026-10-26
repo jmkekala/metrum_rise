@@ -43,6 +43,10 @@ pub const MODES: &[VisualMode] = &[
             "water-patch",
             "water-material",
             "lighting",
+            "graded-delta",
+            "graded-sdf",
+            "graded-level",
+            "graded-slot",
         ],
         aliases: &[
             ("patches", "patch"),
@@ -54,6 +58,8 @@ pub const MODES: &[VisualMode] = &[
             ("material-water", "water-material"),
             ("light", "lighting"),
             ("sun", "lighting"),
+            ("delta", "graded-delta"),
+            ("sdf", "graded-sdf"),
         ],
     },
     VisualMode {
