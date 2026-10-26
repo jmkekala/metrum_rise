@@ -50,7 +50,7 @@ const SPECIES_ROCK: f32 = 3.0;
 // plants differently; the multiply spreads small seeds across the whole word before the per-use
 // offsets below are added.
 pub(crate) const CANOPY_SALT: u32 = 0;
-const UNDERSTORY_SALT: u32 = 64;
+pub(crate) const UNDERSTORY_SALT: u32 = 64;
 
 fn layer_base(layer_salt: u32, seed: u32) -> u32 {
     layer_salt ^ seed.wrapping_mul(0x9e37_79b9)
@@ -778,7 +778,9 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard
     }
     core.with_graded_surface(|surface, scratch| {
         let (cx, cz) = (f64::from(x), f64::from(z));
-        surface.gather_near(cx, cz, f64::from(radius), scratch);
+        // The slack covers the f32 rounding of the sample offsets; a sample outside the gather
+        // would still be answered exactly, by its own query.
+        surface.gather_near(cx, cz, f64::from(radius) + 0.01, scratch);
         let y = surface.ground_height_near(cx, cz, scratch) as f32;
         // A 3x3 footprint rejects submerged roots and leaves clearance at shorelines
         // and built surfaces. Check ground samples, not a global sea level.

@@ -68,7 +68,7 @@ impl SimCore {
     }
 }
 
-/// Builds the map from the visible water and the visual terrain. O(cells x reach² / cell²):
+/// Builds the map from the visible water and the base terrain its depth is measured on. O(cells x reach² / cell²):
 /// one depth and height sample per cell, then a bounded search of the nearby cells for the
 /// nearest water, in parallel rows.
 pub(crate) fn build_mist_map(water: &WaterSystem, terrain: &TerrainSystem) -> MistMap {
@@ -92,7 +92,9 @@ pub(crate) fn build_mist_map(water: &WaterSystem, terrain: &TerrainSystem) -> Mi
                 let (wx, wz) = position(x, z);
                 let depth = water.visible_depth_world(wx, wz);
                 if depth > MIN_WATER_DEPTH_M {
-                    *cell = terrain.sample_visual_height_world(wx, wz) * HEIGHT_SCALE + depth;
+                    // Water depth is on the base (`TERRAIN-07` T13 (a)), so its surface is the
+                    // base plus the depth, whatever the graded ground does there.
+                    *cell = terrain.sample_height_world(wx, wz) * HEIGHT_SCALE + depth;
                 }
             }
         });
@@ -192,7 +194,7 @@ mod tests {
             let i = (map.height / 2 * map.width + x) * 2;
             (map.data[i], map.data[i + 1])
         };
-        let ground = terrain.sample_visual_height_world(-500.0, 0.0) * HEIGHT_SCALE;
+        let ground = terrain.sample_height_world(-500.0, 0.0) * HEIGHT_SCALE;
         let (presence, level) = cell(-500.0);
         assert_eq!(presence, 1.0);
         assert!((level - (ground + 2.0)).abs() < 1e-3);

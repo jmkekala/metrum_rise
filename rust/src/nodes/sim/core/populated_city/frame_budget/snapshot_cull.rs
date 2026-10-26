@@ -375,3 +375,65 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
         run.comparisons += 1;
     }
 }
+
+// `TERRAIN-07-F` vegetation placement digest, a diagnostic compared across builds: the scatter of
+// the 64 m patches over 512 m around a 2k city's centre, both layers, one `VEG_PLANT` line per
+// placed plant (its packed record's bits). With `METRUM_VEG_CLASSIFY` naming a file of
+// `x z` bit pairs, one `VEG_GRADED x z flag` line each: whether the clearance footprint of a
+// plant there meets ground the graded surface does not leave natural.
+#[test]
+#[ignore = "TERRAIN-07-F vegetation placement digest across builds; --ignored --nocapture"]
+fn vegetation_placement_digest_dump() {
+    use crate::nodes::simulation_node::vegetation_api::{CANOPY_SALT, UNDERSTORY_SALT, scatter_layer};
+    use crate::simulation::terrain::graded::{GradedSurface, GroundClass, QueryScratch};
+    let mut city = PopulatedCity::build(2_000);
+    let core = &mut city.core;
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+    let core = &*core;
+    let allocator = &core.allocator;
+    let centre = allocator
+        .buildings
+        .iter()
+        .map(|building| Vector2::new(building.center_x, building.center_y))
+        .sum::<Vector2>()
+        / allocator.buildings.len().max(1) as f32;
+    let corner = (centre / 64.0).floor() * 64.0 - Vector2::splat(256.0);
+    println!("VEG_CITY buildings={} centre={centre:?}", allocator.buildings.len());
+    let generator = core.vegetation;
+    for pz in 0..8 {
+        for px in 0..8 {
+            let origin = corner + Vector2::new(px as f32, pz as f32) * 64.0;
+            for (cell, salt, canopy) in [
+                (generator.canopy_cell_m, CANOPY_SALT, true),
+                (generator.understory_cell_m, UNDERSTORY_SALT, false),
+            ] {
+                for record in scatter_layer(core, origin, 64.0, cell, salt, canopy).chunks_exact(6) {
+                    let bits: Vec<String> = record.iter().map(|v| v.to_bits().to_string()).collect();
+                    println!("VEG_PLANT {}", bits.join(" "));
+                }
+            }
+        }
+    }
+    let Ok(path) = std::env::var("METRUM_VEG_CLASSIFY") else {
+        return;
+    };
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed: &core.transit_network.roadbed,
+        sites: &core.allocator,
+    };
+    let mut scratch = QueryScratch::default();
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let [x, z, radius] = [0, 1, 2].map(|i| {
+            f32::from_bits(line.split(' ').nth(i).unwrap().parse().unwrap())
+        });
+        let graded = [-radius, 0.0, radius].iter().any(|&dz| {
+            [-radius, 0.0, radius].iter().any(|&dx| {
+                let (sx, sz) = (f64::from(x + dx), f64::from(z + dz));
+                surface.mask_at(sx, sz, &mut scratch) != GroundClass::Natural
+            })
+        });
+        println!("VEG_GRADED {} {} {}", x.to_bits(), z.to_bits(), u8::from(graded));
+    }
+}

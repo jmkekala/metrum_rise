@@ -67,7 +67,9 @@ impl SimCore {
             .fold(0.0f32, f32::max);
         self.with_graded_surface(|surface, scratch| {
             let (x, z) = (f64::from(centre.x), f64::from(centre.y));
-            surface.gather_near(x, z, f64::from(reach), scratch);
+            // The slack covers the f32 rounding of the reach; a corner outside the gather would
+            // still be answered exactly, by its own query.
+            surface.gather_near(x, z, f64::from(reach) + 0.01, scratch);
             corners.map(|p| {
                 let height = surface.surface_height_near(f64::from(p.x), f64::from(p.y), scratch);
                 Vector3::new(p.x, height as f32 + lift, p.y)
