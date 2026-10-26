@@ -3845,10 +3845,15 @@ to point).
   the sizes make it impossible within the distance rules.
 - **Uploads.** `Texture2DArray.update_layer` per dirty slot (as the `TERRAIN-06` mask pages are
   written) from one pooled `Image` per level, rewritten in place. No texture, material or mesh is
-  created per edit.
+  created per edit. A tile rebaked at its installed level is rewritten into its own slot before
+  the frame draws, so its instances stay and an edit needs no free slot (`TERRAIN-07-D` round 3).
+- **Tokens.** A tile's token is the serial of the last edit that dirtied it while Godot held it
+  (installed or in flight); a bake arriving with another token is dropped. Edits reach Godot
+  through the residency poll with their dirty tiles per level (`TERRAIN-07-D` item 5).
 - **Budgets per frame.** An edit (preview pose, commit, undo) installs its dirty tiles in one frame
-  within the terrain share of `ROAD-68`'s 2.0 ms Godot stage. Streaming installs closest first,
-  within 1.0 ms of the main thread, like the existing patch installs.
+  within the terrain share of `ROAD-68`'s 2.0 ms Godot stage: the rebaked tiles of an edit wait
+  until the last of them arrives. Streaming installs closest first, within 1.0 ms of the main
+  thread, like the existing patch installs.
 - **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
@@ -3905,6 +3910,11 @@ to point).
   Others are baked by the commit. The function is total, so no terrain validation can reject a
   road; only a representation error ([T7](#terrain-07-open-questions)) or a user decision on
   [T2](#terrain-07-open-questions) could.
+  Until gate E's adoption (`TERRAIN-07-D` item 5) the commit selects and bakes off the frame: the
+  core journals the install with `O(1)` snapshots of the heightmap and of the roadbed before and
+  after it and the sites within the selection's reach, a payload worker selects every level's
+  dirty tiles from them, and Godot rebakes the ones it holds and installs them together. Site
+  publications, terrain brushes and world resets are journalled likewise.
 - **Undo.** The roadbed's undo swaps its pieces back (`ROAD-68-E`). The undo record keeps the
   tiles the commit replaced, as the exact cut's record keeps the refined terrain entries it
   replaced (`SimulationSnapshot::refined_terrain`), and undo swaps them back: no rebake
@@ -4035,7 +4045,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); open: the portal opening (T22 5, detailed for round 5); T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2; item 5, the release install timing, pool sizes and the GPU matrix open) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3; open: the wall meshes, the water reflection proxy, the 100k city's slot maxima and the GPU idle-frame matrix with the user) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5418,6 +5428,102 @@ was held by the other gates' runs and the round's gate checks); the release-libr
 timing, pool sizes and video memory on Kuopio and the 100k city; conflict wall meshes; the water
 reflection proxy of graded cells; the GPU idle-frame matrix (the user's awake display); the
 roadbed coverage predicate (the coordinator's); `TERRAIN-08`.
+
+Round 3, 2026-10-26, the same branch rebased onto `road` at `83ca16fb` (gate C round 4 landed):
+the gate checks, item 5, the reference renders and the matrix's script. Fresh runs on this
+branch.
+
+- **Item 5 (built).** A commit bakes and installs its dirty resident tiles. The core journals
+  each published edit (`nodes/sim/core/graded_edits.rs`): a roadbed install (commit or undo)
+  with its terrain changes and `O(1)` snapshots of the heightmap and of the roadbed after it and
+  at the previous install (an undo's restore swaps pieces before its install takes the changes,
+  so the previous record's roadbed is its `before`), a site publication with its changes, a
+  terrain brush's rectangle, and a world reset (every tile; also a journal past 64 edits). Each
+  road or site record copies the sites within the selection's reach of its changed bounds
+  (`selection_site_reach_m` at `GL2`, the widest the snapshot serves). Godot's residency poll
+  takes the journal under `try_lock` (the first take starts it, so a core no graded renderer
+  reads keeps nothing) and a payload worker runs each edit's selection at every level
+  (`GradedEdit::select`): `dirty_tiles_for_road_changes` and `dirty_tiles_for_site_changes` with
+  the edit's own snapshots at `GL0`-`GL2`, and at `GL3`, whose band reaches past the snapshot,
+  with a site source that reads nothing, which drops the floor to `-inf` and selects a superset;
+  `dirty_tiles_for_base_area` for a brush. Godot gives each dirty tile it holds at that level
+  (installed or in flight) the edit's serial as its token, drops a bake in flight with an older
+  token, and holds the rebaked results until every installed tile of the edit has one, then
+  installs them in one frame; a tile at an unchanged level is rewritten into its own slot, so an
+  edit needs no free slot and rewrites no instance. A tile's token no longer sums its resident
+  patches' payload generations, which rebaked tiles whenever a neighbouring patch became
+  resident, and a patch whose tile list is being refreshed keeps its last list (it dropped every
+  tile of an edited patch until the new list arrived, so the base drew there for some frames).
+  Preview adoption and the undo's kept tiles stay `TERRAIN-07-E`'s; an undo that resets the
+  network render state journals a world reset.
+- **Structure walls and the abutment face (the coordinator's question).** The graded walls,
+  conflict and structure faces alike (`TilePayload::walls`), are counted but not yet drawn in
+  Godot. So nothing can z-fight with the roadbed's abutment face today, and the step that the
+  terrain's abutment wall and headwall close is open where the terrain meets a structure's mouth
+  (the under-bridge and portal views of the reference test are queued, not yet rendered). When the walls are drawn, the 0.15 m coplanar band
+  would fight. Recommended then: start the terrain's abutment wall at the skirt depth (gate C's
+  second option): exact, with the two faces meeting on one edge. A depth offset on the skirt layer
+  is view dependent, and the skirts must stay hidden from 200 m to 3 km.
+- **The GPU idle-frame matrix** needs the user's awake display; its script (`gpu-matrix.sh`,
+  kept with the round's artefacts) builds the release library and runs
+  `idle_frame_benchmark.gd` through the gameplay harness, exact cut and graded tiles alternating
+  twice (`METRUM_IDLE_BENCH_TERRAIN=exact` renders the exact cut), in isolated profiles with a
+  copy of the asset packs, pinned to the P-cores: the Kuopio poses `overview`, `close` and
+  `ground`, `city` and `city_low` on a saved town, and `saved` on the Kuopio reference save
+  (`kuopio-city.sqlite`, which the spec names, is not on this machine). Not run.
+
+**Tests (fresh, round 3).** On the rebased tip (`9b07ac96`): clippy `--all-targets` the
+59-warning baseline set exactly; `./run.sh --test` passed (09:10-09:30, DISPLAY and WAYLAND_DISPLAY
+unset): debug lib 1,954 passed, 0 failed, 172 ignored; integration 4 passed; every Godot bridge
+suite, among them `vehicle_ground_support_test.gd`, `network_tool_chunk_renderer_test.gd` (round
+2's exact-cut fix verified), `road_junction_preview_test.gd`, `road_preview_stream_test.gd`,
+`surface_patch_debug_test.gd`, `debug_visual_modes_test.gd` and `graded_tile_renderer_test.gd`, and
+the rendered block (`terrain_overlay_shader_test.gd`, `graded_cells_shader_test.gd`,
+`debug_visual_modes_test.gd`, 0 failures each). `run.sh` does not run
+`road_junction_reference_test.gd` (`screenshots-C.sh` only), `plot_material_lighting_test.gd`,
+`plot_dawn_lighting_test.gd`, `building_window_test.gd`, `road_marking_lighting_test.gd`,
+`water_reflection_math_test.gd` and `window_spill_test.gd`. With item 5 (`7bee3805`, `5cbec08c`):
+clippy the baseline set exactly (an added `large_enum_variant` on the journal's record kind is
+allowed on the item: at most 64 records live between polls);
+`a_commit_journals_its_dirty_tiles` (the sloped T's side road committed onto its through road:
+the journal holds one road edit, and its selection from its own snapshots equals the live
+selection at `GL0`-`GL2` and contains it at `GL3`) passes; every `simulation::terrain::graded`
+test, 26 passed, 4 ignored; `graded_tile_renderer_test.gd` (headless) 0 failures: the edit beside
+the junction rebakes 3 of the 9 installed tiles, exactly the batch, each into its own slot, in
+one frame, with nothing created (2.05 ms on the debug library and the dummy renderer, not the
+acceptance). `plot_material_lighting_test.gd` and `plot_dawn_lighting_test.gd`
+(GPU) are queued behind the renders, not yet run.
+
+**Reference renders (fresh, round 3; incomplete).** Compare mode's first runs in Godot found two
+harness defects, both fixed in the test. (1) `terrain.gd` uploads no patch while the published
+network generation is unacknowledged, which `network_renderer.gd` does in the game: the first
+session drew no terrain in either mode and never settled (every view waited 60 s, the session hit
+`screenshots-C.sh`'s 360 s). (2) With the acknowledgement once per fixture, the exact cut renders
+(`t_flat`: oblique, the three close views, plan and the four distance views), but B, built after
+it in the same session, again drew nothing (plan: 1,075,466 background pixels): the exact half
+leaves a newer network generation. The test now acknowledges before each mode's terrain; that run,
+the structure fixtures (B only) and the Kuopio wall site were queued behind another gate's timing
+run when the round ended. No B image of the round shows terrain yet, so none of the spec's
+render acceptance (gaps, sidewalks, slivers, pinholes, cracks, hidden roads, skirts) is recorded.
+
+**Release install of a populated edit, pools, video memory, load.** Not measured: the probe
+(`graded_edit_probe.gd` on the release library, gamescope's headless backend, the Kuopio
+reference save with a 60 m spur off `kuopio_01`'s segment) is queued behind the renders.
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/`: 4,531 (4,234 on `road`):
+`select.rs` +33 this round (`dirty_tiles_for_base_area`, `selection_site_reach_m`). The core's
+`graded_edits.rs` 271 (new: the journal, its recording and the per-level selection). Node bridge
+`graded_tiles_api.rs` 580 (+50). Godot: `terrain_graded_tiles.gd` 719 (+94: tokens, the edit
+batch, in-place rewrites), `terrain.gd` +2, `idle_frame_benchmark.gd` +5; the probe
+`graded_edit_probe.gd` 165 (opt-in test). `roadbed/` production unchanged.
+
+**Pending for round 4.** The wall meshes (conflict and structure faces, drawn from
+`TilePayload::walls` without creating a mesh per edit) and, with them, the abutment band above;
+the water reflection proxy of graded cells; the 100k city's slot maxima (not reachable from
+Godot: a Rust census of the listed tiles per level by camera distance); the GPU idle-frame matrix
+with the user; an undo test on the roadbed's swap path (the core tests' commits push no undo
+state); the plain patch payloads a road commit still re-requests (the patch generation bump also
+refreshes the tile lists).
 
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
