@@ -203,7 +203,8 @@ pub(in crate::nodes::simulation_node) struct WaterPatchPayload {
     pub(in crate::nodes::simulation_node) surface_generation: u64,
     pub(in crate::nodes::simulation_node) patch: WaterPatchSnapshot,
     pub(in crate::nodes::simulation_node) depth_bytes: Vec<u8>,
-    pub(in crate::nodes::simulation_node) road_clip_query: RoadClipLoopQuery,
+    // The patch's terrain payload generation, which keys its mesh (`WaterPatchMeshCacheKey`).
+    pub(in crate::nodes::simulation_node) cover_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

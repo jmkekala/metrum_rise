@@ -18,22 +18,6 @@ use crate::simulation::terrain::cdt::{
 const ROAD_FOOTPRINT_GROUP_ID: u64 = 0x4000_0000_0000_0000;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_bounds(
-        core: &SimCore,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> RoadClipLoopQuery {
-        Self::road_clip_loop_query_for_sources(
-            &core.region_graph,
-            &core.transit_network.roadbed,
-            [min_x, min_z, max_x, max_z],
-            core.allocator
-                .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z),
-        )
-    }
-
     // Building-site loops only: terrain builds take their road loops per CDT tile
     // (`terrain_cdt_road_tile_loops`).
     pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_snapshot(
@@ -52,42 +36,6 @@ impl SimulationNode {
             road_loop_count: 0,
             site_loop_count,
             clip_error_label: None,
-        }
-    }
-
-    // Road loops built from the roadbed's outer chains inside the bounds (`ROAD-68-D`), then the
-    // building-site loops. A chain that cannot close fails the query with its typed reason.
-    fn road_clip_loop_query_for_sources(
-        graph: &RegionGraph,
-        roadbed: &RoadbedSystem,
-        bounds: [f32; 4],
-        site_loops: Vec<TerrainCdtRoadLoop>,
-    ) -> RoadClipLoopQuery {
-        let site_loop_count = site_loops.len();
-        let (mut cdt_road_loops, clip_error_label) =
-            match Self::road_terrain_loops(graph, roadbed, bounds.map(f64::from)) {
-                Ok(loops) => (loops, None),
-                Err(error) => {
-                    crate::debug_log!(
-                        "terrain",
-                        "terrain_road_loops_failed bounds={bounds:?} error={error:?}"
-                    );
-                    (Vec::new(), Some(error.label()))
-                }
-            };
-        let road_loop_count = cdt_road_loops.len();
-        let road_source_count = cdt_road_loops
-            .iter()
-            .map(|road_loop| road_loop.source_edges.len())
-            .sum();
-        cdt_road_loops.extend(site_loops);
-        RoadClipLoopQuery {
-            cdt_road_loops,
-            source_count: road_source_count + site_loop_count,
-            road_source_count,
-            road_loop_count,
-            site_loop_count,
-            clip_error_label,
         }
     }
 
@@ -181,18 +129,6 @@ impl SimulationNode {
         )
     }
 
-    pub(in crate::nodes::simulation_node) fn append_road_clip_query(
-        dict: &mut VarDictionary,
-        road_clip_query: &RoadClipLoopQuery,
-    ) {
-        Self::append_road_clip_status(dict, road_clip_query);
-        dict.set(
-            "road_clip_signature",
-            Self::road_clip_query_signature(road_clip_query),
-        );
-        Self::append_road_clip_loops(dict, &road_clip_query.cdt_road_loops);
-    }
-
     pub(in crate::nodes::simulation_node) fn road_clip_query_requires_road_clipping(
         road_clip_query: &RoadClipLoopQuery,
         patch_is_known_road_locked: bool,
@@ -238,104 +174,6 @@ impl SimulationNode {
             error,
             i64::try_from(road_clip_query.source_count).unwrap_or(0),
         )
-    }
-
-    pub(in crate::nodes::simulation_node) fn append_road_clip_loops(
-        dict: &mut VarDictionary,
-        road_clip_loops: &[TerrainCdtRoadLoop],
-    ) {
-        let point_count: usize = road_clip_loops
-            .iter()
-            .map(|road_loop| road_loop.vertices.len())
-            .sum();
-        dict.set(
-            "road_clip_loop_count",
-            i64::try_from(road_clip_loops.len()).unwrap_or(0),
-        );
-        dict.set(
-            "road_clip_point_count",
-            i64::try_from(point_count).unwrap_or(0),
-        );
-        if road_clip_loops.is_empty() {
-            return;
-        }
-
-        let mut group_ids = BTreeMap::<u64, i32>::new();
-        let mut loop_counts = Vec::with_capacity(road_clip_loops.len());
-        let mut loop_groups = Vec::with_capacity(road_clip_loops.len());
-        let mut loop_roles = Vec::with_capacity(road_clip_loops.len());
-        let mut loop_points = Vec::new();
-        for road_loop in road_clip_loops {
-            let next_group_id = i32::try_from(group_ids.len()).unwrap_or(i32::MAX);
-            let group_id = *group_ids
-                .entry(road_loop.footprint_group_id)
-                .or_insert(next_group_id);
-            loop_counts.push(i32::try_from(road_loop.vertices.len()).unwrap_or(0));
-            loop_groups.push(group_id);
-            loop_roles.push(if road_loop.is_hole { 1 } else { 0 });
-            loop_points.extend(
-                road_loop
-                    .vertices
-                    .iter()
-                    .map(|vertex| Vector3::new(vertex.x as f32, vertex.height_m, vertex.z as f32)),
-            );
-        }
-        dict.set(
-            "road_clip_loop_counts",
-            PackedInt32Array::from_iter(loop_counts),
-        );
-        dict.set(
-            "road_clip_loop_groups",
-            PackedInt32Array::from_iter(loop_groups),
-        );
-        dict.set(
-            "road_clip_loop_roles",
-            PackedInt32Array::from_iter(loop_roles),
-        );
-        dict.set(
-            "road_clip_loop_points",
-            PackedVector3Array::from_iter(loop_points),
-        );
-    }
-
-    pub(in crate::nodes::simulation_node) fn road_clip_query_signature(
-        road_clip_query: &RoadClipLoopQuery,
-    ) -> i64 {
-        let mut hash = 0xcbf29ce484222325_u64;
-        Self::mix_road_clip_signature(&mut hash, road_clip_query.source_count as u64);
-        Self::mix_road_clip_signature(&mut hash, road_clip_query.road_source_count as u64);
-        Self::mix_road_clip_signature(&mut hash, road_clip_query.road_loop_count as u64);
-        Self::mix_road_clip_signature(&mut hash, road_clip_query.site_loop_count as u64);
-        if let Some(error_label) = road_clip_query.clip_error_label {
-            for byte in error_label.as_bytes() {
-                Self::mix_road_clip_signature(&mut hash, u64::from(*byte));
-            }
-        }
-        for road_loop in &road_clip_query.cdt_road_loops {
-            Self::mix_road_clip_signature(&mut hash, road_loop.footprint_group_id);
-            Self::mix_road_clip_signature(&mut hash, u64::from(road_loop.is_hole));
-            Self::mix_road_clip_signature(&mut hash, road_loop.vertices.len() as u64);
-            for vertex in &road_loop.vertices {
-                Self::mix_road_clip_signature(
-                    &mut hash,
-                    ((vertex.x * 1000.0).round() as i64) as u64,
-                );
-                Self::mix_road_clip_signature(
-                    &mut hash,
-                    ((vertex.z * 1000.0).round() as i64) as u64,
-                );
-                Self::mix_road_clip_signature(
-                    &mut hash,
-                    ((vertex.height_m * 1000.0).round() as i64) as u64,
-                );
-            }
-        }
-        i64::from_ne_bytes(hash.to_ne_bytes())
-    }
-
-    pub(in crate::nodes::simulation_node) fn mix_road_clip_signature(hash: &mut u64, value: u64) {
-        *hash ^= value;
-        *hash = hash.wrapping_mul(0x100000001b3);
     }
 }
 

@@ -119,6 +119,131 @@ pub(super) fn covered_height_at(
     (best > f32::NEG_INFINITY).then_some(best)
 }
 
+/// Marks each cell of the grid with sides `xs` x `zs` (sorted; cell `(i, j)` the closed rectangle
+/// `[xs[i], xs[i + 1]] x [zs[j], zs[j + 1]]`, `out` row-major by `z`) that a grounded top
+/// triangle meets: some point of the closed cell is held by the roadbed's coverage predicate
+/// (`docs/terrain.md` T32 (a)). A triangle without area holds nothing, as in the predicate.
+/// `O(T + C)` for the `T` triangles met and the `C` cells in their boxes.
+pub(super) fn mark_covered_cells(
+    roadbed: &RoadbedSystem,
+    xs: &[f64],
+    zs: &[f64],
+    pieces: &mut Vec<PieceId>,
+    out: &mut [bool],
+) {
+    let (Some(&x_first), Some(&x_last), Some(&z_first), Some(&z_last)) =
+        (xs.first(), xs.last(), zs.first(), zs.last())
+    else {
+        return;
+    };
+    let bounds = [
+        x_first - PAD_M,
+        z_first - PAD_M,
+        x_last + PAD_M,
+        z_last + PAD_M,
+    ];
+    roadbed.for_each_grounded_top_triangle_in_bounds(bounds, pieces, |[a, b, c]| {
+        let ring = [[a.x, a.z], [b.x, b.z], [c.x, c.z]];
+        if orient(ring[0], ring[1], ring[2]) != 0.0 {
+            mark_met_cells(xs, zs, &ring, out);
+        }
+    });
+}
+
+/// Marks each cell of the grid (as [`mark_covered_cells`]) that the closed polygon `ring` (simple,
+/// either orientation) meets, exactly: a corner of the ring in the cell, a side crossing it, or
+/// the cell inside the ring. `O(C x corners)` for the `C` cells in the ring's box.
+pub(super) fn mark_met_cells(xs: &[f64], zs: &[f64], ring: &[[f64; 2]], out: &mut [bool]) {
+    let (columns, rows) = (xs.len().saturating_sub(1), zs.len().saturating_sub(1));
+    if ring.is_empty() || columns == 0 || rows == 0 {
+        return;
+    }
+    let [min_x, min_z, max_x, max_z] = ring.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |[a, b, c, d], &[x, z]| [a.min(x), b.min(z), c.max(x), d.max(z)],
+    );
+    // The cells whose closed sides overlap the ring's closed box.
+    let (i0, i1) = (
+        xs[1..].partition_point(|&x| x < min_x),
+        xs[..columns].partition_point(|&x| x <= max_x),
+    );
+    let (j0, j1) = (
+        zs[1..].partition_point(|&z| z < min_z),
+        zs[..rows].partition_point(|&z| z <= max_z),
+    );
+    for j in j0..j1 {
+        for i in i0..i1 {
+            let k = j * columns + i;
+            if !out[k] && ring_meets_rect(ring, [xs[i], zs[j], xs[i + 1], zs[j + 1]]) {
+                out[k] = true;
+            }
+        }
+    }
+}
+
+// Whether the closed polygon `ring` meets the closed rectangle `[min_x, min_z, max_x, max_z]`.
+// If no corner of the ring lies in it and no side meets it, the ring's boundary misses the
+// rectangle, which then lies wholly inside the ring or outside it, so one of its corners (on no
+// side) decides. Exact: comparisons and exact orientations.
+fn ring_meets_rect(ring: &[[f64; 2]], rect: [f64; 4]) -> bool {
+    let [min_x, min_z, max_x, max_z] = rect;
+    if ring
+        .iter()
+        .any(|&[x, z]| x >= min_x && x <= max_x && z >= min_z && z <= max_z)
+    {
+        return true;
+    }
+    let n = ring.len();
+    if (0..n).any(|i| segment_meets_rect(ring[i], ring[(i + 1) % n], rect)) {
+        return true;
+    }
+    // The crossing number of the ray from the corner towards `+x`, half-open in `z`: an upward
+    // side crosses right of the point exactly when the point is left of it. The corner lies on
+    // no side, so no orientation is zero where a side crosses its row.
+    let corner = [min_x, min_z];
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        if (a[1] > corner[1]) != (b[1] > corner[1]) && (b[1] > a[1]) == (orient(a, b, corner) > 0.0)
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+// Whether the closed segment `a b` meets the closed rectangle: separated by neither axis (the
+// boxes overlap) nor the segment's own normal (the four corners strictly on one side), the
+// separating axes of two convex sets.
+fn segment_meets_rect(a: [f64; 2], b: [f64; 2], [min_x, min_z, max_x, max_z]: [f64; 4]) -> bool {
+    if a[0].max(b[0]) < min_x
+        || a[0].min(b[0]) > max_x
+        || a[1].max(b[1]) < min_z
+        || a[1].min(b[1]) > max_z
+    {
+        return false;
+    }
+    let sides = [
+        [min_x, min_z],
+        [max_x, min_z],
+        [max_x, max_z],
+        [min_x, max_z],
+    ]
+    .map(|corner| orient(a, b, corner));
+    !(sides.iter().all(|&side| side > 0.0) || sides.iter().all(|&side| side < 0.0))
+}
+
+// The exact orientation of `p` against `a b` (`robust::orient2d`): positive to the left.
+fn orient(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
+    let coord = |[x, y]: [f64; 2]| robust::Coord { x, y };
+    robust::orient2d(coord(a), coord(b), coord(p))
+}
+
 /// A triangle's XZ bounds `[min_x, min_z, max_x, max_z]`.
 pub(super) fn triangle_box(triangle: &[RoadVec3; 3]) -> [f64; 4] {
     let [a, b, c] = triangle;

@@ -3,14 +3,11 @@
 //! Water patch mesh generation and cache helpers for the Godot renderer.
 
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::terrain::cdt::TerrainCdtRoadLoop;
 use crate::simulation::water::WaterPatchSnapshot;
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap};
 
 const WATER_MIN_VISIBLE_DEPTH_M: f32 = 0.001;
-const WATER_SEGMENT_EPSILON: f32 = 0.00001;
 
 /// Cache key for one static water mesh variant.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -21,8 +18,9 @@ pub(crate) struct WaterPatchMeshCacheKey {
     pub(crate) patch_z: usize,
     /// Mesh LOD sample step used for this mesh.
     pub(crate) lod_step: usize,
-    /// Stable signature of road/building clip loops that affect this patch.
-    pub(crate) road_clip_signature: i64,
+    /// The patch's terrain payload generation: the roads and building sites that drop its
+    /// cells (`docs/terrain.md` T32 (a)) change only with it.
+    pub(crate) cover_generation: u64,
     /// Stable signature of visible water depth samples for this patch.
     pub(crate) depth_signature: u64,
 }
@@ -63,7 +61,7 @@ pub(crate) struct WaterPatchMeshStats {
     pub(crate) conservative_cells: usize,
     /// Cells skipped because they contained no visible water.
     pub(crate) dry_cells: usize,
-    /// Cells removed by road/building clipping.
+    /// Cells with water dropped because a road or a building site's footprint meets them.
     pub(crate) road_clipped_cells: usize,
     /// Number of emitted vertices.
     pub(crate) emitted_vertices: usize,
@@ -77,81 +75,10 @@ pub(crate) struct WaterPatchMeshBuildInput {
     pub(crate) key: WaterPatchMeshCacheKey,
     /// Visible water depth patch.
     pub(crate) patch: WaterPatchSnapshot,
-    /// Road/building clip loops overlapping this patch.
-    pub(crate) road_clip_loops: Vec<TerrainCdtRoadLoop>,
-    /// Terrain clip setup error, if road-boundary collection failed.
-    pub(crate) clip_failed: bool,
-}
-
-#[derive(Clone, Copy)]
-struct Rect {
-    min_x: f32,
-    min_z: f32,
-    max_x: f32,
-    max_z: f32,
-}
-
-impl Rect {
-    fn from_points(points: &[Vector2]) -> Self {
-        if points.is_empty() {
-            return Self {
-                min_x: 0.0,
-                min_z: 0.0,
-                max_x: 0.0,
-                max_z: 0.0,
-            };
-        }
-        let mut bounds = Self {
-            min_x: points[0].x,
-            min_z: points[0].y,
-            max_x: points[0].x,
-            max_z: points[0].y,
-        };
-        for point in points {
-            bounds.min_x = bounds.min_x.min(point.x);
-            bounds.min_z = bounds.min_z.min(point.y);
-            bounds.max_x = bounds.max_x.max(point.x);
-            bounds.max_z = bounds.max_z.max(point.y);
-        }
-        bounds
-    }
-
-    fn merge(self, other: Self) -> Self {
-        Self {
-            min_x: self.min_x.min(other.min_x),
-            min_z: self.min_z.min(other.min_z),
-            max_x: self.max_x.max(other.max_x),
-            max_z: self.max_z.max(other.max_z),
-        }
-    }
-
-    fn intersects(self, other: Self) -> bool {
-        self.min_x <= other.max_x
-            && self.max_x >= other.min_x
-            && self.min_z <= other.max_z
-            && self.max_z >= other.min_z
-    }
-
-    fn contains_point(self, point: Vector2) -> bool {
-        const EPSILON: f32 = 0.01;
-        point.x >= self.min_x - EPSILON
-            && point.x <= self.max_x + EPSILON
-            && point.y >= self.min_z - EPSILON
-            && point.y <= self.max_z + EPSILON
-    }
-}
-
-#[derive(Clone)]
-struct ClipLoop {
-    points: Vec<Vector2>,
-    bounds: Rect,
-}
-
-#[derive(Clone)]
-struct ClipGroup {
-    outer_loops: Vec<ClipLoop>,
-    hole_loops: Vec<ClipLoop>,
-    bounds: Rect,
+    /// The mesh cells (row-major by `z`, at the key's LOD step) that a grounded road top
+    /// triangle or a building site's support footprint meets
+    /// ([`SimCore::water_cells_under_roads_and_pads`]); empty when none does.
+    pub(crate) dropped: Vec<bool>,
 }
 
 impl SimCore {
@@ -165,6 +92,43 @@ impl SimCore {
             .collect::<Vec<_>>();
         entries.sort_by_key(|entry| (entry.key.patch_z, entry.key.patch_x, entry.key.lod_step));
         entries
+    }
+
+    /// The cells of a water patch's mesh at `lod_step` (row-major by `z`) that a grounded road
+    /// top triangle or a building site's support footprint meets, exactly
+    /// ([`crate::simulation::terrain::graded::GradedSurface::mark_cells_met_by_roads_and_pads`],
+    /// `docs/terrain.md` T32 (a)): water there would show over the road or the pad, so the mesh
+    /// drops it. Empty when no cell is met. The site index must be ready. `O(T + S + C)` for the
+    /// triangles and sites in the patch and the cells in their boxes.
+    pub(crate) fn water_cells_under_roads_and_pads(
+        &self,
+        patch: &WaterPatchSnapshot,
+        lod_step: usize,
+    ) -> Vec<bool> {
+        let lod_step = lod_step.max(1);
+        let sides = |origin: f32, size: f32, count: usize| {
+            (0..=count)
+                .map(|index| f64::from(mesh_cell_side(origin, size, index, count)))
+                .collect::<Vec<_>>()
+        };
+        let xs = sides(
+            patch.world_origin_x,
+            patch.world_size_x,
+            mesh_interval_count(patch.sample_width, lod_step),
+        );
+        let zs = sides(
+            patch.world_origin_z,
+            patch.world_size_z,
+            mesh_interval_count(patch.sample_height, lod_step),
+        );
+        let mut dropped = Vec::new();
+        self.with_graded_surface(|surface, scratch| {
+            surface.mark_cells_met_by_roads_and_pads(&xs, &zs, &mut dropped, scratch)
+        });
+        if !dropped.contains(&true) {
+            dropped.clear();
+        }
+        dropped
     }
 }
 
@@ -194,7 +158,7 @@ fn mix_signature(hash: &mut u64, value: u64) {
 }
 
 fn build_water_patch_mesh(input: WaterPatchMeshBuildInput) -> CachedWaterPatchMesh {
-    if input.clip_failed || input.patch.depth_nonzero_count == 0 {
+    if input.patch.depth_nonzero_count == 0 {
         return CachedWaterPatchMesh {
             key: input.key,
             vertices: Vec::new(),
@@ -210,14 +174,14 @@ fn build_water_patch_mesh(input: WaterPatchMeshBuildInput) -> CachedWaterPatchMe
         };
     }
 
-    let mut builder = WaterMeshBuilder::new(input.key, input.patch, input.road_clip_loops);
+    let mut builder = WaterMeshBuilder::new(input.key, input.patch, input.dropped);
     builder.build()
 }
 
 struct WaterMeshBuilder {
     key: WaterPatchMeshCacheKey,
     patch: WaterPatchSnapshot,
-    clip_groups: Vec<ClipGroup>,
+    dropped: Vec<bool>,
     vertices: Vec<Vector3>,
     normals: Vec<Vector3>,
     uvs: Vec<Vector2>,
@@ -225,11 +189,7 @@ struct WaterMeshBuilder {
 }
 
 impl WaterMeshBuilder {
-    fn new(
-        key: WaterPatchMeshCacheKey,
-        patch: WaterPatchSnapshot,
-        road_clip_loops: Vec<TerrainCdtRoadLoop>,
-    ) -> Self {
+    fn new(key: WaterPatchMeshCacheKey, patch: WaterPatchSnapshot, dropped: Vec<bool>) -> Self {
         let lod_step = key.lod_step.max(1);
         let x_intervals = mesh_interval_count(patch.sample_width, lod_step);
         let z_intervals = mesh_interval_count(patch.sample_height, lod_step);
@@ -238,7 +198,7 @@ impl WaterMeshBuilder {
         Self {
             key,
             patch,
-            clip_groups: clip_groups_from_road_loops(road_clip_loops),
+            dropped,
             vertices: Vec::with_capacity(estimated_vertices),
             normals: Vec::with_capacity(estimated_vertices),
             uvs: Vec::with_capacity(estimated_vertices),
@@ -253,34 +213,23 @@ impl WaterMeshBuilder {
         let lod_step = self.key.lod_step.max(1);
         let x_interval_count = mesh_interval_count(self.patch.sample_width, lod_step);
         let z_interval_count = mesh_interval_count(self.patch.sample_height, lod_step);
-        if self.clip_groups.is_empty()
+        if self.dropped.is_empty()
             && self.can_emit_indexed_full_grid(x_interval_count, z_interval_count)
         {
             return self.build_indexed_full_grid(x_interval_count, z_interval_count);
         }
-        let clip_bins = road_clip_group_bins(
-            &self.clip_groups,
-            self.patch.world_origin_x,
-            self.patch.world_origin_z,
-            self.patch.world_size_x,
-            self.patch.world_size_z,
-            x_interval_count,
-            z_interval_count,
-        );
         let center_x = self.patch.world_origin_x + self.patch.world_size_x * 0.5;
         let center_z = self.patch.world_origin_z + self.patch.world_size_z * 0.5;
 
+        let (origin_x, size_x) = (self.patch.world_origin_x, self.patch.world_size_x);
+        let (origin_z, size_z) = (self.patch.world_origin_z, self.patch.world_size_z);
         for z_index in 0..z_interval_count {
-            let z0 = z_index as f32 / z_interval_count as f32;
-            let z1 = (z_index + 1) as f32 / z_interval_count as f32;
-            let world_z0 = self.patch.world_origin_z + z0 * self.patch.world_size_z;
-            let world_z1 = self.patch.world_origin_z + z1 * self.patch.world_size_z;
+            let world_z0 = mesh_cell_side(origin_z, size_z, z_index, z_interval_count);
+            let world_z1 = mesh_cell_side(origin_z, size_z, z_index + 1, z_interval_count);
             for x_index in 0..x_interval_count {
                 self.stats.cells_total += 1;
-                let x0 = x_index as f32 / x_interval_count as f32;
-                let x1 = (x_index + 1) as f32 / x_interval_count as f32;
-                let world_x0 = self.patch.world_origin_x + x0 * self.patch.world_size_x;
-                let world_x1 = self.patch.world_origin_x + x1 * self.patch.world_size_x;
+                let world_x0 = mesh_cell_side(origin_x, size_x, x_index, x_interval_count);
+                let world_x1 = mesh_cell_side(origin_x, size_x, x_index + 1, x_interval_count);
                 let cell = [
                     Vector2::new(world_x0, world_z0),
                     Vector2::new(world_x1, world_z0),
@@ -314,13 +263,15 @@ impl WaterMeshBuilder {
                     _ => self.stats.partial_cells += 1,
                 }
 
-                let bin_index = z_index * x_interval_count + x_index;
-                let cell_clip_groups = clip_bins.get(&bin_index).map(Vec::as_slice).unwrap_or(&[]);
-                let emitted =
-                    self.emit_clipped_water_cell(&cell, cell_clip_groups, center_x, center_z);
-                if emitted == 0 && !cell_clip_groups.is_empty() {
+                if self
+                    .dropped
+                    .get(z_index * x_interval_count + x_index)
+                    .is_some_and(|&dropped| dropped)
+                {
                     self.stats.road_clipped_cells += 1;
+                    continue;
                 }
+                self.emit_water_cell(&cell, center_x, center_z);
             }
         }
 
@@ -371,12 +322,12 @@ impl WaterMeshBuilder {
         self.uvs.reserve(vertex_count);
         let center_x = self.patch.world_origin_x + self.patch.world_size_x * 0.5;
         let center_z = self.patch.world_origin_z + self.patch.world_size_z * 0.5;
+        let (origin_x, size_x) = (self.patch.world_origin_x, self.patch.world_size_x);
+        let (origin_z, size_z) = (self.patch.world_origin_z, self.patch.world_size_z);
         for z_index in 0..vertex_rows {
-            let z = z_index as f32 / z_interval_count as f32;
-            let world_z = self.patch.world_origin_z + z * self.patch.world_size_z;
+            let world_z = mesh_cell_side(origin_z, size_z, z_index, z_interval_count);
             for x_index in 0..vertex_cols {
-                let x = x_index as f32 / x_interval_count as f32;
-                let world_x = self.patch.world_origin_x + x * self.patch.world_size_x;
+                let world_x = mesh_cell_side(origin_x, size_x, x_index, x_interval_count);
                 self.add_water_vertex(Vector2::new(world_x, world_z), center_x, center_z);
             }
         }
@@ -532,45 +483,13 @@ impl WaterMeshBuilder {
         false
     }
 
-    fn emit_clipped_water_cell(
-        &mut self,
-        cell: &[Vector2],
-        clip_group_indices: &[usize],
-        center_x: f32,
-        center_z: f32,
-    ) -> usize {
-        if clip_group_indices.is_empty() {
-            return self.emit_unclipped_water_polygon(cell, center_x, center_z);
+    // Two triangles of one cell's corners, unindexed.
+    fn emit_water_cell(&mut self, cell: &[Vector2; 4], center_x: f32, center_z: f32) {
+        for index in 1..cell.len() - 1 {
+            self.add_water_vertex(cell[0], center_x, center_z);
+            self.add_water_vertex(cell[index + 1], center_x, center_z);
+            self.add_water_vertex(cell[index], center_x, center_z);
         }
-        let cell_bounds = Rect::from_points(cell);
-        for &clip_group_index in clip_group_indices {
-            let Some(clip_group) = self.clip_groups.get(clip_group_index) else {
-                continue;
-            };
-            if cell_touches_road_clip_group(cell, cell_bounds, clip_group) {
-                return 0;
-            }
-        }
-        self.emit_unclipped_water_polygon(cell, center_x, center_z)
-    }
-
-    fn emit_unclipped_water_polygon(
-        &mut self,
-        polygon: &[Vector2],
-        center_x: f32,
-        center_z: f32,
-    ) -> usize {
-        if polygon.len() < 3 {
-            return 0;
-        }
-        let mut emitted_vertices = 0;
-        for index in 1..polygon.len() - 1 {
-            self.add_water_vertex(polygon[0], center_x, center_z);
-            self.add_water_vertex(polygon[index + 1], center_x, center_z);
-            self.add_water_vertex(polygon[index], center_x, center_z);
-            emitted_vertices += 3;
-        }
-        emitted_vertices
     }
 
     fn add_water_vertex(&mut self, world_xz: Vector2, center_x: f32, center_z: f32) {
@@ -590,6 +509,12 @@ impl WaterMeshBuilder {
     }
 }
 
+// The world coordinate of side `index` of `count` mesh cells across a patch: one formula for
+// the mesh's vertices and the cells the roads and pads drop.
+fn mesh_cell_side(origin: f32, size: f32, index: usize, count: usize) -> f32 {
+    origin + (index as f32 / count as f32) * size
+}
+
 fn mesh_interval_count(sample_count: usize, lod_step: usize) -> usize {
     let interval_count = sample_count.saturating_sub(1);
     let lod_vertex_count = 2.max(interval_count.div_ceil(lod_step.max(1)) + 1);
@@ -601,248 +526,6 @@ fn wet_corner_count(corner_depths: [f32; 4]) -> usize {
         .iter()
         .filter(|depth| **depth > WATER_MIN_VISIBLE_DEPTH_M)
         .count()
-}
-
-fn clip_groups_from_road_loops(road_clip_loops: Vec<TerrainCdtRoadLoop>) -> Vec<ClipGroup> {
-    let mut groups_by_id = BTreeMap::<u64, ClipGroup>::new();
-    for road_loop in road_clip_loops {
-        if road_loop.vertices.len() < 3 {
-            continue;
-        }
-        let points = road_loop
-            .vertices
-            .iter()
-            .map(|vertex| Vector2::new(vertex.x as f32, vertex.z as f32))
-            .collect::<Vec<_>>();
-        let bounds = Rect::from_points(&points);
-        let clip_loop = ClipLoop { points, bounds };
-        let group = groups_by_id
-            .entry(road_loop.footprint_group_id)
-            .or_insert_with(|| ClipGroup {
-                outer_loops: Vec::new(),
-                hole_loops: Vec::new(),
-                bounds,
-            });
-        group.bounds = group.bounds.merge(bounds);
-        if road_loop.is_hole {
-            group.hole_loops.push(clip_loop);
-        } else {
-            group.outer_loops.push(clip_loop);
-        }
-    }
-    groups_by_id
-        .into_values()
-        .filter(|group| !group.outer_loops.is_empty())
-        .collect()
-}
-
-fn road_clip_group_bins(
-    clip_groups: &[ClipGroup],
-    world_origin_x: f32,
-    world_origin_z: f32,
-    world_size_x: f32,
-    world_size_z: f32,
-    x_interval_count: usize,
-    z_interval_count: usize,
-) -> HashMap<usize, Vec<usize>> {
-    let mut bins = HashMap::<usize, Vec<usize>>::new();
-    if x_interval_count == 0 || z_interval_count == 0 {
-        return bins;
-    }
-    let safe_world_size_x = world_size_x.max(0.001);
-    let safe_world_size_z = world_size_z.max(0.001);
-    for (group_index, clip_group) in clip_groups.iter().enumerate() {
-        let min_x_index = (((clip_group.bounds.min_x - world_origin_x) / safe_world_size_x)
-            * x_interval_count as f32)
-            .floor()
-            .clamp(0.0, (x_interval_count - 1) as f32) as usize;
-        let max_x_index = (((clip_group.bounds.max_x - world_origin_x) / safe_world_size_x)
-            * x_interval_count as f32)
-            .floor()
-            .clamp(0.0, (x_interval_count - 1) as f32) as usize;
-        let min_z_index = (((clip_group.bounds.min_z - world_origin_z) / safe_world_size_z)
-            * z_interval_count as f32)
-            .floor()
-            .clamp(0.0, (z_interval_count - 1) as f32) as usize;
-        let max_z_index = (((clip_group.bounds.max_z - world_origin_z) / safe_world_size_z)
-            * z_interval_count as f32)
-            .floor()
-            .clamp(0.0, (z_interval_count - 1) as f32) as usize;
-        for z_index in min_z_index..=max_z_index {
-            for x_index in min_x_index..=max_x_index {
-                bins.entry(z_index * x_interval_count + x_index)
-                    .or_default()
-                    .push(group_index);
-            }
-        }
-    }
-    bins
-}
-
-fn cell_touches_road_clip_group(
-    cell: &[Vector2],
-    cell_bounds: Rect,
-    clip_group: &ClipGroup,
-) -> bool {
-    if !cell_bounds.intersects(clip_group.bounds) {
-        return false;
-    }
-    if cell_fully_inside_any_road_clip_hole(cell, clip_group) {
-        return false;
-    }
-    for sample in cell_road_clip_samples(cell) {
-        if point_in_road_clip_group(sample, clip_group) {
-            return true;
-        }
-    }
-    for outer in &clip_group.outer_loops {
-        if cell_fully_inside_polygon(cell, &outer.points) {
-            return true;
-        }
-        if polygon_intersects_cell(&outer.points, outer.bounds, cell, cell_bounds) {
-            return true;
-        }
-    }
-    false
-}
-
-fn cell_road_clip_samples(cell: &[Vector2]) -> Vec<Vector2> {
-    let mut samples = Vec::with_capacity(cell.len() + 1);
-    let mut centroid = Vector2::ZERO;
-    for point in cell {
-        samples.push(*point);
-        centroid += *point;
-    }
-    if !cell.is_empty() {
-        samples.push(centroid / cell.len() as f32);
-    }
-    samples
-}
-
-fn cell_fully_inside_any_road_clip_hole(cell: &[Vector2], clip_group: &ClipGroup) -> bool {
-    clip_group
-        .hole_loops
-        .iter()
-        .any(|hole| cell_fully_inside_polygon(cell, &hole.points))
-}
-
-fn point_in_road_clip_group(point: Vector2, clip_group: &ClipGroup) -> bool {
-    let inside_outer = clip_group.outer_loops.iter().any(|outer| {
-        point_in_polygon(point, &outer.points) || point_on_polygon_boundary(point, &outer.points)
-    });
-    if !inside_outer {
-        return false;
-    }
-    for hole in &clip_group.hole_loops {
-        if point_on_polygon_boundary(point, &hole.points) {
-            return true;
-        }
-        if point_in_polygon(point, &hole.points) {
-            return false;
-        }
-    }
-    true
-}
-
-fn polygon_intersects_cell(
-    polygon: &[Vector2],
-    polygon_bounds: Rect,
-    cell: &[Vector2],
-    cell_bounds: Rect,
-) -> bool {
-    if !cell_bounds.intersects(polygon_bounds) {
-        return false;
-    }
-    if cell.iter().any(|point| point_in_polygon(*point, polygon)) {
-        return true;
-    }
-    if polygon
-        .iter()
-        .any(|point| cell_bounds.contains_point(*point))
-    {
-        return true;
-    }
-    for polygon_index in 0..polygon.len() {
-        let polygon_a = polygon[polygon_index];
-        let polygon_b = polygon[(polygon_index + 1) % polygon.len()];
-        for cell_index in 0..cell.len() {
-            let cell_a = cell[cell_index];
-            let cell_b = cell[(cell_index + 1) % cell.len()];
-            if segments_intersect(polygon_a, polygon_b, cell_a, cell_b) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn cell_fully_inside_polygon(cell: &[Vector2], polygon: &[Vector2]) -> bool {
-    cell.iter().all(|point| {
-        point_in_polygon(*point, polygon) || point_on_polygon_boundary(*point, polygon)
-    })
-}
-
-fn point_in_polygon(point: Vector2, polygon: &[Vector2]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut previous = polygon[polygon.len() - 1];
-    for current in polygon {
-        let crosses = (current.y > point.y) != (previous.y > point.y);
-        if crosses {
-            let x_intersection = (previous.x - current.x) * (point.y - current.y)
-                / (previous.y - current.y)
-                + current.x;
-            if point.x < x_intersection {
-                inside = !inside;
-            }
-        }
-        previous = *current;
-    }
-    inside
-}
-
-fn point_on_polygon_boundary(point: Vector2, polygon: &[Vector2]) -> bool {
-    if polygon.len() < 2 {
-        return false;
-    }
-    (0..polygon.len())
-        .any(|index| point_on_segment(point, polygon[index], polygon[(index + 1) % polygon.len()]))
-}
-
-fn segments_intersect(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> bool {
-    let ab = b - a;
-    let cd = d - c;
-    let denom = cross_2d(ab, cd);
-    let ca = c - a;
-    if denom.abs() <= WATER_SEGMENT_EPSILON {
-        return point_on_segment(c, a, b)
-            || point_on_segment(d, a, b)
-            || point_on_segment(a, c, d)
-            || point_on_segment(b, c, d);
-    }
-    let t = cross_2d(ca, cd) / denom;
-    let u = cross_2d(ca, ab) / denom;
-    (-WATER_SEGMENT_EPSILON..=1.0 + WATER_SEGMENT_EPSILON).contains(&t)
-        && (-WATER_SEGMENT_EPSILON..=1.0 + WATER_SEGMENT_EPSILON).contains(&u)
-}
-
-fn point_on_segment(point: Vector2, a: Vector2, b: Vector2) -> bool {
-    let ab = b - a;
-    let ap = point - a;
-    if cross_2d(ab, ap).abs() > WATER_SEGMENT_EPSILON {
-        return false;
-    }
-    let dot = ap.dot(ab);
-    if dot < -WATER_SEGMENT_EPSILON {
-        return false;
-    }
-    dot <= ab.length_squared() + WATER_SEGMENT_EPSILON
-}
-
-fn cross_2d(a: Vector2, b: Vector2) -> f32 {
-    a.x * b.y - a.y * b.x
 }
 
 #[cfg(test)]
@@ -873,7 +556,7 @@ mod tests {
             patch_x: 2,
             patch_z: 3,
             lod_step: 1,
-            road_clip_signature: 0,
+            cover_generation: 0,
             depth_signature,
         }
     }
@@ -886,8 +569,7 @@ mod tests {
             SimCore::build_water_patch_mesh_cache_entries(vec![WaterPatchMeshBuildInput {
                 key,
                 patch,
-                road_clip_loops: Vec::new(),
-                clip_failed: false,
+                dropped: Vec::new(),
             }])
             .try_into()
             .expect("one water patch mesh should be built");
@@ -914,8 +596,7 @@ mod tests {
             SimCore::build_water_patch_mesh_cache_entries(vec![WaterPatchMeshBuildInput {
                 key,
                 patch,
-                road_clip_loops: Vec::new(),
-                clip_failed: false,
+                dropped: Vec::new(),
             }])
             .try_into()
             .expect("one shoreline water patch mesh should be built");
@@ -935,8 +616,7 @@ mod tests {
             SimCore::build_water_patch_mesh_cache_entries(vec![WaterPatchMeshBuildInput {
                 key,
                 patch,
-                road_clip_loops: Vec::new(),
-                clip_failed: false,
+                dropped: Vec::new(),
             }])
             .try_into()
             .expect("one dry water patch cache entry should be built");

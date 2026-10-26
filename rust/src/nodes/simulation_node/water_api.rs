@@ -371,16 +371,19 @@ impl SimulationNode {
         let mut build_queued_count = 0_usize;
         let mut build_inputs = Vec::new();
         {
-            let Some(core) = self.try_lock_core() else {
+            let Some(mut core) = self.try_lock_core() else {
                 stats.set("core_busy", true);
                 return stats;
             };
+            // A missed mesh's dropped cells read the sites (`docs/terrain.md` T32 (a)).
+            let cell_m = core.config.zone_cell_m;
+            core.allocator.prepare_building_site_query_index(cell_m);
             let mut jobs = self.lock_water_patch_mesh_jobs();
             let mut requested_key_lookup = HashSet::new();
             for (patch_x, patch_z, lod_step) in requests {
-                let Some((key, build_input)) = Self::water_patch_mesh_build_input_for_request(
-                    &core, patch_x, patch_z, lod_step,
-                ) else {
+                let Some((key, patch)) =
+                    Self::water_patch_mesh_key_for_request(&core, patch_x, patch_z, lod_step)
+                else {
                     invalid_count += 1;
                     continue;
                 };
@@ -401,7 +404,7 @@ impl SimulationNode {
                     continue;
                 }
                 jobs.in_flight.insert(key);
-                build_inputs.push(build_input);
+                build_inputs.push(Self::water_patch_mesh_build_input(&core, key, patch));
                 build_queued_count += 1;
             }
         }

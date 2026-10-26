@@ -599,7 +599,7 @@ fn water_road_clip_queries_wait_for_matching_surface_publication() {
         "the matching empty-road generation should produce a water payload"
     );
     assert!(
-        SimulationNode::water_patch_mesh_build_input_for_request(&core, 0, 0, 1).is_some(),
+        SimulationNode::water_patch_mesh_key_for_request(&core, 0, 0, 1).is_some(),
         "the matching empty-road generation should produce a water mesh input"
     );
 
@@ -611,7 +611,7 @@ fn water_road_clip_queries_wait_for_matching_surface_publication() {
         "water payload clipping must not combine the current graph with stale road surfaces"
     );
     assert!(
-        SimulationNode::water_patch_mesh_build_input_for_request(&core, 0, 0, 1).is_none(),
+        SimulationNode::water_patch_mesh_key_for_request(&core, 0, 0, 1).is_none(),
         "water mesh clipping must wait for matching road surface publication"
     );
 }
@@ -645,7 +645,7 @@ fn blank_world_reset_publishes_empty_road_surface_for_water_payloads() {
         "water payloads must remain available immediately after a blank-world reset"
     );
     assert!(
-        SimulationNode::water_patch_mesh_build_input_for_request(&core, 0, 0, 1).is_some(),
+        SimulationNode::water_patch_mesh_key_for_request(&core, 0, 0, 1).is_some(),
         "water meshes must remain available immediately after a blank-world reset"
     );
 }
@@ -681,9 +681,67 @@ fn water_only_query_generation_change_keeps_published_surface_payloads_available
         "water-only query changes must not invalidate matching road-clipped payloads"
     );
     assert!(
-        SimulationNode::water_patch_mesh_build_input_for_request(&core, 0, 0, 1).is_some(),
+        SimulationNode::water_patch_mesh_key_for_request(&core, 0, 0, 1).is_some(),
         "water-only query changes must not invalidate matching road-clipped meshes"
     );
+}
+
+// T32 (a): a road across a flooded patch drops exactly the mesh cells its top triangles meet,
+// the builder emits the rest, and the mesh key follows the patch's terrain payload generation.
+#[test]
+fn water_meshes_drop_the_cells_a_road_meets_keyed_by_the_patch_generation() {
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::roadbed::fixtures::{connect, point};
+    use crate::simulation::network::types::NodeType;
+
+    let mut core = test_core_with_flat_terrain(0.0);
+    core.create_blank_world_internal(40.0, 40.0, 10.0, 512.0, 0.0)
+        .expect("the blank-world reset should succeed");
+    let (width, height) = (core.watermap.width, core.watermap.height);
+    core.watermap
+        .replace_baseline_depth_from_dense(&vec![1.0; width * height])
+        .expect("the flood fills every sample");
+    // A 7 m road along z = 0 across the 40 m world, centred on the origin: its top triangles lie
+    // within the two middle rows of 10 m cells and reach into no other row.
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(point(-30.0, 0.0, false), NodeType::Junction);
+    let east = graph.add_node(point(30.0, 0.0, false), NodeType::Junction);
+    connect(&mut graph, west, east, 7.0, false);
+    graph.rebuild_intersection_clips();
+    core.region_graph = graph;
+    core.transit_network.roadbed.clear();
+    core.transit_network
+        .roadbed
+        .compile_dirty(&core.region_graph);
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+
+    let (key, patch) = SimulationNode::water_patch_mesh_key_for_request(&core, 0, 0, 1)
+        .expect("the flooded patch has a mesh key");
+    assert_eq!(key.cover_generation, core.terrain_payload_generation_for_patch(0, 0));
+    let input = SimulationNode::water_patch_mesh_build_input(&core, key, patch);
+    let rows: Vec<Vec<bool>> = input.dropped.chunks(4).map(<[bool]>::to_vec).collect();
+    assert_eq!(
+        rows,
+        [[false; 4], [true; 4], [true; 4], [false; 4]],
+        "the road drops the two middle rows"
+    );
+    let [mesh] = SimCore::build_water_patch_mesh_cache_entries(vec![input])
+        .try_into()
+        .expect("one water mesh");
+    assert_eq!(mesh.stats.road_clipped_cells, 8);
+    assert_eq!(mesh.stats.emitted_triangles, 16);
+    assert!(
+        mesh.vertices
+            .iter()
+            .all(|vertex| vertex.z.abs() >= 10.0),
+        "only the outer rows are emitted"
+    );
+
+    core.bump_terrain_payload_patch_generations(&[(0, 0)]);
+    let (bumped, _) = SimulationNode::water_patch_mesh_key_for_request(&core, 0, 0, 1)
+        .expect("the flooded patch has a mesh key");
+    assert_ne!(bumped, key, "a new patch generation misses the cached mesh");
 }
 
 #[test]

@@ -66,7 +66,10 @@ impl SimulationNode {
             "surface_generation",
             i64::try_from(payload.surface_generation).unwrap_or(i64::MAX),
         );
-        Self::append_road_clip_query(&mut dict, &payload.road_clip_query);
+        dict.set(
+            "cover_generation",
+            i64::try_from(payload.cover_generation).unwrap_or(i64::MAX),
+        );
         dict
     }
 
@@ -79,7 +82,10 @@ impl SimulationNode {
         dict.set("lod_step", i64::try_from(mesh.key.lod_step).unwrap_or(1));
         dict.set("mesh_world_size_x", f64::from(mesh.world_size_x));
         dict.set("mesh_world_size_z", f64::from(mesh.world_size_z));
-        dict.set("road_clip_signature", mesh.key.road_clip_signature);
+        dict.set(
+            "cover_generation",
+            i64::try_from(mesh.key.cover_generation).unwrap_or(i64::MAX),
+        );
         dict.set(
             "depth_signature",
             i64::from_ne_bytes(mesh.key.depth_signature.to_ne_bytes()),

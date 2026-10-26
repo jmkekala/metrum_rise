@@ -677,7 +677,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"depth_nonzero_count": _patch_visible_depth_count(patch_data),
 		"depth_signature": depth_signature,
 		"mesh_stats": mesh_stats,
-		"road_clip_signature": _patch_road_clip_signature(patch_data),
+		"cover_generation": _patch_cover_generation(patch_data),
 		"last_patch_data": patch_data,
 	}
 
@@ -710,9 +710,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
 	var depth_nonzero_count := _patch_visible_depth_count(patch_data)
-	var road_clip_signature := _patch_road_clip_signature(patch_data)
+	var cover_generation := _patch_cover_generation(patch_data)
 	var depth_signature: int = int(patch_data.get("depth_signature", 0))
-	var signature_changed := int(patch.get("road_clip_signature", road_clip_signature - 1)) != road_clip_signature
+	var signature_changed := int(patch.get("cover_generation", cover_generation - 1)) != cover_generation
 	var depth_signature_changed: bool = int(patch.get("depth_signature", depth_signature - 1)) != depth_signature
 	var depth_visibility_changed := int(patch.get("depth_nonzero_count", depth_nonzero_count - 1)) != depth_nonzero_count
 	var texture_shape_changed := int(patch.get("texture_width", texture_width)) != texture_width or int(patch.get("texture_height", texture_height)) != texture_height
@@ -780,7 +780,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	patch["world_origin_z"] = float(patch_data["world_origin_z"])
 	patch["depth_nonzero_count"] = depth_nonzero_count
 	patch["depth_signature"] = depth_signature
-	patch["road_clip_signature"] = road_clip_signature
+	patch["cover_generation"] = cover_generation
 	patch_node.position = Vector3(
 		float(patch_data["world_origin_x"]) + world_size_x * 0.5,
 		0.0,
@@ -1482,8 +1482,10 @@ func _water_patch_depth_stats(patch_data: Dictionary) -> Dictionary:
 func _water_patch_depth_sample_count(patch_data: Dictionary) -> int:
 	return _water_patch_depth_bytes(patch_data).size() >> 2
 
-func _patch_road_clip_signature(patch_data: Dictionary) -> int:
-	return int(patch_data.get("road_clip_signature", 0))
+# The patch's terrain payload generation: the roads and sites that drop water cells change only
+# with it, so a new one refreshes the mesh.
+func _patch_cover_generation(patch_data: Dictionary) -> int:
+	return int(patch_data.get("cover_generation", 0))
 
 func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:
 	if not _patch_has_road_clip_loops(patch_data):
@@ -2269,11 +2271,11 @@ func _water_patch_mesh_data_matches_patch(
 		return false
 	if int(patch.get("depth_nonzero_count", 0)) <= 0:
 		return false
-	var expected_road_clip_signature: int = int(patch.get("road_clip_signature", 0))
-	var mesh_road_clip_signature: int = int(
-		mesh_data.get("road_clip_signature", expected_road_clip_signature - 1)
+	var expected_cover_generation: int = int(patch.get("cover_generation", 0))
+	var mesh_cover_generation: int = int(
+		mesh_data.get("cover_generation", expected_cover_generation - 1)
 	)
-	if mesh_road_clip_signature != expected_road_clip_signature:
+	if mesh_cover_generation != expected_cover_generation:
 		return false
 	var expected_depth_signature: int = int(patch.get("depth_signature", 0))
 	var mesh_depth_signature: int = int(mesh_data.get("depth_signature", expected_depth_signature - 1))

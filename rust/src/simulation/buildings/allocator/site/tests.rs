@@ -525,11 +525,9 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
 fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
     let mut allocator = BuildingAllocator::new();
     allocator.building_sites.push(square_site_with_surface());
-    let direct = allocator.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
     let snapshot = allocator.terrain_site_snapshot_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
-    let detached = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
+    let direct = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
 
-    assert_eq!(detached, direct);
     assert_eq!(direct.len(), 1);
     assert_eq!(
         direct[0].vertices.len(),
@@ -560,7 +558,9 @@ fn neighboring_different_height_site_loops_with_grading_space_compile() {
     allocator
         .building_sites
         .push(flat_site_from_bounds(1.0, -5.0, 5.0, 5.0, 1.0));
-    let loops = allocator.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
+    let loops = allocator
+        .terrain_site_snapshot_for_world_bounds(-8.0, -8.0, 8.0, 8.0)
+        .terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
     let source_samples = vec![
         TerrainCdtVertex::new(-8.0, 0.0, -8.0),
         TerrainCdtVertex::new(-8.0, 0.0, 8.0),

@@ -16,7 +16,7 @@
 //! rise above its first-pass value (the bake's second pass, per point). The value is bitwise the
 //! evaluation over every seam within the cap. Allocation-free once the scratch is warm.
 
-use super::coverage::covered_height_at;
+use super::coverage::{covered_height_at, mark_covered_cells};
 use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE, may_bind, may_lift};
 use super::portal::{PortalWindow, cuts};
 use super::prune::box_distance;
@@ -213,6 +213,35 @@ impl GradedSurface<'_> {
         self.prepare([x, z, x, z], scratch);
         self.prepare_portals([x, z, x, z], scratch);
         self.mask_prepared(x, z, scratch)
+    }
+
+    /// The area form of [`Self::mask_at`]'s `Road` (by coverage) and `Pad` classes, for water's
+    /// cells (`docs/terrain.md` T32 (a)): `out[j * (xs.len() - 1) + i]` is whether a grounded
+    /// road top triangle or a building site's support footprint meets the closed cell
+    /// `[xs[i], xs[i + 1]] x [zs[j], zs[j + 1]]` (`xs`, `zs` sorted). Exact: the coverage
+    /// predicate's closed triangles, each footprint's closed polygon, exact orientations. Portal
+    /// openings are not counted, and a footprint is not grown by the allocator predicate's 1 mm
+    /// tolerance. The site index must be ready. `O(T + S + C)` for the triangles and sites met
+    /// and the cells in their boxes.
+    pub fn mark_cells_met_by_roads_and_pads(
+        &self,
+        xs: &[f64],
+        zs: &[f64],
+        out: &mut Vec<bool>,
+        scratch: &mut QueryScratch,
+    ) {
+        out.clear();
+        let (Some(&min_x), Some(&max_x), Some(&min_z), Some(&max_z)) =
+            (xs.first(), xs.last(), zs.first(), zs.last())
+        else {
+            return;
+        };
+        out.resize(xs.len().saturating_sub(1) * zs.len().saturating_sub(1), false);
+        mark_covered_cells(self.roadbed, xs, zs, &mut scratch.pieces, out);
+        // The gather replaces the window's sites, so no window stays prepared.
+        scratch.rect = None;
+        scratch.sites.gather_unordered(self.sites, [min_x, min_z, max_x, max_z]);
+        scratch.sites.mark_footprint_cells(xs, zs, out);
     }
 
     // [`Self::mask_at`] at an uncovered point of the prepared window and portal parts.

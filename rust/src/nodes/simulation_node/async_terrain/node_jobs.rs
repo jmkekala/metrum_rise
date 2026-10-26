@@ -755,57 +755,60 @@ impl SimulationNode {
         let patch = core
             .watermap
             .visible_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
-        let road_clip_query = Self::road_clip_loop_query_for_bounds(
-            core,
-            patch.world_origin_x,
-            patch.world_origin_z,
-            patch.world_origin_x + patch.world_size_x,
-            patch.world_origin_z + patch.world_size_z,
-        );
         let depth_bytes = Self::f32_bytes_vec(&patch.depth_data);
         Some(WaterPatchPayload {
             key: request.key,
             request_id: request.request_id,
             source_generation: request.source_generation,
             surface_generation: request.surface_generation,
+            cover_generation: core
+                .terrain_payload_generation_for_patch(request.key.patch_x, request.key.patch_z),
             patch,
             depth_bytes,
-            road_clip_query,
         })
     }
 
-    pub(in crate::nodes::simulation_node) fn water_patch_mesh_build_input_for_request(
+    // The cache key of a water patch's mesh at `lod_step`, with the patch it is built from:
+    // the patch's depth and its terrain payload generation, which every road or site change
+    // that could drop one of its cells bumps (`docs/terrain.md` T32 (a)). None until the
+    // roadbed is current.
+    pub(in crate::nodes::simulation_node) fn water_patch_mesh_key_for_request(
         core: &SimCore,
         patch_x: usize,
         patch_z: usize,
         lod_step: usize,
-    ) -> Option<(WaterPatchMeshCacheKey, WaterPatchMeshBuildInput)> {
+    ) -> Option<(WaterPatchMeshCacheKey, WaterPatchSnapshot)> {
         if !core.transit_network.roadbed.is_current() {
             return None;
         }
         let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;
-        let road_clip_query = Self::road_clip_loop_query_for_bounds(
-            core,
-            patch.world_origin_x,
-            patch.world_origin_z,
-            patch.world_origin_x + patch.world_size_x,
-            patch.world_origin_z + patch.world_size_z,
-        );
         let key = WaterPatchMeshCacheKey {
             patch_x,
             patch_z,
             lod_step,
-            road_clip_signature: Self::road_clip_query_signature(&road_clip_query),
+            cover_generation: core.terrain_payload_generation_for_patch(patch_x, patch_z),
             depth_signature: water_patch_depth_signature(&patch),
         };
-        Some((
+        Some((key, patch))
+    }
+
+    // The input of a mesh the cache misses: the cells the roads and sites drop, decided under
+    // the lock, so the builder off it reads no core. A dry patch drops none. The site index
+    // must be ready.
+    pub(in crate::nodes::simulation_node) fn water_patch_mesh_build_input(
+        core: &SimCore,
+        key: WaterPatchMeshCacheKey,
+        patch: WaterPatchSnapshot,
+    ) -> WaterPatchMeshBuildInput {
+        let dropped = if patch.depth_nonzero_count == 0 {
+            Vec::new()
+        } else {
+            core.water_cells_under_roads_and_pads(&patch, key.lod_step)
+        };
+        WaterPatchMeshBuildInput {
             key,
-            WaterPatchMeshBuildInput {
-                key,
-                patch,
-                road_clip_loops: road_clip_query.cdt_road_loops,
-                clip_failed: road_clip_query.clip_error_label.is_some(),
-            },
-        ))
+            patch,
+            dropped,
+        }
     }
 }

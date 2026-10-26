@@ -619,6 +619,124 @@ fn the_graded_ground_never_lies_below_a_seam() {
 // T19 (a): the pruned queries answer bitwise as the evaluation over every seam within the cap,
 // on every fixture and on the sloped T with sites, one point at a time and through the gather
 // variant. On the conflict pair cut into a 0.6 slope, the lower road's cut holds the ground
+// T32 (a): a ring meets exactly the closed cells it touches. A triangle touching a cell at one
+// point (a vertex, or a side through its corner) meets it, the next float away does not; a cell
+// inside a ring is met with no corner or side of the ring in it; a non-convex ring's notch is not.
+#[test]
+fn rings_meet_exactly_the_closed_cells_they_touch() {
+    use super::coverage::mark_met_cells;
+    let sides = [-10.0, 0.0, 10.0, 20.0];
+    // Cell `(i, j)` at `j * 3 + i`.
+    let marked = |ring: &[[f64; 2]]| {
+        let mut out = [false; 9];
+        mark_met_cells(&sides, &sides, ring, &mut out);
+        out.map(u8::from)
+    };
+    let up = |v: f64| f64::from_bits(v.to_bits() + 1);
+    assert_eq!(
+        marked(&[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]),
+        [1, 1, 1, 1, 1, 1, 1, 1, 0]
+    );
+    assert_eq!(
+        marked(&[[1.0, 1.0], [9.0, 1.0], [1.0, 9.0]]),
+        [0, 0, 0, 0, 1, 0, 0, 0, 0]
+    );
+    // A side on the line between two cells meets both.
+    assert_eq!(
+        marked(&[[10.0, 2.0], [15.0, 8.0], [10.0, 8.0]]),
+        [0, 0, 0, 0, 1, 1, 0, 0, 0]
+    );
+    assert_eq!(
+        marked(&[[up(10.0), 2.0], [15.0, 8.0], [up(10.0), 8.0]]),
+        [0, 0, 0, 0, 0, 1, 0, 0, 0]
+    );
+    // The side `x + z = 20` passes through the corner (10, 10) alone.
+    assert_eq!(
+        marked(&[[0.0, 20.0], [20.0, 0.0], [20.0, 20.0]]),
+        [0, 0, 1, 0, 1, 1, 1, 1, 1]
+    );
+    let (a, b) = (up(20.0), up(up(20.0)));
+    assert_eq!(
+        marked(&[[0.0, a], [a, 0.0], [b, b]]),
+        [0, 0, 0, 0, 0, 1, 0, 1, 1]
+    );
+    assert_eq!(
+        marked(&[[-100.0, -100.0], [100.0, -100.0], [0.0, 100.0]]),
+        [1; 9]
+    );
+    let notched = [
+        [-10.0, -10.0],
+        [20.0, -10.0],
+        [20.0, -1.0],
+        [-1.0, -1.0],
+        [-1.0, 20.0],
+        [-10.0, 20.0],
+    ];
+    assert_eq!(marked(&notched), [1, 1, 1, 1, 0, 0, 1, 0, 0]);
+}
+
+// T32 (a): on the sloped T with sites and the sloped four-way, every point of a 0.5 m lattice
+// that `mask_at` finds `Road` or `Pad` lies in a marked cell (every cell holding it, the sides
+// shared by two cells included), and every marked cell has such a point within one lattice
+// diagonal of it. The area query leaves the scratch's point queries exact.
+#[test]
+fn cells_met_by_roads_and_pads_hold_every_road_and_pad_point() {
+    let sites = super::site_tests::fixture_sites();
+    let cases = [
+        ("t_slope_sites", t_junction(true), true),
+        ("four_way_slope", hub(&[180.0, 0.0, 90.0, 270.0], true), false),
+    ];
+    let terrain = terrain(|x, _| SLOPE * x);
+    // 7.5 m cells; their sides lie on the lattice.
+    let xs: Vec<f64> = (0..=20).map(|i| -75.0 + 7.5 * f64::from(i)).collect();
+    let zs: Vec<f64> = (0..=17).map(|j| -52.5 + 7.5 * f64::from(j)).collect();
+    let columns = xs.len() - 1;
+    for (name, graph, with_sites) in cases {
+        let roadbed = compiled(&graph);
+        let surface = GradedSurface {
+            terrain: &terrain,
+            roadbed: &roadbed,
+            sites: if with_sites { &sites } else { &NoSites },
+        };
+        let mut scratch = QueryScratch::default();
+        let mut marked = Vec::new();
+        surface.mark_cells_met_by_roads_and_pads(&xs, &zs, &mut marked, &mut scratch);
+        let mut near = vec![false; marked.len()];
+        let (mut points, mut met) = (0, 0);
+        for j in 0..=255 {
+            for i in 0..=300 {
+                let (x, z) = (-75.0 + 0.5 * f64::from(i), -52.5 + 0.5 * f64::from(j));
+                if !matches!(
+                    surface.mask_at(x, z, &mut scratch),
+                    GroundClass::Road | GroundClass::Pad
+                ) {
+                    continue;
+                }
+                points += 1;
+                for (cj, z_side) in zs.windows(2).enumerate() {
+                    for (ci, x_side) in xs.windows(2).enumerate() {
+                        let k = cj * columns + ci;
+                        let holds = |side: &[f64], v: f64, pad: f64| {
+                            side[0] - pad <= v && v <= side[1] + pad
+                        };
+                        if holds(x_side, x, 0.0) && holds(z_side, z, 0.0) {
+                            assert!(marked[k], "{name}: ({x}, {z}) in unmarked cell {ci}, {cj}");
+                        }
+                        if holds(x_side, x, 0.71) && holds(z_side, z, 0.71) {
+                            near[k] = true;
+                        }
+                    }
+                }
+            }
+        }
+        for (k, (&marked, &near)) in marked.iter().zip(&near).enumerate() {
+            met += usize::from(marked);
+            assert!(!marked || near, "{name}: cell {k} marked far from every road and pad");
+        }
+        assert!(points > 1_000 && met > 20, "{name}: {points} points, {met} cells");
+    }
+}
+
 // below its base, and the upper road's lower bound, whose cone holds the base, lifts it: the
 // second pass changes those values.
 #[test]

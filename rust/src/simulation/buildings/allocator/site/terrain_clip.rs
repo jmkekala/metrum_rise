@@ -3,7 +3,7 @@
 //! Terrain-patch invalidation and authoritative CDT exclusion loops for building sites.
 
 use super::geometry::site_lot_center;
-use super::model::{BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot};
+use super::model::{BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
@@ -97,26 +97,6 @@ impl BuildingAllocator {
             max_z + margin_m,
         );
     }
-
-    pub(crate) fn terrain_cdt_site_loops_for_world_bounds(
-        &self,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> Vec<TerrainCdtRoadLoop> {
-        let mut loops = Vec::new();
-        for building_idx in self.site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z) {
-            let Some(site) = self.building_sites.get(building_idx) else {
-                continue;
-            };
-            if !site.overlaps_bounds(min_x, min_z, max_x, max_z) {
-                continue;
-            }
-            loops.push(building_site_cdt_loop(building_idx, site));
-        }
-        loops
-    }
 }
 
 impl BuildingSiteTerrainSnapshot {
@@ -167,10 +147,6 @@ impl BuildingSiteTerrainClient {
 // max_z)`.
 fn overlaps(site: (f32, f32, f32, f32), query: (f32, f32, f32, f32)) -> bool {
     site.0 <= query.2 && site.2 >= query.0 && site.1 <= query.3 && site.3 >= query.1
-}
-
-fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> TerrainCdtRoadLoop {
-    building_site_cdt_loop_from_parts(building_idx, &site.footprint_world, site.support_height_m)
 }
 
 fn building_site_snapshot_cdt_loop(site: &BuildingSiteTerrainClient) -> TerrainCdtRoadLoop {

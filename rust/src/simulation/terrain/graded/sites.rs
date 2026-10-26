@@ -320,6 +320,21 @@ impl SiteBuffer {
         }
     }
 
+    /// Marks each cell of the grid (as [`super::coverage::mark_covered_cells`]) that a support
+    /// footprint meets: its closed polygon, exactly, the allocator's predicate without the
+    /// predicate's 1 mm tolerance (`docs/terrain.md` T32 (a)). The order of the sites does not
+    /// matter. `O(C x corners)` for the `C` cells in the footprints' boxes.
+    pub(super) fn mark_footprint_cells(&mut self, xs: &[f64], zs: &[f64], out: &mut [bool]) {
+        for index in 0..self.sites.len() {
+            let site = self.sites[index];
+            if site.footprint.1 - site.footprint.0 < 3 {
+                continue;
+            }
+            self.oriented_ring(site.footprint);
+            super::coverage::mark_met_cells(xs, zs, &self.ring, out);
+        }
+    }
+
     /// Rasterizes the material class over the lattice into `classes` (0 none, 1 asphalt,
     /// 2 concrete), the first surface holding each point. `O(points in the boxes x corners)`.
     pub(super) fn rasterize_classes(
