@@ -287,6 +287,8 @@ pub(super) struct Lifted {
     pub(super) x: f64,
     pub(super) z: f64,
     pub(super) base: f64,
+    // The first-pass ground, below `base`: the bin's floor for pass 2's listing.
+    pub(super) ground: f64,
     pub(super) cones: Cones,
     // Within one lattice spacing of a road seam, and within the band.
     pub(super) near_seam: bool,
@@ -385,12 +387,14 @@ pub(super) fn list_second_pass(
 /// Finishes the samples pass 1 left below their base: the first pass's cones plus pass 2's
 /// seams within the cap. Every seam left out has a lower bound below the first-pass ground and
 /// an upper bound above the base, so `g = max(L, min(b, U))` equals its value over every seam
-/// within the cap, bitwise. Writes their deltas; returns whether any is graded.
+/// within the cap, bitwise. Writes their deltas into `texels`, which starts at the tile's sample
+/// `first` (a row band's, `TERRAIN-07-E`); returns whether any is graded.
 /// `O(samples x their lists)`.
 pub(super) fn finish_second_pass(
     seams: &[Seam],
     lists: &BinLists,
     lifted: &[Lifted],
+    first: u32,
     texels: &mut [[f32; 4]],
     stats: &mut BakeStats,
 ) -> bool {
@@ -406,7 +410,7 @@ pub(super) fn finish_second_pass(
             }
         }
         let delta = (cones.ground(sample.base) - sample.base) as f32;
-        texels[sample.sample as usize][0] = delta;
+        texels[(sample.sample - first) as usize][0] = delta;
         graded |= delta != 0.0 || sample.in_band;
         if cones.lower > cones.upper {
             stats.conflicts += 1;

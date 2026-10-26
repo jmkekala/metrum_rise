@@ -375,7 +375,24 @@ fn reached(
     }
     let lowest =
         |seam: &Seam| seam.height_range().0 + TIE_IN_SLOPE * box_distance(seam.box_xz(), rect);
-    let mut floor = f64::INFINITY;
+    let lifts = |seam: &Seam, floor: f64| {
+        box_distance(seam.box_xz(), rect) <= lift_reach(seam.height_range().1, floor)
+    };
+    // The changed seams' own floor is at least the window's, and the lift reach only grows as
+    // the floor falls, so a changed seam that lifts over it lifts over the window's floor too:
+    // the tile is reached without the window's walk (`TERRAIN-07-E`, T27 (a)). Exact: the same
+    // answer as the test below.
+    let changed_floor = (changed.iter().filter(in_window))
+        .map(lowest)
+        .fold(f64::INFINITY, f64::min);
+    if changed
+        .iter()
+        .filter(in_window)
+        .any(|seam| lifts(seam, changed_floor))
+    {
+        return true;
+    }
+    let mut floor = changed_floor;
     roadbed.for_each_grounded_seam_in_bounds(window, &mut scratch.pieces, |[a, b]| {
         floor = floor.min(lowest(&road_seam(a, b)));
     });
@@ -388,9 +405,6 @@ fn reached(
     } else {
         floor = f64::NEG_INFINITY;
     }
-    for seam in changed.iter().filter(in_window) {
-        floor = floor.min(lowest(seam));
-    }
     scratch.base.fill(terrain, window);
     scratch
         .bins
@@ -398,7 +412,7 @@ fn reached(
     let slope = scratch.base.slope();
     let (base, bins) = (&scratch.base, &scratch.bins);
     changed.iter().filter(in_window).any(|seam| {
-        if box_distance(seam.box_xz(), rect) <= lift_reach(seam.height_range().1, floor) {
+        if lifts(seam, floor) {
             return true;
         }
         let (range, _) = bins.first_range(seam, base, slope, band);

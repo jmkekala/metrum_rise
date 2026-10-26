@@ -343,16 +343,24 @@ impl CoverageTriangle {
     /// The heights at the points `(xs[i], z)` the closed triangle holds, as `visit(i, height)`
     /// in order of `i`: bit for bit the predicate's at each, and no other point. `xs` is
     /// sorted. The held points of a row are one run (the triangle is convex and the predicate
-    /// exact), so the scan stops at the first point past it. `O(W)` for a row of `W` points,
-    /// allocation-free.
+    /// exact), so the scan starts at the row's span through the triangle ([`Self::row_span`])
+    /// and stops at the first point past the run. `O(log W + H)` for a row of `W` points of
+    /// which `H` lie in the span, allocation-free.
     pub(crate) fn for_each_held_in_row(
         &self,
         xs: &[f64],
         z: f64,
         mut visit: impl FnMut(usize, f32),
     ) {
+        let Some((min_x, max_x)) = self.row_span(z) else {
+            return;
+        };
+        let (start, end) = (
+            xs.partition_point(|&x| x < min_x),
+            xs.partition_point(|&x| x <= max_x),
+        );
         let mut held = false;
-        for (i, &x) in xs.iter().enumerate() {
+        for (i, &x) in xs.iter().enumerate().take(end).skip(start) {
             match self.held_height(x, z) {
                 Some(height) => {
                     visit(i, height);
@@ -362,6 +370,35 @@ impl CoverageTriangle {
                 None => {}
             }
         }
+    }
+
+    // An interval of x that holds every point of the row at `z` the closed triangle holds
+    // (`TERRAIN-07-E`, T27 (a)), `None` when the row misses the triangle's z range. The row
+    // meets the closed triangle in one segment whose ends lie on its edges, so the interval
+    // joins each edge's crossing of the row (an edge along the row, its whole extent). A
+    // crossing `p + t (q - p)` is computed in `f64` within a few units in the last place of
+    // `|p.x| + |q.x|`; it is widened by `1e-9` of that plus a nanometre, far beyond the rounding,
+    // so no held point lies outside. It only bounds where the scan starts and ends: every point
+    // inside is still tested by the exact predicate, so the products are unchanged. `O(1)`.
+    fn row_span(&self, z: f64) -> Option<(f64, f64)> {
+        let [a, b, c] = &self.vertices;
+        let mut span: Option<(f64, f64)> = None;
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            if z < p.z.min(q.z) || z > p.z.max(q.z) {
+                continue;
+            }
+            let margin = 1e-9 * (1.0 + p.x.abs() + q.x.abs());
+            let (low, high) = if p.z == q.z {
+                (p.x.min(q.x), p.x.max(q.x))
+            } else {
+                let t = ((z - p.z) / (q.z - p.z)).clamp(0.0, 1.0);
+                let x = p.x + t * (q.x - p.x);
+                (x, x)
+            };
+            let (low, high) = (low - margin, high + margin);
+            span = Some(span.map_or((low, high), |(min, max)| (min.min(low), max.max(high))));
+        }
+        span
     }
 
     // Whether an orientation has the sign opposite the winding: the point lies beyond the edge.

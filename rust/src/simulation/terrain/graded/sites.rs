@@ -348,19 +348,21 @@ impl SiteBuffer {
 
     /// The nearest material edge of every lattice point within `band`, by the seams' total
     /// order (smaller distance, then the larger distance to the edge's line, then the smaller
-    /// key): `nearest[k]` its index in [`Self::edges`], else [`NO_SITE`]. Pruned, each edge
-    /// visits the points of each row its band can reach; unpruned, every point.
-    /// `O(points within the edges' bands)`.
+    /// key): `nearest[k]` its index in [`Self::edges`], else [`NO_SITE`]; `nearest` holds the
+    /// `xs` x `zs` points (any run of a lattice's rows, `TERRAIN-07-E`), each set to
+    /// `(NO_SITE, inf)` first. Each point takes the edges in index order, so a run of rows
+    /// equals the same rows of the whole lattice. Pruned, each edge visits the points of each
+    /// row its band can reach; unpruned, every point. `O(points within the edges' bands)`.
     pub(super) fn nearest_edges(
         &self,
         xs: &[f64],
         zs: &[f64],
         band: f64,
         prune: bool,
-        nearest: &mut Vec<(u32, f64)>,
+        nearest: &mut [(u32, f64)],
     ) {
-        nearest.clear();
-        nearest.resize(xs.len() * zs.len(), (NO_SITE, f64::INFINITY));
+        debug_assert_eq!(nearest.len(), xs.len() * zs.len(), "one entry per point");
+        nearest.fill((NO_SITE, f64::INFINITY));
         let width = xs.len();
         for (index, edge) in self.edges.iter().enumerate() {
             let index = index as u32;
