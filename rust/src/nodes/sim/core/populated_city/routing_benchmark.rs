@@ -947,9 +947,10 @@ fn benchmark_populated_work_counts() {
 }
 
 // ROAD-68-G: one player road commit on a populated city, stage by stage. Tiers are residents
-// (`METRUM_COMMIT_TIERS`, default 0,1300,13000); 0 is the 1,300-resident street grid without
-// lots. Each sample branches a 120 m road off a border trunk west of the grid, splitting the
-// trunk into a T junction, which changes the routing topology. City setup is never timed.
+// (`METRUM_COMMIT_TIERS`, default 0,1300,13000); 0 is the street grid of a 1,300-resident side
+// without lots (the populated 1,300 city is one block wider, `ROAD-68-K24`). Each sample
+// branches a 120 m road off a border trunk west of the grid, splitting the trunk into a T
+// junction, which changes the routing topology. City setup is never timed.
 // `ROAD-68-K22`: each populated tier loads its city from this binary's saved snapshot
 // (`commit_city`); `COMMIT_FIXTURE` says where each city came from, `COMMIT_SETUP` where the
 // untimed setup went, and `COMMIT_PRODUCTS` lists the products two runs must share bitwise.
@@ -987,8 +988,7 @@ fn benchmark_populated_commit_prepare() {
 }
 
 // `ROAD-68-K22`: the breakdown on a city loaded from its snapshot has the products of the
-// breakdown on the city built in the run, bitwise, on the 2,000-resident city (the default
-// 1,300 tier no longer houses its residents).
+// breakdown on the city built in the run, bitwise, on the 2,000-resident city.
 #[test]
 #[ignore = "release ROAD-68-K22 snapshot equivalence; builds the city twice and loads it"]
 // Runtime guard: the ignored check must still compile in a debug test build.

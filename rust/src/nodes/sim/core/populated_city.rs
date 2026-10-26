@@ -119,38 +119,51 @@ impl PopulatedCity {
     /// days so employment and inventories settle. The clock starts at day 1, 07:30, at maximum
     /// speed.
     ///
-    /// Panics if the grid holds too few homes for `residents`, which means the sizing constants
-    /// no longer match the bootstrap pack.
+    /// The grid floors its width to whole cross-street blocks. Where that loses more area than
+    /// the side's headroom keeps, so the floored grid cannot house `residents` (1,300 and 13,000
+    /// residents, `ROAD-68-K24`), the city is built once more one block wider, covering its side;
+    /// a tier the floored grid houses is built exactly as before. Panics if the wider grid holds
+    /// too few homes as well, which means the sizing constants no longer match the bootstrap pack.
     pub fn build(residents: u32) -> Self {
         Self::build_timed(residents).0
     }
 
-    /// [`Self::build`], also returning the wall-clock cost of each phase.
+    /// [`Self::build`], also returning the wall-clock cost of each phase, summed over both
+    /// grids when the floored one could not house `residents`.
     pub fn build_timed(residents: u32) -> (Self, PopulatedCityBuildTimes) {
+        let side_m = side_m_for(residents);
+        let floored = crosses_for(side_m);
         let mut times = PopulatedCityBuildTimes::default();
-        let started = Instant::now();
-        let (mut core, row_z, half_x) = street_grid(side_m_for(residents));
-        times.street_grid = started.elapsed();
-        let started = Instant::now();
-        paint_districts(&mut core, &row_z, half_x);
-        times.zoning = started.elapsed();
-        let started = Instant::now();
-        fill_lots(&mut core);
-        times.lots = started.elapsed();
-        core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
-        let mut city = Self {
-            core,
-            departures: 0,
-        };
-        let started = Instant::now();
-        city.admit_households(residents);
-        times.admission = started.elapsed();
-        let started = Instant::now();
-        for _ in 0..WARM_UP_DAYS * 24 {
-            city.advance_hour();
+        let mut housed = 0;
+        for crosses in [floored, floored + 1] {
+            let started = Instant::now();
+            let (mut core, row_z, half_x) = street_grid_with_crosses(side_m, crosses);
+            times.street_grid += started.elapsed();
+            let started = Instant::now();
+            paint_districts(&mut core, &row_z, half_x);
+            times.zoning += started.elapsed();
+            let started = Instant::now();
+            fill_lots(&mut core);
+            times.lots += started.elapsed();
+            core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
+            let mut city = Self {
+                core,
+                departures: 0,
+            };
+            let started = Instant::now();
+            housed = city.admit_households(residents);
+            times.admission += started.elapsed();
+            if housed < residents {
+                continue;
+            }
+            let started = Instant::now();
+            for _ in 0..WARM_UP_DAYS * 24 {
+                city.advance_hour();
+            }
+            times.warm_up = started.elapsed();
+            return (city, times);
         }
-        times.warm_up = started.elapsed();
-        (city, times)
+        panic!("{housed} residents housed, {residents} requested");
     }
 
     /// City totals at the current clock, in the growth scenario's record form.
@@ -216,7 +229,9 @@ impl PopulatedCity {
         times
     }
 
-    fn admit_households(&mut self, residents: u32) {
+    // Admits households until `residents` live in the city or no home is left; returns the
+    // residents housed.
+    fn admit_households(&mut self, residents: u32) -> u32 {
         let core = &mut self.core;
         core.transit_network
             .rebuild_pathing_if_dirty(&mut core.region_graph);
@@ -252,19 +267,20 @@ impl PopulatedCity {
             }
             self.advance_hour();
             let housed = self.core.daily_city_flow_diagnostics().resident_agents;
-            if housed >= residents {
-                return;
+            if housed >= residents || launched == 0 {
+                return housed;
             }
-            assert!(
-                launched > 0,
-                "{housed} residents housed, {residents} requested"
-            );
         }
     }
 }
 
 fn side_m_for(residents: u32) -> f32 {
     (residents as f32 / RESIDENTS_PER_M2).sqrt() * SIDE_HEADROOM
+}
+
+// The cross streets of a `side_m` grid: whole blocks, floored.
+fn crosses_for(side_m: f32) -> usize {
+    (side_m / CROSS_SPACING_M) as usize + 1
 }
 
 /// Builds the street grid of a `side_m` square city with every zoned lot built and complete.
@@ -299,9 +315,14 @@ fn paint_districts(core: &mut SimCore, row_z: &[f32], half_x: f32) {
 /// street per [`RESIDENTS_PER_BORDER`] of the city's fill continues to the world edge, evenly
 /// spaced and alternating west and east. Returns the city, the z of every row street and the
 /// half width of the grid along x.
+#[cfg(test)]
 pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
+    street_grid_with_crosses(side_m, crosses_for(side_m))
+}
+
+// `street_grid` with `crosses` cross streets instead of the side's floored count.
+fn street_grid_with_crosses(side_m: f32, crosses: usize) -> (SimCore, Vec<f32>, f32) {
     let rows = (side_m / ROW_SPACING_M) as usize + 1;
-    let crosses = (side_m / CROSS_SPACING_M) as usize + 1;
     let half_x = (crosses - 1) as f32 * CROSS_SPACING_M * 0.5;
     let half_z = (rows - 1) as f32 * ROW_SPACING_M * 0.5;
     let world = 2.0 * half_x.max(half_z) + 2.0 * WORLD_MARGIN_M;
