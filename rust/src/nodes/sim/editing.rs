@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadPreviewTerrain, RoadRejection, ReservedOverlap,
+    ROAD_BUILD_COST_PER_METER, RoadEditPlan, RoadRejection, ReservedOverlap,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
@@ -83,53 +83,29 @@ impl RoadAddOutcome {
 }
 
 impl SimCore {
-    /// Accepts a road only after the roadbed and every affected terrain payload succeed,
-    /// restoring the staged checkpoint otherwise.
+    /// Accepts a road only after its roadbed builds, restoring the staged checkpoint otherwise.
     #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
-        self.validate_staged_road_render_installing(None, None, None, &mut Default::default())
-            .is_some()
+        self.validate_staged_road_render_installing(None, None, &mut Default::default())
     }
 
     /// As [`Self::validate_staged_road_render`], installing a preview's pieces when they still
-    /// apply, and then its terrain entries when the commit's sources match the preview's
-    /// (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells (`ROAD-68`
-    /// open question 1). The undo record keeps what the install replaced. `Some(adopted)` when the
-    /// edit is accepted, telling whether the preview's terrain was installed. `metrics` receives
-    /// the sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_terrain_ms`,
-    /// `surface_graded_ms`). An accepted edit stages its graded tiles (`TERRAIN-07-E`),
-    /// adopting the preview's `graded` tiles whose inputs equal the committed ones.
+    /// apply (`ROAD-68-E`). The installed pieces must not overlap fields or painted cells
+    /// (`ROAD-68` open question 1), and every node piece must build. No terrain failure rejects
+    /// the road (`TERRAIN-07-E`): an accepted edit stages its graded tiles, adopting the
+    /// preview's `graded` tiles whose inputs equal the committed ones. The undo record keeps
+    /// what the install replaced. True when the edit is accepted. `metrics` receives the
+    /// sub-stages' times (`surface_roadbed_ms`, `surface_overlap_ms`, `surface_graded_ms`).
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
-        terrain: Option<&RoadPreviewTerrain>,
         graded: Option<&crate::simulation::terrain::graded::TileStage>,
         metrics: &mut RoadEditMetrics,
-    ) -> Option<bool> {
+    ) -> bool {
         let roadbed_start = Instant::now();
         // The graded selection reads the roadbeds before and after the install (`O(1)`).
         let roadbed_before = self.transit_network.roadbed.snapshot();
-        let (patches, restore, installed) = self.publish_network_surface(false, delta);
-        // What undo puts back: the entries before the edit, at the edit's generations.
-        let step_m = crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
-        let replaced = crate::nodes::sim::core::RefinedTerrainRestore {
-            patches: patches
-                .iter()
-                .map(|&key| {
-                    let cache_key =
-                        crate::nodes::simulation_node::SimulationNode::refined_patch_cache_key(
-                            key.0, key.1, step_m,
-                        );
-                    let entry = self.refined_terrain_patch_cache.get(&cache_key).cloned();
-                    (
-                        key,
-                        entry,
-                        self.terrain_payload_generation_for_patch(key.0, key.1),
-                    )
-                })
-                .collect(),
-            global_generation: self.terrain_payload_global_generation,
-        };
+        let (_, restore, _) = self.publish_network_surface(false, delta);
         metrics.surface_roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
         let overlap_start = Instant::now();
         let roadbed = &self.transit_network.roadbed;
@@ -147,61 +123,46 @@ impl SimCore {
                 rejection.reason
             );
             self.last_road_rejection = Some(rejection);
-            return None;
+            return false;
         }
-        let terrain_start = Instant::now();
-        let validation = match roadbed.failed_nodes().first() {
-            None => crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
-                self,
-                &patches,
-                terrain.filter(|_| installed),
-            ),
-            Some(&node) => Err(format!(
+        if let Some(&node) = roadbed.failed_nodes().first() {
+            let reason = format!(
                 "node_piece_failed node={node} error={:?}",
                 roadbed.node_error(node)
-            )),
-        };
-        metrics.surface_terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
-        match validation {
-            Ok((entries, adopted)) => {
-                self.insert_refined_terrain_patch_cache_entries(entries);
-                let graded_start = Instant::now();
-                let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
-                metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
-                let stats = self.last_graded_stats;
-                metrics.graded_select_ms = stats.select_ms;
-                metrics.graded_inputs_ms = stats.inputs_ms;
-                metrics.graded_bake_ms = stats.bake_ms;
-                metrics.graded_adopted = stats.adopted;
-                metrics.graded_baked = stats.baked;
-                if self.transit_network.road_edit_is_staged()
-                    && let Some(record) = self.undo_stack.back_mut()
-                {
-                    record.roadbed = Some(restore);
-                    record.refined_terrain = Some(replaced);
-                    record.graded = graded;
-                }
-                self.accept_staged_road_edit();
-                Some(adopted)
-            }
-            Err(reason) => {
-                self.rollback_staged_road_edit(Some(&restore));
-                self.last_road_timing = format!("rejected=render_geometry_invalid {reason}");
-                self.last_road_rejection = Some(RoadRejection::new(
-                    "render_geometry_invalid",
-                    format!(
-                        "the road surface or its terrain failed to build after the edit ({reason}); \
-                         the edit was rolled back"
-                    ),
-                ));
-                debug_log!(
-                    "road",
-                    "road_commit_rejected reason=render_geometry_invalid detail={} rollback=true",
-                    reason
-                );
-                None
-            }
+            );
+            self.rollback_staged_road_edit(Some(&restore));
+            self.last_road_timing = format!("rejected=render_geometry_invalid {reason}");
+            self.last_road_rejection = Some(RoadRejection::new(
+                "render_geometry_invalid",
+                format!(
+                    "the road surface failed to build after the edit ({reason}); the edit was \
+                     rolled back"
+                ),
+            ));
+            debug_log!(
+                "road",
+                "road_commit_rejected reason=render_geometry_invalid detail={} rollback=true",
+                reason
+            );
+            return false;
         }
+        let graded_start = Instant::now();
+        let graded = self.stage_committed_graded_tiles(roadbed_before, graded);
+        metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
+        let stats = self.last_graded_stats;
+        metrics.graded_select_ms = stats.select_ms;
+        metrics.graded_inputs_ms = stats.inputs_ms;
+        metrics.graded_bake_ms = stats.bake_ms;
+        metrics.graded_adopted = stats.adopted;
+        metrics.graded_baked = stats.baked;
+        if self.transit_network.road_edit_is_staged()
+            && let Some(record) = self.undo_stack.back_mut()
+        {
+            record.roadbed = Some(restore);
+            record.graded = graded;
+        }
+        self.accept_staged_road_edit();
+        true
     }
 }
 
@@ -315,6 +276,20 @@ impl SimCore {
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
 
+        // The sync re-grades every road; an edit that leaves one steeper than 1:3, and steeper
+        // than before, is refused below (`roads.md` question 37, `ROAD-68-K15` (1)). O(edges),
+        // like the sync.
+        let roads: HashSet<usize> = (0..self.region_graph.edge_count())
+            .filter(|&edge| {
+                let edge = self.region_graph.edge(edge);
+                !edge.deleted
+                    && edge.primary_type == crate::simulation::network::types::TransitType::Road
+            })
+            .collect();
+        let grades_before: std::collections::HashMap<usize, f32> = roads
+            .iter()
+            .map(|&edge| (edge, self.edge_grade(edge)))
+            .collect();
         // The sync rebuilds every lane and renumbers them.
         let lane_identities = self
             .agents
@@ -344,6 +319,19 @@ impl SimCore {
                     "the terrain edit leaves node {node} without a layout or profile: {error:?}"
                 ),
             ));
+            self.undo_action_in_pool();
+            return;
+        }
+        // Rolled back the same way from the undo record, which restores the source terrain
+        // the sync and the lots read (`TERRAIN-07-E`).
+        if let Some(rejection) = self.steepened_profile(&roads, &grades_before) {
+            debug_log!(
+                "world-editor",
+                "terrain_edit_rolled_back reason={} {}",
+                rejection.reason,
+                rejection.detail
+            );
+            self.last_road_rejection = Some(rejection);
             self.undo_action_in_pool();
             return;
         }
@@ -3798,8 +3786,10 @@ mod tests {
         core.insert_refined_terrain_patch_cache_entries(cache_entries);
     }
 
+    // `TERRAIN-07-E`: the commit stages its graded tiles, and its undo record keeps the ones it
+    // replaced, before lanes publish.
     #[test]
-    fn accepted_road_has_current_terrain_payloads_before_publication() {
+    fn accepted_road_has_its_graded_tiles_before_publication() {
         let mut core = test_core();
         core.benchmark_mode = false;
         core.transit_network.begin_road_edit();
@@ -3819,21 +3809,10 @@ mod tests {
             "{}",
             core.last_road_timing
         );
-        assert!(!core.refined_terrain_patch_cache.is_empty());
-        for entry in core.refined_terrain_patch_cache.values() {
-            assert_eq!(
-                entry.surface_generation,
-                core.terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z)
-            );
-            assert!(
-                entry
-                    .windows
-                    .iter()
-                    .all(|window| window.mesh_result.is_ok())
-            );
-            assert!(entry.mesh_buffers.is_some());
-        }
+        let tiles = core.last_graded_tiles.as_ref().expect("the tiles bake");
+        assert!(!tiles.is_empty() && tiles.tiles().iter().all(|held| held.payload.graded));
         assert_eq!(core.undo_stack.len(), 1);
+        assert!(core.undo_stack[0].graded.is_some());
         assert!(!core.transit_network.road_edit_is_staged());
         assert!(
             core.transit_network.lane_system.lanes.is_empty(),
@@ -3841,8 +3820,10 @@ mod tests {
         );
     }
 
+    // Since `TERRAIN-07-E` no terrain failure refuses a road: a field reserved under the new
+    // road after its topology mutation is the refusal.
     #[test]
-    fn terrain_rejection_restores_split_dependents_and_preserves_undo_history() {
+    fn rejected_commit_restores_split_dependents_and_preserves_undo_history() {
         use crate::simulation::buildings::allocator::EdgeOccupancy;
         let mut core = test_core();
         core.benchmark_mode = false;
@@ -3894,10 +3875,17 @@ mod tests {
         assert_ne!(core.allocator.buildings[0].edge_idx, 0);
         core.transit_network.bulk_load = false;
         core.region_graph.rebuild_intersection_clips();
-        // Refined terrain cannot be prepared against an unfinished authored terrain stroke.
-        core.terrain_stroke_active = true;
+        core.allocator.field_clearance_mut().set(
+            0,
+            &[
+                Vector2::new(-0.5, -40.5),
+                Vector2::new(0.5, -40.5),
+                Vector2::new(0.5, -39.5),
+                Vector2::new(-0.5, -39.5),
+            ],
+        );
         assert!(!core.validate_staged_road_render());
-        assert!(core.last_road_timing.contains("terrain_input_unavailable"));
+        assert!(core.last_road_timing.contains("field_overlap"));
         assert_eq!(core.undo_stack.len(), 30);
         assert_eq!(core.region_graph.edge_count(), 1);
         assert_eq!(

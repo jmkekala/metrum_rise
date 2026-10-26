@@ -33,7 +33,11 @@ fn terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility() {
         let undo_count = core.undo_stack.len();
         let revision = core.zoning.cell_external_revision();
         let terrain_generation = core.heightmap.source_generation();
-        let center = lot.center();
+        // A mound centred 10 m beyond the lot, away from the road: it blocks the lot, and the
+        // road can follow it. One over the road as well would leave the road steeper than 1:3,
+        // which the edit refuses (`roads.md` question 37, `TERRAIN-07-E`).
+        let away = DVec2::new(angle.cos(), angle.sin()).perp() * 20.0;
+        let center = lot.center() + Vector2::new(away.x as f32, away.y as f32);
         core.start_terrain_stroke_internal();
         core.sculpt_terrain_stroke_step_internal(Vector2::new(center.x, center.y), 20.0, 10.0);
         assert!(core.end_terrain_stroke_internal());

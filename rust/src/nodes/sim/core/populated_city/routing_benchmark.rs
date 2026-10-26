@@ -1125,8 +1125,8 @@ fn profile_commits(
     let patches: Vec<(usize, usize)> = (0..core.heightmap.render_patch_rows())
         .flat_map(|z| (0..core.heightmap.render_patch_cols()).map(move |x| (x, z)))
         .collect();
-    let (refined, _) = crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
-        core, &patches, None,
+    let refined = crate::nodes::simulation_node::SimulationNode::build_road_terrain_patches(
+        core, &patches,
     )
     .unwrap_or_else(|reason| panic!("the city's refined terrain must build: {reason}"));
     core.insert_refined_terrain_patch_cache_entries(refined);
@@ -1206,7 +1206,6 @@ fn profile_commits(
             "zoning_ms": m.zoning_ms, "add_ms": m.add_ms, "surface_ms": m.surface_ms,
             "surface_roadbed_ms": m.surface_roadbed_ms,
             "surface_overlap_ms": m.surface_overlap_ms,
-            "surface_terrain_ms": m.surface_terrain_ms,
             "surface_graded_ms": m.surface_graded_ms, "graded_select_ms": m.graded_select_ms,
             "graded_inputs_ms": m.graded_inputs_ms, "graded_bake_ms": m.graded_bake_ms,
             "graded_adopted": m.graded_adopted, "graded_baked": m.graded_baked,

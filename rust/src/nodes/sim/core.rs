@@ -69,7 +69,7 @@ pub(crate) use terrain_payloads::{
     CachedTerrainCdtRoadInput, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, ROAD_PREVIEW_TERRAIN_GENERATION,
     RefinedTerrainAssemblyLedger, RefinedTerrainAssemblyScope, RefinedTerrainCdtWindowBuildInput,
     RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey,
-    RefinedTerrainRestore, RoadPreviewTerrain, RoadPreviewTerrainPatch, RoadTerrainSourceSignature,
+    RoadPreviewTerrain, RoadPreviewTerrainPatch,
 };
 pub(crate) use thread::run_sim_thread;
 pub(crate) use water_preview::{

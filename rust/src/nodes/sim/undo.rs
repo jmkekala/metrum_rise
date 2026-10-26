@@ -25,7 +25,6 @@ impl SimCore {
         }
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
-            refined_terrain: None,
             graded: None,
             terrain: None,
             water: None,
@@ -63,10 +62,11 @@ impl SimCore {
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
-            refined_terrain: None,
             graded: None,
+            // The authoritative source terrain: the stroke solve, the lots and the graded base
+            // read it, and the visual buffer equals it (`TERRAIN-07-E`, authoritative undo).
             terrain: if inc_terrain {
-                Some(self.heightmap.clone_visual_dense())
+                Some(self.heightmap.clone_source_dense())
             } else {
                 None
             },
@@ -134,7 +134,6 @@ impl SimCore {
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
-            refined_terrain: None,
             graded: None,
             terrain: None,
             water: None,
@@ -166,7 +165,6 @@ impl SimCore {
         }
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
-            refined_terrain: None,
             graded: None,
             terrain: None,
             water: None,
@@ -207,7 +205,7 @@ impl SimCore {
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
-        self.reset_local_network_render_state(&edge_ids, &node_ids, restore, None, None);
+        self.reset_local_network_render_state(&edge_ids, &node_ids, restore, None);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
     }
 
@@ -228,7 +226,6 @@ impl SimCore {
         };
         self.push_undo_snapshot(SimulationSnapshot {
             roadbed: None,
-            refined_terrain: None,
             graded: None,
             terrain: None,
             water: None,
@@ -423,7 +420,6 @@ impl SimCore {
                 water,
                 trans_graph,
                 roadbed,
-                refined_terrain,
                 graded,
                 zoning,
                 runtime,
@@ -439,8 +435,9 @@ impl SimCore {
 
             if let Some(t_data) = terrain {
                 self.heightmap
-                    .replace_visual_from_dense(&t_data)
+                    .replace_source_from_dense(&t_data)
                     .expect("undo terrain snapshot must match the live terrain dimensions");
+                self.heightmap.reset_visuals_from_source();
                 sync_trans_graph = true;
             }
             if let Some(w_data) = water {
@@ -518,7 +515,6 @@ impl SimCore {
                         &edge_ids,
                         &node_ids,
                         roadbed.as_ref(),
-                        refined_terrain,
                         graded,
                     );
                 }
@@ -617,89 +613,32 @@ impl SimCore {
 
     // Undo restores the graph. The roadbed swaps back the pieces the edit's install replaced
     // when nothing rebuilt them since (`ROAD-68-E`), so it holds the pre-edit pieces themselves;
-    // otherwise it rebuilds the restored owners' pieces from the restored graph. After a swap the
-    // pre-edit refined terrain entries come back too, when no generation of their patches moved
-    // since the edit: the inputs are the pre-edit inputs again, so they are the terrain a rebuild
-    // would make, and they are the pre-edit terrain itself. With the edit's graded record the
-    // restored roadbed is published now and the graded tiles staged from the kept ones
-    // (`TERRAIN-07-E`).
+    // otherwise it rebuilds the restored owners' pieces from the restored graph. With the edit's
+    // graded record the restored roadbed is published now and the graded tiles staged from the
+    // kept ones (`TERRAIN-07-E`).
     fn reset_local_network_render_state(
         &mut self,
         edge_ids: &HashSet<usize>,
         node_ids: &HashSet<u32>,
         restore: Option<&crate::simulation::network::roadbed::RoadbedRestore>,
-        refined_terrain: Option<crate::nodes::sim::core::RefinedTerrainRestore>,
         graded: Option<crate::nodes::sim::core::GradedUndo>,
     ) {
         let before = graded
             .as_ref()
             .map(|_| self.transit_network.roadbed.snapshot());
-        let mut published = false;
         let roadbed = &mut self.transit_network.roadbed;
-        let swapped = match restore.filter(|restore| roadbed.can_restore(restore)) {
-            Some(restore) => {
-                roadbed.restore(restore);
-                true
-            }
-            None => {
-                self.transit_network
-                    .mark_surface_dirty_from_sets(edge_ids, node_ids);
-                false
-            }
-        };
-        if let Some(terrain) = refined_terrain.filter(|_| swapped) {
-            let unmoved = self.terrain_payload_global_generation == terrain.global_generation
-                && terrain.patches.iter().all(|&(key, _, generation)| {
-                    self.terrain_payload_generation_for_patch(key.0, key.1) == generation
-                });
-            // The swap's stamps: the same pieces as the edit's, old and new exchanged.
-            let (patches, _, _) = self.publish_network_surface(false, None);
-            published = true;
-            let same_patches = patches.len() == terrain.patches.len()
-                && patches
-                    .iter()
-                    .zip(&terrain.patches)
-                    .all(|(key, (recorded, _, _))| key == recorded);
-            if unmoved && same_patches {
-                self.put_back_refined_terrain(terrain);
-            }
+        match restore.filter(|restore| roadbed.can_restore(restore)) {
+            Some(restore) => roadbed.restore(restore),
+            None => self
+                .transit_network
+                .mark_surface_dirty_from_sets(edge_ids, node_ids),
         }
         if let (Some(before), Some(graded)) = (before, graded) {
-            if !published {
-                self.publish_network_surface(false, None);
-            }
+            self.publish_network_surface(false, None);
             self.restage_graded_tiles_for_undo(&before, graded);
         }
         self.terrain_dirty = true;
         self.mark_local_network_render_dirty();
-    }
-
-    // Installs the recorded pre-edit entries at their patches' current generations; a patch
-    // that had none loses the edit's.
-    fn put_back_refined_terrain(
-        &mut self,
-        terrain: crate::nodes::sim::core::RefinedTerrainRestore,
-    ) {
-        let step_m = crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
-        let mut entries = Vec::with_capacity(terrain.patches.len());
-        for (key, entry, _) in terrain.patches {
-            let cache_key = crate::nodes::simulation_node::SimulationNode::refined_patch_cache_key(
-                key.0, key.1, step_m,
-            );
-            match entry {
-                Some(entry) => entries.push(std::sync::Arc::new(
-                    crate::nodes::sim::core::CachedRefinedTerrainPatch {
-                        surface_generation: self.terrain_payload_generation_for_patch(key.0, key.1),
-                        ..crate::nodes::sim::core::CachedRefinedTerrainPatch::clone(&entry)
-                    },
-                )),
-                None => {
-                    self.refined_terrain_patch_cache.remove(&cache_key);
-                    self.road_terrain_inputs.note([key]);
-                }
-            }
-        }
-        self.insert_refined_terrain_patch_cache_entries(entries);
     }
 
     fn can_restore_building_removal_undo(&self, undo: &BuildingRemovalUndo) -> bool {

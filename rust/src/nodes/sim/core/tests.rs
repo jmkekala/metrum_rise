@@ -774,8 +774,11 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
     );
 }
 
+// A commit refused after its planned topology mutation restores the split's dependents. Since
+// `TERRAIN-07-E` no terrain failure refuses a road, so a field reserved under the new road after
+// the plan is the refusal.
 #[test]
-fn planned_topology_terrain_rejection_restores_split_dependents() {
+fn planned_topology_rejection_restores_split_dependents() {
     use crate::simulation::buildings::allocator::EdgeOccupancy;
     let mut core = test_core();
     core.benchmark_mode = false;
@@ -841,10 +844,17 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     assert!(result.committed && result.finalized_geometry.is_some());
     assert_ne!(core.allocator.buildings[0].edge_idx, original.edge_idx);
     core.transit_network.bulk_load = false;
-    core.terrain_stroke_active = true;
-    // Refined terrain cannot be prepared against an unfinished authored terrain stroke.
+    core.allocator.field_clearance_mut().set(
+        0,
+        &[
+            godot::prelude::Vector2::new(-0.5, -40.5),
+            godot::prelude::Vector2::new(0.5, -40.5),
+            godot::prelude::Vector2::new(0.5, -39.5),
+            godot::prelude::Vector2::new(-0.5, -39.5),
+        ],
+    );
     assert!(!core.validate_staged_road_render());
-    assert!(core.last_road_timing.contains("terrain_input_unavailable"));
+    assert!(core.last_road_timing.contains("field_overlap"));
     assert_eq!(core.region_graph.edge_count(), 1);
     assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
     let restored = &core.allocator.buildings[0];

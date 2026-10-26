@@ -60,40 +60,35 @@ impl SiteSource for PreviewSites<'_> {
         thread_local! {
             static KEYS: std::cell::RefCell<Vec<(usize, usize)>> =
                 const { std::cell::RefCell::new(Vec::new()) };
+            static SNAPSHOTS: std::cell::RefCell<Vec<Arc<BuildingSiteTerrainSnapshot>>> =
+                const { std::cell::RefCell::new(Vec::new()) };
         }
         // A site meeting the rectangle holds a point of it, in a patch whose bounds the
         // rectangle meets, and that patch captured every site meeting its bounds.
         KEYS.with_borrow_mut(|keys| {
-            keys.clear();
-            let [min_x, min_z, max_x, max_z] = rect;
-            self.terrain.append_render_patch_keys_for_world_bounds(
-                (min_x - 1.0) as f32,
-                (min_z - 1.0) as f32,
-                (max_x + 1.0) as f32,
-                (max_z + 1.0) as f32,
-                keys,
-            );
-            let mut snapshots: [Option<&BuildingSiteTerrainSnapshot>; 9] = [None; 9];
-            let mut count = 0;
-            for key in keys.iter() {
-                if let Some(patch) = self.inputs.patch(*key) {
-                    assert!(
-                        count < snapshots.len(),
-                        "a graded window meets at most 3 x 3 patches"
-                    );
-                    snapshots[count] = Some(patch.sites.as_ref());
-                    count += 1;
-                }
-            }
-            let snapshots: [&BuildingSiteTerrainSnapshot; 9] =
-                snapshots.map(|snapshot| snapshot.unwrap_or(&EMPTY_SITES));
-            BuildingSiteTerrainSnapshot::push_graded_sites(&snapshots[..count], rect, out);
+            SNAPSHOTS.with_borrow_mut(|snapshots| {
+                keys.clear();
+                let [min_x, min_z, max_x, max_z] = rect;
+                self.terrain.append_render_patch_keys_for_world_bounds(
+                    (min_x - 1.0) as f32,
+                    (min_z - 1.0) as f32,
+                    (max_x + 1.0) as f32,
+                    (max_z + 1.0) as f32,
+                    keys,
+                );
+                snapshots.clear();
+                snapshots.extend(
+                    keys.iter()
+                        .filter_map(|key| self.inputs.patch(*key))
+                        .map(|patch| Arc::clone(&patch.sites)),
+                );
+                BuildingSiteTerrainSnapshot::push_graded_sites(snapshots, rect, out);
+                // Nothing outlives the query.
+                snapshots.clear();
+            })
         });
     }
 }
-
-static EMPTY_SITES: std::sync::LazyLock<BuildingSiteTerrainSnapshot> =
-    std::sync::LazyLock::new(BuildingSiteTerrainSnapshot::default);
 
 /// One pose's graded tiles: the staged tiles, or why the pose could not bake them, with what
 /// the staging did.

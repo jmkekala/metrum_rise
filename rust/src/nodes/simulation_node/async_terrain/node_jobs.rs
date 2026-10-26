@@ -7,7 +7,7 @@ use super::state::*;
 use crate::nodes::sim::core::{
     ROAD_LOCKED_TERRAIN_RENDER_STEP_M, ROAD_PREVIEW_TERRAIN_GENERATION,
     RefinedTerrainAssemblyLedger, RefinedTerrainAssemblyScope, RoadPreviewTerrain,
-    RoadPreviewTerrainPatch, RoadTerrainInputs, RoadTerrainPatchInputs, RoadTerrainSourceSignature,
+    RoadPreviewTerrainPatch, RoadTerrainInputs, RoadTerrainPatchInputs,
 };
 use std::collections::BTreeSet;
 
@@ -24,26 +24,23 @@ pub(in crate::nodes::simulation_node) struct RefinedTerrainSourceInputs<'a> {
 }
 
 impl SimulationNode {
-    /// Builds the actual renderer products for the edit's affected patches before acceptance.
-    /// Work is limited to those patches and their dirty 64 m windows; no world snapshot is copied.
-    /// When `preview` built the same sources (the same signatures for the same patches), its
-    /// entries are adopted, re-stamped with the patches' generations, instead of rebuilt
-    /// (`ROAD-68-E`); the second value tells which happened. The caller passes a preview only
-    /// when it installed the preview's pieces into this core.
-    pub(crate) fn validate_staged_road_terrain(
+    /// Builds the exact cut's refined entries of `patch_keys` synchronously, limited to those
+    /// patches and their dirty 64 m windows: the legacy terrain path (`TERRAIN-07-G` deletes
+    /// it), for the commit breakdown's fixture and the exact cut's tests. No commit calls it
+    /// since `TERRAIN-07-E`, so no terrain failure can reject a road. Fails on the first typed
+    /// CDT failure.
+    #[cfg(test)]
+    pub(crate) fn build_road_terrain_patches(
         core: &mut SimCore,
         patch_keys: &[(usize, usize)],
-        preview: Option<&RoadPreviewTerrain>,
-    ) -> Result<(Vec<Arc<CachedRefinedTerrainPatch>>, bool), String> {
+    ) -> Result<Vec<Arc<CachedRefinedTerrainPatch>>, String> {
         core.refresh_engineered_terrain_patch_ownership_for_keys(
             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             patch_keys,
         );
         let mut sources = Vec::with_capacity(patch_keys.len());
-        let mut signatures = Vec::with_capacity(patch_keys.len());
         for &(patch_x, patch_z) in patch_keys {
             if !core.terrain_patch_requires_engineered_refinement(patch_x, patch_z) {
-                signatures.push(((patch_x, patch_z), None));
                 continue;
             }
             let request = TerrainPatchPayloadRequest {
@@ -57,46 +54,15 @@ impl SimulationNode {
             };
             let source = Self::terrain_patch_payload_build_source_for_request(core, request)
                 .map_err(|_| format!("terrain_input_unavailable patch=({patch_x},{patch_z})"))?;
-            let signature = match &source {
-                TerrainPatchPayloadBuildSource::Refined(source) => {
-                    Some(Self::road_terrain_source_signature(source))
-                }
-                TerrainPatchPayloadBuildSource::Ready(_) => None,
-            };
-            signatures.push(((patch_x, patch_z), signature));
             sources.push(source);
         }
-        if let Some(preview) = preview
-            && preview.patches.len() == signatures.len()
-            && preview
-                .patches
-                .iter()
-                .zip(&signatures)
-                .all(|(patch, (key, signature))| patch.key == *key && patch.source == *signature)
-        {
-            let entries = preview
-                .patches
-                .iter()
-                .filter_map(|patch| patch.entry.as_ref())
-                .map(|entry| {
-                    let generation = core
-                        .terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z);
-                    Arc::new(CachedRefinedTerrainPatch {
-                        surface_generation: generation,
-                        ..CachedRefinedTerrainPatch::clone(entry)
-                    })
-                })
-                .collect();
-            return Ok((entries, true));
-        }
-        let entries = Self::build_road_terrain_sources(
+        Self::build_road_terrain_sources(
             &core.region_graph,
             &core.transit_network.roadbed,
             &core.heightmap,
             core.road_tool_surface_generation,
             sources,
-        )?;
-        Ok((entries, false))
+        )
     }
 
     // Builds the sources' refined entries in parallel (the caller is inside the shared pool)
@@ -140,27 +106,11 @@ impl SimulationNode {
         Ok(entries)
     }
 
-    fn road_terrain_source_signature(
-        source: &RefinedTerrainPatchBuildSource,
-    ) -> RoadTerrainSourceSignature {
-        RoadTerrainSourceSignature {
-            previous: source.previous.clone(),
-            scope: match &source.assembly_scope {
-                RefinedTerrainAssemblyScope::FullPatch => None,
-                RefinedTerrainAssemblyScope::LocalTiles(tiles) => Some(tiles.clone()),
-            },
-            requires_engineered_refinement: source.requires_engineered_refinement,
-            requires_road_clipping: source.requires_road_clipping,
-            road_locked_margin_bits: source.road_locked_margin_m.to_bits(),
-            sites: source.sites.clone(),
-        }
-    }
-
     /// The preview's terrain stage (`ROAD-68-E`): the patches and tiles `tiles` names (what a
     /// commit of the same pieces stamps), built from the road tool's terrain inputs, the edited
-    /// `graph` and the preview's `roadbed` through the commit's ownership, source and build
-    /// functions, in parallel on the shared pool. Entries carry
-    /// [`ROAD_PREVIEW_TERRAIN_GENERATION`]. Fails as the commit's validation would.
+    /// `graph` and the preview's `roadbed` through the exact cut's ownership, source and build
+    /// functions, in parallel on the shared pool, for Godot's preview of the exact cut until
+    /// the graded tiles replace it there. Entries carry [`ROAD_PREVIEW_TERRAIN_GENERATION`].
     /// `O(touched patches * their dirty tiles' CDT)`, independent of the city.
     pub(crate) fn build_road_preview_terrain(
         terrain: &TerrainSystem,
@@ -217,11 +167,7 @@ impl SimulationNode {
                 site_margin_m,
             );
             if engineered_margin_m.is_none() {
-                patches.push(RoadPreviewTerrainPatch {
-                    key,
-                    source: None,
-                    entry: None,
-                });
+                patches.push(RoadPreviewTerrainPatch { key, entry: None });
                 continue;
             }
             let patch = terrain
@@ -260,11 +206,7 @@ impl SimulationNode {
                     patch_inputs.sites.within_bounds(min_x, min_z, max_x, max_z)
                 },
             );
-            patches.push(RoadPreviewTerrainPatch {
-                key,
-                source: Some(Self::road_terrain_source_signature(&source)),
-                entry: None,
-            });
+            patches.push(RoadPreviewTerrainPatch { key, entry: None });
             sources.push(TerrainPatchPayloadBuildSource::Refined(source));
         }
         let entries = Self::build_road_terrain_sources(

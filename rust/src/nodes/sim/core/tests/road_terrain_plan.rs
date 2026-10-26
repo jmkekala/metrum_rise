@@ -386,6 +386,47 @@ fn a_node_move_that_steepens_a_road_past_one_in_three_is_refused() {
     assert!(core.move_network_node_internal(end as i32, at + Vector3::new(0.0, 0.5, 0.0)));
 }
 
+// A terrain edit may not leave a road steeper than 1:3 and steeper than before either
+// (`ROAD-68-K15` (1), decided by the user 2026-10-26 for `TERRAIN-07-E`): a 20 m mound under a
+// flat road is refused with `road_too_steep` and rolled back from its undo record, which
+// restores the source terrain the roads and lots read, and the road as it was.
+#[test]
+fn a_terrain_edit_that_steepens_a_road_past_one_in_three_is_refused() {
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    commit_ready(
+        &mut core,
+        vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)],
+    );
+    let (source, visual) = (
+        core.heightmap.clone_source_dense(),
+        core.heightmap.clone_visual_dense(),
+    );
+    let profile = core.region_graph.edge(0).physical_geometry.clone();
+    core.start_terrain_stroke_internal();
+    core.sculpt_terrain_stroke_step_internal(
+        Vector2::ZERO,
+        12.0,
+        20.0 / crate::config::HEIGHT_SCALE,
+    );
+    core.end_terrain_stroke_internal();
+    assert_eq!(
+        core.last_road_rejection
+            .as_ref()
+            .map(|rejection| rejection.reason.as_str()),
+        Some("road_too_steep")
+    );
+    assert!(
+        core.heightmap.clone_source_dense() == source,
+        "the source terrain is restored"
+    );
+    assert!(
+        core.heightmap.clone_visual_dense() == visual,
+        "the visual terrain is restored"
+    );
+    assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
+}
+
 #[test]
 fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
     let mut core = test_core();
@@ -1783,14 +1824,7 @@ fn bulk_trunk_world(background: usize) -> SimCore {
 
 // The patches whose refined terrain one T-branch commit on the trunk built: every cache entry
 // it added or replaced.
-fn patches_built_by_trunk_branch(core: &mut SimCore) -> Vec<(usize, usize)> {
-    let entry =
-        |key: &crate::nodes::sim::core::RefinedTerrainPatchCacheKey| (key.patch_x, key.patch_z);
-    let before: std::collections::BTreeMap<_, _> = core
-        .refined_terrain_patch_cache
-        .iter()
-        .map(|(key, patch)| (entry(key), std::sync::Arc::as_ptr(patch)))
-        .collect();
+fn tiles_graded_by_trunk_branch(core: &mut SimCore) -> Vec<(i32, i32)> {
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
     let outcome = core.commit_road(
@@ -1808,25 +1842,23 @@ fn patches_built_by_trunk_branch(core: &mut SimCore) -> Vec<(usize, usize)> {
         Default::default(),
     );
     assert!(outcome.committed, "{}", outcome.rejection);
-    let mut built: Vec<(usize, usize)> = core
-        .refined_terrain_patch_cache
+    let tiles = core.last_graded_tiles.as_ref().expect("the tiles bake");
+    tiles
+        .tiles()
         .iter()
-        .filter(|(key, patch)| before.get(&entry(key)) != Some(&std::sync::Arc::as_ptr(patch)))
-        .map(|(key, _)| entry(key))
-        .collect();
-    built.sort_unstable();
-    built
+        .map(|held| (held.tile.x, held.tile.z))
+        .collect()
 }
 
-// The first commit after a world-scale road build validates only the terrain its own edit
-// changed: roads built elsewhere before it (bulk load, load) are the world refresh's, not the
-// commit's, so the patches it builds do not grow with the city (`ROAD-68-D` part 6). Before,
-// the roadbed kept every compile's changed piece bounds until a road edit took them, and the
-// first commit at 100k residents graded and built every road patch of the city.
+// The first commit after a world-scale road build grades only the terrain its own edit changed:
+// roads built elsewhere before it (bulk load, load) are the world refresh's, not the commit's,
+// so the tiles it stages do not grow with the city (`ROAD-68-D` part 6, the graded tiles since
+// `TERRAIN-07-E`). Before, the roadbed kept every compile's changed piece bounds until a road
+// edit took them, and the first commit at 100k residents graded every road patch of the city.
 #[test]
 fn the_first_commit_builds_only_its_own_terrain_as_the_city_grows() {
-    let alone = patches_built_by_trunk_branch(&mut bulk_trunk_world(0));
-    let in_city = patches_built_by_trunk_branch(&mut bulk_trunk_world(5));
+    let alone = tiles_graded_by_trunk_branch(&mut bulk_trunk_world(0));
+    let in_city = tiles_graded_by_trunk_branch(&mut bulk_trunk_world(5));
     assert!(!alone.is_empty(), "the T must build the terrain around it");
     assert_eq!(
         alone, in_city,

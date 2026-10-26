@@ -69,18 +69,6 @@ fn context(core: &mut SimCore) -> RoadPreviewContext {
     RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"))
 }
 
-// Every refined cache entry's final render buffers, by patch, as `Debug` text: it prints each
-// float's shortest round-trip form, so equal text is equal bits.
-fn terrain_buffers(core: &SimCore) -> BTreeMap<(usize, usize), String> {
-    core.refined_terrain_patch_cache
-        .values()
-        .map(|entry| {
-            let key = (entry.key.patch_x, entry.key.patch_z);
-            (key, format!("{:?}", entry.mesh_buffers))
-        })
-        .collect()
-}
-
 fn preview(context: &mut RoadPreviewContext, points: &[Vector3]) -> RoadPreview {
     let surface_generation = context.view.surface_generation;
     context.preview_road(RoadPreviewRequest {
@@ -228,10 +216,6 @@ fn a_stale_preview_recompiles_to_a_fresh_commit() {
             !core.last_road_edit_metrics.preview_plan_reused,
             "sloped {sloped}: a stale fingerprint recompiles"
         );
-        assert!(
-            !core.last_road_edit_metrics.preview_terrain_adopted,
-            "sloped {sloped}: a stale preview's terrain is rebuilt"
-        );
         let control = committed(&[THROUGH, elsewhere], &[0, 1], sloped);
         let mut control = control;
         commit(&mut control, &side_points, None);
@@ -240,73 +224,6 @@ fn a_stale_preview_recompiles_to_a_fresh_commit() {
             bits_only(&pieces(&control)),
             "sloped {sloped}: the stale commit equals a fresh one"
         );
-        assert_eq!(
-            terrain_buffers(&core),
-            terrain_buffers(&control),
-            "sloped {sloped}: the stale commit's terrain equals a fresh one's"
-        );
-    }
-}
-
-#[test]
-fn preview_terrain_is_what_the_commit_installs() {
-    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
-    for sloped in [false, true] {
-        let mut core = committed(&[THROUGH], &[0], sloped);
-        let mut control = committed(&[THROUGH], &[0], sloped);
-        let points = stroke(&core, side);
-        let mut context = context(&mut core);
-        let preview = Arc::new(preview(&mut context, &points));
-        let terrain = preview
-            .pieces
-            .as_ref()
-            .expect("a valid stroke compiles pieces")
-            .terrain
-            .as_ref()
-            .expect("the preview's terrain builds");
-        let entries: Vec<_> = terrain
-            .patches
-            .iter()
-            .filter_map(|patch| patch.entry.as_ref())
-            .collect();
-        assert!(
-            !entries.is_empty(),
-            "sloped {sloped}: the T touches refined terrain"
-        );
-        commit(&mut core, &points, Some(Arc::clone(&preview)));
-        assert!(
-            core.last_road_edit_metrics.preview_terrain_adopted,
-            "sloped {sloped}: a current preview's terrain is the commit's"
-        );
-        for entry in &entries {
-            let live = &core.refined_terrain_patch_cache[&entry.key];
-            assert_eq!(
-                live.surface_generation,
-                core.terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z),
-                "the adopted entry carries the commit's generation"
-            );
-            if let (Some(live), Some(previewed)) = (&live.mesh_buffers, &entry.mesh_buffers) {
-                assert!(Arc::ptr_eq(live, previewed), "the preview's own buffers");
-            }
-        }
-        commit(&mut control, &points, None);
-        assert!(!control.last_road_edit_metrics.preview_terrain_adopted);
-        assert_eq!(
-            terrain_buffers(&core),
-            terrain_buffers(&control),
-            "sloped {sloped}: the adopted terrain equals a fresh commit's bit for bit"
-        );
-        for entry in &entries {
-            assert_eq!(
-                format!("{:?}", entry.mesh_buffers),
-                format!(
-                    "{:?}",
-                    control.refined_terrain_patch_cache[&entry.key].mesh_buffers
-                ),
-                "sloped {sloped}: the previewed patch {:?} equals a fresh commit's",
-                entry.key
-            );
-        }
     }
 }
 
@@ -330,53 +247,6 @@ fn undo_swaps_the_pre_edit_pieces_back() {
             before,
             "sloped {sloped}: undo restores the pre-edit pieces themselves"
         );
-    }
-}
-
-#[test]
-fn undo_puts_the_pre_edit_terrain_back() {
-    let side = [Vector2::ZERO, Vector2::new(0.0, ARM_M)];
-    for sloped in [false, true] {
-        let mut core = committed(&[THROUGH], &[0], sloped);
-        core.benchmark_mode = false;
-        let before = terrain_buffers(&core);
-        let entries_before: BTreeMap<_, _> = core
-            .refined_terrain_patch_cache
-            .iter()
-            .map(|(key, entry)| ((key.patch_x, key.patch_z), entry.mesh_buffers.clone()))
-            .collect();
-        let points = stroke(&core, side);
-        let mut context = context(&mut core);
-        let preview = Arc::new(preview(&mut context, &points));
-        commit(&mut core, &points, Some(preview));
-        assert_ne!(
-            terrain_buffers(&core),
-            before,
-            "sloped {sloped}: the T changes terrain"
-        );
-
-        assert!(core.undo_action_internal());
-        assert_eq!(
-            terrain_buffers(&core),
-            before,
-            "sloped {sloped}: undo restores the pre-edit terrain bit for bit"
-        );
-        for (key, entry) in &core.refined_terrain_patch_cache {
-            assert_eq!(
-                entry.surface_generation,
-                core.terrain_payload_generation_for_patch(key.patch_x, key.patch_z),
-                "a restored entry is current"
-            );
-            if let (Some(Some(old)), Some(restored)) = (
-                entries_before.get(&(key.patch_x, key.patch_z)),
-                &entry.mesh_buffers,
-            ) {
-                assert!(
-                    Arc::ptr_eq(old, restored),
-                    "the pre-edit buffers themselves"
-                );
-            }
-        }
     }
 }
 
@@ -749,7 +619,7 @@ fn benchmark_road_preview_stages() {
         assert!(context.apply(&publication));
         let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} terrain_adopted={} edges={}",
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
             crate::thread_pools::install(rayon::current_num_threads),
             8 * 50,
             payload_vertices / 8,
@@ -776,17 +646,13 @@ fn benchmark_road_preview_stages() {
             outcome.snapshot_ms,
             apply_ms,
             graph_copy_ms,
-            core.last_road_edit_metrics.preview_terrain_adopted,
             core.region_graph.edge_count(),
         );
     }
 }
 
-// A patch and the tiles it re-assembles, `None` for the full patch.
-type PatchScope = ((usize, usize), Option<Vec<(i64, i64)>>);
-
-// The refined patches the preview built and the tiles each re-assembles.
-fn previewed_scope(preview: &RoadPreview) -> Vec<PatchScope> {
+// The refined patches the preview built.
+fn previewed_scope(preview: &RoadPreview) -> Vec<(usize, usize)> {
     let terrain = preview
         .pieces
         .as_ref()
@@ -794,22 +660,13 @@ fn previewed_scope(preview: &RoadPreview) -> Vec<PatchScope> {
         .terrain
         .as_ref()
         .expect("the preview's terrain builds");
-    terrain
-        .patches
-        .iter()
-        .map(|patch| {
-            let scope = patch
-                .source
-                .as_ref()
-                .and_then(|source| source.scope.clone());
-            (patch.key, scope)
-        })
-        .collect()
+    terrain.patches.iter().map(|patch| patch.key).collect()
 }
 
 // A T on a straight trunk changes the terrain only around the junction: the split trunk's far
-// half keeps its chain segments, so the preview builds, and the commit stamps, the same patches
-// and tiles on a 220 m trunk as on a 660 m one, flat and sloped (`ROAD-68-E` locality).
+// half keeps its chain segments, so the preview builds the same exact-cut patches, and the
+// commit adopts the same graded tiles, on a 220 m trunk as on a 660 m one, flat and sloped
+// (`ROAD-68-E` and `TERRAIN-07-E` locality).
 #[test]
 fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
     let side = [Vector2::new(0.0, -80.0), Vector2::new(25.0, 0.0)];
@@ -823,69 +680,29 @@ fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
                 let preview = Arc::new(preview(&mut context, &points));
                 let scope = previewed_scope(&preview);
                 commit(&mut core, &points, Some(preview));
-                assert!(
-                    core.last_road_edit_metrics.preview_terrain_adopted,
-                    "sloped {sloped}, trunk {half_m}: the commit stamps the previewed patches"
+                // `TERRAIN-07-E`: the commit adopts the preview's graded tiles, the same tiles
+                // on either trunk.
+                assert_eq!(
+                    core.last_road_edit_metrics.graded_baked, 0,
+                    "sloped {sloped}, trunk {half_m}: the commit adopts the previewed tiles"
                 );
-                scope
+                let tiles = core.last_graded_tiles.as_ref().expect("the tiles bake");
+                let tiles: Vec<_> = tiles
+                    .tiles()
+                    .iter()
+                    .map(|held| (held.tile.x, held.tile.z))
+                    .collect();
+                (scope, tiles)
             })
             .into_iter()
             .collect();
         assert!(
-            !scopes[0].is_empty(),
+            !scopes[0].0.is_empty() && !scopes[0].1.is_empty(),
             "sloped {sloped}: the T touches terrain"
         );
         assert_eq!(
             scopes[0], scopes[1],
             "sloped {sloped}: the trunk's length does not change the terrain the T rebuilds"
-        );
-    }
-}
-
-// Terrain the commits assembled tile by tile equals terrain built from scratch from the same
-// roads, bit for bit: the tiles a split trunk's far half spans keep windows whose inputs did
-// not change (`ROAD-68-E`).
-#[test]
-fn incremental_road_terrain_equals_a_fresh_build() {
-    use crate::nodes::sim::core::terrain_payloads::CachedRefinedTerrainPatch;
-    use crate::nodes::simulation_node::SimulationNode;
-    let main = ([Vector2::new(-110.0, 0.0), Vector2::new(110.0, 0.0)], 1);
-    for (end_x, sloped) in [(25.0, false), (25.0, true), (-40.0, true)] {
-        let mut core = committed(&[main], &[0], sloped);
-        let points = stroke(&core, [Vector2::new(0.0, -80.0), Vector2::new(end_x, 0.0)]);
-        commit(&mut core, &points, None);
-        let window_keys = |entries: &mut dyn Iterator<Item = &Arc<CachedRefinedTerrainPatch>>| {
-            entries
-                .map(|entry| {
-                    let keys: Vec<_> = entry.windows.iter().map(|window| window.key).collect();
-                    ((entry.key.patch_x, entry.key.patch_z), keys)
-                })
-                .collect::<BTreeMap<_, _>>()
-        };
-        let incremental = terrain_buffers(&core);
-        let incremental_windows = window_keys(&mut core.refined_terrain_patch_cache.values());
-        let keys: Vec<_> = incremental.keys().copied().collect();
-        core.refined_terrain_patch_cache.clear();
-        core.refined_terrain_assembly_ledgers.clear();
-        let (entries, _) = crate::thread_pools::install(|| {
-            SimulationNode::validate_staged_road_terrain(&mut core, &keys, None)
-        })
-        .expect("the roads' terrain builds from scratch");
-        let fresh: BTreeMap<_, _> = entries
-            .iter()
-            .map(|entry| {
-                let key = (entry.key.patch_x, entry.key.patch_z);
-                (key, format!("{:?}", entry.mesh_buffers))
-            })
-            .collect();
-        assert_eq!(
-            incremental, fresh,
-            "T at {end_x}, sloped {sloped}: incremental terrain equals a fresh build"
-        );
-        assert_eq!(
-            incremental_windows,
-            window_keys(&mut entries.iter()),
-            "T at {end_x}, sloped {sloped}: every kept window's input is a fresh build's"
         );
     }
 }
@@ -908,14 +725,13 @@ fn measure_undo_record_heap() {
     let points = stroke(&core, [Vector2::new(0.0, -80.0), Vector2::new(25.0, 0.0)]);
     let preview = Arc::new(preview(&mut context(&mut core), &points));
     commit(&mut core, &points, Some(preview));
-    assert!(core.last_road_edit_metrics.preview_terrain_adopted);
     let record = core
         .undo_stack
         .pop_back()
         .expect("the commit records its undo");
     assert!(
-        record.roadbed.is_some() && record.refined_terrain.is_some(),
-        "the record holds the replaced pieces and terrain"
+        record.roadbed.is_some() && record.graded.is_some(),
+        "the record holds the replaced pieces and graded tiles"
     );
     if std::env::var("METRUM_UNDO_HEAP").as_deref() == Ok("forget") {
         std::mem::forget(record);

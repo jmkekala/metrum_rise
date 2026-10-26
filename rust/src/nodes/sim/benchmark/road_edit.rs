@@ -16,9 +16,6 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) add_ms: f64,
     /// Whether the exact road geometry came from the worker's latest completed preview.
     pub(crate) preview_plan_reused: bool,
-    /// Whether the commit installed the preview's terrain entries instead of building its own
-    /// (`ROAD-68-E`).
-    pub(crate) preview_terrain_adopted: bool,
     /// Reuse checks or a fresh local road solve; included in add_ms.
     pub(crate) road_plan_ms: f64,
     /// Deferred structural stamps, site capture and terrain compilation; included in add_ms.
@@ -27,13 +24,11 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) finalize_ms: f64,
     pub(crate) surface_ms: f64,
     // Children of surface_ms: roadbed compile or preview install with the undo capture, the
-    // field and cell overlap test, and the terrain validation and its cache install.
+    // field and cell overlap test, and the graded tiles (`TERRAIN-07-E`; no terrain validation
+    // since): their selection, input gathers and bakes, and how many tiles were adopted from
+    // the preview and baked.
     pub(crate) surface_roadbed_ms: f64,
     pub(crate) surface_overlap_ms: f64,
-    pub(crate) surface_terrain_ms: f64,
-    // The commit's graded tiles (`TERRAIN-07-E`), after the terrain validation: their
-    // selection, input gathers and bakes, and how many tiles were adopted from the preview
-    // and baked.
     pub(crate) surface_graded_ms: f64,
     pub(crate) graded_select_ms: f64,
     pub(crate) graded_inputs_ms: f64,
@@ -70,14 +65,12 @@ impl RoadEditMetrics {
             core_work_ms,
             add_ms,
             preview_plan_reused,
-            preview_terrain_adopted,
             road_plan_ms,
             terrain_plan_ms,
             finalize_ms,
             surface_ms,
             surface_roadbed_ms,
             surface_overlap_ms,
-            surface_terrain_ms,
             surface_graded_ms,
             graded_select_ms,
             graded_inputs_ms,

@@ -228,9 +228,8 @@ pub(crate) struct RoadPreviewPieces {
     pub(crate) roadbed: RoadbedSystem,
     /// Render chunks the delta changed, in ascending order.
     pub(crate) changed_chunks: Vec<SurfaceChunkKey>,
-    /// The terrain patches the delta's old and new pieces touch, as the commit builds them, or
-    /// the reason the commit's terrain validation would refuse the edit. A commit installs the
-    /// entries only when its own sources have the same signatures.
+    /// The exact cut's terrain patches the delta's old and new pieces touch, for Godot's
+    /// preview of the exact cut, or why they could not be built. No commit reads them.
     pub(crate) terrain: Result<RoadPreviewTerrain, String>,
     /// The pose's staged graded tiles (`TERRAIN-07-E`): the commit adopts those whose inputs
     /// equal its own.

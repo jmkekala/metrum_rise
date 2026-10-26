@@ -268,43 +268,10 @@ pub(crate) struct CachedRefinedTerrainPatch {
 /// them with its own generation.
 pub(crate) const ROAD_PREVIEW_TERRAIN_GENERATION: u64 = u64::MAX;
 
-/// What decides one road-touched patch's refined build besides the roads, the heightmap and the
-/// generation: the previous entry it reuses, the assembly scope, its ownership and margins and
-/// the building sites it reads. A commit adopts a preview's entry only when its own source has
-/// the same signature (`ROAD-68-E`).
-#[derive(Clone, Debug)]
-pub(crate) struct RoadTerrainSourceSignature {
-    pub(crate) previous: Option<Arc<CachedRefinedTerrainPatch>>,
-    /// The local tiles, or `None` for the full patch.
-    pub(crate) scope: Option<Vec<(i64, i64)>>,
-    pub(crate) requires_engineered_refinement: bool,
-    pub(crate) requires_road_clipping: bool,
-    pub(crate) road_locked_margin_bits: u32,
-    pub(crate) sites: crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot,
-}
-
-impl PartialEq for RoadTerrainSourceSignature {
-    fn eq(&self, other: &Self) -> bool {
-        let same_previous = match (&self.previous, &other.previous) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        same_previous
-            && self.scope == other.scope
-            && self.requires_engineered_refinement == other.requires_engineered_refinement
-            && self.requires_road_clipping == other.requires_road_clipping
-            && self.road_locked_margin_bits == other.road_locked_margin_bits
-            && self.sites == other.sites
-    }
-}
-
 /// One patch a preview's pieces touch.
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewTerrainPatch {
     pub(crate) key: (usize, usize),
-    /// The refined source's signature; `None` when the patch stays raw terrain.
-    pub(crate) source: Option<RoadTerrainSourceSignature>,
     /// The refined entry, with [`ROAD_PREVIEW_TERRAIN_GENERATION`]; `None` for raw terrain.
     pub(crate) entry: Option<Arc<CachedRefinedTerrainPatch>>,
 }
@@ -316,18 +283,3 @@ pub(crate) struct RoadPreviewTerrain {
     pub(crate) patches: Vec<RoadPreviewTerrainPatch>,
 }
 
-/// One patch of a [`RefinedTerrainRestore`]: its key, the entry before the edit and the
-/// patch's generation after it.
-pub(crate) type RestoredTerrainPatch =
-    ((usize, usize), Option<Arc<CachedRefinedTerrainPatch>>, u64);
-
-/// The refined entries a road edit's terrain validation replaced (`ROAD-68-E`): per patch the
-/// edit's stamps touched, the entry before the edit (`None` when it had none) and the patch's
-/// generation after the edit. Undo puts them back when the patches' generations have not moved
-/// since and its roadbed swap held, so the restored terrain is the pre-edit terrain itself.
-#[derive(Clone, Debug)]
-pub(crate) struct RefinedTerrainRestore {
-    pub(crate) patches: Vec<RestoredTerrainPatch>,
-    /// The global terrain payload generation after the edit.
-    pub(crate) global_generation: u64,
-}

@@ -175,16 +175,13 @@ impl SimCore {
             let surface_start = Instant::now();
             record_crash_phase_for_core(self, "add road render validation");
             let preview_pieces = preview.as_ref().and_then(|preview| preview.pieces.as_ref());
-            let accepted = self.validate_staged_road_render_installing(
+            road_add.committed = self.validate_staged_road_render_installing(
                 preview_pieces.map(|pieces| &pieces.delta),
-                preview_pieces.and_then(|pieces| pieces.terrain.as_ref().ok()),
                 preview_pieces
                     .and_then(|pieces| pieces.graded.stage.as_ref().ok())
                     .map(|stage| stage.as_ref()),
                 &mut edit_metrics,
             );
-            road_add.committed = accepted.is_some();
-            edit_metrics.preview_terrain_adopted = accepted == Some(true);
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
             if road_add.committed {
                 let t_inv = Instant::now();

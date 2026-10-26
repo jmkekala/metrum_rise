@@ -173,7 +173,7 @@ impl BuildingSiteTerrainSnapshot {
     /// not changed since, these are the allocator's sites, so the bake's inputs are the
     /// allocator's. `O(captured sites of the snapshots + n log n)` for the `n` sites kept.
     pub(crate) fn push_graded_sites(
-        snapshots: &[&BuildingSiteTerrainSnapshot],
+        snapshots: &[std::sync::Arc<BuildingSiteTerrainSnapshot>],
         rect: [f64; 4],
         out: &mut SiteBuffer,
     ) {

@@ -234,7 +234,7 @@ pub(crate) struct BuildingRemovalUndo {
 
 /// A snapshot of simulation state for undo history.
 pub(crate) struct SimulationSnapshot {
-    /// Terrain heightmap data.
+    /// The source terrain, dense: undo restores it and the visual buffer from it.
     pub(crate) terrain: Option<Vec<f32>>,
     /// Water runtime state.
     pub(crate) water: Option<WaterRuntimeSnapshot>,
@@ -242,8 +242,6 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) trans_graph: Option<RegionGraphUndoDelta>,
     /// The roadbed pieces the edit's install replaced; undo swaps them back (`ROAD-68-E`).
     pub(crate) roadbed: Option<crate::simulation::network::roadbed::RoadbedRestore>,
-    /// The refined terrain entries the edit replaced; undo puts them back (`ROAD-68-E`).
-    pub(crate) refined_terrain: Option<super::RefinedTerrainRestore>,
     /// The graded tiles the edit replaced; undo adopts those still current (`TERRAIN-07-E`).
     pub(crate) graded: Option<super::GradedUndo>,
     /// Parcels removed by one road bulldoze.
