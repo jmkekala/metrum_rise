@@ -5,6 +5,11 @@
 ## Without it the test exits at once. Each fixture is rendered flat and on a 2.5% slope, in three views:
 ## oblique (terrain), oblique_roads (terrain hidden, grey) and plan (top-down orthographic, 60 x 37.5 m);
 ## bridges add a fourth, side (the deck's side from 12 m, TERRAIN-07-B's fascias).
+## METRUM_ROAD_JUNCTION_TERRAIN=compare (TERRAIN-07-D) renders each fixture through the production
+## terrain renderer twice in one session, the exact cut (refined patches) and B (graded tiles over
+## plain patches), in the spike's views plus distance renders, adds the spike's fixtures and 8%
+## slopes, and counts background pinholes in plan_terrain. METRUM_ROAD_JUNCTION_FIXTURES limits the
+## fixtures (comma list of names), so a long set can run as several sessions.
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -12,6 +17,11 @@ const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const WORLD_M := 512.0
 const ARM_M := 80.0
 const SLOPE_RISE_M := 6.4 # over 256 m along +x: 2.5%
+const STEEP_RISE_M := 20.48 # over 256 m along +x: 8%
+# Distance renders (TERRAIN-07-D): the camera this far from the junction, 25 degrees down.
+const DISTANCES_M := [200.0, 400.0, 1000.0, 3000.0]
+const DISTANCE_PITCH_DEG := 25.0
+const PINHOLE := Color(1.0, 0.0, 1.0)
 const CAMERA_HEIGHT_M := 30.0
 const CAMERA_PITCH_DEG := 50.0
 const PLAN_HEIGHT_M := 37.5
@@ -29,6 +39,10 @@ var _failures := 0
 var _records: Array[Dictionary] = []
 var _output := ""
 var simulation: SimulationNode
+# "" (the exact cut's checker meshes, the road views) or "compare" (production terrain, exact
+# then B).
+var _terrain_mode := ""
+var _pinholes := {}
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -49,17 +63,24 @@ func _run() -> void:
 	if _failures != 0:
 		quit(1)
 		return
+	_terrain_mode = OS.get_environment("METRUM_ROAD_JUNCTION_TERRAIN")
+	var only := OS.get_environment("METRUM_ROAD_JUNCTION_FIXTURES").split(",", false)
 	simulation = SimulationNode.new()
 	simulation.name = "SimulationNode"
 	root.add_child(simulation)
 	for fixture in _fixtures():
-		for sloped in [false, true]:
-			await _reference(fixture, sloped)
+		if not only.is_empty() and not only.has(fixture.name):
+			continue
+		# Structures render without terrain: the exact cut fails at their open chain ends.
+		if _terrain_mode == "compare" and not fixture.get("terrain", true):
+			continue
+		for slope: Array in _slopes(fixture):
+			await _reference(fixture, slope[0], slope[1])
 	var manifest := {"engine": Engine.get_version_info(), "adapter": RenderingServer.get_video_adapter_name(),
 		"vendor": RenderingServer.get_video_adapter_vendor(), "capture_size": [CAPTURE_SIZE.x, CAPTURE_SIZE.y],
 		"world": {"size_m": WORLD_M, "cell_m": 8.0, "chunk_m": 128.0, "slope": "2.5% rising toward +x"},
 		"conventions": CONVENTIONS, "lighting": "fixed directional light and ambient colour; weather scenario 0 (clear); no time-of-day API is used",
-		"fixtures": _records, "failures": _failures}
+		"fixtures": _records, "failures": _failures, "terrain_mode": _terrain_mode, "pinholes": _pinholes}
 	var file := FileAccess.open(_output.path_join("manifest.json"), FileAccess.WRITE)
 	_expect(file != null, "Reference manifest must open")
 	if file != null:
@@ -109,7 +130,33 @@ func _fixtures() -> Array[Dictionary]:
 			continuation["side"] = [Vector2(arm * 0.5, 12.0), Vector2(arm * 0.5, 0)]
 		result.append(t)
 		result.append(continuation)
+	if _terrain_mode == "compare":
+		# The B spike's fixtures (TERRAIN-07-D item 6). A street grid of closed 96 m blocks with a
+		# T split at the origin, the last commit.
+		result.append({"name": "city_grid_t", "distance": true, "roads": [
+			_road(Vector2(-150, 0), Vector2(150, 0)), _road(Vector2(-150, 96), Vector2(150, 96)),
+			_road(Vector2(-150, -96), Vector2(150, -96)), _road(Vector2(-96, -150), Vector2(-96, 150)),
+			_road(Vector2(96, -150), Vector2(96, 150)), _road(Vector2(0, 0), Vector2(0, 96))]})
+		# The T on flat ground, then the terrain sloped under it (roads stay): cut beside the east
+		# arm, fill beside the west arm, cross-fall across the side arm.
+		result.append({"name": "t_cutfill", "terrain_after": true, "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
+		# A 3 m mound across the side arm and a 2 m hollow under the west arm, sculpted before the
+		# roads, so the roads' profiles cut and fill and the mound's flanks fall across them.
+		result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 0.15], [Vector2(-45, 0), 25.0, -0.10]],
+			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
+		result[0]["distance"] = true
 	return result
+
+# [label, rise over 256 m]: flat and 2.5%, with the spike's 8% on the T, four-way, bend and grid.
+func _slopes(fixture: Dictionary) -> Array:
+	if fixture.get("terrain_after", false):
+		return [["steep", STEEP_RISE_M]]
+	if fixture.has("sculpt"):
+		return [["flat", 0.0]]
+	var slopes := [["flat", 0.0], ["slope", SLOPE_RISE_M]]
+	if _terrain_mode == "compare" and fixture.name in ["t", "four_way", "bend_45", "city_grid_t"]:
+		slopes.append(["steep", STEEP_RISE_M])
+	return slopes
 
 func _surface(point: Vector2) -> Vector3:
 	return Vector3(point.x, float(simulation.get_world_surface_height(point)), point.y)
@@ -176,17 +223,25 @@ func _terrain_node() -> Node3D:
 	renderer.free()
 	return result
 
-func _reference(fixture: Dictionary, sloped: bool) -> void:
-	var label := "%s_%s" % [fixture.name, "slope" if sloped else "flat"]
+func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
+	var label := "%s_%s" % [fixture.name, slope_name]
 	var failures_before := _failures
 	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 128.0, 0.0), "Reference world must load")
 	simulation.set_simulation_speed(0.0)
 	simulation.set_weather_scenario(0, 0.0)
-	if sloped:
-		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), 0.0, Vector2(128, 0), SLOPE_RISE_M, 1.0)
+	for brush: Array in fixture.get("sculpt", []):
+		simulation.sculpt_terrain(brush[0], brush[1], brush[2])
+	var after: bool = fixture.get("terrain_after", false)
+	if rise_m > 0.0 and not after:
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), 0.0, Vector2(128, 0), rise_m, 1.0)
 	for road: Dictionary in fixture.roads:
 		if not await _commit(road):
 			return
+	if rise_m > 0.0 and after:
+		# Centred on the junction: the ground rises beside the east arm's end and falls at the west's.
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128, 0), -rise_m * 0.5, Vector2(128, 0), rise_m * 0.5, 1.0)
+		for frame in range(10):
+			await process_frame
 	if fixture.has("class_at"):
 		var edge: int = simulation.get_hovered_edge(fixture.class_at.x, fixture.class_at.y)
 		_expect(edge >= 0, "%s: an edge at %s" % [label, fixture.class_at])
@@ -210,7 +265,7 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 	camera.position = focus + Vector3(0.0, CAMERA_HEIGHT_M, offset)
 	camera.rotation_degrees = Vector3(-CAMERA_PITCH_DEG, 0.0, 0.0)
 	camera.fov = 70.0
-	camera.far = 3000.0
+	camera.far = 5000.0
 	camera.current = true
 	var environment := WorldEnvironment.new()
 	environment.environment = Environment.new()
@@ -235,6 +290,16 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 	scene.add_child(road.road_mesh_root)
 	var road_chunks: int = road._road_chunk_instances.size()
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
+	var images: Array[Dictionary] = []
+	if _terrain_mode == "compare":
+		for graded in [false, true]:
+			await _compare_views(fixture, label, scene, camera, environment.environment, focus, graded, images)
+		_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
+		simulation.reparent(root)
+		road.free()
+		viewport.free()
+		await process_frame
+		return
 	var terrain: Node3D = await _terrain_node() if fixture.get("terrain", true) else Node3D.new()
 	scene.add_child(terrain)
 	var sky_colour := Color(0.62, 0.74, 0.88)
@@ -246,7 +311,6 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 	]
 	if fixture.has("side"):
 		views.append({"view": "side", "terrain": false, "side": fixture.side})
-	var images: Array[Dictionary] = []
 	for view: Dictionary in views:
 		# Hiding terrain nodes is purely visual: it removes the coplanar z-fight over unclipped asphalt.
 		terrain.visible = view.terrain
@@ -277,14 +341,112 @@ func _reference(fixture: Dictionary, sloped: bool) -> void:
 			pose["fov_deg"] = camera.fov
 		images.append({"view": view.view, "image": png, "camera": pose, "terrain_visible": view.terrain,
 			"background": "sky" if view.terrain else "neutral grey"})
-	var record := {"name": label, "fixture": fixture.name, "slope": "2.5%" if sloped else "flat",
+	_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
+	simulation.reparent(root)
+	road.free()
+	viewport.free()
+	await process_frame
+
+func _finish_record(fixture: Dictionary, label: String, rise_m: float, state: Dictionary, road_chunks: int, images: Array[Dictionary], failures_before: int) -> void:
+	var record := {"name": label, "fixture": fixture.name, "slope": "%.1f%%" % (rise_m / 256.0 * 100.0),
 		"nodes": state.get("nodes", -1), "live_edges": state.get("live_edges", -1), "road_chunks": road_chunks,
 		"images": images, "passed": _failures == failures_before}
 	if fixture.has("angle_deg"):
 		record["arm_angle_deg"] = fixture.angle_deg
 	_records.append(record)
 	print("road_junction_reference %s nodes=%s edges=%s chunks=%d" % [label, record.nodes, record.live_edges, road_chunks])
-	simulation.reparent(root)
-	road.free()
-	viewport.free()
+
+# The production terrain renderer beside the SimulationNode in the capture scene: the exact cut
+# (refined patches) or B (graded tiles over plain patches). Water is an empty stand-in.
+func _production_terrain(scene: Node3D, graded: bool) -> Node3D:
+	if scene.get_node_or_null("Water") == null:
+		var water := Node3D.new()
+		water.name = "Water"
+		scene.add_child(water)
+	var terrain := TerrainScript.new()
+	terrain.name = "Terrain"
+	terrain.graded_tiles_enabled = graded
+	scene.add_child(terrain)
+	return terrain
+
+# Waits until the terrain has no pending patch work and, for B, no tile list or bake in flight,
+# for three frames in a row at the current camera.
+func _settle_terrain(terrain, label: String) -> void:
+	var stable := 0
+	var deadline := Time.get_ticks_msec() + 60000
+	while stable < 3 and Time.get_ticks_msec() < deadline:
+		await process_frame
+		var graded = terrain.graded_tiles
+		var idle: bool = not terrain.has_pending_render_work(false)
+		if graded != null:
+			idle = idle and graded.requested.is_empty() and graded.patch_lists_requested.is_empty()
+		stable = stable + 1 if idle else 0
+	_expect(stable >= 3, "%s: the terrain must settle" % label)
+
+# The spike's views of one terrain mode, then the distance renders where the fixture asks:
+# oblique, the side arm's two sidewalk edges and a corner from 2.5 m, plan_terrain (counting
+# background pixels: every one is a pinhole), and the junction from 200 m to 3 km.
+func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: Camera3D, environment: Environment, focus: Vector3, graded: bool, images: Array[Dictionary]) -> void:
+	var mode := "B" if graded else "exact"
+	var terrain := _production_terrain(scene, graded)
+	var offset := CAMERA_HEIGHT_M / tan(deg_to_rad(CAMERA_PITCH_DEG))
+	var views := [
+		{"view": "oblique"},
+		{"view": "close_east", "from": Vector2(15.0, 30.0), "at": Vector2(5.0, 22.0)},
+		{"view": "close_west", "from": Vector2(-15.0, 30.0), "at": Vector2(-5.0, 22.0)},
+		{"view": "close_corner", "from": Vector2(16.0, 20.0), "at": Vector2(6.0, 8.0)},
+		{"view": "plan_terrain", "ortho": true},
+	]
+	if fixture.get("distance", false):
+		for distance_m: float in DISTANCES_M:
+			views.append({"view": "far_%d" % int(distance_m), "distance": distance_m})
+	for view: Dictionary in views:
+		var ortho: bool = view.get("ortho", false)
+		camera.projection = Camera3D.PROJECTION_ORTHOGONAL if ortho else Camera3D.PROJECTION_PERSPECTIVE
+		camera.fov = 70.0
+		camera.position = focus + Vector3(0.0, CAMERA_HEIGHT_M, offset)
+		camera.rotation_degrees = Vector3(-CAMERA_PITCH_DEG, 0.0, 0.0)
+		var target := focus
+		if view.has("from"):
+			camera.position = _surface(view.from) + Vector3(0.0, 2.5, 0.0)
+			target = _surface(view.at)
+			camera.look_at(target, Vector3.UP)
+		elif view.has("distance"):
+			var pitch := deg_to_rad(DISTANCE_PITCH_DEG)
+			var distance_m: float = view.distance
+			camera.position = focus + Vector3(0.0, distance_m * sin(pitch), distance_m * cos(pitch))
+			camera.fov = 30.0
+			camera.look_at(focus, Vector3.UP)
+		elif ortho:
+			camera.size = PLAN_HEIGHT_M # keep-height: width = 37.5 * 1.6 = 60 m
+			camera.position = focus + Vector3(0.0, 100.0, 0.0)
+			camera.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+		# plan_terrain looks only at ground: a background pixel there is a hole in the surface.
+		environment.background_color = PINHOLE if ortho else Color(0.62, 0.74, 0.88)
+		await _settle_terrain(terrain, "%s %s %s" % [label, mode, view.view])
+		for frame in range(6):
+			await process_frame
+		await RenderingServer.frame_post_draw
+		var image: Image = (camera.get_viewport() as SubViewport).get_texture().get_image()
+		var png := "%s_%s_%s.png" % [label, mode, view.view]
+		_expect(image.save_png(_output.path_join(png)) == OK, "Reference image must save")
+		var entry := {"view": view.view, "terrain_mode": mode, "image": png, "terrain_visible": true,
+			"camera": {"position": [camera.position.x, camera.position.y, camera.position.z],
+				"look_target": [target.x, target.y, target.z], "fov_deg": camera.fov, "orthogonal": ortho}}
+		if ortho:
+			var holes := _count_colour(image, PINHOLE)
+			_pinholes["%s_%s" % [label, mode]] = holes
+			entry["pinholes"] = holes
+			_expect(holes == 0, "%s %s: %d background pixels in plan_terrain" % [label, mode, holes])
+		images.append(entry)
+	terrain.free()
 	await process_frame
+
+func _count_colour(image: Image, colour: Color) -> int:
+	var count := 0
+	for y in image.get_height():
+		for x in image.get_width():
+			var pixel := image.get_pixel(x, y)
+			if absf(pixel.r - colour.r) < 0.02 and absf(pixel.g - colour.g) < 0.02 and absf(pixel.b - colour.b) < 0.02:
+				count += 1
+	return count
