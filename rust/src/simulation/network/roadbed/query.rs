@@ -461,8 +461,12 @@ impl RoadbedSystem {
     }
 
     /// The point-in-triangle predicate and height [`Self::height_at`] takes the highest of:
-    /// the triangle's height at the XZ point, `None` outside it (within the roadbed's sampling
-    /// tolerance). The graded terrain's coverage is this predicate (`TERRAIN-07`).
+    /// the triangle's height at the XZ point, `None` outside it. Exact, with no tolerance: the
+    /// point's side of each edge is an exact orientation test on the `f64` positions, and the
+    /// closed triangle holds the point, so every triangle meeting at an edge or vertex holds a
+    /// point on it, whatever the junction's orientation. The graded terrain's coverage is this
+    /// predicate (`TERRAIN-07`); its raster prepares each triangle once and ends each lattice
+    /// row's scan with its held run (`CoverageTriangle`, the same predicate bit for bit).
     pub fn top_triangle_height_at(triangle: &[RoadVec3; 3], x: f64, z: f64) -> Option<f32> {
         triangle_height_at_xz(triangle, RoadVec2::new(x, z))
     }

@@ -422,6 +422,33 @@ fn coverage_equals_the_roadbed_height_query_at_every_lattice_point() {
     }
 }
 
+// The raster tests only the ends of each row's held run (`ROAD-68-K23`), and still answers as
+// the predicate at each point: every lattice point's road height, bit for bit, is the highest
+// the per-point coverage query finds there, on every fixture and level.
+#[test]
+fn the_coverage_raster_equals_the_predicate_at_every_lattice_point() {
+    let (mut xs, mut zs, mut pieces, mut road) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (name, graph, terrain) in fixtures() {
+        let roadbed = compiled(&graph);
+        for level in LEVELS {
+            for tile in window_tiles() {
+                lattice(&terrain, tile, level, &mut xs, &mut zs);
+                coverage::rasterize(&roadbed, &xs, &zs, &mut pieces, &mut road, None);
+                for (j, &z) in zs.iter().enumerate() {
+                    for (i, &x) in xs.iter().enumerate() {
+                        let point = coverage::covered_height_at(&roadbed, x, z, &mut pieces);
+                        assert_eq!(
+                            road[j * xs.len() + i].to_bits(),
+                            point.unwrap_or(f32::NEG_INFINITY).to_bits(),
+                            "{name} {level:?} ({x}, {z})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn a_missing_node_piece_uncovers_its_gap_and_flips_no_other_region() {
     let graph = t_junction(true);

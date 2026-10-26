@@ -504,6 +504,45 @@ roadbed side stays as the contract terrain consumes:
   structure spans publish none
 - the pieces' top triangles and the point-in-triangle predicate `height_at` uses, which `TERRAIN-07`
   takes as the footprint's coverage (no loops, so an open end flips no region; question 19)
+  - **Exact since `ROAD-68-K19` (2026-10-26; the defect `TERRAIN-07-D` round 2 found); the
+    closed rule confirmed by the user, 2026-10-26.** The predicate (`geometry.rs`
+    `triangle_height_at_xz`, behind `top_triangle_height_at`, `height_at`,
+    `carriageway_height_at`, the lane surface query, the disc test and the legacy ground-tile
+    sampler) has no tolerance and holds the closed triangle: a point is held when none of its
+    exact orientations against the three edges (`robust::orient2d` on the `f64` positions) has
+    the sign opposite the triangle's winding, so edges and vertices are held by every triangle
+    meeting there, and a triangle without area holds nothing (its orientations are all zero on its
+    line and of mixed sign off it). Coverage is "inside some closed top triangle", exactly; a thin
+    triangle holds its interior. Every caller takes the union or the highest of the holding
+    triangles (`height_at`, coverage, the disc test, the ground-tile sampler, the stroke support's
+    per-piece reads), so none needs a point in exactly one triangle: a shared edge's heights agree
+    up to rounding, and a curb line, one XZ edge under a vertical face, reads the curb's top.
+    The rule depends on no direction in the world: a junction turned by quarter turns or mirrored
+    gives every point the same holding triangles and heights, bit for bit. A tie rule that gives
+    each point on an edge to one side by a world direction (+x, then +z), tried first, failed
+    that: it put junction foot-lane points on curb lines 0.12 m down on the carriageway or kept
+    them on the curb by the curb's direction. The height keeps the predicate's arithmetic
+    (`orient2d` returns the same determinant unless the point lies within rounding of an edge's
+    line), so a point inside keeps its height bit for bit. The predicate is one type,
+    `geometry.rs` `CoverageTriangle` (`ROAD-68-K20`): the winding (twice the signed area,
+    nonzero) and its reciprocal are computed once; a point's three orientations are computed
+    before the one test (`ROAD-68-K23`: branching after each orientation cost more than the third
+    one); `triangle_height_at_xz` builds one per call after the box test. The graded raster
+    (`coverage::raise_covered`, which the portal decks share) visits only the lattice inside a
+    triangle's closed box, prepares only a triangle whose box holds a lattice point (most small
+    ones hold none), and ends each row's scan with its held run, which is one run as the
+    triangle is convex and the predicate exact (`CoverageTriangle::for_each_held_in_row`,
+    `ROAD-68-K23`). Both answer bit for bit as the predicate always did. Before, the predicate accepted
+    barycentric weights down to -0.001, up to 0.1% of a triangle's height past each edge (the
+    sloped T covered 3,662 of 3,822 probes just outside its edges), and dropped triangles under
+    0.0005 m². Tests: `roadbed/terrain/tests.rs`
+    `the_coverage_predicate_covers_no_point_outside_its_triangle` (re-enabled),
+    `coverage_equals_inside_some_top_triangle_exactly` and
+    `coverage_and_heights_are_the_same_in_every_quarter_turn_and_mirror`, `geometry.rs`
+    `closed_triangles_hold_their_edges_in_every_orientation` and
+    `a_lattice_row_holds_exactly_the_points_the_predicate_holds`, and `terrain/graded/tests.rs`
+    `the_coverage_raster_equals_the_predicate_at_every_lattice_point`. The changed products and their
+    attribution are recorded under [question 37](#road-68-open-questions) (`ROAD-68-K19`).
 - `take_terrain_changes`, which since `TERRAIN-07-A` also returns the changed grounded chain
   segments themselves (`TerrainChanges::segments`, endpoints with heights), and since
   `TERRAIN-07-C` round 5 the bounds of the changed pieces with a portal row
@@ -2824,7 +2863,32 @@ These need a user decision; work that does not depend on them continues.
       terrain sub-stage reads above C's spread in two of F's four runs (9.74 and 10.45 against C's
       8.15-9.13) in code `ROAD-68-K18` does not reach. Open: that reading needs a commit-window
       profile (question 36) before it can be put down to layout; the 10k commit-window profiles
-      (C F C F, 09:09-09:10) are recorded but not yet analysed.
+      (C F C F, 09:09-09:10) are analysed in the next item.
+    - **The 10k commit-window profiles (`ROAD-68-K18`'s, analysed by `ROAD-68-K19`, 2026-10-26)
+      — not layout: the windows' work differs between runs of one binary; open.** The captures
+      (`perf record -c 200000`, user cycles and instructions with LBR call chains, sampled only
+      inside each commit window, all threads; C = `062575d9`, F = `road68-K18` before its
+      capacity hints) split into the 10k tier's three sample windows by the gaps between them.
+      Instruction samples per window, in total, in the legacy terrain grading
+      (`interpolate_grid_height`, `road_loop_grading`, `rect_loops`), in the terrain CDT
+      (`spade`, `terrain::cdt`) and in the CCH ordering (`pathing::cch`, the previous commit's
+      asynchronous rebuild, which shares the Rayon workers):
+      | Run | sample 0 | sample 1 | sample 2 (window length) |
+      | --- | --- | --- | --- |
+      | 1 C | 8,588 / 1,145 / 1,556 / 69 | 1,854 / 204 / 316 / 84 | 1,232 / 131 / 302 / 46 (14.0 ms) |
+      | 2 F | 9,393 / 1,524 / 1,549 / 244 | 2,736 / 547 / 305 / 198 | 1,728 / 225 / 304 / 261 (19.4 ms) |
+      | 3 C | 9,111 / 1,201 / 1,480 / 171 | 2,238 / 223 / 319 / 174 | 860 / 33 / 177 / 45 (15.7 ms) |
+      | 4 F | 8,679 / 1,151 / 1,474 / 38 | 2,200 / 372 / 351 / 106 | 1,278 / 205 / 251 / 46 (15.5 ms) |
+      The legacy grading work in sample 2's window varies fourfold between C's own two runs (131
+      against 33 samples) and the CDT's 1.7-fold, and the CCH rebuild reaches into the windows by
+      38 to 261 samples, so the work a window holds depends on the run, not only on the binary,
+      and question 36's condition (identical work) cannot be met: the reading is not recorded as
+      layout. Both F runs grade more in that window (225 and 205), which two runs per binary do
+      not separate from the run-to-run spread; none of the varying symbols is node-plan code.
+      Open, as a property of the benchmark rather than of `ROAD-68-K18`'s change: a re-measure
+      needs commit windows that hold only the commit's own work (for example the previous
+      sample's asynchronous CCH and terrain jobs finished before the next sample's click) and more
+      than two runs per binary; the legacy terrain sub-stage is `TERRAIN-07`'s to delete.
     - **The R-tree's traversal order (`ROAD-68-K18`, record) — decided by the user, 2026-10-26: (b).**
       `ROAD-68-K17` left the R-tree's removals because re-indexing only the changed edges would
       change the tree's shape, and with it the order in which `get_edges_near_aabb` returns edges.
@@ -2846,8 +2910,10 @@ These need a user decision; work that does not depend on them continues.
       Sorting the collecting query's result by edge id (experiment S: that one change on `062575d9`,
       debug, not committed) changes no tested product: every K18 product test above passes with its
       pinned products and the Kuopio reference re-records at `3c1dbc27…` twice. The full debug suite
-      on S, which checks the zoning and building products the sorted callers feed, was not run (the
-      run lock went to another branch's suite). So, for these products, the tree's order reaches a
+      on S, which checks the zoning and building products the sorted callers feed (fresh,
+      `ROAD-68-K19`, 2026-10-26 09:47-10:00, `ROAD-68-K18`'s S debug lib test binary, 8 test
+      threads): 1,944 passed, 0 failed, 172 ignored, the counts of `ROAD-68-K18`'s own gate run on F;
+      the experiment's patch is discarded. So, for every tested product, the tree's order reaches a
       product only through the two pickers' exact or near ties, which no fixture exercises. Options:
       (a) sort in `get_edges_near_aabb` (`O(K log K)` for every caller, eight of which sort again);
       (b) sort the two pickers' candidates by edge id, as the eight callers do, and document the
@@ -2909,6 +2975,316 @@ These need a user decision; work that does not depend on them continues.
       timing: neither path is in a hot-path benchmark (the two pickers sort the few edges within
       their pick radius once a query; `benchmark_load_node_check` times the node check alone).
       `roadbed/` production lines: 8,815, unchanged.
+    - **The exact coverage predicate (`ROAD-68-K19`, 2026-10-26).** The roadbed's
+      point-in-triangle predicate is exact and closed (["Footprint and
+      terrain"](#footprint-and-terrain)); the failing `ROAD-68-D` test is re-enabled. A first
+      version gave each point on an edge to one side by a world direction; the coordinator's check
+      of its products found junction foot-lane points on curb lines dropped 0.12 m to the
+      carriageway or kept on the curb by the curb's direction, so the closed rule replaced it (no
+      caller needs a point in exactly one triangle: each takes the union or the highest). Fresh
+      results (debug lib test binaries of the branch): every graph, piece, layout, walkway and span
+      hash of both product probes is unchanged. The attribution used two temporary builds, not
+      committed: one classifies every predicate call against the old predicate (band: the old one
+      held a point outside the closed triangle; thin: a triangle under 0.0005 m², which the old one
+      dropped, holds one; arithmetic: both hold it with different bits), the other compares whole
+      answers (lane points, probe queries, graded lattice points) under both predicates.
+      - Roadbed fixture probe: `bend_10`'s queries alone change, flat and sloped. 24 calls of
+        437,772 differ, all band. At one probe point per fixture the carriageway and
+        carriageway-only lane queries turn `None` (2 answers each); no answer turns `Some`, and
+        every answer that stays `Some` is bitwise equal.
+      - Reference junction probe: the lanes of 14 fixtures (all but `four_way`, `terminal` and
+        `t_mixed_4lane_through`, flat and sloped) and the queries of `t_footpath_beside_arm`
+        change. Of 197,530 calls, 37,953 differ as band and 16 as thin, none by arithmetic. Over
+        the 79,527 lane point evaluations of every lane sync while the 20 fixtures are built, no
+        answer turns `None` or `Some`, so no lane point keeps its graph height for want of a
+        surface. 968 move by more than the sync's 0.1 mm threshold, every one by 0.12 m: junction
+        foot-lane points at a crossing's kerb (for example (±3.5, 8.5) on the flat T), a hair
+        outside the sidewalk's closed triangles, which the band lifted to the curb's top and which
+        stand on the carriageway. The others are bitwise equal or move by less than 0.1 mm, which
+        the sync does not write. Queries: one answer turns `None` in each of the flat and sloped
+        `t_footpath_beside_arm`, none turns `Some`, the others are bitwise equal.
+      - Graded coverage (the seven graded reference fixtures, 16 tiles each at `GL0`-`GL3`,
+        2,567,488 lattice points): coverage is lost at 693 lattice points outside every closed
+        triangle (the defect proper: 501 on `four_way_slope`, 192 on `y_25_slope`, where lattice
+        rows lie a few micrometres outside an arm's edge); the covered height changes at 915
+        points whose old maximum came from a band-covered triangle; no point is gained and none
+        changes on an edge or by arithmetic. On the 0.37 m off-lattice grid of `TERRAIN-07-D`'s
+        mask test (3,352,048 points): 12 lost outside every triangle (one to three per fixture, its
+        finding) and 21 band heights. Every change is a band point.
+      - Orientation: `coverage_and_heights_are_the_same_in_every_quarter_turn_and_mirror` turns
+        each fixture's compiled triangles, its lane points and its edge probes by quarter turns
+        and mirrors them, exactly in `f64`, and finds the same holding triangles and highest
+        height at every probe, bit for bit (the compile itself is not bitwise rotation-equivariant,
+        so the junction is turned after it).
+      - Zoning cells and fields do not read the predicate: their road overlap verdicts intersect
+        the top triangles as polygons (`PolygonFootprint::overlaps_precise_points`), unchanged.
+        The Kuopio reference save re-records twice at `3c1dbc27…` with the fixture unchanged (on
+        the tie-rule build; re-run on the final code in the gate checks below), so it is not
+        re-pinned.
+      - One test changes with the contract: `building_site_terrain`'s frontage check sampled the
+        road exactly on the frontage seam, the road's outer chain, at points interpolated in `f32`
+        that lie a hair outside the exact road for about half the samples (13 tests failed there);
+        it now samples the road 2.5 cm on its side of the seam, as it already sampled the yard
+        2.5 cm on the other.
+      - Open, for the lane builder: lane points meant to lie on a kerb line are computed in `f32`
+        and land a hair on either side, so with an exact surface a foot lane's end at a crossing
+        reads the curb's top or the carriageway's by rounding; the band hid it by lifting the
+        carriageway side to the top. Recommendation: the lane builder places those ends a fixed
+        distance inside the surface it means (the sidewalk or the carriageway), as the building
+        sites' road probes already do (`BUILDING_SITE_ROAD_SAMPLE_INSET_M`); no predicate change.
+    - **Gate checks (`ROAD-68-K19`).** Fresh on `5230a0bd` (debug lib
+      test binary): the product tests `ROAD-68-K18` ran (save bytes, both probes with strips,
+      narrow marks, Kuopio 9 passed / 7 ignored, watertightness 8, grade 55, junction blends,
+      one-in-three 2, `graph::rebuild` 15, edit order 9, road families 4, save 41, `roadbed::` 65,
+      `road_preview` 15, editing 28, clip tests 6) plus `terrain::graded` 20, `network::lanes` 40,
+      zoning 185, agriculture 7, `building_site_terrain` 19 and vegetation 62 all pass, and the
+      Kuopio reference re-records twice at `3c1dbc27…` with the fixture unchanged. `cargo clippy
+      --all-targets` (12:17): the baseline's 59 warnings plus one `useless_vec` in the new
+      orientation unit test, fixed after the run (re-run pending). `roadbed/`'s production lines
+      (counted as for `ROAD-68-K18`) grow from 8,718 to 8,733 (+15: the closed predicate's
+      comments and the shared `xz` helper in `geometry.rs`, the doc of `top_triangle_height_at`).
+      Fresh on `5e9c6331`: `./run.sh --test` (13:05-13:40, `DISPLAY` and `WAYLAND_DISPLAY`
+      unset) exits 0, debug lib 1,951 passed / 0 failed / 171 ignored, integration 4 passed, every
+      Godot script passes with no `SCRIPT ERROR`; it skips only the shader global probe and the
+      rendered vegetation tests (headless). `cargo clippy --all-targets` (`ROAD-68-K20`, 13:44):
+      exactly the baseline's 59 warnings (the warning sets are equal).
+    - **Timing (`ROAD-68-K19`, fresh 2026-10-26 12:43-13:05, recorded by `ROAD-68-K20`).** Release
+      lib test binaries (`$TEST_BINARY`), C = `road` `446290d6` (built in its own worktree and
+      target directory), F = `5230a0bd` (the tip but for a test lint and a doc comment). Both
+      locks, `taskset -c 0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, no restic and no compiler, cargo
+      or Godot process at the session's start, after each breakdown run or at its end (load
+      2.0-2.9); `benchmark_road_preview_stages` with `RAYON_NUM_THREADS=4`, C F F C twice, then
+      `benchmark_populated_commit_breakdown` with `METRUM_COMMIT_TIERS=0,10000,30000,100000` and
+      `RAYON_NUM_THREADS=8`, C F F C. Payload vertex counts are equal (9,845 and 11,706 a pose),
+      and so are the generated and lot digests at every tier and sample. The graded tile digests
+      are equal but at 100k samples 0 and 1 (C `78c7850b…` and `2e1b5b59…`, F `f9d27713…` and
+      `7bc646e7…`, each the same in both runs of its binary). Attributed by `ROAD-68-K20` (a
+      temporary release build of `5e9c6331` that classifies every predicate call against the old
+      predicate; the 100k tier alone, which reproduces F's three graded digests): every call that
+      differs is a band call (the old predicate held a point outside the closed triangle), none a
+      thin triangle's and none by arithmetic. The graded stage made 19,860 band calls of
+      3,079,714 holding calls at sample 0, 8,528 of 1,130,527 at sample 1 and 5,982 of 872,972 at
+      sample 2, whose digest does not change (no lattice point's highest covering triangle there
+      was a band one); the commits' own calls (lanes, queries, the exact cut) differ by band only,
+      and their generated and lot digests are equal. With no thin or arithmetic difference, the
+      closed predicate is the old one but at band points, so the digest changes are band points
+      alone; a second run giving band points the old answer reproduces C's three graded digests.
+      Each run's peak resident set is 18.0-18.2 GiB (18,899,648 and 19,055,268 kB).
+      | Preview stage p50, ms | C | F |
+      | --- | --- | --- |
+      | `sloped_t` plan | 0.447-0.458 | 0.446-0.457 |
+      | `sloped_branch` plan | 0.392-0.399 | 0.394-0.400 |
+      | `sloped_t` roadbed | 0.326-0.331 | 0.308-0.322 |
+      | `sloped_branch` roadbed | 0.331-0.332 | 0.321-0.325 |
+      | `sloped_t` payload | 0.386-0.405 | 0.385-0.391 |
+      | `sloped_branch` payload | 0.386-0.399 | 0.381-0.384 |
+      | `sloped_t` terrain | 4.379-4.486 | 4.485-4.547 |
+      | `sloped_branch` terrain | 4.686-4.726 | 4.737-4.820 |
+      | `sloped_t` total | 5.511-5.627 | 5.616-5.688 |
+      | `sloped_branch` total | 5.775-5.857 | 5.820-5.900 |
+      The legacy terrain stage (the exact cut, whose ground-tile sampler reads the predicate)
+      rises by 0.05-0.11 ms; the roadbed stage falls by up to 0.02 ms. Commit totals and the exact
+      cut's `surface_ms` stay within the two binaries' spreads (the 30k sample 0 window is
+      bimodal in both, 87-137 ms). **Open, a miss: the graded stage is slower.** Its
+      `GRADED_TILES_COMMIT` `stage_ms` rises at 11 of the 12 samples, by 0.13-0.62 ms, most of
+      it in the bake, which rasterizes coverage with the predicate at every lattice point of each
+      triangle's box: 1.54-1.62 to 1.83-1.91 ms at tier 0 sample 0, and 2.78-2.86 to 2.95-3.48 ms
+      at 100k sample 0, past the 3.0 ms terrain stage. Not profiled; the exact predicate makes
+      three `orient2d` calls a point (four where it holds the point) with no early exit, against
+      the old one's two determinants and its area.
+    - **Rebase (`ROAD-68-K20`).** The branch's commits are squashed into one and rebased onto
+      `road` `fdf6c7a1` (`TERRAIN-07-C`'s portal opening, which reads coverage through the same
+      predicate: `coverage::raise_covered` and `PortalWindow::deck_at`), then onto `294fd0f1`
+      (the user's decisions of 2026-10-26, documents only). Conflicts: `project.md`'s recent
+      changes, and this question's `ROAD-68-K18` items beside the user's R-tree decision (both
+      texts kept each time); `graded/portal.rs`'s bounds pad comment cited the old tolerance and
+      now says what coverage's does. The graded attribution re-run on the rebased code (a
+      temporary debug build) gives `ROAD-68-K19`'s counts exactly (693 lattice points lost
+      outside every closed triangle, 915 band heights; 12 and 21 off the lattice), and extended
+      to `TERRAIN-07-C`'s structure-mouth fixture (`site_tests::structure_mouth` with a tunnel,
+      a bridge and a road, 36 tiles at `GL0`-`GL3`, 825,264 lattice points each) changes no
+      point: grounded coverage and the portal decks are bitwise the old predicate's there.
+    - **The graded stage's speed (`ROAD-68-K20`).** The miss above is fixed in the predicate,
+      without changing an answer: `CoverageTriangle` (["Footprint and
+      terrain"](#footprint-and-terrain)) computes the box, the winding and the area's reciprocal
+      once, and leaves a point at the first edge it lies beyond (no orientation of the sign
+      opposite the winding: the same set, as the orientations' exact sum is twice the area); the
+      graded raster prepares each triangle once for its lattice. `roadbed/`'s production lines
+      (counted as for `ROAD-68-K18`) grow from 8,800 on the rebased branch to 8,859 (+59: the type,
+      its box helpers and comments). `cargo clippy --all-targets`: exactly the baseline's 59
+      warnings. Products, fresh: the fixed tip's
+      debug lib test binary passes both product probes as pinned, the graded and portal tests, the
+      gate's other product tests and two Kuopio re-records at `3c1dbc27…`; and a release run of
+      the pre-fix tip `9b696cc5` (P, 17:56-18:03, after the session) gives every generated, lot
+      and graded tile digest of the commit breakdown at 0 to 100k (24 records) equal to F's.
+      **Timing (`ROAD-68-K20`, fresh 2026-10-26 17:14-17:37): still a miss, open.** Release lib
+      test binaries (`$TEST_BINARY`), C = `road` `294fd0f1` (built in its own worktree and target
+      directory), F = `bf68b8e2` (this fix). Both locks, `taskset -c 0,2,4,6,8,10,12,14`,
+      `METRUM_DEBUG=0`, no restic and no compiler, cargo or Godot process at the start, after
+      each breakdown run or at the end (load 2.1-2.7 after the first run; 18.2 at the start,
+      just after another agent's suite, and the last debug build's binary copy overlapped the
+      first two seconds of stage run 1, a C run); the preview stages with 4 workers, C F F C
+      twice, then the commit breakdown at 0, 10k, 30k and 100k with 8 workers, C F F C. Payload
+      vertex counts, generated and lot digests are equal; the graded tile digests are equal but
+      at 100k samples 0 and 1, where F gives `ROAD-68-K19`'s band digests (`f9d27713…`,
+      `7bc646e7…`). Graded stage `stage_ms` (bake within it), C runs 1 and 4, F runs 2 and 3:
+      | Tier, sample | C | F |
+      | --- | --- | --- |
+      | 0, 0 | 1.505, 1.464 | 1.592, 1.492 |
+      | 0, 1 | 1.521, 1.614 | 1.498, 1.589 |
+      | 0, 2 | 1.281, 1.469 | 1.343, 1.365 |
+      | 10k, 0 | 2.522, 2.481 | 2.559, 2.650 |
+      | 10k, 1 | 1.429, 1.474 | 1.718, 1.690 |
+      | 10k, 2 | 1.582, 1.497 | 1.584, 1.608 |
+      | 30k, 0 | 2.110, 2.264 | 2.299, 2.252 |
+      | 30k, 1 | 1.340, 1.423 | 1.393, 1.378 |
+      | 30k, 2 | 1.181, 1.062 | 1.188, 1.161 |
+      | 100k, 0 | 2.836 (bake 2.084), 2.950 (2.302) | 3.074 (2.348), 2.754 (2.164) |
+      | 100k, 1 | 1.311, 1.361 | 1.325, 1.411 |
+      | 100k, 2 | 0.970, 1.105 | 0.948, 1.064 |
+      Most of `ROAD-68-K19`'s rise is gone (at tier 0 sample 0 F reads within C's spread, where
+      it read 0.29 ms above), but F's first 100k sample 0 run takes 3.074 ms, past the 3.0 ms
+      terrain stage, and 10k sample 1 reads 0.22-0.29 ms above C in both runs. The two binaries'
+      spreads at 100k sample 0 (C 0.11 ms, F 0.32 ms) do not separate the fix from the run, and
+      C's own second run reaches 2.950 ms. Not accepted. Next levers, exact and bit-identical:
+      a row of a closed triangle's lattice holds an interval of points (the triangle is convex
+      and the predicate exact), so each row can stop at its first point past a held one; and
+      profile the 10k sample 1 bake against C's. The legacy preview terrain stage, which reads
+      the predicate per call through the ground-tile sampler, stays 0.03-0.08 ms above C
+      (`sloped_t` 4.398-4.424 against 4.365-4.383, `sloped_branch` 4.692-4.737 against
+      4.614-4.661); plan, roadbed and payload stages and the commit totals are within the
+      binaries' spreads.
+    - **The graded stage's speed, round 2 (`ROAD-68-K23`, fresh 2026-10-26): still a miss, open;
+      stopped for the user.** Branch `road68-K19` on `road` `6c51cf00`, three commits: this
+      predicate, `ROAD-68-K20` part 2 (the lane ends on their kerb's surface, ["Footprint and
+      terrain"](#footprint-and-terrain)) and the arm angle fix ([`ROAD-54`](#road-geometry-validation-road-54)).
+      No landing session was run: the stage-only runs below already place the fix outside
+      `road`'s spread.
+      - **Method.** Stage-only runs, not a session: `benchmark_populated_commit_breakdown` at
+        `METRUM_COMMIT_TIERS=10000` with a temporary harness (not committed) that repeats each
+        sample's graded stage 201 times (p10, p50, p90; perf counting only inside them), then
+        times every selected tile's serial `GL0` bake and its coverage raster alone (median of
+        51 each, summed over the tiles). Release lib test binaries (`$TEST_BINARY`), both locks,
+        `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, no restic.
+        C = `road` `294fd0f1` with the harness, F = `ROAD-68-K20`'s tip `6f3a43d1` with it.
+        Graded digests equal in every run (10k: `a7321391…`, `73ba5d43…`, `7d6cb7ff…`).
+      - **What is extra at 10k sample 1: the coverage raster.** Session 19:40-19:43 (C F X):
+        stage p50 C 1.285, F 1.526 ms; serial bake over the 9 tiles C 3.049, F 4.155 ms, of
+        which the raster C 0.721, F 1.424 ms; samples 0 and 2 alike (raster C 1.285 and 0.734,
+        F 2.399 and 1.399). The exact test at every point of a triangle's box costs about twice
+        `road`'s tolerance test (three `orient2d` calls against two determinants); profiled (perf,
+        LBR, inside the repeats) `raise_covered` is 22.6% of F's stage, 13.2% of C's.
+      - **Exact levers tried** (each bitwise: the graded digests above, and the debug coverage,
+        graded and portal tests):
+        - each row's held run by binary search per edge (the run is one interval: the triangle is
+          convex and the predicate exact): raster 1.77 ms at sample 1, slower than F (the
+          searches' `orient2d` calls on rows of a few points);
+        - the run's ends by exact steps from the edge's rounded crossing: 1.35 ms (unlocked);
+        - in one binary, locked (20:20-20:23, two runs each, sample 1 raster): `road`'s test
+          0.89-0.90 ms, the three orientations then one test 1.31-1.32, that with the row's
+          scan ended after its run (`ROAD-68-K20`'s lever (a)) 0.98-0.99, and with each row's run
+          sought from the previous row's 1.00-1.01;
+        - kept: the three orientations then one test, the scan ended after its run, and no
+          preparation for a triangle whose box holds no lattice point. Locked, C X X C
+          (20:34-20:36): stage p50 at 10k sample 0 C 2.204 / 2.255, X 2.362 / 2.282; sample 1
+          C 1.177 / 1.246, X 1.396 / 1.370; sample 2 C 1.103 / 1.095, X 1.379 / 1.350; sample 1
+          raster C 0.738 / 0.736, X 0.989 / 0.971;
+        - `orient2d`'s fast determinant used directly where it provably is `orient2d`'s answer
+          (a per-triangle bound on its error bound over the box): no gain (raster 1.025),
+          dropped.
+      - **Open.** The kept form takes back part of F's rise at sample 1 (+0.12 to +0.22 ms over
+        C in its session, against F's +0.24 in its own) and stays outside C's spread; 100k
+        sample 0 is not re-timed. What remains is the three exact orientations at every point the scan tests,
+        against `road`'s two determinants. Exact levers left: an exact row interval for wide
+        boxes only, with the scan on narrow ones (rows of a few points made the searches lose);
+        and, in the same stage, the sorts of the coverage inputs (`[u64; 9]` triangle bits) and
+        of `[[u64; 3]; 3]` keys, about 4.9% and 4.7% of the stage in both binaries. Nothing is
+        relaxed: the 3.0 ms stage and `road`'s spread stand.
+      - **Checks (fresh, on the branch's final Rust).** `cargo clippy --all-targets`: the
+        baseline's 59 warnings, the warning sets equal. Debug lib tests: `roadbed::geometry`,
+        `roadbed::terrain` and `terrain::graded` (33 passed, 7 ignored; among them the two new
+        tests, `geometry.rs` `a_lattice_row_holds_exactly_the_points_the_predicate_holds`, which
+        checks the row scan and the per-point predicate against the closed rule written out from
+        `orient2d` on rows and columns through every vertex and an ulp to either side, and
+        `the_coverage_raster_equals_the_predicate_at_every_lattice_point` on every graded
+        fixture and level); the reference and roadbed probes, the crossing orientation test over
+        every fixture, `network::validate`, `road_edit_order`, `network::lanes` and the crosswalk
+        tests (113 passed). `roadbed/`'s production lines (counted as for `ROAD-68-K18`): 8,815 on
+        `road` `6c51cf00`, 8,909 on the branch (+94: the closed predicate and its comments,
+        `CoverageTriangle` with the row scan, and the `xz` and `orientation` helpers). `./run.sh
+        --test` on the rebased tip (`road` `6c51cf00`, 21:15-21:35, `DISPLAY` and
+        `WAYLAND_DISPLAY` unset): exit 0; debug lib 1,958 passed, 0 failed, 173 ignored;
+        integration 4 passed; every Godot script passes, no `SCRIPT ERROR`; skipped only the
+        shader global probe and the rendered vegetation tests (headless).
+    - **The landing session (`ROAD-68-K25`, fresh 2026-10-26 22:05-22:09): the graded stage is
+      under 3.0 ms at every tier and sample; land-ready.**
+      - **Decision (decided by the coordinator under the user's delegation, 2026-10-26, for
+        review).** The recorded target is the 3.0 ms terrain stage per commit at every tier, 0
+        to 100k. "Within `road`'s spread" was the coordinator's stricter condition in the
+        `ROAD-68-K20` and `ROAD-68-K23` briefs, not a recorded target. The exact predicate is
+        required by the no-tolerance rule, so the old predicate is no option. The branch is
+        land-ready when every F run's graded `stage_ms` is under 3.0 ms at every tier and sample
+        (the 100k first commit binding) and every product is as recorded; the cost against
+        `road` is then the exact predicate's price, within budget.
+      - **Method.** Release lib test binaries (`$TEST_BINARY`): C = `road` `6c51cf00` (its own
+        worktree and target directory), F = this branch's tip Rust (`7c178931`). Each binary's
+        saved cities were prepared before the session (`benchmark_populated_commit_prepare`, a
+        heavy run, not timed: 225 and 202 s), and every populated tier of every run reads
+        `loaded`. Both locks, `taskset -c 0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, no restic and no
+        compiler, cargo or Godot process at the start, after each breakdown run or at the end
+        (load 10.2 at the start, just after another agent's timing run; 3.3-5.2 after the
+        breakdown runs); the preview stages with 4 workers, C F F C twice, then the commit
+        breakdown at 0, 10k, 30k and 100k with 8 workers, C F F C (50.1-50.6 s a run). Question
+        50's whole-city checks run as before (`ROAD-68-K24`'s change).
+      - **Products.** Payload vertex counts are equal (9,845 and 11,706 a pose, skirts 2,034 and
+        2,448), and so are the generated and lot digests and `lanes_off_surface` at every tier and
+        sample. The graded tile digests are equal (10k: `a7321391…`, `73ba5d43…`, `7d6cb7ff…`, as
+        `ROAD-68-K23` recorded) but at 100k samples 0 and 1, where F gives `ROAD-68-K19`'s band
+        digests (`f9d27713…`, `7bc646e7…`; C `78c7850b…`, `2e1b5b59…`). The `COMMIT_PRODUCTS`
+        records differ in those two digests alone, each binary's two runs are identical, and C's
+        equal `ROAD-68-K22`'s session.
+      - Graded stage `stage_ms` (bake within it), C runs 1 and 4, F runs 2 and 3:
+        | Tier, sample | C | F |
+        | --- | --- | --- |
+        | 0, 0 | 1.646, 1.465 | 1.501, 1.526 |
+        | 0, 1 | 1.463, 1.497 | 1.460, 1.527 |
+        | 0, 2 | 1.179, 1.263 | 1.345, 1.327 |
+        | 10k, 0 | 2.479, 2.529 | 2.511, 2.569 |
+        | 10k, 1 | 1.526, 1.587 | 1.591, 1.476 |
+        | 10k, 2 | 1.532, 1.557 | 1.394, 1.507 |
+        | 30k, 0 | 2.230, 2.337 | 2.209, 2.143 |
+        | 30k, 1 | 1.348, 1.345 | 1.371, 1.109 |
+        | 30k, 2 | 1.238, 1.107 | 1.191, 1.068 |
+        | 100k, 0 | 3.019 (bake 2.366), 3.114 (2.526) | 2.722 (1.948), 2.628 (2.051) |
+        | 100k, 1 | 1.346, 1.127 | 1.271, 1.085 |
+        | 100k, 2 | 0.932, 0.925 | 1.042, 1.104 |
+      - **Verdict: land-ready.** F's slowest graded stage is 2.722 ms (100k sample 0), under
+        3.0 ms in all 24 F samples. The price against `road`: F's two runs overlap or undercut
+        C's at 10 of 12 samples (at most 0.04 ms past C's slower run) and lie wholly above them
+        at tier 0 sample 2 (+0.06 to +0.17 ms) and 100k sample 2 (+0.11 to +0.18), both under
+        1.35 ms. At 100k sample 0 F reads 0.30-0.49 ms under C, whose own runs reach 3.019 and
+        3.114 ms there (`road` past the 3.0 ms stage in this session; 2.836-2.950 in
+        `ROAD-68-K20`'s, 2.911 in `ROAD-68-K22`'s). Not attributed; unlike `road`'s, F's raster
+        prepares no triangle whose box holds no lattice point and ends each row's scan with its
+        run. Preview stages: plan, roadbed and payload within the binaries' spreads; the legacy
+        terrain stage (the exact cut, whose ground-tile sampler reads the predicate) `sloped_t`
+        4.466-4.511 against C's 4.477-4.508, `sloped_branch` 4.765-4.783 against 4.714-4.760.
+        Commit totals (`commit_ms`) are within C's spread or
+        overlap it but at tier 0 sample 1 (12.106-12.361 against 11.294-11.718), tier 0 sample 2
+        (7.910-7.967 against 7.135-7.239) and 10k sample 1 (20.244-20.556 against
+        19.377-20.136); the rise sits in `surface_terrain_ms` (the exact cut: 9.446-9.532 against
+        8.637-9.229, 5.001-5.169 against 4.750-4.865, 13.802-14.171 against 13.066-13.572), and
+        at tier 0 sample 2 also in the mesh stage. The 30k sample 0 window stays bimodal (F
+        106.2 and 149.0 ms, C 102.2-108.1; `ROAD-68-K19` saw 87-137 ms in both binaries).
+      - **Part 2's lane sync.** The commit syncs lane heights in its mesh stage
+        (`precompute_road_mesh_data`), after the lanes stage. `lanes_and_reattach_ms` overlaps or
+        undercuts C's spread at tier 0, 10k sample 0 and 100k, and reads above it at 10k samples
+        1 and 2 and at 30k, by at most 0.08 ms (30k sample 0: 0.824-0.884 against 0.800-0.821;
+        30k sample 1: 0.474-0.478 against 0.440-0.451). `mesh_ms` overlaps or undercuts C's at 10
+        of 12 samples and lies above it at tier 0 sample 2 (1.604-1.870 against 1.260-1.302) and
+        30k sample 1 (1.432-1.491 against 1.287-1.350). The surface stage's roadbed sub-stage
+        (`surface_roadbed_ms`) overlaps or undercuts C's but at 30k sample 1 (0.583-0.608 against
+        0.546-0.553) and 100k sample 1 (0.548-0.632 against 0.479-0.501).
 38. **The Kuopio reference save keeps the legacy stroke solve's profiles (`ROAD-68-K13`) —
     decided 2026-10-25 (user): (a), re-record the reference network with today's code, after
     question 37. The re-recorded network is interim: the user will provide a new Kuopio save once

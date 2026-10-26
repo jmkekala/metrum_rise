@@ -8,8 +8,9 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
-// Sampling tolerance of barycentric tests and ray hits.
-const SAMPLE_EPSILON_M: f64 = 0.001;
+// Determinant floor of ray hits: a ray nearly parallel to a triangle, or a triangle nearly
+// without area, misses (the coverage predicate has no tolerance).
+const RAY_EPSILON_M: f64 = 0.001;
 // Grid cell padding; the legacy f32 millimetre widened to f64, kept bit for bit.
 const GRID_EPSILON_M: f64 = 0.001_f32 as f64;
 const QUERY_GRID_BASE_CELL_M: f64 = 4.0;
@@ -277,43 +278,132 @@ pub(super) fn walk_ray_cells(
     }
 }
 
-// Height of `triangle` at `point` by barycentric weights in XZ, within the sampling tolerance.
+// The roadbed's coverage predicate: the height of `triangle` at `point` in XZ where the closed
+// triangle holds the point, edges and vertices included, `None` elsewhere, and everywhere for a
+// triangle without area. No tolerance: the point's side of each edge is the exact orientation
+// (`robust::orient2d`) of the `f64` positions, and a point is held when no orientation has the
+// sign opposite the triangle's winding. Every triangle meeting at a point on an edge or vertex
+// holds it, so callers take the union or the highest (`height_at`): a shared edge's heights agree
+// up to rounding, and a curb line resolves to the curb's top, in every orientation of the
+// junction (the rule depends on no direction in the world). A thin triangle holds its interior.
+// The height interpolates the vertices by barycentric weights from the same orientations.
+// [`CoverageTriangle`] is the same predicate with the per-triangle work done once. `O(1)`,
+// allocation-free.
 pub(super) fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
-    let min_x = triangle[0].x.min(triangle[1].x).min(triangle[2].x) - SAMPLE_EPSILON_M;
-    let max_x = triangle[0].x.max(triangle[1].x).max(triangle[2].x) + SAMPLE_EPSILON_M;
-    let min_z = triangle[0].z.min(triangle[1].z).min(triangle[2].z) - SAMPLE_EPSILON_M;
-    let max_z = triangle[0].z.max(triangle[1].z).max(triangle[2].z) + SAMPLE_EPSILON_M;
-    if point.x < min_x || point.x > max_x || point.y < min_z || point.y > max_z {
+    // Outside the closed XZ box is outside the triangle, before the winding is computed.
+    if !in_box(&triangle_box_xz(triangle), point.x, point.y) {
         return None;
+    }
+    CoverageTriangle::new(triangle)?.held_height(point.x, point.y)
+}
+
+/// A top triangle prepared for many tests of the roadbed's coverage predicate (the closed
+/// triangle, by exact orientations; [`super::RoadbedSystem::top_triangle_height_at`]): its
+/// winding and twice its area, computed once. [`Self::for_each_held_in_row`] answers bit for bit
+/// as the predicate at every point of a lattice row, and stops at the end of the row's held run.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CoverageTriangle {
+    vertices: [RoadVec3; 3],
+    // Twice the signed area, `orient2d(b, c, a)`, nonzero; and its reciprocal.
+    area: f64,
+    inverse: f64,
+}
+
+impl CoverageTriangle {
+    /// The prepared triangle, or `None` for a triangle without area, which holds nothing.
+    pub(crate) fn new(triangle: &[RoadVec3; 3]) -> Option<Self> {
+        let [a, b, c] = triangle;
+        let area = robust::orient2d(xz(b), xz(c), xz(a));
+        (area != 0.0).then(|| Self {
+            vertices: *triangle,
+            area,
+            inverse: area.recip(),
+        })
     }
 
-    let area = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
-        - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
-    if area.abs() <= SAMPLE_EPSILON_M {
-        return None;
+    // The predicate past the box test. The point's orientation against the edge opposite each
+    // vertex is twice the area of the triangle it makes with that edge: the vertex's barycentric
+    // weight times twice the area. The point is held when none has the sign opposite the
+    // winding; their exact sum is twice the area, so a held point has all three of its sign
+    // (zero on an edge's line). The interpolation is the arithmetic the predicate always had
+    // (`orient2d` returns the same floating-point determinant unless the point lies within
+    // rounding of an edge's line), so a point inside keeps its height bit for bit; the third
+    // weight is the remainder. The three orientations are computed before the one test, which
+    // keeps the per-point work free of data-dependent branches but that test (`ROAD-68-K23`).
+    fn held_height(&self, x: f64, z: f64) -> Option<f32> {
+        let [a, b, c] = &self.vertices;
+        let (wa, wb) = (orientation(b, c, x, z), orientation(c, a, x, z));
+        let wc = orientation(a, b, x, z);
+        if self.opposite(wa) | self.opposite(wb) | self.opposite(wc) {
+            return None;
+        }
+        Some(self.interpolate(wa, wb))
     }
 
-    let numerator_w0 = (triangle[1].x - point.x) * (triangle[2].z - point.y)
-        - (triangle[1].z - point.y) * (triangle[2].x - point.x);
-    let numerator_w1 = (triangle[2].x - point.x) * (triangle[0].z - point.y)
-        - (triangle[2].z - point.y) * (triangle[0].x - point.x);
-    let numerator_w2 = area - numerator_w0 - numerator_w1;
-    let tolerance = -SAMPLE_EPSILON_M * area;
-    let outside = if area > 0.0 {
-        numerator_w0 < tolerance || numerator_w1 < tolerance || numerator_w2 < tolerance
-    } else {
-        numerator_w0 > tolerance || numerator_w1 > tolerance || numerator_w2 > tolerance
-    };
-    if outside {
-        return None;
+    /// The heights at the points `(xs[i], z)` the closed triangle holds, as `visit(i, height)`
+    /// in order of `i`: bit for bit the predicate's at each, and no other point. `xs` is
+    /// sorted. The held points of a row are one run (the triangle is convex and the predicate
+    /// exact), so the scan stops at the first point past it. `O(W)` for a row of `W` points,
+    /// allocation-free.
+    pub(crate) fn for_each_held_in_row(
+        &self,
+        xs: &[f64],
+        z: f64,
+        mut visit: impl FnMut(usize, f32),
+    ) {
+        let mut held = false;
+        for (i, &x) in xs.iter().enumerate() {
+            match self.held_height(x, z) {
+                Some(height) => {
+                    visit(i, height);
+                    held = true;
+                }
+                None if held => return,
+                None => {}
+            }
+        }
     }
-    let inverse_area = area.recip();
-    let (wa, wb, wc) = (
-        numerator_w0 * inverse_area,
-        numerator_w1 * inverse_area,
-        numerator_w2 * inverse_area,
-    );
-    Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
+
+    // Whether an orientation has the sign opposite the winding: the point lies beyond the edge.
+    fn opposite(&self, orientation: f64) -> bool {
+        if self.area > 0.0 {
+            orientation < 0.0
+        } else {
+            orientation > 0.0
+        }
+    }
+
+    // The height from the orientations against the edges opposite `a` and `b` (the third weight
+    // is the remainder), in the predicate's arithmetic.
+    fn interpolate(&self, wa: f64, wb: f64) -> f32 {
+        let [a, b, c] = &self.vertices;
+        let third = self.area - wa - wb;
+        (a.y * (wa * self.inverse) + b.y * (wb * self.inverse) + c.y * (third * self.inverse))
+            as f32
+    }
+}
+
+// The exact orientation of the XZ point `(x, z)` against the edge `p q` (`robust::orient2d`).
+fn orientation(p: &RoadVec3, q: &RoadVec3, x: f64, z: f64) -> f64 {
+    robust::orient2d(xz(p), xz(q), robust::Coord { x, y: z })
+}
+
+// A triangle's closed XZ box `[min_x, min_z, max_x, max_z]`.
+fn triangle_box_xz([a, b, c]: &[RoadVec3; 3]) -> [f64; 4] {
+    [
+        a.x.min(b.x).min(c.x),
+        a.z.min(b.z).min(c.z),
+        a.x.max(b.x).max(c.x),
+        a.z.max(b.z).max(c.z),
+    ]
+}
+
+fn in_box([min_x, min_z, max_x, max_z]: &[f64; 4], x: f64, z: f64) -> bool {
+    x >= *min_x && x <= *max_x && z >= *min_z && z <= *max_z
+}
+
+fn xz(v: &RoadVec3) -> robust::Coord<f64> {
+    robust::Coord { x: v.x, y: v.z }
 }
 
 /// Intersects a forward ray with an XZ rectangle; shared by road and engineered-ground queries.
@@ -357,7 +447,7 @@ pub(crate) fn road_ray_triangle_intersection_t(
     let edge_ac = triangle[2] - triangle[0];
     let pvec = ray_dir.cross(edge_ac);
     let det = edge_ab.dot(pvec);
-    if det.abs() <= SAMPLE_EPSILON_M {
+    if det.abs() <= RAY_EPSILON_M {
         return None;
     }
 
@@ -483,6 +573,159 @@ mod tests {
                 );
             }
         }
+    }
+
+    // The coverage predicate holds the closed triangle: every triangle meeting at a point on an
+    // edge or vertex holds it, in either winding and in every quarter turn and mirror of the
+    // layout; nothing past an edge, however close; a thin triangle's interior; nothing for a
+    // triangle without area. A curb (one XZ edge, two heights) reads its top through the highest.
+    #[test]
+    fn closed_triangles_hold_their_edges_in_every_orientation() {
+        let v = |x: f64, z: f64| RoadVec3::new(x, 1.0 + 0.25 * x - 0.5 * z, z);
+        let reversed = |t: [RoadVec3; 3]| [t[2], t[1], t[0]];
+        // Quarter turns and a mirror, exact in f64.
+        let turns: [fn(RoadVec3) -> RoadVec3; 5] = [
+            |p| p,
+            |p| RoadVec3::new(-p.z, p.y, p.x),
+            |p| RoadVec3::new(-p.x, p.y, -p.z),
+            |p| RoadVec3::new(p.z, p.y, -p.x),
+            |p| RoadVec3::new(-p.x, p.y, p.z),
+        ];
+        let held = |triangles: &[[RoadVec3; 3]], p: RoadVec3| {
+            let point = RoadVec2::new(p.x, p.z);
+            let heights: Vec<f32> = triangles
+                .iter()
+                .filter_map(|t| triangle_height_at_xz(t, point))
+                .collect();
+            (heights.len(), heights.iter().copied().reduce(f32::max))
+        };
+        // A fan of six triangles of uneven angles round (0.3, -0.2), alternate ones reversed.
+        let centre = v(0.3, -0.2);
+        let rim = [
+            (2.0, 0.0),
+            (1.0, 1.5),
+            (-1.0, 1.0),
+            (-2.0, 0.0),
+            (-0.5, -1.0),
+            (1.5, -1.5),
+        ]
+        .map(|(x, z)| v(0.3 + x, -0.2 + z));
+        let fan: Vec<_> = (0..6)
+            .map(|i| {
+                let t = [centre, rim[i], rim[(i + 1) % 6]];
+                if i % 2 == 0 { t } else { reversed(t) }
+            })
+            .collect();
+        // A square split on its diagonal, with a curb: a sidewalk triangle 0.12 m up beside its
+        // x = 1 side.
+        let square = [v(0.0, 0.0), v(1.0, 0.0), v(1.0, 1.0), v(0.0, 1.0)];
+        let up = |p: RoadVec3| RoadVec3::new(p.x, p.y + 0.12, p.z);
+        let split = [
+            [square[0], square[1], square[2]],
+            reversed([square[0], square[2], square[3]]),
+            [up(square[1]), up(v(2.0, 0.5)), up(square[2])],
+        ];
+        let curb_top = held(&split[2..], v(1.0, 0.5)).1;
+        for turn in turns {
+            let fan: Vec<_> = fan.iter().map(|t| t.map(turn)).collect();
+            assert_eq!(held(&fan, turn(centre)).0, 6, "the shared vertex");
+            // On a spoke (both ends share z) and inside.
+            assert_eq!(held(&fan, turn(v(1.3, -0.2))).0, 2, "spoke");
+            assert_eq!(held(&fan, turn(v(0.0, 0.0))).0, 1, "inside");
+            let split: Vec<_> = split.iter().map(|t| t.map(turn)).collect();
+            for t in [0.25, 0.5, 0.75] {
+                assert_eq!(held(&split, turn(v(t, t))).0, 2, "diagonal at {t}");
+            }
+            for (x, z) in [(0.0, 0.5), (0.5, 0.0), (0.5, 1.0)] {
+                assert_eq!(held(&split, turn(v(x, z))).0, 1, "side at ({x}, {z})");
+            }
+            let (count, top) = held(&split, turn(v(1.0, 0.5)));
+            assert_eq!((count, top), (2, curb_top), "the curb line reads its top");
+        }
+        // Nothing past an edge, however close: the old band reached 0.7 mm past the hypotenuse
+        // x + z = 1.
+        let triangle = [v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0)];
+        let at = |z: f64| triangle_height_at_xz(&triangle, RoadVec2::new(0.5, z));
+        assert!(at(0.5).is_some());
+        assert!(at(0.5_f64.next_up()).is_none());
+        assert!(at(0.5 + 1.0e-4).is_none());
+        // A triangle 0.1 mm thick holds its interior at its plane's height; one without area
+        // holds nothing.
+        let thin = [v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0e-4)];
+        let height = triangle_height_at_xz(&thin, RoadVec2::new(0.1, 1.0e-5)).unwrap();
+        assert!((height - (1.0 + 0.025 - 0.5e-5) as f32).abs() < 1.0e-6);
+        for flat in [
+            [v(0.0, 0.0), v(1.0, 0.0), v(2.0, 0.0)],
+            [v(0.0, 0.0), v(1.0, 0.0), v(1.0, 0.0)],
+        ] {
+            for x in [0.0, 0.5, 1.0, 1.5] {
+                assert!(triangle_height_at_xz(&flat, RoadVec2::new(x, 0.0)).is_none());
+            }
+        }
+    }
+
+    // A lattice row's held run is the points the predicate holds, at its heights bit for bit
+    // (`ROAD-68-K23`), against the closed rule written out from `orient2d`: both windings;
+    // vertices, a row-parallel edge and diagonal edges on lattice points; a thin triangle and one
+    // whose edge passes a hair beside a column; rows and columns through every vertex and one
+    // ulp to either side of it.
+    #[test]
+    fn a_lattice_row_holds_exactly_the_points_the_predicate_holds() {
+        let v = |x: f64, z: f64| RoadVec3::new(x, 1.0 + 0.25 * x - 0.5 * z, z);
+        let mut triangles = vec![
+            [v(-2.0, -1.0), v(2.0, -1.0), v(0.0, 2.0)],
+            [v(-1.0, -1.0), v(1.0, 1.0), v(-1.0, 1.0)],
+            [v(-2.6, 0.1), v(2.9, -1.7), v(0.3, 2.2)],
+            [v(-3.0, -0.25), v(3.0, 0.0), v(-3.0, -0.2499)],
+            [v(0.0, -3.0), v(1.0e-9, 3.0), v(0.25, 0.0)],
+        ];
+        let reversed: Vec<_> = triangles.iter().map(|&[a, b, c]| [c, b, a]).collect();
+        triangles.extend(reversed);
+        let reference = |[a, b, c]: &[RoadVec3; 3], x: f64, z: f64| {
+            let area = robust::orient2d(xz(b), xz(c), xz(a));
+            let w = [orientation(b, c, x, z), orientation(c, a, x, z), orientation(a, b, x, z)];
+            let opposite = |w: f64| if area > 0.0 { w < 0.0 } else { w > 0.0 };
+            (!w.iter().any(|&w| opposite(w))).then(|| {
+                let inverse = area.recip();
+                let third = area - w[0] - w[1];
+                (a.y * (w[0] * inverse) + b.y * (w[1] * inverse) + c.y * (third * inverse)) as f32
+            })
+        };
+        let mut held = 0;
+        for triangle in &triangles {
+            let axis = |pick: fn(&RoadVec3) -> f64| {
+                let mut axis: Vec<f64> = (-13..=13).map(|i| f64::from(i) * 0.25).collect();
+                for p in triangle {
+                    axis.extend([pick(p).next_down(), pick(p), pick(p).next_up()]);
+                }
+                axis.sort_by(f64::total_cmp);
+                axis.dedup();
+                axis
+            };
+            // The lattice inside the closed box, as the raster passes it.
+            let [min_x, min_z, max_x, max_z] = triangle_box_xz(triangle);
+            let inside = |axis: Vec<f64>, min: f64, max: f64| -> Vec<f64> {
+                axis.into_iter().filter(|t| (min..=max).contains(t)).collect()
+            };
+            let xs = inside(axis(|p| p.x), min_x, max_x);
+            let zs = inside(axis(|p| p.z), min_z, max_z);
+            let prepared = CoverageTriangle::new(triangle).unwrap();
+            for &z in &zs {
+                let mut run = Vec::new();
+                prepared.for_each_held_in_row(&xs, z, |i, h| run.push((i, h.to_bits())));
+                let expected: Vec<_> = (0..xs.len())
+                    .filter_map(|i| reference(triangle, xs[i], z).map(|h| (i, h.to_bits())))
+                    .collect();
+                assert_eq!(run, expected, "{triangle:?} at z = {z}");
+                for (i, &x) in xs.iter().enumerate() {
+                    let point = triangle_height_at_xz(triangle, RoadVec2::new(x, z));
+                    let expected = reference(triangle, x, z);
+                    assert_eq!(point.map(f32::to_bits), expected.map(f32::to_bits), "{i}");
+                }
+                held += run.len();
+            }
+        }
+        assert!(held > 0);
     }
 
     #[test]

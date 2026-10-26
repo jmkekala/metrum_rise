@@ -264,6 +264,26 @@ with households on their way in planned the rest of its hour differently: save f
 them and the Kuopio reference is re-recorded (`roads.md` "Saved cities for the commit breakdown",
 `simulation.md` "Save bytes"). Open question 50: the breakdown runs the test build's whole-city
 checks.
+`ROAD-68-K19` (branch `road68-K19`)
+makes the roadbed's coverage predicate exact, the defect `TERRAIN-07-D` round 2 found: exact
+orientation tests on the `f64` positions, the closed triangle held (edges and vertices by every
+triangle meeting there; confirmed by the user, 2026-10-26), no tolerance and no dependence on the
+junction's orientation; pieces and saves are unchanged, and coverage and heights change only
+within the old band past an edge. It also analyses `ROAD-68-K18`'s 10k commit-window profiles (not layout: the windows' work varies
+between runs of one binary, open) and runs the full debug suite on the sorted R-tree query
+(1,944 passed; `roads.md` question 37). `ROAD-68-K20` rebases it onto `road` `294fd0f1` and
+finds the exact predicate slowing the graded terrain stage (100k sample 0 to 2.95-3.48 ms
+against 3.0); the predicate prepared once per triangle, bit for bit the same, recovers most of
+it, but one 100k run still takes 3.07 ms and 10k sample 1 stays 0.2-0.3 ms slower: open, not
+landed (`roads.md` question 37). `ROAD-68-K23` rebases it onto `road` `6c51cf00` with
+`ROAD-68-K20` part 2 (lane ends on their kerb's surface) and a fix to the validator's junction arm
+angle, which differed by orientation (the 25° Y, at the limit, was refused in two of eight
+orientations, on `road` too; [`ROAD-54`](roads.md#road-geometry-validation-road-54)). It traces
+10k sample 1's rise to the coverage raster and makes the raster faster, bit for bit, but the stage
+stays 0.12-0.22 ms over `road`. `ROAD-68-K25`'s landing session: the graded stage is under 3.0 ms
+at every tier and sample from 0 to 100k (at most 2.72 ms) with every product as recorded, so the
+branch is ready to land; the 3.0 ms stage, not `road`'s spread, is the target (decided by the
+coordinator under the user's delegation, 2026-10-26, for review; `roads.md` question 37).
 `TERRAIN-07-A`'s Kuopio census and edits ran on the save before `ROAD-68-K15`'s
 re-record, which moved 18 profile points by at most 0.36 m; their re-run is open.
 Tests that need later gates are disabled until then (4 Rust tests, all `TERRAIN-07`; no

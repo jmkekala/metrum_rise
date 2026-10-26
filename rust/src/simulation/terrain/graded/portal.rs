@@ -24,8 +24,9 @@ pub const PORTAL_CLEARANCE_M: f64 = 5.0;
 /// The portal reach `R = H / k`: within it of a portal row, ground graded at the tie-in slope
 /// from the mouth can stay below the bore's crown, so deck coverage counts only there, metres.
 pub const PORTAL_REACH_M: f64 = PORTAL_CLEARANCE_M / TIE_IN_SLOPE;
-// Bounds padding: wider than the roadbed's sampling tolerance, so every triangle whose
-// predicate can accept a point of the rectangle is kept (as coverage pads).
+// Bounds padding, as coverage pads. The predicate is exact (it holds no point outside a
+// triangle's closed XZ box), so the closed rectangle would keep every triangle that can hold one
+// of its points; the pad is the margin the dirty-tile selection's `PIECE_PAD_M` assumes.
 const PAD_M: f64 = 0.01;
 
 /// What the portal opening reads around one lattice rectangle or point: the portal rows within

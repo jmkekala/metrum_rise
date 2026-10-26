@@ -5,10 +5,12 @@
 //! no structure span lies over the point. No loops are joined and no side is inferred, so an
 //! open chain flips no region.
 
-use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::{CoverageTriangle, PieceId, RoadVec3, RoadbedSystem};
 
-// Bounds padding: wider than the roadbed's sampling tolerance and its grid padding, so every
-// triangle whose predicate can accept a point of the rectangle is visited.
+// Bounds padding. The predicate is exact (it holds no point outside a triangle's closed XZ box),
+// so the closed rectangle would visit every triangle that can hold one of its points; the pad,
+// wider than the piece grids' padding, is the margin the dirty-tile selection's
+// `PIECE_PAD_M` assumes for the visited triangles (the coverage inputs).
 const PAD_M: f64 = 0.01;
 
 /// Rasterizes the grounded top triangles over the lattice `xs` x `zs` (sorted, row-major by
@@ -55,25 +57,34 @@ pub(super) fn rasterize(
 /// Raises each lattice point of `xs` x `zs` (row-major by `z`) that `triangle` covers by the
 /// roadbed's predicate to its height there: `out[k]` the highest so far. Heights are `+ 0.0`
 /// so a negative zero never decides a maximum. The one raster of road coverage and the portal
-/// opening's decks (`TERRAIN-07-C`). `O(K)` for the `K` lattice points in its box.
+/// opening's decks (`TERRAIN-07-C`). Only the lattice inside the triangle's closed box can be
+/// held; a triangle whose box holds no lattice point (most of the small ones) is not prepared,
+/// and one without area covers nothing. The triangle is prepared once ([`CoverageTriangle`]) and
+/// each row's scan ends with its held run ([`CoverageTriangle::for_each_held_in_row`]). `O(K)`
+/// for the `K` lattice points in its box.
 pub(super) fn raise_covered(triangle: &[RoadVec3; 3], xs: &[f64], zs: &[f64], out: &mut [f32]) {
     let width = xs.len();
     let [min_x, min_z, max_x, max_z] = triangle_box(triangle);
     let (i0, i1) = (
-        xs.partition_point(|&x| x < min_x - PAD_M),
-        xs.partition_point(|&x| x <= max_x + PAD_M),
+        xs.partition_point(|&x| x < min_x),
+        xs.partition_point(|&x| x <= max_x),
     );
     let (j0, j1) = (
-        zs.partition_point(|&z| z < min_z - PAD_M),
-        zs.partition_point(|&z| z <= max_z + PAD_M),
+        zs.partition_point(|&z| z < min_z),
+        zs.partition_point(|&z| z <= max_z),
     );
+    if i0 == i1 || j0 == j1 {
+        return;
+    }
+    let Some(prepared) = CoverageTriangle::new(triangle) else {
+        return;
+    };
     for j in j0..j1 {
-        for i in i0..i1 {
-            if let Some(height) = RoadbedSystem::top_triangle_height_at(triangle, xs[i], zs[j]) {
-                let cell = &mut out[j * width + i];
-                *cell = cell.max(height + 0.0);
-            }
-        }
+        let row = &mut out[j * width + i0..j * width + i1];
+        prepared.for_each_held_in_row(&xs[i0..i1], zs[j], |i, height| {
+            let cell = &mut row[i];
+            *cell = cell.max(height + 0.0);
+        });
     }
 }
 

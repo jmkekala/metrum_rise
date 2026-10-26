@@ -169,12 +169,19 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
                 graded_samples += usize::from((rendered - site.support_height_m).abs() > 0.05);
             }
         }
-        // The entire frontage follows the road, not just its midpoint.
+        // The entire frontage follows the road, not just its midpoint: the road 2.5 cm on its
+        // side of the seam against the yard 2.5 cm on the other. The roadbed's coverage is
+        // exact (`ROAD-68-K19`), so a point on the seam itself may lie outside the road.
         for step in 1..20 {
             let p = a.lerp(b, step as f32 / 20.0);
-            let inside = p + (d - a).normalized() * 0.025;
-            let road = core.transit_network.roadbed.height_at(p.x, p.y).unwrap();
-            let yard = rendered_paving_height(core, inside).expect("paved frontage coverage");
+            let across = (d - a).normalized() * 0.025;
+            let (road_side, yard_side) = (p - across, p + across);
+            let road = core
+                .transit_network
+                .roadbed
+                .height_at(road_side.x, road_side.y)
+                .unwrap();
+            let yard = rendered_paving_height(core, yard_side).expect("paved frontage coverage");
             assert!(
                 (road - yard).abs() < 0.05,
                 "frontage seam {p:?}: road {road}, yard {yard}"

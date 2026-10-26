@@ -260,6 +260,12 @@ fn check_abutments(name: &str, graph: &RegionGraph, span: &SpanPiece, edge: usiz
 // tilted on flat ground too): graph, spans, lanes and queries, and nodes and walkways except for
 // `band_width_step` (and walkways for `rural_y_40`, which has none), never the layouts. Their
 // mouths lie beyond 12 m (the narrow Y, the D4 tapers). No other entry changes.
+// Re-recorded by `ROAD-68-K19` (the exact, closed coverage predicate): `bend_10` changes its
+// queries alone, flat and sloped: at one probe point just outside every carriageway triangle
+// (inside the old predicate's band) the carriageway and carriageway-only lane queries answer
+// `None`; no answer turns `Some`, and every other answer is bitwise equal. Attributed by
+// classifying every predicate call against the old predicate: 24 of 437,772 differ, all band
+// points. No piece, layout, walkway or lane hash changes.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -354,7 +360,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x04beb00dbe359103,
             0x184a8edb7db27938,
             0x9c80c8207340a2d1,
-            0xa9e75f06f0ef2d20,
+            0xde3af4121d8f1e38,
         ],
     ),
     (
@@ -1158,7 +1164,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x399fa33dd91059df,
             0xb4416ea6abad4253,
             0xf84afd12c8d83330,
-            0x171173a1f3380b82,
+            0xf5cafb41792b0784,
         ],
     ),
     (

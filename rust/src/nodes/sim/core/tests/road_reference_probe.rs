@@ -103,6 +103,15 @@ fn reference_junction_products_match_the_probe() {
 // narrow-angle mouths lie beyond 12 m; the plan-excerpt fix of open question 8 changes none.
 // `y_25/true`'s lanes differ from both parents' tables: `ROAD-68-F`'s minimum run moves the
 // intermediate bend's mouth, question 31 the Y's plane, and the lanes follow both.
+// Re-recorded by `ROAD-68-K19` (the exact, closed coverage predicate): the lanes of 14 fixtures
+// change (not `four_way`, `terminal` or `t_mixed_4lane_through`), and `t_footpath_beside_arm`'s
+// queries, flat and sloped; no graph, piece, layout or walkway hash. Of the 197,530 predicate
+// calls the fixtures make, 37,953 differ because the old band held a point outside the closed
+// triangle and 16 because a triangle under 0.0005 m^2 now holds one; none by arithmetic. No lane
+// point's height turns `None` or `Some`. The lane points that move (968 of 79,527 evaluations
+// over every lane sync) move by 0.12 m: junction foot-lane points at a crossing's kerb, a hair
+// outside the sidewalk's triangles, which the band lifted to the curb's top and which stand on the
+// carriageway (`roads.md` question 37, `ROAD-68-K19`). One query answer turns `None`.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -112,7 +121,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2556dcca71547b6f,
             0x47347647c0875527,
             0x4edf89ccac373d17,
-            0x7a497b01f481e16a,
+            0x85eb325d4f089fce,
             0x838ac943f4110af7,
         ],
     ),
@@ -136,7 +145,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe4c667d40f4b3c30,
             0x944772f28cdd9b4a,
             0x795cbfa449e2504b,
-            0x7907d92c4ca96ba9,
+            0x05f5446d60a07dcb,
             0x58b095a7a059d1e1,
         ],
     ),
@@ -148,7 +157,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0xba1a4d470645c172,
             0x5789c0832814c8bf,
-            0xf6c329b7c5e27393,
+            0x6bf56bfc4c315427,
             0x39761dd71a7b771a,
         ],
     ),
@@ -160,7 +169,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x282bbc68e8e7ad2b,
             0x91b62e25cf8927ab,
             0x17b511e266ee0972,
-            0x26e42d2d78825d1a,
+            0x38fb62bb34fa5ff2,
             0x0d61a4b71492ae0e,
         ],
     ),
@@ -172,7 +181,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2108b450ccc98488,
             0x400de8cd0dd99a81,
             0xa406092b01d0389f,
-            0xe916cc04635a9b01,
+            0xdfd69d46a963d062,
             0x528dcfcd6f252f7c,
         ],
     ),
@@ -184,7 +193,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xd79b65b1ddcd55c9,
             0x788f7c088a440397,
             0x36d1980fd4be934f,
-            0xb36b31787d40f4ba,
+            0x7debcbd899c8c65f,
             0xca3e234a169d1b8e,
         ],
     ),
@@ -220,8 +229,8 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x1f9eafee9c31ca22,
             0x097a57a202a87c0c,
             0x3e532fb50f5548c7,
-            0xb5eb6a5c9f13758f,
-            0x2d6c67d9c41442f0,
+            0x15270fef2625f07e,
+            0x3261c5eaaa8cd8f5,
         ],
     ),
     (
@@ -232,7 +241,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2556dcca71547b6f,
             0xafa5fdd44b1f3e37,
             0xcb3a29371a976116,
-            0x57b15e41b28f604a,
+            0x18f8248be8ec63f1,
             0x11b90e23664a77c6,
         ],
     ),
@@ -256,7 +265,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe4c667d40f4b3c30,
             0x8ff1522bfa09645c,
             0x978ea8db0d82e488,
-            0x60d2be20989e61b3,
+            0x484e2fbd3d85af1b,
             0xa9dd6d496aa66c76,
         ],
     ),
@@ -268,7 +277,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0x72fb69808e0f820c,
             0x0ff79938b4e00d18,
-            0x91c2d837a8190802,
+            0x4960159f0f25c86b,
             0x4b4830d61a573246,
         ],
     ),
@@ -280,7 +289,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x282bbc68e8e7ad2b,
             0xc3ac97b1b3ac4ecc,
             0x1d1dc420bdc56f63,
-            0x1593aed7548df839,
+            0x7d20dd837ef2c1f8,
             0x0e7813513a04bd2b,
         ],
     ),
@@ -292,7 +301,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2108b450ccc98488,
             0xe2969a080ab79204,
             0x8d4202bdb5ac9c55,
-            0xf86c40f7bd976543,
+            0x122c9139234d90a0,
             0x1b69e5524c9a1e0c,
         ],
     ),
@@ -304,7 +313,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xd79b65b1ddcd55c9,
             0x0283be9510bd8e7b,
             0x741add2ecb1b7acd,
-            0x61f0df47c0dd65e2,
+            0x46385a97035fd1a4,
             0x90190fc393a2b1d3,
         ],
     ),
@@ -340,8 +349,8 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x1f9eafee9c31ca22,
             0x5d287ad94f4132f3,
             0x00da901bb89e67be,
-            0xb714adce43010eaf,
-            0x288767f5cc3d19f9,
+            0xb66aaa7fcb7120b8,
+            0x5c5a05b35e186790,
         ],
     ),
 ];
