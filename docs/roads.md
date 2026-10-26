@@ -625,7 +625,11 @@ The road side is rewritten:
   [T22](terrain.md#terrain-07-open-questions) 3 (a)): the row's vertices from the end corner of
   one chain to the start corner of the next, a curb pair once at its lower vertex. The loops join
   through it like a chain, and its segments are structure sources with the retaining-wall policy
-  (`ChainSegment::wall`), so a structure built from a road commits (open question 19).
+  (`ChainSegment::wall`), so a structure built from a road commits (open question 19). A run
+  across a bridge's mouth is marked (`PieceMesh::abutment_runs`), and
+  `RoadbedSystem::wall_seams_in_bounds` gives its segments the bridge's abutment face's bottom
+  edge below their ends (`WallSegment::abutment_bottom`), where the graded terrain's abutment
+  wall starts (`TERRAIN-07-D` round 7, the abutment band).
 - **Source tags.** `TerrainCdtRoadBoundarySource` keeps `BuildingSiteBoundary`. Its span, node and
   handoff variants are replaced by one `RoadBoundary { piece, chain, segment, support }`, where
   `support` is grounded or structure (from the edge class) and carries the retaining-wall policy:

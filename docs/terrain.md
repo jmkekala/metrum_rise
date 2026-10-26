@@ -3715,6 +3715,17 @@ packed after the edge row and interpolated), so the road hides it in depth; wher
 stands above the road top it is discarded as before, so no terrain shows over a sidewalk. The
 overlap is rendering only: the payload, coverage and every query stay exact.
 
+**Behind the road** ([T24](#terrain-07-open-questions) (a2), `TERRAIN-07-D` round 7, decided by the
+coordinator under the user's delegation, for review). Within the same pixel inside a road seam the
+terrain is now kept whatever its height: ground at or below the road top keeps its depth as (a)
+does; ground above it writes the depth of its view ray where the ray has fallen below the road top
+by more than the ground's rise plus the pixel (`road_top - rise - w`), so any road fragment of the
+pixel hides it and it shows only where none is drawn. The push follows the pass's own view ray, so
+the shadow and depth passes keep it behind the road as well; a ray that does not fall (seen from
+below) keeps the ground discarded. Writing `DEPTH` costs the graded variant's early depth test (the
+base variant writes none); its GPU cost is the matrix re-run's to measure. Drawing only: the
+geometry, coverage and queries stay exact.
+
 The material class uses the same pattern with the material edges: away from an edge the nearest
 sample's class; near one, the class of a surrounding sample on the fragment's side of the nearest
 edge. A hidden edge inside another surface then has the same class on both sides and draws nothing.
@@ -3795,8 +3806,15 @@ to point).
   its lower side on the left, as a conflict wall's road is: along the seam for a headwall,
   against it (the space under the bridge on the left) for an abutment. Below the bridge's slab
   the roadbed's own abutment face closes the road chunk down to the skirt depth
-  ([skirts](#skirts), round 4); the abutment wall overlaps it there in the same plane (a
-  `TERRAIN-07-D` risk, [record](#terrain-07-c-record)). At a tunnel's portal row the terrain
+  ([skirts](#skirts), round 4), so at a bridge's mouth the abutment wall starts at that face's
+  bottom edge (the abutment band, `TERRAIN-07-D` round 7, gate C's recommended option): the
+  roadbed marks each wall run whose mouth is a bridge's (`PieceMesh::abutment_runs`) and gives its
+  segments the edge's height below their ends (`WallSegment::abutment_bottom`: the skirt depth
+  below the row's corners, straight between them, bitwise the face's bottom vertices at the
+  corners); faces stand from the surface up to the edge where the surface lies below it, and a
+  headwall from the deck where it stands above the deck, with nothing between, which the slab and
+  the face close. The two faces meet on that edge instead of overlapping in one plane (round 6's
+  0.15 m band, seen from under the bridge). At a tunnel's portal row the terrain
   beyond is cut where it stands less than `H` above the deck (the portal opening,
   [T22](#terrain-07-open-questions) 5 (a), round 5), so the headwall keeps only faces with an end
   at or above `h + H`; the opening's sides are structure walls along the bore seams, from the
@@ -3826,7 +3844,9 @@ to point).
 - The patch LOD steps are unchanged: step 1 (10 m) to 2 km, 2 to 5 km, 4 to 12 km, 8 beyond.
 - A graded tile takes its level from the camera's distance to the tile ([T5](#terrain-07-open-questions)),
   with 32 m of hysteresis (proposed): `GL0` to 256 m, `GL1` to 512 m, `GL2` to 2 km, `GL3`
-  beyond. At 1920×1080 and the game's 60 degree field of view a pixel covers about 1 mm per metre
+  beyond. The distance is the camera's to the tile's centre on the ground under the camera, from
+  its height above that ground (`TERRAIN-07-D` round 7: the renderer had measured along the
+  ground, so a camera high over the city drew `GL0` tiles 300-400 m away). At 1920×1080 and the game's 60 degree field of view a pixel covers about 1 mm per metre
   of distance, so 0.5 m texels resolve within about 500 m.
 - Every level samples the same pointwise function on its own lattice. Values at shared lattice
   points are bitwise equal across levels, so there are no mips, no downsampling and no
@@ -3904,6 +3924,14 @@ to point).
   patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
   empty world is [T25](#terrain-07-open-questions).
+- **Instance uniforms.** The cells place themselves from instance uniforms (`cell_mode`, the patch
+  rectangle, the lattice anchor), and Godot holds every instance's instance uniforms in one global
+  buffer of `rendering/limits/global_shader_variables/buffer_size` vec4 slots, 16 per instance; an
+  instance past it renders with the defaults, so a base cell collapses and its patch shows the sky
+  (`TERRAIN-07-D` round 7: on Kuopio the prewarmed cell sets alone passed the default 65,536 slots,
+  4,096 instances, and the game's trees had passed it before them, [`WATER-05`](roadmap.md#validated-bugs)).
+  `project.godot` sets 1,048,576 slots (65,536 instances, 16 MB): twice the most a session asked
+  for (the round 7 matrix's saved sessions refused 26,581 allocations past the 4,096 with the trees), the `T7` rule.
 - **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
@@ -4103,7 +4131,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; open: the GPU matrix re-run, `kuopio_t2_wall`'s plan pinholes (B 3: T24 (a) does not reach them), the abutment band, the water reflection proxy, the undo swap test) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); open: the matrix re-run, a background sliver at the T2 site's road edge and under the bridge's abutment edge, the bridge mouth's sky pixels, T26, the water reflection proxy (it draws the 5.8 M extra primitives of the saved paths), the undo swap test) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5965,6 +5993,125 @@ the changed-only sync), `terrain.gd` 4,602 (+10), `terrain_cells.gdshaderinc` 40
 `terrain_surface.gdshaderinc` 1,009 (+6). Node bridge `graded_tiles_api.rs` 600 (+1). `roadbed/`
 unchanged (8,959 lines on `road` `6c51cf00`, tests and fixtures excluded).
 
+Round 7, 2026-10-26 night, the same branch rebased onto `road` at `bcf865a2` (`ROAD-68-K23`: the
+exact closed coverage predicate; two conflicts in the roadbed test file and `roads.md`, both taken
+from `road`): the matrix verdict, the moving-camera frames, T24 (a2), the abutment band. Fresh runs
+on this branch unless marked; probes on release libraries in gamescope's headless backend, P-cores.
+
+- **GPU idle-frame matrix (fresh, run by the coordinator on the user's display, 22:11-22:41;
+  invalidated for the graded poses by the next bullet, to re-run).** Tree `ce8bf8f0` (round 6's
+  tip; its one dirty file `docs/terrain.md`), release library `0c58c9dc…`, Kuopio reference save
+  `8fa19a1e`, the populated town `42af609c`, RX 7900 XTX (RADV), two rounds, GPU p50 in ms
+  (exact / graded, each round): `overview` 1.258 1.218 / 1.239 1.240, `close` 1.095 1.097 / 1.098
+  1.096, `ground` 1.196 1.009 / 1.019 1.017, `saved` 2.168 2.169 / 1.760 1.763, `city` 4.903 4.821 /
+  4.789 4.148, `city_low` 4.308 3.397 / 3.265 2.915; graded minus exact of the medians +0.002,
+  +0.001, -0.08, -0.41, -0.39, -0.76. On the three Kuopio poses the frames are identical in both
+  modes (the same draws and primitives) and the medians differ by 1-2 µs within a 40 µs spread
+  between rounds; the coordinator judged the matrix passed. Idle frame p50 Kuopio about 1.9 ms in
+  both. Loads (total, two rounds): Kuopio exact 2,823 and 2,815 ms, graded 3,552 and 3,489 (T25's
+  prewarm is part); saved 3,846 and 3,752 against 4,515 and 4,473; town 5,200 and 4,977 against
+  3,922 and 3,884. Camera paths, frame p50 exact / graded (the summary's table mixed the three
+  scenes; per scene): Kuopio equal (4.8-6.1 ms); saved `pan_high` 14.7, 13.9 / 16.0, 15.7,
+  `orbit_high` 15.7, 14.9 / 16.2, 16.1, the low paths and `zoom_in` within 0.6 ms; town `pan_high`
+  5.7, 5.9 / 10.0, 10.1, `orbit_high` 7.1, 7.1 / 11.2, 11.8, the rest within 1 ms.
+- **Graded cells drew with failed instance uniforms (found, fixed).** `kuopio_t2_wall`'s close views
+  in B (this round and round 6's renders alike) show the sky over most of the ground between the
+  site and the far shore, with straight edges, where the exact cut draws terrain; round 6 counted
+  only the plan view. The log holds 2,525 "Too many instances using shader instance variables"
+  errors, all after B's terrain was set up (its prewarm makes T25's 1,296 sets of five cell
+  `MultiMesh`es, whose materials take instance uniforms): Godot keeps instance uniforms in one
+  buffer of 65,536 vec4 slots by default, 4,096 instances, and an instance past it renders with
+  the defaults, so its base cells collapse (`cell_mode` 0) and the patch shows nothing where it
+  has no graded tile. In the game the
+  buffer is already full when the cells come: every matrix session logs the errors from the trees
+  at load (Kuopio exact 18,400, graded 23,584; saved 21,371 / 26,581; town 7,055 / 7,287), so the
+  graded sessions drew their cells, and their GPU p50, without them. `project.godot` now sets
+  1,048,576 slots ([instance uniforms](#godot-tile-renderer)); the same render with it: no error,
+  B's close views show exactly the exact cut's sky (128,903 pixels both in `close_east`), the plan
+  pinholes unchanged. **The matrix's graded numbers are invalid and it needs a re-run** on this
+  round's tip; [`WATER-05`](roadmap.md#validated-bugs)'s lever (a) is taken with it.
+- **The moving camera's frame (attributed; one defect fixed, the rest
+  [T26](#terrain-07-open-questions)).** Probes of the town's `pan_high` and `orbit_high` (the
+  matrix library, the round's scripts with the graded frame's parts on the `perf` channel; paced at
+  60 Hz, so main-thread CPU, not frame time): the graded renderer works 4.47 / 4.00 ms a frame
+  against the exact cut's terrain 2.72 / 0.16 ms, which matches the matrix's +4.2 / +4.4 ms. Of it
+  the patch cell rewrites 2.38 / 2.73 ms (5.1 / 5.2 patches a frame at about 0.5 ms each, after 5.4 /
+  6.7 tile uploads a frame as tiles change level), the re-level of all 1,610 desired tiles 1.73 /
+  0.97 ms (every frame: the paths move 8 m or more a frame), the poll 0.17 / 0.25 ms. Defect fixed:
+  the renderer measured a tile's distance along the ground, not from the camera
+  ([LOD](#lod-and-distant-tiles)), so a camera 300-400 m up drew `GL0` tiles below it; by the
+  camera's distance `orbit_high` takes 2.65 ms (cells 1.32 ms, 2.2 uploads a frame, re-level 1.21
+  ms) and `pan_high` 4.60 ms (unchanged: it crosses new ground every frame). On the saved save the
+  renderer works 0.35-0.91 ms a frame on the paths.
+- **The tripled primitives (attributed: not the main view).** Saved `orbit_high`, per pass
+  (`viewport_get_render_info`): the main viewport draws 1.26 M primitives exact and 1.61 M graded
+  (the cells submit 0.84 M before culling: `GL2` 0.58 M, base 0.26 M), its shadow passes 1.8 k in
+  both (the cells cast none), and the other viewports 1.83 M against 7.61 M. The only other
+  viewport that draws terrain is the water reflection, which mirrors every visible patch's mesh as
+  its own instance, the collapsed `PlaneMesh` of a patch with cells included; which of its proxies
+  add the 5.8 M is not yet split (open, with the reflection proxy item). The matrix's GPU p50 is the
+  main viewport's measured time (`viewport_get_measured_render_time_gpu`), so the reflection's GPU
+  time is outside the gate's comparison.
+- **T24 (a2) (built; B plan pinholes 0).** The [behind-the-road rule](#the-exact-seam-mask) in
+  `terrain_surface.gdshaderinc`. `kuopio_t2_wall` `plan_terrain`: B 0 pinholes (round 6: 3), the
+  exact cut 1 (unchanged, `TERRAIN-07-G` deletes it); `t` flat, 2.5% and 8%: 0 in every half, 0
+  failures. Close views against round 6's renders: no terrain over a sidewalk; the changed pixels
+  are a background sliver narrowed (below). GPU cost of the depth write: for the matrix re-run.
+- **A background sliver along a road edge (found, open).** `kuopio_t2_wall` B `close_corner`: a
+  2-4 pixel band of background along the side road's far outer edge, where the ground beyond
+  stands above the road (the T2 site's conflict wall); the exact cut has none (0 pixels in the
+  region), round 6's B 2,317 pixels, this round 1,762 (a2 fills its one-pixel band), the same with
+  the larger buffer. Not attributed: next, whether that edge's conflict wall faces reach the wall
+  `MultiMesh` at the level drawn. The acceptance's "no background sliver" misses until it is.
+- **The abutment band (built).** At a bridge's mouth the terrain's abutment wall now starts at the
+  roadbed's abutment face's bottom edge ([retaining walls](#cliffs-coal-pits-retaining-walls)): the
+  roadbed marks the wall runs at bridge mouths (`PieceMesh::abutment_runs`, set by the span's
+  `SpanEnd::WallRun { abutment }` and the node's arm class) and `wall_seams_in_bounds` returns
+  `WallSegment`s with the edge's height under their ends (`mesh::abutment_bottom_height`, one
+  function, bitwise the face's bottom vertex at the corners); the bake walls from the surface up to
+  that edge where the surface lies below it, a headwall above the deck as before, and nothing
+  between. Tests (debug, fresh): `structure_mouths_wall_the_graded_ground` (every point along the
+  bridge's mouth: a face from the ground to the edge below it, none over the band, the band's
+  points counted) and `a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck` (every face's
+  top on the edge within 0.1 mm, the edge at the row's corners equal to the roadbed's abutment
+  bottom vertices bitwise) pass. `bridge_t` `under_bridge`: the lighter band below the slab's end
+  (the two faces in one plane) is gone (92 pixels changed against round 5's render, all there); a
+  dashed line of background pixels along the face's bottom edge stays, as in round 5 (open, with
+  the sliver above).
+- **The bridge mouth's sky pixels** (`mouth_side`, the grass just below the slab's end): unchanged
+  by the band (6 pixels, round 5's too); not attributed (open).
+- **Streaming install budget (recommendation, not built).** Round 6's worst streaming install
+  frame (1.08 ms on Kuopio, 1.45 ms on the populated save; historical) passes the 1.0 ms budget
+  because `_poll_and_install` checks it only after each poll of four tiles, and a tile's upload
+  (a `GL0` layer of 275 KB and its rows) is the frame's largest step. Recommended: check the
+  budget before each tile's upload and keep the tiles polled but not yet uploaded in a queue that
+  the next frame installs first (Rust hands a result over once, so a polled tile cannot stay
+  there); a frame then ends within the budget plus one tile's upload, `O(1)` per tile.
+- **The mask test's skip set is empty** after `K23`: `the_exact_mask_equals_coverage` compares
+  every point (the points covered past the triangles' edges no longer exist); the skip and its
+  helper are removed and the test passes.
+
+**Tests (fresh, round 7).** `./run.sh --test` on the code tip `500ae428` (DISPLAY and WAYLAND_DISPLAY
+unset): exit 0; debug lib 1,970 passed, 0
+failed, 175 ignored (K23's re-enabled coverage test among the passed); integration 4 passed; every
+Godot bridge suite and the rendered block with 0 failures, among them `graded_tile_renderer_test.gd`,
+`graded_cells_shader_test.gd` (the a2 shader in both renderers), `network_tool_chunk_renderer_test.gd`,
+`road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`
+and both plot lighting suites; skipped as before: the headless shader global probe and the
+Forward+ vegetation tests. Targeted debug tests on the Rust of the tip (`simulation::terrain::graded`,
+`simulation::network::roadbed`): 96 passed, 4 ignored. Clippy `--all-targets`: the 59-warning
+baseline set exactly. Renders (`screenshots-C.sh`, compare mode, the tree with the round's
+changes): `kuopio_t2_wall` (pinholes B 0, exact 1), `t` (0 everywhere, 0 failures), `bridge_t` and
+`tunnel_t` (B, pinholes 0, 0 failures), and `kuopio_t2_wall` again with the larger instance
+buffer (no overflow error, B's ground complete).
+
+**Lines** (production, tests excluded, counted as `ROAD-68-K18` counts). `simulation/terrain/graded/`:
+5,215 against 5,149 at round 6's tip by the same count (+66: the band in `walls.rs`, `tile.rs`,
+`seams.rs`, `query.rs`). `roadbed/` 8,989 against 8,909 on `road` `bcf865a2` (+80: the run marks,
+`WallSegment`, `abutment_bottom_height`, the arm's bridge flag, their docs). Godot:
+`terrain_graded_tiles.gd` 1,047 (+36: the frame's parts and cell counts on the `perf` channel, the
+camera distance), `terrain.gd` 4,608 (+6), `terrain_surface.gdshaderinc` 1,030 (+21: a2).
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
@@ -6645,6 +6792,12 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       only where no road fragment is drawn; costs the graded cells' early depth test (measure in
       the GPU matrix). The alternative is the road's: a one-pixel horizontal fringe of the
       roadbed's outer edge under the terrain.
+    - **Round 7: (a2) taken by the coordinator under the user's delegation, 2026-10-26 night, for
+      review; built.** The [behind-the-road rule](#the-exact-seam-mask): `kuopio_t2_wall` B 0
+      plan pinholes (target met; exact 1), `t` 0 in every half, no terrain over a sidewalk in the
+      close views. Its GPU cost (the graded variant's early depth test) waits for the matrix
+      re-run. A separate 2-4 pixel background sliver along that site's side road edge in
+      `close_corner` (B only) stays open ([record](#terrain-07-d-record), round 7).
 25. **T25. Cell sets prewarmed per grid patch (`TERRAIN-07-D` round 6; taken pending the user's
     review, 2026-10-26).**
     - **Evidence.** Round 5's populated edit created 16 materials and 24 `MultiMesh`es: cell sets
@@ -6659,6 +6812,35 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       `PlaneMesh` with a mask, walls in one shared `MultiMesh`.
     - **Recommendation.** (a) now (exact, reversible); (c) if the memory record is too high for
       the 100k city.
+    - **Round 7.** With the sets prewarmed, Kuopio's B terrain overflowed Godot's instance-uniform
+      buffer (4,096 instances by default; 6,480 cell instances prewarmed) and its cells drew with
+      default uniforms; the buffer is now sized for them ([instance uniforms](#godot-tile-renderer)). Loads in the round 7 matrix: Kuopio
+      3.49-3.55 s graded against 2.82 s exact, of which the prewarm 0.10-0.14 s (round 6).
+26. **T26. The moving camera's graded work (`TERRAIN-07-D` round 7) — recommendation taken by the
+    coordinator under the user's delegation, 2026-10-26 night, for review; to build next round.**
+    - **Evidence.** On the populated town's `pan_high` and `orbit_high` (the camera 400 m from the
+      pivot, moving 8 m or more a frame) the graded renderer works 4.6 and 2.7 ms of main thread
+      a frame (after this round's camera-distance fix; 4.5 and 4.0 before), against the exact cut's
+      terrain 2.7 and 0.2 ms; the matrix measured the frame 4.2-4.4 ms longer. Two parts: each tile
+      installed at a new level rewrites every patch its 3 x 3 neighbourhood meets
+      (`_rebuild_patch_cells`, `O(the patch's tiles)`, about 0.5 ms a patch, 2-5 patches a frame),
+      and a camera move of 8 m re-levels every desired tile (`O(desired)`: 1,610 tiles, 1.0-1.8 ms;
+      the 100k city lists 10,500 tiles, about 10 ms by the same rate). Neither is an acceptance of
+      gate D's (its install budget is the edit's and streaming's 1.0 ms of uploads), but
+      `ROAD-68-H`'s moving poses must stay under 16.7 ms, and the saved save's high paths ran
+      15.7-16.2 ms in graded mode on the matrix.
+    - **Options.** (a) Per-tile cell updates: keep each tile's instance index in its level's
+      `MultiMesh`, move a tile between levels by a swap-remove and an append, and rewrite only the
+      custom data of the tile and of the neighbours whose side code changed: `O(1)` per change.
+      With it, re-level by bands: keep the desired tiles bucketed by the camera travel at which
+      they can next cross a level boundary (their distance to the nearest boundary of their
+      level and hysteresis), so a move re-levels only the tiles due, `O(tiles due)`, exact because
+      a tile's distance changes by at most the camera's travel. (b) Raise the re-level step from
+      8 m (fewer re-levels, a tile switching up to the step late) and rebuild each dirty patch at
+      most once every few frames: cheaper, not bounded. (c) Move residency and re-levelling to
+      Rust.
+    - **Recommendation.** (a): exact and bounded by the changes; it keeps the "work on changes"
+      rule of the renderer.
 
 #### Superseded `ROAD-68` questions
 
