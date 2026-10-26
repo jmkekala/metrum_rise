@@ -3819,7 +3819,10 @@ to point).
 
 - **Patches** stay the residency, streaming and payload unit, with today's base heightmap texture
   (R32F with apron) and `TERRAIN-06` mask layer. A patch with no graded tile renders as today,
-  one `PlaneMesh` at its step.
+  one `PlaneMesh` at its step. Every patch installs its plain payload (the heightmap patch),
+  road-owned patches included: the graded cells draw the roads' terrain over it (`TERRAIN-07-D`
+  round 4; Rust had kept the exact cut's refusal of plain payloads for road-owned patches, so no
+  patch under a road installed).
 - **Cells.** A patch with graded tiles renders its cells, each tile clipped to the patch, as
   instances: one `MultiMesh` per patch and mesh, at most five (the base cell mesh and the four
   levels). Instance data carries the tile's place in the patch, the slot, the level and each side's
@@ -3861,6 +3864,14 @@ to point).
   over the apron, the exact mask and the material class. Both share the grass and paving includes,
   the baked world noise (`TERRAIN-04`), the patch masks (`TERRAIN-06`), the overlays, the shoreline
   sampling of the water texture and the cloud shadow in `light()`.
+- **Walls.** A tile's wall faces (conflict walls, abutments, headwalls, the portal opening's
+  sides) reach Godot with its slot bytes, eight little-endian `f32` per face (`pack_walls`:
+  `a`, `b`, the bottoms and the tops). Each pooled cell set holds one more `MultiMesh`, of one
+  quad, prewarmed with 1,024 instances; a face draws as one instance of the patch holding its
+  midpoint, its eight values carried raw in the instance transform's basis (full floats in both
+  renderers) and placed in world space by `terrain_graded_walls.gdshader`, which lights it
+  through `standard_light.gdshaderinc` in the exact cut's retaining wall colour. Faces past the
+  capacity are counted and logged. Nothing is created per edit (`TERRAIN-07-D` round 4).
 - **Debug.** `terrain_visual_debug_mode` gains `delta` (raised orange, lowered blue, as the spike's
   `plan_grading`), `sdf`, level and slot views.
 
