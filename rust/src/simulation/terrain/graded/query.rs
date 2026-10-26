@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Point and ray queries of the graded surface (`TERRAIN-07`), for roads and building sites:
-//! Godot's surface queries read them since `TERRAIN-07-D`, the other consumers from
-//! `TERRAIN-07-F`. Every query evaluates the same pointwise function as
-//! the bake, over every seam within the cap of the points it reads (no pruning, so no reach to
-//! compute), and answers from the `GL0` lattice the surface renders with: a point between lattice points lies
-//! on the `GL0` triangle under it, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)`
-//! diagonal; in a 64 m tile without a seam within the cap, the bilinear base, as the ray march
-//! reads it. Allocation-free once the scratch is warm.
+//! Point and ray queries of the graded surface (`TERRAIN-07`), for roads and building sites, the
+//! read API the consumers moved to in `TERRAIN-07-F`. Every query evaluates the same pointwise
+//! function as the bake and answers from the `GL0` lattice the surface renders with: a point
+//! between lattice points lies on the `GL0` triangle under it, each lattice cell split along its
+//! `(i, j)`-`(i + 1, j + 1)` diagonal.
+//!
+//! Exact pruning over the query's own window (`docs/terrain.md` T19 (a)): a query reads the
+//! lattice points of a small rectangle (its `GL0` cell, one ring more for a normal, the cells
+//! within a reach for the gather variant), and evaluates only the seams the bake's first pass
+//! would list in a bin of that rectangle: those whose cone may bind its exact base range, and the
+//! road seams within the band. Every other seam within the cap holds the base at every point of
+//! the rectangle and is not a nearest seam, so it changes no value unless a cut's upper bound holds
+//! a point below its base; such a point then takes the cones of the seams whose lower bound may
+//! rise above its first-pass value (the bake's second pass, per point). The value is bitwise the
+//! evaluation over every seam within the cap. Allocation-free once the scratch is warm.
 
 use super::coverage::covered_height_at;
-use super::grade::{CAP_M, continues_ground};
+use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE, may_bind, may_lift};
 use super::portal::{PortalWindow, cuts};
-use super::sample::{BaseGrid, BaseWindow, Listed, Value, evaluate};
-use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
+use super::prune::box_distance;
+use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
+use super::seams::{Seam, road_seam};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::tile::{Level, TILE_M, grown};
 use crate::assets::SiteSurfaceMaterial;
@@ -44,24 +52,46 @@ pub enum GroundClass {
     Paved(SiteSurfaceMaterial),
 }
 
-/// Reused buffers of the queries.
+/// Reused buffers of the queries, and what the last query or gather prepared.
 #[derive(Default)]
 pub struct QueryScratch {
-    seams: SeamScratch,
+    // The rectangle prepared: every lattice point the prepared queries read lies in it.
+    rect: Option<[f64; 4]>,
+    // The rectangle the portal parts were gathered for.
+    portal_rect: Option<[f64; 4]>,
+    // The seams the first pass lists over `rect`: road seams in key order, unique, then the pad
+    // seams in key order.
     window: Vec<Seam>,
-    // The structure mouths' wall seams of the window (`TERRAIN-07-C`), and their abutment
-    // bottoms, which only the bake's walls read.
-    walls: Vec<Seam>,
-    wall_bottoms: Vec<Option<[f64; 2]>>,
+    // The other seams whose box comes within the cap of `rect`, with their box's distance from
+    // it: only a point below its base after the first pass reads them.
+    rest: Vec<(Seam, f64)>,
     base: BaseWindow,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
     portals: PortalWindow,
+    // Test reference: every gathered seam listed, as before the pruning.
+    #[cfg(test)]
+    pub(super) unpruned: bool,
+    // Test counter: points whose value the second pass changed.
+    #[cfg(test)]
+    pub(super) lifts: std::cell::Cell<u32>,
+}
+
+#[cfg(test)]
+impl QueryScratch {
+    // The seams the last preparation listed, and those it gathered within the cap.
+    pub(super) fn listed(&self) -> (usize, usize) {
+        (self.window.len(), self.window.len() + self.rest.len())
+    }
 }
 
 /// The graded surface over a base heightmap, a roadbed and building sites: the read API every
-/// consumer moves to. Point queries cost one gather of the seams and sites within the cap of the
-/// point, then `O(S)` per lattice point read (three for a height, twelve for a normal).
+/// consumer moves to. A point query walks the grounded chain segments and the sites within the
+/// cap of its window (`O(P + V)` for the pieces met and their chain vertices, plus the sites of
+/// the 512 m site chunks), keeps the `K` seams the pruning lists, `O(K log K)`, then costs `O(K)`
+/// per lattice point read (three for a height, twelve for a normal), plus `O(V)` for a point a
+/// cut holds below its base. The `_near` variants share one gather between the points within a
+/// reach of a centre.
 #[derive(Clone, Copy)]
 pub struct GradedSurface<'a> {
     /// The base heightmap (its source samples).
@@ -81,26 +111,12 @@ impl GradedSurface<'_> {
     }
 
     /// The graded ground the terrain renders: `GL0` values on the `GL0` triangle under the
-    /// point; in a pad its support height; in a 64 m tile without a seam within the cap the
-    /// bilinear base, as [`Self::raycast_surface`] marches it (`TERRAIN-07-D`). Under a road it
-    /// is the hidden inside-rule surface, so callers test [`Self::mask_at`] first.
+    /// point; in a pad its support height. Under a road it is the hidden inside-rule surface,
+    /// so callers test [`Self::mask_at`] first.
     pub fn ground_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(0), scratch);
-        if scratch.window.is_empty() {
-            // No seam within the cap of the cell: its vertices carry no delta. The tile's own
-            // window decides between the base and the base's `GL0` triangles, as the march does.
-            let [tx, tz] = [x, z].map(|v| (v / TILE_M).floor() * TILE_M);
-            self.prepare(grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M), scratch);
-            if scratch.window.is_empty() {
-                return scratch.base.at(x, z);
-            }
-        }
-        let [w0, w1, w2] = cell.weights();
-        let [v0, v1, v2] = cell.vertices();
-        w0 * self.vertex(v0, scratch)
-            + w1 * self.vertex(v1, scratch)
-            + w2 * self.vertex(v2, scratch)
+        self.ground_prepared(&cell, scratch)
     }
 
     /// The visible surface: the road's height where a road covers the point, else the graded
@@ -112,27 +128,72 @@ impl GradedSurface<'_> {
         }
     }
 
-    /// The rendered `GL0` normal, as the terrain shader's vertex stage computes it: per lattice
-    /// point the base gradient of the ungraded terrain (the central difference of the base over
-    /// one base cell either side) plus the central difference of the packed delta over its four
-    /// neighbours, interpolated over the `GL0` triangle under the point and normalized.
+    /// Prepares the `_near` queries ([`Self::ground_height_near`], [`Self::surface_height_near`])
+    /// for every point within `reach` metres of `(x, z)` on each axis: one gather for clustered
+    /// points, such as a vehicle's contacts. The window is wider than one point's, so it lists
+    /// more seams; every value stays exact.
+    pub fn gather_near(&self, x: f64, z: f64, reach: f64, scratch: &mut QueryScratch) {
+        // A point's `GL0` cell lies within one spacing of it.
+        let rect = grown([x, z, x, z], reach.max(0.0) + GL0_M);
+        self.prepare(rect, scratch);
+        self.prepare_portals(rect, scratch);
+    }
+
+    /// [`Self::ground_height_at`] from the last [`Self::gather_near`], bitwise. A point whose
+    /// cell lies outside the gathered window is prepared alone, so the answer is exact either way.
+    pub fn ground_height_near(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
+        let cell = Cell::at(x, z);
+        if !scratch.rect.is_some_and(|rect| holds(rect, cell.rect(0))) {
+            self.prepare(cell.rect(0), scratch);
+        }
+        self.ground_prepared(&cell, scratch)
+    }
+
+    /// [`Self::mask_at`] from the last [`Self::gather_near`], equal to it; a point outside the
+    /// gathered window is prepared alone.
+    pub fn mask_near(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
+        if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_some() {
+            return GroundClass::Road;
+        }
+        let point = [x, z, x, z];
+        if !scratch.rect.is_some_and(|rect| holds(rect, point)) {
+            self.prepare(point, scratch);
+        }
+        if !scratch.portal_rect.is_some_and(|rect| holds(rect, point)) {
+            self.prepare_portals(point, scratch);
+        }
+        self.mask_prepared(x, z, scratch)
+    }
+
+    /// [`Self::surface_height_at`] from the last [`Self::gather_near`], bitwise.
+    pub fn surface_height_near(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
+        match self.roadbed.height_at(x as f32, z as f32) {
+            Some(height) => f64::from(height),
+            None => self.ground_height_near(x, z, scratch),
+        }
+    }
+
+    // The graded ground on the `GL0` triangle under the point of `cell`, from the prepared
+    // window.
+    fn ground_prepared(&self, cell: &Cell, scratch: &mut QueryScratch) -> f64 {
+        let [w0, w1, w2] = cell.weights();
+        let [v0, v1, v2] = cell.vertices();
+        w0 * self.vertex(v0, scratch)
+            + w1 * self.vertex(v1, scratch)
+            + w2 * self.vertex(v2, scratch)
+    }
+
+    /// The rendered `GL0` normal: per lattice point the central difference of the graded
+    /// height over its four neighbours, interpolated over the `GL0` triangle under the point and
+    /// normalized.
     pub fn normal_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> [f64; 3] {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(1), scratch);
-        let cell_m = scratch.base.grid().cell_m;
         let mut normal = [0.0; 3];
         for (weight, [i, j]) in cell.weights().into_iter().zip(cell.vertices()) {
-            let (px, pz) = (i as f64 * GL0_M, j as f64 * GL0_M);
-            let base = &scratch.base;
-            let base_dx = (base.at(px + cell_m, pz) - base.at(px - cell_m, pz)) / (2.0 * cell_m);
-            let base_dz = (base.at(px, pz + cell_m) - base.at(px, pz - cell_m)) / (2.0 * cell_m);
-            let dx = base_dx
-                + (self.delta([i + 1, j], scratch) - self.delta([i - 1, j], scratch))
-                    / (2.0 * GL0_M);
-            let dz = base_dz
-                + (self.delta([i, j + 1], scratch) - self.delta([i, j - 1], scratch))
-                    / (2.0 * GL0_M);
-            let vertex = normalized([-dx, 1.0, -dz]);
+            let dx = self.vertex([i + 1, j], scratch) - self.vertex([i - 1, j], scratch);
+            let dz = self.vertex([i, j + 1], scratch) - self.vertex([i, j - 1], scratch);
+            let vertex = normalized([-dx / (2.0 * GL0_M), 1.0, -dz / (2.0 * GL0_M)]);
             for axis in 0..3 {
                 normal[axis] += weight * vertex[axis];
             }
@@ -151,6 +212,11 @@ impl GradedSurface<'_> {
         }
         self.prepare([x, z, x, z], scratch);
         self.prepare_portals([x, z, x, z], scratch);
+        self.mask_prepared(x, z, scratch)
+    }
+
+    // [`Self::mask_at`] at an uncovered point of the prepared window and portal parts.
+    fn mask_prepared(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
         if self.opened(x, z, scratch) {
             return GroundClass::Road;
         }
@@ -222,28 +288,56 @@ impl GradedSurface<'_> {
         cuts(deck, base + f64::from(delta))
     }
 
-    // Gathers the seams and sites within the cap of `rect` (road seams in key order, then the
-    // pad seams), the wall seams there and the base samples one base cell around it, which every base read of the
-    // callers lies in (`normal_at`'s central differences reach one cell out): a point's base
-    // reads only its four samples, so the window's extent changes no value.
+    // Prepares the queries of the lattice points in `rect`: the base samples one base cell around
+    // it, the sites within the cap, and the seams within the cap sorted by the bake's first-pass
+    // test over the rectangle's exact base range (its cone may bind that base, or a road seam lies
+    // within the band) into the listed window (road seams in key order, then the pad seams) and
+    // the rest. `O(P + V + K log K)` plus the sites.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
-        gather_road_seams(
-            self.roadbed,
-            window,
-            &mut scratch.seams,
-            &mut scratch.window,
-        );
-        gather_wall_seams(
-            self.roadbed,
-            window,
-            &mut scratch.seams,
-            (&mut scratch.walls, &mut scratch.wall_bottoms),
-        );
-        scratch.sites.gather(self.sites, window);
-        scratch.sites.push_pad_seams(&mut scratch.window);
         let cell_m = BaseGrid::of(self.terrain).cell_m;
         scratch.base.fill(self.terrain, grown(rect, cell_m));
+        let band = Level::Gl0.band_m(cell_m);
+        let base = scratch.base.bilinear_range(rect);
+        #[cfg(test)]
+        let unpruned = scratch.unpruned;
+        #[cfg(not(test))]
+        let unpruned = false;
+        let QueryScratch {
+            window: listed,
+            rest,
+            pieces,
+            sites,
+            ..
+        } = scratch;
+        listed.clear();
+        rest.clear();
+        let sort = |seam: Seam, band: f64, listed: &mut Vec<Seam>, rest: &mut Vec<(Seam, f64)>| {
+            let distance = box_distance(seam.box_xz(), rect);
+            if unpruned || may_bind(seam.height_range(), base, distance, band) {
+                listed.push(seam);
+            } else if distance <= CAP_M + WINDOW_PAD_M {
+                rest.push((seam, distance));
+            }
+        };
+        self.roadbed
+            .for_each_grounded_seam_in_bounds(window, pieces, |[a, b]| {
+                sort(road_seam(a, b), band, listed, rest)
+            });
+        // A segment two pieces share comes twice; key order is the nearest seam's tie order.
+        listed.sort_unstable_by_key(Seam::key);
+        listed.dedup_by_key(|seam| seam.key());
+        let roads = listed.len();
+        sites.gather(self.sites, window);
+        // No sample names a pad seam, so it takes no band.
+        sites.for_each_pad_seam(|seam| sort(seam, 0.0, listed, rest));
+        listed[roads..].sort_unstable_by_key(Seam::key);
+        scratch.rect = Some(rect);
+    }
+
+    // Whether no seam comes within the cap of the prepared rectangle, listed or not.
+    fn quiet(scratch: &QueryScratch) -> bool {
+        scratch.window.is_empty() && scratch.rest.is_empty()
     }
 
     // Gathers the portal parts around `rect`, for the opening's test (T22 5 (a)).
@@ -252,11 +346,14 @@ impl GradedSurface<'_> {
         scratch
             .portals
             .gather(self.roadbed, rect, band, &mut scratch.pieces);
+        scratch.portal_rect = Some(rect);
     }
 
-    // The graded value at a point of the prepared window, over every gathered seam, with its
-    // pad from the gathered sites; under a road at a structure mouth the ground's
-    // ([`continues_ground`]).
+    // The graded value at a point of the prepared window, with its pad from the gathered sites:
+    // over the listed seams, then, for a ground point a cut's upper bound holds below its base, the
+    // cones of the other seams whose lower bound may rise above that first-pass value. Their
+    // upper bounds lie above the base, so `min(b, U)` keeps its operand and the overlap rule
+    // returns the evaluation over every seam within the cap, bitwise.
     fn evaluate(
         &self,
         x: f64,
@@ -265,38 +362,40 @@ impl GradedSurface<'_> {
         road: Option<f32>,
         scratch: &QueryScratch,
     ) -> f64 {
-        let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
-        let value = self.value(x, z, base, road, scratch);
-        if road.is_some()
-            && continues_ground(&scratch.walls, x, z, value.nearest_distance, band)
-        {
-            return self.value(x, z, base, None, scratch).height;
-        }
-        value.height
-    }
-
-    // [`evaluate`] at a point of the prepared window over every gathered seam.
-    fn value(&self, x: f64, z: f64, base: f64, road: Option<f32>, scratch: &QueryScratch) -> Value {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
         let all = (0..seams.len() as u32).map(Listed::unbounded);
         let site = scratch.sites.pad_at(x, z);
         let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
-        evaluate(x, z, base, road, pad, seams, all, band)
+        let first = evaluate(x, z, base, road, pad, seams, all, band);
+        if road.is_some() || pad.is_some() || first.height >= base {
+            return first.height;
+        }
+        let mut cones = first.cones;
+        for (seam, distance) in &scratch.rest {
+            if may_lift(seam.height_range().1, first.height, *distance) {
+                let at = seam.at(x, z);
+                if at.distance <= CAP_M {
+                    cones.add(at.height, at.distance);
+                }
+            }
+        }
+        let height = cones.ground(base);
+        #[cfg(test)]
+        if height != first.height {
+            scratch.lifts.set(scratch.lifts.get() + 1);
+        }
+        height
     }
 
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake
     // packs there.
     fn vertex(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
-        scratch.base.at(i as f64 * GL0_M, j as f64 * GL0_M) + self.delta([i, j], scratch)
-    }
-
-    // The `f32` delta the bake packs at a `GL0` lattice point.
-    fn delta(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
         let road = covered_height_at(self.roadbed, x, z, &mut scratch.pieces);
         let base = scratch.base.at(x, z);
-        f64::from((self.evaluate(x, z, base, road, scratch) - base) as f32)
+        let delta = (self.evaluate(x, z, base, road, scratch) - base) as f32;
+        base + f64::from(delta)
     }
 
     // First `t` at which the ray meets the ground before `limit`: per 64 m tile, the base
@@ -331,7 +430,7 @@ impl GradedSurface<'_> {
                     self.prepare(grown(rect, GL0_M), scratch);
                     self.prepare_portals(grown(rect, GL0_M), scratch);
                 }
-                hit = if !graded || scratch.window.is_empty() {
+                hit = if !graded || Self::quiet(scratch) {
                     self.march_base(origin, direction, (t0, t1), &grid, scratch)
                 } else {
                     self.march_graded(origin, direction, (t0, t1), rect, scratch)
@@ -382,15 +481,16 @@ impl GradedSurface<'_> {
         rect: [f64; 4],
         scratch: &mut QueryScratch,
     ) -> Option<f64> {
-        // The ground outside footprints lies in `[min(b, H_lo), max(b, H_hi)]`; under a road the
-        // inside rule's arm runs down from a seam.
+        // The ground outside footprints lies in `[min(b, H_lo), max(b, H_hi)]`; triangles that
+        // straddle an edge rise at most the capped fill arm above a seam.
         let base_high = scratch.base.range(rect).1;
         let seam_high = scratch
             .window
             .iter()
+            .chain(scratch.rest.iter().map(|(seam, _)| seam))
             .map(|seam| seam.height_range().1)
             .fold(f64::NEG_INFINITY, f64::max);
-        let high = base_high.max(seam_high);
+        let high = base_high.max(seam_high + TIE_IN_SLOPE * FILL_ARM_MAX_M);
         let lowest =
             |a: f64, b: f64| (origin[1] + direction[1] * a).min(origin[1] + direction[1] * b);
         if lowest(t0, t1) > high {
@@ -484,6 +584,11 @@ impl Cell {
             [1.0 - fz, fz - fx, fx]
         }
     }
+}
+
+// Whether `outer` holds `inner`, both `[min_x, min_z, max_x, max_z]`.
+fn holds(outer: [f64; 4], inner: [f64; 4]) -> bool {
+    outer[0] <= inner[0] && outer[1] <= inner[1] && inner[2] <= outer[2] && inner[3] <= outer[3]
 }
 
 fn normalized(v: [f64; 3]) -> [f64; 3] {

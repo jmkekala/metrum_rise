@@ -616,6 +616,86 @@ fn the_graded_ground_never_lies_below_a_seam() {
     assert!(walls > 0, "the conflict fixture walls its lower road");
 }
 
+// T19 (a): the pruned queries answer bitwise as the evaluation over every seam within the cap,
+// on every fixture and on the sloped T with sites, one point at a time and through the gather
+// variant. On the conflict pair cut into a 0.6 slope, the lower road's cut holds the ground
+// below its base, and the upper road's lower bound, whose cone holds the base, lifts it: the
+// second pass changes those values.
+#[test]
+fn pruned_queries_equal_the_evaluation_over_every_seam() {
+    let sites = super::site_tests::fixture_sites();
+    let mut cases: Vec<_> = fixtures()
+        .into_iter()
+        .map(|(name, graph, terrain)| (name, graph, terrain, false))
+        .collect();
+    cases.push((
+        "t_slope_sites",
+        t_junction(true),
+        terrain(|x, _| SLOPE * x),
+        true,
+    ));
+    cases.push(("conflict_cut", conflict(), terrain(|_, z| 0.6 * z), false));
+    let mut lifts = 0;
+    for (name, graph, terrain, with_sites) in cases {
+        let roadbed = compiled(&graph);
+        let surface = GradedSurface {
+            terrain: &terrain,
+            roadbed: &roadbed,
+            sites: if with_sites { &sites } else { &NoSites },
+        };
+        let mut pruned = QueryScratch::default();
+        let mut reference = QueryScratch::default();
+        reference.unpruned = true;
+        let (mut listed, mut gathered) = (0, 0);
+        for i in 0..1_200 {
+            let t = i as f64 * 0.618_033_988_75;
+            let (x, z) = (-70.0 + t.fract() * 140.0, -45.0 + (t * 7.3).fract() * 100.0);
+            let at = format!("{name} ({x}, {z})");
+            let expected = surface.ground_height_at(x, z, &mut reference);
+            assert_eq!(
+                surface.ground_height_at(x, z, &mut pruned).to_bits(),
+                expected.to_bits(),
+                "ground {at}"
+            );
+            let (kept, all) = pruned.listed();
+            (listed, gathered) = (listed + kept, gathered + all);
+            assert_eq!(
+                surface.surface_height_at(x, z, &mut pruned).to_bits(),
+                surface.surface_height_at(x, z, &mut reference).to_bits(),
+                "surface {at}"
+            );
+            assert_eq!(
+                surface.mask_at(x, z, &mut pruned),
+                surface.mask_at(x, z, &mut reference),
+                "mask {at}"
+            );
+            assert_eq!(
+                surface.normal_at(x, z, &mut pruned).map(f64::to_bits),
+                surface.normal_at(x, z, &mut reference).map(f64::to_bits),
+                "normal {at}"
+            );
+            // A vehicle's contacts: one gather within 2.5 m, every contact as its own query.
+            surface.gather_near(x, z, 2.5, &mut pruned);
+            for (dx, dz) in [(0.0, 0.0), (2.5, -2.5), (-2.4, 1.3), (0.7, 2.5)] {
+                let (cx, cz) = (x + dx, z + dz);
+                assert_eq!(
+                    surface.surface_height_near(cx, cz, &mut pruned).to_bits(),
+                    surface.surface_height_at(cx, cz, &mut reference).to_bits(),
+                    "near {at} + ({dx}, {dz})"
+                );
+                assert_eq!(
+                    surface.mask_near(cx, cz, &mut pruned),
+                    surface.mask_at(cx, cz, &mut reference),
+                    "mask near {at} + ({dx}, {dz})"
+                );
+            }
+        }
+        assert!(listed * 4 < gathered, "{name}: listed {listed} of {gathered}");
+        lifts += pruned.lifts.get();
+    }
+    assert!(lifts > 0, "the second pass changes some cut point");
+}
+
 #[test]
 fn queries_answer_from_the_baked_lattice() {
     for (name, graph, terrain) in fixtures() {
@@ -958,6 +1038,15 @@ fn benchmark_graded_point_queries() {
         });
         time("base", &mut |x, z| {
             surface.base_height_at(x, z, &mut scratch)
+        });
+        // A vehicle's four contacts within 2.5 m: one gather, per contact (T19 (a)).
+        time("near4", &mut |x, z| {
+            surface.gather_near(x, z, 2.5, &mut scratch);
+            [(2.5, 1.0), (2.5, -1.0), (-2.5, 1.0), (-2.5, -1.0)]
+                .iter()
+                .map(|(dx, dz)| surface.surface_height_near(x + dx, z + dz, &mut scratch))
+                .sum::<f64>()
+                / 4.0
         });
         eprintln!("GRADED_QUERIES {record}");
     }
