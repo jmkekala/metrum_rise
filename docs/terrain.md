@@ -5460,7 +5460,7 @@ branch.
   conflict and structure faces alike (`TilePayload::walls`), are counted but not yet drawn in
   Godot. So nothing can z-fight with the roadbed's abutment face today, and the step that the
   terrain's abutment wall and headwall close is open where the terrain meets a structure's mouth
-  (the under-bridge and portal views of the reference test are queued, not yet rendered). When the walls are drawn, the 0.15 m coplanar band
+  (the reference test's under-bridge and portal views wait for the render defect below). When the walls are drawn, the 0.15 m coplanar band
   would fight. Recommended then: start the terrain's abutment wall at the skirt depth (gate C's
   second option): exact, with the two faces meeting on one edge. A depth offset on the skirt layer
   is view dependent, and the skirts must stay hidden from 200 m to 3 km.
@@ -5521,7 +5521,8 @@ reference save with a 60 m spur off `kuopio_01`'s segment) is queued behind the 
 batch, in-place rewrites), `terrain.gd` +2, `idle_frame_benchmark.gd` +5; the probe
 `graded_edit_probe.gd` 165 (opt-in test). `roadbed/` production unchanged.
 
-**Pending for round 4.** The wall meshes (conflict and structure faces, drawn from
+**Pending for round 4.** First the render defect (graded terrain draws nothing in a GPU session),
+then the reference renders, crops and the release probe; the wall meshes (conflict and structure faces, drawn from
 `TilePayload::walls` without creating a mesh per edit) and, with them, the abutment band above;
 the water reflection proxy of graded cells; the 100k city's slot maxima (not reachable from
 Godot: a Rust census of the listed tiles per level by camera distance); the GPU idle-frame matrix
