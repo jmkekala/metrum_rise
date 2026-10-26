@@ -151,6 +151,8 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		"the junction's patch %s installs: %d patches" % [junction_patch, terrain.patches.size()])
 	for key: Vector2i in terrain.patch_payload_requested.keys():
 		_expect(false, "patch %s still waits for its payload" % key)
+	# A request Rust refuses by contract is a bug, reported apart from the retries.
+	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused: %s" % terrain.patch_payload_refused)
 	_expect(graded.installed.has(Vector2i(0, 0)), "the junction's tile installs graded")
 	_expect(graded.patch_cells.has(junction_patch), "the junction's patch draws cells")
 
@@ -169,6 +171,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(faces > 0, "the bridge's mouth has wall faces")
 	_expect(instances == faces, "every wall face draws once: %d instances of %d faces" % [instances, faces])
 	_expect(int(graded.counters["walls_truncated"]) == 0, "no patch runs out of wall instances")
+	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused after the bridge: %s" % terrain.patch_payload_refused)
 	print("graded walls: %d faces over %d installed tiles" % [faces, graded.installed.size()])
 	terrain.free()
 	camera.free()

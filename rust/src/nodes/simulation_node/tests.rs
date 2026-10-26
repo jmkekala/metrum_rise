@@ -3,7 +3,7 @@
 //! Regression tests for the Godot simulation-node bridge.
 
 use super::async_terrain::{
-    TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
+    PayloadDeferral, TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
     TerrainPatchPayloadKey, TerrainPatchPayloadRequest, WaterPatchPayloadAsyncState,
     WaterPatchPayloadKey,
 };

@@ -37,7 +37,7 @@ fn payload_workers_release_rayon_when_simulation_core_is_busy() {
     let (tx, rx) = mpsc::channel();
     let worker_core = Arc::clone(&core);
     pool.spawn(move || {
-        let (terrain, terrain_retry) = SimulationNode::try_prepare_terrain_patch_payload_sources(
+        let (terrain, terrain_retry, _) = SimulationNode::try_prepare_terrain_patch_payload_sources(
             &worker_core,
             vec![terrain_request],
         );
@@ -57,9 +57,9 @@ fn payload_workers_release_rayon_when_simulation_core_is_busy() {
     assert_eq!(water_retry.len(), 1);
     assert_eq!(water_retry[0].request_id, water_request.request_id);
     pool.install(|| {
-        let (terrain, failed) =
+        let (terrain, failed, refused) =
             SimulationNode::try_prepare_terrain_patch_payload_sources(&core, terrain_retry);
-        assert!(failed.is_empty());
+        assert!(failed.is_empty() && refused.is_empty());
         assert_eq!(terrain.len(), 1);
         let (water, failed) = SimulationNode::try_prepare_water_patch_payloads(&core, water_retry);
         assert!(failed.is_empty());
@@ -451,7 +451,7 @@ fn refined_payload_source_waits_for_batched_terrain_stroke_finalization() {
             &mut core,
             in_stroke_request
         )
-        .is_none(),
+        .is_err_and(|deferral| deferral == PayloadDeferral::Retry),
         "refined work must retry while its immutable terrain snapshot is intentionally stale"
     );
 
@@ -462,7 +462,7 @@ fn refined_payload_source_waits_for_batched_terrain_stroke_finalization() {
             &mut core,
             finalized_request
         )
-        .is_some(),
+        .is_ok(),
         "stroke finalization publishes the matching terrain/road snapshot"
     );
 }
@@ -484,7 +484,7 @@ fn refined_payload_source_waits_for_matching_road_surface_generation() {
 
     assert!(
         SimulationNode::terrain_patch_payload_build_source_for_request(&mut core, request)
-            .is_none(),
+            .is_err_and(|deferral| deferral == PayloadDeferral::Retry),
         "refined work must not pair the current graph with a stale published road surface"
     );
 }
@@ -776,6 +776,26 @@ fn plain_terrain_payload_is_served_for_road_locked_patch() {
     assert!(
         source.is_ready(),
         "the plain payload is the patch's heightmap, built at once, never a refined cut"
+    );
+}
+
+#[test]
+fn a_request_outside_the_world_is_refused_not_retried() {
+    // TERRAIN-07-D round 4: a refusal by contract is reported apart from the transient retries,
+    // so Godot logs it and stops asking instead of retrying every frame.
+    let mut core = test_core_with_flat_terrain(0.0);
+    let request = TerrainPatchPayloadRequest {
+        key: TerrainPatchPayloadKey {
+            patch_x: 999,
+            patch_z: 999,
+            render_step_mm: 0,
+        },
+        request_id: 1,
+        surface_generation: core.terrain_payload_generation_for_patch(999, 999),
+    };
+    assert!(
+        SimulationNode::terrain_patch_payload_build_source_for_request(&mut core, request)
+            .is_err_and(|deferral| deferral == PayloadDeferral::Refused("patch_outside_world")),
     );
 }
 

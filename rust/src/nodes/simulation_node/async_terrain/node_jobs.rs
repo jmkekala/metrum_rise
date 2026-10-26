@@ -56,7 +56,7 @@ impl SimulationNode {
                 surface_generation: core.terrain_payload_generation_for_patch(patch_x, patch_z),
             };
             let source = Self::terrain_patch_payload_build_source_for_request(core, request)
-                .ok_or_else(|| format!("terrain_input_unavailable patch=({patch_x},{patch_z})"))?;
+                .map_err(|_| format!("terrain_input_unavailable patch=({patch_x},{patch_z})"))?;
             let signature = match &source {
                 TerrainPatchPayloadBuildSource::Refined(source) => {
                     Some(Self::road_terrain_source_signature(source))
@@ -379,19 +379,21 @@ impl SimulationNode {
     ) -> (
         Vec<TerrainPatchPayloadBuildSource>,
         Vec<TerrainPatchPayloadRequest>,
+        Vec<(TerrainPatchPayloadRequest, &'static str)>,
     ) {
         let Some(mut core) = Self::try_lock_shared_core(core) else {
-            return (Vec::new(), requests);
+            return (Vec::new(), requests, Vec::new());
         };
         let mut sources = Vec::with_capacity(requests.len());
-        let mut failed = Vec::new();
+        let (mut failed, mut refused) = (Vec::new(), Vec::new());
         for request in requests {
             match Self::terrain_patch_payload_build_source_for_request(&mut core, request) {
-                Some(source) => sources.push(source),
-                None => failed.push(request),
+                Ok(source) => sources.push(source),
+                Err(PayloadDeferral::Retry) => failed.push(request),
+                Err(PayloadDeferral::Refused(reason)) => refused.push((request, reason)),
             }
         }
-        (sources, failed)
+        (sources, failed, refused)
     }
 
     pub(in crate::nodes::simulation_node) fn try_prepare_water_patch_payloads(
@@ -491,11 +493,11 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn terrain_patch_payload_build_source_for_request(
         core: &mut SimCore,
         request: TerrainPatchPayloadRequest,
-    ) -> Option<TerrainPatchPayloadBuildSource> {
+    ) -> Result<TerrainPatchPayloadBuildSource, PayloadDeferral> {
         if core.terrain_payload_generation_for_patch(request.key.patch_x, request.key.patch_z)
             != request.surface_generation
         {
-            return None;
+            return Err(PayloadDeferral::Retry);
         }
         // The plain payload (step 0) is the patch's heightmap, served for every patch: the graded
         // tiles (`TERRAIN-07-D` item 4) draw the roads' and sites' terrain over it, road-owned
@@ -503,9 +505,10 @@ impl SimulationNode {
         if request.key.render_step_mm == 0 {
             let patch = core
                 .heightmap
-                .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+                .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)
+            .ok_or(PayloadDeferral::Refused("patch_outside_world"))?;
             let height_bytes = Self::f32_bytes_vec(&patch.height_data);
-            return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
+            return Ok(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
@@ -517,12 +520,12 @@ impl SimulationNode {
             }));
         }
         if !core.transit_network.roadbed.is_current() {
-            return None;
+            return Err(PayloadDeferral::Retry);
         }
         if core.terrain_stroke_active {
             // Refined inputs sample the immutable road-query terrain snapshot. A batched stroke
             // publishes that snapshot only at finalization, so intermediate requests must retry.
-            return None;
+            return Err(PayloadDeferral::Retry);
         }
 
         let cache_key = RefinedTerrainPatchCacheKey {
@@ -537,7 +540,7 @@ impl SimulationNode {
             )
             && Self::cached_refined_cdt_failure_label(cached).is_none()
         {
-            return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
+            return Ok(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
@@ -561,12 +564,13 @@ impl SimulationNode {
         };
         let base_patch = core
             .heightmap
-            .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+            .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)
+            .ok_or(PayloadDeferral::Refused("patch_outside_world"))?;
         let request_key = (request.key.patch_x, request.key.patch_z);
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
         let allocator = &core.allocator;
-        Some(TerrainPatchPayloadBuildSource::Refined(
+        Ok(TerrainPatchPayloadBuildSource::Refined(
             Self::refined_terrain_patch_source(
                 &core.heightmap,
                 RefinedTerrainSourceInputs {

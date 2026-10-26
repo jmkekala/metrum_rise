@@ -14,4 +14,4 @@ pub(in crate::nodes::simulation_node) use state::{
 };
 
 #[cfg(test)]
-pub(in crate::nodes::simulation_node) use state::WaterPatchPayloadKey;
+pub(in crate::nodes::simulation_node) use state::{PayloadDeferral, WaterPatchPayloadKey};

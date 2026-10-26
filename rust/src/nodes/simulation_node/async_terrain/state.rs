@@ -213,6 +213,16 @@ pub(in crate::nodes::simulation_node) struct WaterPatchPayloadRequestState {
     pub(in crate::nodes::simulation_node) surface_generation: u64,
 }
 
+/// Why a payload request produced no build source: a transient state that Godot retries (a
+/// stale generation, a roadbed not yet current, a terrain stroke in progress), or a refusal by
+/// contract, which is a bug: Godot logs it once and never asks again (`TERRAIN-07-D` round 4,
+/// after a refusal retried silently every frame hid the graded render defect).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::nodes::simulation_node) enum PayloadDeferral {
+    Retry,
+    Refused(&'static str),
+}
+
 pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadAsyncState {
     pub(in crate::nodes::simulation_node) next_request_id: u64,
     pub(in crate::nodes::simulation_node) requested:
@@ -225,6 +235,8 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadAsyncState {
         HashMap<TerrainPatchPayloadKey, TerrainPatchPayload>,
     pub(in crate::nodes::simulation_node) completed: Vec<TerrainPatchPayload>,
     pub(in crate::nodes::simulation_node) failed: Vec<TerrainPatchPayloadRequest>,
+    // Requests refused by contract with the reason, for the next poll.
+    pub(in crate::nodes::simulation_node) refused: Vec<(TerrainPatchPayloadRequest, &'static str)>,
 }
 
 impl TerrainPatchPayloadAsyncState {
@@ -238,6 +250,7 @@ impl TerrainPatchPayloadAsyncState {
             payloads: HashMap::new(),
             completed: Vec::new(),
             failed: Vec::new(),
+            refused: Vec::new(),
         }
     }
 
@@ -374,6 +387,7 @@ impl TerrainPatchPayloadAsyncState {
         self.payloads.clear();
         self.completed.clear();
         self.failed.clear();
+        self.refused.clear();
     }
 }
 

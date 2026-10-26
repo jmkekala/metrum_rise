@@ -161,6 +161,10 @@ var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
 var patch_payload_requested_generation: Dictionary = {}
+# Patch key -> [render step mm, reason] of a payload request Rust refused by contract: a bug,
+# logged once and never asked again (a refusal retried every frame hid TERRAIN-07-D's render
+# defect). Tests assert there is none (get_pending_render_work_counts()["refused"]).
+var patch_payload_refused: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
 var patch_payload_road_generation: int = -1
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
@@ -543,6 +547,7 @@ func get_pending_render_work_counts() -> Dictionary:
 		"water_texture_sync": water_texture_sync_queue.size(),
 		"residency_mutation": 1 if _terrain_residency_pending_mutations else 0,
 		"blocked_bad_cdt": handled_bad_cdt_patch_failures.size(),
+		"refused": patch_payload_refused.size(),
 	}
 
 func get_blocked_dirty_patch_failures() -> Array[Dictionary]:
@@ -1596,6 +1601,7 @@ func _clear_patches() -> void:
 	handled_bad_cdt_patch_generations.clear()
 	handled_bad_cdt_patch_render_steps.clear()
 	handled_bad_cdt_patch_failures.clear()
+	patch_payload_refused.clear()
 	patch_payload_road_generation = -1
 	pending_terrain_ack_states = PackedInt64Array()
 	patch_prewarm_queue.clear()
@@ -2241,6 +2247,8 @@ func _request_terrain_patch_payloads(
 			continue
 		if int(patch_payload_requested.get(key, -1)) == render_step_mm:
 			continue
+		if patch_payload_refused.has(key) and int(patch_payload_refused[key][0]) == render_step_mm:
+			continue
 		flat_requests.push_back(key.x)
 		flat_requests.push_back(key.y)
 		flat_requests.push_back(render_step_mm)
@@ -2288,6 +2296,25 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 		):
 			patch_payload_requested.erase(retry_key)
 			patch_payload_requested_generation.erase(retry_key)
+	var refused_requests: PackedInt64Array = result.get(
+		"refused_requests",
+		PackedInt64Array()
+	) as PackedInt64Array
+	var refused_reasons: PackedStringArray = result.get("refused_reasons", PackedStringArray()) as PackedStringArray
+	for index in range(refused_requests.size() / 4):
+		var refused_key := Vector2i(int(refused_requests[index * 4]), int(refused_requests[index * 4 + 1]))
+		var refused_step := int(refused_requests[index * 4 + 2])
+		var reason := refused_reasons[index] if index < refused_reasons.size() else "unknown"
+		if int(patch_payload_requested.get(refused_key, -1)) == refused_step:
+			patch_payload_requested.erase(refused_key)
+			patch_payload_requested_generation.erase(refused_key)
+		if not patch_payload_refused.has(refused_key):
+			MetrumDebug.log(
+				"terrain",
+				"terrain payload refused key=(%d,%d) step_mm=%d reason=%s"
+				% [refused_key.x, refused_key.y, refused_step, reason]
+			)
+		patch_payload_refused[refused_key] = [refused_step, reason]
 	for payload_variant in payloads:
 		var patch_data: Dictionary = payload_variant as Dictionary
 		var key := Vector2i(

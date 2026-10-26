@@ -395,7 +395,7 @@ impl SimulationNode {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::Channel::Perf.enabled();
                 let snapshot_start = Instant::now();
-                let (sources, mut failed_requests) =
+                let (sources, mut failed_requests, refused_requests) =
                     SimulationNode::try_prepare_terrain_patch_payload_sources(
                         &core,
                         build_requests,
@@ -485,6 +485,7 @@ impl SimulationNode {
                     .expect("terrain payload job lock poisoned during result publication");
                 job_state.completed.extend(built);
                 job_state.failed.append(&mut failed_requests);
+                job_state.refused.extend(refused_requests);
                 if perf_enabled
                     && (worker_start.elapsed().as_secs_f64() * 1000.0 >= 8.0
                         || cdt_ms >= 4.0
@@ -536,7 +537,10 @@ impl SimulationNode {
         stats
     }
 
-    /// Returns ready async terrain patch payloads without blocking on patch extraction.
+    /// Returns ready async terrain patch payloads without blocking on patch extraction, the
+    /// transient failures to request again (`retry_requests`, flat `(patch_x, patch_z,
+    /// render_step_mm, generation)`), and the requests refused by contract, which must not be
+    /// requested again (`refused_requests`, the same layout, with `refused_reasons`).
     #[func]
     pub fn poll_ready_terrain_patch_payloads(&mut self, max_patches: i32) -> VarDictionary {
         let (completed_payloads, failed_requests) =
@@ -589,6 +593,29 @@ impl SimulationNode {
         if !failed_requests.is_empty() {
             jobs.ingest_failed(failed_requests);
         }
+        // Refusals by contract end their request like a failure but are reported apart, never as
+        // a retry: Godot logs each once and stops asking (`TERRAIN-07-D` round 4).
+        let refused = std::mem::take(&mut jobs.refused);
+        if !refused.is_empty() {
+            jobs.ingest_failed(refused.iter().map(|(request, _)| *request).collect());
+        }
+        stats.set(
+            "refused_requests",
+            Self::packed_terrain_patch_payload_states(refused.iter().map(|(request, _)| {
+                (
+                    request.key.patch_x,
+                    request.key.patch_z,
+                    request.key.render_step_mm,
+                    request.surface_generation,
+                )
+            }))
+            .to_variant(),
+        );
+        let mut reasons = PackedStringArray::new();
+        for (_, reason) in &refused {
+            reasons.push(&GString::from(*reason));
+        }
+        stats.set("refused_reasons", reasons.to_variant());
         let ready_before_count = jobs.ready.len();
         let requested_before_count = jobs.requested.len();
         if max_patches == 0 {
