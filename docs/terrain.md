@@ -6605,8 +6605,11 @@ Acceptance:
 - the populated city's site-dense first edits ([T21](#terrain-07-open-questions), moved here
   from gate C on 2026-10-26 under T20 (a), for review: their full-edit bakes take 2.85-4.10 ms
   on four workers, gate C's evidence), replayed as drags: each pose's delta and the commit's
-  adoption at most 3.0 ms on four workers, with T21's lever (b) (a tile's rows across workers)
-  if they miss; then the user decides;
+  adoption at most 3.0 ms on four workers, with T21's exact levers (a), among them a tile's rows
+  split across workers, if they miss; then the user decides (correction, `TERRAIN-07-E` round 1:
+  this text called the row split T21's lever (b), but T21's option (b) is counting the stage on
+  more workers, which the user ruled out on 2026-10-26; the row split is part of option (a), and
+  round 3's record had numbered it within its own list of the remaining exact levers);
 - the frame paths of [T20](#terrain-07-open-questions) (a) on Kuopio, moved here from gate A:
   every stroke of `benchmark_kuopio_graded_edits` replayed as a drag, each pose's delta (the
   tiles changed since the last pose), the commit's adoption and the rest's bake, and the undo
@@ -7039,20 +7042,22 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       - the bake 2.20-2.53 ms at 2k and 10k (11 tiles), 1.95-2.15 at 30k (8 tiles), 2.98-3.23 at
         100k (13 tiles), against the control's same tiles; the selection 0.60-0.92 ms (control
         0.60-0.77);
-      - lever (b), a tile's rows split across workers, not built: at best it turns 13 tiles on
-        four workers from four rounds into 3.25 and 11 tiles from three into 2.75, so the 100k
-        edit's bake would fall to about 2.4-2.6 ms and its stage to 3.2-3.5 ms, still over
-        3.0 ms, and the 2k and 10k edits to about 2.7-3.1 ms. Its cost is a bake split into a
-        shared tile set-up, parallel row ranges and a per-tile finish (the second pass, rows
-        and walls), with the scratch moved out of the per-worker cells.
+      - the row split, a tile's rows split across workers (part of option (a); this list once
+        called it lever (b), which is T21's option of counting more workers, corrected in
+        `TERRAIN-07-E` round 1), not built: at best it turns 13 tiles on four workers from four
+        rounds into 3.25 and 11 tiles from three into 2.75, so the 100k edit's bake would fall
+        to about 2.4-2.6 ms and its stage to 3.2-3.5 ms, still over 3.0 ms, and the 2k and 10k
+        edits to about 2.7-3.1 ms. Its cost is a bake split into a shared tile set-up, parallel
+        row ranges and a per-tile finish (the second pass, rows and walls), with the scratch
+        moved out of the per-worker cells.
       Under [T20](#terrain-07-open-questions) (a) no frame bakes a whole edit: the commit adopts
       the last pose's tiles and each pose bakes only the tiles changed since the one before. So,
       as on Kuopio, the populated full-edit bake is gate C's evidence and the populated frame
       paths' 3.0 ms acceptance (the site-dense first edits replayed as drags, each pose's delta
       and the commit's adoption) is [`TERRAIN-07-E`](#terrain-07-e--preview-commit-undo-and-load)'s,
       recorded there; decided by the coordinator under the user's delegation, 2026-10-26 night,
-      for review. Lever (b) moves with it: a pose delta of a few tiles leaves workers idle, which
-      is what it removes. Not relaxed: if gate E's populated poses or adoption miss 3.0 ms, the
+      for review. The row split moves with it: a pose delta of a few tiles leaves workers idle,
+      which is what it removes. Not relaxed: if gate E's populated poses or adoption miss 3.0 ms, the
       user decides between the budget for site-dense edits and (c).
 
 22. **T22. The geometry of structure ends (`TERRAIN-07-C` round 2) — decided by the coordinator
