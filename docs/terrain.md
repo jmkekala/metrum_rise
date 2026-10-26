@@ -4073,7 +4073,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; open: the edit install frame (2.99 ms against 1.0 ms on Kuopio), the abutment band, the bridge-mouth finding of the renders, the water reflection proxy, the 100k city's slot maxima, a populated save for the probe, and the GPU idle-frame matrix with the user) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause (the inside rule's mouth correction), the plot suites passing in `run.sh --test`, a populated save; open: the GPU matrix's miss (graded GPU p50 0.70-0.94 ms above exact; on the Kuopio poses attributed to frame pacing, a re-run decides), the edit install frame, the `kuopio_t2_wall` pinholes, the abutment band, the water reflection proxy and the 100k city's slot maxima) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5721,8 +5721,9 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
 - **The GPU's +0.7-0.9 ms (attributed: frame pacing, not extra work).** On the Kuopio poses the
   graded frames draw exactly what the exact cut's do. In gamescope's headless backend, which paces
   both modes at 60 Hz, the GPU p50 is the same in both modes and the same as graded's on the
-  display: exact 2.13 / 1.82 / 1.71 ms, graded (the change-driven renderer) 2.14 / 1.83 / 1.70 ms
-  for `overview` / `close` / `ground` (same session, tip's release library). The GPU's time per
+  display: exact 2.13 / 1.82 / 1.71 ms, graded on the tip 2.11 / 1.80 / 1.70 ms and graded with
+  the change-driven renderer 2.14 / 1.83 / 1.70 ms for `overview` / `close` / `ground` (same
+  session, the tip's release library). The GPU's time per
   frame grows when frames come slower (its clocks fall with its load), so exact at about 530 fps
   measured 1.24 / 1.08 / 0.99 ms and graded, CPU-bound at 150-170 fps, 2.12 / 1.83 / 1.70 ms. The
   matrix re-run with the CPU fix decides it. Where cells draw the cost is real: over the Kuopio
@@ -5757,8 +5758,12 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
   ground beyond (-0.38 to -0.46 m) up to the deck. `site_tests.rs`
   `a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck` (every level, every face along
   the row tops at the deck, and the cut edge and the terrain 0.25 m beyond lie below it, sampled
-  every 5 cm) fails without the fix (a face topping at 0.474 m) and passes with it. The 2-pixel
-  sky sliver under the face: see the re-render below.
+  every 5 cm) fails without the fix (a face topping at 0.474 m) and passes with it. Re-rendered
+  (`bridge_t` and `tunnel_t`, B, the fix's tree): the dark face is gone from `mouth_side`, the
+  road runs into the deck; `under_bridge` shows the ground rising to the slab's end; pinholes 0
+  in both plan views, no assertion failed; `tunnel_t` renders (its no-crash check). Still open: a
+  few sky pixels in the grass just below the slab's end in `mouth_side` (round 4's sliver; not a
+  wall, unchanged by the fix).
 - **Plot suites (fixed; not `TERRAIN-08`).** Round 3's and round 4's runs failed behind exit code
   0: gamescope exits 0 whatever its child returns (checked with a child exiting 3). Three causes,
   none of them the Forward+ canopy: the suites captured the sidewalk with a white tag, which
@@ -5783,6 +5788,21 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
   sidewalk edge of the diagonal road against the grass, B at (496, 200), (768, 468) and
   (1176, 870), exact at (1230, 914), so the crack is between the road's outer edge and the
   terrain's discard edge in both modes.
+- **Not done.** The abutment band (waits for `ROAD-68-K20` on `road`), the water reflection proxy
+  of graded cells, the 100k city's slot census and the undo test on the swap path.
+
+**Tests (fresh, round 5).** Clippy `--all-targets` on the rebased tip (`9d0f8ec1`): the
+59-warning baseline set exactly. Before the rebase (debug, `d3`): every
+`simulation::terrain::graded` test and `graded_queries` 31 passed, 4 ignored, the new mouth test
+among them, `structure_mouths_wall_the_graded_ground` and the portal tests unchanged; the mouth
+test against the tree without the fix fails as recorded above. GPU suites through the status
+runner: `plot_material_lighting_test.gd` and `plot_dawn_lighting_test.gd` PASS (status 0);
+before their fixes on the same tree status 2 and FAIL. RUNSH_PLACEHOLDER
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/`: 5,305 (5,196 in round 4):
+`tile.rs` +78 (the mouth post-pass), `grade.rs` +23 (`continues_ground`), `query.rs` +13 net.
+Godot: `terrain_graded_tiles.gd` 879 (+73: the change flags, the edit frame's parts, the hidden
+plane), `terrain.gd` 4,592 (+31: the kept resident entries and revisions). `roadbed/` unchanged.
 
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
