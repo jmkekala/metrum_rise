@@ -21,6 +21,7 @@ use crate::simulation::terrain::graded::{
     slot_side,
 };
 use std::cell::RefCell;
+use std::thread::LocalKey;
 
 /// Most tile bakes in flight at once: the request budget that bounds the payloads Rust holds.
 const MAX_IN_FLIGHT_TILES: usize = 96;
@@ -94,6 +95,20 @@ thread_local! {
     static BAKED: RefCell<Vec<TilePayload>> = RefCell::default();
     static LISTS: RefCell<PatchTilesScratch> = RefCell::default();
     static SELECT: RefCell<SelectScratch> = RefCell::default();
+}
+
+// Runs `f` with this thread's scratch taken out of `key` and put back after. The bakes and the
+// edit selections run Rayon inside, where this thread may steal another job of the same kind:
+// that job finds an empty scratch, where a `RefCell` borrow held across the join panicked
+// ("already borrowed", round 4, the Kuopio reference save).
+fn with_scratch<T: Default + 'static, R>(
+    key: &'static LocalKey<RefCell<T>>,
+    f: impl FnOnce(&mut T) -> R,
+) -> R {
+    let mut scratch = key.take();
+    let out = f(&mut scratch);
+    key.set(scratch);
+    out
 }
 
 fn level_code(level: Level) -> (i64, i64) {
@@ -193,7 +208,7 @@ fn bake_level(
         level => level,
     };
     let side = slot_side(pool_level, cell_m);
-    BAKED.with_borrow_mut(|baked| {
+    with_scratch(&BAKED, |baked| {
         let mut outcomes: Vec<Result<(), BakeError>> = Vec::with_capacity(tiles.len());
         match bake_tiles(
             &inputs.terrain,
@@ -575,8 +590,9 @@ impl SimulationNode {
         }
         let jobs = Arc::clone(&self.graded_jobs);
         self.async_jobs.spawn(move || {
-            let selections: Vec<GradedEditSelection> = SELECT
-                .with_borrow_mut(|scratch| edits.iter().map(|edit| edit.select(scratch)).collect());
+            let selections: Vec<GradedEditSelection> = with_scratch(&SELECT, |scratch| {
+                edits.iter().map(|edit| edit.select(scratch)).collect()
+            });
             jobs.lock().unwrap().edits.extend(selections);
         });
     }

@@ -41,6 +41,8 @@ void fragment() {
 	METALLIC = 0.0;
 	SPECULAR = specular;
 	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
-	EMISSION += ALBEDO * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
-		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
+	// A flat face with no normal map: the lamp light reads the face normal itself, and the quad
+	// needs no tangents (a shader reading TANGENT warns on every mesh without them).
+	EMISSION += ALBEDO * street_lamp_surface(VERTEX, NORMAL, vec3(0.0), vec3(0.0),
+		vec3(0.5, 0.5, 1.0), 1.0, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }
