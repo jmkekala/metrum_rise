@@ -3822,8 +3822,10 @@ to point).
   one `PlaneMesh` at its step.
 - **Cells.** A patch with graded tiles renders its cells, each tile clipped to the patch, as
   instances: one `MultiMesh` per patch and mesh, at most five (the base cell mesh and the four
-  levels). Instance data carries the tile origin, the slot, the level and each side's neighbour
-  level. Vertices clamp to the patch rectangle, which is a lattice line of every level.
+  levels). Instance data carries the tile's place in the patch, the slot, the level and each side's
+  neighbour level, every channel an integer below 2,048: the Compatibility renderer keeps instance
+  custom data as half floats (`TERRAIN-07-D` round 2). Vertices clamp to the patch rectangle, which
+  is a lattice line of every level.
 - **Base cell mesh.** One generic grid whose vertex `k` per axis lies at `clamp(o + s(k - 1), 0,
   64 m)` for the patch step `s` and the cell's phase `o` (the first base lattice line inside the
   tile), so one mesh serves every phase and its vertices are the patch's own vertices.
@@ -3836,6 +3838,9 @@ to point).
   existing seams between patches at different steps are unchanged.
 - **Slot pools.** Per level, a `Texture2DArray` of RGBAF layers for the texels and one for the rows,
   sized by the [memory table](#data), prewarmed at renderer load as patch resources are today.
+  Each graded level of a patch draws with its own material, which binds that level's two pools,
+  so a draw adds two samplers to the base set (eight failed to link in GLES3, `TERRAIN-07-D`
+  round 2).
   Residency allocates and eviction frees. An exhausted pool is a typed error, logged and counted;
   the sizes make it impossible within the distance rules.
 - **Uploads.** `Texture2DArray.update_layer` per dirty slot (as the `TERRAIN-06` mask pages are
@@ -3927,12 +3932,17 @@ the road, one site chunk lookup and the seams near the point
 | Query | Answer | Replaces | Consumers |
 | --- | --- | --- | --- |
 | `base_height_at(x, z)` | the base `b(p)` | `sample_height_world`, `get_height_at_internal` | terrain brushes and authoring tools, water depth ([T13](#terrain-07-open-questions)) |
-| `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
+| `ground_height_at(x, z)` | the graded ground: `GL0` values (base plus the packed `f32` delta) on the `GL0` triangle under `p`, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)` diagonal, which the `TERRAIN-07-D` mesh follows; at a pad the pad; in a 64 m tile without a seam or pad within the cap the bilinear base, as `raycast_surface` marches it (correction, `TERRAIN-07-D` round 2: the two queries disagreed there by the `GL0` triangles' chord of the bilinear base, 3.7 mm at the grade breaks of `vehicle_ground_support_test.gd`); under a road the hidden inside-rule surface, so callers test `mask_at` first | `sample_visual_height_world`, `raycast_visual_terrain`'s heights | generated vegetation, grass, mist, water reflection, building render probes |
 | `surface_height_at(x, z)` | the visible surface: the road's `height_at` where covered, else `ground_height_at` | `get_world_surface_height_internal` and `_near` (road, site, CDT ground, visual terrain) | agents off lane, vehicle contacts, authored plants, picking, cell zoning overlays, Godot tools |
 | `normal_at(x, z)` | the rendered `GL0` normal: per lattice point today's base gradient (the central difference of the base over one base cell either side) plus the central difference of the packed delta over its four neighbours, interpolated over the `GL0` triangle; the shader computes the same (correction, `TERRAIN-07-D`: the base term was the 0.5 m difference, which the [renderer rule](#godot-tile-renderer) does not draw and which would crease the shading at every graded cell's border with a base cell) | (new) | vegetation slope tests |
 | `mask_at(x, z)` | `GroundClass { Natural, Graded, Road, Pad, Paved(material) }` | water's road-clip suppression, `sample_building_site_height(..).is_some()` tests, the CDT holes the grass mask rasterizes | vegetation clearance, GPU grass, water mesh cells, fields |
 | `raycast_surface(origin, dir)` | the nearer of the road's ray hit and the ground hit (a base heightfield march, refined to `GL0` cells inside graded tiles) | `intersect_world_surface_internal`, `raycast_engineered_ground` | cursor, picking, tools |
 | `raycast_base(origin, dir)` | the authored base | `intersect_terrain_internal` | terrain brushes |
+
+Godot's `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
+`raycast_surface` since `TERRAIN-07-D` round 2 (`SimCore::graded_surface_height` and
+`intersect_graded_surface`, which ready the site index as the old ray query did); the Rust
+consumers of `get_world_surface_height_internal` and `_near` move in `TERRAIN-07-F`.
 
 `Graded` means `delta != 0` outside footprints. Consumer caches keep keying on the existing
 per-patch terrain payload generations, which the dirty tile selection bumps for the patches
@@ -4025,7 +4035,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); open: the portal opening (T22 5, detailed for round 5); T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (round 1 on branch `terrain07-D`: items 1-3, [record](#terrain-07-d-record); items 4-5, the reference renders and the GPU matrix are round 2's) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2; item 5, the release install timing, pool sizes and the GPU matrix open) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -5307,11 +5317,10 @@ library (the bake now packs off the lock), and `MultiMesh` instances start with 
 replaces, plus the cell vertex path, the mask call and the four debug views), `terrain.gd` +41.
 The node bridge `graded_tiles_api.rs` 530.
 
-**Finding (open, roadbed).** At the sloped T's east road end the grounded top triangles reach
-1.09 mm past the outer chain (tile (1, 0), tile-local (0.011, 2.977)): coverage and the chain
-disagree there, so the mask (the chain) keeps terrain over 1 mm of road. Invisible, but it is a
-coverage/chain mismatch the roadbed should explain; the mask test treats points within 2 mm of a
-chain as the chain's.
+**Finding (roadbed; explained in round 2).** At the sloped T's east road end coverage reaches
+1.09 mm past the outer chain (tile (1, 0), tile-local (0.011, 2.977)), so the mask (the chain)
+keeps terrain over 1 mm of road. Round 2 found the roadbed's predicate, not its geometry, and
+replaced the 2 mm skip (below).
 
 **Pending for round 2.** Items 4 and 5; the reference fixtures and views in
 `road_junction_reference_test.gd` with B against the exact cut, the distance renders, pinholes;
@@ -5320,6 +5329,95 @@ a populated edit and the pool sizes and video memory on Kuopio and the 100k city
 meshes (`TilePayload::walls` is counted, not drawn); the water reflection's proxy of graded cells
 (the collapsed PlaneMesh shows no ground in reflections while cells draw); `GL3` delta normals use
 the lattice neighbours' positions, not a mirrored query (no consumer reads them).
+
+Round 2, 2026-10-26, the same branch rebased onto `road` at `74fe0a30`: the gate checks, item 4,
+the coverage finding and the reference renders. Fresh runs on this branch.
+
+- **GLES3 (fixed).** Two defects, both of the Compatibility renderer, found by probes of the
+  shaders in isolation. (1) The graded variant's program with the base set's samplers plus the
+  eight pool samplers failed to link ("too many fragment shader texture samplers"; four pool
+  samplers link, six do not). Each graded level of a patch now draws with its own material, which
+  binds that level's `graded_texels` and `graded_rows`, so a draw adds two samplers; the shader
+  lost its per-level sampler switch and `CellFrame.level`. (2) The base cells drew nothing: the
+  Compatibility renderer keeps `MultiMesh` instance custom data as half floats (14,043 arrives as
+  14,040 or 14,048; Forward+ keeps it exact), which rounded the 15-bit lattice codes. Every
+  channel is now an integer below 2,048: `x` the tile's column plus 32 times its row among the
+  patch's tiles (from the tile holding the patch rectangle's lower corner, a patch spanning at most
+  32 tiles), `y` the slot, `z` the codes' bits 0-8, `w` bits 9-14. Both variants link in both
+  renderers, and `graded_cells_shader_test.gd` checks the base cell in the Compatibility renderer
+  again.
+- **Item 4 (done).** `terrain.gd` `graded_tiles_enabled` defaults on: every patch requests its
+  plain payload (`_terrain_patch_payload_render_step_mm` returns 0) and no patch requires the
+  engineered refinement, so the game never requests a refined CDT patch. Godot's
+  `get_world_surface_height` and `intersect_world_surface` answer from `surface_height_at` and
+  `raycast_surface` ([query table](#queries-for-consumers)). The exact cut stays reachable from
+  `road_junction_reference_test.gd` only, which turns the switch off for its exact half (T10).
+  Preview staging still shows the refined preview patches until `TERRAIN-07-E`.
+- **The coverage finding (roadbed defect, for the coordinator).** Neither the top triangles nor
+  the outer chains are wrong: the chains are the triangles' own vertices. The roadbed's
+  point-in-triangle predicate (`top_triangle_height_at`, behind `height_at`) accepts points whose
+  barycentric weights reach `-0.001`, so coverage extends up to 0.1% of a triangle's height past
+  its edges. A probe without the 2 mm skip found one to three such points per fixture (480k
+  points each, seven fixtures, `GL0` and `GL1`), every one within 1.3 mm of a chain and outside
+  its covering triangle by exact orientation. Recorded in
+  [`roads.md`, "Footprint and terrain"](roads.md#footprint-and-terrain) with the failing, ignored
+  test `the_coverage_predicate_covers_no_point_outside_its_triangle` (3,662 of 3,822 edge probes
+  on the T covered). The mask test now skips exactly the points the predicate covers outside every
+  grounded top triangle (exact `orient2d`, at most a handful per fixture) and compares every other
+  point bitwise; no distance tolerance remains.
+- **Point query correction (taken pending the user's review, 2026-10-26; reversible in this
+  branch).** With item 4, `./run.sh --test` failed `vehicle_ground_support_test.gd` ("buried
+  contact", 16.1 mm of clearance against 19.8 mm) on a world without roads or sites: the vehicles
+  stand on the bilinear base, and `ground_height_at` answered the `GL0` triangles of the base,
+  whose chord lies 3.7 mm off the bilinear base at the fixture's grade breaks. `raycast_surface`
+  already marched the bilinear base in tiles without a seam within the cap, so the two gate A
+  queries disagreed there. `ground_height_at` now answers the bilinear base in such a tile too
+  (the [query table](#queries-for-consumers) records the correction); every graded tile is
+  unchanged, and the gate A query tests pass unchanged. Alternative: keep the `GL0` triangles
+  everywhere and move the march and the vehicle contacts to them (the vehicles are `TERRAIN-07-F`'s).
+- **Point query cost.** The query filled its base window over the whole cap window (about
+  131 m square around the point), 17k samples per query on the 1 m grid of the vehicle fixture,
+  which then ran past its 300 s timeout. It now fills one base cell around the rectangle it reads
+  (a point's base reads only its four samples, so no value changes; the graded tests pass
+  bitwise). The seam and site gathers still cover the cap; a gather variant for clustered points
+  stays `TERRAIN-07-F`'s ([T19](#terrain-07-open-questions)).
+- **`terrain_overlay_shader_test.gd` under Forward+** (pre-existing, `road` too): tracked as
+  `TERRAIN-08` in the roadmap. The test reads its captures as linear light, which holds in the
+  Compatibility renderer only; Forward+ captures are sRGB-encoded (0.726 measured against the
+  linear 0.5). The test's capture decoding, not the terrain shader, so not fixed here.
+
+**Tests (fresh, round 2).** Every `simulation::terrain::graded` test and `graded_queries`
+(`surface_queries_answer_from_the_graded_surface`: on the sloped T the query equals
+`GradedSurface::surface_height_at` bitwise, the road's `height_at` on the road, and a vertical ray
+lands on the same surface), after the query correction: 26 passed, 4 ignored (the timing
+benchmarks). The roadbed defect test fails as recorded when run (`--ignored`). Godot in isolated
+profiles: `graded_cells_shader_test.gd` 0 failures in the Compatibility renderer (no link error,
+base cell checked) and in Forward+; `graded_tile_renderer_test.gd` 0 failures (9 tiles, 17
+uploads, worst install frame 0.89 ms on the debug library and the dummy renderer, not the
+acceptance); `vehicle_ground_support_test.gd` PASS after the correction (4,840 poses, minimum
+contact clearance 0.019998 m). First `./run.sh --test` of the round (tree `98f48e36`): debug lib
+1,951 passed, 0 failed, 173 ignored; integration 4 passed; the Godot bridge block stopped at
+`vehicle_ground_support_test.gd` (fixed above). Second run (tree `8f96e17c`): debug lib 1,951
+passed, 0 failed, 173 ignored; integration 4 passed; in the Godot bridge block
+`vehicle_ground_support_test.gd` passed and `network_tool_chunk_renderer_test.gd` failed the 13
+assertions of its exact-cut transaction case (`_test_real_terrain_atomic_transaction`: the
+engineered patch's refined payload staged, installed and acknowledged), which ran on the new
+default. Its `TestTerrainRenderer` now keeps the exact cut (the path stays in `terrain.gd` until
+`TERRAIN-07-G`); the suites after it and the rendered block have not run in this round. Clippy `--all-targets` on the round's Rust tip (`2faee9e8`): the 59-warning baseline set
+exactly, nothing added or removed.
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/`: `query.rs` +15, nothing
+else. Godot renderer: `terrain_graded_tiles.gd` 625 (+7), `terrain_cells.gdshaderinc` 395 (-21),
+`terrain_surface.gdshaderinc` 1,003, `terrain.gd` +3. Node bridge: `query/terrain.rs` +43.
+`roadbed/` production unchanged (8,170 lines, tests and fixtures excluded); its round 2 change is
+the defect test.
+
+**Pending for round 3.** Item 5 (a commit installs its dirty resident tiles); the reference
+renders in compare mode (`renders.sh` sessions, written and committed but not yet run: the run lock
+was held by the other gates' runs and the round's gate checks); the release-library install
+timing, pool sizes and video memory on Kuopio and the 100k city; conflict wall meshes; the water
+reflection proxy of graded cells; the GPU idle-frame matrix (the user's awake display); the
+roadbed coverage predicate (the coordinator's); `TERRAIN-08`.
 
 #### `TERRAIN-07-E` — preview, commit, undo and load
 

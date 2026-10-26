@@ -409,9 +409,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the opening over the tunnel's bore are round 4's, with T21. Round 4 hangs the abutment face
   below a bridge's slab where it meets a road, so the bridge's road chunks close there; the
   opening over a tunnel's bore is designed for round 5, and the site-dense full-edit budget is
-  carried to gate E's frame paths for review (T21). Gate `TERRAIN-07-D` round 1 (work in progress) builds the graded tiles' residency and the Godot tile renderer behind a switch: the payload workers bake requested tiles off the simulation lock, Godot uploads them in place into prewarmed slot pools and draws each patch's 64 m cells as instances whose borders stitch exactly; the game still renders the exact cut until round 2. See the
+  carried to gate E's frame paths for review (T21). Gate `TERRAIN-07-D` (rounds 1-2, work in progress) builds the graded tiles' residency and the Godot tile renderer: the payload workers bake requested tiles off the simulation lock, Godot uploads them in place into prewarmed slot pools and draws each patch's 64 m cells as instances whose borders stitch exactly. Since round 2 the game renders the graded surface (no refined CDT patch is requested) and Godot's surface height and ray queries answer from it; the exact cut stays reachable from the reference test for comparison. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
-  ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
+  ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record), [D](terrain.md#terrain-07-d-record)).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
