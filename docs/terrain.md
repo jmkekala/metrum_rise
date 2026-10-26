@@ -5797,7 +5797,13 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
 among them, `structure_mouths_wall_the_graded_ground` and the portal tests unchanged; the mouth
 test against the tree without the fix fails as recorded above. GPU suites through the status
 runner: `plot_material_lighting_test.gd` and `plot_dawn_lighting_test.gd` PASS (status 0);
-before their fixes on the same tree status 2 and FAIL. RUNSH_PLACEHOLDER
+before their fixes on the same tree status 2 and FAIL. `./run.sh --test` on the rebased tip
+(`9d0f8ec1`'s Rust; the Godot suites ran on `71e87906`'s scripts, DISPLAY and WAYLAND_DISPLAY
+unset): exit 0, debug lib 1,962 passed, 0 failed, 172 ignored, integration 4 passed, every Godot
+bridge suite and the rendered block with 0 failures (`graded_tile_renderer_test.gd` with the
+production renderer's change-driven path among them), and both plot suites PASS in gamescope's
+headless backend; skipped as before: the headless shader global probe and the Forward+ vegetation
+tests.
 
 **Lines** (production, tests excluded). `simulation/terrain/graded/`: 5,305 (5,196 in round 4):
 `tile.rs` +78 (the mouth post-pass), `grade.rs` +23 (`continues_ground`), `query.rs` +13 net.
