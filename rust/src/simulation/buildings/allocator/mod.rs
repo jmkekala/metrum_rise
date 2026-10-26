@@ -542,7 +542,7 @@ pub struct BuildingAllocator {
     pub registry: AssetRegistry,
 }
 
-pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, NearbySites};
+pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot, NearbySites, SiteSnapshot};
 pub use site::SiteChange;
 pub(crate) use site::site_footprint_contains;
 

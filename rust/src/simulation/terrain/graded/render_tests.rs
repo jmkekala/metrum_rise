@@ -1,0 +1,544 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+//! `TERRAIN-07-D` acceptance on the Rust side: the graded patch tile lists against the bake, the
+//! slot packing, and a port of the Godot cell shader's arithmetic
+//! (`godot/scripts/shaders/terrain_cells.gdshaderinc`) checked against the bake: the cell
+//! lattices equal the bake's, stitched borders share their vertices and texel values bitwise,
+//! and the exact seam mask equals coverage. The port mirrors the shader line by line (integer
+//! half-metres, `f32` for the mask); change both together.
+
+use super::coverage::covered_height_at;
+use super::tests::{LEVELS, compiled, fixtures, window_tiles};
+use super::tile::{Evaluation, bake_tiles_with, lattice};
+use super::*;
+use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
+use crate::simulation::terrain::TerrainSystem;
+
+const SIDE_HM: i32 = 128;
+
+// --- The shader's lattice arithmetic, ported. ---
+
+fn floor_div(a: i32, b: i32) -> i32 {
+    a.div_euclid(b)
+}
+
+fn imod(a: i32, b: i32) -> i32 {
+    a - b * floor_div(a, b)
+}
+
+fn code_spacing_hm(code: i32, cell_hm: i32) -> i32 {
+    if code < 3 { 1 << code } else { cell_hm << (code - 3) }
+}
+
+fn code_phase_hm(code: i32, spacing: i32, anchor_hm: i32, origin_hm: i32) -> i32 {
+    if code < 3 { 0 } else { imod(anchor_hm - origin_hm, spacing) }
+}
+
+fn vertex_hm(code: i32, k: i32, spacing: i32, phase: i32) -> i32 {
+    if code < 3 {
+        k * spacing
+    } else {
+        (phase + spacing * (k - 1)).clamp(0, SIDE_HM)
+    }
+}
+
+fn snap_hm(p: i32, spacing: i32, phase: i32) -> i32 {
+    if p >= SIDE_HM {
+        return SIDE_HM;
+    }
+    (phase + spacing * floor_div(p - phase, spacing)).max(0)
+}
+
+fn first_line_hm(spacing: i32, phase: i32) -> i32 {
+    if phase == 0 { spacing } else { phase }
+}
+
+fn inner_lines(spacing: i32, phase: i32) -> i32 {
+    let first = first_line_hm(spacing, phase);
+    if first < SIDE_HM { (SIDE_HM - 1 - first) / spacing + 1 } else { 0 }
+}
+
+fn index_at(code: i32, p: i32, spacing: i32, phase: i32) -> i32 {
+    if code < 3 {
+        return 1 + p / spacing;
+    }
+    let first = first_line_hm(spacing, phase);
+    if p >= SIDE_HM {
+        2 + inner_lines(spacing, phase)
+    } else if p < first {
+        1
+    } else {
+        2 + (p - first) / spacing
+    }
+}
+
+fn index_hm(code: i32, idx: i32, spacing: i32, phase: i32) -> i32 {
+    if code < 3 {
+        return (idx - 1) * spacing;
+    }
+    let first = first_line_hm(spacing, phase);
+    let end_index = 2 + inner_lines(spacing, phase);
+    if idx <= 0 {
+        if phase == 0 { -spacing } else { phase - spacing }
+    } else if idx == 1 {
+        0
+    } else if idx < end_index {
+        first + (idx - 2) * spacing
+    } else if idx == end_index {
+        SIDE_HM
+    } else if imod(SIDE_HM - phase, spacing) == 0 {
+        SIDE_HM + spacing
+    } else {
+        first + inner_lines(spacing, phase) * spacing
+    }
+}
+
+// One cell's lattice frame, as the shader's `CellFrame`.
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    code: i32,
+    origin_hm: [i32; 2],
+    spacing: i32,
+    phase: [i32; 2],
+}
+
+fn frame(code: i32, tile: TileKey, anchor_hm: [i32; 2], cell_hm: i32) -> Frame {
+    let origin_hm = [tile.x * SIDE_HM, tile.z * SIDE_HM];
+    let spacing = code_spacing_hm(code, cell_hm);
+    Frame {
+        code,
+        origin_hm,
+        spacing,
+        phase: [0, 1].map(|axis| code_phase_hm(code, spacing, anchor_hm[axis], origin_hm[axis])),
+    }
+}
+
+// Side codes west, east, south, north; the shader's `cell_vertex_position_hm` (unclamped: the
+// fixtures' tiles lie inside one patch).
+fn vertex_position_hm(
+    frame: Frame,
+    k: [i32; 2],
+    sides: [i32; 4],
+    anchor_hm: [i32; 2],
+    cell_hm: i32,
+) -> [i32; 2] {
+    let mut p = [0, 1].map(|axis| vertex_hm(frame.code, k[axis], frame.spacing, frame.phase[axis]));
+    if p[0] == 0 || p[0] == SIDE_HM {
+        let side = if p[0] == 0 { sides[0] } else { sides[1] };
+        let s = code_spacing_hm(side, cell_hm);
+        p[1] = snap_hm(p[1], s, code_phase_hm(side, s, anchor_hm[1], frame.origin_hm[1]));
+    }
+    if p[1] == 0 || p[1] == SIDE_HM {
+        let side = if p[1] == 0 { sides[2] } else { sides[3] };
+        let s = code_spacing_hm(side, cell_hm);
+        p[0] = snap_hm(p[0], s, code_phase_hm(side, s, anchor_hm[0], frame.origin_hm[0]));
+    }
+    p
+}
+
+// Mesh vertices per axis for a code, as terrain_graded_tiles.gd builds the meshes.
+fn mesh_vertices(code: i32, cell_hm: i32) -> i32 {
+    let spacing = code_spacing_hm(code, cell_hm);
+    if code < 3 {
+        SIDE_HM / spacing + 1
+    } else {
+        (SIDE_HM + spacing - 1) / spacing + 2
+    }
+}
+
+fn level_code(level: Level) -> i32 {
+    match level {
+        Level::Gl0 => 0,
+        Level::Gl1 => 1,
+        Level::Gl2 => 2,
+        Level::Gl3 { step } => 3 + i32::from(step).trailing_zeros() as i32,
+    }
+}
+
+fn anchor_hm(terrain: &TerrainSystem) -> [i32; 2] {
+    let cell = f64::from(terrain.cell_size_m());
+    [terrain.width, terrain.height].map(|n| (-(n as f64 - 1.0) * cell) as i32)
+}
+
+fn cell_hm(terrain: &TerrainSystem) -> i32 {
+    (f64::from(terrain.cell_size_m()) * 2.0).round() as i32
+}
+
+// --- The shader's exact seam mask, ported (`f32`, tile-frame metres). ---
+
+#[derive(Clone, Copy, Debug)]
+struct Hit {
+    distance: f32,
+    line_distance: f32,
+    signed_distance: f32,
+    index: i32,
+}
+
+const NO_HIT: Hit = Hit {
+    distance: 1e30,
+    line_distance: 0.0,
+    signed_distance: 1e30,
+    index: 1 << 30,
+};
+
+fn segment_at(seg: [f32; 4], p: [f32; 2], index: i32) -> Hit {
+    let a = [seg[0], seg[1]];
+    let ab = [seg[2] - seg[0], seg[3] - seg[1]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
+    let mut q = a;
+    let mut cross = 0.0;
+    if len2 > 0.0 {
+        let t = ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2;
+        cross = ab[0] * (p[1] - a[1]) - ab[1] * (p[0] - a[0]);
+        q = if t <= 0.0 {
+            a
+        } else if t >= 1.0 {
+            [seg[2], seg[3]]
+        } else {
+            [a[0] + ab[0] * t, a[1] + ab[1] * t]
+        };
+    }
+    let (ex, ez) = (p[0] - q[0], p[1] - q[1]);
+    let d = (ex * ex + ez * ez).sqrt();
+    let line = if len2 > 0.0 { cross.abs() / len2.sqrt() } else { 0.0 };
+    Hit {
+        distance: d,
+        line_distance: line,
+        signed_distance: if cross > 0.0 { -d } else { d },
+        index,
+    }
+}
+
+fn nearer(a: &Hit, b: &Hit) -> bool {
+    if a.distance != b.distance {
+        return a.distance < b.distance;
+    }
+    if a.line_distance != b.line_distance {
+        return a.line_distance > b.line_distance;
+    }
+    a.index < b.index
+}
+
+fn mix(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+// The fragment's axis stop: the index at or before `x` and the fraction to the next sample.
+fn axis_stop(frame: Frame, x: f32, axis: usize) -> (i32, f32) {
+    let p = ((x * 2.0).floor() as i32).clamp(0, SIDE_HM - 1);
+    let index = index_at(frame.code, p, frame.spacing, frame.phase[axis]);
+    let p0 = index_hm(frame.code, index, frame.spacing, frame.phase[axis]) as f32 * 0.5;
+    let p1 = index_hm(frame.code, index + 1, frame.spacing, frame.phase[axis]) as f32 * 0.5;
+    (index, ((x - p0) / (p1 - p0).max(1e-6)).clamp(0.0, 1.0))
+}
+
+// The signed distance the shader's `cell_mask` tests against zero.
+fn mask_sdf(frame: Frame, payload: &TilePayload, p: [f32; 2]) -> f32 {
+    let (ix, fx) = axis_stop(frame, p[0], 0);
+    let (iz, fz) = axis_stop(frame, p[1], 1);
+    let width = payload.samples[0];
+    let t: [[f32; 4]; 4] = std::array::from_fn(|c| {
+        let (i, j) = (ix as usize + (c & 1), iz as usize + (c >> 1));
+        payload.texels[j * width + i]
+    });
+    let mut sdf = mix(mix(t[0][1], t[1][1], fx), mix(t[2][1], t[3][1], fx), fz);
+    let spacing_m = frame.spacing as f32 * 0.5;
+    if sdf.abs() < 2.0 * spacing_m {
+        let mut best = NO_HIT;
+        for texel in &t {
+            let index = texel[2] as i32;
+            if index < 0 {
+                continue;
+            }
+            let hit = segment_at(payload.seams[index as usize], p, index);
+            if nearer(&hit, &best) {
+                best = hit;
+            }
+        }
+        if best.index < NO_HIT.index {
+            sdf = best.signed_distance;
+        }
+    }
+    sdf
+}
+
+fn bake_level(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    tiles: &[TileKey],
+    level: Level,
+) -> Vec<TilePayload> {
+    let mut out = Vec::new();
+    bake_tiles_with(terrain, roadbed, &NoSites, tiles, level, Evaluation::Lanes, &mut out)
+        .expect("tiles bake");
+    out
+}
+
+// Whether a texel renders differently from the base: graded, covered or painted.
+fn texel_renders(texel: [f32; 4]) -> bool {
+    texel[0] != 0.0 || texel[1] < 0.0 || (texel[3] as i32) & 15 != 0
+}
+
+#[test]
+fn cell_lattices_are_the_bake_lattices() {
+    let mut cases = 0;
+    for (name, _, terrain) in fixtures() {
+        let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+        let (mut xs, mut zs) = (Vec::new(), Vec::new());
+        for level in LEVELS.into_iter().chain([2, 4, 8].map(|step| Level::Gl3 { step })) {
+            let code = level_code(level);
+            for tile in window_tiles() {
+                lattice(&terrain, tile, level, &mut xs, &mut zs);
+                let frame = frame(code, tile, anchor, cell);
+                let [ox, oz] = tile.origin();
+                assert!(xs.len() <= slot_side(level, f64::from(cell) * 0.5), "{name}: slot side");
+                for (axis, coords, origin) in [(0, &xs, ox), (1, &zs, oz)] {
+                    for (idx, &world) in coords.iter().enumerate() {
+                        let hm = (world - origin) * 2.0;
+                        assert_eq!(
+                            f64::from(index_hm(code, idx as i32, frame.spacing, frame.phase[axis])),
+                            hm,
+                            "{name} {level:?} {tile:?} axis {axis} index {idx}"
+                        );
+                        if (0.0..=128.0).contains(&hm) {
+                            assert_eq!(
+                                index_at(code, hm as i32, frame.spacing, frame.phase[axis]),
+                                idx as i32,
+                                "{name} {level:?} {tile:?} axis {axis} at {hm}"
+                            );
+                        }
+                    }
+                    // Every mesh vertex lies on a lattice point.
+                    for k in 0..mesh_vertices(code, cell) {
+                        let p = vertex_hm(code, k, frame.spacing, frame.phase[axis]);
+                        let idx = index_at(code, p, frame.spacing, frame.phase[axis]);
+                        assert_eq!(index_hm(code, idx, frame.spacing, frame.phase[axis]), p);
+                    }
+                }
+                cases += 1;
+            }
+        }
+    }
+    assert!(cases > 0);
+}
+
+#[test]
+fn stitched_borders_share_vertices_and_texels_bitwise() {
+    // `t_slope`: graded on both sides of the shared side x = 0 between tiles (-1, z) and (0, z).
+    let (_, graph, terrain) = fixtures().swap_remove(0);
+    let roadbed = compiled(&graph);
+    let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+    let levels = [Level::Gl0, Level::Gl1, Level::Gl2, Level::Gl3 { step: 2 }];
+    let mut shared = 0;
+    for z in -2..2 {
+        let (west, east) = (TileKey { x: -1, z }, TileKey { x: 0, z });
+        for &fine in &levels {
+            for &coarse in &levels {
+                let (fine_code, coarse_code) = (level_code(fine), level_code(coarse));
+                if fine_code > coarse_code {
+                    continue;
+                }
+                let fine_payload = &bake_level(&terrain, &roadbed, &[west], fine)[0];
+                let coarse_payload = &bake_level(&terrain, &roadbed, &[east], coarse)[0];
+                let fine_frame = frame(fine_code, west, anchor, cell);
+                let coarse_frame = frame(coarse_code, east, anchor, cell);
+                // The finer west cell snaps its east side to the coarser east cell's lattice.
+                let fine_sides = [fine_code, coarse_code, fine_code, fine_code];
+                let coarse_sides = [coarse_code; 4];
+                let border = |frame: Frame, sides: [i32; 4], x_side: i32| {
+                    let mut points = Vec::new();
+                    for kz in 0..mesh_vertices(frame.code, cell) {
+                        for kx in 0..mesh_vertices(frame.code, cell) {
+                            let p = vertex_position_hm(frame, [kx, kz], sides, anchor, cell);
+                            if p[0] == x_side {
+                                points.push(p[1]);
+                            }
+                        }
+                    }
+                    points.sort_unstable();
+                    points.dedup();
+                    points
+                };
+                let fine_border = border(fine_frame, fine_sides, SIDE_HM);
+                let coarse_border = border(coarse_frame, coarse_sides, 0);
+                assert_eq!(fine_border, coarse_border, "z {z}: {fine:?} | {coarse:?}");
+                for &p in &fine_border {
+                    let texel = |frame: Frame, payload: &TilePayload, x: i32| {
+                        let ix = index_at(frame.code, x, frame.spacing, frame.phase[0]) as usize;
+                        let iz = index_at(frame.code, p, frame.spacing, frame.phase[1]) as usize;
+                        payload.texels[iz * payload.samples[0] + ix][0].to_bits()
+                    };
+                    assert_eq!(
+                        texel(fine_frame, fine_payload, SIDE_HM),
+                        texel(coarse_frame, coarse_payload, 0),
+                        "z {z}: {fine:?} | {coarse:?} at {p} hm: delta bits"
+                    );
+                    shared += 1;
+                }
+            }
+        }
+    }
+    assert!(shared > 0);
+}
+
+#[test]
+fn the_exact_mask_equals_coverage() {
+    let mut pieces: Vec<PieceId> = Vec::new();
+    for (name, graph, terrain) in fixtures() {
+        let roadbed = compiled(&graph);
+        let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+        for level in [Level::Gl0, Level::Gl1] {
+            let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
+            let (mut tested, mut wrong) = (0, 0);
+            let mut first = String::new();
+            for payload in &payloads {
+                let frame = frame(level_code(level), payload.tile, anchor, cell);
+                let [ox, oz] = payload.tile.origin();
+                // A 0.37 m grid: off the lattice, through every kind of cell.
+                for j in 0..173 {
+                    for i in 0..173 {
+                        let p = [i as f32 * 0.37 + 0.011, j as f32 * 0.37 + 0.017];
+                        let (x, z) = (ox + f64::from(p[0]), oz + f64::from(p[1]));
+                        // The mask follows the outer chains; coverage is the top triangles. They
+                        // agree to the f32 tile frame except at the sloped T's east road end,
+                        // where the triangles reach 1.09 mm past the chain (2026-10-26, open in
+                        // the gate D record): points within 2 mm of a chain are the chain's.
+                        let near_chain = payload.seams.iter().any(|&s| {
+                            segment_at(s, p, 0).distance < 2e-3
+                        });
+                        if near_chain {
+                            continue;
+                        }
+                        let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
+                        let sdf = mask_sdf(frame, payload, p);
+                        let discarded = sdf < 0.0;
+                        tested += 1;
+                        if covered != discarded && first.is_empty() {
+                            let nearest = payload
+                                .seams
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &s)| (segment_at(s, p, i as i32).signed_distance, i))
+                                .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+                            let (ix, _) = axis_stop(frame, p[0], 0);
+                            let (iz, _) = axis_stop(frame, p[1], 1);
+                            let named: Vec<f32> = (0..4)
+                                .map(|c| {
+                                    let (i, j) = (ix as usize + (c & 1), iz as usize + (c >> 1));
+                                    payload.texels[j * payload.samples[0] + i][2]
+                                })
+                                .collect();
+                            first = format!(
+                                "tile {:?} p {p:?} covered {covered} sdf {sdf} nearest row seam {nearest:?} named {named:?}",
+                                payload.tile
+                            );
+                        }
+                        wrong += usize::from(covered != discarded);
+                    }
+                }
+            }
+            assert!(tested > 0);
+            assert_eq!(wrong, 0, "{name} {level:?}: {wrong} of {tested} points; first: {first}");
+        }
+    }
+}
+
+#[test]
+fn patch_tile_lists_hold_every_tile_that_renders_graded() {
+    let mut scratch = PatchTilesScratch::default();
+    let mut listed = Vec::new();
+    for (name, graph, terrain) in fixtures() {
+        let roadbed = compiled(&graph);
+        // Two patch-like rectangles, one on tile borders and one off them.
+        for rect in [[-128.0, -128.0, 128.0, 128.0], [-110.0, -97.0, 93.0, 121.0]] {
+            graded_tiles_in_rect(&terrain, &roadbed, &NoSites, rect, &mut scratch, &mut listed)
+                .expect("list");
+            assert!(listed.is_sorted(), "{name}: sorted");
+            for level in LEVELS {
+                let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
+                for payload in &payloads {
+                    let (mut xs, mut zs) = (Vec::new(), Vec::new());
+                    lattice(&terrain, payload.tile, level, &mut xs, &mut zs);
+                    let renders = zs.iter().enumerate().any(|(j, &z)| {
+                        xs.iter().enumerate().any(|(i, &x)| {
+                            x >= rect[0].max(payload.tile.origin()[0])
+                                && x <= rect[2].min(payload.tile.origin()[0] + TILE_M)
+                                && z >= rect[1].max(payload.tile.origin()[1])
+                                && z <= rect[3].min(payload.tile.origin()[1] + TILE_M)
+                                && texel_renders(payload.texels[j * xs.len() + i])
+                        })
+                    });
+                    if renders {
+                        assert!(
+                            listed.contains(&payload.tile),
+                            "{name} {level:?}: {:?} renders graded but is not listed",
+                            payload.tile
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn site_tiles_are_listed() {
+    let sites = super::site_tests::fixture_sites();
+    let (_, graph, terrain) = fixtures().swap_remove(1);
+    let roadbed = compiled(&graph);
+    let mut scratch = PatchTilesScratch::default();
+    let mut listed = Vec::new();
+    let rect = [-128.0, -128.0, 128.0, 128.0];
+    graded_tiles_in_rect(&terrain, &roadbed, &sites, rect, &mut scratch, &mut listed)
+        .expect("list");
+    let mut payloads = Vec::new();
+    bake_tiles_with(
+        &terrain,
+        &roadbed,
+        &sites,
+        &window_tiles(),
+        Level::Gl0,
+        Evaluation::Lanes,
+        &mut payloads,
+    )
+    .expect("bake");
+    for payload in &payloads {
+        if payload.texels.iter().any(|&texel| texel_renders(texel)) {
+            assert!(listed.contains(&payload.tile), "{:?} not listed", payload.tile);
+        }
+    }
+}
+
+#[test]
+fn packed_slots_hold_the_payload_bitwise() {
+    let (_, graph, terrain) = fixtures().swap_remove(0);
+    let roadbed = compiled(&graph);
+    let cell_m = f64::from(terrain.cell_size_m());
+    for level in LEVELS {
+        let side = slot_side(level, cell_m);
+        for payload in bake_level(&terrain, &roadbed, &window_tiles(), level) {
+            let (mut texels, mut rows) = (Vec::new(), Vec::new());
+            pack_slot(&payload, side, &mut texels, &mut rows);
+            assert_eq!(texels.len(), side * side * 16);
+            assert_eq!(rows.len(), slot_row_texels(level) * 16);
+            let read = |bytes: &[u8], texel: usize| -> [u32; 4] {
+                std::array::from_fn(|c| {
+                    let at = texel * 16 + c * 4;
+                    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+                })
+            };
+            let [width, depth] = payload.samples;
+            for j in 0..depth {
+                for i in 0..width {
+                    assert_eq!(read(&texels, j * side + i), payload.texels[j * width + i].map(f32::to_bits));
+                }
+            }
+            for (index, seam) in payload.seams.iter().enumerate() {
+                assert_eq!(read(&rows, index), seam.map(f32::to_bits));
+            }
+            for (index, edge) in payload.edges.iter().enumerate() {
+                assert_eq!(read(&rows, level.seam_capacity() + index), edge.map(f32::to_bits));
+            }
+        }
+    }
+}

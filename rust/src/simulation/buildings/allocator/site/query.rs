@@ -64,32 +64,128 @@ impl SiteSource for BuildingAllocator {
     }
 
     fn sites_in_bounds(&self, rect: [f64; 4], out: &mut SiteBuffer) {
+        self.visit_graded_sites(rect, |site| push_graded_site(site, out));
+    }
+}
+
+impl BuildingAllocator {
+    // Visits the sites a graded terrain query of `rect` reads, through the 512 m chunk index.
+    fn visit_graded_sites(&self, rect: [f64; 4], mut visit: impl FnMut(&BuildingSiteClient)) {
+        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+        let [min_x, min_z, max_x, max_z] = query.rect;
+        self.visit_indexed_site_candidates_for_bounds(min_x, min_z, max_x, max_z, |idx| {
+            if let Some(site) = self.building_sites.get(idx)
+                && query.holds(site)
+            {
+                visit(site);
+            }
+        });
+    }
+
+    /// Copies the sites the graded terrain bakes and tile lists of rectangles inside `rects`
+    /// read, so they can run off the simulation lock (`TERRAIN-07-D`); `None` while the site
+    /// index is being rebuilt. `O(sites meeting each rectangle)`, each site copied once.
+    pub(crate) fn graded_site_snapshot(&self, rects: Vec<[f64; 4]>) -> Option<SiteSnapshot> {
+        if !self.building_site_query_index_ready() {
+            return None;
+        }
+        let mut indices = Vec::new();
+        for &rect in &rects {
+            let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+            let [min_x, min_z, max_x, max_z] = query.rect;
+            self.visit_indexed_site_candidates_for_bounds(min_x, min_z, max_x, max_z, |idx| {
+                if self
+                    .building_sites
+                    .get(idx)
+                    .is_some_and(|site| query.holds(site))
+                {
+                    indices.push(idx);
+                }
+            });
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        Some(SiteSnapshot {
+            rects,
+            max_site_radius_m: self.max_site_radius_m,
+            sites: indices
+                .into_iter()
+                .map(|idx| self.building_sites[idx].clone())
+                .collect(),
+        })
+    }
+}
+
+// What a graded terrain site query keeps: the rectangle grown past its f32 rounding, and the
+// test the allocator and its snapshots share.
+struct SiteRectQuery {
+    rect: [f32; 4],
+    reach: f32,
+}
+
+impl SiteRectQuery {
+    fn new(rect: [f64; 4], max_site_radius_m: f32) -> Self {
         // Grown past the f32 rounding of the rectangle: a site more only adds inputs.
-        let [min_x, min_z, max_x, max_z] = [
+        let rect = [
             rect[0] - SITE_RECT_SLACK_M,
             rect[1] - SITE_RECT_SLACK_M,
             rect[2] + SITE_RECT_SLACK_M,
             rect[3] + SITE_RECT_SLACK_M,
         ]
         .map(|value| value as f32);
-        // Every footprint, surface and planting corner lies within the maximum site radius of
-        // its lot centre, so a lot centre farther from the rectangle (plus the polygon test's
-        // slack) rules the site out before its polygons are read, as `site_at` does.
-        let reach = self.max_site_radius_m.max(0.0) + SITE_REACH_SLACK_M;
-        self.visit_indexed_site_candidates_for_bounds(min_x, min_z, max_x, max_z, |idx| {
-            let Some(site) = self.building_sites.get(idx) else {
-                return;
-            };
-            let centre = site_lot_center(site);
-            let dx = (min_x - centre.x).max(centre.x - max_x).max(0.0);
-            let dz = (min_z - centre.y).max(centre.y - max_z).max(0.0);
-            if dx * dx + dz * dz <= reach * reach && site.overlaps_bounds(min_x, min_z, max_x, max_z) {
-                out.push_site(&site.footprint_world, site.support_height_m);
-                for surface in &site.surfaces {
-                    out.push_surface(surface.material, &surface.vertices_world);
-                }
-            }
-        });
+        Self {
+            rect,
+            reach: max_site_radius_m.max(0.0) + SITE_REACH_SLACK_M,
+        }
+    }
+
+    // Every footprint, surface and planting corner lies within the maximum site radius of its
+    // lot centre, so a lot centre farther from the rectangle (plus the polygon test's slack)
+    // rules the site out before its polygons are read, as `site_at` does.
+    fn holds(&self, site: &BuildingSiteClient) -> bool {
+        let [min_x, min_z, max_x, max_z] = self.rect;
+        let centre = site_lot_center(site);
+        let dx = (min_x - centre.x).max(centre.x - max_x).max(0.0);
+        let dz = (min_z - centre.y).max(centre.y - max_z).max(0.0);
+        dx * dx + dz * dz <= self.reach * self.reach
+            && site.overlaps_bounds(min_x, min_z, max_x, max_z)
+    }
+}
+
+fn push_graded_site(site: &BuildingSiteClient, out: &mut SiteBuffer) {
+    out.push_site(&site.footprint_world, site.support_height_m);
+    for surface in &site.surfaces {
+        out.push_surface(surface.material, &surface.vertices_world);
+    }
+}
+
+/// The building sites meeting some rectangles, copied from the allocator
+/// ([`BuildingAllocator::graded_site_snapshot`]): within any of them it answers every graded
+/// terrain query with the sites the allocator would give, so a bake from it equals the bake from
+/// the allocator bitwise, inputs included. A query inside none of the rectangles is a caller
+/// error (debug-asserted).
+pub(crate) struct SiteSnapshot {
+    rects: Vec<[f64; 4]>,
+    max_site_radius_m: f32,
+    sites: Vec<BuildingSiteClient>,
+}
+
+impl SiteSource for SiteSnapshot {
+    fn ready(&self) -> bool {
+        true
+    }
+
+    fn sites_in_bounds(&self, rect: [f64; 4], out: &mut SiteBuffer) {
+        debug_assert!(
+            self.rects.iter().any(|outer| {
+                rect[0] >= outer[0] && rect[1] >= outer[1] && rect[2] <= outer[2] && rect[3] <= outer[3]
+            }),
+            "graded site snapshot queried outside its rectangles"
+        );
+        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
+        for site in self.sites.iter().filter(|site| query.holds(site)) {
+            push_graded_site(site, out);
+        }
     }
 }
 

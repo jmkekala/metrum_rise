@@ -17,6 +17,7 @@ mod grade;
 mod portal;
 mod prune;
 mod query;
+mod residency;
 mod sample;
 mod seams;
 mod select;
@@ -27,6 +28,7 @@ mod walls;
 pub use grade::{CAP_M, FILL_ARM_MAX_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
 pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
+pub use residency::{PatchTilesScratch, graded_tiles_in_rect, pack_slot, slot_row_texels, slot_side};
 pub use seams::{Seam, SeamKind};
 pub use select::{
     SelectScratch, dirty_tiles_for_base_change, dirty_tiles_for_road_changes,
@@ -38,6 +40,8 @@ pub use walls::WallFace;
 
 #[cfg(test)]
 mod portal_tests;
+#[cfg(test)]
+mod render_tests;
 #[cfg(test)]
 pub(crate) mod site_tests;
 #[cfg(test)]

@@ -157,6 +157,7 @@ mod async_terrain;
 mod building_lod_api;
 mod cell_zoning_api;
 mod economy_api;
+mod graded_tiles_api;
 mod junction_debug_api;
 mod network_api;
 mod system_api;
@@ -268,6 +269,8 @@ pub struct SimulationNode {
     junction_stalls:
         Option<crate::simulation::economy::agents::junction_stalls::JunctionStallDetector>,
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
+    /// Graded terrain residency work in flight and waiting for Godot's poll (`TERRAIN-07-D`).
+    graded_jobs: Arc<Mutex<graded_tiles_api::GradedResidencyJobs>>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Payload and mesh jobs in flight on Rayon's pool, waited for when the node is freed.
     async_jobs: Arc<async_jobs::AsyncJobs>,
@@ -490,6 +493,7 @@ impl INode3D for SimulationNode {
             car_visuals: Default::default(),
             junction_stalls: None,
             terrain_patch_payload_jobs,
+            graded_jobs: Default::default(),
             water_patch_payload_jobs,
             async_jobs: Default::default(),
             benchmark_mode,

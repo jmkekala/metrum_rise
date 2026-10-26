@@ -17,9 +17,9 @@ use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use std::time::Instant;
 
-const LEVELS: [Level; 4] = [Level::Gl0, Level::Gl1, Level::Gl2, Level::Gl3 { step: 2 }];
+pub(super) const LEVELS: [Level; 4] = [Level::Gl0, Level::Gl1, Level::Gl2, Level::Gl3 { step: 2 }];
 
-fn compiled(graph: &RegionGraph) -> RoadbedSystem {
+pub(super) fn compiled(graph: &RegionGraph) -> RoadbedSystem {
     let mut roadbed = RoadbedSystem::new(64.0);
     roadbed.compile_dirty(graph);
     assert!(roadbed.failed_nodes().is_empty(), "fixture nodes compile");
@@ -73,7 +73,7 @@ fn terrain(height: impl Fn(f32, f32) -> f32) -> TerrainSystem {
 
 // The reference fixtures with their terrain: on the road plane, the conflict pair on an 8%
 // slope across it, and a mound under a T.
-fn fixtures() -> Vec<(&'static str, RegionGraph, TerrainSystem)> {
+pub(super) fn fixtures() -> Vec<(&'static str, RegionGraph, TerrainSystem)> {
     let plane = |sloped: bool| terrain(move |x, _| if sloped { SLOPE * x } else { 0.0 });
     vec![
         ("t_slope", t_junction(true), plane(true)),
@@ -95,7 +95,7 @@ fn fixtures() -> Vec<(&'static str, RegionGraph, TerrainSystem)> {
 }
 
 // The 16 tiles of the 256 m window around the origin.
-fn window_tiles() -> Vec<TileKey> {
+pub(super) fn window_tiles() -> Vec<TileKey> {
     let mut tiles = Vec::new();
     for x in -2..2 {
         for z in -2..2 {

@@ -28,6 +28,7 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const TerrainWorldNoise := preload("res://scripts/renderers/terrain_world_noise.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
+const TerrainGradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
 const HEIGHT_SCALE := 20.0
@@ -126,6 +127,11 @@ const FIELD_OVERLAY_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 @onready var water_node = $"../Water"
 
 var overlay_mode: int = 0
+## Graded terrain tiles (TERRAIN-07-D) drawn as cells over the patches that hold them. The exact
+## cut stays the default until TERRAIN-07-D round 2 stops requesting refined patches, and stays
+## renderable beside it for the reference comparison until TERRAIN-07-G (T10).
+var graded_tiles_enabled := false
+var graded_tiles: TerrainGradedTiles = null
 var terrain_world_size: Vector2 = Vector2.ZERO
 var terrain_cell_m: float = 1.0
 var patch_cols: int = 0
@@ -282,6 +288,9 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_grass_textures()
 	_ensure_border_visuals()
 	_prewarm_terrain_patch_resource_pool()
+	if graded_tiles_enabled:
+		graded_tiles = TerrainGradedTiles.new()
+		graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size)
 	_refresh_engineered_patch_lookup()
 	_sync_patch_residency(true)
 	mark_overlay_dirty()
@@ -409,6 +418,9 @@ func _process(delta: float) -> void:
 	else:
 		_defer_patch_mesh_lods(delta)
 
+	if graded_tiles != null:
+		_process_graded_tiles()
+
 	var input_manager = get_node_or_null("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
@@ -485,6 +497,29 @@ func _process(delta: float) -> void:
 			perf_details
 		)
 		_reset_terrain_resource_pool_perf_counters()
+
+# Hands the resident patches to the graded tile renderer: their nodes, materials, rectangles,
+# LOD steps and payload generations.
+func _process_graded_tiles() -> void:
+	var camera := get_viewport().get_camera_3d()
+	if camera == null:
+		return
+	var resident := {}
+	for key: Vector2i in resident_patch_lookup.keys():
+		var patch: Dictionary = patches.get(key, {})
+		var data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
+		if patch.is_empty() or data.is_empty():
+			continue
+		var size := Vector2(float(data["world_size_x"]), float(data["world_size_z"]))
+		resident[key] = {
+			"node": patch["node"],
+			"material": patch["material"],
+			"rect": Rect2(Vector2(float(data["world_origin_x"]), float(data["world_origin_z"])), size),
+			"step": int(patch.get("lod_step", 1)),
+			"generation": get_patch_surface_generation(key),
+			"aabb": patch_cull_aabb(size),
+		}
+	graded_tiles.process(camera.global_position, resident)
 
 func get_resident_patch_keys() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -1480,6 +1515,8 @@ func _deactivate_patch(key: Vector2i) -> void:
 	var patch: Dictionary = patches[key]
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = false
+	if graded_tiles != null:
+		graded_tiles.release_patch(key, patch_node)
 	resident_patch_lookup.erase(key)
 
 func _remove_patch(key: Vector2i) -> void:
@@ -1488,6 +1525,8 @@ func _remove_patch(key: Vector2i) -> void:
 	patch_render_will_change.emit(key)
 	var was_resident: bool = resident_patch_lookup.has(key)
 	var patch: Dictionary = patches[key]
+	if graded_tiles != null:
+		graded_tiles.release_patch(key, patch["node"])
 	_release_terrain_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
@@ -1541,6 +1580,8 @@ func _refresh_resident_patch_bounds() -> void:
 
 func _clear_patches() -> void:
 	patches_will_reset.emit()
+	if graded_tiles != null:
+		graded_tiles.clear()
 	for key in patches.keys():
 		var patch: Dictionary = patches[key]
 		_release_terrain_patch_resources(patch)
