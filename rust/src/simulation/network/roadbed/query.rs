@@ -13,7 +13,6 @@ use super::geometry::{
 };
 use super::index::{QUERY_CELL_M, query_cell_at};
 use super::mesh::PieceMesh;
-use super::system::Piece;
 use super::{BandKind, RoadVec2, RoadVec3, RoadbedSystem};
 use godot::prelude::Vector3;
 
@@ -379,8 +378,8 @@ impl RoadbedSystem {
         triangle_height_at_xz(triangle, RoadVec2::new(x, z))
     }
 
-    /// The grounded pieces (node pieces and grounded spans) whose bounds touch the XZ bounds,
-    /// sorted and unique, into `pieces` (`TERRAIN-07-A`).
+    /// The grounded pieces (standard spans, and node pieces where a standard edge meets) whose
+    /// bounds touch the XZ bounds, sorted and unique, into `pieces` (`TERRAIN-07-A`).
     pub fn grounded_pieces_in_bounds(&self, bounds: [f64; 4], pieces: &mut Vec<PieceId>) {
         pieces.clear();
         self.any_piece_in_bounds(bounds, |id, _| {
@@ -389,10 +388,7 @@ impl RoadbedSystem {
         });
         pieces.sort_unstable();
         pieces.dedup();
-        pieces.retain(|id| match &self.pieces[id].piece {
-            Piece::Span(span) => span.grounded(),
-            Piece::Node(_) => true,
-        });
+        pieces.retain(|id| self.pieces[id].grounded());
     }
 
     // Visits pieces whose bounds touch `bounds` until `visit` returns true. Walks the query

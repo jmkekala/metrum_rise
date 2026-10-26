@@ -33,7 +33,9 @@ use super::layout::{
     ArmInput, ArmKey, BoundaryBand, CoreVertexSource, Crosswalk, EdgeEnd, JunctionLayout,
     LayoutError, NodeKind, PathPoint, SectorBoundary, Side,
 };
-use super::mesh::{CURB_FACE_GROUP, GROUPS, PieceMesh, RowLayout, push_section_row_at, row_slots};
+use super::mesh::{
+    CURB_FACE_GROUP, GROUPS, PieceMesh, RowLayout, StripKind, push_section_row_at, row_slots,
+};
 use super::profile::{Level, RoadProfile};
 use super::span::{MouthSection, edge_points};
 use super::{BandKind, RoadBand, RoadSection, RoadVec2, RoadVec3};
@@ -83,6 +85,8 @@ pub struct NodePiece {
     approaches: Box<[(ArmKey, RoadSection)]>,
     mesh: Arc<PieceMesh>,
     footprint: PieceFootprint,
+    // Whether the piece stands on the terrain (`NodeArms::grounded`).
+    grounded: bool,
 }
 
 impl NodePiece {
@@ -117,6 +121,12 @@ impl NodePiece {
 
     pub(super) fn footprint(&self) -> &PieceFootprint {
         &self.footprint
+    }
+
+    // Whether the piece stands on the terrain: a standard edge meets the node. Where only
+    // bridges and tunnels meet it hangs no skirt and gives the terrain no seam or coverage.
+    pub(super) fn grounded(&self) -> bool {
+        self.grounded
     }
 
     pub(super) fn mouth(&self, key: ArmKey) -> Option<&Arc<MouthSection>> {
@@ -675,7 +685,9 @@ pub(super) fn build_node_piece(
         .iter()
         .map(|point| [point.x as f32, point.z as f32])
         .collect();
-    let mesh = PieceMesh::from_groups(positions, road_space, &groups, outer_chains);
+    let grounded = plan.arms.grounded();
+    let strips = grounded.then_some(StripKind::Skirt);
+    let mesh = PieceMesh::from_groups(positions, road_space, &groups, outer_chains, strips);
     let footprint = PieceFootprint::of_bounds(mesh.bounds_xz(), grid, footprint);
     Ok(NodePiece {
         node: plan.arms.node,
@@ -685,6 +697,7 @@ pub(super) fn build_node_piece(
         approaches: plan.approaches.into_boxed_slice(),
         mesh: Arc::new(mesh),
         footprint,
+        grounded,
     })
 }
 

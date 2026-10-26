@@ -67,6 +67,9 @@ pub(crate) struct NodeArms {
     // A bend's default crossing that its layout cannot hold moves from the first arm (input
     // order) to the second (`ROAD-68` open question 13).
     crossing_fallback: Option<[usize; 2]>,
+    // Whether a standard edge meets the node. Where only bridges and tunnels meet, the piece is
+    // part of the structure and stands off the terrain (`TERRAIN-07-C`).
+    grounded: bool,
 }
 
 impl NodeArms {
@@ -77,11 +80,10 @@ impl NodeArms {
     /// ordinary arms. The crossing rule counts road arms only.
     pub(crate) fn collect(graph: &RegionGraph, node: u32) -> Option<Self> {
         let incidents = node_incidents(graph, node)?;
-        // Bridge and tunnel ends own their terminals until their portals and abutments
-        // (`ROAD-68-F`).
-        let structure_end = matches!(incidents.as_slice(), [(key, _)]
-            if graph.edge(key.edge).class != EdgeClass::Standard);
-        if incidents.is_empty() || passes_through(graph, &incidents) || structure_end {
+        if incidents.is_empty()
+            || passes_through(graph, &incidents)
+            || ends_a_structure(graph, &incidents)
+        {
             return None;
         }
         let pos = graph.node(node).pos;
@@ -105,6 +107,9 @@ impl NodeArms {
                 .as_ref()
                 .and_then(|crossings| crossings.fallback)
                 .map(|pair| pair.map(|road| roads[road])),
+            grounded: incidents
+                .iter()
+                .any(|(key, _)| graph.edge(key.edge).class == EdgeClass::Standard),
         };
         for (index, &(key, _)) in incidents.iter().enumerate() {
             let road = roads.iter().position(|&input| input == index);
@@ -192,6 +197,13 @@ impl NodeArms {
             EdgeEnd::Start => [positive, negative],
             EdgeEnd::End => [negative, positive],
         }
+    }
+
+    /// Whether the node's piece stands on the terrain: a standard edge meets the node. Where only
+    /// bridges and tunnels meet, the piece is part of the structure: no skirts, no terrain seams,
+    /// no coverage (`TERRAIN-07-C`).
+    pub(super) fn grounded(&self) -> bool {
+        self.grounded
     }
 
     /// Number of arms.
@@ -394,6 +406,17 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 }
 
 // A pass-through pair ([`edges_pass_through`]), so the node has no layout.
+/// Whether `node` is a structure's free end: a bridge or tunnel is its only surface arm. Such an
+/// end owns no node piece; the structure's span closes it with a cap (`TERRAIN-07-C`).
+/// `O(degree)`.
+pub(super) fn is_structure_end(graph: &RegionGraph, node: u32) -> bool {
+    node_incidents(graph, node).is_some_and(|incidents| ends_a_structure(graph, &incidents))
+}
+
+fn ends_a_structure(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
+    matches!(incidents, [(key, _)] if graph.edge(key.edge).class != EdgeClass::Standard)
+}
+
 fn passes_through(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
     matches!(incidents, [(a, da), (b, db)]
         if edges_pass_through((graph.edge(a.edge), *da), (graph.edge(b.edge), *db)))

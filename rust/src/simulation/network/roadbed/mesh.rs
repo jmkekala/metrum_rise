@@ -8,7 +8,7 @@
 //! convention: top triangles face up, curb faces face the carriageway and strips face away from
 //! the road.
 
-use super::geometry::{SurfaceTriangleGrid, bounds_xz};
+use super::geometry::{SurfaceTriangleGrid, bounds_xz, triangulate_constrained_rings_xz};
 use super::profile::{Level, MAX_PROFILE_BANDS, RoadProfile};
 use super::span::MouthSection;
 use super::{BandKind, RoadSection, RoadVec2, RoadVec3};
@@ -30,8 +30,8 @@ pub const BRIDGE_DECK_DEPTH_M: f64 = 0.35;
 /// them. A layer of its own beside the top surface and the curb faces; queries never see it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StripKind {
-    /// Road skirts, [`SKIRT_DEPTH_M`] deep, on every grounded piece (node pieces and standard
-    /// spans): they reach into the ground below the footprint's edge, so a terrain mesh that sags
+    /// Road skirts, [`SKIRT_DEPTH_M`] deep, on every grounded piece (standard spans, and node
+    /// pieces where a standard edge meets): they reach into the ground below the footprint's edge, so a terrain mesh that sags
     /// below the edge leaves no gap under the road.
     Skirt,
     /// Bridge fascias, [`BRIDGE_DECK_DEPTH_M`] deep: a bridge span's deck sides, closed down to
@@ -82,6 +82,10 @@ pub struct PieceMesh {
     outer_chains: Vec<OuterChain>,
     // The strips below the outer chains; a tunnel's road piece has none.
     strips: Option<StripKind>,
+    // The caps closing a structure's free ends (`TERRAIN-07-C`): triangles over `(vertex,
+    // bottom)` pairs, a mesh vertex or the bottom `cap_kind` puts below it.
+    caps: Vec<[(u32, bool); 3]>,
+    cap_kind: Option<StripKind>,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -143,6 +147,12 @@ impl PieceMesh {
         self.strips
     }
 
+    /// The kind whose depth the bottoms of the piece's free-end caps take (`TERRAIN-07-C`): a
+    /// bridge's fascias, a tunnel's skirt depth; `None` without a free end.
+    pub fn cap_kind(&self) -> Option<StripKind> {
+        self.cap_kind
+    }
+
     /// The strip's bottom vertex below outer-chain vertex `vertex` (an index into
     /// [`Self::positions`]): the vertex moved straight down by the strip's depth. `None` without
     /// strips.
@@ -150,23 +160,33 @@ impl PieceMesh {
         Some(self.strips?.bottom(self.positions[vertex as usize]))
     }
 
-    /// Visits the strip triangles, chain by chain and segment by segment, two per chain segment:
-    /// each as its world points and, per point, whether it is a bottom vertex. The top points are
-    /// the chain's positions bitwise and the bottoms [`Self::strip_bottom`]'s. Each triangle is
-    /// wound so that `-(b - a) x (c - a)` faces away from the road, the right of the chain.
-    /// `O(chain vertices)`, without allocation.
+    /// Visits the strip triangles, chain by chain and segment by segment, two per chain segment,
+    /// then the free-end caps' (`TERRAIN-07-C`): each as its world points and, per point, whether
+    /// it is a bottom vertex. The top points are the mesh's positions bitwise and the bottoms
+    /// [`StripKind::bottom`]'s of the strip kind or the cap kind. Each triangle is wound so that
+    /// `-(b - a) x (c - a)` faces away from the road: the right of the chain, out of the free end.
+    /// `O(chain vertices + cap triangles)`, without allocation.
     pub fn for_each_strip_triangle(&self, mut visit: impl FnMut([RoadVec3; 3], [bool; 3])) {
-        let Some(kind) = self.strips else {
+        if let Some(kind) = self.strips {
+            for chain in &self.outer_chains {
+                for pair in chain.vertices.windows(2) {
+                    let [a, b] = [pair[0], pair[1]].map(|vertex| self.positions[vertex as usize]);
+                    // Down the chain's start, along the bottom, back up its end: the road lies left
+                    // of the chain, so this order faces right, away from it.
+                    visit([a, kind.bottom(a), kind.bottom(b)], [false, true, true]);
+                    visit([a, kind.bottom(b), b], [false, true, false]);
+                }
+            }
+        }
+        let Some(kind) = self.cap_kind else {
             return;
         };
-        for chain in &self.outer_chains {
-            for pair in chain.vertices.windows(2) {
-                let [a, b] = [pair[0], pair[1]].map(|vertex| self.positions[vertex as usize]);
-                // Down the chain's start, along the bottom, back up its end: the road lies left of
-                // the chain, so this order faces right, away from it.
-                visit([a, kind.bottom(a), kind.bottom(b)], [false, true, true]);
-                visit([a, kind.bottom(b), b], [false, true, false]);
-            }
+        let point = |(vertex, bottom): (u32, bool)| {
+            let top = self.positions[vertex as usize];
+            if bottom { kind.bottom(top) } else { top }
+        };
+        for triangle in &self.caps {
+            visit(triangle.map(point), triangle.map(|(_, bottom)| bottom));
         }
     }
 
@@ -369,14 +389,16 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
 }
 
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
-/// mouth sections, with `strips` below its two outer chains. `O(sections * bands)`; allocates
-/// only the mesh.
+/// mouth sections, with `strips` below its two outer chains and, at each end `caps` names a kind
+/// for (a structure's free end, `TERRAIN-07-C`), a cap ([`end_cap`]) down to that kind's depth.
+/// `O(sections * bands)`; allocates only the mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
     start_mouth: &MouthSection,
     end_mouth: &MouthSection,
     layout: &RowLayout,
     strips: Option<StripKind>,
+    caps: [Option<StripKind>; 2],
 ) -> PieceMesh {
     let rows = sections.len();
     let stride = layout.stride();
@@ -454,6 +476,21 @@ pub(super) fn build_span_mesh(
                 .collect(),
         },
     ];
+    let mut cap_triangles = Vec::new();
+    for (end, kind) in caps.iter().enumerate() {
+        let Some(kind) = kind else {
+            continue;
+        };
+        // The end row and the row next to it inside the span.
+        let (row, inner) = if end == 0 { (0, 1) } else { (rows - 1, rows - 2) };
+        end_cap(
+            &positions,
+            (row * stride, inner * stride),
+            stride,
+            kind.depth_m(),
+            &mut cap_triangles,
+        );
+    }
     PieceMesh::new(
         positions,
         road_space,
@@ -461,17 +498,72 @@ pub(super) fn build_span_mesh(
         group_starts,
         outer_chains,
         strips,
+        (cap_triangles, caps[0].or(caps[1])),
     )
+}
+
+// The cap closing a structure's free end (`TERRAIN-07-C`): the polygon in the end row's vertical
+// plane between the row (its `stride` vertices from `first`, left to right, whose consecutive
+// pairs are the row's band and curb-step edges) and the straight edge between the bottoms `depth`
+// below its two corners (a bridge's slab end), triangulated in that plane, so its top edges are
+// the row's edges, its sides the strips' end edges and its bottom the slab's end edge. Each
+// triangle, over `(vertex, bottom)` pairs, faces out of the span, away from the row from `inner`.
+// A row that dips below the bottom edge bounds no simple polygon and gets no cap: its slab would
+// cut its deck. `O(stride log stride)`.
+fn end_cap(
+    positions: &[RoadVec3],
+    (first, inner): (usize, usize),
+    stride: usize,
+    depth: f64,
+    out: &mut Vec<[(u32, bool); 3]>,
+) {
+    let (left, right) = (positions[first], positions[first + stride - 1]);
+    let along = RoadVec2::new(right.x - left.x, right.z - left.z).normalize();
+    let ring: Vec<(u32, bool)> = std::iter::once((first as u32, true))
+        .chain((first..first + stride).map(|vertex| (vertex as u32, false)))
+        .chain(std::iter::once(((first + stride - 1) as u32, true)))
+        .collect();
+    // The ring in the plane, as the XZ of points `(lateral metres along the row, 0, height)`.
+    let plane = |(vertex, bottom): (u32, bool)| {
+        let point = positions[vertex as usize];
+        let lateral = (point.x - left.x) * along.x + (point.z - left.z) * along.y;
+        RoadVec3::new(lateral, 0.0, if bottom { point.y - depth } else { point.y })
+    };
+    let points: Vec<RoadVec3> = ring.iter().map(|&corner| plane(corner)).collect();
+    let Some(triangles) = triangulate_constrained_rings_xz(&[&points]) else {
+        debug_assert!(false, "a free end's row stands above its bottom edge");
+        return;
+    };
+    // A triangle counter-clockwise in the plane faces `(along.y, -along.x)` in XZ: flip it when
+    // that is not out of the span.
+    let inward = positions[inner] - positions[first];
+    let outward = RoadVec2::new(-inward.x, -inward.z);
+    let facing = RoadVec2::new(along.y, -along.x).dot(outward);
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(|point| {
+            let index = points.iter().position(|&p| p == point);
+            ring[index.expect("a cap vertex is a ring vertex")]
+        });
+        let [pa, pb, pc] = triangle;
+        let counter_clockwise = (pb.x - pa.x) * (pc.z - pa.z) - (pb.z - pa.z) * (pc.x - pa.x) > 0.0;
+        out.push(if counter_clockwise == (facing > 0.0) {
+            [a, b, c]
+        } else {
+            [a, c, b]
+        });
+    }
 }
 
 impl PieceMesh {
     /// Assembles a node piece's mesh from its triangle groups (band kinds in declaration order,
-    /// then curb faces). A node piece stands on the terrain, so its chains hang skirts.
+    /// then curb faces), hanging `strips` from its chains: skirts where it stands on the terrain,
+    /// none where only structures meet.
     pub(super) fn from_groups(
         positions: Vec<RoadVec3>,
         road_space: Vec<[f32; 2]>,
         groups: &[Vec<[u32; 3]>; GROUPS],
         outer_chains: Vec<Box<[u32]>>,
+        strips: Option<StripKind>,
     ) -> Self {
         let group_starts = group_starts(groups.each_ref().map(|group| group.len() as u32));
         let triangles = groups.iter().flatten().copied().collect();
@@ -485,7 +577,8 @@ impl PieceMesh {
             triangles,
             group_starts,
             outer_chains,
-            Some(StripKind::Skirt),
+            strips,
+            (Vec::new(), None),
         )
     }
 
@@ -497,6 +590,7 @@ impl PieceMesh {
         group_starts: [u32; GROUPS + 1],
         outer_chains: Vec<OuterChain>,
         strips: Option<StripKind>,
+        (caps, cap_kind): (Vec<[(u32, bool); 3]>, Option<StripKind>),
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
         let grid = SurfaceTriangleGrid::from_triangles(
@@ -513,6 +607,8 @@ impl PieceMesh {
             group_starts,
             outer_chains,
             strips,
+            caps,
+            cap_kind,
             grid,
         }
     }

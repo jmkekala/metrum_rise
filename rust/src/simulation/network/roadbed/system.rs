@@ -46,6 +46,16 @@ impl PublishedPiece {
         self.parts().0
     }
 
+    // Whether the piece stands on the terrain: a standard span, or a node piece where a standard
+    // edge meets. Structure spans, and node pieces where only structures meet, publish no
+    // terrain seams, coverage or loops.
+    pub(super) fn grounded(&self) -> bool {
+        match &self.piece {
+            Piece::Span(span) => span.grounded(),
+            Piece::Node(node) => node.grounded(),
+        }
+    }
+
     fn parts(&self) -> (&Arc<PieceMesh>, &PieceFootprint) {
         match &self.piece {
             Piece::Span(span) => (span.shared_mesh(), span.footprint()),

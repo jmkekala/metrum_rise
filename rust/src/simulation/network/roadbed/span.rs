@@ -26,6 +26,7 @@ pub(super) use model::{
     WIDTH_CHANGE_TAPER_WIDTH_FACTOR, edge_points, is_surface_edge,
 };
 
+use super::arms::is_structure_end;
 use super::index::{PieceFootprint, RenderGrid};
 use super::layout::{ArmKey, CROSSWALK_DEPTH_M, EdgeEnd};
 use super::mesh::{PieceMesh, StripKind, build_span_mesh};
@@ -197,7 +198,23 @@ pub(crate) fn build_span_piece(
         EdgeClass::Bridge => Some(StripKind::Fascia),
         EdgeClass::Tunnel => None,
     };
-    let mesh = build_span_mesh(&sections, &start_mouth, &end_mouth, model.layout(), strips);
+    // A structure's free end (no continuation, so no node piece) is capped: a bridge's down to
+    // its slab, a tunnel's to the skirt depth, a road end meeting the ground (`TERRAIN-07-C`).
+    let cap = match edge.class {
+        EdgeClass::Standard => None,
+        EdgeClass::Bridge => Some(StripKind::Fascia),
+        EdgeClass::Tunnel => Some(StripKind::Skirt),
+    };
+    let caps = [edge.start_node, edge.end_node]
+        .map(|node| cap.filter(|_| is_structure_end(graph, graph.get_valid_node(node))));
+    let mesh = build_span_mesh(
+        &sections,
+        &start_mouth,
+        &end_mouth,
+        model.layout(),
+        strips,
+        caps,
+    );
     let footprint = PieceFootprint::of_span(&mesh, model.layout().stride(), grid, footprint);
     // A crossing's kerbs are its section row's carriageway-edge vertices in the mesh, the
     // vertices `pass_through_crossing` evaluates for the lanes.

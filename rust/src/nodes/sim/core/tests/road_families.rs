@@ -5,8 +5,9 @@
 //! node piece or a pass-through's span mouth, and roads without sidewalks (shoulders) at a T. The
 //! published road chunks, skirts and bridge concrete included, are watertight as `terrain_seams`
 //! measures the reference junctions: a bridge's fascias (`TERRAIN-07-B`) close its deck's sides
-//! against the deck edge and the slab. The terrain side of structures (abutments and portals) is
-//! `TERRAIN-07`'s, so the terrain is not checked here.
+//! against the deck edge and the slab, and a structure's free end is capped (`TERRAIN-07-C`). The
+//! terrain side of structures (abutments and portals) is `TERRAIN-07`'s, so the terrain is not
+//! checked here.
 
 use super::road_edit_order::{ARM_M, Stroke, committed};
 use super::terrain_seams::open_road_edges_where;
@@ -57,29 +58,28 @@ fn without_sidewalks(core: &mut SimCore, edges: &[usize]) {
         .compile_dirty(&core.region_graph);
 }
 
-// The XZ points of structure `edge`'s two mouth rows, the free end's (a road end without a
-// piece) first if it has one, and the XZ segments of its two outer chains.
-type StructureEnds = (Vec<Vec<(f64, f64)>>, bool, Vec<[(f64, f64); 2]>);
+// The XZ points of structure `edge`'s mouth rows where it meets another piece, without its free
+// end's (a road end without a piece, which its cap closes), and the XZ segments of its two outer
+// chains.
+type StructureEnds = (Vec<Vec<(f64, f64)>>, Vec<[(f64, f64); 2]>);
 
 fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
     let graph = &core.region_graph;
     let roadbed = &core.transit_network.roadbed;
     let span = roadbed.span_piece(edge).expect("the structure's span");
     let record = graph.edge(edge);
-    let mut ends = [
-        (record.start_node, span.start_mouth()),
-        (record.end_node, span.end_mouth()),
-    ];
     let free = |node: u32| {
         let node = graph.get_valid_node(node);
         graph.node_adjacency(node).len() == 1 && roadbed.node_piece(node).is_none()
     };
-    ends.sort_by_key(|&(node, _)| !free(node));
-    let has_free_end = free(ends[0].0);
-    let rows = ends
-        .iter()
-        .map(|(_, mouth)| mouth.vertices.iter().map(|p| (p.x, p.z)).collect())
-        .collect();
+    let rows = [
+        (record.start_node, span.start_mouth()),
+        (record.end_node, span.end_mouth()),
+    ]
+    .iter()
+    .filter(|(node, _)| !free(*node))
+    .map(|(_, mouth)| mouth.vertices.iter().map(|p| (p.x, p.z)).collect())
+    .collect();
     let mesh = span.mesh();
     let chains = mesh
         .outer_chains()
@@ -92,7 +92,7 @@ fn structure_ends(core: &SimCore, edge: usize) -> StructureEnds {
             })
         })
         .collect();
-    (rows, has_free_end, chains)
+    (rows, chains)
 }
 
 // The family cases: strokes, the stroke ends whose edges change, and the class they take
@@ -141,11 +141,12 @@ fn structure_and_rural_road_chunks_are_watertight() {
             let roadbed = &core.transit_network.roadbed;
             assert!(roadbed.is_current(), "{name}/{sloped}");
             assert!(roadbed.failed_nodes().is_empty(), "{name}/{sloped}");
-            // A structure that ends without a continuation ends on its mouth row there. At both
-            // of its mouth rows its slab and fascias end, and so do the skirts of the grounded
-            // pieces it meets; a tunnel's sides have no strips, since its bore is its portals'.
-            // Abutments and portals close them (`TERRAIN-07-C`). Everything else is watertight.
-            let (rows, has_free_end, chains) = match class {
+            // A structure that ends without a continuation is capped there (`TERRAIN-07-C`). At
+            // a mouth row it shares with a grounded piece its slab and fascias end, and so do
+            // the skirts of the grounded piece; a tunnel's sides have no strips, since its bore
+            // is its portals'. Abutments and portals close them (`TERRAIN-07-C`). Everything
+            // else is watertight.
+            let (rows, chains) = match class {
                 Some(_) => structure_ends(&core, edges[0]),
                 None => Default::default(),
             };
@@ -170,8 +171,7 @@ fn structure_and_rural_road_chunks_are_watertight() {
                         near(p, closest)
                     })
                 };
-                (has_free_end && on_both(&rows[0]))
-                    || ((layer == CONCRETE || vertical) && rows.iter().any(on_both))
+                ((layer == CONCRETE || vertical) && rows.iter().any(on_both))
                     || (tunnel && on_chain(a) && on_chain(b))
             });
             if !problems.is_empty() {

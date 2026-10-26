@@ -82,16 +82,18 @@ type ChainSegmentKey = ([u64; 6], bool, bool, bool);
 
 // Net count of each grounded chain segment over the pieces published (`+1`) and replaced
 // (`-1`) since the last take, so a piece rebuilt unchanged, or a clear followed by the same
-// pieces, cancels out (`ROAD-68-E`). Structure spans' chains never reach the loops and are not
-// counted.
+// pieces, cancels out (`ROAD-68-E`). The chains of structure spans, and of node pieces where only
+// structures meet, never reach the loops and are not counted.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChainChanges(BTreeMap<ChainSegmentKey, i64>);
 
 impl ChainChanges {
     // `O(V log S)` for the piece's chain vertices `V` and the counted segments `S`.
     pub(super) fn count(&mut self, piece: &PublishedPiece, sign: i64) {
+        if !piece.grounded() {
+            return;
+        }
         let (mesh, node) = match &piece.piece {
-            Piece::Span(span) if !span.grounded() => return,
             Piece::Span(span) => (span.mesh(), false),
             Piece::Node(node) => (node.mesh(), true),
         };
@@ -158,6 +160,10 @@ pub fn terrain_loops(
         if let PieceId::Span(edge) = id
             && graph.edge(edge).class != EdgeClass::Standard
         {
+            continue;
+        }
+        // A node piece where only structures meet is part of the structure.
+        if !roadbed.pieces[&id].grounded() {
             continue;
         }
         let mesh = roadbed.pieces[&id].mesh();

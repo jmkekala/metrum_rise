@@ -346,3 +346,41 @@ fn overlap_walk_visits_every_triangle_a_rectangle_meets() {
         }
     }
 }
+
+// `TERRAIN-07-B`'s open risk, closed by `TERRAIN-07-C`: a node piece where only structures meet
+// (a bend between two bridges, a junction of tunnels, of bridges and a tunnel) is part of the
+// structure. It hangs no skirt and gives the terrain no seam, coverage or chain change; where a
+// standard road meets a structure the piece still stands on the terrain.
+#[test]
+fn a_node_piece_where_only_structures_meet_stands_off_the_terrain() {
+    use crate::simulation::network::roadbed::StripKind;
+    use Arm::{Bridge, Sidewalks as Walk, Tunnel};
+    let two = TWO_LANE_M;
+    let cases = [
+        (vec![(15.0, two, Bridge), (135.0, two, Bridge)], false),
+        (vec![(0.0, two, Tunnel), (180.0, two, Tunnel), (270.0, two, Tunnel)], false),
+        (vec![(0.0, two, Bridge), (180.0, two, Bridge), (270.0, two, Tunnel)], false),
+        (vec![(15.0, two, Walk), (135.0, two, Bridge)], true),
+    ];
+    for sloped in [false, true] {
+        for (arms, grounded) in &cases {
+            let name = format!("{arms:?}/{sloped}");
+            let mut roadbed = compiled(&family(arms, sloped));
+            let hub = roadbed.node_piece(0).expect("the hub's piece");
+            assert_eq!(
+                hub.mesh().strip_kind(),
+                grounded.then_some(StripKind::Skirt),
+                "{name}"
+            );
+            let bounds = hub.mesh().bounds_xz();
+            let (mut pieces, mut seams) = (Vec::new(), Vec::new());
+            roadbed.grounded_pieces_in_bounds(bounds, &mut pieces);
+            assert_eq!(pieces.contains(&PieceId::Node(0)), *grounded, "{name}");
+            // Structure spans publish no seams either, so only a grounded hub's road gives any.
+            roadbed.grounded_seams_in_bounds(bounds, &mut pieces, &mut seams);
+            assert_eq!(!seams.is_empty(), *grounded, "{name}");
+            let changes = roadbed.take_terrain_changes();
+            assert_eq!(!changes.segments.is_empty(), *grounded, "{name}");
+        }
+    }
+}

@@ -118,8 +118,10 @@ pub(in crate::simulation::network::render::road) fn emit_piece_surfaces(
     }
 }
 
+// Skirts, and a tunnel's free-end cap at the skirt depth (`TERRAIN-07-C`; a bridge's cap goes
+// with its fascias). A piece has one or the other.
 fn emit_skirts(mesh: &mut NetworkMeshData, piece: &PieceMesh) {
-    if piece.strip_kind() == Some(StripKind::Skirt) {
+    if piece.strip_kind() == Some(StripKind::Skirt) || piece.cap_kind() == Some(StripKind::Skirt) {
         emit_chain_strips(mesh, piece, MeshLayer::Skirt, curb_color());
     }
 }
