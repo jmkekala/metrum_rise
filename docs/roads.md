@@ -1575,6 +1575,12 @@ These need a user decision; work that does not depend on them continues.
       run, and undo restores every piece bitwise. With the wall runs left out of the loops the
       first case fails as before (`render_geometry_invalid roadbed_chain_open_end patch=(1,2)`).
       A failed node's gap still fails its rectangle; that error stays.
+    - **`TERRAIN-07-C` round 4 (2026-10-26):** the road chunks close at those mouths too. A
+      bridge span hangs an abutment face from its slab's end edge down to the skirt depth at
+      each mouth it shares with a grounded piece ([T22](terrain.md#terrain-07-open-questions) 4
+      (a), the bottom edge taken pending the user's review), so the family chunk check runs
+      without its concrete-row exemption. The terrain over a tunnel past its mouth row is not
+      opened yet (T22 5, detailed for round 5).
     - **Until `TERRAIN-07` (measured by `ROAD-68-F` part 2, 2026-10-25).** Abutments and portals
       moved to `TERRAIN-07`, so the error stands on the legacy terrain: a bridge or tunnel stroke
       that joins a grounded road is rejected at the commit (`render_geometry_invalid

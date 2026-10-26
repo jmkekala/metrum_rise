@@ -406,7 +406,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   built from a road in play: the road closes its edge across the structure's mouth with a wall
   run, so the commit no longer rejects it, and the graded terrain walls the step there (an
   abutment under a bridge's end, a headwall over a tunnel's); the bridge's own abutment face and
-  the opening over the tunnel's bore are round 4's, with T21. See the
+  the opening over the tunnel's bore are round 4's, with T21. Round 4 hangs the abutment face
+  below a bridge's slab where it meets a road, so the bridge's road chunks close there; the
+  opening over a tunnel's bore is designed for round 5, and the site-dense full-edit budget is
+  carried to gate E's frame paths for review (T21). See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
 

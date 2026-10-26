@@ -3229,9 +3229,11 @@ bridge fascias) and `TERRAIN-07-A` (the grading core and queries, roads only, be
 path in `simulation/terrain/graded/`, read by no consumer yet) are done; `TERRAIN-07-C` (round 1:
 sites, pads, paving and conflict walls; round 2: two exact levers, free structure ends capped and
 structure-only node pieces off the terrain; round 3: wall runs at structure mouths, so bridges
-and tunnels are built from roads in play, and the terrain's abutment and headwall faces) is work
-in progress, with the populated budget miss ([T21](#terrain-07-open-questions)), the roadbed's
-abutment face and the portal opening ([T22](#terrain-07-open-questions)) open for round 4.**
+and tunnels are built from roads in play, and the terrain's abutment and headwall faces; round
+4: the roadbed's abutment face) is work in progress, with the portal opening
+([T22](#terrain-07-open-questions) 5, detailed for round 5) open and the populated full-edit
+budget miss carried to `TERRAIN-07-E`'s frame paths under T20 (a)
+([T21](#terrain-07-open-questions), for review).**
 `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
@@ -3703,7 +3705,11 @@ marks the bottom vertices so the road shader can deepen them with distance
 ([T5](#terrain-07-open-questions)). Pads need no skirt: the terrain is the pad. A node piece where
 only bridges and tunnels meet is part of the structure and hangs none (`TERRAIN-07-C` round 2,
 [T22](#terrain-07-open-questions)); a structure's free end is capped down to its strips' depth
-(a tunnel's to the skirt depth, in the skirt layer). Built in
+(a tunnel's to the skirt depth, in the skirt layer). Where a bridge's mouth row is shared with a
+grounded piece, the bridge span hangs the abutment face from its slab's end edge down to the
+skirt depth below the row's corners, in the skirt layer with the bottom attribute, so its bottoms
+are the grounded skirts' bottoms there and the terrain's abutment wall continues it (round 4).
+Built in
 `TERRAIN-07-B`: the payload's skirt layer, UV `y` the bottom attribute, drawn with the curb-face
 shader's skirt variant, which measures the distance as `terrain.gd` measures patch LOD (camera
 to point).
@@ -3760,8 +3766,11 @@ to point).
   abutment where it stands below a bridge's. The terrain is masked on the road's side of the
   seam, so the faces close its cut edge against the mouth row. A wall face runs `a -> b` with
   its lower side on the left, as a conflict wall's road is: along the seam for a headwall,
-  against it (the space under the bridge on the left) for an abutment. Ordinary grounded roads
-  get no structural walls.
+  against it (the space under the bridge on the left) for an abutment. Below the bridge's slab
+  the roadbed's own abutment face closes the road chunk down to the skirt depth
+  ([skirts](#skirts), round 4); the abutment wall overlaps it there in the same plane (a
+  `TERRAIN-07-D` risk, [record](#terrain-07-c-record)). Ordinary grounded roads get no
+  structural walls.
 - **Conflict walls** ([T2](#terrain-07-open-questions) (c), built in `TERRAIN-07-C` round 1 as
   payload data, rendered in `TERRAIN-07-D`). Along every road seam of a tile (its part in the
   tile), the vertices are the seam's crossings with the level's lattice lines and cell diagonals,
@@ -4007,7 +4016,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | --- | --- | --- |
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
-| `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); open: T21, the abutment face and the portal opening (T22 4 roadbed half, 5)) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
+| `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); open: the portal opening (T22 5, detailed for round 5); T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
@@ -4951,6 +4960,74 @@ headless shader global probe, the Forward+ vegetation tests). Ready to land.
 shared bridge mouth (and with it the `road_families` check's concrete row exemption), and the
 portal opening over the bore (5 (a)), both as decided.
 
+Round 4, 2026-10-26, on round 3 rebased onto `road` `062575d9` (`ROAD-68-K17`; round 3 ready to
+land at `e372efa3`, above): T22 4 (a)'s roadbed half, the abutment face. The portal opening
+(T22 5 (a)) is detailed in [T22](#terrain-07-open-questions) for round 5 and not built.
+
+**What landed.**
+
+- [T22](#terrain-07-open-questions) 4 (a), the roadbed's half (its bottom edge and the chunk
+  check's rule taken pending the user's review, 2026-10-26): at each mouth a bridge span shares
+  with a grounded piece, the span hangs the abutment face, a quad in the mouth row's vertical
+  plane from the slab's end edge (the fascias' bottoms below the row's two corners) down to the
+  skirt depth below the corners (`PieceMesh::for_each_abutment_triangle`), emitted in the skirt
+  layer with the bottom attribute on its bottom vertices and facing the space under the bridge.
+  Its bottoms are the grounded skirts' bottoms below the corners, bitwise, and deepen with them;
+  the terrain's abutment wall (round 3) continues it to the graded ground. Each span end is
+  classified once from its node's arms (`arms::span_end`: a free end's cap, a grounded span's
+  wall run, a bridge's abutment, or shared, `mesh::SpanEnd`), which replaces
+  `is_structure_end` and `passes_into_structure` and their two incident collections per end.
+- `structure_and_rural_road_chunks_are_watertight` without the concrete-row exemption: on a
+  shared structure row it accepts the abutment face's skirt-bottom edge (the terrain's abutment
+  wall continues it) and, as before, the vertical end edges on the row's corner lines (fascia,
+  face and skirt ends of different depths, T-vertices on one line) and a tunnel's sides.
+- The strip probe hashes the abutment faces after the strips and caps, and
+  `strips_hang_from_the_outer_chains_bitwise` checks them: present exactly at the bridge ends
+  whose node another standard edge meets, top points the slab's end-edge points and bottoms the
+  skirt bottoms below the row's corners, bitwise, facing into the span.
+
+**Acceptance (debug library tests, fresh).**
+
+- Watertight ends: `structure_and_rural_road_chunks_are_watertight` passes without the concrete
+  row exemption, flat and sloped. Negative control (the face's emission left out, the check
+  unchanged): the bridge T and the bridge continuation fail, flat and sloped, two open
+  concrete edges each, the slab's end edge on the shared row split at a chunk line (for
+  example `(0, -0.23, 10)-(5, -0.23, 10)`).
+- Strip probe: the ten bridge entries (`bridge_t`, `bridge_bend`, `bridge_pass_through`,
+  `bridge_rural_t` and `width_bridge_pass_through`, flat and sloped; each bridge meets a road at
+  its hub) re-record; every other strip entry, the tunnels' among them, and the seven
+  top-surface hashes are unchanged.
+- `a_bridge_and_a_tunnel_drawn_from_a_road_commit_and_undo` (eight cases, undo bitwise) and
+  `structure_mouths_wall_the_graded_ground` pass unchanged; the roadbed, road render, families,
+  terrain seam, graded, preview and edit-order tests pass (147 run, 6 ignored).
+
+**Benchmarks.** None timed: the graded terrain code is round 3's (its timing above stands for
+it), and the roadbed adds two triangles per shared bridge mouth to the bridge's chunk and one
+incident collection fewer per span end.
+
+**Gate checks** (fresh, on `a0929936`): `cargo clippy --all-targets` gives the 59-warning
+baseline set exactly (file and message compared). `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY
+unset, 08:49-09:05) exits 0: the debug library suite 1,947 passed, 0 failed, 171 ignored (as
+round 3: this round extends the strips and watertight tests and adds none), the integration
+tests 4 passed, every Godot bridge and asset test passing without a SCRIPT ERROR, and the same
+two skips (the headless shader global probe, the Forward+ vegetation tests); its tmpfs profile
+removed. Disabled tests unchanged: two legacy-pipeline `TERRAIN-07` tests of
+`road_terrain_plan` (the refined patches) and gate A's two census runners.
+
+**Lines** (production, tests excluded): `roadbed/` 8,612 (round 3 8,547, +65): `mesh` +55 (the
+`SpanEnd` closure per end, the abutment storage and visitor, `EndFaces`), `arms` +21
+(`span_end` in place of the two end predicates), `span` -11. The road renderer +23
+(`emit_abutment_faces` and the shared strip triangle). `graded/` unchanged at 4,274.
+
+**Risk for `TERRAIN-07-D`.** Between the slab and the skirt depth the abutment face is coplanar
+with the terrain's abutment wall, which runs from the seam's height down to the graded ground,
+and faces the same way (a 0.15 m band, seen from under the bridge). Options: draw the skirt
+layer with the depth offset it may already need against the ground, or start the terrain's
+abutment wall at the skirt depth, which needs a wall seam to know its structure is a bridge.
+
+**Open (round 5).** The portal opening (T22 5 (a)) as detailed there, then gate C's final
+commit; T21's populated full-edit budget stays carried to gate E under T20 (a), for review.
+
 #### `TERRAIN-07-D` — residency, payloads and the Godot tile renderer
 
 1. Residency requests by tile and level, async bakes on the payload workers, per-frame request and
@@ -5239,6 +5316,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Round 3:** the wall runs (so a bridge or tunnel is built from a road in play) and the
       terrain's abutment and headwall faces along them are built; the roadbed's abutment face at
       a shared mouth and the portal opening over the bore stay open (T22).
+    - **Round 4:** the roadbed's abutment face is built; the portal opening stays open (T22 5,
+      detailed for round 5).
 15. **T15. Coal pits.**
     - **Options.** (a) Keep the overlay. (b) An excavation client: a lowered pad with a 1:1 seam.
     - **Recommendation.** (a); (b) is a product change for its own item.
@@ -5439,7 +5518,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 
 22. **T22. The geometry of structure ends (`TERRAIN-07-C` round 2) — decided by the coordinator
     under the user's delegation, 2026-10-26 night, for review: the recommendations; parts 1 and
-    2 built in round 2, parts 3-5 open for round 3.** T14 (a) names `SeamKind::Wall` at
+    2 built in round 2, 3 and 4 in rounds 3 and 4, part 5 detailed in round 4 (taken pending the
+    user's review) and open for round 5.** T14 (a) names `SeamKind::Wall` at
     abutments and portals but not their shapes.
     - **Evidence.** Bridge and tunnel spans publish no chains, coverage or skirts (`ROAD-68-F`
       part 2, `TERRAIN-07-B`). Where a structure meets a grounded piece (a node piece's mouth or a
@@ -5512,16 +5592,50 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         `structure_mouths_wall_the_graded_ground` replaces the exact cut's
         `cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall` (deleted with its
         tunnel source fixture).
-    - **Open (round 4), the decided design unchanged:** 4 (a)'s roadbed half, the abutment face
-      the bridge hangs from its slab's end edge at a mouth it shares (today the `road_families`
-      chunk check still exempts the slab's end edge on those rows, the concrete row exemption):
-      the slab end edge and the structure walls meet only in the mouth plane, and a face from
-      the slab down needs a bottom edge the road chunk check can accept, which is a check rule
-      to decide with the face. 5 (a), the portal opening: tunnel top triangles near a mouth row
-      as coverage where the graded ground stands less than 5.0 m above the deck, with walls
-      along the tunnel's outer chains in the cut; it touches coverage, the queries and the
-      selection together, so it is its own round. Until then the terrain covers the tunnel past
-      its mouth row and the headwall closes the step at the row.
+    - **Round 4 (2026-10-26).** Built 4 (a)'s roadbed half (the abutment face, below); 5 (a)
+      detailed for round 5, taken pending the user's review, 2026-10-26 (reversible on the branch;
+      nothing of it is built):
+      - *Abutment face*, its bottom edge and the check rule taken pending the user's review: at each
+        mouth a bridge span shares with a grounded piece (another standard edge meets the node,
+        `arms::span_end`), the span hangs a quad in the mouth row's vertical plane from the slab's
+        end edge (the fascias' bottoms below the row's two corners) down to the skirt depth below
+        the corners, in the skirt layer with the bottom attribute on its bottom vertices
+        (`PieceMesh::for_each_abutment_triangle`), facing the space under the bridge. Its bottoms
+        are the grounded skirts' bottoms below the corners, bitwise, and deepen with them; the
+        terrain's abutment wall (round 3) continues it to the graded ground. The `road_families`
+        chunk check drops its concrete-row exemption and accepts, on a shared structure row, the
+        face's skirt-bottom edge and, as before, the vertical end edges on the row's corner lines
+        (fascia, face and skirt ends of different depths: T-vertices on one line, no gap).
+      - *Portal opening, the design for round 5.* (1) The roadbed marks a tunnel span's end whose
+        mouth row a grounded piece shares (`SpanEnd::Portal`, the tunnel's counterpart of
+        `Abutment`) and answers, per rectangle, those spans' top triangles and portal rows (the
+        row's corner segment) and their outer-chain segments (the bore seams); no terrain height.
+        (2) Portal coverage: per lattice point the highest covering portal-span top triangle (the
+        deck `t`), counted only within the portal reach `R = H / k` (10 m, the distance in which
+        ground graded at 1:2 from the mouth can stay below the bore's crown) of a portal row in XZ.
+        (3) After both passes, a lattice point with portal coverage and no road coverage is cut
+        where its graded ground `g < t + H` (`H` = 5.0 m): its delta is unchanged (`g`), its `sdf`
+        is minus its distance to the nearer of its nearest road seam within the band and the bore
+        seams within the band (the same nearest order), clamped to the band, and it names that seam;
+        the seam row lists the named bore seams after the named road seams, each group in key order.
+        A ground lattice point within the band of a bore seam on its right (outside the tunnel)
+        takes that seam into its nearest seam the same way, so the exact test closes the cut's sides
+        on the bore seams; a point under the crown (on a bore seam's left, not cut) never names one.
+        The cut is a post-pass on final values, so pruned equals unpruned by construction. (4)
+        Walls: along each bore seam's part in the tile, structure walls from the seam's height to
+        the lattice surface where the surface stands below `h + H` (the cut); along a portal's wall
+        seam no headwall face where the surface at both vertices stands below `h + H` (the terrain
+        beyond the row is cut). (5) Queries: `mask_at` returns `Road` at a cut point by the same
+        rule pointwise (the ground value at the point, the deck there, the reach to the portal
+        rows); `ground_height_at` is unchanged. (6) Selection: a changed piece whose bounds meet a
+        lattice grown by `R` marks the tile where the portal triangles, portal rows or bore seams
+        over that rectangle differ between the two roadbeds (as covering triangles do today); the
+        ground's own changes are already selected wherever `g` changes. (7) Tile inputs list the
+        portal triangles with the covering ones and the portal rows and bore seams with the wall
+        seams. Known limit, to record with it: where the cut's far boundary (the iso-line `g = t +
+        H`, bilinear) meets a side, the exact test of the bore seam a cut sample names decides
+        within one cell. Until round 5 the terrain covers a tunnel past its mouth row and the
+        headwall closes the step at the row.
 
 #### Superseded `ROAD-68` questions
 
