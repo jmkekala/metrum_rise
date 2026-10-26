@@ -75,6 +75,61 @@ fn reference_junction_products_match_the_probe() {
     assert_probes(&actual, EXPECTED);
 }
 
+// The crossing kerb ends (`ROAD-68-K20`): every crossing connector's kerb ends, the marking's
+// kerb segment, stand on the carriageway (D8, the crossing contract), at its height a centimetre
+// inside the crossing and below the curb's top a centimetre outside it. Every reference junction,
+// flat and sloped, and the T and the four-way in each quarter turn and mirror of their strokes:
+// rounding puts the ends a hair on either side of the curb line differently in each, and the
+// surface must not follow it.
+#[test]
+fn crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation() {
+    // Exact in f32; `+ 0.0` keeps a negated zero coordinate positive.
+    let turns: [fn(Vector2) -> Vector2; 8] = [
+        |p| p,
+        |p| Vector2::new(-p.y + 0.0, p.x),
+        |p| Vector2::new(-p.x + 0.0, -p.y + 0.0),
+        |p| Vector2::new(p.y, -p.x + 0.0),
+        |p| Vector2::new(-p.x + 0.0, p.y),
+        |p| Vector2::new(p.y, p.x),
+        |p| Vector2::new(p.x, -p.y + 0.0),
+        |p| Vector2::new(-p.y + 0.0, -p.x + 0.0),
+    ];
+    let mut ends = 0;
+    for sloped in [false, true] {
+        for (name, strokes, order) in reference_fixtures() {
+            let turned_too = name == "t" || name == "four_way";
+            for (t, turn) in turns.iter().enumerate().take(if turned_too { 8 } else { 1 }) {
+                let turned: Vec<Stroke> = strokes
+                    .iter()
+                    .map(|&(points, lanes)| (points.map(turn), lanes))
+                    .collect();
+                let case = format!("{name}/{sloped} turn {t}");
+                let core = committed(&turned, &order, sloped);
+                let network = &core.transit_network;
+                let (lanes, roadbed) = (&network.lane_system, &network.roadbed);
+                for &id in lanes.node_lanes.values().flatten() {
+                    if lanes.crosswalk(id).is_none() {
+                        continue;
+                    }
+                    let g = &lanes.lanes[id].geometry;
+                    let across = Vector2::new(g[2].x - g[1].x, g[2].z - g[1].z).normalized() * 0.01;
+                    for (end, inward) in [(g[1], across), (g[2], -across)] {
+                        let road = roadbed.carriageway_height_at(end.x + inward.x, end.z + inward.y);
+                        let curb = roadbed.height_at(end.x - inward.x, end.z - inward.y);
+                        let (Some(road), Some(curb)) = (road, curb) else {
+                            panic!("{case}: no surface beside the kerb end {end:?}");
+                        };
+                        assert!((end.y - road).abs() < 0.005, "{case}: {end:?} off the carriageway {road}");
+                        assert!(curb - end.y > 0.1, "{case}: {end:?} not below the curb's top {curb}");
+                        ends += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(ends > 0, "no crossing");
+}
+
 // Recorded at `79e7a476` (probe v2: errors by variant and values, layouts field by field) and
 // re-recorded by `ROAD-68-D`: every span hash changes with the span outer chains, which now keep the
 // road on their left; nodes, layouts, walkways and queries change only where an arm's knot lateral
@@ -112,6 +167,13 @@ fn reference_junction_products_match_the_probe() {
 // over every lane sync) move by 0.12 m: junction foot-lane points at a crossing's kerb, a hair
 // outside the sidewalk's triangles, which the band lifted to the curb's top and which stand on the
 // carriageway (`roads.md` question 37, `ROAD-68-K19`). One query answer turns `None`.
+// Re-recorded by `ROAD-68-K20` (crossing kerb ends on the carriageway): the lanes of the 16
+// fixtures with a junction crossing change (not `bend_45`, whose crossing ends already stood on
+// the carriageway, or `terminal`), flat and sloped; no graph, piece, layout, walkway or query
+// hash. Against the lane sync before (every point by coverage), the only live-lane points that
+// differ are crossing connectors' kerb ends, each 0.12 m lower: 4 to 16 of the 12 to 16 kerb
+// ends of each fixture, those a hair inside the curb's top or on its line, which now take the
+// published kerb's height on the carriageway.
 const EXPECTED: &[(&str, [u64; 7])] = &[
     (
         "t/false",
@@ -121,7 +183,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2556dcca71547b6f,
             0x47347647c0875527,
             0x4edf89ccac373d17,
-            0x85eb325d4f089fce,
+            0x0c3eb6c0171c80e2,
             0x838ac943f4110af7,
         ],
     ),
@@ -133,7 +195,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8ac53c6ba6dd075e,
             0x95f31d9618ccf200,
             0xafee7454c4568380,
-            0xe3d993390861063e,
+            0x429b56c8fb2cd296,
             0xd99b058cb0fae1a5,
         ],
     ),
@@ -145,7 +207,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe4c667d40f4b3c30,
             0x944772f28cdd9b4a,
             0x795cbfa449e2504b,
-            0x05f5446d60a07dcb,
+            0x01e418204ddd5520,
             0x58b095a7a059d1e1,
         ],
     ),
@@ -157,7 +219,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0xba1a4d470645c172,
             0x5789c0832814c8bf,
-            0x6bf56bfc4c315427,
+            0x1f84b8cb57e3455c,
             0x39761dd71a7b771a,
         ],
     ),
@@ -169,7 +231,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x282bbc68e8e7ad2b,
             0x91b62e25cf8927ab,
             0x17b511e266ee0972,
-            0x38fb62bb34fa5ff2,
+            0x5970941573f19252,
             0x0d61a4b71492ae0e,
         ],
     ),
@@ -181,7 +243,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2108b450ccc98488,
             0x400de8cd0dd99a81,
             0xa406092b01d0389f,
-            0xdfd69d46a963d062,
+            0x24a8eeb8df348e5f,
             0x528dcfcd6f252f7c,
         ],
     ),
@@ -217,7 +279,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8e9b1f1be0bee144,
             0x48243482aceceb3e,
             0x725ba4ed67ab8533,
-            0x64cc1ab4d6f180ef,
+            0x70eda1d6234787eb,
             0x3d058890d0738383,
         ],
     ),
@@ -229,7 +291,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x1f9eafee9c31ca22,
             0x097a57a202a87c0c,
             0x3e532fb50f5548c7,
-            0x15270fef2625f07e,
+            0xf0709666563dceca,
             0x3261c5eaaa8cd8f5,
         ],
     ),
@@ -241,7 +303,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2556dcca71547b6f,
             0xafa5fdd44b1f3e37,
             0xcb3a29371a976116,
-            0x18f8248be8ec63f1,
+            0x24e77a90069d67d5,
             0x11b90e23664a77c6,
         ],
     ),
@@ -253,7 +315,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8ac53c6ba6dd075e,
             0x32c7fd63a1eb6355,
             0xc0af058dd2cd34c1,
-            0x6474b67732ab4072,
+            0x937487134b099c72,
             0xd095e221ec6237f7,
         ],
     ),
@@ -265,7 +327,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0xe4c667d40f4b3c30,
             0x8ff1522bfa09645c,
             0x978ea8db0d82e488,
-            0x484e2fbd3d85af1b,
+            0xf37d75a9f4df036b,
             0xa9dd6d496aa66c76,
         ],
     ),
@@ -277,7 +339,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2658fc21c04f8df4,
             0x72fb69808e0f820c,
             0x0ff79938b4e00d18,
-            0x4960159f0f25c86b,
+            0x75e4df21d8fc25e8,
             0x4b4830d61a573246,
         ],
     ),
@@ -289,7 +351,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x282bbc68e8e7ad2b,
             0xc3ac97b1b3ac4ecc,
             0x1d1dc420bdc56f63,
-            0x7d20dd837ef2c1f8,
+            0x32308f2381a5fbfa,
             0x0e7813513a04bd2b,
         ],
     ),
@@ -301,7 +363,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x2108b450ccc98488,
             0xe2969a080ab79204,
             0x8d4202bdb5ac9c55,
-            0x122c9139234d90a0,
+            0x694c9dd6a136c49c,
             0x1b69e5524c9a1e0c,
         ],
     ),
@@ -337,7 +399,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x8e9b1f1be0bee144,
             0x1688825a6d3c5eca,
             0xcb77516b91670e6f,
-            0xf9f521f92366dae0,
+            0x55f99cd0072849db,
             0x047e584947353eb2,
         ],
     ),
@@ -349,7 +411,7 @@ const EXPECTED: &[(&str, [u64; 7])] = &[
             0x1f9eafee9c31ca22,
             0x5d287ad94f4132f3,
             0x00da901bb89e67be,
-            0xb66aaa7fcb7120b8,
+            0xffc2fe2b74589974,
             0x5c5a05b35e186790,
         ],
     ),

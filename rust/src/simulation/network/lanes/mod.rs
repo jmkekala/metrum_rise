@@ -210,8 +210,9 @@ impl LaneSystem {
         graph: &RegionGraph,
         roadbed: &RoadbedSystem,
     ) {
-        for lane in &mut self.lanes {
-            sync_lane_height_to_visible_surface(lane, graph, roadbed);
+        for (lane_id, lane) in self.lanes.iter_mut().enumerate() {
+            let crossing = self.crosswalks.get(&lane_id).copied();
+            sync_lane_height_to_visible_surface(lane, crossing, graph, roadbed);
         }
         self.surface_synced_len = self.lanes.len();
         self.lifted_since = Some((0, roadbed.generation()));
@@ -229,7 +230,8 @@ impl LaneSystem {
             .filter(|&&lane_id| {
                 let lane = &self.lanes[lane_id];
                 let mut synced = lane.clone();
-                sync_lane_height_to_visible_surface(&mut synced, graph, roadbed);
+                let crossing = self.crosswalks.get(&lane_id).copied();
+                sync_lane_height_to_visible_surface(&mut synced, crossing, graph, roadbed);
                 synced.geometry != lane.geometry
             })
             .count()
@@ -254,11 +256,16 @@ impl LaneSystem {
         use rayon::prelude::*;
         let start = self.surface_synced_len.min(self.lanes.len());
         let new_lanes = &mut self.lanes[start..];
+        let crosswalks = &self.crosswalks;
         // The frame and the commit call this inside the shared pool; other callers are not.
         crate::thread_pools::install(|| {
             new_lanes
                 .par_iter_mut()
-                .for_each(|lane| sync_lane_height_to_visible_surface(lane, graph, roadbed));
+                .enumerate()
+                .for_each(|(offset, lane)| {
+                    let crossing = crosswalks.get(&(start + offset)).copied();
+                    sync_lane_height_to_visible_surface(lane, crossing, graph, roadbed);
+                });
         });
         self.surface_synced_len = self.lanes.len();
         let generation = roadbed.generation();
@@ -290,7 +297,8 @@ impl LaneSystem {
             #[cfg(debug_assertions)]
             if skip {
                 let mut lifted = self.lanes[lane_id].clone();
-                sync_lane_height_to_visible_surface(&mut lifted, graph, roadbed);
+                let crossing = self.crosswalks.get(&lane_id).copied();
+                sync_lane_height_to_visible_surface(&mut lifted, crossing, graph, roadbed);
                 assert_eq!(lifted.geometry, self.lanes[lane_id].geometry, "lane {lane_id}");
             }
             skip
@@ -319,7 +327,8 @@ impl LaneSystem {
             let Some(lane) = self.lanes.get_mut(lane_id) else {
                 continue;
             };
-            sync_lane_height_to_visible_surface(lane, graph, roadbed);
+            let crossing = self.crosswalks.get(&lane_id).copied();
+            sync_lane_height_to_visible_surface(lane, crossing, graph, roadbed);
         }
         let edge_ms = edge_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -337,7 +346,8 @@ impl LaneSystem {
             let Some(lane) = self.lanes.get_mut(lane_id) else {
                 continue;
             };
-            sync_lane_height_to_visible_surface(lane, graph, roadbed);
+            let crossing = self.crosswalks.get(&lane_id).copied();
+            sync_lane_height_to_visible_surface(lane, crossing, graph, roadbed);
         }
         if road_debug {
             crate::debug_log!(
@@ -356,8 +366,11 @@ impl LaneSystem {
     }
 }
 
+// Lifts one lane onto the visible road surface; `crossing` is the street crossing it walks, when
+// it is a crossing connector.
 fn sync_lane_height_to_visible_surface(
     lane: &mut Lane,
+    crossing: Option<LaneCrosswalk>,
     graph: &RegionGraph,
     roadbed: &RoadbedSystem,
 ) {
@@ -376,9 +389,18 @@ fn sync_lane_height_to_visible_surface(
     let owner_query = roadbed.lane_query(edge_id, node_id, lane_type == LaneType::Vehicle);
 
     let mut changed = false;
-    for point in &mut lane.geometry {
-        let Some(surface_y) = lane_visible_surface_height(lane_type, roadbed, &owner_query, point)
-        else {
+    for (index, point) in lane.geometry.iter_mut().enumerate() {
+        // A crossing connector's second and third points are its kerb ends, the marking's kerb
+        // segment. They stand on the crossing, on the carriageway (D8): their height is the
+        // published crossing kerb's at the same point, never a coverage lookup, which would put
+        // a point on the curb line on the curb's top or the carriageway by rounding.
+        let surface_y = match crossing {
+            Some(crossing) if index == 1 || index == 2 => {
+                published_kerb_height(graph, roadbed, node_id, crossing.edge_id, point)
+            }
+            _ => lane_visible_surface_height(lane_type, roadbed, &owner_query, point),
+        };
+        let Some(surface_y) = surface_y else {
             continue;
         };
         let target_y = surface_y - sidewalk_base_offset;
@@ -392,6 +414,34 @@ fn sync_lane_height_to_visible_surface(
         lane.cum_dist = geometry::build_cum_dist(&lane.geometry);
         lane.length = lane.cum_dist.last().copied().unwrap_or(0.0);
     }
+}
+
+// The height of the kerb of edge `edge_id`'s crossing at node `node_id` that stands at `point` in
+// XZ, bit for bit, in the published pieces (`RoadbedSystem::for_each_crossing`: a node piece's
+// layout kerbs on its plane, or a pass-through crossing's span-row carriageway-edge vertices).
+// The lanes build their kerb ends with the same functions, so a crossing the pieces publish has
+// the lane's kerb ends; `None` (the end keeps its height) where the pieces hold no such kerb.
+// `O(degree)`, allocation-free.
+fn published_kerb_height(
+    graph: &RegionGraph,
+    roadbed: &RoadbedSystem,
+    node_id: usize,
+    edge_id: usize,
+    point: &Vector3,
+) -> Option<f32> {
+    let node = u32::try_from(node_id).ok()?;
+    let at = |kerb: &Vector3| {
+        kerb.x.to_bits() == point.x.to_bits() && kerb.z.to_bits() == point.z.to_bits()
+    };
+    let mut height = None;
+    roadbed.for_each_crossing(graph, node, |arm, kerbs| {
+        if arm.edge == edge_id
+            && let Some(kerb) = kerbs.iter().find(|kerb| at(kerb))
+        {
+            height = Some(kerb.y);
+        }
+    });
+    height
 }
 
 fn lane_is_road_sidewalk(lane: &Lane, graph: &RegionGraph) -> bool {

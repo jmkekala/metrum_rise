@@ -543,6 +543,27 @@ roadbed side stays as the contract terrain consumes:
     `a_lattice_row_holds_exactly_the_points_the_predicate_holds`, and `terrain/graded/tests.rs`
     `the_coverage_raster_equals_the_predicate_at_every_lattice_point`. The changed products and their
     attribution are recorded under [question 37](#road-68-open-questions) (`ROAD-68-K19`).
+  - **Lane ends on a kerb line (`ROAD-68-K20`; the crossing on the carriageway, taken pending
+    the user's review, 2026-10-26).** A crossing connector's kerb ends, the marking's kerb
+    segment, lie on the curb line, where the closed predicate holds both the carriageway and the
+    curb's top; built in `f32`, they land a hair on either side, so a coverage lookup gave each
+    the one or the other by rounding. They stand on the crossing, on the carriageway: D8 puts the
+    kerb points "at the two carriageway edges", the crossing contract at the node plane's height
+    with both directions walking the marking's segment, and `node::crossing_kerbs` builds them at
+    `Level::Ground` (a span-owned crossing's are its row's carriageway-edge vertices); the curb's
+    top would float the walk 0.12 m over the zebra. Constructively, not by an inset (which would
+    move the connector off the marking's segment, or the marking off the kerb): the lane sync
+    gives a crossing connector's second and third points the height of the published crossing
+    kerb at the same point, bit for bit in XZ (`RoadbedSystem::for_each_crossing`, `O(degree)`),
+    and no coverage lookup; an end the pieces hold no kerb for keeps its height. No fallback and
+    no predicate change. Test: `road_reference_probe`
+    `crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation` (every reference junction,
+    flat and sloped, and the T and the four-way in each quarter turn and mirror: every kerb end at
+    the carriageway's height 1 cm inside the crossing and over 0.1 m below the curb's top 1 cm
+    outside). A first version turned every fixture: flat `y_25_branches_first` turned by three
+    quarter turns has its stem rejected (`road_plan_invalid`, the first rejection met; later
+    fixtures were not tried), so the orientation pass covers the T and the four-way; that
+    rejection is open.
 - `take_terrain_changes`, which since `TERRAIN-07-A` also returns the changed grounded chain
   segments themselves (`TerrainChanges::segments`, endpoints with heights), and since
   `TERRAIN-07-C` round 5 the bounds of the changed pieces with a portal row
@@ -3026,7 +3047,9 @@ These need a user decision; work that does not depend on them continues.
         that lie a hair outside the exact road for about half the samples (13 tests failed there);
         it now samples the road 2.5 cm on its side of the seam, as it already sampled the yard
         2.5 cm on the other.
-      - Open, for the lane builder: lane points meant to lie on a kerb line are computed in `f32`
+      - Done by `ROAD-68-K20` part 2 (["Footprint and terrain"](#footprint-and-terrain), lane ends
+        on a kerb line), constructively rather than by the inset recommended here. Was open, for
+        the lane builder: lane points meant to lie on a kerb line are computed in `f32`
         and land a hair on either side, so with an exact surface a foot lane's end at a crossing
         reads the curb's top or the carriageway's by rounding; the band hid it by lifting the
         carriageway side to the top. Recommendation: the lane builder places those ends a fixed
@@ -7503,7 +7526,9 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
   kerb points are that row's carriageway-edge vertices, bitwise (`roadbed::span`
   `pass_through_crossing`, the span model the compile builds the row with)
 - the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
-  segment stored by the marking
+  segment stored by the marking, and after the lane surface sync their kerb ends keep the
+  published kerbs' heights, on the carriageway (`ROAD-68-K20`, ["Footprint and
+  terrain"](#footprint-and-terrain))
 - routes between adjacent arms stay on the sidewalk and must not create direct mouth-to-mouth
   chords through the junction carriageway. They run on the centre of the raised walkway, midway
   between its carriageway-edge and outer boundary curves. From a sidewalk end they follow the
