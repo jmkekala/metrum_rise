@@ -9,7 +9,11 @@
 ## terrain renderer twice in one session, the exact cut (refined patches) and B (graded tiles over
 ## plain patches), in the spike's views plus distance renders, adds the spike's fixtures and 8%
 ## slopes, and counts background pinholes in plan_terrain. METRUM_ROAD_JUNCTION_FIXTURES limits the
-## fixtures (comma list of names), so a long set can run as several sessions.
+## fixtures (comma list of names), so a long set can run as several sessions. In compare mode the
+## structures render B only (the exact cut fails at their open chain ends), over ground sculpted
+## after the commits (a hollow under the bridge, a mound over the tunnel), with a view from under
+## the bridge at its road mouth and one at the tunnel's portal; kuopio_t2_wall loads the Kuopio
+## reference save and compares both terrains at its conflict wall site (T2).
 extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
@@ -71,8 +75,9 @@ func _run() -> void:
 	for fixture in _fixtures():
 		if not only.is_empty() and not only.has(fixture.name):
 			continue
-		# Structures render without terrain: the exact cut fails at their open chain ends.
-		if _terrain_mode == "compare" and not fixture.get("terrain", true):
+		# Structures render without terrain in the legacy mode: the exact cut fails at their open
+		# chain ends. Compare mode renders their B half only, where the fixture asks.
+		if _terrain_mode == "compare" and not fixture.get("terrain", true) and not fixture.has("b_only"):
 			continue
 		for slope: Array in _slopes(fixture):
 			await _reference(fixture, slope[0], slope[1])
@@ -145,10 +150,30 @@ func _fixtures() -> Array[Dictionary]:
 		result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 0.15], [Vector2(-45, 0), 25.0, -0.10]],
 			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]})
 		result[0]["distance"] = true
+		# TERRAIN-07-C's structure walls at a road mouth (TERRAIN-07-D round 3): the side road of
+		# the T made a bridge over a hollow sculpted after the commits, and a tunnel under a
+		# mound, each seen at its mouth.
+		for fixture in result:
+			if fixture.name == "bridge_t":
+				fixture["b_only"] = true
+				fixture["sculpt_after"] = [[Vector2(0, 32), 26.0, -0.25]]
+				fixture["mouth_views"] = [
+					{"view": "under_bridge", "from": Vector2(7.0, 24.0), "eye_m": 1.0, "at": Vector2(0.0, 7.0), "at_m": -0.6},
+					{"view": "mouth_side", "from": Vector2(18.0, 14.0), "eye_m": 2.0, "at": Vector2(0.0, 9.0), "at_m": -1.0}]
+			elif fixture.name == "tunnel_t":
+				fixture["b_only"] = true
+				fixture["sculpt_after"] = [[Vector2(0, 46), 30.0, 0.3]]
+				fixture["mouth_views"] = [
+					{"view": "portal", "from": Vector2(6.0, -12.0), "eye_m": 2.5, "at": Vector2(0.0, 14.0), "at_m": 2.0}]
+		# The Kuopio reference save's conflict wall site (TERRAIN-07-C round 4, T2 (c)).
+		result.append({"name": "kuopio_t2_wall", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+			"focus": Vector2(-16.3, 1182.8), "roads": []})
 	return result
 
 # [label, rise over 256 m]: flat and 2.5%, with the spike's 8% on the T, four-way, bend and grid.
 func _slopes(fixture: Dictionary) -> Array:
+	if fixture.has("save") or fixture.has("b_only"):
+		return [["flat", 0.0]]
 	if fixture.get("terrain_after", false):
 		return [["steep", STEEP_RISE_M]]
 	if fixture.has("sculpt"):
@@ -226,7 +251,10 @@ func _terrain_node() -> Node3D:
 func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	var label := "%s_%s" % [fixture.name, slope_name]
 	var failures_before := _failures
-	_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 128.0, 0.0), "Reference world must load")
+	if fixture.has("save"):
+		_expect(simulation.load_game(ProjectSettings.globalize_path(fixture.save)), "%s: the save must load" % label)
+	else:
+		_expect(simulation.create_blank_world(WORLD_M, WORLD_M, 8.0, 128.0, 0.0), "Reference world must load")
 	simulation.set_simulation_speed(0.0)
 	simulation.set_weather_scenario(0, 0.0)
 	for brush: Array in fixture.get("sculpt", []):
@@ -249,6 +277,12 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 		_expect(simulation.get_edge_class(edge) == fixture["class"], "%s: edge %d takes class %d" % [label, edge, fixture["class"]])
 		for frame in range(4):
 			await process_frame
+	if _terrain_mode == "compare":
+		# Ground moved under (or over) a structure after it was built: the roads stay.
+		for brush: Array in fixture.get("sculpt_after", []):
+			simulation.sculpt_terrain(brush[0], brush[1], brush[2])
+		for frame in range(10):
+			await process_frame
 	var state: Dictionary = simulation.get_road_benchmark_state()
 	var viewport := SubViewport.new()
 	viewport.size = CAPTURE_SIZE
@@ -258,7 +292,7 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	var scene := Node3D.new()
 	viewport.add_child(scene)
 	simulation.reparent(scene)
-	var focus := _surface(Vector2.ZERO)
+	var focus := _surface(fixture.get("focus", Vector2.ZERO))
 	var camera := Camera3D.new()
 	scene.add_child(camera)
 	var offset := CAMERA_HEIGHT_M / tan(deg_to_rad(CAMERA_PITCH_DEG))
@@ -292,7 +326,7 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
 	var images: Array[Dictionary] = []
 	if _terrain_mode == "compare":
-		for graded in [false, true]:
+		for graded in ([true] if fixture.has("b_only") else [false, true]):
 			await _compare_views(fixture, label, scene, camera, environment.environment, focus, graded, images)
 		_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
 		simulation.reparent(root)
@@ -397,6 +431,9 @@ func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: C
 		{"view": "close_corner", "from": Vector2(16.0, 20.0), "at": Vector2(6.0, 8.0)},
 		{"view": "plan_terrain", "ortho": true},
 	]
+	views.append_array(fixture.get("mouth_views", []))
+	# Close and mouth views are placed relative to the focus (the origin but on a save).
+	var focus_xz := Vector2(focus.x, focus.z)
 	if fixture.get("distance", false):
 		for distance_m: float in DISTANCES_M:
 			views.append({"view": "far_%d" % int(distance_m), "distance": distance_m})
@@ -408,8 +445,8 @@ func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: C
 		camera.rotation_degrees = Vector3(-CAMERA_PITCH_DEG, 0.0, 0.0)
 		var target := focus
 		if view.has("from"):
-			camera.position = _surface(view.from) + Vector3(0.0, 2.5, 0.0)
-			target = _surface(view.at)
+			camera.position = _surface(focus_xz + view.from) + Vector3(0.0, float(view.get("eye_m", 2.5)), 0.0)
+			target = _surface(focus_xz + view.at) + Vector3(0.0, float(view.get("at_m", 0.0)), 0.0)
 			camera.look_at(target, Vector3.UP)
 		elif view.has("distance"):
 			var pitch := deg_to_rad(DISTANCE_PITCH_DEG)

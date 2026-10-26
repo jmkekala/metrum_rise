@@ -32,6 +32,9 @@ pub(crate) const EDIT_LEVELS: [Level; 6] = [
 ];
 
 /// What one published edit changed for the graded tiles.
+// At most `MAX_PENDING_EDITS` records live between two polls; boxing the roadbed snapshots
+// would only add allocations.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum GradedEditKind {
     /// A roadbed install (a commit or an undo): its terrain changes, the roadbed when the
     /// previous install was recorded and after this one, and the sites within the selection's
