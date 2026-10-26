@@ -457,7 +457,10 @@ pub(crate) fn visit_turning_radii(
     }
 }
 
-fn outgoing_angle(edge: &Edge, at_start: bool) -> Option<f32> {
+// An edge's horizontal direction from the node: its centreline over the first metre
+// (`ARM_DIRECTION_RUN_M`, or its whole length when shorter), as `[x, z]`; `None` under
+// `MIN_SEGMENT_RUN_M`.
+fn outgoing_direction(edge: &Edge, at_start: bool) -> Option<[f32; 2]> {
     let points = centreline(edge);
     let &origin = if at_start {
         points.first()?
@@ -482,8 +485,40 @@ fn outgoing_angle(edge: &Edge, at_start: bool) -> Option<f32> {
         endpoint = point;
     }
     let delta = endpoint - origin;
-    (delta.x.hypot(delta.z) >= MIN_SEGMENT_RUN_M)
-        .then(|| delta.z.atan2(delta.x).rem_euclid(std::f32::consts::TAU))
+    (delta.x.hypot(delta.z) >= MIN_SEGMENT_RUN_M).then_some([delta.x, delta.z])
+}
+
+// The exact cross and dot products of two directions: each product of `f32` components is exact
+// in `f64`, so each value is one rounding of the exact result, which a quarter turn or a mirror
+// of both directions leaves unchanged (up to the cross product's sign under a mirror).
+fn cross_dot(u: [f32; 2], v: [f32; 2]) -> (f64, f64) {
+    let [ux, uz] = u.map(f64::from);
+    let [vx, vz] = v.map(f64::from);
+    (ux * vz - uz * vx, ux * vx + uz * vz)
+}
+
+// Counter-clockwise order in XZ from +x towards +z, the order of `atan2(z, x)` in `[0, 2π)`,
+// exactly: the half-plane, then the sign of the exact cross product.
+fn counter_clockwise(u: &[f32; 2], v: &[f32; 2]) -> std::cmp::Ordering {
+    let lower = |[x, z]: [f32; 2]| z < 0.0 || (z == 0.0 && x < 0.0);
+    lower(*u).cmp(&lower(*v)).then_with(|| {
+        let (cross, _) = cross_dot(*u, *v);
+        0.0.partial_cmp(&cross).unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+// The angle from direction `u` counter-clockwise to `v`, in `[0, 2π)`, from their exact cross
+// and dot products, so the same in every quarter turn and mirror of a junction, bit for bit
+// (`ROAD-68-K23`). Each arm's own `atan2` and their difference round differently in each
+// orientation, and so decided by orientation whether a Y at exactly the 25° limit was legal.
+fn counter_clockwise_angle(u: [f32; 2], v: [f32; 2]) -> f64 {
+    let (cross, dot) = cross_dot(u, v);
+    let angle = cross.atan2(dot) + 0.0;
+    if angle < 0.0 {
+        angle + std::f64::consts::TAU
+    } else {
+        angle
+    }
 }
 
 /// Appends degree-two kink or junction angle/degree violations for a canonical node.
@@ -506,22 +541,24 @@ pub fn validate_node(
         return;
     };
     let mut degree = 0;
-    let mut angles = Vec::with_capacity(incident.len());
+    let mut directions = Vec::with_capacity(incident.len());
     for &edge_id in incident {
         let edge = graph.edge(edge_id);
         if !is_road(edge) {
             continue;
         }
         degree += 1;
-        if let Some(angle) = outgoing_angle(edge, graph.get_valid_node(edge.start_node) == node_id)
+        if let Some(direction) =
+            outgoing_direction(edge, graph.get_valid_node(edge.start_node) == node_id)
         {
-            angles.push(angle);
+            directions.push(direction);
         }
     }
-    if degree == 2 && angles.len() == 2 {
-        let gap = (angles[0] - angles[1]).abs();
-        let separation = gap.min(std::f32::consts::TAU - gap);
-        let kink = (std::f32::consts::PI - separation).to_degrees();
+    if degree == 2 && directions.len() == 2 {
+        // The angle between the two directions, in `[0, π]`.
+        let (cross, dot) = cross_dot(directions[0], directions[1]);
+        let separation = cross.abs().atan2(dot);
+        let kink = (std::f64::consts::PI - separation).to_degrees() as f32;
         if let Some((limit, tier)) = upper_violation(kink, &limits.direction_kink_degrees) {
             output.push(RoadGeometryViolation::DirectionKink {
                 node_id,
@@ -539,13 +576,15 @@ pub fn validate_node(
                 tier,
             });
         }
-        if angles.len() >= 2 {
-            angles.sort_unstable_by(f32::total_cmp);
-            let mut smallest = std::f32::consts::TAU - angles[angles.len() - 1] + angles[0];
-            for pair in angles.windows(2) {
-                smallest = smallest.min(pair[1] - pair[0]);
+        if directions.len() >= 2 {
+            // Adjacent arms counter-clockwise, the last to the first included.
+            directions.sort_unstable_by(counter_clockwise);
+            let last = directions[directions.len() - 1];
+            let mut smallest = counter_clockwise_angle(last, directions[0]);
+            for pair in directions.windows(2) {
+                smallest = smallest.min(counter_clockwise_angle(pair[0], pair[1]));
             }
-            let measured = smallest.to_degrees();
+            let measured = smallest.to_degrees() as f32;
             if let Some((limit, tier)) =
                 lower_violation(measured, &limits.junction_arm_angle_degrees)
             {

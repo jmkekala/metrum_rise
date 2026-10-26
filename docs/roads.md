@@ -558,12 +558,12 @@ roadbed side stays as the contract terrain consumes:
     and no coverage lookup; an end the pieces hold no kerb for keeps its height. No fallback and
     no predicate change. Test: `road_reference_probe`
     `crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation` (every reference junction,
-    flat and sloped, and the T and the four-way in each quarter turn and mirror: every kerb end at
-    the carriageway's height 1 cm inside the crossing and over 0.1 m below the curb's top 1 cm
-    outside). A first version turned every fixture: flat `y_25_branches_first` turned by three
-    quarter turns has its stem rejected (`road_plan_invalid`, the first rejection met; later
-    fixtures were not tried), so the orientation pass covers the T and the four-way; that
-    rejection is open.
+    flat and sloped, in each quarter turn and mirror: every stroke commits, and every kerb end
+    stands at the carriageway's height 1 cm inside the crossing and over 0.1 m below the curb's
+    top 1 cm outside). A first version turned every fixture and found flat
+    `y_25_branches_first`, turned by three quarter turns, refused; `ROAD-68-K23` traced it to the
+    validator's arm angle ([`ROAD-54`](#road-geometry-validation-road-54)), fixed it there and
+    turns every fixture again.
 - `take_terrain_changes`, which since `TERRAIN-07-A` also returns the changed grounded chain
   segments themselves (`TerrainChanges::segments`, endpoints with heights), and since
   `TERRAIN-07-C` round 5 the bounds of the changed pieces with a portal row
@@ -7661,7 +7661,15 @@ rise over horizontal run over segments of at least 5 cm (`grade::steepest_grade`
 definition the validator, the placement rule, the road tool's warning and the recorded replays'
 quality check share. Arm directions at a node use the first metre of each
 centreline, without clips, so sub-5 cm end segments do not decide them and a smooth curve split at
-a node does not read as a kink. `validate_edge` is `O(points)`, `validate_node` is
+a node does not read as a kink. The angle between two arms (the junction's gaps between adjacent
+arms, counter-clockwise in an exact order, and a degree-two node's kink) comes from their
+directions' cross and dot products in `f64`, where each product of the `f32` components is exact,
+so it is the same in every quarter turn and mirror of a junction, bit for bit (`ROAD-68-K23`).
+Before, each arm's own `atan2` and their difference rounded differently in each orientation: the
+reference 25° Y, exactly at the illegal limit, measured 25.000002° to 25.000023° in six of its
+eight orientations and under 25° in the other two, which were refused (on `road` too); it now
+measures 25.0 in all of them. The angle is compared in `f32`, as every validator measurement is.
+`validate_edge` is `O(points)`, `validate_node` is
 `O(degree log degree)` plus the one-metre prefix, and `audit_graph` runs both over the graph with
 Rayon in a deterministic order.
 

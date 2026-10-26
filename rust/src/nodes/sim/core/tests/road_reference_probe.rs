@@ -78,9 +78,11 @@ fn reference_junction_products_match_the_probe() {
 // The crossing kerb ends (`ROAD-68-K20`): every crossing connector's kerb ends, the marking's
 // kerb segment, stand on the carriageway (D8, the crossing contract), at its height a centimetre
 // inside the crossing and below the curb's top a centimetre outside it. Every reference junction,
-// flat and sloped, and the T and the four-way in each quarter turn and mirror of their strokes:
-// rounding puts the ends a hair on either side of the curb line differently in each, and the
-// surface must not follow it.
+// flat and sloped, in each quarter turn and mirror of its strokes: rounding puts the ends a hair
+// on either side of the curb line differently in each, and the surface must not follow it. Each
+// orientation also plans and commits every stroke (`ROAD-68-K23`): the 25° Y, at exactly the
+// illegal arm angle, was refused in two of them when the angle was measured from each arm's own
+// `atan2`.
 #[test]
 fn crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation() {
     // Exact in f32; `+ 0.0` keeps a negated zero coordinate positive.
@@ -97,8 +99,7 @@ fn crossing_kerb_ends_stand_on_the_carriageway_in_every_orientation() {
     let mut ends = 0;
     for sloped in [false, true] {
         for (name, strokes, order) in reference_fixtures() {
-            let turned_too = name == "t" || name == "four_way";
-            for (t, turn) in turns.iter().enumerate().take(if turned_too { 8 } else { 1 }) {
+            for (t, turn) in turns.iter().enumerate() {
                 let turned: Vec<Stroke> = strokes
                     .iter()
                     .map(|&(points, lanes)| (points.map(turn), lanes))
