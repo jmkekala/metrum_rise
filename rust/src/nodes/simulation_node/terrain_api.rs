@@ -763,10 +763,14 @@ impl SimulationNode {
     }
 
     /// Returns the visible world-surface height at a position: the compiled roadbed where a
-    /// road covers it, else the graded ground the terrain renders (`TERRAIN-07-D`).
+    /// road covers it, else the graded surface (`TERRAIN-07-F`).
     #[func]
     pub fn get_world_surface_height(&self, pos: Vector2) -> f32 {
-        self.lock_core().graded_surface_height(pos)
+        // The graded surface reads the site index.
+        let mut core = self.lock_core();
+        let cell_m = core.config.zone_cell_m;
+        core.allocator.prepare_building_site_query_index(cell_m);
+        core.get_world_surface_height_internal(pos)
     }
 
     /// Raycasts against the terrain heightmap.

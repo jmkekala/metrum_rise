@@ -379,10 +379,10 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
 // `TERRAIN-07-F` vegetation placement digest, a diagnostic compared across builds: the scatter of
 // the 64 m patches over 512 m around a 2k city's centre, both layers, one `VEG_PLANT` line per
 // placed plant (its packed record's bits). With `METRUM_VEG_CLASSIFY` naming a file of
-// `x z` bit pairs, one `VEG_GRADED x z flag` line each: whether the clearance footprint of a
-// plant there meets ground the graded surface does not leave natural.
+// `x z radius` bit triples, one `VEG_GRADED x z classes` line each: the ground classes other
+// than natural that the clearance footprint there meets (1 road, 2 pad, 4 paved, 8 graded).
 #[test]
-#[ignore = "TERRAIN-07-F vegetation placement digest across builds; --ignored --nocapture"]
+#[ignore = "diagnostic: the vegetation placement digest compared across builds; --ignored --nocapture"]
 fn vegetation_placement_digest_dump() {
     use crate::nodes::simulation_node::vegetation_api::{CANOPY_SALT, UNDERSTORY_SALT, scatter_layer};
     use crate::simulation::terrain::graded::{GradedSurface, GroundClass, QueryScratch};
@@ -408,7 +408,7 @@ fn vegetation_placement_digest_dump() {
                 (generator.canopy_cell_m, CANOPY_SALT, true),
                 (generator.understory_cell_m, UNDERSTORY_SALT, false),
             ] {
-                for record in scatter_layer(core, origin, 64.0, cell, salt, canopy).chunks_exact(6) {
+                for record in scatter_layer(core, origin, 64.0, cell, salt, canopy).as_chunks::<6>().0 {
                     let bits: Vec<String> = record.iter().map(|v| v.to_bits().to_string()).collect();
                     println!("VEG_PLANT {}", bits.join(" "));
                 }
@@ -428,12 +428,19 @@ fn vegetation_placement_digest_dump() {
         let [x, z, radius] = [0, 1, 2].map(|i| {
             f32::from_bits(line.split(' ').nth(i).unwrap().parse().unwrap())
         });
-        let graded = [-radius, 0.0, radius].iter().any(|&dz| {
-            [-radius, 0.0, radius].iter().any(|&dx| {
+        let mut classes = 0u8;
+        for dz in [-radius, 0.0, radius] {
+            for dx in [-radius, 0.0, radius] {
                 let (sx, sz) = (f64::from(x + dx), f64::from(z + dz));
-                surface.mask_at(sx, sz, &mut scratch) != GroundClass::Natural
-            })
-        });
-        println!("VEG_GRADED {} {} {}", x.to_bits(), z.to_bits(), u8::from(graded));
+                classes |= match surface.mask_at(sx, sz, &mut scratch) {
+                    GroundClass::Natural => 0,
+                    GroundClass::Road => 1,
+                    GroundClass::Pad => 2,
+                    GroundClass::Paved(_) => 4,
+                    GroundClass::Graded => 8,
+                };
+            }
+        }
+        println!("VEG_GRADED {} {} {classes}", x.to_bits(), z.to_bits());
     }
 }

@@ -261,7 +261,10 @@ impl SimulationNode {
         if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
             return PackedFloat32Array::new();
         }
-        PackedFloat32Array::from(hedge_runs::hedge_runs(&self.lock_core(), origin, span).as_slice())
+        // The runs stand on the graded surface, which reads the site index.
+        let mut core = self.lock_core();
+        prepare_sites(&mut core);
+        PackedFloat32Array::from(hedge_runs::hedge_runs(&core, origin, span).as_slice())
     }
 
     /// Where a hedge end drawn at `pos` would land once `plant_vegetation_line` joins it to a
