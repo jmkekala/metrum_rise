@@ -299,10 +299,13 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	if camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M:
 		_desired_camera = camera_position
 		_relevel_desired()
-	_poll_and_install(start_us, resident_patches)
-	var polled_us := Time.get_ticks_usec()
+	# An edit's batch installs in a frame of its own: the poll that completes it leaves it for
+	# the next frame, which installs it and polls nothing.
 	var batch_tiles := _install_edit_batch(resident_patches)
 	var batch_us := Time.get_ticks_usec()
+	if batch_tiles == 0:
+		_poll_and_install(start_us, resident_patches)
+	var polled_us := Time.get_ticks_usec()
 	counters["install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
 	for key: Vector2i in changed_patches.keys():
@@ -338,14 +341,14 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		var end_us := Time.get_ticks_usec()
 		var ms := func(from_us: int, to_us: int) -> float: return float(to_us - from_us) / 1000.0
 		counters["edit_frame_parts"] = {
-			"poll_ms": ms.call(start_us, polled_us), "batch_ms": ms.call(polled_us, batch_us),
-			"residency_ms": ms.call(batch_us, residency_us), "watched_ms": ms.call(residency_us, watched_us),
+			"batch_ms": ms.call(start_us, batch_us), "poll_ms": ms.call(batch_us, polled_us),
+			"residency_ms": ms.call(polled_us, residency_us), "watched_ms": ms.call(residency_us, watched_us),
 			"cells_ms": ms.call(watched_us, cells_us), "cells_sync_ms": float(_frame_sync_us) / 1000.0,
 			"cells_walls_ms": float(_frame_walls_us) / 1000.0, "walls_ms": ms.call(cells_us, end_us),
 			"cell_patches": cell_patches, "wall_patches": wall_patches,
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
 		}
-		# The edit's frame: polls, its uploads and the cell rewrites they caused.
+		# The edit's frame: its uploads, the cell rewrites they caused and the frame's changes.
 		counters["edit_batches"] += 1
 		counters["edit_tiles_last"] = batch_tiles
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
@@ -964,9 +967,22 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial) -> void:
 			var name := String(uniform["name"])
 			if not name.begins_with("graded_") and not name.begins_with("cell_"):
 				_uniform_names.append(name)
-	for material: ShaderMaterial in cells["materials"]:
-		for name in _uniform_names:
-			material.set_shader_parameter(name, source.get_shader_parameter(name))
+	# The values the cell set's materials hold, by uniform: only the parameters that differ are
+	# copied into the four materials (a payload commit changes a few of about a hundred). A set
+	# keeps its values through the pool, so a reused set copies what differs from its last patch.
+	var values: Array = cells.get("values", [])
+	var all := values.size() != _uniform_names.size()
+	if all:
+		values.resize(_uniform_names.size())
+		cells["values"] = values
+	for index in _uniform_names.size():
+		var name := _uniform_names[index]
+		var value: Variant = source.get_shader_parameter(name)
+		if not all and typeof(value) == typeof(values[index]) and value == values[index]:
+			continue
+		values[index] = value
+		for material: ShaderMaterial in cells["materials"]:
+			material.set_shader_parameter(name, value)
 	cells["watched"] = _watched_parameters(source)
 
 ## Pool sizes, use and creation counters, for tests and the memory record.

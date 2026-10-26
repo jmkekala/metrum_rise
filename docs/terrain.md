@@ -3500,10 +3500,13 @@ lattice sample:
 sample is bitwise the base (a half-float delta between 16 m and 32 m rounds to 1.6 cm steps).
 
 **Rows.** Per tile and level: the road seams the texels name, tile-local `[ax, az, bx, bz]`
-(`f32`, metres from the tile origin), sorted by key; then the material edges likewise. Proposed
-capacities, to be confirmed by measured maxima ([T7](#terrain-07-open-questions)): 512 seams and
-256 edges at `GL0`, 512/128 at `GL1`, 256/64 at `GL2`, 128/16 at `GL3` (seams from the
-`TERRAIN-07-A` maxima, edges until `TERRAIN-07-C` measures them).
+(`f32`, metres from the tile origin), sorted by key; then the material edges likewise.
+Capacities at least twice the measured maxima ([T7](#terrain-07-open-questions)): 512 seams and
+256 edges at `GL0`, `GL1` and `GL2`, 128/128 at `GL3` (its lattice bound). Measured
+(`TERRAIN-07-D` round 6, every listed tile of the 14,000-resident populated save at every level):
+seams 242, 244 and 212, edges 102, 108 and 119 at `GL0`-`GL2`; the 100k city's `GL0` 245 seams and
+113 edges. A wider band names more edges, so `GL2`, with the widest, names the most; its
+proposed 64 edges failed 1,079 of the save's 1,580 tiles.
 
 **Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, the
 conflict walls along its road seams and the structure walls along its wall seams
@@ -3867,13 +3870,30 @@ to point).
   within the terrain share of `ROAD-68`'s 2.0 ms Godot stage: the rebaked tiles of an edit wait
   until the last of them arrives. Streaming installs closest first, within 1.0 ms of the main
   thread, like the existing patch installs.
-- **Work on changes, not frames** (`TERRAIN-07-D` round 5). `terrain.gd` keeps the renderer's
-  resident patch entries (node, material, rectangle, LOD step, payload generation) as patches
-  become resident, leave, commit a payload or change LOD step, with a residency revision, and a
-  material revision that advances wherever a parameter the cells copy is set. The renderer
-  refreshes patch lists, desired tiles, evictions, requests and material syncs only when a
-  revision, a camera move of 8 m or finished work (a list, a failure, a request left over) asks
-  for it, so an idle frame polls Rust once and compares two numbers: `O(changes)` per frame.
+- **Work on changes, not frames** (`TERRAIN-07-D` rounds 5 and 6). `terrain.gd` keeps the
+  renderer's resident patch entries (node, material, rectangle, LOD step, payload generation) as
+  patches become resident, leave, commit a payload or change LOD step, and hands over the keys
+  changed since the last frame, with the keys whose material parameters the cells copy were set.
+  Each change costs its own tiles: a changed patch or an arriving list adds and removes its own
+  listed tiles in the desired set (every tile counts the resident lists naming it, entering with
+  the first and evicted with the last), a changed material syncs that patch's cells, copying only
+  the parameters that differ, and only tiles whose desire, level or token changed, or whose
+  request failed or did not go out, are considered for requests. A camera move of 8 m re-levels
+  the desired tiles (`O(desired)`). An idle frame polls Rust once: `O(changes)` per frame (round 5
+  rebuilt the desired set from every resident list on any change: 2.0-3.1 ms in an edit's frame).
+- **Refusals.** A request Rust refuses by contract (a tile it cannot represent, `T7`) is recorded
+  with its token, counted and logged once on the `terrain` channel, and not asked again until an
+  edit dirties the tile or the patch's generation moves; transient failures (a busy core, an
+  unready site index) are asked again. Round 5's populated save re-asked its refused tiles every
+  frame (827,447 refusals in 600 s), and the closest refused tiles took the whole request budget,
+  so nothing farther ever baked.
+- **Cell sets** are pooled and prewarmed at setup, one per patch of the world's grid (every
+  resident patch may hold a graded tile at once), so neither streaming nor an edit creates a
+  `MultiMesh`, material or node (round 5's populated edit created 16 materials and 24
+  `MultiMesh`es for patches newly drawing cells). Each cell `MultiMesh` holds the most tiles a
+  patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
+  faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
+  empty world is [T25](#terrain-07-open-questions).
 - **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
@@ -5742,7 +5762,7 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
   failed (Godot keeps the failed position). Capacity, both modes; graded adds its cell
   `MultiMesh`es (the cells' instance uniforms), hence 4,181-4,535 errors against 3,782-3,808. The
   levers (a larger buffer, or proxies without instance uniforms) are the water reflection's and
-  vegetation's, for the coordinator.
+  vegetation's, for the coordinator: tracked as [`WATER-05`](roadmap.md#validated-bugs) (round 6).
 - **The edit install frame (attributed; fixed by the same change).** The probe on the tip with
   the frame's parts recorded (`edit_frame_parts`, kept): 4.10 ms, of which polling 0.73, the
   batch's 6 uploads 0.17, the per-frame residency passes 2.34 and the per-frame material check
@@ -6479,6 +6499,41 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       layer uploads.
     - **Recommendation.** (a): graded tiles exist only where roads and sites are, so real cities
       use a fraction of the worst case; (b) if the measured maxima exceed 2,048.
+24. **T24. Pinholes along a road's outer edge in plan view (`TERRAIN-07-D` round 6; open, for the
+    user).**
+    - **Evidence.** `kuopio_t2_wall`'s `plan_terrain` (orthographic, 0.0375 m per pixel, centred
+      at `(-16.3, 1182.8)`): exact cut 1 pinhole, B 3, every one a single pixel on the same
+      straight outer sidewalk edge of the diagonal road (world about `(-27.7, 1171.6)`,
+      `(-17.5, 1181.6)`, `(-2.2, 1196.7)`; exact `(-0.2, 1198.3)`). Present in both modes, so not
+      the graded mask's: the exact cut joins the road along the same chain with CDT vertices. The
+      chain itself is the road's triangle vertices (round 2). About 3 pixels in the edge's 1,000
+      is the rate of a gap of about 1e-4 m, the `f32` spacing at Kuopio's 1.2 km offsets: the road
+      reaches the screen in its chunk's frame (`render_frame_local`), the terrain in its patch's
+      (and the mask in its tile's), so the same exact edge rounds differently on each side.
+      Superseded question 24's road-side watertightness holds; question 23 (meshes in different
+      frames) returns as this join. Not verified by a per-pixel diagnostic yet.
+    - **Options.** (a) The graded mask keeps the terrain under the road's outer band by a fixed
+      screen-scale overlap where the terrain lies below the road top, hidden by depth (a
+      rendering overlap, not geometry repair; the exact cut keeps its pinhole). (b) Draw road
+      chunks and terrain cells in one shared frame per 512 m chunk with the same `f32` arithmetic,
+      which closes the exact cut's join but not a per-fragment mask against a rasterized edge.
+      (c) Accept sub-pixel pinholes and drop the plan-view count from the acceptance.
+    - **Recommendation.** (a), measured with the plan-view count and the close views' "no terrain
+      over a sidewalk" check; not taken (the acceptance's "sky pinholes 0" is the user's).
+25. **T25. Cell sets prewarmed per grid patch (`TERRAIN-07-D` round 6; taken pending the user's
+    review, 2026-10-26).**
+    - **Evidence.** Round 5's populated edit created 16 materials and 24 `MultiMesh`es: cell sets
+      were made when a patch first drew cells. The bound on patches drawing cells at once is the
+      resident patches; on Kuopio all 1,296 are resident while 29 list graded tiles (round 6
+      census). One cell set (five cell `MultiMesh`es of 81 instances, a wall `MultiMesh` of 256,
+      four materials, six nodes) per grid patch costs video memory and load time on a large,
+      mostly empty world (recorded in the round 6 record).
+    - **Options.** (a) Prewarm one per grid patch (taken). (b) Prewarm for the patches with a
+      non-empty list plus a reserve, topped up outside edits; an edit that newly grades more
+      patches than the reserve still creates. (c) Lighter sets: the base cells drawn by the patch's
+      `PlaneMesh` with a mask, walls in one shared `MultiMesh`.
+    - **Recommendation.** (a) now (exact, reversible); (c) if the memory record is too high for
+      the 100k city.
 
 #### Superseded `ROAD-68` questions
 
