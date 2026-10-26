@@ -390,9 +390,15 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   stage (worst 6.70 ms); under T20 (a), decided by the coordinator under the user's delegation for
   review, no frame bakes a whole edit (undo keeps the replaced tiles, about 1.4 MB per entry;
   previews bake only what changed since the last pose; the commit adopts), and gate
-  `TERRAIN-07-E` accepts those frame paths against 3.0 ms. See the
-  [specification](terrain.md#graded-terrain-surface-terrain-07) and the
-  [gate record](terrain.md#terrain-07-a-record).
+  `TERRAIN-07-E` accepts those frame paths against 3.0 ms. Gate `TERRAIN-07-C` round 1 (work in
+  progress) makes building sites terrain clients: the terrain is each pad at its support height,
+  the yard paving is a material class equal to the legacy partition's, site changes select only
+  the tiles within their reach, and retaining walls close the step where a road's embankment
+  stands over a lower road; bridge and tunnel ends follow in round 2. Open: with the pads grading
+  the ground, three of the populated city's road commits beside built-up blocks take 3.3-4.3 ms
+  of terrain against the 3.0 ms stage; exact pruning levers remain. See the
+  [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
+  ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.

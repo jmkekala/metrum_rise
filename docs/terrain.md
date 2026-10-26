@@ -3226,7 +3226,8 @@ Terminology:
 
 **Specification adopted by the user (2026-10-25); of its gates `TERRAIN-07-B` (road skirts and
 bridge fascias) and `TERRAIN-07-A` (the grading core and queries, roads only, beside the legacy
-path in `simulation/terrain/graded/`, read by no consumer yet) are done.**
+path in `simulation/terrain/graded/`, read by no consumer yet) are done; `TERRAIN-07-C` round 1
+(sites, pads, paving and conflict walls; structure ends are round 2's) is work in progress.**
 `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
@@ -3445,8 +3446,9 @@ side, being a base lattice line, is a lattice line of every level.
 **Seams.** `Seam { a: [f64; 3], b: [f64; 3], kind }`, height linear along the segment:
 
 - `SeamKind::Road`: one grounded outer-chain segment, road on the left
-- `SeamKind::Pad`: one side of a site's support footprint, oriented counter-clockwise, at the
-  support height
+- `SeamKind::Pad`: one side of a site's support footprint, oriented counter-clockwise (positive
+  signed area in XZ, the paving partition's convention), at the support height; a window's pad
+  seams follow its road seams, in key order (`TERRAIN-07-C`)
 - `SeamKind::Wall`: reserved for structures ([T14](#terrain-07-open-questions)); not built
 
 A seam's key is the bits of `a` then `b`, never a piece, edge or building id: a split renumbers
@@ -3454,8 +3456,16 @@ pieces far from the edit whose vertices stay bit-identical (`ROAD-68-E` round 4)
 ties in at the slope ratio `k = 0.5` (1:2).
 
 **Material edges.** The sides of each site surface polygon (`SiteSurfaceMaterial`: asphalt or
-concrete), keyed like seams. The material class at a point is the first surface, in building and
-authored order, that contains it, which is the rule `SitePavingPartition` applies today.
+concrete), oriented with the surface on the left and keyed like seams (the bits of `a` then `b`,
+unique). The material class at a point is the first surface, in canonical site order and then
+authored order, that contains it (closed: a point on a side is inside), which is the rule
+`SitePavingPartition` applies today. Correction (`TERRAIN-07-C`): canonical site order is the
+order of the sites' content (footprint corner count and bits, support height bits, then the
+surfaces' materials and corner bits), not building order: the allocator swap-removes buildings,
+so a removal far away would renumber two overlapping sites and change a tile it never touched
+(invariants 3 and 5). Where sites' surfaces do not overlap the two orders agree. The containment
+test decides each crossing by the side's cross product alone, exact in sign for lattice points
+and `f32` corners, as the partition's `cross >= 0` is.
 
 **Texels** (proposed format, [T6](#terrain-07-open-questions)): one RGBAF texel, 16 bytes, per
 lattice sample:
@@ -3469,6 +3479,8 @@ lattice sample:
 - B: the nearest road seam's index in the tile's seam row when `|sdf| < B`, else `-1`.
 - A: `16 × (e + 1) + class`, integer-valued: `class` the material class (0 none, 1 asphalt,
   2 concrete), `e` the nearest material edge's index in the tile's edge row within `B`, else `-1`.
+  The nearest edge takes the seams' total order (distance, then the larger distance to its line,
+  then the smaller key).
 
 `delta` is `f32` rather than half float so that a pad renders at its support height and an ungraded
 sample is bitwise the base (a half-float delta between 16 m and 32 m rounds to 1.6 cm steps).
@@ -3479,10 +3491,11 @@ capacities, to be confirmed by measured maxima ([T7](#terrain-07-open-questions)
 256 edges at `GL0`, 512/128 at `GL1`, 256/64 at `GL2`, 128/16 at `GL3` (seams from the
 `TERRAIN-07-A` maxima, edges until `TERRAIN-07-C` measures them).
 
-**Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, and
-the tile's inputs (the sorted seam keys and heights, the bits of the road top triangles the
-coverage visited, sorted, the site footprints, heights and surfaces, and the base revisions under
-the window) for adoption, compared exactly as `ROAD-68-E` compares
+**Payload.** Per tile and level: the tile key, the level, the texels with apron, the rows, the
+conflict walls along its road seams ([retaining walls](#cliffs-coal-pits-retaining-walls)), and
+the tile's inputs (the sorted road seam keys and heights, the bits of the road top triangles the
+coverage visited, sorted, the window's site footprints, heights and surfaces in canonical order,
+and the base revisions under the window) for adoption, compared exactly as `ROAD-68-E` compares
 terrain sources (a hash only as a fast reject).
 
 **Residency and eviction.** Godot owns residency. A tile is resident at a level while its patch is
@@ -3694,8 +3707,23 @@ to point).
   terrain shader paints with the paving include. Outside the pad they follow the graded ground, as
   today's paving triangles do.
 - For consumers, `mask_at` reports `Pad` inside the footprint and `Paved` on a surface.
+  Clarification (`TERRAIN-07-C`): `Pad` wins over `Paved`, so `Pad` is exactly the footprint
+  test that the `sample_building_site_height(..).is_some()` consumers make, and `Paved` is the
+  paving outside footprints (frontage, aprons); the texels carry the material inside pads too,
+  which the shader paints.
 - A placement, removal, surface change or pad height change marks the tiles within its reach of the
-  old and the new footprint.
+  old and the new footprint. Built (`TERRAIN-07-C`, `dirty_tiles_for_site_changes`): the allocator
+  records each change as the site before it, after it or both (`SiteChange`: the bounds of its
+  lot, footprint and surfaces and its support height), in the same mutators and outbox entries as
+  the legacy terrain boxes; a tile is dirty when its lattice lies within the band of a change's
+  bounds (class, pad and edges change only there), or where the bake's passes may list a pad seam
+  of the change, tested with one seam spanning the bounds at the support height: the passes read
+  a seam's box and height range only, so every real pad seam's test passes there too. The floor of
+  pass 2 takes the window's pad seams as it takes road seams, also for road changes.
+- The bake reads the sites through the allocator's 512 m site chunks (`SiteSource`): a source
+  whose index is being rebuilt cannot answer, and the bake fails with
+  `BakeError::SitesUnavailable` rather than scan every site; the caller prepares the index. The
+  selection then marks every candidate tile a changed seam reaches within the cap (a superset).
 
 ### Cliffs, coal pits, retaining walls
 
@@ -3706,10 +3734,28 @@ to point).
 - **Coal pits** are an overlay today (`get_coal_pit_overlay_data`, an L8 mask the terrain shader
   paints), not a cut. They stay an overlay ([T15](#terrain-07-open-questions)).
 - **Retaining walls.** The exact cut promotes structural sources (tunnel portals, bridge abutments)
-  to wall faces. B has none yet: `SeamKind::Wall` (no cone; the client builds its wall mesh from its
+  to wall faces. `SeamKind::Wall` (no cone; the client builds its wall mesh from its
   skirt grown to the graded height difference) is reserved for the abutments and portals of
-  [`TERRAIN-07-C`](#terrain-07-c--sites-pads-paving-and-structure-ends)
-  ([T14](#terrain-07-open-questions)). Ordinary grounded roads never get walls.
+  [`TERRAIN-07-C`](#terrain-07-c--sites-pads-paving-and-structure-ends) round 2
+  ([T14](#terrain-07-open-questions)). Ordinary grounded roads get no structural walls.
+- **Conflict walls** ([T2](#terrain-07-open-questions) (c), built in `TERRAIN-07-C` round 1 as
+  payload data, rendered in `TERRAIN-07-D`). Along every road seam of a tile (its part in the
+  tile), the vertices are the seam's crossings with the level's lattice lines and cell diagonals,
+  where the rendered lattice surface bends. A vertex is walled where the highest lower bound `L`
+  of the other seams within the cap, road and pad seams alike, stands above the seam (`g = L >
+  h`); its top is the higher of `L` and the lattice surface there, elsewhere the higher of `h`
+  and that surface. A face joins two consecutive vertices of which one is walled, from the seam's
+  heights to the tops, facing away from the road; the faces of a seam share their ends bitwise.
+  Between vertices the top is linear like the surface, so the face covers the masked terrain's
+  cut edge over the seam wherever its ends do: the step is closed with no gap. The extent is
+  resolved at the crossings (about 0.17 m apart at `GL0`); beyond the last walled vertex the
+  terrain edge meets the seam within the `GL0` interpolation, as on any curve
+  ([invariant 10](#invariants)). The roadbed takes no terrain height. Pads are not masked
+  ([T11](#terrain-07-open-questions)): the terrain is continuous over a pad seam, so a pad gets
+  no wall. Pruned, a seam is evaluated only against the seams whose cone can rise above it at all
+  (`h'_hi - k D > h_lo`, `D` between their boxes, after one test against all the tile's road
+  seams), which leaves every walled `L` as it is; the unpruned bake takes every seam and gives
+  the same faces bitwise.
 
 ### LOD and distant tiles
 
@@ -3819,7 +3865,14 @@ to point).
   ([T20](#terrain-07-open-questions) (a), which takes [T9](#terrain-07-open-questions) (b));
   redo swaps likewise. A kept tile is bitwise the rebake of the restored inputs (invariant 9);
   `TERRAIN-07-E` tests that equality, and an input changed meanwhile outside the undo stack
-  would make a kept tile stale, which gate E must rule out or rebake.
+  would make a kept tile stale, which gate E must rule out or rebake. Sites are such an input
+  (`TERRAIN-07-C`): the demand pass places, redevelops and removes buildings beside a committed
+  road between the commit and its undo, outside the undo stack, and a kept tile within the reach
+  of such a change no longer equals the rebake. The tile's inputs hold the window's sites
+  (`TileInputs::sites`, canonical order, compared exactly), so gate E can compare each kept
+  tile's inputs with the current ones at undo and rebake the ones that differ, or mark the kept
+  tiles a site change selects ([`dirty_tiles_for_site_changes`](#sites-pads-and-paving)) stale
+  as the change publishes; the second keeps undo free of input gathers.
 - **Load.** No terrain surface state is saved. Tiles are baked as residency requests them.
 - **Bitwise.** A preview tile equals the committed tile, a fresh bake of the same inputs, the tile
   after undo and redo, and the tile after save and load.
@@ -3930,7 +3983,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | --- | --- | --- |
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
-| `TERRAIN-07-C` | open | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
+| `TERRAIN-07-C` | in progress (round 1 on branch `terrain07-C`: items 1-3 and 5, [record](#terrain-07-c-record); item 4, structure ends, is round 2's) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
@@ -4552,6 +4605,156 @@ extension cases of [`earthworks.md`](earthworks.md#1-the-runtime-site-support-fo
 the hillside houses (`hillside_houses_terrain_builds_clean`, re-pointed from the refined CDT
 patches) and the Kuopio reference save's sites bake without errors; a placement or removal marks only
 the tiles within its bound, with 100k background sites; a placement's terrain stage is timed.
+
+#### `TERRAIN-07-C` record
+
+Round 1, 2026-10-26, branch `terrain07-C` from `road` at `5f2c5fbf` (gate A landed); items 1-3
+and 5. Item 4 (structure ends) is round 2's, and the gate commit follows it. Fresh runs on this
+branch, kept apart from gate A's numbers.
+
+**What landed.**
+
+- Allocator (item 1): `SiteSource for BuildingAllocator`, the sites whose bounds meet a rectangle
+  through the 512 m site chunks with their footprints, support heights and surfaces in authored
+  order; it answers only while the chunk index is ready (`SiteSource::ready`), so the bake never
+  scans the city (`BakeError::SitesUnavailable` otherwise). The allocator's footprint predicate is
+  shared (`site_footprint_contains`). Every site change records a `SiteChange` (the site before or
+  after it: the legacy box and its support height) in the same mutators as the legacy terrain
+  boxes, into a second outbox that `SimCore`'s site publication moves to
+  `last_site_terrain_changes` (`TERRAIN-07-E` consumes it).
+- Graded (items 2, 3 and 5): `graded/sites.rs` (the window's sites in canonical order, `Pad`
+  seams, the `Pad` class by the allocator's predicate, the material class of the first surface
+  holding a point, the nearest material edge within the band, the site inputs),
+  `graded/walls.rs` (conflict walls), the `Pad` class in the pointwise function (the support
+  height exactly; pad samples never need the second pass), the material word and the edge row in
+  the bake with `Level::edge_capacity` and `BakeError::EdgeCapacity`, `TileInputs::sites`,
+  `TilePayload::walls`, `dirty_tiles_for_site_changes`, pad seams in the selection's pass-2 floor
+  for road changes too, and `mask_at` reporting `Pad` and `Paved` (`Pad` first). Every bake,
+  query and selection takes a `SiteSource`; road-only fixtures pass `NoSites`.
+- Rules recorded where they live: canonical site order (not building order) and the closed,
+  exact containment ([data](#data)); the mask's precedence and the site change selection
+  ([sites](#sites-pads-and-paving)); conflict walls ([retaining walls](#cliffs-coal-pits-retaining-walls));
+  the sites' stale kept-tile risk ([undo](#preview-commit-undo-and-load)).
+- Tests: `graded/site_tests.rs`, and `hillside_houses_terrain_builds_clean` re-pointed from the
+  refined CDT patches (its `TERRAIN-07` ignore removed).
+
+**Acceptance (debug library tests, fresh, on the timed code `6b5dd5de`).**
+
+- Pads: `pads_hold_their_support_height_and_surfaces_their_partition_class` (three sites beside
+  the sloped T: a turned house with an asphalt apron leaving the pad for the road and an
+  overlapping concrete walk, a pad with a non-convex concrete yard, a pad 6 m above the road):
+  at every level every uncovered lattice point in a footprint packs `support - base` bitwise.
+  `kuopio_yards_bake_as_pads_with_the_partition_materials` and the re-pointed
+  `hillside_houses_terrain_builds_clean` check the same on the allocator's placed sites (the six
+  Kuopio yards on the reference save, the five hillside houses).
+- Materials: at every lattice point near the surfaces the class is one the legacy
+  `SitePavingPartition` gives there (within its `f32` output's 0.1 mm), and 0 elsewhere: the
+  fixture above (the frontage-extension trapezoid running past the pad to the road, the
+  non-convex yard, the overlap decided by authored order) at all four levels, and the Kuopio yard
+  fixture's and hillside houses' surfaces at `GL0` (the surfaces the legacy snapshot hands the
+  partition).
+- Bakes without errors: every tile within the cap of each Kuopio yard and hillside house, at all
+  four levels.
+- Exactness: `site_bakes_prune_exactly` (`assert_exact_pruning` with the sites: texels, seam and
+  edge rows, walls and inputs of the pruned bake equal the evaluation over every seam, footprint,
+  surface and edge, at `GL0`, `GL2` and `GL3`, in batches of 16 and 1, reversed, on 1, 4 and 8
+  workers, the lanes equal one point at a time), and the same on the Kuopio yards (the 4 x 4
+  tiles around the first yard, the `GL0` reference on its tile); gate A's exactness suite,
+  `kuopio_pruned_bake_equals_every_seam` among it, passes unchanged.
+- Selection: `site_changes_select_every_tile_they_alter` (a placement, the high pad's removal and
+  a pad height change, at `GL0` and `GL2`: every tile whose texels, edges or walls change is
+  selected, fewer than all).
+- Walls: `walls_close_the_step_at_the_lower_road` (T2's case: two roads 10 m apart between their
+  outer chains, 9 m apart in height; the lower road's wall stands 4.000 m) and
+  `a_pad_above_a_road_walls_it` and `kuopio_conflict_wall_closes_the_step` (round 4's site at node
+  50 on the reference save, `site-1.json`, wall up to 0.37 m): every road seam point sampled
+  every 5 cm where another seam's lower bound stands above the seam is covered by a face of its
+  tile from the seam's height (1 mm) to at least the rendered `GL0` surface (1 mm) and the graded
+  ground (1 cm), and the faces of a run share their ends bitwise; pruned walls equal the walls
+  over every seam.
+
+**Speed-ups found on the way** (exact; the unpruned bake is their test): pads and surfaces take
+the even-odd rule along each lattice row away from their sides and test the predicate only within
+1 cm of a side or on a row within 1 cm of a corner (`for_each_span_point`); the allocator rules a
+site out by its lot centre before reading its polygons; the walls' setters are found per 16 m
+block of the tile's road seams, and the lattice surface is read only along seams with a walled
+vertex. On the first build (`27fc85d90782`, same session, before them) the populated first edits
+took 3.63-4.79 ms and the Kuopio edits a median 2.78 ms.
+
+**Benchmarks** (release library tests, both locks, P-cores, four workers, 2026-10-26: control
+`ddafa2e183cd` (gate A round 4's binary, `7547abd8`, the code of `road` `5f2c5fbf`) 01:41-01:47,
+then `519a09971bd8` (`6b5dd5de`) 01:47-01:53; load 4.4 and 2.7 at their starts, restic absent;
+logs under `$ARTIFACTS`). Commands as in [measurement](#measurement-and-acceptance) plus
+`benchmark_graded_site_placement` and `benchmark_kuopio_yard_placements`.
+
+- **A placement's terrain stage** (site change selection plus the `GL0` bake, median of 7):
+  - `benchmark_graded_site_placement` (a site placed beside the sloped T, the neighbourhood fixed,
+    a background grid of 0, 1,092, 10,212 and 100,100 sites beyond 400 m): the same tile and texel
+    digest at every size, 0.76, 0.81, 0.79 and 0.73 ms (selection 0.12-0.21 ms).
+  - The six Kuopio yard placements on the reference save: 1.25-2.90 ms (2-5 tiles, selection
+    0.12-0.30 ms; two of them build 101 and 186 wall faces where their pads stand over the road).
+  - A building's removal in the populated city (`GRADED_SITE_REMOVAL`, after the commits):
+    1.20, 1.13, 1.10 and 1.19 ms at 2k, 10k, 30k and 100k residents (1,412 to 76,108 buildings),
+    1-2 tiles, every selected tile within the cap and band of the removed site's bounds.
+- **Populated commits** (`graded_tiles` rows, now with the city's sites): 0: 2.02, 1.77, 1.33 ms
+  (control 1.86, 1.54, 1.35); 2k: **3.33**, 1.35, 1.43 (2.37, 1.31, 1.41); 10k: **3.37**, 1.72,
+  1.47 (2.36, 1.50, 1.38); 30k: 2.89, 1.56, 1.01 (2.12, 1.58, 0.95); 100k: **4.29**, 1.72, 1.32
+  (2.71, 1.38, 1.20). The first edit of each built-up tier branches beside zoned lots, so its
+  tiles hold sites (55-76 material edges per tile): it misses 3.0 ms at 2k, 10k and 100k. Open,
+  not relaxed (below). Selection 0.83-1.02 ms on those edits (control 0.68-0.74). The edits
+  without sites stay within noise of the control.
+- **Why** (the populated census, `GL0` every road tile, same binaries): 0.66-0.90 ms per tile per
+  worker in the built-up tiers against 0.32-0.37 for the control, with 1.39-2.12 evaluated seams
+  per sample against 0.63-0.95 and windows of up to 1,285 seams against 808: the pads' seams
+  are cones the samples around them evaluate. The tier without lots is unchanged (0.32 against
+  0.30 ms).
+- **Kuopio edits** (roads only; the save has no sites): median 2.31 ms, p90 3.69, worst 6.67, 31
+  of 44 within 3.0 ms (control 2.14, 3.85, 6.50, 33 of 44); 84 wall faces over the 44 edits'
+  tiles. Census `GL0` 0.424 ms per tile per worker (control 0.372), rows up to 207 seams.
+- **Reference fixtures** (16 tiles, p50 of 50): `GL0` 0.88-1.30 ms on the road fixtures, `conflict_8`
+  1.60 (control 0.83-1.22, 1.70); `GL1` 0.59-0.79, `GL2` 0.48-0.69, `GL3` 0.38-0.66 ms.
+- **Locality** (`benchmark_graded_tiles_locality`): the same 4 tiles with bitwise equal texels at 3
+  to 4,707 edges, p50 0.50, 0.71, 1.00, 0.76 ms (control 0.45, 0.61, 0.86, 0.75).
+- **T7** (material edge rows): at most 113 per `GL0` tile in the 100k city, 3-7 on the Kuopio
+  yards, against the capacity of 256; `GL1`-`GL3` maxima are not measured at city scale yet (the
+  populated census bakes `GL0`). `GL3` takes its lattice bound (128), as its seams do. No
+  capacity error anywhere.
+
+**Open, not relaxed.** The populated commits beside built-up blocks miss the 3.0 ms terrain stage
+(3.33-4.29 ms on three of fifteen edits). The exact levers left, in the order to try: (1) a pad
+seam names no nearest seam, so the pruning's band term (`may_bind`'s `B`, which lists every
+seam within the band of a bin) should not list pad seams, only their bind and lift reaches: at
+`GL0` a pad within 0.5 m of the base then binds within about 1 m instead of 2 m, at `GL2` 6 m
+and `GL3` 60 m less; (2) the selection's per-candidate site gather and pad seams (0.83-1.02 ms
+of the stage); (3) a profile of the built-up tile bake. If they miss, the cost of sites as
+grading clients goes to the user as a new question. Kuopio's full-edit bakes (T20 (a): no frame
+runs them; gate E's frame paths) gain about 8 % from the walls.
+
+**Gate checks** (fresh): `cargo clippy --all-targets` on `6b5dd5de` gives the 59-warning
+baseline set exactly (file and message compared). `./run.sh --test` on `6b5dd5de` (DISPLAY and WAYLAND_DISPLAY unset,
+01:53-02:11) passes: the debug library suite 1,938 passed, 0 failed, 174 ignored (gate A: 1,929
+and 173; nine new tests run, `hillside_houses_terrain_builds_clean` among them, and two new
+benchmarks are ignored); the integration tests 4 passed; every Godot bridge and asset test, no
+SCRIPT ERROR; it still skips the rendered vegetation tests (Forward+ display) and the shader global
+probe (headless renderer). Disabled tests: the three legacy-pipeline `TERRAIN-07` tests (the
+tunnel portal CDT test, round 2's, and two refined-patch tests of `road_terrain_plan`) and gate
+A's two manual census runners.
+
+**Rebased** on `road` `b3627ada` (gate `ROAD-68-E` landed), 2026-10-26: one conflict, in the
+commit breakdown harness, which keeps both sides (E's measurement of the view's cell copy after
+the timed commits, then this gate's site removal); the docs merged without conflict. Fresh on the
+rebased round 1 (02:15-02:33): clippy gives the 59-warning baseline set exactly; `./run.sh --test`
+exits 0 with the debug library suite at 1,940 passed, 0 failed, 174 ignored (E's two new tests),
+the integration tests 4 passed, every Godot bridge and asset test passing without a SCRIPT ERROR
+and the same two skips; pruned equals unpruned (`site_bakes_prune_exactly`, the Kuopio yard and
+dead-end exactness tests, in that suite).
+
+**Lines** (production, tests excluded): `graded/` 4,117 (round 4: 2,684): the new `sites` 659 and
+`walls` 354, `tile` +219 (the pad class in the sample loop, the material word, the edge row, the
+site and wall calls, the new errors and capacities), `select` +102 (site change selection, pad
+seams in the floor), `seams` +57 (`SeamKind::Pad`, the shared `segment_at`), `query` +26,
+`sample` +18, the router +10. Allocator +112/−23 (`SiteSource`, `SiteChange`, the outbox).
+Roadbed unchanged. Tests +1,010 (`site_tests` 944, `tests` +66).
 
 #### `TERRAIN-07-D` — residency, payloads and the Godot tile renderer
 
