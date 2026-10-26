@@ -405,7 +405,6 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
     directions_pass_through(a.1, b.1) && RoadProfile::for_edge(a.0) == RoadProfile::for_edge(b.0)
 }
 
-// A pass-through pair ([`edges_pass_through`]), so the node has no layout.
 /// Whether `node` is a structure's free end: a bridge or tunnel is its only surface arm. Such an
 /// end owns no node piece; the structure's span closes it with a cap (`TERRAIN-07-C`).
 /// `O(degree)`.
@@ -417,6 +416,7 @@ fn ends_a_structure(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bo
     matches!(incidents, [(key, _)] if graph.edge(key.edge).class != EdgeClass::Standard)
 }
 
+// A pass-through pair ([`edges_pass_through`]), so the node has no layout.
 fn passes_through(graph: &RegionGraph, incidents: &[(ArmKey, RoadVec2)]) -> bool {
     matches!(incidents, [(a, da), (b, db)]
         if edges_pass_through((graph.edge(a.edge), *da), (graph.edge(b.edge), *db)))

@@ -31,8 +31,8 @@ pub const BRIDGE_DECK_DEPTH_M: f64 = 0.35;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StripKind {
     /// Road skirts, [`SKIRT_DEPTH_M`] deep, on every grounded piece (standard spans, and node
-    /// pieces where a standard edge meets): they reach into the ground below the footprint's edge, so a terrain mesh that sags
-    /// below the edge leaves no gap under the road.
+    /// pieces where a standard edge meets): they reach into the ground below the footprint's
+    /// edge, so a terrain mesh that sags below the edge leaves no gap under the road.
     Skirt,
     /// Bridge fascias, [`BRIDGE_DECK_DEPTH_M`] deep: a bridge span's deck sides, closed down to
     /// the concrete slab, whose edges are the fascias' bottom vertices.
@@ -482,7 +482,11 @@ pub(super) fn build_span_mesh(
             continue;
         };
         // The end row and the row next to it inside the span.
-        let (row, inner) = if end == 0 { (0, 1) } else { (rows - 1, rows - 2) };
+        let (row, inner) = if end == 0 {
+            (0, 1)
+        } else {
+            (rows - 1, rows - 2)
+        };
         end_cap(
             &positions,
             (row * stride, inner * stride),

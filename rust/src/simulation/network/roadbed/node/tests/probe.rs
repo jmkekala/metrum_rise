@@ -102,7 +102,11 @@ fn strips_hang_from_the_outer_chains_bitwise() {
             triangles.clear();
             mesh.for_each_strip_triangle(|points, bottoms| triangles.push((points, bottoms)));
             let mut strip = triangles.iter();
-            let chains = if kind.is_some() { mesh.outer_chains() } else { &[] };
+            let chains = if kind.is_some() {
+                mesh.outer_chains()
+            } else {
+                &[]
+            };
             for chain in chains {
                 let kind = kind.unwrap();
                 for pair in chain.vertices().windows(2) {

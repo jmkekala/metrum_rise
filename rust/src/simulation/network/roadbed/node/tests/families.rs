@@ -358,8 +358,22 @@ fn a_node_piece_where_only_structures_meet_stands_off_the_terrain() {
     let two = TWO_LANE_M;
     let cases = [
         (vec![(15.0, two, Bridge), (135.0, two, Bridge)], false),
-        (vec![(0.0, two, Tunnel), (180.0, two, Tunnel), (270.0, two, Tunnel)], false),
-        (vec![(0.0, two, Bridge), (180.0, two, Bridge), (270.0, two, Tunnel)], false),
+        (
+            vec![
+                (0.0, two, Tunnel),
+                (180.0, two, Tunnel),
+                (270.0, two, Tunnel),
+            ],
+            false,
+        ),
+        (
+            vec![
+                (0.0, two, Bridge),
+                (180.0, two, Bridge),
+                (270.0, two, Tunnel),
+            ],
+            false,
+        ),
         (vec![(15.0, two, Walk), (135.0, two, Bridge)], true),
     ];
     for sloped in [false, true] {
