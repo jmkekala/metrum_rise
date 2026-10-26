@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Point and ray queries of the graded surface (`TERRAIN-07`), for roads and building sites; no
-//! consumer reads them until `TERRAIN-07-F`. Every query evaluates the same pointwise function as
+//! Point and ray queries of the graded surface (`TERRAIN-07`), for roads and building sites:
+//! Godot's surface queries read them since `TERRAIN-07-D`, the other consumers from
+//! `TERRAIN-07-F`. Every query evaluates the same pointwise function as
 //! the bake, over every seam within the cap of the points it reads (no pruning, so no reach to
 //! compute), and answers from the `GL0` lattice the surface renders with: a point between lattice points lies
 //! on the `GL0` triangle under it, each lattice cell split along its `(i, j)`-`(i + 1, j + 1)`
-//! diagonal. Allocation-free once the scratch is warm.
+//! diagonal; in a 64 m tile without a seam within the cap, the bilinear base, as the ray march
+//! reads it. Allocation-free once the scratch is warm.
 
 use super::coverage::covered_height_at;
 use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE};
@@ -75,11 +77,21 @@ impl GradedSurface<'_> {
     }
 
     /// The graded ground the terrain renders: `GL0` values on the `GL0` triangle under the
-    /// point; in a pad its support height. Under a road it is the hidden inside-rule surface,
-    /// so callers test [`Self::mask_at`] first.
+    /// point; in a pad its support height; in a 64 m tile without a seam within the cap the
+    /// bilinear base, as [`Self::raycast_surface`] marches it (`TERRAIN-07-D`). Under a road it
+    /// is the hidden inside-rule surface, so callers test [`Self::mask_at`] first.
     pub fn ground_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(0), scratch);
+        if scratch.window.is_empty() {
+            // No seam within the cap of the cell: its vertices carry no delta. The tile's own
+            // window decides between the base and the base's `GL0` triangles, as the march does.
+            let [tx, tz] = [x, z].map(|v| (v / TILE_M).floor() * TILE_M);
+            self.prepare(grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M), scratch);
+            if scratch.window.is_empty() {
+                return scratch.base.at(x, z);
+            }
+        }
         let [w0, w1, w2] = cell.weights();
         let [v0, v1, v2] = cell.vertices();
         w0 * self.vertex(v0, scratch)
@@ -206,8 +218,10 @@ impl GradedSurface<'_> {
         cuts(deck, base + f64::from(delta))
     }
 
-    // Gathers the seams, sites and base samples within the cap of `rect`: road seams in key
-    // order, then the pad seams.
+    // Gathers the seams and sites within the cap of `rect` (road seams in key order, then the
+    // pad seams) and the base samples one base cell around it, which every base read of the
+    // callers lies in (`normal_at`'s central differences reach one cell out): a point's base
+    // reads only its four samples, so the window's extent changes no value.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
         gather_road_seams(
@@ -218,7 +232,8 @@ impl GradedSurface<'_> {
         );
         scratch.sites.gather(self.sites, window);
         scratch.sites.push_pad_seams(&mut scratch.window);
-        scratch.base.fill(self.terrain, window);
+        let cell_m = BaseGrid::of(self.terrain).cell_m;
+        scratch.base.fill(self.terrain, grown(rect, cell_m));
     }
 
     // Gathers the portal parts around `rect`, for the opening's test (T22 5 (a)).
