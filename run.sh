@@ -1147,6 +1147,30 @@ if [ $TEST -eq 1 ]; then
     else
         echo "Rendered vegetation tests skipped: they need a Forward+ display."
     fi
+    # Plot and paving lighting (RENDER-13), Forward+: on $DISPLAY, else in gamescope's headless
+    # backend. gamescope exits 0 whatever its child returns, so the test's status comes back
+    # through a file and a failure fails the run.
+    for plot_test_script in plot_material_lighting_test plot_dawn_lighting_test; do
+        plot_test_command=(godot --path "$asset_test_project" --audio-driver Dummy --resolution 640x480 \
+            --script "res://tests/${plot_test_script}.gd" -- --asset-editor)
+        if [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
+            echo "Running $plot_test_script on $DISPLAY..."
+            if ! "${plot_test_command[@]}"; then
+                exit 1
+            fi
+        elif [ "$METRUM_PLATFORM" = "linux" ] && command -v gamescope >/dev/null 2>&1; then
+            echo "Running $plot_test_script in gamescope's headless backend..."
+            plot_test_status="$asset_test_profile/${plot_test_script}.status"
+            env -u WAYLAND_DISPLAY timeout 600 gamescope --backend headless -W 640 -H 480 -- \
+                sh -c '"$@"; echo $? > "$0"' "$plot_test_status" "${plot_test_command[@]}"
+            if [ "$(cat "$plot_test_status" 2>/dev/null)" != 0 ]; then
+                echo "$plot_test_script failed (status $(cat "$plot_test_status" 2>/dev/null || echo none))"
+                exit 1
+            fi
+        else
+            echo "$plot_test_script skipped: it needs a Forward+ display or gamescope."
+        fi
+    done
     exit 0
 fi
 

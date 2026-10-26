@@ -54,7 +54,7 @@ func run() -> void:
 			print("DAWN_PAVING hour=", hour, " kind=", kind, " delta=", delta)
 			expect(delta < 0.002, "frontage and yard must match with the live coloured sky")
 			if kind == "asphalt":
-				var sidewalk := await capture(Materials.road_sidewalk_material())
+				var sidewalk := await capture(Materials.road_sidewalk_material(), SIDEWALK_TAG)
 				expect(difference(frontage, sidewalk) < 0.002, "sidewalk must share the same morning lighting")
 		# Put the comparison area fully in shadow: ambient/reflections must also agree alone.
 		blocker.visible = false

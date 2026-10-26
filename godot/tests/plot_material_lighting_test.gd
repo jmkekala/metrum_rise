@@ -5,6 +5,10 @@
 extends SceneTree
 
 const Materials := preload("res://scripts/renderers/world_materials.gd")
+const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
+# The vertex colour of a roadside sidewalk in the road chunks (`sidewalk_color`):
+# road_path.gdshader draws a vertex whose green channel is full as a footpath (ROAD-56).
+const SIDEWALK_TAG := Color(0, 0, 0, 1)
 var failures := 0
 var viewport: SubViewport
 var surface: MeshInstance3D
@@ -62,37 +66,33 @@ func difference(a: Image, b: Image) -> float:
 	return total / count
 
 func native_terrain_face() -> ArrayMesh:
-	# Exercise Rust's real CDT/regular-buffer export, which a PlaneMesh cannot cover.
-	var simulation := SimulationNode.new()
-	root.add_child(simulation)
-	expect(simulation.create_blank_world(80, 80, 10, 40, 0), "native winding fixture must initialize")
-	# The synchronous preview's terrain payload (`ROAD-68-E`; terrain joins the preview after
-	# part 1, so until then this fixture finds no faces, as since `ROAD-68-A`).
-	var result: Variant = simulation.preview_road(
-		PackedVector3Array([Vector3(-10, 0, 0), Vector3(10, 0, 0)]), 1, 1, true)
-	await process_frame
+	# The terrain triangles the game draws, which a PlaneMesh cannot cover: since TERRAIN-07-D
+	# the graded renderer's cell meshes (no CDT export). A cell mesh's vertex holds its lattice
+	# index in XZ, which terrain_cells.gdshaderinc scales into place without mirroring, so its
+	# winding is the drawn one. A face of the 2 m GL2 lattice, in metres, is the flat face.
+	var tiles := GradedTiles.new()
+	tiles._build_meshes()
 	var selected := PackedVector3Array()
 	var faces := 0
 	var backwards := 0
-	if result is Dictionary:
-		for patch in result.get("terrain_preview", {}).get("patches", []):
-			var vertices: PackedVector3Array = patch.get("terrain_mesh_vertices", PackedVector3Array())
-			var indices: PackedInt32Array = patch.get("terrain_mesh_indices", PackedInt32Array())
-			for i in range(0, indices.size(), 3):
-				var a := vertices[indices[i]]
-				var b := vertices[indices[i + 1]]
-				var c := vertices[indices[i + 2]]
-				var normal := (b - a).cross(c - a)
-				faces += 1
-				if normal.y > 0:
-					backwards += 1
-				if selected.is_empty() and absf(normal.y) > 1 and absf(a.y - b.y) < 0.0001 and absf(a.y - c.y) < 0.0001:
-					var centre := (a + b + c) / 3.0
-					selected = PackedVector3Array([a - centre, b - centre, c - centre])
-	simulation.free()
+	for code: int in tiles._meshes.keys():
+		var cell_arrays: Array = (tiles._meshes[code] as ArrayMesh).surface_get_arrays(0)
+		var vertices: PackedVector3Array = cell_arrays[Mesh.ARRAY_VERTEX]
+		var indices: PackedInt32Array = cell_arrays[Mesh.ARRAY_INDEX]
+		for i in range(0, indices.size(), 3):
+			var a := vertices[indices[i]]
+			var b := vertices[indices[i + 1]]
+			var c := vertices[indices[i + 2]]
+			var normal := (b - a).cross(c - a)
+			faces += 1
+			if normal.y > 0:
+				backwards += 1
+			if selected.is_empty() and code == 2:
+				var centre := (a + b + c) / 3.0
+				selected = PackedVector3Array([(a - centre) * 2.0, (b - centre) * 2.0, (c - centre) * 2.0])
 	print("NATIVE_TERRAIN_WINDING faces=", faces, " backwards=", backwards)
-	expect(faces > 0 and backwards == 0, "exported terrain must face upward under Godot's clockwise convention")
-	expect(not selected.is_empty(), "native fixture must supply a flat terrain face")
+	expect(faces > 0 and backwards == 0, "graded terrain cells must face upward under Godot's clockwise convention")
+	expect(not selected.is_empty(), "the graded cells must supply a flat terrain face")
 	if selected.is_empty():
 		return null
 	var arrays := []
@@ -154,12 +154,12 @@ func run() -> void:
 			if energy == 0.0:
 				expect(frontage.get_pixel(160, 120).get_luminance() < 0.01, "paving must not retain the grass emission floor")
 			if kind == "asphalt":
-				var sidewalk := await capture(Materials.road_sidewalk_material())
-				var rotated := await capture(Materials.road_sidewalk_material(), Color.WHITE, PI * 0.5)
+				var sidewalk := await capture(Materials.road_sidewalk_material(), SIDEWALK_TAG)
+				var rotated := await capture(Materials.road_sidewalk_material(), SIDEWALK_TAG, PI * 0.5)
 				print("PLOT_SIDEWALK delta=", difference(yard, sidewalk), " rotated=", difference(sidewalk, rotated))
 				expect(difference(yard, sidewalk) < 0.012, "yard and sidewalk asphalt must match")
 				expect(difference(sidewalk, rotated) < 0.012, "world mapped normals must not depend on mesh orientation")
-	var native_mesh := await native_terrain_face()
+	var native_mesh := native_terrain_face()
 	if native_mesh != null:
 		for energy: float in [1.0, 0.02]:
 			sun.light_energy = energy
@@ -173,7 +173,7 @@ func run() -> void:
 			var b := reference.get_pixel(160, 120)
 			var delta := Vector3(a.r - b.r, a.g - b.g, a.b - b.b).length()
 			print("NATIVE_PAVING energy=", energy, " delta=", delta)
-			expect(delta < 0.012, "actual exported terrain must match the yard under day/night lighting")
+			expect(delta < 0.012, "a drawn terrain face must match the yard under day/night lighting")
 	world.environment.ambient_light_energy = 0
 	# Directional shadows and local lamps must agree across the paving boundary too.
 	var blocker := MeshInstance3D.new()

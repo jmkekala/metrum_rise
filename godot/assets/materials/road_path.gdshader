@@ -7,8 +7,12 @@ render_mode cull_back, depth_draw_opaque, specular_disabled;
 // draw as a Finnish light-traffic path instead.
 
 varying vec3 world_pos;
+// Share of direct sunlight the clouds let through, from fragment() to light(), as the yards'
+// paving receives it (paving_surface.gdshaderinc).
+varying float cloud_sun;
 
 #include "res://scripts/shaders/ground_paving.gdshaderinc"
+#include "res://scripts/shaders/weather_clouds.gdshaderinc"
 #include "res://scripts/shaders/road_surface_finnish.gdshaderinc"
 #include "res://scripts/shaders/path_surface_finnish.gdshaderinc"
 
@@ -33,6 +37,7 @@ void vertex() {
 #include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 
 void fragment() {
+	cloud_sun = weather_cloud_sun(world_pos);
 	// 8-bit channels: R half-width in decimetres, G footpath marker, B surface kind, A 128 + age.
 	vec4 path = COLOR * 255.0;
 	bool footpath = path.g > 127.5;
@@ -80,5 +85,6 @@ void fragment() {
 }
 
 void light() {
-	DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION);
+	DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION)
+		* (LIGHT_IS_DIRECTIONAL ? cloud_sun : 1.0);
 }
