@@ -326,6 +326,14 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
 	var images: Array[Dictionary] = []
 	if _terrain_mode == "compare":
+		# The production terrain renderer uploads nothing while the network generation is
+		# unacknowledged (network_renderer.gd acknowledges it in the game); the terrain built
+		# below reads the published state whole.
+		var ack_deadline := Time.get_ticks_msec() + 10000
+		while simulation.is_network_dirty() and Time.get_ticks_msec() < ack_deadline:
+			simulation.acknowledge_network_render(simulation.get_network_render_generation())
+			await process_frame
+		_expect(not simulation.is_network_dirty(), "%s: the network render must be acknowledged" % label)
 		for graded in ([true] if fixture.has("b_only") else [false, true]):
 			await _compare_views(fixture, label, scene, camera, environment.environment, focus, graded, images)
 		_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
