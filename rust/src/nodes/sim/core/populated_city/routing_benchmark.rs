@@ -980,6 +980,8 @@ fn benchmark_populated_commit_breakdown() {
 #[test]
 #[ignore = "release TERRAIN-07-E populated drags; loads or builds the requested cities outside timing"]
 fn benchmark_populated_graded_drags() {
+    // As the breakdown (question 50 (a)): no test-only checks in the timed frames.
+    super::contract::timing_mode();
     for residents in commit_tiers() {
         let started = Instant::now();
         let (mut core, mut fixture) = commit_city(residents);
