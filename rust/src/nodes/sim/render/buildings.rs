@@ -522,8 +522,7 @@ impl SimCore {
                 let road_height_m = road_sample.map(|(_, height_m)| height_m);
                 let source_height_m =
                     self.heightmap.sample_height_world(point.x, point.y) * HEIGHT_SCALE;
-                let visual_height_m =
-                    self.heightmap.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE;
+                let visual_height_m = graded_ground_height(self, point);
 
                 edge_debug.record_terrain_visual_height(support_height_m, visual_height_m);
                 if let Some(height_m) = road_height_m {
@@ -810,6 +809,14 @@ fn normalized_or_zero(value: Vector2) -> Vector2 {
     }
 }
 
+// The graded ground the terrain renders at a probe point (`TERRAIN-07-F`), which the probes
+// report as the visual terrain height. The site index must be ready.
+fn graded_ground_height(core: &SimCore, point: Vector2) -> f32 {
+    core.with_graded_surface(|surface, scratch| {
+        surface.ground_height_at(f64::from(point.x), f64::from(point.y), scratch) as f32
+    })
+}
+
 fn push_site_debug_sample(
     samples: &mut VarArray,
     label: &str,
@@ -818,8 +825,7 @@ fn push_site_debug_sample(
     core: &SimCore,
 ) {
     let source_height_m = core.heightmap.sample_height_world(point.x, point.y) * HEIGHT_SCALE;
-    let visual_height_m =
-        core.heightmap.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE;
+    let visual_height_m = graded_ground_height(core, point);
     let mut dict = VarDictionary::new();
     dict.set("label", label);
     dict.set("point", point);

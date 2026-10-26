@@ -149,16 +149,14 @@ impl SimulationNode {
             let centre = (corners[0] + corners[2]) * 0.5;
             let color =
                 zoning_parcel_color(&core, core.zoning.cells.profile(key).unwrap_or(0), false);
-            let corners = corners.map(|p| {
-                // A visual inset leaves visible grid lines without altering authority or picking.
-                let p = centre + (p - centre) * 0.94;
-                let point = Vector2::new(p.x as f32, p.y as f32);
-                Vector3::new(
-                    point.x,
-                    core.get_world_surface_height_internal(point) + 0.04,
-                    point.y,
-                )
-            });
+            // A visual inset leaves visible grid lines without altering authority or picking.
+            let corners = core.graded_surface_corners(
+                corners.map(|p| {
+                    let p = centre + (p - centre) * 0.94;
+                    Vector2::new(p.x as f32, p.y as f32)
+                }),
+                0.04,
+            );
             for index in [0, 1, 2, 0, 2, 3] {
                 vertices.push(corners[index]);
                 colors.push(color);
@@ -184,13 +182,7 @@ impl SimulationNode {
                     parcel.zone_profile_runtime_id(),
                     parcel.occupied_building().is_some(),
                 );
-                let corners = parcel.corners().map(|point| {
-                    Vector3::new(
-                        point.x,
-                        core.get_world_surface_height_internal(point) + 0.04,
-                        point.y,
-                    )
-                });
+                let corners = core.graded_surface_corners(parcel.corners(), 0.04);
                 for index in [0, 1, 2, 0, 2, 3] {
                     vertices.push(corners[index]);
                     colors.push(color);
@@ -252,6 +244,9 @@ impl SimulationNode {
             return result;
         }
         let preview = core.preview_cell_selection_internal(shape, &path);
+        // The corners stand on the graded surface, which reads the site index.
+        let cell_m = core.config.zone_cell_m;
+        core.allocator.prepare_building_site_query_index(cell_m);
         let mut corners = PackedVector3Array::new();
         let mut addresses = PackedInt64Array::new();
         for &key in &preview.selection.cells {
@@ -260,13 +255,11 @@ impl SimulationNode {
                 .cells
                 .frame(key.grid)
                 .expect("selected cell frame");
-            for corner in frame.corners(key.x, key.y) {
-                let point = Vector2::new(corner.x as f32, corner.y as f32);
-                corners.push(Vector3::new(
-                    point.x,
-                    core.get_world_surface_height_internal(point) + 0.08,
-                    point.y,
-                ));
+            let points = frame
+                .corners(key.x, key.y)
+                .map(|corner| Vector2::new(corner.x as f32, corner.y as f32));
+            for corner in core.graded_surface_corners(points, 0.08) {
+                corners.push(corner);
             }
             addresses.extend([key.grid as i64, i64::from(key.x), i64::from(key.y)]);
         }

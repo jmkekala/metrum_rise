@@ -175,8 +175,5 @@ pub(in crate::nodes::simulation_node) fn zoning_parcel_surface_corners(
     core: &SimCore,
     geometry: &crate::simulation::zoning::ParcelGeometry,
 ) -> [Vector3; 4] {
-    geometry.corners.map(|corner| {
-        let surface_y = core.get_world_surface_height_internal(Vector2::new(corner.x, corner.y));
-        Vector3::new(corner.x, surface_y, corner.y)
-    })
+    core.graded_surface_corners(geometry.corners, 0.0)
 }

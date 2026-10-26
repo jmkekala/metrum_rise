@@ -3,9 +3,12 @@
 //! Rigid vehicle support over road, apron and pad boundaries.
 
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::buildings::allocator::NearbySites;
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
+
+// Covers the f32 rounding of contact offsets around a pose's position, with a wide margin; a
+// contact outside the gather is still answered exactly, by its own query.
+const CONTACT_SLACK_M: f64 = 0.01;
 
 impl SimCore {
     /// Shared off-lane support solve for simulation snapshots and interpolated render poses.
@@ -19,21 +22,16 @@ impl SimCore {
             .vehicle_ground_support
             .get(vehicle as usize)
             .unwrap_or(&self.vehicle_ground_support[0]);
-        // Every contact lies within the support's reach of `position`: one site gather serves
-        // them all, with the per-point query's results (`SIM-02-K`).
-        let mut nearby = NearbySites::new();
-        if self
-            .allocator
-            .gather_nearby_sites(position, support.reach_m, &mut nearby)
-        {
+        // Every contact lies within the support's reach of `position`: one gather of the graded
+        // surface serves them all, with the per-point query's results (`TERRAIN-07-F`).
+        self.with_graded_surface(|surface, scratch| {
+            let (x, z) = (f64::from(position.x), f64::from(position.y));
+            surface.gather_near(x, z, f64::from(support.reach_m) + CONTACT_SLACK_M, scratch);
             vehicle_support_pose(support, position, heading, |point| {
-                self.get_world_surface_height_near(point, &nearby)
+                let (x, z) = (f64::from(point.x), f64::from(point.y));
+                surface.surface_height_near(x, z, scratch) as f32
             })
-        } else {
-            vehicle_support_pose(support, position, heading, |point| {
-                self.get_world_surface_height_internal(point)
-            })
-        }
+        })
     }
 
     /// [`Self::vehicle_ground_pose`] with a per-point surface query at every contact, the

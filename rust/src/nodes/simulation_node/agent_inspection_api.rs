@@ -54,13 +54,16 @@ impl SimulationNode {
     /// `active: false` and a `reason` once `render_id` is no longer inspected. O(1).
     #[func]
     pub fn get_agent_inspection(&self, render_id: i64) -> VarDictionary {
-        let Some(core) = self.try_lock_core() else {
+        let Some(mut core) = self.try_lock_core() else {
             let mut drawn = VarDictionary::new();
             if let Some(origin) = self.car_visuals.drawn_origin(render_id) {
                 drawn.set("drawn_position", Vector3::new(origin.x, origin.y, origin.z));
             }
             return drawn;
         };
+        // Positions stand on the graded surface, which reads the site index.
+        let cell_m = core.config.zone_cell_m;
+        core.allocator.prepare_building_site_query_index(cell_m);
         let id = u64::try_from(render_id).unwrap_or(u64::MAX);
         let Some(idx) = core.agents.inspected_agent_index(id) else {
             let reason = core
@@ -88,9 +91,12 @@ impl SimulationNode {
     /// or when `render_id` is not inspected. O(route lanes).
     #[func]
     pub fn get_agent_route_lines(&self, render_id: i64) -> VarDictionary {
-        let Some(core) = self.try_lock_core() else {
+        let Some(mut core) = self.try_lock_core() else {
             return VarDictionary::new();
         };
+        // The markers stand on the graded surface, which reads the site index.
+        let cell_m = core.config.zone_cell_m;
+        core.allocator.prepare_building_site_query_index(cell_m);
         let Some(idx) = u64::try_from(render_id)
             .ok()
             .and_then(|id| core.agents.inspected_agent_index(id))

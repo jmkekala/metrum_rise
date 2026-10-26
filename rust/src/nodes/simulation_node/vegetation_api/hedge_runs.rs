@@ -42,7 +42,7 @@ pub(crate) fn hedge_runs(core: &SimCore, origin: Vector2, span: f32) -> Vec<f32>
         VegetationLayer::Canopy,
         cell_m,
     );
-    let height = |p: Vector2| authored_ground_height(core, p);
+    let height = |p: Vector2| core.get_world_surface_height_internal(p);
     let mut modules = Vec::new();
     if !core.vegetation_edits.any_in_cell_range(
         VegetationLayer::Canopy,

@@ -7,6 +7,7 @@ use crate::nodes::sim::core::VegetationEditUndo;
 use crate::simulation::vegetation::edits::{
     AuthoredPlant as Plant, VARIANT_FROM_SEED, VegetationCell, VegetationLayer, pack_patch_key,
 };
+use crate::simulation::terrain::graded::GroundClass;
 use crate::simulation::vegetation::{hash, unit};
 use brush::preset;
 
@@ -77,7 +78,7 @@ fn clear_footprint(
     y: f32,
     radius: f32,
     max_relief: f32,
-    sample: impl Fn(f32, f32) -> Option<f32>,
+    mut sample: impl FnMut(f32, f32) -> Option<f32>,
 ) -> bool {
     [-radius, 0.0, radius].into_iter().all(|dz| {
         [-radius, 0.0, radius]
@@ -639,14 +640,14 @@ pub(crate) fn scatter_layer(
             if x < origin.x || z < origin.y || x >= origin.x + span || z >= origin.y + span {
                 continue;
             }
-            // An authored plant stands in a yard or beside one, where the lawn is the site's
-            // graded ground rather than the heightmap; on a slope the two differ by metres. A
-            // generated plant is cleared off every such surface, so it reads the cheap heightmap.
+            // An authored plant stands on the visible surface (a yard's pad or a road deck
+            // where one owns the point); a generated plant, cleared off every such surface,
+            // stands on the graded ground (`TERRAIN-07-F`).
             let height = |x: f32, z: f32| {
                 if authored {
-                    authored_ground_height(core, Vector2::new(x, z))
+                    core.get_world_surface_height_internal(Vector2::new(x, z))
                 } else {
-                    core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
+                    ground_height(core, x, z)
                 }
             };
             let y = height(x, z);
@@ -679,11 +680,12 @@ pub(crate) fn scatter_layer(
     packed
 }
 
-// Ground under an authored plant as drawn: a road deck, a building's flat support or a yard's
-// graded ground where one owns the point, else the visual heightmap. Bounded lookups only: the
-// road R-tree, the 512 m site chunks and the refined patch's CDT tiles.
-fn authored_ground_height(core: &SimCore, pos: Vector2) -> f32 {
-    core.get_world_surface_height_internal(pos)
+// The graded ground the terrain renders at a point (`TERRAIN-07-F`). The site index must be
+// ready.
+fn ground_height(core: &SimCore, x: f32, z: f32) -> f32 {
+    core.with_graded_surface(|surface, scratch| {
+        surface.ground_height_at(f64::from(x), f64::from(z), scratch) as f32
+    })
 }
 
 // The generator decision has one implementation for rendering, picking and painting.
@@ -764,38 +766,45 @@ fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, y
         && (layer != VegetationLayer::Canopy || tree_clearance::clear(core, x, z))
 }
 
-// Whether a 3x3 footprint of `radius` around a position is open, native ground within
-// `max_relief` of its centre height. Wild vegetation keeps off a building's whole flat support;
-// with `yard`, an authored plant keeps off only its walls and paving, so a yard's lawn can be
-// planted and a house's own hedge stands where its asset put it.
+// Whether a 3x3 footprint of `radius` around a position is open ground within `max_relief` of
+// its centre height, on the graded surface (`TERRAIN-07-F`): one gather around the footprint,
+// then each sample's class and graded ground. Wild vegetation keeps off a building's whole
+// flat support and its paving; with `yard`, an authored plant keeps off only its walls and
+// paving, so a yard's lawn can be planted and a house's own hedge stands where its asset put
+// it. The site index must be ready.
 fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard: bool) -> bool {
     if !inside_world(core, x, z) {
         return false;
     }
-    let y = core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE;
-    // A 3x3 footprint rejects submerged roots and leaves clearance at shorelines
-    // and built surfaces. Check native terrain samples, not a global sea level.
-    if !clear_footprint(x, z, y, radius, max_relief, |sx, sz| {
-        let p = Vector2::new(sx, sz);
-        // A committed field is worked land, so it clears plants exactly as a road deck or a
-        // building pad does: the test is the same predicate, and nothing is destroyed, so the
-        // stand returns if the field is redrawn or the farm is removed.
-        if core.watermap.visible_depth_world(p.x, p.y) > 0.001
-            || core.transit_network.roadbed.height_at(p.x, p.y).is_some()
-            || if yard {
-                core.allocator.building_site_blocks_yard_plant(p)
-            } else {
-                core.allocator.sample_building_site_height(p).is_some()
+    core.with_graded_surface(|surface, scratch| {
+        let (cx, cz) = (f64::from(x), f64::from(z));
+        surface.gather_near(cx, cz, f64::from(radius), scratch);
+        let y = surface.ground_height_near(cx, cz, scratch) as f32;
+        // A 3x3 footprint rejects submerged roots and leaves clearance at shorelines
+        // and built surfaces. Check ground samples, not a global sea level.
+        clear_footprint(x, z, y, radius, max_relief, |sx, sz| {
+            let p = Vector2::new(sx, sz);
+            let (px, pz) = (f64::from(sx), f64::from(sz));
+            let built = match surface.mask_near(px, pz, scratch) {
+                GroundClass::Road | GroundClass::Paved(_) => true,
+                GroundClass::Pad => !yard,
+                GroundClass::Natural | GroundClass::Graded => false,
+            };
+            // A committed field is worked land, so it clears plants exactly as a road deck or a
+            // building pad does: the test is the same predicate, and nothing is destroyed, so the
+            // stand returns if the field is redrawn or the farm is removed. The mask answers the
+            // ground; a bridge deck over it is the roadbed's visible surface.
+            if built
+                || core.watermap.visible_depth_world(p.x, p.y) > 0.001
+                || core.transit_network.roadbed.height_at(p.x, p.y).is_some()
+                || (yard && core.allocator.building_site_blocks_yard_plant(p))
+                || core.allocator.field_clearance.covers_point(p)
+            {
+                return None;
             }
-            || core.allocator.field_clearance.covers_point(p)
-        {
-            return None;
-        }
-        Some(core.heightmap.sample_visual_height_world(p.x, p.y) * crate::config::HEIGHT_SCALE)
-    }) {
-        return false;
-    }
-    true
+            Some(surface.ground_height_near(px, pz, scratch) as f32)
+        })
+    })
 }
 
 #[cfg(test)]

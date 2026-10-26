@@ -151,11 +151,17 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
                 let p = a.lerp(b, u).lerp(d.lerp(c, u), v);
                 let rendered = rendered_paving_height(core, p)
                     .unwrap_or_else(|| panic!("yard {index} missing paving at {p:?}"));
-                let queried = core.get_world_surface_height_internal(p);
-                assert!(
-                    (rendered - queried).abs() < 0.003,
-                    "yard query {queried} != render {rendered} at {p:?}"
-                );
+                // The graded surface is the pad (`TERRAIN-07-F`): its support height wherever
+                // the `GL0` triangle under the point lies inside the footprint. Within one
+                // lattice diagonal of a side the triangle reaches the graded ground beyond it.
+                if site.contains_point(p) && pad_depth(&site.footprint_world, p) > GL0_DIAGONAL_M {
+                    let queried = core.get_world_surface_height_internal(p);
+                    assert!(
+                        (queried - site.support_height_m).abs() < 1e-5,
+                        "yard query {queried} != pad {} at {p:?}",
+                        site.support_height_m
+                    );
+                }
                 let hit = core
                     .intersect_world_surface_internal(
                         Vector3::new(p.x, rendered + 10.0, p.y),
@@ -189,6 +195,20 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
         }
     }
     graded_samples
+}
+
+// A `GL0` lattice cell's diagonal: the graded surface's triangle under a point lies within it.
+const GL0_DIAGONAL_M: f32 = 0.5 * std::f32::consts::SQRT_2 + 0.01;
+
+// Distance from a point inside a footprint to its nearest side.
+fn pad_depth(footprint: &[Vector2], point: Vector2) -> f32 {
+    (0..footprint.len())
+        .map(|i| {
+            let (a, b) = (footprint[i], footprint[(i + 1) % footprint.len()]);
+            let t = ((point - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+            point.distance_to(a + (b - a) * t)
+        })
+        .fold(f32::INFINITY, f32::min)
 }
 
 fn rendered_paving_height(core: &SimCore, point: Vector2) -> Option<f32> {
@@ -382,7 +402,9 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                     for point in &site.footprint_world {
                         let center = site.footprint_world.iter().copied().sum::<Vector2>()
                             / site.footprint_world.len() as f32;
-                        let inside = point.lerp(center, 0.01);
+                        // Deep enough that the graded surface's `GL0` triangle lies in the pad.
+                        let inside = *point + (center - *point).normalized() * 1.5;
+                        assert!(pad_depth(&site.footprint_world, inside) > GL0_DIAGONAL_M);
                         assert!(
                             (core.get_world_surface_height_internal(inside)
                                 - site.support_height_m)
@@ -1157,9 +1179,12 @@ fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
         for u in [0.1, 0.3, 0.5, 0.7, 0.9] {
             for v in [0.05, 0.25, 0.5, 0.9] {
                 let point = p[0].lerp(p[1], u).lerp(p[3].lerp(p[2], u), v);
-                let height = rendered_paving_height(&core, point).unwrap_or_else(|| {
-                    panic!("building {building} yard ({u}, {v}) at {point:?} is not paved")
-                });
+                assert!(
+                    rendered_paving_height(&core, point).is_some(),
+                    "building {building} yard ({u}, {v}) at {point:?} is not paved"
+                );
+                // Agents stand on the visible graded surface (`TERRAIN-07-F`).
+                let height = core.get_world_surface_height_internal(point);
                 let source = core.get_height_at_internal(point);
                 cut += usize::from(source - height > 0.1);
                 fill += usize::from(height - source > 0.1);
@@ -1349,8 +1374,8 @@ fn check_vehicle_contacts(core: &SimCore, transform: &[f32]) {
     for contact in core.vehicle_ground_support[0].contacts() {
         let p = origin + x * contact.x + y * contact.y + z * contact.z;
         let point = Vector2::new(p.x, p.z);
-        let ground = rendered_paving_height(core, point)
-            .unwrap_or_else(|| core.get_world_surface_height_internal(point));
+        // The visible surface the contacts stand on: the graded surface (`TERRAIN-07-F`).
+        let ground = core.get_world_surface_height_internal(point);
         assert!(p.y - ground >= 0.017, "contact={p:?}, ground={ground}");
         closest = closest.min(p.y - ground);
     }

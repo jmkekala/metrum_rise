@@ -63,7 +63,7 @@ impl SimulationNode {
     ) -> VarDictionary {
         let mut frame = VarDictionary::new();
         frame.set("busy", true);
-        let Some(core) = self.try_lock_core() else {
+        let Some(mut core) = self.try_lock_core() else {
             return frame;
         };
 
@@ -120,6 +120,9 @@ impl SimulationNode {
             construction_scaffold_transforms.to_variant(),
         );
         if known_site_revision != site_revision as i64 {
+            // The debug probes read the graded surface, which reads the site index.
+            let cell_m = core.config.zone_cell_m;
+            core.allocator.prepare_building_site_query_index(cell_m);
             frame.set(
                 "site_mesh_data",
                 core.get_building_site_mesh_data_internal().to_variant(),

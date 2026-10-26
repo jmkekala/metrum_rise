@@ -4,10 +4,16 @@
 
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::buildings::allocator::NearbySites;
-use crate::simulation::terrain::graded::GradedSurface;
+use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use godot::prelude::*;
+use std::cell::RefCell;
 mod engineered;
+
+thread_local! {
+    // One graded query scratch per thread (`TERRAIN-07-F`): the snapshot and render workers and
+    // the simulation thread keep theirs warm, so a surface query allocates nothing.
+    static SURFACE_SCRATCH: RefCell<QueryScratch> = RefCell::default();
+}
 
 impl SimCore {
     /// Returns the heightmap dimensions in terrain samples as a Godot Vector2.
@@ -20,80 +26,53 @@ impl SimCore {
         self.heightmap.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
     }
 
-    /// Returns the visible world-surface height at the given world position.
-    ///
-    /// This reads owned road surfaces first, building-site top surfaces second, and the current
-    /// visual terrain buffer only when no engineered surface owns the query point.
-    pub fn get_world_surface_height_internal(&self, pos: Vector2) -> f32 {
-        self.world_surface_height_with_sites(pos, || {
-            self.allocator.sample_building_site_height(pos)
-        })
+    /// The graded surface (`TERRAIN-07`) over the heightmap, the roadbed and the building sites:
+    /// the read API of every surface consumer. The site index must be ready
+    /// (`BuildingAllocator::prepare_building_site_query_index`) while it is queried.
+    pub(crate) fn graded_surface(&self) -> GradedSurface<'_> {
+        GradedSurface {
+            terrain: &self.heightmap,
+            roadbed: &self.transit_network.roadbed,
+            sites: &self.allocator,
+        }
     }
 
-    /// [`Self::get_world_surface_height_internal`] at `pos`, within the reach of a successful
-    /// `BuildingAllocator::gather_nearby_sites`, querying building sites among `nearby` only.
-    pub(crate) fn get_world_surface_height_near(&self, pos: Vector2, nearby: &NearbySites) -> f32 {
-        self.world_surface_height_with_sites(pos, || {
-            self.allocator.sample_building_site_height_near(pos, nearby)
-        })
-    }
-
-    // Roads first, then the building site `site_height` finds, engineered ground, terrain.
-    fn world_surface_height_with_sites(
+    /// Runs `query` on the graded surface with this thread's reused query scratch.
+    pub(crate) fn with_graded_surface<T>(
         &self,
-        pos: Vector2,
-        site_height: impl FnOnce() -> Option<f32>,
-    ) -> f32 {
-        self.transit_network
-            .roadbed
-            .height_at(pos.x, pos.y)
-            .or_else(site_height)
-            .or_else(|| self.sample_engineered_ground_height(pos))
-            .unwrap_or_else(|| {
-                self.heightmap.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE
+        query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
+    ) -> T {
+        let surface = self.graded_surface();
+        SURFACE_SCRATCH.with_borrow_mut(|scratch| query(&surface, scratch))
+    }
+
+    /// Returns the visible world-surface height at the given world position: the road's where a
+    /// road covers it, else the graded ground the terrain renders
+    /// ([`GradedSurface::surface_height_at`], `TERRAIN-07-F`), a pad's support height inside its
+    /// footprint. The site index must be ready.
+    pub fn get_world_surface_height_internal(&self, pos: Vector2) -> f32 {
+        self.with_graded_surface(|surface, scratch| {
+            surface.surface_height_at(f64::from(pos.x), f64::from(pos.y), scratch) as f32
+        })
+    }
+
+    /// A quad's corners (a zoning cell or parcel) on the visible surface, `lift` metres above it:
+    /// one gather of the graded surface around the corners, then each corner's exact
+    /// [`Self::get_world_surface_height_internal`]. The site index must be ready.
+    pub(crate) fn graded_surface_corners(&self, corners: [Vector2; 4], lift: f32) -> [Vector3; 4] {
+        let centre = corners.iter().fold(Vector2::ZERO, |sum, &p| sum + p) * 0.25;
+        let reach = corners
+            .iter()
+            .map(|p| (p.x - centre.x).abs().max((p.y - centre.y).abs()))
+            .fold(0.0f32, f32::max);
+        self.with_graded_surface(|surface, scratch| {
+            let (x, z) = (f64::from(centre.x), f64::from(centre.y));
+            surface.gather_near(x, z, f64::from(reach), scratch);
+            corners.map(|p| {
+                let height = surface.surface_height_near(f64::from(p.x), f64::from(p.y), scratch);
+                Vector3::new(p.x, height as f32 + lift, p.y)
             })
-    }
-
-    /// The visible surface the graded terrain renders (`TERRAIN-07-D`), at `pos`: the road's
-    /// height where a road covers the point, else the graded ground
-    /// ([`GradedSurface::surface_height_at`]), so Godot's queries agree with the graded tiles.
-    /// Readies the building-site index the surface reads, as
-    /// [`Self::intersect_world_surface_internal`] does.
-    pub fn graded_surface_height(&mut self, pos: Vector2) -> f32 {
-        self.allocator
-            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
-        let surface = GradedSurface {
-            terrain: &self.heightmap,
-            roadbed: &self.transit_network.roadbed,
-            sites: &self.allocator,
-        };
-        let (x, z) = (f64::from(pos.x), f64::from(pos.y));
-        surface.surface_height_at(x, z, &mut self.graded_query_scratch) as f32
-    }
-
-    /// The nearer of a ray's hits on the road and on the visible graded ground
-    /// ([`GradedSurface::raycast_surface`], `TERRAIN-07-D`). Readies the building-site index the
-    /// surface reads.
-    pub fn intersect_graded_surface(
-        &mut self,
-        ray_origin: Vector3,
-        ray_dir: Vector3,
-    ) -> Option<Vector3> {
-        self.allocator
-            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
-        let surface = GradedSurface {
-            terrain: &self.heightmap,
-            roadbed: &self.transit_network.roadbed,
-            sites: &self.allocator,
-        };
-        let to_f64 = |v: Vector3| [v.x, v.y, v.z].map(f64::from);
-        surface
-            .raycast_surface(
-                to_f64(ray_origin),
-                to_f64(ray_dir),
-                &mut self.graded_query_scratch,
-            )
-            .map(|[x, y, z]| Vector3::new(x as f32, y as f32, z as f32))
+        })
     }
 
     /// Raycasts against the terrain heightmap.

@@ -1276,9 +1276,12 @@ impl SimulationNode {
     pub fn try_get_zoning_parcels_overlay_packed(&self) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set("busy", true);
-        let Some(core) = self.try_lock_core() else {
+        let Some(mut core) = self.try_lock_core() else {
             return dict;
         };
+        // The corners stand on the graded surface, which reads the site index.
+        let cell_m = core.config.zone_cell_m;
+        core.allocator.prepare_building_site_query_index(cell_m);
         let revision = core.zoning.overlay_revision();
         let occupancy_revision = core.zoning.overlay_occupancy_revision();
         let parcel_count = core.zoning.parcels().len();
