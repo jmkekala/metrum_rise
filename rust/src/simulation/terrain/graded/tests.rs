@@ -138,6 +138,38 @@ fn texel_bits(payload: &TilePayload) -> Vec<[u32; 4]> {
         .collect()
 }
 
+/// A digest of every product of `payloads` in order (texels, rows, walls, the graded flag,
+/// inputs and stats, by their bits), to compare builds bitwise (`TERRAIN-07-E`). Untimed.
+pub(crate) fn payload_digest<'a>(payloads: impl IntoIterator<Item = &'a TilePayload>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let words = |values: &[f32], hasher: &mut std::collections::hash_map::DefaultHasher| {
+        for value in values {
+            value.to_bits().hash(hasher);
+        }
+    };
+    for payload in payloads {
+        (payload.tile, payload.level, payload.samples, payload.graded).hash(&mut hasher);
+        for texel in &payload.texels {
+            words(texel, &mut hasher);
+        }
+        for row in payload.seams.iter().chain(&payload.edges) {
+            words(row, &mut hasher);
+        }
+        for wall in &payload.walls {
+            words(&[wall.a, wall.b, wall.bottom, wall.top].concat(), &mut hasher);
+        }
+        let inputs = &payload.inputs;
+        (&inputs.seams, &inputs.triangles, &inputs.base_revisions, &inputs.sites).hash(&mut hasher);
+        let stats = &payload.stats;
+        (stats.window_seams, stats.listed, stats.candidates).hash(&mut hasher);
+        (stats.reach_sum_m.to_bits(), stats.reach_max_m.to_bits()).hash(&mut hasher);
+        (stats.second_pass_samples, stats.second_pass_candidates).hash(&mut hasher);
+        (stats.conflicts, stats.seam_conflicts, stats.portal_cut, stats.bore_named).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn assert_same(a: &TilePayload, b: &TilePayload, what: &str) {
     assert_eq!(a.tile, b.tile, "{what}");
     assert!(

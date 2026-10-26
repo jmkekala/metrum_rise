@@ -1037,6 +1037,7 @@ fn graded_drag(
                     "inputs_ms": stats.inputs_ms, "bake_ms": stats.bake_ms,
                     "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
                     "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
+                    "digest": pieces.graded.stage.as_ref().ok().map(|stage| stage_digest(stage)),
                 }));
             }
             None => poses.push(serde_json::json!({
@@ -1057,6 +1058,7 @@ fn graded_drag(
     let outcome = core.commit_road(request(Some(preview)), Instant::now(), Default::default());
     assert!(outcome.committed, "{}", outcome.rejection);
     let commit = core.last_graded_stats;
+    let commit_digest = core.last_graded_tiles.as_deref().ok().map(stage_digest);
     let reused = core.last_road_edit_metrics.preview_plan_reused;
     let kept = core
         .undo_stack
@@ -1068,11 +1070,13 @@ fn graded_drag(
         .expect("the kept tiles bake");
     assert!(core.undo_action_internal(), "undo");
     let undo = core.last_graded_stats;
+    let undo_digest = core.last_graded_tiles.as_deref().ok().map(stage_digest);
     core.benchmark_mode = true;
     let outcome = core.commit_road(request(None), Instant::now(), Default::default());
     assert!(outcome.committed, "{}", outcome.rejection);
     serde_json::json!({
         "poses": poses, "pose_max_ms": pose_max_ms,
+        "commit_digest": commit_digest, "undo_digest": undo_digest,
         "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
         "commit_inputs_ms": commit.inputs_ms, "commit_bake_ms": commit.bake_ms,
         "commit_tiles": commit.wanted, "commit_adopted": commit.adopted,
@@ -1080,6 +1084,13 @@ fn graded_drag(
         "undo_ms": undo.total_ms(), "undo_tiles": undo.wanted, "undo_adopted": undo.adopted,
         "undo_baked": undo.baked, "kept_tiles": kept.0, "kept_mb": kept.1 as f64 / 1e6,
     })
+}
+
+// A digest of a stage's products, untimed, to compare builds bitwise.
+fn stage_digest(stage: &crate::simulation::terrain::graded::TileStage) -> String {
+    let payloads = stage.tiles().iter().map(|held| &*held.payload);
+    let digest = crate::simulation::terrain::graded::tests::payload_digest(payloads);
+    format!("{digest:016x}")
 }
 
 // `ROAD-68-K22`: generates and checks this binary's saved commit-breakdown cities for

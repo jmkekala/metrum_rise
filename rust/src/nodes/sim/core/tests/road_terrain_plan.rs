@@ -7,6 +7,7 @@ use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
 use crate::nodes::sim::core::{RefinedTerrainPatchBuildInput, RoadEditPlan};
 use crate::simulation::network::roadbed::RoadbedSystem;
+use crate::simulation::terrain::graded::tests as graded_tests;
 use godot::prelude::Vector2;
 
 #[test]
@@ -1093,11 +1094,17 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
             Some(pieces) => {
                 let stats = pieces.graded.stats;
                 pose_max_ms = pose_max_ms.max(stats.total_ms());
+                // The pose's products, untimed, to compare builds bitwise.
+                let digest = pieces.graded.stage.as_ref().ok().map(|stage| {
+                    let payloads = stage.tiles().iter().map(|held| &*held.payload);
+                    format!("{:016x}", graded_tests::payload_digest(payloads))
+                });
                 poses.push(serde_json::json!({
                     "u": u, "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
                     "inputs_ms": stats.inputs_ms, "bake_ms": stats.bake_ms,
                     "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
                     "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
+                    "digest": digest,
                 }));
             }
             None => poses.push(serde_json::json!({
@@ -1121,6 +1128,13 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
     );
     assert!(outcome.committed, "{}", outcome.rejection);
     let commit = core.last_graded_stats;
+    let tiles_digest = |core: &SimCore| {
+        core.last_graded_tiles.as_ref().ok().map(|stage| {
+            let payloads = stage.tiles().iter().map(|held| &*held.payload);
+            format!("{:016x}", graded_tests::payload_digest(payloads))
+        })
+    };
+    let commit_digest = tiles_digest(core);
     let metrics = &core.last_road_edit_metrics;
     let (preview_reused, surface_graded_ms) =
         (metrics.preview_plan_reused, metrics.surface_graded_ms);
@@ -1134,10 +1148,12 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
         .expect("the kept tiles bake");
     assert!(core.undo_action_internal(), "undo");
     let undo = core.last_graded_stats;
+    let undo_digest = tiles_digest(core);
     core.benchmark_mode = true;
     commit_recorded_stroke(core, stroke);
     serde_json::json!({
         "poses": poses, "pose_max_ms": pose_max_ms,
+        "commit_digest": commit_digest, "undo_digest": undo_digest,
         "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
         "commit_inputs_ms": commit.inputs_ms, "commit_bake_ms": commit.bake_ms,
         "commit_tiles": commit.wanted, "commit_adopted": commit.adopted,
