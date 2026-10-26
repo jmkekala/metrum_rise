@@ -305,7 +305,9 @@ mod tests {
         assert_eq!(terrain.parse("depth"), Some(6));
         assert_eq!(terrain.parse("sun"), Some(10));
         assert_eq!(terrain.parse("4"), Some(4));
-        assert_eq!(terrain.parse("11"), None);
+        assert_eq!(terrain.parse("delta"), Some(11));
+        assert_eq!(terrain.parse("graded-slot"), Some(14));
+        assert_eq!(terrain.parse("15"), None);
         assert_eq!(terrain.parse("false"), Some(0));
         assert_eq!(terrain.parse("bogus"), None);
         assert_eq!(lookup("terrain_grass").parse("luma"), Some(9));

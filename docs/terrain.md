@@ -5281,9 +5281,21 @@ bitwise, every mesh vertex on a lattice point), `stitched_borders_share_vertices
 `the_exact_mask_equals_coverage` (all seven fixtures at `GL0` and `GL1`, about 480k off-lattice
 points each: the port's discard equals the roadbed's coverage everywhere farther than 2 mm from a
 chain), `patch_tile_lists_hold_every_tile_that_renders_graded` (every level, two patch
-rectangles), `site_tiles_are_listed`, `packed_slots_hold_the_payload_bitwise`. Godot:
-`graded_tile_renderer_test.gd` (bridge round trip, installs, cells and codes, an edit reinstalling
-with no texture, image, mesh or material created, eviction freeing every slot).
+rectangles), `site_tiles_are_listed`, `packed_slots_hold_the_payload_bitwise`: 6 passed (debug).
+Godot, in isolated profiles: `graded_tile_renderer_test.gd` (headless; bridge round trip, 9 tiles
+installed, every patch tile one cell, slots and stitching codes, an edit reinstalling 17 uploads in
+all with no texture, image, mesh or material created, eviction freeing every slot): 0 failures; the
+debug library's worst frame of installs took 0.44 ms (poll 0.17 ms), but the dummy renderer
+uploads nothing, so this is not the release, GPU-backed acceptance. `graded_cells_shader_test.gd`
+(Forward+ under gamescope's headless backend): a `GL0` cell is discarded exactly on its road
+seam's side and drawn on the other, and a base cell of the base variant draws its whole tile: 0
+failures, so both variants compile and draw. Clippy `--all-targets`: the 59-warning baseline set
+exactly. `terrain_overlay_shader_test.gd` under Forward+ fails two canopy assertions with
+`road`'s unsplit shader as well (same run, control): renderer-dependent and not a regression;
+`run.sh` runs it in the Compatibility renderer.
+Fixed on the way: packing slots under the jobs lock stalled Godot's poll for 18.7 ms in the debug
+library (the bake now packs off the lock), and `MultiMesh` instances start with a zero transform
+(the cells now set the identity).
 
 **Finding (open, roadbed).** At the sloped T's east road end the grounded top triangles reach
 1.09 mm past the outer chain (tile (1, 0), tile-local (0.011, 2.977)): coverage and the chain
