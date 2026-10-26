@@ -84,8 +84,17 @@ var _uniform_names: PackedStringArray = PackedStringArray()
 # The desired levels are recomputed when the camera moved or the lists or residency changed.
 var _desired: Dictionary = {}
 var _desired_camera := Vector3(INF, INF, INF)
-var _desired_signature := -1
 var _desired_dirty := true
+# The revisions of the resident patches and of their materials last processed (terrain.gd's):
+# a change refreshes the patch lists, the desired tiles and the cells' materials; an idle frame
+# does none of it.
+var _resident_revision := -1
+var _material_revision := -1
+# Whether a patch list or a tile may need a request: the residency or the desired tiles changed,
+# a request failed, or the last requests did not all go out (the per-frame budget or Rust's
+# in-flight bound).
+var _lists_dirty := true
+var _requests_dirty := true
 const DESIRED_REFRESH_MOVE_M := 8.0
 var counters := {
 	"textures_created": 0,
@@ -107,7 +116,14 @@ var counters := {
 	"install_ms_max": 0.0,
 	"poll_ms_max": 0.0,
 	"upload_ms_max": 0.0,
+	# The last edit frame's parts (ms) and the patches whose cells or walls it rewrote.
+	"edit_frame_parts": {},
 }
+# Per-frame accumulators of the parts the edit frame reports.
+var _frame_sync_us := 0
+var _frame_walls_us := 0
+var _frame_lists := 0
+var _frame_lists_same := 0
 
 ## Reads the slot layout and prewarms the pools and cell meshes. `pool_slots` overrides the
 ## per-level slot counts (tests use small pools).
@@ -234,50 +250,83 @@ func clear() -> void:
 	_dirty_walls.clear()
 	for key in patch_cells.keys():
 		release_patch(key, null)
+	_resident_revision = -1
+	_material_revision = -1
+	_desired.clear()
+	_desired_dirty = true
+	_lists_dirty = true
+	_requests_dirty = true
 
 ## One frame: polls finished work and installs it within the install budget, keeps the tiles of
 ## `resident_patches` (patch key -> {node, material, rect: Rect2, step, generation}) at their
 ## distance's level, evicts the rest and rewrites the instances of the patches that changed.
-func process(camera_position: Vector3, resident_patches: Dictionary) -> void:
+## `resident_revision` advances whenever `resident_patches` changes and `material_revision`
+## whenever a patch material may have; with neither, nor a camera move, nor finished work, the
+## frame only polls. O(changes) per frame.
+func process(camera_position: Vector3, resident_patches: Dictionary, resident_revision: int, material_revision: int) -> void:
 	var start_us := Time.get_ticks_usec()
+	_frame_sync_us = 0
+	_frame_walls_us = 0
+	_frame_lists = 0
+	_frame_lists_same = 0
 	_poll_and_install(start_us, resident_patches)
+	var polled_us := Time.get_ticks_usec()
 	var batch_tiles := _install_edit_batch(resident_patches)
+	var batch_us := Time.get_ticks_usec()
 	counters["install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
-	_request_patch_lists(resident_patches)
-	var signature := resident_patches.size()
-	for key: Vector2i in resident_patches.keys():
-		signature = signature * 31 + int(resident_patches[key]["generation"]) + key.x * 7 + key.y * 13
-	if (
-		_desired_dirty
-		or signature != _desired_signature
-		or camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M
-	):
+	var resident_changed := resident_revision != _resident_revision
+	if resident_changed:
+		_resident_revision = resident_revision
+		_lists_dirty = true
+		_desired_dirty = true
+	if _lists_dirty:
+		_request_patch_lists(resident_patches)
+	if _desired_dirty or camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M:
 		_desired = _desired_tiles(camera_position, resident_patches)
 		_desired_camera = camera_position
-		_desired_signature = signature
 		_desired_dirty = false
-	_request_tiles(_desired)
-	_evict(_desired)
-	for key: Vector2i in resident_patches.keys():
-		var patch: Dictionary = resident_patches[key]
-		var cells: Dictionary = patch_cells.get(key, {})
-		if cells.is_empty():
-			continue
-		if int(cells.get("step", -1)) != int(patch["step"]):
-			_dirty_patches[key] = true
-		elif _watched_parameters(patch["material"]) != cells["watched"]:
-			_sync_material(cells, patch["material"])
+		_evict(_desired)
+		_requests_dirty = true
+	if _requests_dirty:
+		_request_tiles(_desired)
+	var residency_us := Time.get_ticks_usec()
+	# A patch's cells follow its LOD step and its material's parameters.
+	if resident_changed or material_revision != _material_revision:
+		_material_revision = material_revision
+		for key: Vector2i in patch_cells.keys():
+			if not resident_patches.has(key):
+				continue
+			var patch: Dictionary = resident_patches[key]
+			var cells: Dictionary = patch_cells[key]
+			if int(cells.get("step", -1)) != int(patch["step"]):
+				_dirty_patches[key] = true
+			elif _watched_parameters(patch["material"]) != cells["watched"]:
+				_sync_material(cells, patch["material"])
+	var watched_us := Time.get_ticks_usec()
+	var cell_patches := _dirty_patches.size()
 	for key: Vector2i in _dirty_patches.keys():
 		if resident_patches.has(key):
 			_rebuild_patch_cells(key, resident_patches)
 		_dirty_walls.erase(key)
 	_dirty_patches.clear()
+	var cells_us := Time.get_ticks_usec()
+	var wall_patches := _dirty_walls.size()
 	for key: Vector2i in _dirty_walls.keys():
 		if resident_patches.has(key) and patch_cells.has(key):
 			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
 	_dirty_walls.clear()
 	if batch_tiles > 0:
+		var end_us := Time.get_ticks_usec()
+		var ms := func(from_us: int, to_us: int) -> float: return float(to_us - from_us) / 1000.0
+		counters["edit_frame_parts"] = {
+			"poll_ms": ms.call(start_us, polled_us), "batch_ms": ms.call(polled_us, batch_us),
+			"residency_ms": ms.call(batch_us, residency_us), "watched_ms": ms.call(residency_us, watched_us),
+			"cells_ms": ms.call(watched_us, cells_us), "cells_sync_ms": float(_frame_sync_us) / 1000.0,
+			"cells_walls_ms": float(_frame_walls_us) / 1000.0, "walls_ms": ms.call(cells_us, end_us),
+			"cell_patches": cell_patches, "wall_patches": wall_patches,
+			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
+		}
 		# The edit's frame: polls, its uploads and the cell rewrites they caused.
 		counters["edit_batches"] += 1
 		counters["edit_tiles_last"] = batch_tiles
@@ -298,15 +347,22 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 			var flat: PackedInt32Array = list["tiles"]
 			for index in range(0, flat.size(), 2):
 				tiles.append(Vector2i(flat[index], flat[index + 1]))
+			_frame_lists += 1
+			if patch_lists.has(key) and patch_lists[key]["tiles"] == tiles:
+				_frame_lists_same += 1
 			patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
 			_dirty_patches[key] = true
 			_desired_dirty = true
+			# A list baked for an older generation is asked again.
+			_lists_dirty = true
 		for failure: Dictionary in result.get("failed", []):
 			var keys: PackedInt64Array = failure["keys"]
 			if String(failure["kind"]) == "patch":
 				patch_lists_requested.erase(Vector2i(keys[0], keys[1]))
+				_lists_dirty = true
 			else:
 				requested.erase("%d,%d,%d,%d" % [keys[0], keys[1], keys[2], keys[3]])
+				_requests_dirty = true
 				if not bool(failure["retry"]):
 					# The tile stays as it was; the edit installs without it.
 					_edit_batch.erase(Vector2i(keys[0], keys[1]))
@@ -353,6 +409,7 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 			# The pool sizes make this impossible within the distance rules; counted, the tile
 			# stays as it was.
 			counters["pool_exhausted"] += 1
+			_requests_dirty = true
 			MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(key)])
 			return
 		slot = free.pop_back()
@@ -449,6 +506,7 @@ func _mark_tile_patches(key: Vector2i, resident_patches: Dictionary) -> void:
 			_dirty_patches[patch_key] = true
 
 func _request_patch_lists(resident_patches: Dictionary) -> void:
+	_lists_dirty = false
 	var flat := PackedInt64Array()
 	for key: Vector2i in resident_patches.keys():
 		var generation := int(resident_patches[key]["generation"])
@@ -465,6 +523,7 @@ func _request_patch_lists(resident_patches: Dictionary) -> void:
 	for index in accepted.size():
 		if accepted[index] == 0:
 			patch_lists_requested.erase(Vector2i(flat[index * 3], flat[index * 3 + 1]))
+			_lists_dirty = true
 
 # Tile key -> {level: Vector2i(code, step), token, distance} for every listed tile of a resident
 # patch. A patch whose list is being refreshed keeps its last one until the new one arrives, so
@@ -488,6 +547,7 @@ func _desired_tiles(camera_position: Vector3, resident_patches: Dictionary) -> D
 	return desired
 
 func _request_tiles(desired: Dictionary) -> void:
+	_requests_dirty = false
 	var wanted: Array = []
 	for tile: Vector2i in desired.keys():
 		var want: Dictionary = desired[tile]
@@ -506,6 +566,7 @@ func _request_tiles(desired: Dictionary) -> void:
 		wanted.append([float(want["distance"]), tile, level, int(want["token"]), request_key])
 	# Closest first, within the per-frame request budget.
 	wanted.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	_requests_dirty = wanted.size() > REQUESTS_PER_FRAME
 	var flat := PackedInt64Array()
 	for entry: Array in wanted.slice(0, REQUESTS_PER_FRAME):
 		var tile: Vector2i = entry[1]
@@ -519,6 +580,8 @@ func _request_tiles(desired: Dictionary) -> void:
 	for index in sent.size():
 		if index < accepted.size() and accepted[index] != 0:
 			requested[sent[index][4]] = sent[index][3]
+		else:
+			_requests_dirty = true
 
 func _evict(desired: Dictionary) -> void:
 	for tile: Vector2i in installed.keys():
@@ -656,8 +719,12 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 				node.get_parent().remove_child(node)
 			patch_node.add_child(node)
 		cells["node_parent"] = patch_node
+	var sync_us := Time.get_ticks_usec()
 	_sync_material(cells, patch["material"])
+	var walls_us := Time.get_ticks_usec()
 	_rebuild_patch_walls(cells, patch)
+	_frame_sync_us += walls_us - sync_us
+	_frame_walls_us += Time.get_ticks_usec() - walls_us
 	# The PlaneMesh collapses while the cells draw the patch.
 	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
 

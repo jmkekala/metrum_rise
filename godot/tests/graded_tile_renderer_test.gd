@@ -15,6 +15,9 @@ const WORLD_M := 1020.0
 const CELL_M := 10.0
 
 var _failures := 0
+# The resident patches' revision handed to the renderer (terrain.gd's): advanced with every
+# change of the resident dictionary.
+var _revision := 0
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -65,6 +68,7 @@ func _run() -> void:
 	await _add_road(simulation, [Vector3(-120.0, 0.0, 70.0), Vector3(-10.0, 0.0, 70.0)])
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1
+	_revision += 1
 	graded.counters["install_ms_max"] = 0.0
 	_expect(await _settle_edit(graded, camera, resident), "the edit's tiles must install again")
 	counters = graded.get_pool_counters()
@@ -107,8 +111,9 @@ func _run() -> void:
 	var far := _resident_patches(host, layout, world_size, 1)
 	for key: Vector2i in far.keys():
 		far[key]["generation"] = int(resident[key]["generation"])
+	_revision += 1
 	for frame in 4:
-		graded.process(Vector3(0.0, 120.0, 10.0), {})
+		graded.process(Vector3(0.0, 120.0, 10.0), {}, _revision, 0)
 		await process_frame
 	counters = graded.get_pool_counters()
 	_expect(int(counters["installed"]) == 0, "no tile may stay installed without resident patches")
@@ -242,7 +247,7 @@ func _resident_patches(host: Node3D, layout: Dictionary, world_size: Vector2, ge
 func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
 	var stable := 0
 	for frame in TIMEOUT_FRAMES:
-		graded.process(camera, resident)
+		graded.process(camera, resident, _revision, 0)
 		await process_frame
 		var idle: bool = graded.requested.is_empty() and graded.patch_lists_requested.is_empty()
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
@@ -253,7 +258,7 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 # Waits for the edit batch's install, then for the residency to settle.
 func _settle_edit(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
 	for frame in TIMEOUT_FRAMES:
-		graded.process(camera, resident)
+		graded.process(camera, resident, _revision, 0)
 		await process_frame
 		if int(graded.counters["edit_batches"]) > 0:
 			return await _settle(graded, camera, resident)
