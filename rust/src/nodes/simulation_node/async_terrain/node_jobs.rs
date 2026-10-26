@@ -497,13 +497,10 @@ impl SimulationNode {
         {
             return None;
         }
+        // The plain payload (step 0) is the patch's heightmap, served for every patch: the graded
+        // tiles (`TERRAIN-07-D` item 4) draw the roads' and sites' terrain over it, road-owned
+        // patches included. The exact cut asks road-owned patches at the refined step.
         if request.key.render_step_mm == 0 {
-            if core.terrain_patch_requires_engineered_refinement(
-                request.key.patch_x,
-                request.key.patch_z,
-            ) {
-                return None;
-            }
             let patch = core
                 .heightmap
                 .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;

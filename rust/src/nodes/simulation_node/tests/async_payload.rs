@@ -755,7 +755,9 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
 }
 
 #[test]
-fn raw_terrain_payload_is_rejected_for_road_locked_patch() {
+fn plain_terrain_payload_is_served_for_road_locked_patch() {
+    // TERRAIN-07-D item 4: every patch renders its plain payload and the graded tiles draw the
+    // road's terrain over it. Refusing it left the road's patches uninstalled forever.
     let mut core = test_core_with_flat_terrain(0.0);
     core.road_locked_terrain_patch_margins.insert((0, 0), 8.0);
     let surface_generation = core.terrain_payload_generation_for_patch(0, 0);
@@ -769,10 +771,11 @@ fn raw_terrain_payload_is_rejected_for_road_locked_patch() {
         surface_generation,
     };
 
+    let source = SimulationNode::terrain_patch_payload_build_source_for_request(&mut core, request)
+        .expect("a road-owned patch serves its plain payload");
     assert!(
-        SimulationNode::terrain_patch_payload_build_source_for_request(&mut core, request)
-            .is_none(),
-        "road-owned patches must never publish raw heightmap payloads"
+        source.is_ready(),
+        "the plain payload is the patch's heightmap, built at once, never a refined cut"
     );
 }
 
