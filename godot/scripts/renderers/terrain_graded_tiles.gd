@@ -131,6 +131,9 @@ var counters := {
 	"upload_ms_max": 0.0,
 	# The last edit frame's parts (ms) and the patches whose cells or walls it rewrote.
 	"edit_frame_parts": {},
+	# The cell sets prewarmed at setup and the time it took (T25's load cost).
+	"cell_sets_prewarmed": 0,
+	"cell_prewarm_ms": 0.0,
 }
 # Per-frame accumulators of the parts the edit frame reports.
 var _frame_sync_us := 0
@@ -165,8 +168,11 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	_identity_cells = PackedFloat32Array()
 	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
 	_cells_pool.clear()
+	var prewarm_us := Time.get_ticks_usec()
 	for _patch in grid.x * grid.y:
 		_cells_pool.append(_new_cells())
+	counters["cell_sets_prewarmed"] = grid.x * grid.y
+	counters["cell_prewarm_ms"] = float(Time.get_ticks_usec() - prewarm_us) / 1000.0
 
 func _new_pool(level: Dictionary, slots: int) -> Dictionary:
 	var side := int(level["side"])
