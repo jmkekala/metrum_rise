@@ -7670,9 +7670,10 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       tile's window inputs (every seam within the cap, the covering top triangles, the sites, the
       base revisions) equal the last pose's. A growing stroke rebuilds its whole span each pose:
       its stations divide each interval between fixed stations evenly (`roads.md`, span pieces)
-      and its profile is solved again, so every chain segment of the new road moves (on the T
-      fixture 210 of 268 seams survive a pose, all of them the trunk's and the junction's), and
-      every tile the pose selects holds the new road in its window. On the reference fixtures'
+      and its profile is solved again, so the new road's chain segments move (on the flat T
+      fixture 209-211 of a pose's 262-286 seams within 300 m survive into the next pose, about
+      the count the trunk and the junction hold), and every tile the pose selects holds the new
+      road in its window. On the reference fixtures'
       drags (T, Y, four-way, split trunk, flat and sloped) no pose adopts a tile; on Kuopio's 39
       strokes replayed as drags of eight poses, 2 of 1,925 pose tiles are adopted. A pose so costs
       the full bake of the edit as far as it reaches: 31 of 299 poses take more than 3.0 ms on four
