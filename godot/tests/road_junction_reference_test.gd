@@ -326,14 +326,6 @@ func _reference(fixture: Dictionary, slope_name: String, rise_m: float) -> void:
 	_expect(road_chunks > 0, "%s must have road chunk meshes" % label)
 	var images: Array[Dictionary] = []
 	if _terrain_mode == "compare":
-		# The production terrain renderer uploads nothing while the network generation is
-		# unacknowledged (network_renderer.gd acknowledges it in the game); the terrain built
-		# below reads the published state whole.
-		var ack_deadline := Time.get_ticks_msec() + 10000
-		while simulation.is_network_dirty() and Time.get_ticks_msec() < ack_deadline:
-			simulation.acknowledge_network_render(simulation.get_network_render_generation())
-			await process_frame
-		_expect(not simulation.is_network_dirty(), "%s: the network render must be acknowledged" % label)
 		for graded in ([true] if fixture.has("b_only") else [false, true]):
 			await _compare_views(fixture, label, scene, camera, environment.environment, focus, graded, images)
 		_finish_record(fixture, label, rise_m, state, road_chunks, images, failures_before)
@@ -398,6 +390,16 @@ func _finish_record(fixture: Dictionary, label: String, rise_m: float, state: Di
 	_records.append(record)
 	print("road_junction_reference %s nodes=%s edges=%s chunks=%d" % [label, record.nodes, record.live_edges, road_chunks])
 
+# The production terrain renderer uploads nothing while the network generation is unacknowledged
+# (network_renderer.gd acknowledges it in the game), and the exact half's refined patches leave a
+# newer one; each terrain built after this reads the published state whole.
+func _acknowledge_network(label: String) -> void:
+	var deadline := Time.get_ticks_msec() + 10000
+	while simulation.is_network_dirty() and Time.get_ticks_msec() < deadline:
+		simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		await process_frame
+	_expect(not simulation.is_network_dirty(), "%s: the network render must be acknowledged" % label)
+
 # The production terrain renderer beside the SimulationNode in the capture scene: the exact cut
 # (refined patches) or B (graded tiles over plain patches). Water is an empty stand-in.
 func _production_terrain(scene: Node3D, graded: bool) -> Node3D:
@@ -430,6 +432,7 @@ func _settle_terrain(terrain, label: String) -> void:
 # background pixels: every one is a pinhole), and the junction from 200 m to 3 km.
 func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: Camera3D, environment: Environment, focus: Vector3, graded: bool, images: Array[Dictionary]) -> void:
 	var mode := "B" if graded else "exact"
+	await _acknowledge_network("%s %s" % [label, mode])
 	var terrain := _production_terrain(scene, graded)
 	var offset := CAMERA_HEIGHT_M / tan(deg_to_rad(CAMERA_PITCH_DEG))
 	var views := [
