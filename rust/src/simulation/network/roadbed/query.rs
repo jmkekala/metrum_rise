@@ -28,6 +28,19 @@ pub enum PieceId {
     Node(u32),
 }
 
+/// One part of a tunnel span with a portal row ([`RoadbedSystem::for_each_portal_part_in_bounds`],
+/// `TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)).
+#[derive(Clone, Copy, Debug)]
+pub enum PortalPart<'a> {
+    /// A portal row's vertices, corner to corner ([`PieceMesh::portal_rows`]).
+    Row(&'a [RoadVec3]),
+    /// A top triangle: the deck the graded terrain opens near a portal row.
+    Top([RoadVec3; 3]),
+    /// An outer-chain segment, the deck on its left: a bore seam, along which the opening's
+    /// sides stand.
+    Bore([RoadVec3; 2]),
+}
+
 /// Prepared owner-local surface lookup, reused for every point of one lane.
 pub struct LaneSurfaceQuery<'a> {
     // The lane owner's span, or a junction lane's node piece.
@@ -403,6 +416,48 @@ impl RoadbedSystem {
                 false
             });
         }
+    }
+
+    /// Visits the parts of the tunnel spans with a portal row ([`PieceMesh::portal_rows`],
+    /// `TERRAIN-07-C`) whose bounds touch the XZ bounds, piece by piece in ascending piece order:
+    /// every portal row, the top triangles whose piece grid cells touch the bounds (a triangle
+    /// may come more than once), and the outer-chain segments whose own bounds touch them. No
+    /// terrain height is read. `pieces` is the caller's scratch. `O(P log P + T + V)` for the
+    /// pieces met, the triangles visited and their chain vertices.
+    pub fn for_each_portal_part_in_bounds(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &mut Vec<PieceId>,
+        mut visit: impl FnMut(PortalPart<'_>),
+    ) {
+        self.portal_pieces_in_bounds(bounds_xz, pieces);
+        for id in pieces.iter() {
+            let mesh = self.pieces[id].mesh();
+            mesh.portal_rows()
+                .for_each(|row| visit(PortalPart::Row(row)));
+            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
+                visit(PortalPart::Top(mesh.triangle_points(triangle)));
+                false
+            });
+            for_each_segment_in_bounds(mesh, mesh.outer_chains(), bounds_xz, &mut |segment| {
+                visit(PortalPart::Bore(segment))
+            });
+        }
+    }
+
+    /// The tunnel spans with a portal row ([`PieceMesh::portal_rows`], `TERRAIN-07-C`) whose
+    /// bounds touch the XZ bounds, sorted and unique, into `pieces`. `O(P log P)` for the pieces
+    /// met.
+    pub fn portal_pieces_in_bounds(&self, bounds_xz: [f64; 4], pieces: &mut Vec<PieceId>) {
+        pieces.clear();
+        self.any_piece_in_bounds(bounds_xz, |id, mesh| {
+            if mesh.portal_rows().next().is_some() {
+                pieces.push(id);
+            }
+            false
+        });
+        pieces.sort_unstable();
+        pieces.dedup();
     }
 
     /// The point-in-triangle predicate and height [`Self::height_at`] takes the highest of:

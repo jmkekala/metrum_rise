@@ -200,7 +200,7 @@ pub(crate) fn build_span_piece(
     };
     // Each end row closed as its node's arms say (`TERRAIN-07-C`, T22): a structure's free end
     // capped, a grounded span's mouth into a structure walled, a bridge's mouth onto the ground
-    // closed below its slab by the abutment face.
+    // closed below its slab by the abutment face, a tunnel's marked a portal row.
     let ends = [edge.start_node, edge.end_node]
         .map(|node| span_end(graph, graph.get_valid_node(node), edge_idx));
     let mesh = build_span_mesh(

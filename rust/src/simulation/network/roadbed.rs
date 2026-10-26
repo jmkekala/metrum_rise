@@ -38,7 +38,7 @@ pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
 pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
-pub use query::{LaneSurfaceQuery, PieceId};
+pub use query::{LaneSurfaceQuery, PieceId, PortalPart};
 pub use section::{RoadBand, RoadSection};
 pub(crate) use span::incident_direction;
 pub use span::{MouthSection, SpanPiece};

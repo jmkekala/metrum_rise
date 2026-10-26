@@ -9,6 +9,7 @@
 
 use super::coverage::covered_height_at;
 use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE};
+use super::portal::{PortalWindow, cuts};
 use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
 use super::seams::{Seam, SeamScratch, gather_road_seams};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
@@ -30,7 +31,8 @@ pub enum GroundClass {
     Natural,
     /// Ground whose graded height differs from the base (`delta != 0`) outside footprints.
     Graded,
-    /// Covered by a grounded road top triangle: the terrain is discarded there.
+    /// Covered by a grounded road top triangle, or cut by a tunnel's portal opening
+    /// (`TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)): the terrain is discarded there.
     Road,
     /// Inside a building site's support footprint (the allocator's predicate), paved or not:
     /// the terrain is the pad, at its support height.
@@ -48,6 +50,7 @@ pub struct QueryScratch {
     base: BaseWindow,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
+    portals: PortalWindow,
 }
 
 /// The graded surface over a base heightmap, a roadbed and building sites: the read API every
@@ -111,14 +114,20 @@ impl GradedSurface<'_> {
         normalized(normal)
     }
 
-    /// What the point is, in this order: road where a grounded road top triangle covers it, pad
-    /// inside a site's support footprint, paved on a site surface, graded where the graded
-    /// value differs from the base, else natural.
+    /// What the point is, in this order: road where a grounded road top triangle covers it or
+    /// a portal opening cuts it (a portal deck within the reach of its row, the ground's
+    /// rendered value at the point less than the clearance above it, T22 5 (a)), pad inside a
+    /// site's support footprint, paved on a site surface, graded where the graded value differs
+    /// from the base, else natural.
     pub fn mask_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
         if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_some() {
             return GroundClass::Road;
         }
         self.prepare([x, z, x, z], scratch);
+        self.prepare_portals([x, z, x, z], scratch);
+        if self.opened(x, z, scratch) {
+            return GroundClass::Road;
+        }
         if scratch.sites.pad_at(x, z) != NO_SITE {
             return GroundClass::Pad;
         }
@@ -136,7 +145,7 @@ impl GradedSurface<'_> {
 
     /// The nearer of the road's ray hit and the visible graded ground's: the base patches
     /// (bilinear) in tiles without a seam within the cap, the `GL0` triangles elsewhere, never
-    /// ground a road covers.
+    /// ground a road covers or a portal opening cuts.
     pub fn raycast_surface(
         &self,
         origin: [f64; 3],
@@ -174,6 +183,19 @@ impl GradedSurface<'_> {
             .map(|t| along(origin, direction, t))
     }
 
+    // Whether a portal opening cuts the uncovered point of the window and portal parts
+    // prepared around it: a portal deck
+    // within the reach there, and the ground's rendered value (the base plus its `f32` delta, as
+    // the bake packs it) less than the clearance above it (T22 5 (a)).
+    fn opened(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> bool {
+        let Some(deck) = scratch.portals.deck_at(x, z) else {
+            return false;
+        };
+        let base = scratch.base.at(x, z);
+        let delta = (self.evaluate(x, z, base, None, scratch) - base) as f32;
+        cuts(deck, base + f64::from(delta))
+    }
+
     // Gathers the seams, sites and base samples within the cap of `rect`: road seams in key
     // order, then the pad seams.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
@@ -187,6 +209,14 @@ impl GradedSurface<'_> {
         scratch.sites.gather(self.sites, window);
         scratch.sites.push_pad_seams(&mut scratch.window);
         scratch.base.fill(self.terrain, window);
+    }
+
+    // Gathers the portal parts around `rect`, for the opening's test (T22 5 (a)).
+    fn prepare_portals(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
+        let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
+        scratch
+            .portals
+            .gather(self.roadbed, rect, band, &mut scratch.pieces);
     }
 
     // The graded value at a point of the prepared window, over every gathered seam, with its
@@ -247,6 +277,7 @@ impl GradedSurface<'_> {
                 let rect = [tile[0], tile[1], tile[0] + TILE_M, tile[1] + TILE_M];
                 if graded {
                     self.prepare(grown(rect, GL0_M), scratch);
+                    self.prepare_portals(grown(rect, GL0_M), scratch);
                 }
                 hit = if !graded || scratch.window.is_empty() {
                     self.march_base(origin, direction, (t0, t1), &grid, scratch)
@@ -341,7 +372,9 @@ impl GradedSurface<'_> {
                     });
                 if let Some(t) = t {
                     let [x, _, z] = along(origin, direction, t);
-                    if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_none() {
+                    if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_none()
+                        && !self.opened(x, z, scratch)
+                    {
                         hit = Some(t);
                     }
                 }

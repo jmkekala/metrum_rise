@@ -14,6 +14,7 @@
 
 mod coverage;
 mod grade;
+mod portal;
 mod prune;
 mod query;
 mod sample;
@@ -24,6 +25,7 @@ mod tile;
 mod walls;
 
 pub use grade::{CAP_M, FILL_ARM_MAX_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
+pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
 pub use seams::{Seam, SeamKind};
 pub use select::{
@@ -34,6 +36,8 @@ pub use sites::{NoSites, SiteBuffer, SiteSource};
 pub use tile::{BakeError, BakeStats, Level, TILE_M, TileInputs, TileKey, TilePayload, bake_tiles};
 pub use walls::WallFace;
 
+#[cfg(test)]
+mod portal_tests;
 #[cfg(test)]
 pub(crate) mod site_tests;
 #[cfg(test)]

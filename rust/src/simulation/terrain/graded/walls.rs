@@ -15,6 +15,7 @@
 //! not masked (`T11`): the terrain is continuous over a pad seam and has no step to close.
 
 use super::grade::{CAP_M, TIE_IN_SLOPE};
+use super::portal::{PORTAL_CLEARANCE_M, PortalWindow};
 use super::prune::box_distance;
 use super::seams::Seam;
 use super::tile::{TILE_M, TileKey};
@@ -27,8 +28,9 @@ const SETTER_SLACK_M: f64 = 1.0e-6;
 /// lower side on the left of `a -> b`: the road for a conflict wall and a portal's headwall, the
 /// space under the bridge for an abutment), standing from `bottom` to `top` (world heights,
 /// metres): a conflict wall from the seam's height up to the wall top, a structure wall
-/// (`TERRAIN-07-C`, T22 4 (a)) between the seam's height and the graded ground. Faces along a
-/// seam share their ends bitwise.
+/// (`TERRAIN-07-C`, T22 4 (a)) between the seam's height and the graded ground, and a portal
+/// opening's side wall (T22 5 (a)) along a bore seam, the deck on its left where the ground
+/// beside stands above it. Faces along a seam share their ends bitwise.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WallFace {
     /// Start, tile-local XZ.
@@ -261,13 +263,65 @@ pub(super) fn build_walls(
 /// graded ground stands above a tunnel's mouth, an abutment where it stands below a bridge's.
 /// The terrain is masked on the road's side of the seam, so the faces close its cut edge
 /// against the structure's mouth row. A headwall runs along the seam (the road on its left), an
-/// abutment against it (the space under the bridge on its left). `heights(i, j)` is the
-/// finished sample at lattice point `(i, j)`. `O(wall seams x their crossings)`.
+/// abutment against it (the space under the bridge on its left).
+///
+/// Then the portal opening's (T22 5 (a)): along a portal row's wall seam
+/// ([`PortalWindow::opens`]) no face where the surface at both ends stands below the seam's
+/// height plus the clearance `H`, since the terrain beyond the row is cut; and along every bore
+/// seam (`portals`' bores, key order) a face from the seam's height to the surface wherever a
+/// vertex within the portal reach has the surface there below `h + H`, the opening's sides.
+/// `heights(i, j)` is the finished sample at lattice point `(i, j)`. `O(wall and bore seams x
+/// their crossings x portal rows)`.
 pub(super) fn build_structure_walls(
     walls: &[Seam],
+    portals: &PortalWindow,
+    tile: TileKey,
+    lattice: (&[f64], &[f64]),
+    heights: impl Fn(usize, usize) -> f64,
+    scratch: &mut WallScratch,
+    out: &mut Vec<WallFace>,
+) {
+    let below_crown = |v: &WallVertex| v.top < v.bottom + PORTAL_CLEARANCE_M;
+    for seam in walls {
+        let opens = portals.opens(seam);
+        seam_walls(
+            seam,
+            tile,
+            lattice,
+            &heights,
+            |_, surface, h| surface != h,
+            |v, w| !(opens && below_crown(v) && below_crown(w)),
+            scratch,
+            out,
+        );
+    }
+    for seam in portals.bores() {
+        seam_walls(
+            seam,
+            tile,
+            lattice,
+            &heights,
+            |(x, z), surface, h| {
+                surface != h && surface < h + PORTAL_CLEARANCE_M && portals.reaches(x, z)
+            },
+            |_, _| true,
+            scratch,
+            out,
+        );
+    }
+}
+
+// The structure walls along one seam's part in the tile: a vertex is walled where `walled((x,
+// z), surface, h)` says, a face joins two consecutive vertices of which one is walled and that
+// `keep` keeps, from the seam's height to the surface, its lower side on its left.
+#[allow(clippy::too_many_arguments)]
+fn seam_walls(
+    seam: &Seam,
     tile: TileKey,
     (xs, zs): (&[f64], &[f64]),
-    heights: impl Fn(usize, usize) -> f64,
+    heights: &impl Fn(usize, usize) -> f64,
+    walled: impl Fn((f64, f64), f64, f64) -> bool,
+    keep: impl Fn(&WallVertex, &WallVertex) -> bool,
     scratch: &mut WallScratch,
     out: &mut Vec<WallFace>,
 ) {
@@ -281,45 +335,43 @@ pub(super) fn build_structure_walls(
         bottom: [v.bottom.min(v.top) as f32, w.bottom.min(w.top) as f32],
         top: [v.bottom.max(v.top) as f32, w.bottom.max(w.top) as f32],
     };
-    for seam in walls {
-        let Some(range) = clip(seam, rect) else {
+    let Some(range) = clip(seam, rect) else {
+        return;
+    };
+    crossings(seam, range, xs, zs, &mut scratch.params);
+    scratch.vertices.clear();
+    for (k, &t) in scratch.params.iter().enumerate() {
+        let (x, z, h) = point_at(seam, t);
+        let surface = surface_at(xs, zs, heights, x, z);
+        if let Some(&last) = scratch.vertices.last() {
+            let (fa, fb) = (last.top - last.bottom, surface - h);
+            if (fa < 0.0 && fb > 0.0) || (fa > 0.0 && fb < 0.0) {
+                let previous = scratch.params[k - 1];
+                let (cx, cz, ch) = point_at(seam, previous + (t - previous) * (fa / (fa - fb)));
+                scratch.vertices.push(WallVertex {
+                    x: cx,
+                    z: cz,
+                    bottom: ch,
+                    top: ch,
+                    walled: false,
+                });
+            }
+        }
+        scratch.vertices.push(WallVertex {
+            x,
+            z,
+            bottom: h,
+            top: surface,
+            walled: walled((x, z), surface, h),
+        });
+    }
+    for pair in scratch.vertices.windows(2) {
+        let [v, w] = [pair[0], pair[1]];
+        if !(v.walled || w.walled) || !keep(&v, &w) {
             continue;
-        };
-        crossings(seam, range, xs, zs, &mut scratch.params);
-        scratch.vertices.clear();
-        for (k, &t) in scratch.params.iter().enumerate() {
-            let (x, z, h) = point_at(seam, t);
-            let surface = surface_at(xs, zs, &heights, x, z);
-            if let Some(&last) = scratch.vertices.last() {
-                let (fa, fb) = (last.top - last.bottom, surface - h);
-                if (fa < 0.0 && fb > 0.0) || (fa > 0.0 && fb < 0.0) {
-                    let previous = scratch.params[k - 1];
-                    let (cx, cz, ch) = point_at(seam, previous + (t - previous) * (fa / (fa - fb)));
-                    scratch.vertices.push(WallVertex {
-                        x: cx,
-                        z: cz,
-                        bottom: ch,
-                        top: ch,
-                        walled: false,
-                    });
-                }
-            }
-            scratch.vertices.push(WallVertex {
-                x,
-                z,
-                bottom: h,
-                top: surface,
-                walled: surface != h,
-            });
         }
-        for pair in scratch.vertices.windows(2) {
-            let [v, w] = [pair[0], pair[1]];
-            if !(v.walled || w.walled) {
-                continue;
-            }
-            let above = v.top > v.bottom || w.top > w.bottom;
-            out.push(if above { face(v, w) } else { face(w, v) });
-        }
+        let above = v.top > v.bottom || w.top > w.bottom;
+        out.push(if above { face(v, w) } else { face(w, v) });
     }
 }
 

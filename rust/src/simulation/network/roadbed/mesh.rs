@@ -68,6 +68,9 @@ pub(super) enum SpanEnd {
     /// A bridge's mouth shared with a grounded piece: the abutment face below the slab's end
     /// edge ([`PieceMesh::for_each_abutment_triangle`]).
     Abutment,
+    /// A tunnel's mouth shared with a grounded piece: its portal row, near which the graded
+    /// terrain opens the ground over the deck ([`PieceMesh::portal_rows`], T22 5 (a)).
+    Portal,
 }
 
 /// Footprint boundary polyline: vertex indices into its piece's positions, ordered so the road
@@ -130,6 +133,9 @@ pub struct PieceMesh {
     // per mouth its row's two corner vertices, the space under the bridge right of the first to
     // the second.
     abutments: Vec<[u32; 2]>,
+    // The portal rows of a tunnel span (`TERRAIN-07-C`): per mouth shared with a grounded piece
+    // its end row's first and last vertex, the row the vertices between them.
+    portals: Vec<[u32; 2]>,
     bounds_xz: [f64; 4],
     // Top triangles only; items are triangle indices.
     grid: SurfaceTriangleGrid,
@@ -262,6 +268,16 @@ impl PieceMesh {
             visit([top_a, bottom_a, bottom_b], [false, true, true]);
             visit([top_a, bottom_b, top_b], [false, true, false]);
         }
+    }
+
+    /// The portal rows of a tunnel span (`TERRAIN-07-C`, `docs/terrain.md` T22 5 (a)): per end
+    /// row it shares with a grounded piece, the row's vertices from one corner to the other,
+    /// bitwise the vertices the grounded piece's wall run across that mouth takes. Empty for
+    /// every other piece. `O(1)` per row.
+    pub fn portal_rows(&self) -> impl Iterator<Item = &[RoadVec3]> + '_ {
+        self.portals
+            .iter()
+            .map(|&[first, last]| &self.positions[first as usize..=last as usize])
     }
 
     /// XZ bounds `[min_x, min_z, max_x, max_z]` of every vertex.
@@ -464,7 +480,7 @@ pub(super) fn row_slots(profile: &RoadProfile) -> impl Iterator<Item = (f32, Lev
 
 /// Builds a span mesh from its sections, whose first and last rows are copied from the two
 /// mouth sections, with `strips` below its two outer chains, and each end row closed as `ends`
-/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run or an abutment face.
+/// says (`TERRAIN-07-C`): a cap ([`end_cap`]), a wall run, an abutment face or a portal row.
 /// `O(sections * bands)`; allocates only the mesh.
 pub(super) fn build_span_mesh(
     sections: &[RoadSection],
@@ -580,6 +596,7 @@ pub(super) fn build_span_mesh(
             // An abutment runs the other way, so the space under the bridge lies on its right.
             SpanEnd::Abutment if end == 0 => faces.abutments.push([first, last]),
             SpanEnd::Abutment => faces.abutments.push([last, first]),
+            SpanEnd::Portal => faces.portals.push([first, last]),
         }
     }
     PieceMesh::new(
@@ -594,12 +611,14 @@ pub(super) fn build_span_mesh(
 }
 
 // The faces closing a span's end rows (`TERRAIN-07-C`): the free-end caps' triangles over
-// `(vertex, bottom)` pairs with the kind their bottoms take, and the abutment faces' corner pairs.
+// `(vertex, bottom)` pairs with the kind their bottoms take, the abutment faces' corner pairs,
+// and the portal rows' first and last vertices.
 #[derive(Default)]
 struct EndFaces {
     caps: Vec<[(u32, bool); 3]>,
     cap_kind: Option<StripKind>,
     abutments: Vec<[u32; 2]>,
+    portals: Vec<[u32; 2]>,
 }
 
 // The cap closing a structure's free end (`TERRAIN-07-C`): the polygon in the end row's vertical
@@ -695,6 +714,7 @@ impl PieceMesh {
             caps,
             cap_kind,
             abutments,
+            portals,
         }: EndFaces,
     ) -> Self {
         let top_count = group_starts[CURB_FACE_GROUP] as usize;
@@ -716,6 +736,7 @@ impl PieceMesh {
             caps,
             cap_kind,
             abutments,
+            portals,
             grid,
         }
     }

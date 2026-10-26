@@ -498,7 +498,8 @@ pub(crate) fn edges_pass_through(a: (&Edge, RoadVec2), b: (&Edge, RoadVec2)) -> 
 ///   wall run;
 /// - a bridge whose mouth row a grounded piece shares (another standard edge meets the node, so
 ///   the node's piece is grounded or the node passes through into a standard span) hangs its
-///   abutment face below the slab's end edge;
+///   abutment face below the slab's end edge, and a tunnel whose mouth row a grounded piece
+///   shares marks it a portal row, near which the graded terrain opens the ground (T22 5 (a));
 /// - any other end is closed by the piece it shares the row with.
 ///
 /// `O(degree)`.
@@ -524,6 +525,7 @@ pub(super) fn span_end(graph: &RegionGraph, node: u32, edge_idx: usize) -> SpanE
         EdgeClass::Bridge if others().any(|class| class == EdgeClass::Standard) => {
             SpanEnd::Abutment
         }
+        EdgeClass::Tunnel if others().any(|class| class == EdgeClass::Standard) => SpanEnd::Portal,
         _ => SpanEnd::Shared,
     }
 }

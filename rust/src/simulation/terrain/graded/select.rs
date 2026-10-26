@@ -4,6 +4,7 @@
 //! can alter, from the changed seams' own reaches, so cost follows the edit and never the city.
 
 use super::grade::{CAP_M, TIE_IN_SLOPE, lift_reach};
+use super::portal::{PORTAL_REACH_M, PortalWindow};
 use super::prune::{BinGrid, bin_side, box_distance};
 use super::sample::{BaseGrid, BaseWindow};
 use super::seams::{Seam, road_seam};
@@ -37,6 +38,9 @@ struct CandidateScratch {
     xs: Vec<f64>,
     zs: Vec<f64>,
     sites: SiteBuffer,
+    // The portal opening's parts around the candidate's lattice in the two roadbeds.
+    portals: PortalWindow,
+    other_portals: PortalWindow,
     // The candidate's lattice rectangle.
     rect: [f64; 4],
 }
@@ -55,7 +59,12 @@ thread_local! {
 ///   first-pass ground below the base; so a removed seam counts;
 /// - every tile whose lattice meets a changed piece and whose covering top triangles differ
 ///   between the two roadbeds (coverage and the road surface under the deep inside rule), so a
-///   split trunk's far half, rebuilt bit for bit, marks nothing.
+///   split trunk's far half, rebuilt bit for bit, marks nothing;
+/// - every tile whose lattice lies within the larger of the portal reach and the band of a
+///   changed piece with a portal row ([`TerrainChanges::portals`]) and whose portal parts
+///   ([`PortalWindow`]: the rows, decks and bore seams the portal opening reads, `TERRAIN-07-C`)
+///   differ between the two roadbeds. The windows hold only those pieces' parts, so an edit that
+///   replaces no portal piece reads none.
 ///
 /// A superset is safe: rebaking an unaffected tile reproduces its bits. `O(changed segments x
 /// tiles within the cap of each)` plus one window per candidate tile, in parallel.
@@ -79,6 +88,13 @@ pub fn dirty_tiles_for_road_changes(
     for bounds in &changes.pieces {
         push_tiles(grown(*bounds, apron + PIECE_PAD_M), &mut scratch.candidates);
     }
+    let portal_reach = PORTAL_REACH_M.max(band);
+    for bounds in &changes.portals {
+        push_tiles(
+            grown(*bounds, apron + portal_reach + PIECE_PAD_M),
+            &mut scratch.candidates,
+        );
+    }
     scratch.changed.clear();
     scratch
         .changed
@@ -91,15 +107,17 @@ pub fn dirty_tiles_for_road_changes(
     }
     sort_unique(&mut scratch.candidates);
     let changed = &scratch.changed;
-    let pieces = &changes.pieces;
+    let (pieces, portals) = (&changes.pieces, &changes.portals);
     crate::thread_pools::install(|| {
         scratch
             .candidates
             .par_iter()
             .map(|&tile| {
                 CANDIDATE.with_borrow_mut(|candidate| {
-                    reached(terrain, after, sites, changed, tile, level, &grid, candidate)
-                        || covering_triangles_changed(before, after, pieces, candidate)
+                    reached(
+                        terrain, after, sites, changed, tile, level, &grid, candidate,
+                    ) || covering_triangles_changed(before, after, pieces, candidate)
+                        || portals_changed(before, after, portals, band, candidate)
                 })
             })
             .collect_into_vec(&mut scratch.dirty);
@@ -228,6 +246,32 @@ fn covering_triangles_changed(
         bits.dedup();
     }
     candidate.triangles != candidate.other_triangles
+}
+
+// Whether the portal parts the bake of the candidate's lattice (left in `candidate` by
+// `reached`) reads differ between the roadbeds, where a changed portal piece (`portals`, its
+// bounds) lies within the larger of the portal reach and the band of it: the opening reads
+// nothing else of the roadbed beyond the coverage, the seams and the finished values, which the
+// other tests follow.
+fn portals_changed(
+    before: &RoadbedSystem,
+    after: &RoadbedSystem,
+    portals: &[[f64; 4]],
+    band: f64,
+    candidate: &mut CandidateScratch,
+) -> bool {
+    let rect = candidate.rect;
+    let near = grown(rect, PORTAL_REACH_M.max(band) + PIECE_PAD_M);
+    if !portals.iter().any(|bounds| meets(*bounds, near)) {
+        return false;
+    }
+    candidate
+        .portals
+        .gather(before, rect, band, &mut candidate.pieces);
+    candidate
+        .other_portals
+        .gather(after, rect, band, &mut candidate.pieces);
+    !candidate.portals.same(&candidate.other_portals)
 }
 
 fn triangle_box(points: &[crate::simulation::network::roadbed::RoadVec3; 3]) -> [f64; 4] {

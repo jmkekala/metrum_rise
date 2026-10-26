@@ -677,38 +677,50 @@ fn walls_close_the_step_at_the_lower_road() {
 }
 
 // `TERRAIN-07-C` T22 4 (a), the graded wall test that replaces the exact cut's tunnel portal CDT
+/// A road level along `x` from -90 m to a mouth at the origin, continued straight on to 90 m by
+/// an edge of `class` (a pass-through's shared mouth row), over a base level to 20 m before the
+/// mouth and then rising at `slope` (a 1:2 hill at 0.5, a valley at -0.5).
+pub(crate) fn structure_mouth(
+    class: crate::simulation::network::types::EdgeClass,
+    slope: f32,
+) -> (RegionGraph, TerrainSystem) {
+    let mut graph = RegionGraph::new();
+    let nodes = [-90.0f32, 0.0, 90.0]
+        .map(|x| graph.add_node(Vector3::new(x, 0.0, 0.0), NodeType::Junction));
+    let polyline = |from: f32| {
+        (0..=9)
+            .map(|i| Vector3::new(from + 10.0 * i as f32, 0.0, 0.0))
+            .collect()
+    };
+    graph.add_edge(road_edge(nodes[0], nodes[1], polyline(-90.0), 7.0));
+    let mut structure = road_edge(nodes[1], nodes[2], polyline(0.0), 7.0);
+    structure.class = class;
+    graph.add_edge(structure);
+    graph.rebuild_intersection_clips();
+    let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
+    for z in 0..53 {
+        for x in 0..53 {
+            let wx = x as f32 * 10.0 - 260.0;
+            terrain.set_height(x, z, slope * (wx + 20.0).max(0.0) / HEIGHT_SCALE);
+        }
+    }
+    (graph, terrain)
+}
+
 // test: a road running into a hill continued by a tunnel, and into a valley by a bridge, both
 // level at the mouth. Along every wall seam of the structure's mouth row, every point sampled
 // each 5 cm where the rendered `GL0` ground differs from the seam is covered by a face of its
-// tile between the seam's height and that ground (1 mm), its lower side on the face's left: a
-// headwall along the seam over the tunnel, an abutment against it under the bridge. Pruned walls
+// tile between the seam's height and that ground (1 mm), its lower side on the face's left: an
+// abutment against the seam under the bridge; at the tunnel's portal row (T22 5 (a)) the
+// terrain beyond is cut wherever the ground stands less than the clearance above the seam, and
+// no face on the seam covers those points (a headwall where it stands higher). Pruned walls
 // equal the walls over every seam.
 #[test]
 fn structure_mouths_wall_the_graded_ground() {
     use crate::simulation::network::types::EdgeClass;
     for (class, slope) in [(EdgeClass::Tunnel, 0.5f32), (EdgeClass::Bridge, -0.5)] {
-        let mut graph = RegionGraph::new();
-        let nodes = [-90.0f32, 0.0, 90.0]
-            .map(|x| graph.add_node(Vector3::new(x, 0.0, 0.0), NodeType::Junction));
-        let polyline = |from: f32| {
-            (0..=9)
-                .map(|i| Vector3::new(from + 10.0 * i as f32, 0.0, 0.0))
-                .collect()
-        };
-        graph.add_edge(road_edge(nodes[0], nodes[1], polyline(-90.0), 7.0));
-        let mut structure = road_edge(nodes[1], nodes[2], polyline(0.0), 7.0);
-        structure.class = class;
-        graph.add_edge(structure);
-        graph.rebuild_intersection_clips();
+        let (graph, terrain) = structure_mouth(class, slope);
         let roadbed = compiled(&graph);
-        // Level to 20 m before the mouth, then a 1:2 hill or valley.
-        let mut terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
-        for z in 0..53 {
-            for x in 0..53 {
-                let wx = x as f32 * 10.0 - 260.0;
-                terrain.set_height(x, z, slope * (wx + 20.0).max(0.0) / HEIGHT_SCALE);
-            }
-        }
         let tiles = window_tiles();
         let bake =
             |evaluation| bake_with(&terrain, &roadbed, &NoSites, &tiles, Level::Gl0, evaluation);
@@ -719,7 +731,7 @@ fn structure_mouths_wall_the_graded_ground() {
             sites: &NoSites,
         };
         let mut scratch = QueryScratch::default();
-        let (mut walled, mut highest) = (0, 0.0f64);
+        let (mut walled, mut highest, mut opened) = (0, 0.0f64, 0);
         for payload in &payloads {
             let origin = payload.tile.origin();
             let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
@@ -740,6 +752,34 @@ fn structure_mouths_wall_the_graded_ground() {
                         continue;
                     }
                     let (lx, lz) = ((x - origin[0]) as f32, (z - origin[1]) as f32);
+                    // A face on this wall seam: both its ends on the seam's line.
+                    let on_seam = |face: &&WallFace| {
+                        [face.a, face.b].iter().all(|p| {
+                            let (px, pz) =
+                                (f64::from(p[0]) + origin[0], f64::from(p[1]) + origin[1]);
+                            let (dx, dz) = (b.x - a.x, b.z - a.z);
+                            ((px - a.x) * dz - (pz - a.z) * dx).abs() / dx.hypot(dz) < 2e-3
+                        })
+                    };
+                    let covering = |face: &&WallFace| {
+                        let (dx, dz) = (face.b[0] - face.a[0], face.b[1] - face.a[1]);
+                        let s =
+                            ((lx - face.a[0]) * dx + (lz - face.a[1]) * dz) / (dx * dx + dz * dz);
+                        let off = (face.a[0] + dx * s - lx).hypot(face.a[1] + dz * s - lz);
+                        (-1e-4..=1.0 + 1e-4).contains(&s) && off < 2e-3
+                    };
+                    if class == EdgeClass::Tunnel && ground < h + PORTAL_CLEARANCE_M {
+                        assert!(
+                            !payload
+                                .walls
+                                .iter()
+                                .filter(on_seam)
+                                .any(|face| covering(&face)),
+                            "{class:?}: a headwall at ({x}, {z}) over the opening"
+                        );
+                        opened += 1;
+                        continue;
+                    }
                     let (face, s) = payload
                         .walls
                         .iter()
@@ -770,12 +810,15 @@ fn structure_mouths_wall_the_graded_ground() {
             }
         }
         // The rendered surface on the row interpolates the samples beside it: the hidden inside
-        // rule's on the road's side, the cones of the chains' end corners beyond (1.0 m above
-        // the tunnel's mouth, 0.47 m below the bridge's).
-        assert!(
-            walled > 50 && highest > 0.25,
-            "{class:?}: {walled} walled points, highest {highest}"
-        );
+        // rule's on the road's side, the cones of the chains' end corners beyond (up to 1.0 m
+        // above the tunnel's mouth, all of it opened, 0.47 m below the bridge's).
+        match class {
+            EdgeClass::Tunnel => assert!(opened > 50 && walled == 0, "{opened} opened, {walled}"),
+            _ => assert!(
+                walled > 50 && highest > 0.25,
+                "{class:?}: {walled} walled points, highest {highest}"
+            ),
+        }
         for (pruned, full) in payloads.iter().zip(&bake(Evaluation::Unpruned)) {
             assert_eq!(pruned.walls, full.walls, "{class:?} {:?}", pruned.tile);
         }

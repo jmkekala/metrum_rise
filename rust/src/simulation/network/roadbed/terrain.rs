@@ -78,6 +78,10 @@ pub struct TerrainChanges {
     /// and a removed segment's heights are gone from the roadbed. A one-vertex chain gives a
     /// segment from the vertex to itself.
     pub segments: Vec<[RoadVec3; 2]>,
+    /// The bounds of [`Self::pieces`] whose piece has a portal row ([`PieceMesh::portal_rows`],
+    /// `TERRAIN-07-C`), in the same order: the graded terrain's portal opening reads only those
+    /// pieces' parts, so it changes only near them.
+    pub portals: Vec<[f64; 4]>,
 }
 
 // An outer-chain segment as `terrain_loops` reads it: its endpoints' coordinate bits, whether

@@ -64,6 +64,11 @@ impl PublishedPiece {
     }
 }
 
+// A piece's bounds when it has a portal row (`TERRAIN-07-C`).
+fn portal_bounds(mesh: &PieceMesh) -> Option<[f64; 4]> {
+    mesh.portal_rows().next().map(|_| mesh.bounds_xz())
+}
+
 // This compile's node plans, by node.
 type Plans = BTreeMap<u32, Result<Option<NodePlan>, NodeError>>;
 
@@ -90,6 +95,8 @@ pub struct RoadbedSystem {
     // and the net chain segments they changed (`ROAD-68-E`).
     changed_bounds: Vec<[f64; 4]>,
     changed_chains: ChainChanges,
+    // The bounds among `changed_bounds` of pieces with a portal row (`TERRAIN-07-C`).
+    changed_portals: Vec<[f64; 4]>,
     // Nodes whose piece failed in the published generation, with the reason, and their ids.
     failed: imbl::OrdMap<u32, NodeError>,
     failed_ids: Arc<Vec<u32>>,
@@ -216,6 +223,7 @@ impl RoadbedSystem {
             changed_chunks: BTreeSet::new(),
             changed_bounds: Vec::new(),
             changed_chains: ChainChanges::default(),
+            changed_portals: Vec::new(),
             failed: imbl::OrdMap::new(),
             failed_ids: Arc::default(),
             rebuilt: RebuiltOwners::default(),
@@ -229,6 +237,7 @@ impl RoadbedSystem {
             changed_chunks: BTreeSet::new(),
             changed_bounds: Vec::new(),
             changed_chains: ChainChanges::default(),
+            changed_portals: Vec::new(),
             rebuilt: RebuiltOwners::default(),
             dirty_edges: self.dirty_edges.clone(),
             dirty_nodes: self.dirty_nodes.clone(),
@@ -257,6 +266,9 @@ impl RoadbedSystem {
         self.changed_chunks.extend(self.index.occupied_chunks());
         let dropped = self.pieces.values().map(|piece| piece.mesh().bounds_xz());
         self.changed_bounds.extend(dropped);
+        let portals = self.pieces.values().map(PublishedPiece::mesh);
+        self.changed_portals
+            .extend(portals.filter_map(portal_bounds));
         for piece in self.pieces.values() {
             self.changed_chains.count(piece, -1);
         }
@@ -719,6 +731,7 @@ impl RoadbedSystem {
             self.index.remove(id, footprint);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(old.mesh().bounds_xz());
+            self.changed_portals.extend(portal_bounds(old.mesh()));
             self.changed_chains.count(old, -1);
         }
         if let Some(published) = published {
@@ -726,6 +739,7 @@ impl RoadbedSystem {
             self.index.insert(id, mesh, footprint);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(published.mesh().bounds_xz());
+            self.changed_portals.extend(portal_bounds(published.mesh()));
             self.changed_chains.count(&published, 1);
             self.pieces.insert(id, published);
         }
@@ -741,6 +755,7 @@ impl RoadbedSystem {
             pieces: std::mem::take(&mut self.changed_bounds),
             chains,
             segments,
+            portals: std::mem::take(&mut self.changed_portals),
         }
     }
 

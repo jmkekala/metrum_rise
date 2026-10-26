@@ -40,33 +40,40 @@ pub(super) fn rasterize(
         x_last + PAD_M,
         z_last + PAD_M,
     ];
-    let width = xs.len();
     roadbed.for_each_grounded_top_triangle_in_bounds(bounds, pieces, |triangle| {
         if let Some(triangles) = triangles.as_deref_mut() {
             triangles.push(triangle_bits(&triangle));
         }
-        let [min_x, min_z, max_x, max_z] = triangle_box(&triangle);
-        let (i0, i1) = (
-            xs.partition_point(|&x| x < min_x - PAD_M),
-            xs.partition_point(|&x| x <= max_x + PAD_M),
-        );
-        let (j0, j1) = (
-            zs.partition_point(|&z| z < min_z - PAD_M),
-            zs.partition_point(|&z| z <= max_z + PAD_M),
-        );
-        for j in j0..j1 {
-            for i in i0..i1 {
-                if let Some(height) = RoadbedSystem::top_triangle_height_at(&triangle, xs[i], zs[j])
-                {
-                    let cell = &mut road[j * width + i];
-                    *cell = cell.max(height + 0.0);
-                }
-            }
-        }
+        raise_covered(&triangle, xs, zs, road);
     });
     if let Some(triangles) = triangles {
         triangles.sort_unstable();
         triangles.dedup();
+    }
+}
+
+/// Raises each lattice point of `xs` x `zs` (row-major by `z`) that `triangle` covers by the
+/// roadbed's predicate to its height there: `out[k]` the highest so far. Heights are `+ 0.0`
+/// so a negative zero never decides a maximum. The one raster of road coverage and the portal
+/// opening's decks (`TERRAIN-07-C`). `O(K)` for the `K` lattice points in its box.
+pub(super) fn raise_covered(triangle: &[RoadVec3; 3], xs: &[f64], zs: &[f64], out: &mut [f32]) {
+    let width = xs.len();
+    let [min_x, min_z, max_x, max_z] = triangle_box(triangle);
+    let (i0, i1) = (
+        xs.partition_point(|&x| x < min_x - PAD_M),
+        xs.partition_point(|&x| x <= max_x + PAD_M),
+    );
+    let (j0, j1) = (
+        zs.partition_point(|&z| z < min_z - PAD_M),
+        zs.partition_point(|&z| z <= max_z + PAD_M),
+    );
+    for j in j0..j1 {
+        for i in i0..i1 {
+            if let Some(height) = RoadbedSystem::top_triangle_height_at(triangle, xs[i], zs[j]) {
+                let cell = &mut out[j * width + i];
+                *cell = cell.max(height + 0.0);
+            }
+        }
     }
 }
 
@@ -88,7 +95,8 @@ pub(super) fn covered_height_at(
     (best > f32::NEG_INFINITY).then_some(best)
 }
 
-fn triangle_box(triangle: &[RoadVec3; 3]) -> [f64; 4] {
+/// A triangle's XZ bounds `[min_x, min_z, max_x, max_z]`.
+pub(super) fn triangle_box(triangle: &[RoadVec3; 3]) -> [f64; 4] {
     let [a, b, c] = triangle;
     [
         a.x.min(b.x).min(c.x),
@@ -98,7 +106,8 @@ fn triangle_box(triangle: &[RoadVec3; 3]) -> [f64; 4] {
     ]
 }
 
-fn triangle_bits(triangle: &[RoadVec3; 3]) -> [u64; 9] {
+/// A triangle's vertex bits, `[ax, ay, az, bx, by, bz, cx, cy, cz]`.
+pub(super) fn triangle_bits(triangle: &[RoadVec3; 3]) -> [u64; 9] {
     let [a, b, c] = triangle;
     [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z].map(f64::to_bits)
 }

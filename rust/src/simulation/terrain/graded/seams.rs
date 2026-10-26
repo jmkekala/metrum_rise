@@ -18,6 +18,11 @@ pub enum SeamKind {
     /// T22 4 (a)), the grounded road on its left: no cone, never a sample's nearest seam; the
     /// bake builds wall faces along it from its height to the graded ground.
     Wall,
+    /// One outer-chain segment of a tunnel span with a portal row, the deck on its left
+    /// (`TERRAIN-07-C`, T22 5 (a)): no cone; near a portal it names the nearest seam of the
+    /// samples the opening cuts and of the ground beside them, and the opening's side walls
+    /// stand along it.
+    Bore,
 }
 
 /// One seam segment in world metres `[x, height, z]`, its height linear along it.
