@@ -5796,9 +5796,14 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
   centre is `(0, 0)` (`METRUM_IDLE_BENCH_CENTRE=0,0`); its asset packs are the bootstrap packs.
   It loads on the rebased tip's release library (`b3972ecc`, `ROAD-68-K21`'s 1:3 load check
   included; the city is flat). The probe there: the exact cut settles in 2,326 ms (video memory
-  698 MiB); the graded half did not settle within the probe's 600 s (a miss, open: not yet told
-  whether a bake is retried forever, such as an unready site index, or a request stalls; the
-  round 4 tip's scripts on the same save are queued as the control).
+  698 MiB); the graded half did not settle within the probe's 600 s (a miss, open): Godot counted
+  827,447 failures Rust reported as not to be retried (about 23 a frame), with 145 tiles installed
+  and 8 patches drawing cells, so requests that fail by contract are asked again every frame
+  (the failing request's kind and reason are logged only on the `terrain` channel, which the probe
+  did not enable: the next run reads them). The edit there committed in 103 ms and installed 12
+  tiles in one frame 5 frames later, in 4.49 ms (residency 3.09, polling 0.53, cells 0.47, the
+  uploads 0.22), and created 16 materials and 24 `MultiMesh`es (patches newly drawing cells took
+  cell sets the pool had not prewarmed): both misses, open.
 - **Renders (fresh, round 4's chain on its tip `4607be47`).** `kuopio_t2_wall` (before:
   aborted): plan_terrain pinholes exact 1, B 3 (a miss, open): each a single pixel on the outer
   sidewalk edge of the diagonal road against the grass, B at (496, 200), (768, 468) and
