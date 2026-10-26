@@ -35,6 +35,15 @@ func _numbers(name: String, count: int) -> PackedFloat64Array:
 	_expect(out.size() == count, "%s needs %d numbers" % [name, count])
 	return out
 
+# The production terrain uploads nothing while the network generation is unacknowledged, which
+# network_renderer.gd does in the game once its road chunks are up.
+func _acknowledge_network() -> void:
+	var deadline := Time.get_ticks_msec() + 30000
+	while simulation.is_network_dirty() and Time.get_ticks_msec() < deadline:
+		simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		await process_frame
+	_expect(not simulation.is_network_dirty(), "the network render must be acknowledged")
+
 func _surface(point: Vector2) -> Vector3:
 	return Vector3(point.x, float(simulation.get_world_surface_height(point)), point.y)
 
@@ -66,6 +75,7 @@ func _run() -> void:
 	_expect(simulation.load_game(OS.get_environment("METRUM_GRADED_PROBE_SAVE")), "the save must load")
 	_report["load_game_ms"] = float(Time.get_ticks_usec() - load_start_us) / 1000.0
 	simulation.set_simulation_speed(0.0)
+	await _acknowledge_network()
 	var water := Node3D.new()
 	water.name = "Water"
 	scene.add_child(water)
@@ -138,6 +148,7 @@ func _edit(terrain, road: PackedFloat64Array) -> Dictionary:
 			_expect(committed, "the probe's road must commit: %s" % result)
 			break
 	var commit_ms := float(Time.get_ticks_usec() - commit_start_us) / 1000.0
+	await _acknowledge_network()
 	var install_frames := 0
 	while committed and int(graded.counters["edit_batches"]) == int(before["edit_batches"]) and install_frames < 3000:
 		await process_frame
