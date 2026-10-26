@@ -330,6 +330,18 @@ impl<M: CellMaps> CellStore<M> {
         (entries, bytes)
     }
 
+    /// Test-only: the chunk entries that hold no block and no curve source (`ROAD-68-K24`).
+    /// Each caches only that its chunk was generated and has no cell, which a request for the
+    /// chunk rebuilds: a city built in the run keeps one in every chunk its lot passes generated,
+    /// a loaded one only where its roads' reach warmed the chunk or a later request generated it.
+    #[cfg(test)]
+    pub(crate) fn empty_chunk_entries(&self) -> usize {
+        self.chunks
+            .iter()
+            .filter(|(_, chunk)| chunk.blocks.is_empty() && chunk.sources.is_empty())
+            .count()
+    }
+
     /// Restores consecutive frame identities, rejecting duplicates and invalid serialized bases.
     pub(crate) fn restore_saved_frame(&mut self, grid: u64, frame: GridFrame) -> bool {
         if grid != self.frames.len() as u64 + 1

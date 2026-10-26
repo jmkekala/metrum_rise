@@ -1296,6 +1296,7 @@ fn profile_commits(
             * 4096
     };
     let (entries, bytes) = core.zoning.cells.memory_estimate();
+    let empty_chunks = core.zoning.cells.empty_chunk_entries();
     let before = resident();
     let begin = Instant::now();
     let copy = crate::simulation::zoning::cells::CellStore::copy_of(&core.zoning.cells);
@@ -1305,7 +1306,8 @@ fn profile_commits(
     drop(black_box(copy));
     eprintln!(
         "COMMIT_CELL_COPY {}",
-        serde_json::json!({"residents": residents, "entries": entries, "payload_bytes": bytes,
+        serde_json::json!({"residents": residents, "entries": entries,
+            "empty_chunk_entries": empty_chunks, "payload_bytes": bytes,
             "copy_estimate_bytes": bytes + 24 * entries, "copy_resident_growth_bytes": grown,
             "copy_ms": copy_ms})
     );
@@ -1319,13 +1321,15 @@ fn profile_commits(
             "graded_walls_s": graded_walls_s, "samples_s": samples_s, "cell_copy_s": cell_copy_s,
             "site_removal_s": site_removal_s})
     );
-    // The cell store's size (`COMMIT_CELL_COPY`) is not a product: it follows the store's edit
-    // history, and a loaded store holds a few entries fewer than the built one with the same
-    // digests (`ROAD-68-K22`).
+    // The cell store's entries are a product without its empty chunk entries, a cache of
+    // chunks generated without a cell that follows where the city came from: the built city
+    // keeps one in every chunk its lot passes generated, the loaded one only near its roads
+    // (`ROAD-68-K24`; `ROAD-68-K22` saw 24 / 29 fewer entries in loaded 10k / 30k cities).
     serde_json::json!({
         "residents": residents, "buildings": header["buildings"],
         "households": header["households"], "agents": header["agents"],
         "nodes": header["nodes"], "edges": header["edges"], "lanes": header["lanes"],
+        "cell_entries": entries - empty_chunks,
         "road_vertices": initial_road_vertices, "census": census_counts, "walls": walls,
         "samples": sample_products,
         "site_removal_digest": removal.as_ref().map(|record| record["digest"].clone()),
