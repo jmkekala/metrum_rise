@@ -5747,7 +5747,18 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
   the frame's parts recorded (`edit_frame_parts`, kept): 4.10 ms, of which polling 0.73, the
   batch's 6 uploads 0.17, the per-frame residency passes 2.34 and the per-frame material check
   0.85; no patch's cells were rewritten. Round 4's lead (cell rewrites and `_sync_material`) was
-  wrong; the frame paid the idle frame's cost plus the batch.
+  wrong; the frame paid the idle frame's cost plus the batch. After (same session and library,
+  round 4's tip scripts against the change-driven ones): C 3.08 ms, F 3.44 ms, still a miss
+  (open). The F frame's parts: residency 2.24 ms, cells 0.57 ms (one patch), material check 0.26,
+  polling 0.23, the 6 uploads 0.14; nothing created. A patch list arrived in the batch's frame,
+  and a list arrival (like every residency revision, which a commit's plain payload re-commits
+  advance) recomputes the desired tiles over every resident patch's list, evicts and re-requests:
+  `O(resident patches)` again, 1,296 on Kuopio. The cells' rewrite on a list arrival is now
+  skipped unless the list empties or fills (the cells show the installed tiles, not the list;
+  `7979f2bd`, after this measurement). Next: changes keyed by patch from `terrain.gd` (a patch
+  entering or leaving, against an entry's update), and the desired tiles updated per changed list
+  with a per-tile count of the lists naming it, so a list or a re-committed payload costs its own
+  tiles.
 - **The bridge mouth (fixed at its cause).** A diagnostic bake of `bridge_t` (the mouth row at
   `z = 10`, a lattice row; the hollow sculpted after) showed every structure-wall face along the
   row standing from the deck (0) up to 0.354 m (0.474 m at the curbs, 0.12 + 0.354): the row's
@@ -5783,6 +5794,11 @@ plot suites, a populated save. Fresh runs on this branch unless marked.
   `$ARTIFACTS/populated_city_14000.sqlite`, generated in 66 s. A 60 m spur off the trunk in the
   margin, `(-1300, 0) -> (-1300, 60)`, is the probe's edit; for the matrix's town poses the city
   centre is `(0, 0)` (`METRUM_IDLE_BENCH_CENTRE=0,0`); its asset packs are the bootstrap packs.
+  It loads on the rebased tip's release library (`b3972ecc`, `ROAD-68-K21`'s 1:3 load check
+  included; the city is flat). The probe there: the exact cut settles in 2,326 ms (video memory
+  698 MiB); the graded half did not settle within the probe's 600 s (a miss, open: not yet told
+  whether a bake is retried forever, such as an unready site index, or a request stalls; the
+  round 4 tip's scripts on the same save are queued as the control).
 - **Renders (fresh, round 4's chain on its tip `4607be47`).** `kuopio_t2_wall` (before:
   aborted): plan_terrain pinholes exact 1, B 3 (a miss, open): each a single pixel on the outer
   sidewalk edge of the diagonal road against the grass, B at (496, 200), (768, 468) and
