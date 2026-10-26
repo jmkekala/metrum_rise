@@ -6758,6 +6758,13 @@ p50) holds both. The kept tiles take a median 2.75 MB per undo entry and at most
 the rows in use; every dirty tile, graded before the edit or not; T20's 1.43 / 3.73 MB counted
 only the graded ones at slot capacity).
 
+**Gate checks (fresh, on `28f887c8`).** Clippy `--all-targets`: the 59-warning baseline set
+exactly. Debug `cargo test --lib` (`RAYON_NUM_THREADS=4`): 1,959 passed, 0 failed, 174 ignored (no
+new ignore). `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset: exit 0 (the library as
+above, `tests/growth_scenario.rs` 4 passed, the Godot bridge suites with no script error); it
+skipped the rendered vegetation tests (they need a Forward+ display) and the shader global probe
+(headless renderer).
+
 **Open (not relaxed).** T27: the poses miss 3.0 ms; the exact levers (T18, T21: the row split,
 the coverage row span, the selection) are round 2's, then the user's choice. The populated drags
 and the sessions above. The kept tiles' memory (an ungraded kept tile could be dropped and baked
