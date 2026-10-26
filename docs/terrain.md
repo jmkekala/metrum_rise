@@ -5611,7 +5611,10 @@ with the production renderer and the bridge's walls, `network_tool_chunk_rendere
 Forward+ vegetation tests. On the refusal change: `nodes::simulation_node::` 147 passed, 7
 ignored (with `a_request_outside_the_world_is_refused_not_retried`), `simulation::terrain::graded`
 and the core's graded tests 31 passed, 4 ignored. `plot_material_lighting_test.gd` and
-`plot_dawn_lighting_test.gd` (GPU, round 3's queue on `8e2798a4`): exit 0 each. The headless
+`plot_dawn_lighting_test.gd` (GPU, round 3's queue on `8e2798a4`, the defect tree): both FAIL
+(exit 0 hides it): "exported terrain must face upward", "native fixture must supply a flat
+terrain face", "yard and sidewalk asphalt must match", "sidewalk must share the same morning
+lighting"; the rerun on the fixed tree was queued at the handoff, open. The headless
 regression check against the library without the fix: 8 failures; with it: 0.
 
 **Reference renders (fresh, round 4; tree `b95adb55`, before the re-entrancy fix).** In compare
@@ -5622,9 +5625,13 @@ every B and exact half, no assertion failed; the 4x crops of `t`'s curb returns 
 terrain over a sidewalk and no background sliver, exact and B alike; the distance views show no
 crack along cell or level borders, no road hidden and no skirt. Finding, open (gate D's):
 `bridge_t`'s `mouth_side` shows a dark face standing above the deck at the bridge's mouth and a
-2-pixel sky sliver at the ground line under it; which faces they are (graded walls or the
-roadbed's abutment face) is not yet told apart (a render with the graded walls in magenta is
-queued). Deferred by the user to the tunnel work (`ROAD-61`), 2026-10-26: `tunnel_t`'s portal
+2-pixel sky sliver at the ground line under it. A render with the graded walls in magenta
+(the refusal change's tree) shows the dark face is a graded wall face: along the bridge's mouth
+row it stands from the deck up to an uneven top, over the road. Not yet told apart: a bake rule
+(the structure wall's top is the lattice surface along the seam, which on the road's side is the
+masked, hidden inside-rule ground and may stand above the deck) or a placement error in the
+wall instances; next, the bridge_t tile's faces from the bake against the deck height. The sliver
+is not a wall (no magenta there). Deferred by the user to the tunnel work (`ROAD-61`), 2026-10-26: `tunnel_t`'s portal
 view shows the sky through a sliver at the tunnel's mouth between the deck's end and the mound;
 tunnels are not yet a finished feature, so `tunnel_t` stays in the render set only as a no-crash
 and no-regression check, and gate D adds no portal headwall or bore interior. `kuopio_t2_wall` aborted (the re-entrancy above) after its exact
