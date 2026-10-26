@@ -398,7 +398,12 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the tiles within their reach, and retaining walls close the step where a road's embankment
   stands over a lower road; bridge and tunnel ends follow in round 2. Open: with the pads grading
   the ground, three of the populated city's road commits beside built-up blocks take 3.3-4.3 ms
-  of terrain against the 3.0 ms stage; exact pruning levers remain. See the
+  of terrain against the 3.0 ms stage; exact pruning levers remain. Round 2 (2026-10-26) takes two
+  exact levers (2.86-3.86 ms on the edits beside built-up blocks, still a miss at 2k, 10k and
+  100k residents: `terrain.md` T21, open) and starts the structure ends
+  (T22, decided under the user's delegation for review): a structure's free end is capped and a
+  node piece where only structures meet stands off the terrain; building a bridge or tunnel from a
+  road in play still waits for round 3's wall runs. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record)).
 

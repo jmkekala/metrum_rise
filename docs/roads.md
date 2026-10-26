@@ -1553,6 +1553,12 @@ These need a user decision; work that does not depend on them continues.
     - **`TERRAIN-07` (2026-10-25):** superseded there: inside and outside come from the pieces' top
       triangles, so an open end flips no region ([T3](terrain.md#terrain-07-open-questions));
       abutments and portals in [T14](terrain.md#terrain-07-open-questions).
+    - **`TERRAIN-07-C` round 2 (2026-10-26):** their shapes are
+      [T22](terrain.md#terrain-07-open-questions) (decided under the user's delegation, for
+      review). A structure's free end is capped and a node piece where only structures meet
+      stands off the terrain; the grounded chains that end at a structure close across its mouth
+      row through a wall run the roadbed publishes (T22 3 (a)), built in round 3, so until then
+      the rejection below still stands.
     - **Until `TERRAIN-07` (measured by `ROAD-68-F` part 2, 2026-10-25).** Abutments and portals
       moved to `TERRAIN-07`, so the error stands on the legacy terrain: a bridge or tunnel stroke
       that joins a grounded road is rejected at the commit (`render_geometry_invalid

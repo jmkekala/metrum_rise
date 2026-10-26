@@ -3226,8 +3226,11 @@ Terminology:
 
 **Specification adopted by the user (2026-10-25); of its gates `TERRAIN-07-B` (road skirts and
 bridge fascias) and `TERRAIN-07-A` (the grading core and queries, roads only, beside the legacy
-path in `simulation/terrain/graded/`, read by no consumer yet) are done; `TERRAIN-07-C` round 1
-(sites, pads, paving and conflict walls; structure ends are round 2's) is work in progress.**
+path in `simulation/terrain/graded/`, read by no consumer yet) are done; `TERRAIN-07-C` (round 1:
+sites, pads, paving and conflict walls; round 2: two exact levers, free structure ends capped and
+structure-only node pieces off the terrain) is work in progress, with the populated budget miss
+([T21](#terrain-07-open-questions)) and the rest of the structure ends
+([T22](#terrain-07-open-questions)) open for round 3.**
 `TERRAIN-07` rewrites the terrain surface core on the Rust and Godot sides. It
 replaces the exact cut, a constrained Delaunay triangulation per 64 m tile composed into the
 render patches (one per 512 m terrain chunk), with approach B: the 10 m base heightmap, plus a fine
@@ -3449,7 +3452,8 @@ side, being a base lattice line, is a lattice line of every level.
 - `SeamKind::Pad`: one side of a site's support footprint, oriented counter-clockwise (positive
   signed area in XZ, the paving partition's convention), at the support height; a window's pad
   seams follow its road seams, in key order (`TERRAIN-07-C`)
-- `SeamKind::Wall`: reserved for structures ([T14](#terrain-07-open-questions)); not built
+- `SeamKind::Wall`: reserved for structures ([T14](#terrain-07-open-questions), their shapes
+  [T22](#terrain-07-open-questions)); not built
 
 A seam's key is the bits of `a` then `b`, never a piece, edge or building id: a split renumbers
 pieces far from the edit whose vertices stay bit-identical (`ROAD-68-E` round 4). Every kind
@@ -3593,8 +3597,10 @@ sides with the cell lines and the base lattice points inside it), and `D` is the
 seam's box to the bin, at most the distance from the seam to any of its samples.
 
 1. **Pass 1** lists in a bin the seams within the cap with
-   `D <= max( (h_hi - β_lo) / k, (β_hi - h_lo) / k, B )`. Every other seam's cone holds the base at
-   every sample of the bin (`h - k d <= b <= h + k d`) and is not the nearest within the band. A
+   `D <= max( (h_hi - β_lo) / k, (β_hi - h_lo) / k, B )`, where `B` is the band for a road seam
+   and `0` for a pad seam, which no sample names as its nearest (`TERRAIN-07-C` round 2; the
+   selection's pass-1 test takes the same per-seam band). Every other seam's cone holds the base
+   at every sample of the bin (`h - k d <= b <= h + k d`) and is not the nearest within the band. A
    sample evaluated over the listed seams gets `g1 = max(L1, min(b, U1))`. The unlisted seams'
    upper bounds are at least `b`, so `min(b, U)` is `min(b, U1)`, and their lower bounds are at
    most `b`: `g = max(g1, L_rest)` with `L_rest <= b`. A `Road` sample (the inside rule reads only
@@ -3688,7 +3694,10 @@ facing away from the road, in the curb's concrete, casting no shadow (where the 
 skirt lies inside the ground). It goes through the chunk
 emission with the other piece layers, so the preview's skirt is the commit's. A vertex attribute
 marks the bottom vertices so the road shader can deepen them with distance
-([T5](#terrain-07-open-questions)). Pads need no skirt: the terrain is the pad. Built in
+([T5](#terrain-07-open-questions)). Pads need no skirt: the terrain is the pad. A node piece where
+only bridges and tunnels meet is part of the structure and hangs none (`TERRAIN-07-C` round 2,
+[T22](#terrain-07-open-questions)); a structure's free end is capped down to its strips' depth
+(a tunnel's to the skirt depth, in the skirt layer). Built in
 `TERRAIN-07-B`: the payload's skirt layer, UV `y` the bottom attribute, drawn with the curb-face
 shader's skirt variant, which measures the distance as `terrain.gd` measures patch LOD (camera
 to point).
@@ -3736,8 +3745,10 @@ to point).
 - **Retaining walls.** The exact cut promotes structural sources (tunnel portals, bridge abutments)
   to wall faces. `SeamKind::Wall` (no cone; the client builds its wall mesh from its
   skirt grown to the graded height difference) is reserved for the abutments and portals of
-  [`TERRAIN-07-C`](#terrain-07-c--sites-pads-paving-and-structure-ends) round 2
-  ([T14](#terrain-07-open-questions)). Ordinary grounded roads get no structural walls.
+  [`TERRAIN-07-C`](#terrain-07-c--sites-pads-paving-and-structure-ends)
+  ([T14](#terrain-07-open-questions)); [T22](#terrain-07-open-questions) (a) replaces the grown
+  skirt by wall faces the terrain builds like conflict walls (round 3). Ordinary grounded roads
+  get no structural walls.
 - **Conflict walls** ([T2](#terrain-07-open-questions) (c), built in `TERRAIN-07-C` round 1 as
   payload data, rendered in `TERRAIN-07-D`). Along every road seam of a tile (its part in the
   tile), the vertices are the seam's crossings with the level's lattice lines and cell diagonals,
@@ -3983,7 +3994,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | --- | --- | --- |
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
-| `TERRAIN-07-C` | in progress (round 1 on branch `terrain07-C`: items 1-3 and 5, [record](#terrain-07-c-record); item 4, structure ends, is round 2's) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
+| `TERRAIN-07-C` | in progress (branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; open: T21, T22 parts 3-5) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | open | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
@@ -4756,6 +4767,74 @@ seams in the floor), `seams` +57 (`SeamKind::Pad`, the shared `segment_at`), `qu
 `sample` +18, the router +10. Allocator +112/−23 (`SiteSource`, `SiteChange`, the outbox).
 Roadbed unchanged. Tests +1,010 (`site_tests` 944, `tests` +66).
 
+Round 2, 2026-10-26, on the rebased branch: the populated miss and the first part of item 4.
+
+**What landed.**
+
+- The exact lever 1 (`prune.rs` `listing_band`): pass 1 lists a pad seam only within its bind
+  reach, never for the band, since no sample names a pad seam as its nearest; the bake's two
+  passes and the selection's pass-1 test take every seam's band from that one function
+  ([two passes](#the-grading-function)). The selection's floor reads the window's pad seams
+  without the canonical site order and material edges (`SiteBuffer::gather_unordered`,
+  `for_each_pad_seam`): a minimum is order-free, so the floor is the same bits.
+- Item 4, [T22](#terrain-07-open-questions) parts 1 and 2 (decided under the user's delegation,
+  for review): a node piece where only bridges and tunnels meet is part of the structure
+  (`NodeArms::grounded`): it hangs no skirt, and no grounded query, chain change or patch loop
+  reads it (`PublishedPiece::grounded`), which closes `TERRAIN-07-B`'s skirt-in-the-air risk. A
+  structure's free end (`is_structure_end`, the rule that gives it no node piece) is capped
+  (`end_cap`): the polygon in the end row's vertical plane between the row and the bottoms below
+  its corners (a bridge's fascia depth, so the cap's bottom is the slab's end edge; a tunnel's
+  skirt depth, emitted in the skirt layer), triangulated by the roadbed's constrained ring
+  triangulation in that plane, facing out of the span.
+- Tests: `a_node_piece_where_only_structures_meet_stands_off_the_terrain` (a bend of two
+  bridges, a junction of tunnels, of bridges and a tunnel; a bend of a road and a bridge still
+  grounded, flat and sloped); the strip probe checks the caps (end-row tops, corner bottoms,
+  facing out) and re-records the 18 entries with a free structure end, every other strip entry
+  and the seven top-surface hashes unchanged; `structure_and_rural_road_chunks_are_watertight`
+  checks the free ends without an exception (the shared mouths keep theirs: the slab's and the
+  strips' ends, which the abutments close in round 3).
+
+**Benchmarks** (release library tests, both locks, P-cores, four workers, 2026-10-26 03:49-04:13,
+C X X C: control `ddafa2e183cd` (gate A round 4's binary, as in round 1), then `42116b005a4d`
+(`9f5dc86f`); restic absent; logs under `$ARTIFACTS`). Commands as in round 1.
+
+- **Populated commits** (`graded_tiles` rows): the first edits of the built-up tiers 2k **3.05,
+  3.25**, 10k **3.20, 3.28**, 30k 2.86, 2.88, 100k **3.82, 3.86** ms (control 2.20/2.28,
+  2.43/2.46, 2.14/2.17, 2.86/2.94); their texel digests are round 1's, bitwise. The tier without
+  lots 1.96-2.08 (control 1.88-1.94); every other edit 1.21-1.76 (control 1.03-1.54). Selection
+  on the first edits 0.76-0.90 ms (control 0.57-0.78); evaluated seams per sample 1.44-1.64
+  (round 1 1.67-1.88, control 1.24-1.43). Still a miss at 2k, 10k and 100k: open as
+  [T21](#terrain-07-open-questions), not relaxed.
+- **A building's removal in the city** 0.90-1.09 ms; the six Kuopio yard placements 1.22-3.00 ms;
+  `benchmark_graded_site_placement` 0.67-0.93 ms at every background size in a quiet A/B
+  against round 1's binary (0.82-0.93), while later pairs ran beside other agents' builds and
+  scattered to 4.5 ms for both binaries, so they are not evidence.
+- **Kuopio edits** (roads only): median 2.29/2.41 ms, p90 4.01/4.21, worst 6.65/6.66, 30 of 44
+  within 3.0 ms (control 2.07/2.08, 3.70, 6.61/6.72, 33/32 of 44): round 1's walls, as recorded
+  there; T20 (a) keeps full-edit bakes off the frame paths.
+- **Reference fixtures** (p50 of 50): `GL0` 0.88-1.33 ms on the road fixtures, `conflict_8`
+  1.57-1.59 (control 0.81-1.25, 1.54-1.55). **Locality**: the same 4 tiles bitwise at 3 to 4,707
+  edges, p50 0.50-0.94 ms (control 0.46-0.83).
+
+**Gate checks** (fresh, on `eb6649ed`): clippy `--all-targets` gives the 59-warning baseline set
+exactly; `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset, 04:33-04:50) exits 0 with the
+debug library suite at 1,941 passed, 0 failed, 174 ignored (the new families test), the
+integration tests 4 passed, every Godot bridge and asset test passing without a SCRIPT ERROR, and
+the same two skips (the headless shader global probe, the Forward+ vegetation tests). Disabled
+tests unchanged: the three legacy-pipeline `TERRAIN-07` tests (the tunnel portal CDT test among
+them, round 3's) and gate A's two census runners.
+
+**Lines** (production, tests excluded): `graded/` 4,143 (round 1 4,117: `prune` +15 for
+`listing_band`, `sites` +13 for the unordered gather and the pad seam visitor, `select` -2).
+`roadbed/` 8,225 on `road` to 8,386 (+161): `mesh` +100 (the cap storage, its visit with the
+strips and `end_cap`), `arms` +23 (`grounded`, `is_structure_end`), `span` +17 (the caps per
+end), `node` +13, `system` +10 (`PublishedPiece::grounded`), `terrain` +6, `query` -4.
+
+**Open (round 3).** T21's exact levers and re-timing. T22 parts 3-5: the wall runs that close the
+grounded chains at a structure's mouth (so a bridge or tunnel drawn from a road in play commits and
+undoes), the wall faces at abutments and portals, the portal opening and the wall test on the graded
+surface that replaces the tunnel portal CDT test.
+
 #### `TERRAIN-07-D` — residency, payloads and the Godot tile renderer
 
 1. Residency requests by tile and level, async bakes on the payload workers, per-frame request and
@@ -5033,6 +5112,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       `ROAD-68-F` as the owner, but the user's scope split of 2026-10-25 had moved abutments and
       portals to `TERRAIN-07`, and `ROAD-68-F` part 2 built none; the coordinator corrected the
       owner.
+    - **Shapes (`TERRAIN-07-C` round 2):** [T22](#terrain-07-open-questions), decided under the
+      user's delegation for review: structure-only node pieces off the terrain and free-end caps
+      built; wall runs at structure mouths, wall faces and the portal opening are round 3's.
 15. **T15. Coal pits.**
     - **Options.** (a) Keep the overlay. (b) An excavation client: a lowered pad with a 1:1 seam.
     - **Recommendation.** (a); (b) is a product change for its own item.
@@ -5173,6 +5255,96 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       - Round 4 (the re-recorded save, fresh): 33 of the 44 full-edit bakes are within 3.0 ms
         (median 2.11 ms, worst 6.70 ms), so (a) removes more than the undo rebake: it also keeps
         the commit's and the poses' frames off the full-edit bake.
+
+21. **T21. Building sites as grading clients in the populated commits (`TERRAIN-07-C` round 2) —
+    open, not relaxed.**
+    - **Evidence** ([record](#terrain-07-c-record), round 2, same session against gate A's
+      binary, four workers). With the city's sites as grading inputs, the first road commit of
+      each built-up tier branches beside zoned lots and takes 3.05-3.25 ms at 2k residents,
+      3.20-3.28 at 10k, 2.86-2.88 at 30k and 3.82-3.86 at 100k (control 2.20-2.28, 2.43-2.46,
+      2.14-2.17, 2.86-2.94); every other edit takes 1.21-1.76 ms. The exact levers 1 and 2 (pad
+      seams out of the band term; the selection's floor without the canonical site order)
+      reproduce round 1's texels bitwise and take 0.04-0.45 ms off it (round 1: 3.33, 3.37,
+      2.89, 4.29 ms, another session). Of the miss, the bake carries 0.6-0.8 ms (2.24-3.05 ms
+      against 1.63-2.34 ms for the same 8-13 tiles) and the selection 0.1-0.2 ms (0.76-0.90
+      against 0.57-0.78). Evaluated seams per sample fall from 1.67-1.88 to 1.44-1.64 (control
+      1.24-1.43). A flat profile of the 10k tier (perf, the commits and the city census
+      together, `$ARTIFACTS`) puts the sites' share in the nearest material edge search
+      (`SiteBuffer::nearest_edges`, 0.55 % of the samples, against 0.91 % for the cone
+      evaluation, `evaluate_lanes` and `Seam::at_lanes`), then the coverage raster (0.39 %) and
+      the pad and class rasters (0.22 %); the window's site gather and canonical order stay below
+      0.05 %. 13 tiles on four workers take four rounds of about 0.9 ms.
+    - **Options.** (a) More exact levers, then re-time: the nearest material edge search (55-76
+      edges a tile on these edits, each tested at every lattice point within its band; a per-row
+      edge list or the bake's bins would bound the pairs), and
+      splitting a tile's rows across workers so 13 tiles balance on four workers (`T18`'s lever).
+      (b) Count the stage on more workers: a change of the acceptance's measurement, not allowed
+      under the delegation. (c) Coarser site grading or material edges (pads or paving at a
+      coarser lattice): changes the surface, a product change.
+    - **Recommendation.** (a), in `TERRAIN-07-C` round 3 before the gate commit; if it still
+      misses, the user decides between the budget for site-dense edits and (c).
+
+22. **T22. The geometry of structure ends (`TERRAIN-07-C` round 2) — decided by the coordinator
+    under the user's delegation, 2026-10-26 night, for review: the recommendations; parts 1 and
+    2 built in round 2, parts 3-5 open for round 3.** T14 (a) names `SeamKind::Wall` at
+    abutments and portals but not their shapes.
+    - **Evidence.** Bridge and tunnel spans publish no chains, coverage or skirts (`ROAD-68-F`
+      part 2, `TERRAIN-07-B`). Where a structure meets a grounded piece (a node piece's mouth or a
+      pass-through's shared mouth row) the grounded chains end at the row's two corners; the
+      slab's end edge and the fascia and skirt end edges there are open. A structure end without
+      a continuation has no node piece, so its row is open: deck, curb faces, fascias and slab.
+      The exact cut's commit validation still rejects every edit whose tile holds such a chain
+      end (`roadbed_chain_open_end`, [`roads.md` question 19](roads.md#road-68-open-questions)),
+      so no structure can be built from a road in play; the graded terrain needs no closure for
+      its mask (T3). A node piece where only structures meet (a bend between two bridges)
+      counted as grounded: it hung skirts, and its chains were road seams that would grade the
+      terrain up to the bridge (the `TERRAIN-07-B` open risk). Nothing opens the terrain over a
+      tunnel: its deck has no coverage, so past the mouth row the terrain covers it, at most
+      `k d` above it within `d` of the grounded chains' ends, through any vehicle. The road
+      tool's tunnel check asks only 1 m of terrain over a tunnel's middle
+      (`PREVIEW_CLEARANCE_M`); the roadbed reads no terrain height.
+    - **Questions and options.**
+      1. A node piece where only structures meet: (a) part of the structure: no skirts, no
+         terrain seams, coverage, chain changes or patch loops; (b) grounded as before.
+      2. A structure's free end: (a) the span caps it in the end row's vertical plane, from the
+         row down to the bottoms below its corners (a bridge's fascia depth, so the cap's bottom
+         is the slab's end edge; a tunnel's skirt depth, a skirt-layer cap meeting the ground);
+         (b) a terminal node piece for structures, which then needs its own slab and fascias.
+      3. The grounded chains that end at a structure: (a) the roadbed publishes each structure
+         mouth that meets a grounded piece as a wall run, the row's points from the end corner of
+         one grounded chain to the start corner of the next (a curb pair once, at its lower
+         vertex), keyed like seams; the exact cut's loops join through it (a structure source
+         with its retaining-wall policy), so the commit validates, and the graded terrain reads
+         its segments as `SeamKind::Wall`; (b) the exact cut closes across the mouth on its own
+         (legacy only); (c) the commit skips the exact cut's validation for structures until
+         `TERRAIN-07-G` deletes it.
+      4. The walls: (a) `SeamKind::Wall` has no cone and names no nearest seam; the terrain builds
+         its wall faces as it builds conflict walls, along the wall seam from the seam's height
+         to the graded ground wherever they differ (an abutment below a bridge's end, a portal's
+         headwall above a tunnel's), and the roadbed hangs an abutment face from the slab's end
+         edge at a mouth it shares; (b) the client grows a strip down to the graded height (the
+         earlier wording of [retaining walls](#cliffs-coal-pits-retaining-walls)), which needs
+         graded heights in the client.
+      5. The portal opening: (a) the bake treats a tunnel's top triangles near its mouth rows as
+         coverage wherever the graded ground stands less than a bore clearance `H` (proposed
+         5.0 m) above the deck, so the open cut ends where the terrain becomes the bore's crown,
+         and wall faces along the tunnel's outer chains in the cut close its sides from the deck
+         edge to the graded ground; everything is derived in the bake from the seams, the
+         pieces and the base, with no roadbed height authority; (b) the portal at the mouth row,
+         a headwall from the deck to the graded ground, the deck covered beyond it; (c) left to
+         `ROAD-61`.
+    - **Recommendation.** 1 (a), 2 (a), 3 (a), 4 (a), 5 (a). They construct every face from
+      the pieces' own vertices and the graded samples, keep the roadbed free of terrain heights,
+      and close every edge the `road_families` check exempts today except a tunnel's sides,
+      which the bore (5 (a)) closes.
+    - **Decided by the coordinator under the user's delegation, 2026-10-26 night, for review:
+      the recommendations.** Built in round 2: 1 (a) (`NodeArms::grounded`, the node piece's
+      `grounded`, every grounded test reads `PublishedPiece::grounded`) and 2 (a)
+      (`end_cap`, `PieceMesh::cap_kind`); `road_families` checks the free ends without an
+      exception. Round 3 builds 3-5 and gate C's remaining structure-end acceptance (a bridge
+      and a tunnel drawn from a road in play commit and undo; the wall test on the graded
+      surface replacing the tunnel portal CDT test). No acceptance target changes. Risk for
+      `TERRAIN-07-D`: seen from a portal, the terrain over the bore shows its culled underside.
 
 #### Superseded `ROAD-68` questions
 
