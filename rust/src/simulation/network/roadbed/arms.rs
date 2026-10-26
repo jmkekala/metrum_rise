@@ -55,6 +55,8 @@ struct ArmRecord {
     attached: bool,
     // A bridge or tunnel: at a grounded node its mouth is a structure mouth (`TERRAIN-07-C`).
     structure: bool,
+    // A bridge: its span hangs the abutment face below that mouth (`TERRAIN-07-C` round 4).
+    bridge: bool,
 }
 
 /// The arms of one node, owning the knot and band buffers their [`ArmInput`]s borrow.
@@ -206,6 +208,7 @@ impl NodeArms {
             crossable,
             attached,
             structure: edge.class != EdgeClass::Standard,
+            bridge: edge.class == EdgeClass::Bridge,
         });
     }
 
@@ -278,6 +281,12 @@ impl NodeArms {
     /// grounded chains with a wall run (`TERRAIN-07-C`, `docs/terrain.md` T22 3 (a)).
     pub(super) fn is_structure(&self, index: usize) -> bool {
         self.arms[index].structure
+    }
+
+    /// Whether arm `index` is a bridge, whose span hangs the abutment face below its mouth row
+    /// where a grounded piece shares it ([`super::PieceMesh::for_each_abutment_triangle`]).
+    pub(super) fn is_bridge(&self, index: usize) -> bool {
+        self.arms[index].bridge
     }
 
     /// Whether arm `index` is a footpath attached to a road node's sidewalk ring (D5), whose
@@ -518,7 +527,9 @@ pub(super) fn span_end(graph: &RegionGraph, node: u32, edge_idx: usize) -> SpanE
             if passes_through(graph, &incidents)
                 && others().any(|class| class != EdgeClass::Standard) =>
         {
-            SpanEnd::WallRun
+            SpanEnd::WallRun {
+                abutment: others().any(|class| class == EdgeClass::Bridge),
+            }
         }
         EdgeClass::Bridge if ends_a_structure(graph, &incidents) => SpanEnd::Cap(StripKind::Fascia),
         EdgeClass::Tunnel if ends_a_structure(graph, &incidents) => SpanEnd::Cap(StripKind::Skirt),

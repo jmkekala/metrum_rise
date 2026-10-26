@@ -12,7 +12,7 @@ use super::geometry::{
     walk_ray_cells,
 };
 use super::index::{QUERY_CELL_M, query_cell_at};
-use super::mesh::PieceMesh;
+use super::mesh::{PieceMesh, abutment_bottom_height};
 use super::{BandKind, RoadVec2, RoadVec3, RoadbedSystem};
 use godot::prelude::Vector3;
 
@@ -39,6 +39,18 @@ pub enum PortalPart<'a> {
     /// An outer-chain segment, the deck on its left: a bore seam, along which the opening's
     /// sides stand.
     Bore([RoadVec3; 2]),
+}
+
+/// One wall-run segment ([`RoadbedSystem::wall_seams_in_bounds`], `TERRAIN-07-C`), with the
+/// abutment face's bottom edge below its ends where its run crosses a bridge's mouth
+/// (`TERRAIN-07-D`, the abutment band).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallSegment {
+    /// The segment's two points, the grounded road on its left.
+    pub points: [RoadVec3; 2],
+    /// The height of the abutment face's bottom edge below each point (the skirt depth below
+    /// the row's corners, straight between them); `None` where the structure is a tunnel.
+    pub abutment_bottom: Option<[f64; 2]>,
 }
 
 /// Prepared owner-local surface lookup, reused for every point of one lane.
@@ -367,21 +379,39 @@ impl RoadbedSystem {
     /// grounded pieces [`Self::grounded_pieces_in_bounds`] found for the same bounds, whose own
     /// XZ bounds touch them, sorted and deduplicated by key like
     /// [`Self::grounded_seams_in_bounds`]: the structure mouths' wall seams. `O(V + S log S)`
-    /// for the pieces' wall-run vertices `V` and the `S` segments kept.
+    /// for the pieces' wall-run vertices `V` and the `S` segments kept. A run across a
+    /// bridge's mouth ([`PieceMesh::abutment_runs`]) gives its segments the abutment face's
+    /// bottom edge below their ends.
     pub fn wall_seams_in_bounds(
         &self,
         bounds_xz: [f64; 4],
         pieces: &[PieceId],
-        out: &mut Vec<[RoadVec3; 2]>,
+        out: &mut Vec<WallSegment>,
     ) {
         out.clear();
         for id in pieces {
             let mesh = self.pieces[id].mesh();
-            for_each_segment_in_bounds(mesh, mesh.wall_runs(), bounds_xz, &mut |segment| {
-                out.push(segment)
-            });
+            for (run, &abutment) in mesh.wall_runs().iter().zip(mesh.abutment_runs()) {
+                // A run spans its mouth row from corner to corner.
+                let vertices = run.vertices();
+                let corners = abutment.then(|| {
+                    [vertices[0], vertices[vertices.len() - 1]]
+                        .map(|v| mesh.positions()[v as usize])
+                });
+                let chains = std::slice::from_ref(run);
+                for_each_segment_in_bounds(mesh, chains, bounds_xz, &mut |points| {
+                    out.push(WallSegment {
+                        points,
+                        abutment_bottom: corners
+                            .map(|corners| points.map(|p| abutment_bottom_height(corners, p))),
+                    })
+                });
+            }
         }
-        let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
+        let key = |s: &WallSegment| {
+            let [a, b] = s.points;
+            [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits)
+        };
         out.sort_unstable_by_key(key);
         out.dedup_by_key(|segment| key(segment));
     }

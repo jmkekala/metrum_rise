@@ -710,11 +710,13 @@ pub(crate) fn structure_mouth(
 // test: a road running into a hill continued by a tunnel, and into a valley by a bridge, both
 // level at the mouth. Along every wall seam of the structure's mouth row, every point sampled
 // each 5 cm where the rendered `GL0` ground differs from the seam is covered by a face of its
-// tile between the seam's height and that ground (1 mm), its lower side on the face's left: an
-// abutment against the seam under the bridge; at the tunnel's portal row (T22 5 (a)) the
-// terrain beyond is cut wherever the ground stands less than the clearance above the seam, and
-// no face on the seam covers those points (a headwall where it stands higher). Pruned walls
-// equal the walls over every seam.
+// tile between the seam's height and that ground (1 mm), its lower side on the face's left: at
+// the bridge (`TERRAIN-07-D`, the abutment band) an abutment against the seam from the ground
+// up to the abutment face's bottom edge where the ground stands below that edge, and no face
+// where it stands between the edge and the deck (the roadbed's face closes it); at the tunnel's
+// portal row (T22 5 (a)) the terrain beyond is cut wherever the ground stands less than the
+// clearance above the seam, and no face on the seam covers those points (a headwall where it
+// stands higher). Pruned walls equal the walls over every seam.
 #[test]
 fn structure_mouths_wall_the_graded_ground() {
     use crate::simulation::network::types::EdgeClass;
@@ -731,19 +733,28 @@ fn structure_mouths_wall_the_graded_ground() {
             sites: &NoSites,
         };
         let mut scratch = QueryScratch::default();
-        let (mut walled, mut highest, mut opened) = (0, 0.0f64, 0);
+        let (mut walled, mut highest, mut opened, mut banded) = (0, 0.0f64, 0, 0);
         for payload in &payloads {
             let origin = payload.tile.origin();
             let rect = [origin[0], origin[1], origin[0] + TILE_M, origin[1] + TILE_M];
             let (mut pieces, mut segments, mut walls) = (Vec::new(), Vec::new(), Vec::new());
             roadbed.grounded_seams_in_bounds(rect, &mut pieces, &mut segments);
             roadbed.wall_seams_in_bounds(rect, &pieces, &mut walls);
-            for [a, b] in &walls {
+            for wall in &walls {
+                let [a, b] = wall.points;
+                assert_eq!(
+                    wall.abutment_bottom.is_some(),
+                    class == EdgeClass::Bridge,
+                    "{class:?}: an abutment bottom exactly at the bridge's mouth"
+                );
                 let steps = ((b.x - a.x).hypot(b.z - a.z) / 0.05).ceil().max(1.0) as usize;
                 for step in 0..=steps {
                     let t = step as f64 / steps as f64;
                     let along = |p: f64, q: f64| p + (q - p) * t;
                     let (x, z, h) = (along(a.x, b.x), along(a.z, b.z), along(a.y, b.y));
+                    // Where the terrain's abutment wall starts: the abutment face's bottom edge
+                    // at a bridge, the seam elsewhere.
+                    let start = wall.abutment_bottom.map_or(h, |[ua, ub]| along(ua, ub));
                     if TileKey::at(x, z) != payload.tile {
                         continue;
                     }
@@ -780,6 +791,22 @@ fn structure_mouths_wall_the_graded_ground() {
                         opened += 1;
                         continue;
                     }
+                    if start <= ground && ground <= h {
+                        // Within 1 mm of the band's ends a face may end at the point.
+                        let inside = start + 1e-3 < ground && ground < h - 1e-3;
+                        assert!(
+                            !inside
+                                || !payload
+                                    .walls
+                                    .iter()
+                                    .filter(on_seam)
+                                    .any(|face| covering(&face)),
+                            "{class:?}: a terrain face at ({x}, {z}) over the abutment face"
+                        );
+                        banded += 1;
+                        continue;
+                    }
+                    let h = if ground < start { start } else { h };
                     let (face, s) = payload
                         .walls
                         .iter()
@@ -815,8 +842,8 @@ fn structure_mouths_wall_the_graded_ground() {
         match class {
             EdgeClass::Tunnel => assert!(opened > 50 && walled == 0, "{opened} opened, {walled}"),
             _ => assert!(
-                walled > 50 && highest > 0.25,
-                "{class:?}: {walled} walled points, highest {highest}"
+                walled + banded > 50 && highest > 0.0,
+                "{class:?}: {walled} walled points, {banded} in the band, highest {highest}"
             ),
         }
         for (pruned, full) in payloads.iter().zip(&bake(Evaluation::Unpruned)) {
@@ -830,12 +857,24 @@ fn structure_mouths_wall_the_graded_ground() {
 // before the fix the rendered cut edge along the mouth row and the terrain beyond it rose to it
 // (0.354 m over the carriageway, a dark face above the deck). Along every wall seam, sampled
 // each 5 cm at every level, the rendered surface and the terrain 0.25 m beyond the row stand
-// below the deck, and every face along the row is an abutment, its top the seam's height.
+// below the deck, and every face along the row is an abutment, its top the abutment face's
+// bottom edge (`TERRAIN-07-D`, the abutment band), which at the row's corners is the roadbed's
+// abutment face's bottom vertex, bitwise.
 #[test]
 fn a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck() {
     use crate::simulation::network::types::EdgeClass;
     let (graph, terrain) = structure_mouth(EdgeClass::Bridge, -0.5);
     let roadbed = compiled(&graph);
+    let mut bottoms = Vec::new();
+    for (id, _) in roadbed.pieces_in_bounds([-1.0e4, -1.0e4, 1.0e4, 1.0e4]) {
+        if let Some(mesh) = roadbed.piece_mesh(id) {
+            mesh.for_each_abutment_triangle(|points, bottom| {
+                bottoms.extend((0..3).filter(|&k| bottom[k]).map(|k| points[k]));
+            });
+        }
+    }
+    assert!(!bottoms.is_empty(), "the bridge hangs its abutment face");
+    let mut corners = 0;
     let surface = GradedSurface {
         terrain: &terrain,
         roadbed: &roadbed,
@@ -858,7 +897,17 @@ fn a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck() {
             let (mut pieces, mut segments, mut walls) = (Vec::new(), Vec::new(), Vec::new());
             roadbed.grounded_seams_in_bounds(rect, &mut pieces, &mut segments);
             roadbed.wall_seams_in_bounds(rect, &pieces, &mut walls);
-            for [a, b] in &walls {
+            for wall in &walls {
+                let [a, b] = wall.points;
+                let [ua, ub] = wall
+                    .abutment_bottom
+                    .unwrap_or_else(|| panic!("a bridge mouth's wall seam has its band"));
+                for (end, u) in [(a, ua), (b, ub)] {
+                    for bottom in bottoms.iter().filter(|p| (p.x, p.z) == (end.x, end.z)) {
+                        assert_eq!(u.to_bits(), bottom.y.to_bits(), "at the corner {end:?}");
+                        corners += 1;
+                    }
+                }
                 let (dx, dz) = (b.x - a.x, b.z - a.z);
                 let length = dx.hypot(dz);
                 // Beyond the row: the seam's right, the road being on its left.
@@ -890,10 +939,10 @@ fn a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck() {
                     };
                     for (s, top) in [(sa, face.top[0]), (sb, face.top[1])] {
                         let (px, pz) = (a.x + dx * s, a.z + dz * s);
-                        let h = a.y + (b.y - a.y) * s.clamp(0.0, 1.0);
+                        let u = ua + (ub - ua) * s.clamp(0.0, 1.0);
                         assert!(
-                            (f64::from(top) - h).abs() < 1e-4,
-                            "{level:?}: a face at ({px}, {pz}) tops at {top} over the deck {h}"
+                            (f64::from(top) - u).abs() < 1e-4,
+                            "{level:?}: a face at ({px}, {pz}) tops at {top}, not the abutment face's bottom {u}"
                         );
                     }
                     faces += 1;
@@ -901,7 +950,10 @@ fn a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck() {
             }
         }
     }
-    assert!(sampled > 100 && faces > 20, "{sampled} sampled, {faces} faces");
+    assert!(
+        sampled > 100 && faces > 0 && corners > 0,
+        "{sampled} sampled, {faces} faces, {corners} corners"
+    );
 }
 
 // The site fixture's high pad walls the road beside it, closed like a road's.

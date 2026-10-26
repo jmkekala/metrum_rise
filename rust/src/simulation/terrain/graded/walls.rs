@@ -265,6 +265,13 @@ pub(super) fn build_walls(
 /// against the structure's mouth row. A headwall runs along the seam (the road on its left), an
 /// abutment against it (the space under the bridge on its left).
 ///
+/// At a bridge's mouth (`bottoms`, per wall seam the abutment face's bottom edge below its ends,
+/// `TERRAIN-07-D`, the abutment band) the bridge span closes the row from the deck down to that
+/// edge with its slab and abutment face, so the abutment wall starts there: faces where the
+/// surface stands below the edge, from the surface up to it, meeting the face on its bottom
+/// edge, and the headwall's faces where it stands above the deck as before; between the two
+/// nothing, which the face and the slab close.
+///
 /// Then the portal opening's (T22 5 (a)): along a portal row's wall seam
 /// ([`PortalWindow::opens`]) no face where the surface at both ends stands below the seam's
 /// height plus the clearance `H`, since the terrain beyond the row is cut; and along every bore
@@ -273,7 +280,7 @@ pub(super) fn build_walls(
 /// `heights(i, j)` is the finished sample at lattice point `(i, j)`. `O(wall and bore seams x
 /// their crossings x portal rows)`.
 pub(super) fn build_structure_walls(
-    walls: &[Seam],
+    (walls, bottoms): (&[Seam], &[Option<[f64; 2]>]),
     portals: &PortalWindow,
     tile: TileKey,
     lattice: (&[f64], &[f64]),
@@ -282,7 +289,16 @@ pub(super) fn build_structure_walls(
     out: &mut Vec<WallFace>,
 ) {
     let below_crown = |v: &WallVertex| v.top < v.bottom + PORTAL_CLEARANCE_M;
-    for seam in walls {
+    for (seam, bottom) in walls.iter().zip(bottoms) {
+        if let Some(bottom) = *bottom {
+            let all = |_: &WallVertex, _: &WallVertex| true;
+            let above = |_: (f64, f64), surface: f64, h: f64| surface > h;
+            seam_walls(seam, tile, lattice, &heights, above, all, scratch, out);
+            let below = |_: (f64, f64), surface: f64, u: f64| surface < u;
+            let edge = abutment_bottom(seam, bottom);
+            seam_walls(&edge, tile, lattice, &heights, below, all, scratch, out);
+            continue;
+        }
         let opens = portals.opens(seam);
         seam_walls(
             seam,
@@ -308,6 +324,16 @@ pub(super) fn build_structure_walls(
             scratch,
             out,
         );
+    }
+}
+
+/// The abutment face's bottom edge under a bridge mouth's wall seam (`bottom`, its heights
+/// below the seam's ends): the seam's XZ at those heights.
+pub(super) fn abutment_bottom(seam: &Seam, bottom: [f64; 2]) -> Seam {
+    Seam {
+        a: [seam.a[0], bottom[0], seam.a[2]],
+        b: [seam.b[0], bottom[1], seam.b[2]],
+        kind: seam.kind,
     }
 }
 

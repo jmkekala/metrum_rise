@@ -49,8 +49,10 @@ pub enum GroundClass {
 pub struct QueryScratch {
     seams: SeamScratch,
     window: Vec<Seam>,
-    // The structure mouths' wall seams of the window (`TERRAIN-07-C`).
+    // The structure mouths' wall seams of the window (`TERRAIN-07-C`), and their abutment
+    // bottoms, which only the bake's walls read.
     walls: Vec<Seam>,
+    wall_bottoms: Vec<Option<[f64; 2]>>,
     base: BaseWindow,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
@@ -232,7 +234,12 @@ impl GradedSurface<'_> {
             &mut scratch.seams,
             &mut scratch.window,
         );
-        gather_wall_seams(self.roadbed, window, &mut scratch.seams, &mut scratch.walls);
+        gather_wall_seams(
+            self.roadbed,
+            window,
+            &mut scratch.seams,
+            (&mut scratch.walls, &mut scratch.wall_bottoms),
+        );
         scratch.sites.gather(self.sites, window);
         scratch.sites.push_pad_seams(&mut scratch.window);
         let cell_m = BaseGrid::of(self.terrain).cell_m;

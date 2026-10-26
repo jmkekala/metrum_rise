@@ -3,7 +3,7 @@
 //! Seams (`TERRAIN-07`): the segments the graded terrain ties in to, their canonical keys, and
 //! one seam's nearest point, distance, height and side at a world point.
 
-use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem, WallSegment};
 
 /// What a seam bounds. Every kind ties in at the slope ratio
 /// [`super::grade::TIE_IN_SLOPE`].
@@ -195,20 +195,26 @@ pub(super) fn road_seam(a: RoadVec3, b: RoadVec3) -> Seam {
 
 /// The wall seams whose XZ bounds touch `rect`, sorted by key: the wall-run segments of the
 /// grounded pieces the preceding [`gather_road_seams`] over a rectangle holding `rect` found
-/// ([`RoadbedSystem::wall_seams_in_bounds`]). `O(V + S log S)` for the pieces' wall-run
-/// vertices and the segments kept.
+/// ([`RoadbedSystem::wall_seams_in_bounds`]), and per seam in `bottoms` the abutment face's
+/// bottom edge below its ends where it crosses a bridge's mouth (the abutment band).
+/// `O(V + S log S)` for the pieces' wall-run vertices and the segments kept.
 pub(super) fn gather_wall_seams(
     roadbed: &RoadbedSystem,
     rect: [f64; 4],
     scratch: &mut SeamScratch,
-    out: &mut Vec<Seam>,
+    (out, bottoms): (&mut Vec<Seam>, &mut Vec<Option<[f64; 2]>>),
 ) {
-    roadbed.wall_seams_in_bounds(rect, &scratch.pieces, &mut scratch.segments);
+    roadbed.wall_seams_in_bounds(rect, &scratch.pieces, &mut scratch.walls);
     out.clear();
-    out.extend(scratch.segments.iter().map(|[a, b]| Seam {
-        kind: SeamKind::Wall,
-        ..road_seam(*a, *b)
+    out.extend(scratch.walls.iter().map(|wall| {
+        let [a, b] = wall.points;
+        Seam {
+            kind: SeamKind::Wall,
+            ..road_seam(a, b)
+        }
     }));
+    bottoms.clear();
+    bottoms.extend(scratch.walls.iter().map(|wall| wall.abutment_bottom));
 }
 
 /// Reused buffers of [`gather_road_seams`] and [`gather_wall_seams`].
@@ -216,4 +222,5 @@ pub(super) fn gather_wall_seams(
 pub(super) struct SeamScratch {
     pub(super) pieces: Vec<PieceId>,
     segments: Vec<[RoadVec3; 2]>,
+    walls: Vec<WallSegment>,
 }

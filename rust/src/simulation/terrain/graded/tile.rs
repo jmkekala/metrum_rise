@@ -18,7 +18,7 @@ use super::sample::{
 };
 use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
-use super::walls::{WallFace, WallScratch, build_structure_walls, build_walls};
+use super::walls::{WallFace, WallScratch, abutment_bottom, build_structure_walls, build_walls};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
@@ -118,7 +118,8 @@ impl Level {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TileInputs {
     /// The road seam keys, sorted, then the wall seam keys the structure walls read, sorted
-    /// (`TERRAIN-07-C`), then the portal rows' corner segments and the bore seams the portal
+    /// (`TERRAIN-07-C`), then those walls' abutment bottoms at bridge mouths as seam keys, in
+    /// the walls' order, then the portal rows' corner segments and the bore seams the portal
     /// opening reads (T22 5 (a)), each sorted.
     pub seams: Vec<[u64; 6]>,
     /// Top triangle vertex bits, sorted and unique, then the portal opening's deck triangles,
@@ -251,8 +252,9 @@ pub(super) struct BakeScratch {
     seams: SeamScratch,
     window: Vec<Seam>,
     // The wall seams within the band of the lattice, in key order (`TERRAIN-07-C`): no cone,
-    // so outside the window's grading seams.
+    // so outside the window's grading seams; per seam its abutment bottom at a bridge's mouth.
     wall_seams: Vec<Seam>,
+    wall_bottoms: Vec<Option<[f64; 2]>>,
     // The covered lattice points that continue the ground across a structure mouth.
     mouth_points: Vec<u32>,
     base: BaseWindow,
@@ -492,6 +494,7 @@ fn bake_tile(
         seams: seam_scratch,
         window: seams,
         wall_seams,
+        wall_bottoms,
         mouth_points,
         base,
         xs,
@@ -525,7 +528,12 @@ fn bake_tile(
     let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
     let window = window(rect, band);
     gather_road_seams(roadbed, window, seam_scratch, seams);
-    gather_wall_seams(roadbed, grown(rect, band), seam_scratch, wall_seams);
+    gather_wall_seams(
+        roadbed,
+        grown(rect, band),
+        seam_scratch,
+        (wall_seams, wall_bottoms),
+    );
     // Road seams first (indices `0..road_count`, in key order, the rows the texels name), then
     // the sites' pad seams in key order.
     let road_count = seams.len();
@@ -812,7 +820,7 @@ fn bake_tile(
         &mut out.walls,
     );
     build_structure_walls(
-        wall_seams,
+        (wall_seams, wall_bottoms),
         portals,
         tile,
         (xs, zs),
@@ -829,6 +837,12 @@ fn bake_tile(
     out.inputs.seams.clear();
     out.inputs.seams.extend(seams[..road_count].iter().map(Seam::key));
     out.inputs.seams.extend(wall_seams.iter().map(Seam::key));
+    out.inputs.seams.extend(
+        wall_seams
+            .iter()
+            .zip(wall_bottoms.iter())
+            .filter_map(|(seam, bottom)| bottom.map(|bottom| abutment_bottom(seam, bottom).key())),
+    );
     portals.inputs(&mut out.inputs.triangles, &mut out.inputs.seams);
     sites.inputs(&mut out.inputs.sites);
     base_revisions(terrain, window, &mut out.inputs.base_revisions);

@@ -845,14 +845,15 @@ pub(super) fn build_node_piece(
                     .any(|chain| chain.first() == run.vertices().last()),
                 "a structure mouth's wall run ends where an outer chain starts"
             );
-            run
+            (run, plan.arms.is_bridge(arm))
         })
         .collect();
     let mesh = PieceMesh::from_groups(
         positions,
         road_space,
         &groups,
-        (outer_chains, wall_runs),
+        outer_chains,
+        wall_runs,
         strips,
     );
     let footprint = PieceFootprint::of_bounds(mesh.bounds_xz(), grid, footprint);
