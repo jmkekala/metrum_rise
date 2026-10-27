@@ -163,7 +163,7 @@ fn benchmark_kuopio_terrain_query_index() {
     let mut core = test_core();
     core.load_game_internal(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain.db"
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
     ))
     .unwrap();
     let started = std::time::Instant::now();
