@@ -3924,7 +3924,12 @@ km.
 - **Budgets per frame.** An edit (preview pose, commit, undo) installs its dirty tiles in one frame
   within the terrain share of `ROAD-68`'s 2.0 ms Godot stage: the rebaked tiles of an edit wait
   until the last of them arrives. Streaming installs closest first, within 1.0 ms of the main
-  thread, like the existing patch installs.
+  thread, like the existing patch installs: the budget is checked before each polled result
+  (an edit, a patch's tile list, a failure, a tile bake; the frame's first result excepted, so
+  the work progresses whatever the frame's other work cost), and results polled past it wait
+  in arrival order for the next frame, which takes them first (Rust hands a result over once),
+  so a frame ends within the budget plus one result's work (`TERRAIN-07-D` round 10; the check
+  after each poll overran it by a poll's results, all of the finished lists at once).
 - **Work on changes, not frames** (`TERRAIN-07-D` rounds 5 and 6). `terrain.gd` keeps the
   renderer's resident patch entries (node, material, rectangle, LOD step, payload generation) as
   patches become resident, leave, commit a payload or change LOD step, and hands over the keys
@@ -4017,6 +4022,10 @@ km.
   renderers) and placed in world space by `terrain_graded_walls.gdshader`, which lights it
   through `standard_light.gdshaderinc` in the exact cut's retaining wall colour. Faces past the
   capacity are counted and logged. Nothing is created per edit (`TERRAIN-07-D` round 4).
+- **Water reflection** ([T38](#terrain-07-open-questions) (a), `TERRAIN-07-D` round 10). The
+  reflection world's terrain proxies mirror each patch's `PlaneMesh` at the shader's default
+  `cell_mode`, so the mirror draws the base ground where cells draw a patch; the cells are not
+  mirrored, as the roads they grade around are not.
 - **Debug.** `terrain_visual_debug_mode` gains `delta` (raised orange, lowered blue, as the spike's
   `plan_grading`), `sdf`, level and slot views.
 
@@ -4201,7 +4210,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; open: T35, T34's confirmation, the undo swap test) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); open: T35, T34's confirmation) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -6399,6 +6408,76 @@ plain flag 13, the mouth rows' naming and the named-seam lookup 80); `graded_til
 nine meshes, the plain routing, the material binding), `terrain_cells.gdshaderinc` 421 (+16),
 `terrain_surface.gdshaderinc` 1,032 (+19), `terrain_graded_plain.gdshader` 9 (new).
 
+Round 10, 2026-10-27 night, the same branch: T35's split by pass and level, the undo test on the
+swap path, the streaming install budget, the water reflection's ground (T38). Fresh runs on this
+branch unless marked; probes on the release library `51c539ca…` (the tip `2b182dae`'s Rust) in
+gamescope's headless backend, P-cores, `.run.lock` only.
+
+- **T35 split by pass and by level (fresh).** Probe `gpuc`: the tip's scripts with an attribution
+  overlay (each frame's GPU timestamps per pass read from the `RenderingDevice`, which Godot
+  captures under `--gpu-profile`; a switch drawing one level's tiles as base cells), 300 frames
+  after 120, two rounds mirrored, unpaced. `saved` exact 2.168 ms (2.182, 2.154), graded +0.192
+  (2.380, 2.340); with the capture off exact 2.118, graded +0.166 (round 9: +0.174). The main
+  viewport per pass, graded minus exact: depth prepass 0.224 -> 0.256 (+0.032), directional
+  shadows 0.095 (+0.000), opaque (colour) pass 1.163 -> 1.319 (+0.156), post-sky effects and the
+  transparent pass +0.000; the water reflection's viewport, drawn first and outside the
+  measured viewport time, -0.003 (prepass) to -0.010 (transparent). One level's tiles as base
+  cells: `GL0` +0.194 (none on the pose), `GL1` +0.069, `GL2` +0.121, `GL3` +0.198; primitives
+  1,812,116, without `GL1`'s cells 1,771,796, without `GL2`'s 1,750,676 (exact 1,759,724).
+  Probe `gpud` (the same method): every graded tile plain +0.103 (prepass +0.007, colour
+  +0.099), the mask without its discard +0.160 (+0.010, +0.149), the tip +0.179 (+0.032,
+  +0.146), exact 2.170. Reading and levers in [T35](#terrain-07-open-questions); no lever built.
+  0 script errors in the 24 sessions.
+- **The undo on the roadbed's swap path (test).** `an_undo_on_the_swap_path_journals_the_commits_tiles_back`
+  (`nodes/sim/core/tests/graded_edits.rs`): on the sloped T, a commit and its undo, which takes
+  the swap path (the pre-edit pieces themselves come back, by address). The journal records the
+  undo as one road edit from the commit's roadbed to the restored one; its selection equals the
+  live selection at every level (a superset at `GL3`), equals the commit's at `GL0`-`GL2`, and
+  those tiles bake bitwise as before the commit and unlike after it. It passes with no code
+  change: the record's `before` is the previous record's roadbed, so the swap's install takes
+  the commit's own pieces as its changes.
+- **The water reflection's ground (T38, (a) taken under the delegation, for review).** A state
+  census (fresh, an overlay of the idle benchmark on the saved Kuopio save, graded) reads the
+  reflection's terrain proxies: on `saved` 30 of 1,122 mirror patches whose cells draw them, all
+  at the shader's default `cell_mode` 0, so the mirror draws their whole base `PlaneMesh`; the
+  70 cell nodes drawn there have no proxy (`overview`: 30 of 1,296, 84). The mirror shows the
+  ungraded ground there, not no ground as round 1 had it. [T38](#terrain-07-open-questions)
+  keeps it so; no code change.
+- **The worst streaming install frame (attributed, fixed).** Round 7's recommendation, the
+  budget checked before each tile's upload, was built first and measured
+  (`graded_edit_probe.gd`, the tip's renderer against it, two rounds mirrored, a new counter
+  for the streaming part alone): it did not lower the worst frame (Kuopio 1.19 / 0.69 ms
+  against 1.05 / 0.78, populated 1.98 / 3.15 against 2.69 / 2.04), and the uploads were not
+  the cost (at most 0.04 ms each). Timers on the worst frame's parts: on the populated save
+  12-17 patch lists arriving in one poll took 1.90-2.12 ms of its 1.99-2.16 ms (about 0.16 ms
+  a list: each list counts its tiles into the desired set), with no tile; on Kuopio 24 tiles
+  0.51 ms, the Rust polls 0.32 and 12 lists 0.12 of 0.97 ms. A poll hands over every finished
+  list at once and the budget was checked only between polls. Now every polled result (edit,
+  list, failure, tile) is taken in arrival order with the budget checked before each, and the
+  rest waits for the next frame ([budgets per frame](#godot-tile-renderer)).
+  Measured (the same probe, the tip's renderer against `2136452e`, two rounds mirrored): the
+  worst frame on the populated save 4.16 / 1.86 ms -> 1.37 / 1.35 (109-162 results deferred
+  while it settles), on Kuopio 0.81 / 1.13 -> 1.02 / 1.04; settling 1.52-1.63 s and 2.5-4.3 s
+  either way, the edit's install 0.34-0.57 -> 0.35-0.46 ms, nothing created, video memory
+  unchanged. Still above 1.0 ms by one result's work, as the rule allows (a list up to about
+  0.35 ms): open, the lever being a list's own cost (about 5 µs a tile in `_recount`).
+
+**Tests (fresh, round 10).** `./run.sh --test` on `cbd9d784` (the per-tile check; DISPLAY and
+WAYLAND_DISPLAY unset): exit 0, 0 SCRIPT ERROR; the debug lib suite 1,974 passed, 0 failed, 176
+ignored (round 9: 1,973; the new undo test), integration 4 passed; every Godot suite passes,
+among them `graded_tile_renderer_test.gd`, `graded_cells_shader_test.gd`,
+`network_tool_chunk_renderer_test.gd`, `road_junction_preview_test.gd`,
+`surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd` and both plot lighting suites;
+skipped as before: the headless shader global probe and the Forward+ vegetation tests. On
+`2136452e` (every result under the budget, no Rust change): `graded_tile_renderer_test.gd`
+(headless, the debug library) 0 failures. Clippy `--all-targets`: the 59-warning baseline set
+exactly. `graded_edits` (debug): 2 passed. Not run: the GPU idle-frame matrix (no
+`matrix-ready`).
+
+**Lines** (production, tests excluded). `simulation/terrain/graded/` 5,373, `roadbed/`
+unchanged (no Rust production change). Godot: `terrain_graded_tiles.gd` 1,374 (+43: the result
+queue, the list's own function, two counters).
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
@@ -7206,7 +7285,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
 35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — (b) then (c) decided by the
     coordinator under the user's delegation, 2026-10-27 night, for review; round 9: (b) built and
     (c) bounded, neither closes the pose (+0.17 ms left); open for the user. (a) stays the
-    user's: it changes visible slope detail.**
+    user's: it changes visible slope detail. Round 10: split by pass and level (the colour
+    pass's fragments of `GL1` and `GL2`); no exact lever closes it.**
     - **Evidence.** The matrix on the fix (`6826a11c`): graded below the exact cut on five poses,
       `saved` +0.20 ms (2.14 -> 2.34, both rounds). Attributed ([record](#terrain-07-d-record),
       round 8): the cells' own work over the base lattice 0.155 ms, the mask's arithmetic 0.07,
@@ -7250,6 +7330,60 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       fetches are not the cost.
     - **Recommendation (round 9).** Revert (b) unless (a) is taken with it (it does not pay
       alone), keep the material binding, and take (f) next; (a) is the user's.
+    - **Round 10: (f), the split by pass and by level (fresh probes, [record](#terrain-07-d-record)).**
+      Godot's own GPU timestamps per pass, the tip's scripts and library, two rounds mirrored:
+      graded minus exact on `saved` +0.192 ms (+0.166 with the timestamps off), of it the depth
+      prepass +0.032, the colour pass +0.156, shadows, sky, post effects and the transparent
+      pass 0.000, the water reflection's viewport -0.003 to -0.010. By level (each level's tiles
+      drawn as base cells instead): `GL1`'s cells 0.123 ms (prepass 0.017, colour 0.110), `GL2`'s
+      0.071 (0.014, 0.056), `GL0` and `GL3` nothing (no `GL0` tile on the pose; `GL3` costs no
+      more than base cells). `GL1` takes two thirds with 40k triangles against `GL2`'s 61k: the
+      cost follows the cells' screen area, not their vertices. The colour pass split further
+      (every tile plain, and the mask without its discard): the discard costs the prepass 0.022
+      (without it the cells draw depth only) and the colour pass nothing, the mask's arithmetic
+      0.05 in the colour pass, and the cells' own fragment work, mask aside, 0.10 (the 1 m and
+      2 m lattices over pixels the exact cut covers at 10 m).
+    - **Levers left (round 10).** No exact one closes the pose. A depth-only prepass (no mask)
+      is not exact: ground the mask cuts away in front of a farther surface (a portal's opening,
+      the ground inside a conflict, T24 (a)'s band) would write depth and hide what lies
+      behind; it could take at most the prepass's 0.032. Removing the colour pass's discard
+      gains nothing (measured) and is not exact either. (g) Plain regions finer than a tile (per 16 m block of a tile, the
+      bake's flags beside `plain`; exact, as (b)) are bounded by the mask's 0.075 on the area
+      they cover, a payload and instance-layout change; not built. The 0.10 left is the
+      levels' density, which (a) trades: the user's.
+    - **Recommendation (round 10).** Unchanged: (a) is the user's. If (a) is taken, (g) next
+      (with (b), about +0.13 - 0.05 by the sums, not closing alone); if (a) is refused, (g)
+      can take at most 0.075 and the pose stays a recorded miss. Revert (b) unless (a) or (g)
+      is taken.
+38. **T38. The water reflection's ground where graded cells draw (`TERRAIN-07-D` round 10) —
+    (a) decided by the coordinator under the user's delegation, 2026-10-27 night, for review.**
+    - **Evidence.** The reflection world mirrors each resident patch's `PlaneMesh` node as a
+      `RenderingServer` instance (`water_reflection.gd` `_sync_proxy`) with its material's
+      reflection variant; it copies the transform, the material, the AABB and the margin, not
+      the instance uniforms or the visibility range. Where a patch's cells draw it, its node
+      collapses (`cell_mode` 1, hidden by its visibility range), but the proxy keeps the
+      shader's default `cell_mode` 0 and draws the whole base patch: the mirror shows the base
+      ground, without the graded deltas, and no cell `MultiMesh` is mirrored (round 1 had
+      guessed it showed no ground there). Census (fresh, the saved Kuopio save, graded): on
+      `saved` 30 of the 1,122 terrain proxies mirror patches whose cells draw them, every one
+      at `cell_mode` 0, and those patches' 70 drawn cell nodes have no proxy; on `overview` 30
+      of 1,296 and 84. The exact cut's proxies mirrored its refined patches, cut ground
+      included.
+    - **What it shows.** The deltas are zero outside the grading's reach of roads, pads and
+      structure ends, so the mirror differs only there: a reflected embankment or cut shows the
+      natural slope, and where grading moves the ground across the lake level the reflection's
+      shoreline is the base ground's. The mirror leaves out roads, lots, props and bridges
+      (`water_reflection.gd`), so a reflected fill would stand without its road either way.
+    - **Options.** (a) Keep the base ground in the mirror: no cost, consistent with the mirror
+      leaving out what the grading serves. (b) Mirror the cells: a proxy per drawn cell
+      `MultiMesh` of every patch drawing cells, with the reflection variant of its graded
+      material (up to eight per drawing set) and the node's instance uniforms copied, and the
+      patch's own proxy collapsed (`cell_mode` 1): the exact ground in the mirror, for the cells'
+      triangles drawn again in the reflection pass (the main view's within the mirror's
+      frustum; the reflection's terrain proxies are where round 8 found 5.8 M extra
+      primitives). (c) (b) only for patches meeting water.
+    - **Recommendation.** (a) for gate D; (c) when the mirror gains roads and bridges, which
+      the reflected grading belongs to.
 
 #### Superseded `ROAD-68` questions
 
