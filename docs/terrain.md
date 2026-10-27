@@ -6821,8 +6821,8 @@ F (24 passed, 4 ignored), the debug suite below.
 **Landing session (fresh, 2026-10-27 01:42-01:51, one hold of both locks, `taskset -c
 0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, release library tests).** C = `road` `d80bf36f` with round
 1 and the drags' timing mode (`$TEST_BINARY` sha256 `9c726b90…`), F = this round (`e3b506c0`,
-sha256 `a24fba55…`); each binary's cities prepared before the session, every
-`COMMIT_FIXTURE` `loaded`. C F F C throughout.
+sha256 `a24fba55…`); each binary's cities prepared before the session (10k, 30k, 100k), every
+populated tier's `COMMIT_FIXTURE` `loaded`. C F F C throughout.
 
 - Preview stages (`benchmark_road_preview_stages`, four workers, 400 samples), graded stage p50 /
   p95 per pose: `sloped_t` C 1.676 / 2.149 and 1.680 / 2.137 ms, F 1.450 / 1.788 and 1.464 /
@@ -6896,7 +6896,13 @@ sha256 `a24fba55…`); each binary's cities prepared before the session, every
   (the split trunk's T on a 220 m and a 660 m trunk; the first commit after a bulk road build
   with background roads or without) pass in the debug suite below.
 
-**Gate checks (fresh, on `e3b506c0`).** GATE_CHECKS
+**Gate checks (fresh, on `e3b506c0`).** Clippy `--all-targets`: the 59-warning baseline set
+exactly. Debug `cargo test --lib` (`RAYON_NUM_THREADS=4`): 1,960 passed, 0 failed, 175 ignored
+(round 1: 1,959 and 174; the one more test and one more ignore come with `road`'s `ROAD-68-K24`;
+this round adds and ignores none). `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset:
+exit 0 (the library as above, `tests/growth_scenario.rs` 4 passed, the Godot bridge suites with
+no script error); it skipped the rendered vegetation tests (Forward+ display) and the shader
+global probe (headless renderer).
 
 **Open (not relaxed).** T27: 19-22 of 299 Kuopio poses and the populated drags' first poses at 10k
 to 100k exceed 3.0 ms after (a); the user's choice between (d) and (b) with (c), recommendation
@@ -7343,6 +7349,14 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       for review. The row split moves with it: a pose delta of a few tiles leaves workers idle,
       which is what it removes. Not relaxed: if gate E's populated poses or adoption miss 3.0 ms, the
       user decides between the budget for site-dense edits and (c).
+    - **`TERRAIN-07-E` round 2 (2026-10-27, fresh, [record](#terrain-07-e-record)): the populated
+      poses miss, the adoption fits; open for the user.** With the row split and the other exact
+      levers built, the site-dense first edits as drags adopt every tile at their commit (at
+      most 1.83 ms on four workers) and undo every kept tile, but each drag's first valid pose,
+      which holds no tile yet and so bakes the edit's 6-12 tiles, takes 3.75-5.20 ms at 10k to
+      100k residents, and the 100k first edit's later poses 2.84-3.30 ms. That is T27's question
+      as much as this one's: T27 (d) (finish a large pose over the following frames) covers
+      these poses too, without (c)'s coarser sites; the recommendation is T27's (d).
 
 22. **T22. The geometry of structure ends (`TERRAIN-07-C` round 2) — decided by the coordinator
     under the user's delegation, 2026-10-26 night, confirmed by the user 2026-10-26: the recommendations; parts 1 and
