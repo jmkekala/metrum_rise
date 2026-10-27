@@ -7575,6 +7575,25 @@ no game code: the breakdown's harness, its fixture city and a test-only count.
 2. Remove the remaining dead paths and every `ROAD-68` ignore. Update references to legacy types
    in [`terrain.md`](terrain.md) and [`earthworks.md`](earthworks.md). Record final line counts.
 
+**Carried to H for final verification (the user, 2026-10-27).** Results too close to call at the
+gate that measured them: they do not block that gate and are neither relaxed nor accepted; H
+measures and judges each against its target. A gate landing later adds its own here.
+
+1. Godot terrain install per pose ([`terrain.md`](terrain.md#budgets), the 1.0 ms share proposed
+   within this spec's 2.0 ms Godot stage): 2 of 594 frames over 1.0 ms, 1.55 and 1.39 ms
+   (`kuopio_12` attempts 34 and 36, four cell sets starting to draw; binding their materials is
+   about 65 % of a flip), within the 2.0 ms stage. The final probe: `TERRAIN-07-E` round 7,
+   `windowed-20261027T185026` ([record](terrain.md#terrain-07-e-record)).
+2. Whole drag frames of 14-20 ms in that windowed probe (worst 20.23 ms, `kuopio_10` attempt 25)
+   while Godot's terrain install took under 1.6 ms, with no screenshots taken: H attributes them
+   against the [Moving target](#targets) (16.7 ms).
+3. Streaming installs at 1.04-1.05 ms against their 1.0 ms a frame (`TERRAIN-07-D` round 11,
+   [record](terrain.md#terrain-07-d-record)): named for `TERRAIN-07-G`'s acceptance, which keeps
+   it; listed here for reference.
+4. [`terrain.md`](terrain.md#terrain-07-open-questions) T42 (a), the preview's tiles at the
+   renderer's distance rule without its hysteresis, pending the user's review: H checks it
+   visually on the display.
+
 ## Measurement and acceptance
 
 ### Baseline (`ROAD-67-A`, legacy compiler)

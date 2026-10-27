@@ -132,6 +132,12 @@ func run(bench: Node) -> void:
 	if not bool(load_wait.get("ok", false)):
 		bench._fail("world render work did not settle", load_wait)
 		return
+	# Apart from the load's own time: the cell sets the graded renderer builds after it.
+	var load_builds := await _wait_for_cell_builds(bench)
+	_report.phases.append(load_builds.merged({"phase": "cell_set_builds"}))
+	if not bool(load_builds.ok):
+		bench._fail("the cell set builds did not finish", load_builds)
+		return
 
 	var centre := Vector2.ZERO
 	var centre_text := OS.get_environment("METRUM_IDLE_BENCH_CENTRE").split(",", false)
@@ -154,10 +160,15 @@ func run(bench: Node) -> void:
 			if not bool(settle.get("ok", false)):
 				bench._fail("pose %s/%s did not settle" % [pose.name, variant], settle)
 				return
+			var builds := await _wait_for_cell_builds(bench)
+			if not bool(builds.ok):
+				bench._fail("pose %s/%s: the cell set builds did not finish" % [pose.name, variant], builds)
+				return
 			for i in range(warmup_frames):
 				await bench.get_tree().process_frame
 			var sample := await _capture(bench, viewport_rid, capture_frames)
-			sample.merge({"pose": pose.name, "variant": variant, "settle_ms": settle.elapsed_ms})
+			sample.merge({"pose": pose.name, "variant": variant, "settle_ms": settle.elapsed_ms,
+				"cell_builds": builds})
 			# Optional visual baseline: the last captured frame, for before/after image diffs.
 			var screenshot_dir := OS.get_environment("METRUM_IDLE_BENCH_SCREENSHOT_DIR")
 			if not screenshot_dir.is_empty():
@@ -300,3 +311,21 @@ func _selected(text: String, all: Array) -> Array:
 func _selected_poses(text: String) -> Array:
 	var wanted := text.split(",", false)
 	return POSES.filter(func(pose): return wanted.is_empty() or pose.name in wanted)
+
+# The idle frame is measured in the steady state: the graded renderer builds its cell sets off
+# the frame paths (a world's sets after its load, hidden sets whose patch took a new step after a
+# camera move), within the streaming budget's spare time, for seconds after a load (Kuopio's
+# 1,296 sets: about 4,900 frames), and a frame inside that window is not idle (`TERRAIN-07-E`
+# round 7: sampled there, Kuopio's close and overview read 0.6-0.8 ms more GPU time than the
+# exact cut). Waits until none is left; the exact cut has none. Returns {ok, ms, frames, builds}.
+func _wait_for_cell_builds(bench: Node) -> Dictionary:
+	var graded: Variant = _terrain.get("graded_tiles")
+	var start_us := Time.get_ticks_usec()
+	var builds := 0 if graded == null else int(graded.cell_builds_pending())
+	var frames := 0
+	while graded != null and int(graded.cell_builds_pending()) > 0:
+		if bench._elapsed_ms(start_us) > bench.settle_timeout_sec * 1000.0:
+			return {"ok": false, "ms": bench._elapsed_ms(start_us), "frames": frames, "builds": builds}
+		await bench.get_tree().process_frame
+		frames += 1
+	return {"ok": true, "ms": bench._elapsed_ms(start_us), "frames": frames, "builds": builds}

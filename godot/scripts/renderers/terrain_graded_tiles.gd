@@ -1607,6 +1607,12 @@ func _park(cells: Dictionary, patch_node: Node) -> void:
 	if patch_node != null:
 		patch_node.add_child(root)
 
+## Cell set builds still queued (built off the frame paths: a world's sets after its load, or
+## hidden sets whose patch took a new step). They take the streaming budget's spare time each
+## frame, so a benchmark of the idle frame waits for none to be left. O(1).
+func cell_builds_pending() -> int:
+	return _builds.size() + _builds_urgent.size()
+
 ## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
 ## it (a hole showing the sky). For tests and the probe; O(resident patches).
 func hole_patches() -> int:

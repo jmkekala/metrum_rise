@@ -4291,6 +4291,15 @@ same (3.5 ms at 10k and 4.3 ms at 100k on the breakdown's first samples). The co
 exact in its frame, `ROAD-68`'s click-to-committed under 16.7 ms stays binding, and the row's
 3.0 ms holds for every other commit and undo.
 
+Accepted by the user, 2026-10-27: the GPU and frame cost of the background cell-set builds in
+the seconds after a load ([`TERRAIN-07-E` round 7](#terrain-07-e-record)). The renderer builds
+every resident patch's cell set off the frame paths within the streaming budget's spare time:
+on Kuopio 1,296 sets, which take about 1,070 frames (3.1 s uncapped, about 4,900 frames and 82 s
+at 60 Hz) after the load's settle; inside that window a frame takes 1.4-1.5 ms more and the
+viewport's GPU time 0.7-0.9 ms more on Kuopio's `close` and `overview` poses. The idle-frame row
+is judged on the steady state: the matrix samples once no build is left
+(`idle_frame_benchmark.gd`), and there the graded terrain costs what the exact cut does.
+
 The spike's 1.64-2.52 ms per edit has none of: the conflict terms of the reach, coverage
 rasterization, sites, materials, the apron, the levels or packing. `TERRAIN-07-A`, `-C` and `-E`
 measure them against this budget; the budget is not relaxed to fit.
@@ -7537,12 +7546,58 @@ passed (`graded_tile_renderer_test.gd` with the fixed hole check, 0 failures;
 tests (Forward+ display) and the shader global probe (headless). Lines: `graded/` and `roadbed/`
 unchanged (no change under `rust/src/`).
 
-**Open (not relaxed).** The real-display drag probe and the GPU idle-frame matrix on this tip
-(both the coordinator's; the matrix because hidden sets now wait in the tree, and round 6 changed
-the sets' build, data and load path); the flips' material binding (pose frames to 1.55 ms under
-gamescope): a candidate is binding a set's materials as it is built, which would make every
-built set hold its nodes' instance-uniform slots (Kuopio: 1,296 x 5 x 16 = 103,680 of the
-1,048,576 slots) and reverse gate D round 9's binding while drawing, so it is not taken.
+**The real-display probe on `d8aed5c2`** (the coordinator, 19:49, `windowed-20261027T185026`,
+no screenshots taken): success, 39 strokes, 0 failures, every log check 0, 0 holes in 13 loads and
+1,117 recorded frames; pose 1.55 ms (2 of 594 over the 1.0 ms share: `kuopio_12` attempts 34 and
+36, four sets starting to draw), catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85 ms; GPU
+p50 2.60 ms.
+
+*Carried to `ROAD-68-H` by the user, 2026-10-27* (they do not block gate E and are neither relaxed
+nor accepted; H measures and judges them; the list with its numbers is in
+[`roads.md`](roads.md#road-68-h--acceptance-and-cleanup)): the pose install's 2 of 594 frames over
+the proposed 1.0 ms share (1.55 and 1.39 ms, within the 2.0 ms Godot stage); the probe's whole
+drag frames of 14-20 ms while the terrain install took under 1.6 ms; the streaming installs'
+1.04-1.05 ms (gate D's, named for `TERRAIN-07-G`'s acceptance); [T42](#terrain-07-open-questions)
+(a), the preview levels without hysteresis, pending the user's review.
+
+**The idle-frame matrix on `d8aed5c2`** (the coordinator, the real display, 19:54): every session
+0 overflows; graded minus exact GPU p50 `city` -0.52, `city_low` -0.40, `saved` +0.22, `ground`
++0.03, but `close` +0.76 and `overview` +0.61 ms (gate D's matrix: +0.01 and -0.01) with the same
+primitives and draws; loads Kuopio 2,460 / 2,364 against 2,832 / 2,722 ms, saved 3,376 / 3,405
+against 3,678 / 3,661, the town 4,556 / 4,950 against 4,028 / 3,817. The Kuopio poses were sampled
+1-11 s after the load, inside the cell sets' background builds. Attribution under gamescope with
+its nested refresh lifted (`-r 1000`, so frames run uncapped as in the matrix; GPU times as the
+display's), one session each, `$ARTIFACTS` `t07e7/idle-probe2.sh` (at 60 Hz, capped, the
+difference does not show: `close` 1.85 ms in both modes):
+
+| Kuopio session | `overview` GPU / frame p50 | `close` GPU / frame p50 | Sets left to build at the pose |
+| --- | --- | --- | --- |
+| exact cut | 1.26 / 1.97 ms | 1.08 / 1.90 ms | none |
+| graded, sampled as the matrix samples | 2.13 / 3.41 | 1.80 / 3.33 | 1,054 -> 732, 595 -> 273 |
+| graded, sampled once the builds finished | 1.24 / 1.90 | 1.08 / 1.82 | 0 |
+| graded with no build at all (a scratch renderer) | 1.25 / 1.93 | 1.10 / 1.83 | 1,296 unbuilt |
+
+The cost is the build window's, not the built sets': a built hidden set under its patch's node
+costs nothing (once built, graded equals the exact cut). The window: 1,065 frames, 3.1 s uncapped
+after the load's settle (4,939 frames, 82 s at 60 Hz); a camera move to a pose queues the hidden
+sets whose patch took a new step (35 at `overview`, 178 at `close`, 0.1-0.3 s). Accepted by the
+user, 2026-10-27 (loads are rare in play; [budgets](#budgets)), and the matrix now judges the
+steady state: `idle_frame_benchmark.gd` waits for the builds after the load (a phase of its own,
+outside the load's time) and at each pose (`cell_builds_pending()`); on the tree's benchmark,
+uncapped: `overview` 1.25, `close` 1.09 ms GPU p50 (1,170 builds waited, 1,067 frames, 3.06 s).
+The game's settle does not wait for them.
+
+*The Kuopio load's +370 ms* (over the exact cut; gate D's matrix +250, accepted by the user): in
+the same uncapped sessions the load call takes 431 ms exact and 542-548 graded (+111-117: T25's
+prewarm and the pools), the settle 1,974 exact, 2,094 graded with no build and 2,164-2,265 with
+the builds, so the builds add about 70-170 ms of it (one session each): the user's "slower load
+is ok" (2026-10-27) covers it.
+
+**Open (not relaxed).** One more matrix on this tip (the coordinator's); the flips' material
+binding (pose frames to 1.55 ms): a candidate is binding a set's materials as it is built, which
+would make every built set hold its nodes' instance-uniform slots (Kuopio: 1,296 x 5 x 16 =
+103,680 of the 1,048,576 slots) and reverse gate D round 9's binding while drawing, so it is not
+taken.
 
 #### `TERRAIN-07-F` — consumers re-pointed
 
