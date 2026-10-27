@@ -528,6 +528,99 @@ fn wet_corner_count(corner_depths: [f32; 4]) -> usize {
         .count()
 }
 
+// `TERRAIN-07-F` water cell digest (T32), a diagnostic compared across builds: with the whole
+// world under 1 m of water, the mesh cells each patch drops at LOD steps 1, 2, 4 and 8, found
+// from the built mesh (every cell is wet, so a cell the mesh does not emit is dropped). One
+// `WATER_DROP <case> <patch_x> <patch_z> <lod> <count> <i,j>...` line per patch and step that
+// drops any, then `WATER_CASE <case> meshes=<n> cells=<n> dropped=<n>`.
+#[cfg(test)]
+pub(crate) fn print_dropped_water_cells(case: &str, core: &mut SimCore) {
+    let (width, height) = (core.watermap.width, core.watermap.height);
+    core.watermap
+        .replace_baseline_depth_from_dense(&vec![1.0; width * height])
+        .expect("the flood fills every sample");
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+    let (mut meshes, mut cells, mut dropped_total) = (0, 0, 0);
+    for patch_z in 0..core.watermap.render_patch_rows() {
+        for patch_x in 0..core.watermap.render_patch_cols() {
+            let patch = core
+                .watermap
+                .visible_patch_snapshot(patch_x, patch_z)
+                .expect("every patch of the grid has a snapshot");
+            for lod_step in [1, 2, 4, 8] {
+                let key = WaterPatchMeshCacheKey {
+                    patch_x,
+                    patch_z,
+                    lod_step,
+                    cover_generation: 0,
+                    depth_signature: 0,
+                };
+                let dropped = core.water_cells_under_roads_and_pads(&patch, lod_step);
+                let mesh = build_water_patch_mesh(WaterPatchMeshBuildInput {
+                    key,
+                    patch: patch.clone(),
+                    dropped,
+                });
+                let (columns, rows) = (
+                    mesh_interval_count(patch.sample_width, lod_step),
+                    mesh_interval_count(patch.sample_height, lod_step),
+                );
+                let list = dropped_cells_of(&mesh, &patch, columns, rows);
+                meshes += 1;
+                cells += columns * rows;
+                dropped_total += list.len();
+                if !list.is_empty() {
+                    let names: Vec<String> = list.iter().map(|(i, j)| format!("{i},{j}")).collect();
+                    println!(
+                        "WATER_DROP {case} {patch_x} {patch_z} {lod_step} {} {}",
+                        list.len(),
+                        names.join(" ")
+                    );
+                }
+            }
+        }
+    }
+    println!("WATER_CASE {case} meshes={meshes} cells={cells} dropped={dropped_total}");
+}
+
+// The cells of a flooded patch's mesh it does not emit: an indexed mesh is the full grid, an
+// unindexed one emits each cell as six vertices led by its first corner.
+#[cfg(test)]
+fn dropped_cells_of(
+    mesh: &CachedWaterPatchMesh,
+    patch: &WaterPatchSnapshot,
+    columns: usize,
+    rows: usize,
+) -> Vec<(usize, usize)> {
+    if !mesh.indices.is_empty() {
+        return Vec::new();
+    }
+    let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
+    let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+    let mut first_corners = std::collections::HashMap::new();
+    for j in 0..rows {
+        for i in 0..columns {
+            let x = mesh_cell_side(patch.world_origin_x, patch.world_size_x, i, columns) - center_x;
+            let z = mesh_cell_side(patch.world_origin_z, patch.world_size_z, j, rows) - center_z;
+            first_corners.insert((x.to_bits(), z.to_bits()), (i, j));
+        }
+    }
+    let mut emitted = std::collections::HashSet::new();
+    for vertex in mesh.vertices.chunks(6).map(|cell| cell[0]) {
+        emitted.insert(first_corners[&(vertex.x.to_bits(), vertex.z.to_bits())]);
+    }
+    let mut dropped = Vec::new();
+    for j in 0..rows {
+        for i in 0..columns {
+            if !emitted.contains(&(i, j)) {
+                dropped.push((i, j));
+            }
+        }
+    }
+    dropped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

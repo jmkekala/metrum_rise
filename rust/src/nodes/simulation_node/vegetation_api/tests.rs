@@ -1662,9 +1662,9 @@ fn a_yard_row_stays_on_its_line_where_a_neighbours_corner_juts_past_it() {
 }
 
 #[test]
-#[ignore = "TERRAIN-07-F: injects a site client without its building, which the graded surface's site index cannot read; to be rebuilt through the allocator"]
 fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
-    use crate::simulation::buildings::allocator::BuildingSiteClient;
+    use crate::simulation::buildings::allocator::{BuildingSiteClient, indexed_test_building};
+    use crate::simulation::zoning::ZoneType;
     let mut core = core();
     core.vegetation.config.enabled = false;
     let square = |a: f32, b: f32| {
@@ -1676,11 +1676,17 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
         ]
     };
     let house = square(2.0, 10.0);
+    let lot = square(0.0, 20.0);
+    // The site comes with its building, which the allocator's site index is built from: the
+    // graded surface reads sites through that index (`TERRAIN-07-F`).
+    let mut building = indexed_test_building(String::new(), ZoneType::None, 0);
+    (building.center_x, building.center_y) = (10.0, 10.0);
+    core.allocator.buildings.push(building);
     core.allocator.building_sites.push(BuildingSiteClient {
         structure_world: vec![[house[0], house[1], house[2], house[3]]],
         planting_world: Vec::new(),
-        footprint_world: square(0.0, 20.0),
-        lot_footprint_world: [Vector2::ZERO; 4],
+        footprint_world: lot.clone(),
+        lot_footprint_world: [lot[0], lot[1], lot[2], lot[3]],
         support_height_m: 0.0,
         surfaces: vec![
             crate::simulation::buildings::allocator::BuildingSiteSurfaceClient {
@@ -1690,6 +1696,9 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
             },
         ],
     });
+    core.allocator.recompute_max_site_radius_m();
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
     let shrub = |x: f32, z: f32| Plant {
         x,
         z,

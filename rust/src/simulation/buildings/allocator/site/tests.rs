@@ -596,6 +596,8 @@ fn support_tie_in_accepts_flat_surroundings() {
     ));
 }
 
+// A pad more than the cap's tie-in budget (64 m at 1:2) above flat ground cannot grade into it
+// (`docs/terrain.md` T12 (a)).
 #[test]
 fn support_tie_in_rejects_oversteep_surroundings() {
     let terrain = TerrainSystem::with_chunking(32, 32, 1.0, 8, 0.0);
@@ -604,7 +606,7 @@ fn support_tie_in_rejects_oversteep_surroundings() {
 
     assert!(!building_site_support_tie_in_is_valid(
         &square_site_with_surface().footprint_world,
-        5.0,
+        32.1,
         &terrain,
         &graph,
         &road_surface,

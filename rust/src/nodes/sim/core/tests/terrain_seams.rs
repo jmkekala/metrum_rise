@@ -421,3 +421,19 @@ fn reference_junction_road_and_terrain_share_seam_vertices() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+// `TERRAIN-07-F` water cell digest (T32) over the reference junctions, flat and sloped, compared
+// across builds ([`crate::nodes::sim::render::water::print_dropped_water_cells`]).
+#[test]
+#[ignore = "diagnostic: the water cell digest compared across builds; --ignored --nocapture"]
+fn reference_junction_water_cell_digest_dump() {
+    for sloped in [false, true] {
+        for (name, strokes, order) in reference_fixtures() {
+            let mut core = committed(&strokes, &order, sloped);
+            crate::nodes::sim::render::water::print_dropped_water_cells(
+                &format!("{name}/{sloped}"),
+                &mut core,
+            );
+        }
+    }
+}

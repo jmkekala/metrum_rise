@@ -259,7 +259,9 @@ fn hillside_residential_sites_select_constructible_houses() {
 }
 
 // The hillside's five empty lots, checked for terrain-neutral feasibility across all profiles and
-// built, the family house on parcel 7.
+// built, the small house on parcel 7: with the tie-in rays at the graded terrain's 64 m cap
+// (`docs/terrain.md` T12 (a)) it grades into the slope that refused it at the exact cut's 20 m
+// margin, where the family house was the constructible one.
 fn hillside_houses() -> SimCore {
     let mut core = fixture();
     let before = (
@@ -323,7 +325,7 @@ fn hillside_houses() -> SimCore {
         if id == 7 {
             assert_eq!(
                 action.asset_id,
-                "kenney:building.residential.family_single_house"
+                "kenney:building.residential.small_single_family_house"
             );
         }
         let result = core.allocator.execute_demand_spawn_action(
@@ -449,13 +451,15 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
         solves,
         "remote terrain must reuse local feasibility"
     );
+    // Past the tie-in reach (the graded terrain's 64 m cap, `docs/terrain.md` T12 (a)), so no ray
+    // reaches the unedited ground.
     let grid = core
         .heightmap
         .grid_rect_for_world_bounds(
-            geometry.aabb_min.x - 25.0,
-            geometry.aabb_min.y - 25.0,
-            geometry.aabb_max.x + 25.0,
-            geometry.aabb_max.y + 25.0,
+            geometry.aabb_min.x - 75.0,
+            geometry.aabb_min.y - 75.0,
+            geometry.aabb_max.x + 75.0,
+            geometry.aabb_max.y + 75.0,
         )
         .unwrap();
     for z in grid.2..=grid.3 {

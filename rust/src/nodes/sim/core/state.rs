@@ -1983,9 +1983,10 @@ impl SimCore {
 
 /// The render patches and 64 m CDT tiles whose refined terrain a road edit changes, by patch
 /// (`ROAD-68-D`, `ROAD-68-E`). A tile reads the roads through the loops inside its halo, which
-/// is also the grading envelope cap, and through the building sites within the local sample
-/// margin of its window, which grade against road surfaces and edges up to
-/// `site_feasibility_dependency_margin_m` beyond them (less than the cap). So a tile changes
+/// is also the grading envelope cap, and through the building sites within the CDT's local
+/// sample margin of its window (`terrain_cdt_local_sample_margin_m`, less than the cap; the
+/// site feasibility margin, which reaches past the cap since `TERRAIN-07-F` T12, is not the
+/// CDT's). So a tile changes
 /// only within the cap of a changed chain segment, or within the cap of a changed piece when a
 /// site's bounds overlap its window grown by that margin. `site_bounds(patch, bounds, out)`
 /// appends the bounds `[min_x, min_z, max_x, max_z]` of the sites overlapping `bounds`, for the

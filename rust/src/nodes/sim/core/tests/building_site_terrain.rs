@@ -622,7 +622,7 @@ fn patch_ownership(
     )
 }
 
-// `SIM-02-K`: two site changes far apart in one publication refresh the union of the patches
+// `SIM-02-K`: site changes far apart in one publication refresh the union of the patches
 // each touches. Their ownership equals what refreshing the box merged over both gives, and
 // every patch between them keeps its ownership, payload generation and render state.
 #[test]
@@ -650,17 +650,28 @@ fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
         .flat_map(|a| (a + 1..sites.len()).map(move |b| (a, b)))
         .max_by(|&x, &y| distance(x).total_cmp(&distance(y)))
         .unwrap();
-    let mut touched = patches(&core, sites[a]);
-    touched.extend(patches(&core, sites[b]));
+    // Each farthest site goes with every site sharing one of its patches (the yard across its
+    // road, since the 64 m tie-in reach of `docs/terrain.md` T12 (a) accepts both), so the
+    // patches it touches lose their site ownership.
+    let shares = |i: usize, j: usize| {
+        let theirs = patches(&core, sites[j]);
+        patches(&core, sites[i]).iter().any(|key| theirs.contains(key))
+    };
+    let mut removed: Vec<usize> = (0..sites.len())
+        .filter(|&j| shares(a, j) || shares(b, j))
+        .collect();
+    removed.sort_unstable_by(|x, y| y.cmp(x));
+    let mut touched: Vec<_> = removed.iter().flat_map(|&j| patches(&core, sites[j])).collect();
     touched.sort_unstable();
     touched.dedup();
     let merged = patches(
         &core,
-        (
-            sites[a].0.min(sites[b].0),
-            sites[a].1.min(sites[b].1),
-            sites[a].2.max(sites[b].2),
-            sites[a].3.max(sites[b].3),
+        removed.iter().fold(
+            (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+            |m, &j| {
+                let site = sites[j];
+                (m.0.min(site.0), m.1.min(site.1), m.2.max(site.2), m.3.max(site.3))
+            },
         ),
     );
     assert!(
@@ -675,7 +686,7 @@ fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
         .collect();
     let generations = core.terrain_payload_patch_generations.clone();
     let dirty = core.heightmap.dirty_render_patches().clone();
-    for index in [a.max(b), a.min(b)] {
+    for &index in &removed {
         assert!(core.allocator.remove_building_for_bulldoze(
             index,
             &mut core.zoning,
@@ -687,7 +698,7 @@ fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
     }
     assert_eq!(
         core.allocator.building_site_dirty_bounds.len(),
-        2,
+        removed.len(),
         "each site change keeps its own box"
     );
     core.publish_pending_building_site_changes();
@@ -731,11 +742,13 @@ fn site_changes_far_apart_refresh_only_the_patches_they_touch() {
 
 #[test]
 fn large_paved_yards_remain_flat_over_hills_and_depressions() {
+    // A relief the pad cannot tie into within the tie-in reach (the graded terrain's 64 m cap at
+    // 1:2, `docs/terrain.md` T12 (a)) refuses the yard.
     for (grade, max_relief, accepted) in [
         (-0.35_f32, 3.0, true),
         (0.35, 3.0, true),
-        (-0.35, 14.0, false),
-        (0.35, 14.0, false),
+        (-0.35, 40.0, false),
+        (0.35, 40.0, false),
     ] {
         let mut core = test_core();
         core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 64, 0.0);
@@ -875,17 +888,13 @@ fn kuopio_yard_core() -> SimCore {
             }
         }
     }
-    use crate::simulation::buildings::allocator::DemandSpawnPlacementRejection::SiteSupportTieInInvalid;
     // The third road's yards stood beside a four-way 29 m above the ground in the network
-    // recorded 2026-09-08; on the re-recorded network it lies on the ground and takes both.
-    assert_eq!(
-        rejected,
-        vec![
-            (1, 1.0, SiteSupportTieInInvalid),
-            (3, 1.0, SiteSupportTieInInvalid)
-        ]
-    );
-    assert_eq!(core.allocator.buildings.len(), 6);
+    // recorded 2026-09-08; on the re-recorded network it lies on the ground and takes both. The
+    // first and fourth roads' yards on their +1 sides, refused while the tie-in rays reached the
+    // exact cut's 20 m margin, grade into the hillside within the graded terrain's 64 m cap
+    // (`docs/terrain.md` T12 (a), `TERRAIN-07-F`).
+    assert_eq!(rejected, vec![]);
+    assert_eq!(core.allocator.buildings.len(), 8);
     assert_eq!(core.zoning.parcels().len(), 8);
     core
 }
@@ -1904,3 +1913,78 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
     }
 }
 
+
+// `TERRAIN-07-F` vegetation placement digest on hills, compared across builds: the Kuopio
+// reference save with its yards (each placement's verdict as one `VEG_YARD road side verdict`
+// line), then the scatter of the 64 m patches over 512 m around the yards' centre, both layers,
+// one `VEG_PLANT` line per placed plant (its packed record's bits), and per plant one
+// `VEG_CLASS x z class base ground` line (the bits of its position, its ground class, 0 natural,
+// 1 road, 2 pad, 3 paved, 4 graded, and the base and graded ground heights there in metres).
+#[test]
+#[ignore = "diagnostic: the hillside vegetation placement digest compared across builds; --ignored --nocapture"]
+fn kuopio_vegetation_placement_digest_dump() {
+    use crate::nodes::simulation_node::vegetation_api::{CANOPY_SALT, UNDERSTORY_SALT, scatter_layer};
+    use crate::simulation::terrain::graded::{GradedSurface, GroundClass, QueryScratch};
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    for road in 0..KUOPIO_YARD_ROADS.len() {
+        for side in [-1.0, 1.0] {
+            let verdict = place_kuopio_yard(&mut core, road, side, &asset).map(|_| ());
+            println!("VEG_YARD {road} {side} {verdict:?}");
+        }
+    }
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let core = &core;
+    // The yard roads' midpoints' centre, fixed whichever yards a build accepts.
+    let centre = KUOPIO_YARD_ROADS
+        .iter()
+        .map(|&([x, z], _)| Vector2::new(x, z))
+        .sum::<Vector2>()
+        / KUOPIO_YARD_ROADS.len() as f32;
+    let corner = (centre / 64.0).floor() * 64.0 - Vector2::splat(256.0);
+    let buildings = core.allocator.buildings.len();
+    println!("VEG_CITY buildings={buildings} centre={centre:?}");
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed: &core.transit_network.roadbed,
+        sites: &core.allocator,
+    };
+    let mut scratch = QueryScratch::default();
+    let generator = core.vegetation;
+    for pz in 0..8 {
+        for px in 0..8 {
+            let origin = corner + Vector2::new(px as f32, pz as f32) * 64.0;
+            for (cell, salt, canopy) in [
+                (generator.canopy_cell_m, CANOPY_SALT, true),
+                (generator.understory_cell_m, UNDERSTORY_SALT, false),
+            ] {
+                for record in scatter_layer(core, origin, 64.0, cell, salt, canopy).as_chunks::<6>().0 {
+                    let bits: Vec<String> = record.iter().map(|v| v.to_bits().to_string()).collect();
+                    println!("VEG_PLANT {}", bits.join(" "));
+                    let (x, z) = (f64::from(record[0]), f64::from(record[2]));
+                    let class = match surface.mask_at(x, z, &mut scratch) {
+                        GroundClass::Natural => 0,
+                        GroundClass::Road => 1,
+                        GroundClass::Pad => 2,
+                        GroundClass::Paved(_) => 3,
+                        GroundClass::Graded => 4,
+                    };
+                    println!(
+                        "VEG_CLASS {} {} {class} {} {}",
+                        record[0].to_bits(),
+                        record[2].to_bits(),
+                        surface.base_height_at(x, z, &mut scratch),
+                        surface.ground_height_at(x, z, &mut scratch)
+                    );
+                }
+            }
+        }
+    }
+}

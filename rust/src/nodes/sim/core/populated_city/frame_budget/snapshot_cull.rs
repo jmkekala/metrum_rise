@@ -376,6 +376,15 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
     }
 }
 
+// `TERRAIN-07-F` water cell digest (T32) over the 2k city, compared across builds
+// ([`crate::nodes::sim::render::water::print_dropped_water_cells`]).
+#[test]
+#[ignore = "diagnostic: the water cell digest compared across builds; --ignored --nocapture"]
+fn populated_city_water_cell_digest_dump() {
+    let mut city = PopulatedCity::build(2_000);
+    crate::nodes::sim::render::water::print_dropped_water_cells("city_2k", &mut city.core);
+}
+
 // `TERRAIN-07-F` vegetation placement digest, a diagnostic compared across builds: the scatter of
 // the 64 m patches over 512 m around a 2k city's centre, both layers, one `VEG_PLANT` line per
 // placed plant (its packed record's bits). With `METRUM_VEG_CLASSIFY` naming a file of

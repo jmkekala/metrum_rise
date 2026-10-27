@@ -27,6 +27,9 @@ const BUILDING_SITE_SUPPORT_TIE_IN_EPS_M: f32 = 0.05;
 pub(super) const BUILDING_SITE_NEAREST_ROAD_SURFACE_MIN_RADIUS_M: f32 = 3.0;
 pub(super) const BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M: f32 = 8.0;
 const BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M: f32 = 0.05;
+// How far a pad's tie-in rays reach (`docs/terrain.md` T12 (a)): the graded terrain's cap, the
+// farthest a pad's cone grades the ground.
+const BUILDING_SITE_SUPPORT_TIE_IN_REACH_M: f32 = crate::simulation::terrain::graded::CAP_M as f32;
 
 /// Roads seen by site grading: the graph for nearest-edge probes, the roadbed for heights.
 #[derive(Clone, Copy)]
@@ -184,9 +187,13 @@ pub(crate) fn building_site_support_tie_in_is_valid(
         return false;
     }
     let safe_step_m = BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M.max(f32::EPSILON);
-    let max_distance_m = terrain_cdt_local_sample_margin_m(terrain, safe_step_m);
-    let context =
-        SiteGradingContext::new(terrain, graph, road_surface, safe_step_m, max_distance_m);
+    let context = SiteGradingContext::new(
+        terrain,
+        graph,
+        road_surface,
+        safe_step_m,
+        BUILDING_SITE_SUPPORT_TIE_IN_REACH_M,
+    );
     visit_footprint_grading_rays(footprint_world, safe_step_m, |seam, outward| {
         building_site_support_tie_in_ray_is_valid(support_height_m, seam, outward, &context)
     })
@@ -194,7 +201,9 @@ pub(crate) fn building_site_support_tie_in_is_valid(
 
 /// Chooses the closest feasible level pad to the preferred road-connection height.
 /// Intersects exact unions of the existing ray-height intervals, plus driveway grade intervals;
-/// it does not raise the slope limit or move the road. Ties choose the lower height.
+/// it does not raise the slope limit or move the road. Ties choose the lower height. The rays
+/// read the base terrain and the roads out to the graded terrain's cap (`docs/terrain.md` T12
+/// (a)).
 pub(crate) fn solve_building_site_support_height(
     footprint: &[Vector2],
     preferred: f32,
@@ -233,19 +242,15 @@ pub(crate) fn solve_building_site_support_height(
         graph,
         surface,
         BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M,
-        terrain_cdt_local_sample_margin_m(terrain, BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M),
+        BUILDING_SITE_SUPPORT_TIE_IN_REACH_M,
     );
     let mut intervals = vec![(low, high)];
     let mut next = Vec::new();
     let valid = visit_footprint_grading_rays(footprint, context.safe_step_m, |seam, outward| {
         next.clear();
         for d in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
-            let target = building_site_raw_tie_in_target_height(
-                seam + outward * d,
-                d,
-                terrain,
-                context.roads,
-            );
+            let target =
+                building_site_raw_tie_in_target_height(seam + outward * d, d, terrain, context.roads);
             let budget = d * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
             for &(lo, hi) in &intervals {
                 let a = lo.max(target - budget);
@@ -280,9 +285,11 @@ pub(crate) fn solve_building_site_support_height(
         })
 }
 
-/// Padding needed to capture every terrain and nearest-road dependency of site grading.
+/// Padding needed to capture every terrain and nearest-road dependency of site feasibility:
+/// the tie-in reach (the graded terrain's cap), the nearest-road probe radius and one terrain
+/// cell of bilinear support.
 pub(crate) fn site_feasibility_dependency_margin_m(terrain: &TerrainSystem) -> f32 {
-    terrain_cdt_local_sample_margin_m(terrain, BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M)
+    BUILDING_SITE_SUPPORT_TIE_IN_REACH_M
         + BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M
         + terrain.cell_size_m()
 }
@@ -394,8 +401,12 @@ fn building_site_support_tie_in_ray_is_valid(
 ) -> bool {
     for distance_m in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
         let pos = seam + outward * distance_m;
-        let target_height_m =
-            building_site_raw_tie_in_target_height(pos, distance_m, context.terrain, context.roads);
+        let target_height_m = building_site_raw_tie_in_target_height(
+            pos,
+            distance_m,
+            context.terrain.terrain(),
+            context.roads,
+        );
         let max_delta_m = distance_m.max(0.0) * MAX_TERRAIN_TIE_IN_SLOPE_RATIO
             + BUILDING_SITE_SUPPORT_TIE_IN_EPS_M;
         if (target_height_m - seam_height_m).abs() <= max_delta_m {
@@ -422,11 +433,13 @@ fn grading_ring_distances(safe_step_m: f32, max_distance_m: f32) -> impl Iterato
         })
 }
 
-/// Samples the road or terrain target used to validate a proposed pad's support height.
+/// Samples the road or terrain target used to validate a proposed pad's support height: the
+/// visible road, else the base terrain (`docs/terrain.md` T12 (a)), which the graded terrain
+/// grades from.
 pub(super) fn building_site_raw_tie_in_target_height(
     pos: Vector2,
     distance_m: f32,
-    terrain: &dyn TerrainVisualSource,
+    terrain: &TerrainSystem,
     roads: SiteRoads<'_>,
 ) -> f32 {
     let nearest_radius_m = distance_m.clamp(
@@ -436,7 +449,7 @@ pub(super) fn building_site_raw_tie_in_target_height(
     if let Some(road_height_m) = building_site_visible_road_height(roads, pos, nearest_radius_m) {
         return road_height_m;
     }
-    terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE
+    terrain.sample_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE
 }
 
 fn building_site_visible_road_height(
