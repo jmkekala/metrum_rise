@@ -4229,7 +4229,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load budget open for the user, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); open for the user: the Load budget (Kuopio about +250 ms, saved about +200 ms; beside T25), so the acceptance is not passed; for the user's review: T25 (a), T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
-| `TERRAIN-07-E` | in progress (round 1, 2026-10-26, branch `terrain07-E`, the Rust half, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo. The commit and undo paths fit 3.0 ms on Kuopio; the drag poses do not (T27, open) | Preview, commit, undo and load |
+| `TERRAIN-07-E` | in progress (rounds 1-2, 2026-10-26/27, branch `terrain07-E`, the Rust half, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise. The commit and undo paths fit 3.0 ms on Kuopio and in the populated city; 19-22 of 299 Kuopio drag poses and the populated drags' first poses do not (T27, open for the user: (d) recommended) | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
@@ -6775,6 +6775,136 @@ the coverage row span, the selection) are round 2's, then the user's choice. The
 and the sessions above. The kept tiles' memory (an ungraded kept tile could be dropped and baked
 again at undo, cheaply). The Godot half.
 
+Round 2, 2026-10-27, the same branch rebased on `road` at `d80bf36f` (`ROAD-68-K24` landed: the
+commit breakdown and its preparation run without the test-only checks, `roads.md` question 50
+(a), so every breakdown number below is a new series, not comparable with breakdown records
+taken with the checks). T27 (a) taken under the delegation; fresh runs only, kept apart from
+round 1's.
+
+**What landed (T27 (a), every product bitwise).**
+
+- Row bands (T21's lever (a)): a tile's samples and its second pass run in bands of 16 lattice
+  rows on the shared pool (`BAND_ROWS`, `Sampling::rows` in `graded/tile.rs`), beside the nearest
+  material edge search in the same bands (`SiteBuffer::nearest_edges` now fills any run of a
+  lattice's rows); the set-up (gathers, base, bins, pass 1's lists, coverage, the portal parts,
+  pads and classes) and the finish (pass 2's lists, the portal opening, rows, walls, inputs) stay
+  one per tile. Each band's counts are summed in band order and its pass 2 samples keep their
+  tile index, so the bytes and stats do not depend on the split. A tile now holds its bake
+  buffers from set-up to finish while its bands sample on any worker, so the buffers moved from
+  the per-worker cells into a pool (`SCRATCHES`) that holds as many sets as were ever in use at
+  once; no thread-local borrow spans a join.
+- The coverage row span: `CoverageTriangle::for_each_held_in_row` starts and ends each row's scan
+  at the row's span through the closed triangle, each edge's crossing widened by `1e-9` of its
+  coordinates plus a nanometre, far beyond the crossing's rounding; every point inside is still
+  tested by the exact predicate (`roadbed/geometry.rs`).
+- A cheaper selection: `reached` first tests the changed seams against their own floor, which is
+  at least the window's (the lift reach only grows as the floor falls), so most reached tiles
+  skip the window's seam walk, site gather, base and bins; the answer is the same.
+- Benchmarks: a product digest (`graded::tests::payload_digest`: texels, rows, walls, the graded
+  flag, inputs and stats, by their bits) on every pose, commit and undo of
+  `benchmark_kuopio_graded_drags` and `benchmark_populated_graded_drags`, which now runs without
+  the test-only checks like the breakdown; `METRUM_COMMIT_PREVIEW` makes
+  `benchmark_populated_commit_breakdown` drag each stroke in eight poses before its commit,
+  untimed (`COMMIT_POSES`), and commit with the last pose's preview, as the game does
+  (`preview_reused` in the stages); every breakdown record holds the kept tiles' job span from
+  the click (`kept_job_ms`), the adoption frames' start and the measured frames' end.
+- Production lines: `simulation/terrain/graded/` (files other than the tests) 5,275 to 5,450 (the
+  band sampling moved out of `bake_tile`, the scratch pool, the band counts), `roadbed/` 9,802 to
+  9,839 (the row span).
+
+**Products (fresh, bitwise).** Every run of the session below gives the control's products: the
+digests of all 299 Kuopio poses, 39 commits and 39 undos, of all 84 populated drag poses, 12
+commits and 12 undos, and the commit breakdown's `COMMIT_PRODUCTS` at every tier, with and
+without the preview mode, are equal across C and F. The graded library tests pass in release on
+F (24 passed, 4 ignored), the debug suite below.
+
+**Landing session (fresh, 2026-10-27 01:42-01:51, one hold of both locks, `taskset -c
+0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, release library tests).** C = `road` `d80bf36f` with round
+1 and the drags' timing mode (`$TEST_BINARY` sha256 `9c726b90…`), F = this round (`e3b506c0`,
+sha256 `a24fba55…`); each binary's cities prepared before the session, every
+`COMMIT_FIXTURE` `loaded`. C F F C throughout.
+
+- Preview stages (`benchmark_road_preview_stages`, four workers, 400 samples), graded stage p50 /
+  p95 per pose: `sloped_t` C 1.676 / 2.149 and 1.680 / 2.137 ms, F 1.450 / 1.788 and 1.464 /
+  1.801 ms (7.38 tiles, none adopted); `sloped_branch` C 1.464 / 1.728 and 1.467 / 1.710 ms, F
+  1.331 / 1.553 and 1.339 / 1.551 ms (4.62 tiles). The commit's graded stage adopts every tile:
+  C 0.447-0.628 ms, F 0.343-0.475 ms.
+- Kuopio frame paths (`benchmark_kuopio_graded_drags`, four workers; the 39 strokes as drags of
+  eight poses, 13 intermediate poses invalid as in round 1):
+
+  | Path | C (runs 1, 4) | F (runs 2, 3) |
+  | --- | --- | --- |
+  | Pose median / worst | 1.39 / 7.14, 1.41 / 7.04 ms | 1.25 / 4.62, 1.23 / 4.72 ms |
+  | Poses over 3.0 ms (strokes) | 35 (16), 36 (16) of 299 | 22 (11), 19 (10) |
+  | Last pose (the full edit) median, over 3.0 ms | 2.56 ms, 15; 2.59 ms, 15 | 2.40 ms, 11; 2.38 ms, 9 |
+  | Commit (adoption) median / worst | 0.55 / 1.33, 0.59 / 1.37 ms | 0.56 / 1.19, 0.51 / 1.04 ms |
+  | Undo (kept tiles) median / worst | 0.43 / 1.07, 0.41 / 0.96 ms | 0.39 / 0.93, 0.33 / 0.76 ms |
+
+  Every miss is a pose of 8-19 steep tiles; its bake takes 2.1-3.9 ms, selection 0.25-0.69 ms
+  and the input gathers 0.15-0.52 ms (T27, open for the user).
+- Populated drags (`benchmark_populated_graded_drags`, four workers, tiers 0, 10k, 30k, 100k,
+  the breakdown's three trunk branches each, as drags of eight poses; every first pose is
+  invalid, `junction_corner_does_not_fit`): a pose takes a median 1.88 / 1.90 ms (C) and 1.85 /
+  1.86 ms (F); 11 / 10 (C) and 9 / 9 (F) of 84 poses exceed 3.0 ms, all on the first sample of
+  a populated tier but one stall (below): that drag's first valid pose, which holds no tile yet
+  and bakes its 6-12 tiles (F 3.75-5.20 ms at 10k to 100k), the 100k first sample's later poses
+  (12-13 tiles, 6 adopted, F 2.84-3.30 ms) and once a later pose at 30k (3.02 ms). Later poses adopt 1-6 tiles each: on flat ground a branch's far tiles keep their
+  inputs. The commit adopts every tile of the last pose: median 0.84 / 0.94 ms, worst 1.67 /
+  1.83 ms (F; C 0.99 / 0.89, 1.72 / 1.83); undo adopts every kept tile, median 1.05 / 0.98 ms
+  (F). Not attributed, open: one stall per run in both binaries on a different sample each time,
+  an undo of 24.4-25.2 ms at 30k (C run 1, F runs 2 and 3) and a first pose of 47.4 ms (F run 2)
+  and 23.2 ms (C run 4) at 100k, where the other runs take 0.8-1.3 ms and 1.7-1.8 ms. A
+  candidate, not verified: the previous commit's background routing hierarchy rebuild holding
+  the shared pool's workers when the undo or the next drag's first pose submits its tiles.
+- The commit at 0 to 100k (`benchmark_populated_commit_breakdown`, eight workers; a new series,
+  without the test-only checks). The default commits without a preview, so its graded stage
+  bakes the edit: `surface_graded` at 100k C 3.18 / 1.78 / 1.30 and 3.45 / 1.56 / 1.29 ms, F
+  3.09 / 1.70 / 1.20 and 2.92 / 1.48 / 1.14 ms per sample; the commit totals C 26.5 / 14.8 / 13.0
+  and 26.4 / 15.1 / 10.5 ms, F 25.9 / 14.3 / 10.0 and 26.5 / 23.3 / 10.2 ms. With
+  `METRUM_COMMIT_PREVIEW` (F, two runs, the game's adoption path, `preview_reused` true), the
+  graded stage adopts every tile in 0.54-1.65 ms, and the commit:
+
+  | Tier | Commit total, ms (two runs, three samples) | First sample's stages, ms |
+  | --- | --- | --- |
+  | 0 | 8.2 / 4.5 / 3.2, 7.8 / 5.3 / 3.8 | mesh 2.8-3.3, surface 1.1-1.3 |
+  | 10k | 29.0 / 16.1 / 5.7, 30.1 / 14.6 / 6.1 | buildings 10.2-10.7, mesh 4.2-4.3, surface 2.2, lanes 1.1-1.8 |
+  | 30k | 25.0 / 10.1 / 9.3, 25.7 / 11.0 / 9.1 | buildings 7.3-7.5, mesh 4.9-5.1, surface 1.8, lanes 1.1 |
+  | 100k | 27.0 / 14.2 / 9.3, 27.2 / 15.1 / 9.5 | buildings 8.0-8.2, mesh 3.5-3.9, lanes 2.0-3.1, snapshot 2.3-2.4, surface 2.3-2.4 |
+
+  Against 16.7 ms: the first commit of every populated tier misses (25.0-30.1 ms); the later
+  samples fit (5.7-16.1 ms). On `road`, which still validates the terrain, `ROAD-68-K24`'s 100k
+  commits take 97.9-101.8 / 19.9-20.9 / 14.0-15.3 ms. Question 33's deferred lot regeneration
+  ([`roads.md`](roads.md#road-68-open-questions)) starts from the game path's first 100k commit,
+  27.0-27.2 ms with `buildings` 8.0-8.2 ms: deferred one frame, about 19 ms would remain, still
+  over 16.7 ms (mesh, lanes, snapshot and the surface next).
+- The kept tiles' job (the undo record's replaced tiles, a pure job on the shared pool): it starts
+  2.3-5.5 ms after the click and ends 2.7-8.1 ms after it (0.4-2.6 ms long; with the preview
+  0.9-3.4 and 1.7-6.8 ms), in every one of F's 48 commits before the commit returns (at least
+  0.8 ms before). So it overlaps the commit's own later stages (lanes, buildings, mesh,
+  snapshot), not the agent tick or the next preview or commit, and no frame after the commit
+  shares the pool with it. What it takes from those stages is not separated in this session:
+  both binaries spawn it. No budget is broken by the frames after the commit; the commit's own
+  16.7 ms miss is the lot regeneration's (question 33), so the job keeps its priority this round.
+- Locality (fresh, F, a stage-only run after the session, 02:02, both locks, four workers):
+  `benchmark_graded_tiles_locality` (a fixed T, its node piece dropped and rebuilt, background
+  street grids from 400 m out) selects the same 4 tiles with bitwise equal texels at 3, 147,
+  1,203 and 4,707 edges, p50 0.48, 0.75, 0.77 and 0.85 ms (the small step past the bare T as in
+  gates A and C, 0.46-1.00 ms). In the populated drags each tier's branches sit beside a
+  different block edge, so their tiles differ by tier and bound the cost rather than prove
+  locality: a pose's selection takes a median 0.56, 0.64, 0.64 and 0.68 ms at 0, 10k, 30k and
+  100k, a baked tile 0.12-0.22 ms and a commit's adopted tile 0.10-0.14 ms. The round-1 tests
+  (the split trunk's T on a 220 m and a 660 m trunk; the first commit after a bulk road build
+  with background roads or without) pass in the debug suite below.
+
+**Gate checks (fresh, on `e3b506c0`).** GATE_CHECKS
+
+**Open (not relaxed).** T27: 19-22 of 299 Kuopio poses and the populated drags' first poses at 10k
+to 100k exceed 3.0 ms after (a); the user's choice between (d) and (b) with (c), recommendation
+(d). The commit at 16.7 ms: each populated tier's first commit (25-30 ms on the game's path),
+question 33's deferral next, which alone does not fit it. The populated drags' unexplained
+stalls. One gather per tile (T27's remaining exact lever). The kept tiles' share of the commit's
+stages, if the commit budget needs it. The kept tiles' memory. The Godot half.
+
 #### `TERRAIN-07-F` — consumers re-pointed
 
 1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
@@ -7708,6 +7838,27 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** (a) in round 2, measured on the Kuopio and populated drags; if poses
       still miss, the user decides between (d) and (b) with (c). Taken under the delegation for
       review: round 2 builds (a); the 3.0 ms budget is unchanged and the miss stays open.
+    - **Round 2 (2026-10-27): (a) built, the poses still miss; the user's choice between (d) and
+      (b) with (c).** The row bands, the coverage row span and the selection's early floor
+      ([record](#terrain-07-e-record), round 2), every product bitwise (the digests of all 299
+      Kuopio poses, 39 commits and 39 undos equal the control's). In the round's session (C F F C, four workers) the Kuopio
+      poses take a median 1.25 / 1.23 ms against the control's 1.39 / 1.41 and at worst 4.62 /
+      4.72 ms against 7.14 / 7.04; 22 / 19 of 299 poses (11 / 10 of 39 strokes) still exceed
+      3.0 ms (control 35 / 36, 16). The bake is still most of every miss (2.1-3.9 ms of 8-19
+      tiles), selection 0.25-0.69 ms and the input gathers 0.15-0.52 ms.
+      - **What is left of (a).** One gather per tile: a pose gathers each wanted tile's inputs
+        to compare them with the held tile's, then the bake gathers them again (0.15-0.52 ms of
+        the poses over 3.0 ms, `inputs_ms`); folding the comparison into the bake's own set-up
+        would bring about a third of the misses within 3.0 ms, not the worst. Wider lanes need a
+        target above Godot's minimum CPU and runtime dispatch (`unsafe`). Every miss is a pose of
+        8-19 steep tiles whose bake's CPU time over four workers alone exceeds the budget.
+      - **Recommendation for the user: (d).** (b) with (c) helps only where a growing road's far
+        segments keep their bits, and on a slope the profile solve moves heights along the whole
+        road every pose, so it reaches none of the misses, which are all on Kuopio's hills; (d)
+        bounds every pose's frame cost whatever the edit, at the price of the previous pose's
+        tiles showing for a frame or two on large edits on hills. The 3.0 ms budget is not
+        relaxed: under (d) it is what a frame's share of a larger pose is held to. Open, for the
+        user; this round takes neither.
 
 #### Superseded `ROAD-68` questions
 

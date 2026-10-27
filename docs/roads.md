@@ -2386,6 +2386,14 @@ These need a user decision; work that does not depend on them continues.
       still does not fit a frame. That cannot be judged until `TERRAIN-07` replaces the legacy
       terrain validation, which takes 10-90 ms of today's commit. Per-pose plans, synchronous
       or in jobs, are not the next step.
+    - **Measured with `TERRAIN-07` (`TERRAIN-07-E` round 2, 2026-10-27, fresh; the commit
+      breakdown's game path, `METRUM_COMMIT_PREVIEW`, eight workers, without the test-only
+      checks, [`terrain.md` gate E record](terrain.md#terrain-07-e-record)).** The commit still
+      misses the frame on each populated tier's first sample: 29.0-30.1 ms at 10k, 25.0-25.7 at
+      30k, 27.0-27.2 at 100k, of which `buildings` (the lot regeneration) 10.2-10.7, 7.3-7.5 and
+      8.0-8.2 ms; the later samples take 5.7-16.1 ms. The deferral (c) starts from those first
+      commits: at 100k it would leave about 19 ms (mesh 3.5-3.9, lanes 2.0-3.1, snapshot 2.3-2.4,
+      surface 2.3-2.4 ms next), so it alone does not fit the frame.
 35. **Worn zebra bars on residential streets (`ROAD-68-F` part 1, from the gate F notes) —
     decided by the coordinator under the user's delegation, 2026-10-25, confirmed by the user 2026-10-25: (a).**
     - **Evidence.** Two bars of the upper branch's zebra on `y_25_slope_oblique` looked faded
