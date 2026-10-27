@@ -62,6 +62,7 @@ struct TileResult {
     request: GradedTileRequest,
     samples: [usize; 2],
     graded: bool,
+    plain: bool,
     seams: usize,
     edges: usize,
     texels: Vec<u8>,
@@ -268,6 +269,7 @@ fn bake_level(
                 request: *request,
                 samples: payload.samples,
                 graded: payload.graded,
+                plain: payload.plain(),
                 seams: payload.seams.len(),
                 edges: payload.edges.len(),
                 texels,
@@ -462,10 +464,11 @@ impl SimulationNode {
     /// key order; Godot rebakes the tiles it holds at that level), `patches` (per list `patch_x`, `patch_z`,
     /// `token` and `tiles`, flat `(x, z)` pairs in key order), at most `max_tiles` baked tiles in
     /// `tiles` (per tile `tile_x`, `tile_z`, `level`, `step`, `token`, `samples_x`, `samples_z`,
-    /// `graded`, `seam_count`, `edge_count`, `wall_count`, the slot layers' little-endian
-    /// RGBAF bytes `texels` and `rows`, packed as `pack_slot` documents, and the wall faces'
-    /// bytes `walls`, packed as `pack_walls` documents), and `failed` (per
-    /// failure its kind, keys, `token`, `reason` and `retry`). The rest stays queued.
+    /// `graded`, `plain` (`TilePayload::plain`), `seam_count`, `edge_count`, `wall_count`, the
+    /// slot layers' little-endian RGBAF bytes `texels` and `rows`, packed as `pack_slot`
+    /// documents, and the wall faces' bytes `walls`, packed as `pack_walls` documents), and
+    /// `failed` (per failure its kind, keys, `token`, `reason` and `retry`). The rest stays
+    /// queued.
     #[func]
     pub fn poll_graded_tile_results(&mut self, max_tiles: i32) -> VarDictionary {
         self.spawn_graded_edit_selection();
@@ -514,6 +517,7 @@ impl SimulationNode {
             dict.set("samples_x", result.samples[0] as i64);
             dict.set("samples_z", result.samples[1] as i64);
             dict.set("graded", result.graded);
+            dict.set("plain", result.plain);
             dict.set("seam_count", result.seams as i64);
             dict.set("edge_count", result.edges as i64);
             dict.set("wall_count", (result.walls.len() / WALL_FACE_BYTES) as i64);

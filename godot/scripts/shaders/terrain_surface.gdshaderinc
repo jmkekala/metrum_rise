@@ -1,8 +1,10 @@
-// The terrain surface shader (TERRAIN-04, -06, -07), shared by its two variants: terrain.gdshader
-// (the base: PlaneMesh patches and base cells, no discard, so ungraded ground keeps early depth)
-// and terrain_graded.gdshader (TERRAIN_GRADED: graded cells with height, normal, exact seam mask
-// and material class). Both share the grass and paving includes, the baked world noise, the
-// patch masks, the overlays, the shoreline sampling and the cloud shadow in light().
+// The terrain surface shader (TERRAIN-04, -06, -07), shared by its variants: terrain.gdshader
+// (the base: PlaneMesh patches and base cells, no discard, so ungraded ground keeps early depth),
+// terrain_graded.gdshader (TERRAIN_GRADED: graded cells with height, normal, exact seam mask
+// and material class) and terrain_graded_plain.gdshader (TERRAIN_GRADED_PLAIN as well: graded
+// cells of plain tiles, without the mask and class, T35 (b)). All share the grass and paving
+// includes, the baked world noise, the patch masks, the overlays, the shoreline sampling and the
+// cloud shadow in light().
 uniform sampler2D heightmap;
 // Rust-baked per patch on the heightmap's texel grid (patch_masks.rs), one layer per patch slot:
 // R is local relief encoded as sqrt(relief / TERRAIN_MASK_RELIEF_MAX_M); G is nonzero wherever a
@@ -601,6 +603,16 @@ void fragment() {
 	// road top but at a conflict; ground above it stays discarded. The shader writes no DEPTH, so
 	// the graded cells keep the early depth test (T24 (a2)'s pushed depth cost 0.4-0.7 ms of GPU
 	// on the populated town, TERRAIN-07-D round 8).
+#ifdef TERRAIN_GRADED_PLAIN
+	// A plain tile (T35 (b), Rust's TilePayload::plain): no sample is covered, names a seam or
+	// carries a material word, so the mask would discard nothing and paint class 0. Without the
+	// discard the cells keep early depth and draw no fragment in the depth prepass. The sdf view
+	// reads the mask's value, the samples' bilinear one there.
+	float plain_sdf = terrain_visual_debug_mode == 12
+		? cell_plain_sdf(cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m)
+		: 1e30;
+	vec4 graded_debug = vec4(var_cell_delta, plain_sdf, float(var_cell.y), float(var_cell.x));
+#else
 	float cell_pixel_m = max(fwidth(var_cell_local_m.x), fwidth(var_cell_local_m.y));
 	CellMask cell_mask_here = cell_mask(
 		cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m);
@@ -610,6 +622,7 @@ void fragment() {
 		}
 	}
 	vec4 graded_debug = vec4(var_cell_delta, cell_mask_here.sdf, float(var_cell.y), float(var_cell.x));
+#endif
 #else
 	// Base cells name their lattice code (PlaneMesh patches -1) and no slot.
 	vec4 graded_debug = vec4(0.0, 1e30, float(var_cell.y), -1.0);
@@ -647,9 +660,15 @@ void fragment() {
 	bool paved_cdt = height_is_baked && COLOR.b < 0.5;
 	bool asphalt = COLOR.r > 0.5;
 #ifdef TERRAIN_GRADED
-	// The material class paints the site paving, with the yards' texture and lighting.
+	// The material class paints the site paving, with the yards' texture and lighting; a plain
+	// tile's is 0.
+#ifdef TERRAIN_GRADED_PLAIN
+	paved_cdt = false;
+	asphalt = false;
+#else
 	paved_cdt = cell_mask_here.class_id > 0;
 	asphalt = cell_mask_here.class_id == 1;
+#endif
 #endif
 	paved_surface = float(paved_cdt && terrain_visual_debug_mode == 0 && terrain_grass_visual_debug_mode == 0);
 	if (paved_surface > 0.5) {

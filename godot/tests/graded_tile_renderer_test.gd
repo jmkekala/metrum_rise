@@ -43,7 +43,7 @@ func _run() -> void:
 	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [24, 24, 24, 24])
 	var created := _creation_counters(graded)
 	_expect(int(created["textures_created"]) == 8, "the pools are 4 levels x (texels, rows): %s" % created)
-	_expect(int(created["multimeshes_created"]) == 6 * 4, "one cell set per patch of the 2 x 2 grid: %s" % created)
+	_expect(int(created["multimeshes_created"]) == (GradedTiles.CELL_MESHES + 1) * 4, "one cell set per patch of the 2 x 2 grid: %s" % created)
 
 	var resident := _resident_patches(host, layout, world_size, 1)
 	_mark_changed(resident)
@@ -61,6 +61,10 @@ func _run() -> void:
 	_expect(graded.patch_cells.size() > 0, "patches with graded tiles must draw cells")
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
+	# A pooled cell set binds no material, so it holds none of Godot's instance uniform slots.
+	for cells: Dictionary in graded._cells_pool:
+		for node: GeometryInstance3D in cells["nodes"]:
+			_expect(node.material_override == null, "a pooled cell set binds no material")
 
 	# A populated edit: another road beside the junction. Rust selects the commit's dirty tiles;
 	# the installed ones among them rebake and install together in one frame, each into its own
@@ -102,9 +106,9 @@ func _run() -> void:
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
 		_expect(after[name] == created[name], "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
-	# Each pooled cell set holds five cell MultiMeshes, the wall MultiMesh and the four graded
-	# levels' materials; the wall material is one, made at setup.
-	_expect((int(after["materials_created"]) - 1) * 6 == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
+	# Each pooled cell set holds nine cell MultiMeshes, the wall MultiMesh and the four graded
+	# levels' materials with their plain forms; the wall material is one, made at setup.
+	_expect((int(after["materials_created"]) - 1) * (GradedTiles.CELL_MESHES + 1) == int(after["multimeshes_created"]) * 8, "cell materials are pooled with their cells: %s" % after)
 	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d, edit %d tiles in %.3f ms" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
@@ -400,6 +404,7 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	# wrote stands for it.
 	var counts: Array[int] = cells["counts"]
 	for index in nodes.size():
+		_expect((nodes[index] as GeometryInstance3D).material_override != null, "a set drawing a patch binds its materials")
 		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
 		var written: Array = (cells["custom"][index] as Array).slice(0, counts[index])
 		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
@@ -412,8 +417,9 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 			_expect(data.r < 2048.0 and data.b < 2048.0 and data.a < 2048.0, "custom channels are exact as half floats")
 			var own := codes & 7
 			var entry: Dictionary = graded.installed.get(tile, {})
-			if index < 4:
+			if index != GradedTiles.CELL_BASE:
 				_expect(not entry.is_empty() and int(data.g) == int(entry["slot"]), "a graded instance names its slot")
+				_expect(not entry.is_empty() and GradedTiles.mesh_level(index) == int(entry["level"]) and (index >= GradedTiles.CELL_PLAIN) == bool(entry["plain"]), "a graded instance draws in its level's mesh, plain or masked")
 			else:
 				_expect(entry.is_empty() and int(data.g) == -1, "a base cell has no slot")
 			for side in 4:

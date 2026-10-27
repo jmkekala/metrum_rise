@@ -4,8 +4,9 @@
 ## graded 64 m tiles of the resident patches by camera distance, the slot pools (per level one
 ## Texture2DArray of RGBAF layers for the texels and one for the rows, prewarmed), in-place
 ## uploads from one pooled Image per level, and per patch one MultiMesh per cell mesh (the base
-## cells and GL0-GL3) whose instances carry the tile's place in the patch, slot and stitching
-## codes, each graded level with its own material binding that level's pools. It does no
+## cells, GL0-GL3, and GL0-GL3 again for plain tiles, which draw without the seam mask: T35 (b))
+## whose instances carry the tile's place in the patch, slot and stitching codes, each graded
+## level with its own materials binding that level's pools. It does no
 ## geometry: positions, stitching, clamping and the mask are terrain_cells.gdshaderinc's, the
 ## values Rust's. Nothing is created per edit; the counters in get_pool_counters() prove it.
 ## An edit (item 5) dirties the tiles Rust selects for it at the level each is held at: they
@@ -20,6 +21,7 @@ extends RefCounted
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
+const PLAIN_SHADER := preload("res://assets/materials/terrain_graded_plain.gdshader")
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const TILE_M := 64.0
 # Level distances with their hysteresis (T5, TD10): GL0 to 64 m, GL1 to 128 m, GL2 to 2 km,
@@ -38,8 +40,12 @@ const PATCH_TILE_ROW := 32
 const REQUESTS_PER_FRAME := 24
 const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
-const CELL_MESHES := 5
+# The cell meshes of a patch: GL0-GL3 (0-3), the base cells (CELL_BASE), and GL0-GL3 of plain
+# tiles (CELL_PLAIN + level), whose samples are neither covered, named by a seam nor painted
+# (Rust's TilePayload::plain), drawn by the graded variant without the mask (T35 (b)).
+const CELL_MESHES := 9
 const CELL_BASE := 4
+const CELL_PLAIN := 5
 # Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
 # Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
 # patch with more draws the first ones and counts and logs the rest.
@@ -60,7 +66,7 @@ var lattice_anchor_hm := Vector2i.ZERO
 var levels: Array[Dictionary] = []
 # Per level: texels/rows Texture2DArray, the pooled upload Images, the free slots.
 var pools: Array[Dictionary] = []
-# Tile key -> {code, level, step, slot, token}: what each installed tile shows.
+# Tile key -> {code, level, step, slot, token, plain, walls}: what each installed tile shows.
 var installed: Dictionary = {}
 # "x,z,level,step" -> token of a bake in flight.
 var requested: Dictionary = {}
@@ -81,8 +87,8 @@ var patch_lists_requested: Dictionary = {}
 # is counted and logged once instead of being re-asked every frame (round 5's populated save).
 var refused: Dictionary = {}
 var patch_lists_refused: Dictionary = {}
-# Patch key -> {nodes: Array[MultiMeshInstance3D], materials: Array[ShaderMaterial] (GL0-GL3),
-# watched: Array}.
+# Patch key -> {nodes: Array[MultiMeshInstance3D], materials: Array[ShaderMaterial] (GL0-GL3, then
+# their plain forms), watched: Array}.
 var patch_cells: Dictionary = {}
 var _cells_pool: Array[Dictionary] = []
 var _cells_per_patch := 81
@@ -539,7 +545,8 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	if not current.is_empty() and int(current["level"]) != code:
 		_free_slot(current)
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
-	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls}
+	var plain := bool(tile["plain"])
+	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "plain": plain, "walls": walls}
 	# The installed level moves the hysteresis: the tile is levelled again at once. A bake of an
 	# older level or token (the camera moved, an edit dirtied it) still wants one.
 	var want: Dictionary = _desired.get(key, {})
@@ -547,9 +554,10 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 		_level_tile(key, want)
 		if want["level"] != Vector2i(code, step) or int(want["token"]) != token:
 			_wanted[key] = true
-	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites its own
-	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
-	if current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code:
+	# Rewritten in place, the tile keeps its instances; a new slot, lattice or plain form rewrites
+	# its own instances and its neighbours' sides, and changed faces the walls of the patches that
+	# draw them.
+	if current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code or bool(current["plain"]) != plain:
 		_cell_changed(key)
 		# A resident patch meeting the tile without cells yet is built whole.
 		for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
@@ -925,10 +933,19 @@ func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, p
 			return max(own, _cell_code(neighbour, int(resident_patches[key]["step"])))
 	return own
 
-# The cell MultiMesh a tile draws in: its installed level's, else the base cells'.
+# The cell MultiMesh a tile draws in: its installed level's (the plain one for a plain tile), else
+# the base cells'.
 func _cell_mesh(tile: Vector2i) -> int:
 	var entry: Dictionary = installed.get(tile, {})
-	return int(entry["level"]) if not entry.is_empty() else CELL_BASE
+	if entry.is_empty():
+		return CELL_BASE
+	return int(entry["level"]) + (CELL_PLAIN if entry["plain"] else 0)
+
+## The graded level (0-3) a cell mesh draws, -1 for the base cells.
+static func mesh_level(index: int) -> int:
+	if index == CELL_BASE:
+		return -1
+	return index - CELL_PLAIN if index > CELL_BASE else index
 
 # A tile's instance custom data in a patch's cells, for the patch's rewrite and the per-tile
 # updates alike: its place in the patch (column + PATCH_TILE_ROW * row from `first`, the tile
@@ -968,7 +985,10 @@ func _update_cell_tiles(resident_patches: Dictionary) -> void:
 	_dirty_cell_tiles.clear()
 	for key: Vector2i in touched.keys():
 		var counts: Array[int] = patch_cells[key]["counts"]
-		if counts[0] + counts[1] + counts[2] + counts[3] == 0:
+		var graded := 0
+		for index in CELL_MESHES:
+			graded += counts[index] if index != CELL_BASE else 0
+		if graded == 0:
 			release_patch(key, resident_patches[key]["node"])
 
 # One tile's instance in a patch's cells (T26): its custom data rewritten in place while its
@@ -1068,7 +1088,8 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		var multimesh := node.multimesh
 		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
 		# vertices onto its sides.
-		var code := index if index < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
+		var level := mesh_level(index)
+		var code := base_code(step) if level < 0 else (level if level < 3 else base_code(2))
 		multimesh.mesh = _meshes[min(code, 6)]
 		multimesh.visible_instance_count = counts[index]
 		node.visible = counts[index] > 0
@@ -1147,6 +1168,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 		if node.get_parent() != null:
 			node.get_parent().remove_child(node)
 	cells["node_parent"] = null
+	_bind_materials(cells, false)
 	_cells_pool.append(cells)
 
 # A pooled cell set, bounded to the patch's culling box. The pool holds one per patch of the
@@ -1157,10 +1179,29 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.multimesh.custom_aabb = aabb
 		node.custom_aabb = aabb
+	_bind_materials(cells, true)
 	return cells
 
-# One patch's cell resources: five cell MultiMeshes (GL0-GL3 and the base cells), the four
-# graded levels' materials and the wall MultiMesh.
+# A set's graded materials are bound to its nodes only while it draws a patch (the base cells take
+# the patch's material in _rebuild_patch_cells): Godot reserves a node's instance uniforms, 16 of
+# its global buffer's slots, while the node's material declares them, so the pooled sets hold none
+# (prewarmed bound, Kuopio's 1,296 sets held 5,184 nodes' slots, and the plain forms would have
+# doubled it, T35 (b)). No material is created: the set's own are bound.
+func _bind_materials(cells: Dictionary, bound: bool) -> void:
+	var nodes: Array = cells["nodes"]
+	var materials: Array[ShaderMaterial] = cells["materials"]
+	var at := 0
+	for index in CELL_MESHES:
+		var node: GeometryInstance3D = nodes[index]
+		if index == CELL_BASE:
+			if not bound:
+				node.material_override = null
+			continue
+		node.material_override = materials[at] if bound else null
+		at += 1
+
+# One patch's cell resources: nine cell MultiMeshes (GL0-GL3, the base cells, GL0-GL3 plain), the
+# four graded levels' materials and their plain forms, and the wall MultiMesh.
 func _new_cells() -> Dictionary:
 	var nodes: Array = []
 	# New instances start with a zero transform; the shader places the vertices, so every
@@ -1182,17 +1223,19 @@ func _new_cells() -> Dictionary:
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		node.visible = false
 		nodes.append(node)
-	# One material per graded level, so a draw binds only its level's two pool samplers.
+	# One material per graded level and form, so a draw binds only its level's two pool samplers.
 	var materials: Array[ShaderMaterial] = []
-	for code in pools.size():
+	for index in CELL_MESHES:
+		var code := mesh_level(index)
+		if code < 0:
+			continue
 		var material := ShaderMaterial.new()
-		material.shader = GRADED_SHADER
+		material.shader = PLAIN_SHADER if index >= CELL_PLAIN else GRADED_SHADER
 		counters["materials_created"] += 1
 		material.set_shader_parameter("graded_texels", pools[code]["texels"])
 		material.set_shader_parameter("graded_rows", pools[code]["rows"])
 		material.set_shader_parameter("graded_seam_capacity", int(levels[code]["seam_capacity"]))
 		material.set_shader_parameter("graded_edge_capacity", int(levels[code]["edge_capacity"]))
-		(nodes[code] as GeometryInstance3D).material_override = material
 		materials.append(material)
 	var wall_multimesh := MultiMesh.new()
 	wall_multimesh.transform_format = MultiMesh.TRANSFORM_3D
@@ -1277,6 +1320,10 @@ func get_pool_counters() -> Dictionary:
 		bytes += int(pool["slots"]) * (int(pool["side"]) * int(pool["side"]) + int(pool["row_texels"])) * 16
 	out["pool_bytes"] = bytes
 	out["installed"] = installed.size()
+	var plain := 0
+	for entry: Dictionary in installed.values():
+		plain += 1 if entry["plain"] else 0
+	out["installed_plain"] = plain
 	out["patches_with_cells"] = patch_cells.size()
 	out["cell_sets_free"] = _cells_pool.size()
 	out["refused"] = refused.size() + patch_lists_refused.size()

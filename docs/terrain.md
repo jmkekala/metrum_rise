@@ -3716,6 +3716,17 @@ in every pass that runs the fragment shader (depth prepass, shadows), so cut-awa
 shadow on the road. Cost: at most four segment distances per fragment in the band; its cost at full
 screen is an acceptance measurement.
 
+**Bridge mouths** (`TERRAIN-07-D` round 9). Coverage ends at a bridge's mouth row, which is a
+wall seam, not a road seam, so the samples there named only the road seams and the cut edge across
+the mouth fell on the bilinear zero of their clamped distances, up to a metre past the row on the
+bridge's side, where the ground then stopped short of the abutment wall (the `bridge_t`
+`under_bridge` dashed line). The bake names the row too: a lattice point within the band of a
+bridge mouth row that is nearer than its named seam (the nearest-seam order, rows after the
+window's and the bore seams) names the row, its `sdf` that distance, negative where a road covers
+it (`name_mouth_rows`, on the final heights; only the mask moves). The rows' end heights are the
+road top along the row, for the outer-band overlap. A tunnel's portal row stays unnamed: past it
+the opening's cut is the mask's, closed on the bore seams.
+
 **Outer-band overlap** ([T24](#terrain-07-open-questions) (a), decided by the user 2026-10-26).
 The road and the terrain reach the screen through different `f32` frames (the road chunk's, the
 patch's and the tile's), so the same exact edge rounds apart by about 1e-4 m at 1 km offsets, and a
@@ -3881,8 +3892,8 @@ km.
   round 4; Rust had kept the exact cut's refusal of plain payloads for road-owned patches, so no
   patch under a road installed).
 - **Cells.** A patch with graded tiles renders its cells, each tile clipped to the patch, as
-  instances: one `MultiMesh` per patch and mesh, at most five (the base cell mesh and the four
-  levels). Instance data carries the tile's place in the patch, the slot, the level and each side's
+  instances: one `MultiMesh` per patch and mesh, at most nine (the base cell mesh, the four
+  levels, and the four levels again for plain tiles: [plain cells](#godot-tile-renderer)). Instance data carries the tile's place in the patch, the slot, the level and each side's
   neighbour level, every channel an integer below 2,048: the Compatibility renderer keeps instance
   custom data as half floats (`TERRAIN-07-D` round 2). Vertices clamp to the patch rectangle, which
   is a lattice line of every level.
@@ -3936,7 +3947,7 @@ km.
   hysteresis moved). Exact: every desired tile has its distance's level in every frame (round 7
   re-levelled every desired tile per 8 m of travel, so a level could switch up to 8 m late), at
   `O(tiles due + buckets passed)` per frame instead of `O(desired)`.
-- **Cells per tile** (T26 (a), round 8). Each pooled cell set records what its five
+- **Cells per tile** (T26 (a), round 8). Each pooled cell set records what its nine
   `MultiMesh`es hold: per mesh the instance count and each instance's custom data and tile, per
   tile place of the patch its (mesh, instance). A tile installed at a new slot or lattice, or
   evicted, rewrites its own instance in every patch drawing cells that holds it (in place while
@@ -3961,7 +3972,10 @@ km.
   `MultiMesh`es for patches newly drawing cells). Each cell `MultiMesh` holds the most tiles a
   patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
-  empty world is [T25](#terrain-07-open-questions).
+  empty world is [T25](#terrain-07-open-questions). A set's eight graded materials are bound to
+  its nodes only while it draws a patch (acquired from the pool, unbound on release; the base
+  cells take the patch's material at each rewrite): binding a made material creates nothing, and a
+  pooled node with no material holds no instance uniform slot (`TERRAIN-07-D` round 9).
 - **Instance uniforms.** The cells place themselves from instance uniforms (`cell_mode`, the patch
   rectangle, the lattice anchor), and Godot holds every instance's instance uniforms in one global
   buffer of `rendering/limits/global_shader_variables/buffer_size` vec4 slots, 16 per instance; an
@@ -3970,13 +3984,28 @@ km.
   4,096 instances, and the game's trees had passed it before them, [`WATER-05`](roadmap.md#validated-bugs)).
   `project.godot` sets 1,048,576 slots (65,536 instances, 16 MB): twice the most a session asked
   for (the round 7 matrix's saved sessions refused 26,581 allocations past the 4,096 with the trees), the `T7` rule.
-- **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
+- **Shader.** One source with three variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
   lattice point), the normal from today's base gradient plus the central difference of `delta`
-  over the apron, the exact mask and the material class. Both share the grass and paving includes,
+  over the apron, the exact mask and the material class. The plain variant
+  (`terrain_graded_plain.gdshader`, `TERRAIN_GRADED_PLAIN`) is the graded variant without the
+  mask, its discard and the class, for the plain cells below; its `sdf` debug view reads the
+  samples' bilinear value, which is the mask's on a plain tile. All share the grass and paving includes,
   the baked world noise (`TERRAIN-04`), the patch masks (`TERRAIN-06`), the overlays, the shoreline
   sampling of the water texture and the cloud shadow in `light()`.
+- **Plain cells** ([T35](#terrain-07-open-questions) (b), `TERRAIN-07-D` round 9). A tile whose
+  samples are none covered, none named by a seam and none painted (no material word:
+  `TilePayload::plain`, `O(texels)` in the bake, reported as `plain` in the poll) draws in its
+  level's plain `MultiMesh` with the plain variant. It renders exactly as the graded variant
+  would: every fragment's `sdf` is the bilinear one of samples at or above zero (an unnamed
+  sample lies at least the band, three spacings, from every seam, so no road passes between
+  samples) and its class 0, so the mask discards and paints nothing there. Without the discard
+  the plain cells keep early depth and draw no fragment in the depth prepass. A tile rebaked
+  plain or not moves between the two meshes like a level change (`_update_tile_cell`).
+  `plain_tiles_are_never_masked` ports the mask over every plain tile of the fixtures and a high
+  fill's tiles past its tile line; `graded_cells_shader_test.gd` renders a plain slot in both
+  variants and compares the pixels.
 - **Walls.** A tile's wall faces (conflict walls, abutments, headwalls, the portal opening's
   sides) reach Godot with its slot bytes, eight little-endian `f32` per face (`pack_walls`:
   `a`, `b`, the bottoms and the tops). Each pooled cell set holds one more `MultiMesh`, of one

@@ -206,6 +206,19 @@ pub struct TilePayload {
     pub stats: BakeStats,
 }
 
+impl TilePayload {
+    /// Whether the cells draw the tile exactly without the seam mask and the material class
+    /// (`T35` (b)): no sample is covered, names a seam or carries a material word. Every
+    /// fragment's signed distance is then the bilinear one of samples at or above zero (an
+    /// unnamed sample lies at least the band, three spacings, from every seam, so no road
+    /// passes between samples), so the mask discards nothing, and its class is 0. `O(texels)`.
+    pub fn plain(&self) -> bool {
+        self.texels
+            .iter()
+            .all(|&[_, sdf, seam, material]| sdf >= 0.0 && seam < 0.0 && material == 0.0)
+    }
+}
+
 /// Why a tile cannot be represented (`T7`): nothing is dropped silently.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BakeError {
@@ -480,6 +493,75 @@ fn continue_ground_at_mouths(
     }
 }
 
+// A texel's named seam: the window's seams (`0..seams.len()`), then the bore seams, then the wall
+// seams.
+fn named_seam<'a>(
+    (seams, bores, walls): (&'a [Seam], &'a [Seam], &'a [Seam]),
+    index: usize,
+) -> &'a Seam {
+    if index < seams.len() {
+        &seams[index]
+    } else if index < seams.len() + bores.len() {
+        &bores[index - seams.len()]
+    } else {
+        &walls[index - seams.len() - bores.len()]
+    }
+}
+
+// Names the bridge mouth rows (the wall seams with an abutment bottom) in the mask
+// (`TERRAIN-07-D` round 9): a lattice point within the band of a row that is nearer than its
+// named seam, by the nearest order with the rows after the window and bore seams, names that row,
+// its `sdf` the distance, negative where a road covers it. Coverage ends at the row, which is no
+// road seam, so before the cut edge across a bridge mouth fell on the bilinear zero of the road
+// seams' clamped distances, up to a metre past the row on the bridge's side, and the ground
+// stopped short of the abutment wall there (the `bridge_t` `under_bridge` dashed line). Only the
+// mask moves: heights are final. Returns the points named. `O(points within the band of the rows
+// x rows)`.
+fn name_mouth_rows(
+    (seams, bores, walls, bottoms): (&[Seam], &[Seam], &[Seam], &[Option<[f64; 2]>]),
+    (xs, zs): (&[f64], &[f64]),
+    road: &[f32],
+    band: f64,
+    nearest: &mut [u32],
+    texels: &mut [[f32; 4]],
+) -> u32 {
+    let span = |lines: &[f64], lo: f64, hi: f64| {
+        lines.partition_point(|&v| v < lo - band)..lines.partition_point(|&v| v <= hi + band)
+    };
+    let first_wall = (seams.len() + bores.len()) as u32;
+    let mut named = 0;
+    for (k, (row, bottom)) in walls.iter().zip(bottoms).enumerate() {
+        if bottom.is_none() {
+            continue;
+        }
+        let code = first_wall + k as u32;
+        let area = row.box_xz();
+        for j in span(zs, area[1], area[3]) {
+            for i in span(xs, area[0], area[2]) {
+                let index = j * xs.len() + i;
+                let (x, z) = (xs[i], zs[j]);
+                let at = row.at(x, z);
+                if at.distance >= band {
+                    continue;
+                }
+                let current = nearest[index];
+                let nearer = current == NO_SEAM || {
+                    let other = named_seam((seams, bores, walls), current as usize).at(x, z);
+                    at.nearer_than(code, &other, current)
+                };
+                if !nearer {
+                    continue;
+                }
+                named += u32::from(current == NO_SEAM || current < first_wall);
+                nearest[index] = code;
+                let covered = road[index] > f32::NEG_INFINITY;
+                texels[index][1] = if covered { -at.distance } else { at.distance } as f32;
+            }
+        }
+    }
+    named
+}
+
 // Bakes one tile with `evaluation`.
 fn bake_tile(
     inputs: &Inputs<'_, impl SiteSource>,
@@ -736,14 +818,25 @@ fn bake_tile(
         );
         graded |= stats.portal_cut + stats.bore_named > 0;
     }
+    // The bridge mouths' rows in the mask, on the final names.
+    if wall_bottoms.iter().any(Option::is_some) {
+        let named = name_mouth_rows(
+            (seams, portals.bores(), wall_seams, wall_bottoms),
+            (xs, zs),
+            road,
+            band,
+            nearest,
+            &mut out.texels,
+        );
+        graded |= named > 0;
+    }
 
-    // The seam row: the named road seams in key order, then the named bore seams.
-    let seam_at = |index: usize| match index.checked_sub(seams.len()) {
-        Some(bore) => &portals.bores()[bore],
-        None => &seams[index],
-    };
+    // The seam row: the named road seams in key order, then the named bore seams, then the
+    // named bridge mouth rows.
+    let bores = portals.bores();
+    let seam_at = |index: usize| named_seam((&seams[..], bores, &wall_seams[..]), index);
     row_of.clear();
-    row_of.resize(seams.len() + portals.bores().len(), NO_SEAM);
+    row_of.resize(seams.len() + bores.len() + wall_seams.len(), NO_SEAM);
     for &named in nearest.iter() {
         if named != NO_SEAM {
             row_of[named as usize] = 0;
