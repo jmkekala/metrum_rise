@@ -388,6 +388,16 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
+`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 5 adds direct indexed grounded-piece
+walks, one coverage-triangle gather per query window, the single world-surface ray for Godot
+inspection, and GPU grass exclusion from the graded `sdf` and class. The matched T37 and landing
+measurements run against `road` `d456913e`; the final full-suite rerun remains. The fresh T37
+C/F/F/C still misses at 100k, 0.895 / 1.340 ms (+0.445), with all products equal; T37 stays open,
+not relaxed. The landing's preview and 0/10k/30k/100k commit products match in every C/F/F/C run.
+The Kuopio digest remains record-for-record equal to round 3 (6,460 plants).
+`PERF-09` owns the control's frame-budget regression. T40 remains pending the user's review. Evidence and acceptance:
+[`terrain.md`](terrain.md#terrain-07-f-record).
+
 | ID         | Kind        | Status        | Priority | Owner doc                                        | Problem                                                                                                                                                                                   | Exit criteria                                                                                                              |
 | ------------| -------------| ---------------| ----------| --------------------------------------------------| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| ----------------------------------------------------------------------------------------------------------------------------|
 | `NET-02` | `hardening` | `done` | `P1` | [`entrance_and_exit.md`](entrance_and_exit.md#cch-routing-performance-track-net-02net-05) | CCH queries dominate the measured ECON-13 100k routing cost; turn checks rescan lane-connection maps and query arcs have scattered storage. | Cache exact vehicle turns, flatten upward adjacency and separate arc costs without changing ordering, arithmetic or ties. Bit-identical cost/path results on deterministic randomized populated-fixture pairs, including whitelists and FOOT-only directions; matched 10k/100k query timings; byte-identical ECON-13 records and growth reports. **Done 2026-10-11:** cost/path query time falls 35–38% at 10k/100k; four matched 10k economy pairs reduce hour 35.50 → 25.13 ms and day 9.22 → 9.01 ms (p = 0.0286 each). Query reports, economic records and five growth reports are identical; 2,298 library and four growth tests pass. Full 100k hour/day scaling remains ECON-13-B. |

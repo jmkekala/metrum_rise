@@ -101,6 +101,7 @@ var patch_lists_refused: Dictionary = {}
 # Patch key -> {root: Node3D (the set's nodes), nodes: Array[MultiMeshInstance3D],
 # materials: Array[ShaderMaterial] (GL0-GL3), watched: Array}.
 var patch_cells: Dictionary = {}
+var _cell_mask_revision := 0
 var _cells_pool: Array[Dictionary] = []
 var _cells_per_patch := 81
 var _meshes: Dictionary = {}
@@ -1310,6 +1311,8 @@ func _update_cell_tiles(resident_patches: Dictionary) -> void:
 		for key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
 			if _dirty_patches.has(key) or not patch_cells.has(key) or not resident_patches.has(key):
 				continue
+			_cell_mask_revision += 1
+			patch_cells[key]["mask_revision"] = _cell_mask_revision
 			if _update_tile_cell(patch_cells[key], tile, resident_patches[key], resident_patches):
 				touched[key] = true
 	_dirty_cell_tiles.clear()
@@ -1399,6 +1402,8 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 		cells = _acquire_cells(patch)
 		patch_cells[key] = cells
 	_park(cells, patch["node"])
+	_cell_mask_revision += 1
+	cells["mask_revision"] = _cell_mask_revision
 	cells["rect"] = patch["rect"]
 	var step := int(patch["step"])
 	cells["step"] = step

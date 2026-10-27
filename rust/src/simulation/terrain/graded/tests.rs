@@ -894,6 +894,28 @@ fn queries_answer_from_the_baked_lattice() {
 }
 
 #[test]
+fn a_gathered_quiet_surface_equals_the_bilinear_base_bitwise() {
+    let terrain = terrain(|x, z| 0.013 * x * z + 0.17 * x - 0.09 * z);
+    let roadbed = RoadbedSystem::new(64.0);
+    let surface = GradedSurface {
+        terrain: &terrain,
+        roadbed: &roadbed,
+        sites: &NoSites,
+    };
+    let mut gathered = QueryScratch::default();
+    surface.gather_near(0.0, 0.0, 2.5, &mut gathered);
+    for (x, z) in [(0.0, 0.0), (2.5, -2.5), (-2.4, 1.3), (0.7, 2.5)] {
+        assert_eq!(
+            surface.surface_height_near(x, z, &mut gathered).to_bits(),
+            surface
+                .surface_height_at(x, z, &mut QueryScratch::default())
+                .to_bits(),
+            "({x}, {z})"
+        );
+    }
+}
+
+#[test]
 fn road_changes_select_every_tile_they_alter() {
     for (name, graph, terrain) in conflict_fixtures() {
         let roadbed = compiled(&graph);

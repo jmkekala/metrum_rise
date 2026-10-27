@@ -635,7 +635,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 	var camera := get_viewport().get_camera_3d()
 	if not camera:
 		return
-	var pos = simulation_node.intersect_terrain(
+	var pos = simulation_node.intersect_world_surface(
 		camera.project_ray_origin(mouse_pos),
 		camera.project_ray_normal(mouse_pos)
 	)

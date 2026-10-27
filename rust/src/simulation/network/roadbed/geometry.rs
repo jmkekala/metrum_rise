@@ -49,6 +49,7 @@ impl RoadSurfaceTriangleQueryIndex {
     }
 
     /// Samples the highest ground triangle in the grid cell containing `point`.
+    #[cfg(test)]
     pub(crate) fn sample_ground_height(&self, point: RoadVec2) -> Option<f32> {
         let mut height: Option<f32> = None;
         for &item in self.grid.cell_items(point) {

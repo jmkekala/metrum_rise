@@ -17,15 +17,17 @@
 //! evaluation over every seam within the cap. Allocation-free once the scratch is warm.
 
 use super::coverage::{covered_height_in, gather as gather_coverage, mark_covered_cells};
-use super::grade::{CAP_M, may_bind, may_lift};
+use super::grade::{CAP_M, continues_ground, may_bind, may_lift};
 use super::portal::{PortalWindow, cuts};
 use super::prune::box_distance;
-use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
+use super::sample::{BaseGrid, BaseWindow, Listed, Value, evaluate};
 use super::seams::{Seam, road_seam};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::tile::{Level, TILE_M, grown};
 use crate::assets::SiteSurfaceMaterial;
-use crate::simulation::network::roadbed::{GroundedPieceScratch, PieceId, RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::{
+    GroundedPieceScratch, PieceId, RoadVec3, RoadbedSystem, WallSegment,
+};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
@@ -75,6 +77,8 @@ pub struct QueryScratch {
     grounded: GroundedPieceScratch,
     coverage: Vec<[RoadVec3; 3]>,
     pieces: Vec<PieceId>,
+    wall_segments: Vec<WallSegment>,
+    walls: Vec<Seam>,
     sites: SiteBuffer,
     portals: PortalWindow,
     // Test reference: every gathered seam listed, as before the pruning.
@@ -126,6 +130,13 @@ impl GradedSurface<'_> {
     pub fn ground_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(0), scratch);
+        if self.quiet(scratch) {
+            let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
+            self.prepare(grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M), scratch);
+            if self.quiet(scratch) {
+                return scratch.base.at(x, z);
+            }
+        }
         self.ground_prepared(&cell, scratch)
     }
 
@@ -143,8 +154,15 @@ impl GradedSurface<'_> {
     /// points, such as a vehicle's contacts. The window is wider than one point's, so it lists
     /// more seams; every value stays exact.
     pub fn gather_near(&self, x: f64, z: f64, reach: f64, scratch: &mut QueryScratch) {
-        // A point's `GL0` cell lies within one spacing of it.
-        let rect = grown([x, z, x, z], reach.max(0.0) + GL0_M);
+        // A seam anywhere in a rendered tile switches that tile from bilinear base to its `GL0`
+        // lattice. Gather the complete tiles the points may occupy so `_near` makes the same
+        // tile-level choice as an independent point query.
+        let reach = reach.max(0.0);
+        let min_x = ((x - reach) / TILE_M).floor() * TILE_M;
+        let min_z = ((z - reach) / TILE_M).floor() * TILE_M;
+        let max_x = ((x + reach) / TILE_M).floor() * TILE_M + TILE_M;
+        let max_z = ((z + reach) / TILE_M).floor() * TILE_M + TILE_M;
+        let rect = grown([min_x, min_z, max_x, max_z], GL0_M);
         self.prepare(rect, scratch);
         self.prepare_portals(rect, scratch);
     }
@@ -155,6 +173,11 @@ impl GradedSurface<'_> {
         let cell = Cell::at(x, z);
         if !scratch.rect.is_some_and(|rect| holds(rect, cell.rect(0))) {
             self.prepare(cell.rect(0), scratch);
+        }
+        let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
+        let tile = grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M);
+        if self.quiet(scratch) || self.quiet_for(tile, x, z, scratch) {
+            return scratch.base.at(x, z);
         }
         self.ground_prepared(&cell, scratch)
     }
@@ -199,11 +222,20 @@ impl GradedSurface<'_> {
     pub fn normal_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> [f64; 3] {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(1), scratch);
+        let cell_m = scratch.base.grid().cell_m;
         let mut normal = [0.0; 3];
         for (weight, [i, j]) in cell.weights().into_iter().zip(cell.vertices()) {
-            let dx = self.vertex([i + 1, j], scratch) - self.vertex([i - 1, j], scratch);
-            let dz = self.vertex([i, j + 1], scratch) - self.vertex([i, j - 1], scratch);
-            let vertex = normalized([-dx / (2.0 * GL0_M), 1.0, -dz / (2.0 * GL0_M)]);
+            let (px, pz) = (i as f64 * GL0_M, j as f64 * GL0_M);
+            let base = &scratch.base;
+            let base_dx = (base.at(px + cell_m, pz) - base.at(px - cell_m, pz)) / (2.0 * cell_m);
+            let base_dz = (base.at(px, pz + cell_m) - base.at(px, pz - cell_m)) / (2.0 * cell_m);
+            let dx = base_dx
+                + (self.delta([i + 1, j], scratch) - self.delta([i - 1, j], scratch))
+                    / (2.0 * GL0_M);
+            let dz = base_dz
+                + (self.delta([i, j + 1], scratch) - self.delta([i, j - 1], scratch))
+                    / (2.0 * GL0_M);
+            let vertex = normalized([-dx, 1.0, -dz]);
             for axis in 0..3 {
                 normal[axis] += weight * vertex[axis];
             }
@@ -385,6 +417,21 @@ impl GradedSurface<'_> {
             },
         );
         listed[roads..].sort_unstable_by_key(Seam::key);
+        self.roadbed
+            .grounded_pieces_in_bounds(window, &mut scratch.pieces);
+        self.roadbed.wall_seams_in_bounds(
+            window,
+            &scratch.pieces,
+            &mut scratch.wall_segments,
+        );
+        scratch.walls.clear();
+        scratch.walls.extend(scratch.wall_segments.iter().map(|wall| {
+            let [a, b] = wall.points;
+            Seam {
+                kind: super::seams::SeamKind::Wall,
+                ..road_seam(a, b)
+            }
+        }));
         scratch.rect = Some(rect);
         scratch.rest_ready = false;
         scratch.base_range = base;
@@ -442,6 +489,22 @@ impl GradedSurface<'_> {
         scratch.window.is_empty() && scratch.rest.is_empty()
     }
 
+    // Whether the seams already gathered for a wider `_near` window leave this point's local
+    // rectangle quiet. This preserves the bilinear-base shortcut of [`Self::ground_height_at`]
+    // without another piece/site gather for the common all-quiet case.
+    fn quiet_for(&self, rect: [f64; 4], x: f64, z: f64, scratch: &mut QueryScratch) -> bool {
+        self.gather_rest(scratch);
+        if scratch.sites.pad_at(x, z) != NO_SITE {
+            return false;
+        }
+        let window = grown(rect, CAP_M + WINDOW_PAD_M);
+        scratch
+            .window
+            .iter()
+            .chain(scratch.rest.iter().map(|(seam, _)| seam))
+            .all(|seam| box_distance(seam.box_xz(), window) > 0.0)
+    }
+
     // Gathers the portal parts around `rect`, for the opening's test (T22 5 (a)).
     fn prepare_portals(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
@@ -464,13 +527,14 @@ impl GradedSurface<'_> {
         road: Option<f32>,
         scratch: &mut QueryScratch,
     ) -> f64 {
-        let seams = &scratch.window;
+        let (mut first, mut pad) = self.value(x, z, base, road, scratch);
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
-        let all = (0..seams.len() as u32).map(Listed::unbounded);
-        let site = scratch.sites.pad_at(x, z);
-        let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
-        let first = evaluate(x, z, base, road, pad, seams, all, band);
-        if road.is_some() || pad.is_some() || first.height >= base {
+        let continued = road.is_some()
+            && continues_ground(&scratch.walls, x, z, first.nearest_distance, band);
+        if continued {
+            (first, pad) = self.value(x, z, base, None, scratch);
+        }
+        if (road.is_some() && !continued) || pad.is_some() || first.height >= base {
             return first.height;
         }
         self.gather_rest(scratch);
@@ -491,14 +555,36 @@ impl GradedSurface<'_> {
         height
     }
 
+    // The first-pass value at one point and whether a site pad holds it.
+    fn value(
+        &self,
+        x: f64,
+        z: f64,
+        base: f64,
+        road: Option<f32>,
+        scratch: &QueryScratch,
+    ) -> (Value, Option<f64>) {
+        let seams = &scratch.window;
+        let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
+        let all = (0..seams.len() as u32).map(Listed::unbounded);
+        let site = scratch.sites.pad_at(x, z);
+        let pad = (site != NO_SITE).then(|| scratch.sites.height(site));
+        (evaluate(x, z, base, road, pad, seams, all, band), pad)
+    }
+
     // The rendered height of a `GL0` lattice point: the base plus the `f32` delta the bake
     // packs there.
     fn vertex(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
+        scratch.base.at(x, z) + self.delta([i, j], scratch)
+    }
+
+    // The `f32` delta the bake packs at one `GL0` lattice point.
+    fn delta(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
+        let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
         let road = covered_height_in(&scratch.coverage, x, z);
         let base = scratch.base.at(x, z);
-        let delta = (self.evaluate(x, z, base, road, scratch) - base) as f32;
-        base + f64::from(delta)
+        f64::from((self.evaluate(x, z, base, road, scratch) - base) as f32)
     }
 
     // First `t` at which the ray meets the ground before `limit`: per 64 m tile, the base

@@ -8,6 +8,7 @@ extends Node3D
 const GameSettings := preload("res://scripts/core/game_settings.gd")
 const GRASS_SHADER := preload("res://scripts/shaders/grass.gdshader")
 const MASK_SHADER := preload("res://scripts/shaders/grass_surface_mask.gdshader")
+const GRADED_MASK_SHADER := preload("res://scripts/shaders/grass_graded_mask.gdshader")
 const CELL_M := 0.8
 # Farthest a clump draws (grain; meadow fades out by 60 m, see grass.gdshader). The vertex shader
 # runs for every cell of the window whether its clump draws or not, so the window is no larger
@@ -45,6 +46,10 @@ var _draws: Array[MultiMeshInstance3D] = []
 var _near_draws: Array[MultiMeshInstance3D] = []
 var _masks: Array[SubViewport] = []
 var _mask_meshes: Array[MeshInstance3D] = []
+# Per mask slot, mirrors of the graded renderer's five cell MultiMeshes. They share the cell
+# buffers and bind only the grading textures needed to classify grass roots.
+var _graded_mask_cells: Array[Array] = []
+var _graded_mask_revisions: Array[int] = []
 var _bindings: Array[Dictionary] = []
 var _keys: Array[Vector2i] = []
 
@@ -64,6 +69,7 @@ func _ready() -> void:
 		near_material.set_shader_parameter("near_fade_m", NEAR_FADE_M)
 		_near_draws.append(near)
 		_keys.append(Vector2i(-1, -1))
+		_graded_mask_revisions.append(-1)
 	_bindings.resize(PATCH_SLOTS * 2)
 	for index in _bindings.size():
 		_bindings[index] = {}
@@ -135,6 +141,11 @@ func _process(_delta: float) -> void:
 		var patch_size: Vector2 = terrain_material.get_shader_parameter("patch_world_size_m")
 		var patch_min := Vector2(source.position.x, source.position.z) - patch_size * 0.5
 		var mask_mesh := _mask_meshes[slot]
+		var graded_cells: Dictionary = {}
+		if _terrain.graded_tiles != null:
+			graded_cells = _terrain.graded_tiles.patch_cells.get(key, {})
+		_sync_graded_mask(slot, source, graded_cells)
+		mask_mesh.visible = graded_cells.is_empty()
 		if _keys[slot] != key or mask_mesh.mesh != source.mesh:
 			_keys[slot] = key
 			mask_mesh.mesh = source.mesh
@@ -222,6 +233,60 @@ func _create_mask() -> void:
 	add_child(viewport)
 	_masks.append(viewport)
 	_mask_meshes.append(mesh)
+	var cells: Array = []
+	for index in 5:
+		var cell := MultiMeshInstance3D.new()
+		cell.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		cell.visible = false
+		var cell_material := ShaderMaterial.new()
+		cell_material.shader = GRADED_MASK_SHADER
+		cell.material_override = cell_material
+		viewport.add_child(cell)
+		cells.append(cell)
+	_graded_mask_cells.append(cells)
+
+# Mirrors one patch's current cell buffers into the private mask world. The source MultiMeshes
+# own all tile movement and counts, so steady frames only compare references and bindings.
+func _sync_graded_mask(
+	slot: int, source: MeshInstance3D, cells: Dictionary
+) -> void:
+	var mirrors: Array = _graded_mask_cells[slot]
+	if cells.is_empty():
+		for mirror: MultiMeshInstance3D in mirrors:
+			mirror.visible = false
+		if _graded_mask_revisions[slot] >= 0:
+			_graded_mask_revisions[slot] = -1
+			_masks[slot].render_target_update_mode = SubViewport.UPDATE_ONCE
+		return
+	var revision := int(cells.get("mask_revision", 0))
+	if _graded_mask_revisions[slot] != revision:
+		_graded_mask_revisions[slot] = revision
+		_masks[slot].render_target_update_mode = SubViewport.UPDATE_ONCE
+	var rect: Rect2 = cells["rect"]
+	var rect_hm := Vector4i(
+		int(round(rect.position.x * 2.0)), int(round(rect.position.y * 2.0)),
+		int(round(rect.end.x * 2.0)), int(round(rect.end.y * 2.0))
+	)
+	var sources: Array = cells["nodes"]
+	var materials: Array = cells["materials"]
+	for index in mirrors.size():
+		var mirror := mirrors[index] as MultiMeshInstance3D
+		var cell_source := sources[index] as MultiMeshInstance3D
+		mirror.multimesh = cell_source.multimesh
+		mirror.position = source.position
+		mirror.visible = cell_source.visible and cell_source.multimesh.visible_instance_count > 0
+		mirror.set_instance_shader_parameter("cell_patch_rect_hm", rect_hm)
+		mirror.set_instance_shader_parameter(
+			"cell_lattice_anchor_hm", _terrain.graded_tiles.lattice_anchor_hm
+		)
+		var material := mirror.material_override as ShaderMaterial
+		material.set_shader_parameter("terrain_cell_m", _terrain.terrain_cell_m)
+		if index < materials.size():
+			var source_material := materials[index] as ShaderMaterial
+			for parameter in [
+				&"graded_texels", &"graded_rows", &"graded_seam_capacity", &"graded_edge_capacity"
+			]:
+				material.set_shader_parameter(parameter, source_material.get_shader_parameter(parameter))
 
 func _clump_mesh() -> ArrayMesh:
 	var vertices := PackedVector3Array()

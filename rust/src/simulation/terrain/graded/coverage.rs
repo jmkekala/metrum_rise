@@ -105,6 +105,7 @@ pub(super) fn raise_covered(triangle: &[RoadVec3; 3], xs: &[f64], zs: &[f64], ou
 
 /// The coverage of one world point, by the same predicate and triangles as [`rasterize`]: the
 /// highest covering grounded top triangle's height, `None` uncovered.
+#[cfg(test)]
 pub(super) fn covered_height_at(
     roadbed: &RoadbedSystem,
     x: f64,

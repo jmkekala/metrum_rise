@@ -2,7 +2,9 @@
 
 //! Spatial lookup and ray-query operations for derived building sites.
 
-use super::geometry::{point_in_polygon_slice, site_lot_center, update_site_plane_ray_hit};
+use super::geometry::{point_in_polygon_slice, site_lot_center};
+#[cfg(test)]
+use super::geometry::update_site_plane_ray_hit;
 use super::model::{
     BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot, SiteChange,
     site_surface_bounds,
@@ -10,7 +12,9 @@ use super::model::{
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::graded::{SiteBuffer, SiteSource};
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector2;
+#[cfg(test)]
+use godot::prelude::Vector3;
 
 // Covers the polygon test's `SITE_POINT_EPS_M` edge tolerance and the f32 rounding of lot
 // centers, radii and distances, with a wide margin; a larger value only tests more sites.
@@ -285,11 +289,13 @@ impl BuildingSiteClient {
             .any(|area| point_in_polygon_slice(pos, area))
     }
 
+    #[cfg(test)]
     pub(super) fn height_at(&self, pos: Vector2) -> Option<f32> {
         // Aprons are owned by engineered terrain, not an independent flat plane.
         self.contains_point(pos).then_some(self.support_height_m)
     }
 
+    #[cfg(test)]
     pub(crate) fn raycast(&self, ray_origin: Vector3, ray_dir: Vector3) -> Option<Vector3> {
         if ray_dir.length_squared() <= f32::EPSILON {
             return None;
@@ -424,6 +430,7 @@ impl BuildingAllocator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn sample_building_site_height(&self, pos: Vector2) -> Option<f32> {
         self.site_at(pos, |site| site.height_at(pos))
     }
@@ -568,6 +575,7 @@ impl BuildingAllocator {
         best
     }
 
+    #[cfg(test)]
     pub(crate) fn raycast_building_site_surface(
         &self,
         ray_origin: Vector3,
@@ -669,6 +677,7 @@ impl BuildingAllocator {
     }
 }
 
+#[cfg(test)]
 fn projected_ray_bounds_in_world(
     ray_origin: Vector3,
     ray_dir: Vector3,
@@ -722,6 +731,7 @@ fn projected_ray_bounds_in_world(
     ))
 }
 
+#[cfg(test)]
 fn clip_projected_ray_axis(
     origin: f32,
     direction: f32,

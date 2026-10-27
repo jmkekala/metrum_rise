@@ -3,7 +3,9 @@
 //! Polygon, hull, bounds, and plane-intersection primitives.
 
 use super::model::BuildingSiteClient;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector2;
+#[cfg(test)]
+use godot::prelude::Vector3;
 
 pub(super) const SITE_POINT_EPS_M: f32 = 0.001;
 pub(super) const SITE_POINT_EPS_SQUARED_M2: f32 = SITE_POINT_EPS_M * SITE_POINT_EPS_M;
@@ -89,6 +91,7 @@ pub(super) fn site_radius_m(site: &BuildingSiteClient) -> f32 {
         .sqrt()
 }
 
+#[cfg(test)]
 pub(super) fn update_site_plane_ray_hit(
     best: &mut Option<(f32, Vector3)>,
     ray_origin: Vector3,

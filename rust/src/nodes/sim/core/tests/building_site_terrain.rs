@@ -151,11 +151,11 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
                 let p = a.lerp(b, u).lerp(d.lerp(c, u), v);
                 let rendered = rendered_paving_height(core, p)
                     .unwrap_or_else(|| panic!("yard {index} missing paving at {p:?}"));
+                let queried = core.get_world_surface_height_internal(p);
                 // The graded surface is the pad (`TERRAIN-07-F`): its support height wherever
                 // the `GL0` triangle under the point lies inside the footprint. Within one
                 // lattice diagonal of a side the triangle reaches the graded ground beyond it.
                 if site.contains_point(p) && pad_depth(&site.footprint_world, p) > GL0_DIAGONAL_M {
-                    let queried = core.get_world_surface_height_internal(p);
                     assert!(
                         (queried - site.support_height_m).abs() < 1e-5,
                         "yard query {queried} != pad {} at {p:?}",
@@ -169,8 +169,8 @@ fn settle_and_check_yards(core: &mut SimCore) -> usize {
                     )
                     .unwrap();
                 assert!(
-                    (hit.y - rendered).abs() < 0.003,
-                    "yard picking {hit:?} != render {rendered}"
+                    (hit.y - queried).abs() < 1e-5,
+                    "yard picking {hit:?} != surface query {queried}"
                 );
                 graded_samples += usize::from((rendered - site.support_height_m).abs() > 0.05);
             }

@@ -7,6 +7,7 @@ use crate::nodes::sim::core::SimCore;
 use crate::simulation::terrain::graded::{GradedSurface, QueryScratch};
 use godot::prelude::*;
 use std::cell::RefCell;
+#[cfg(test)]
 mod engineered;
 
 thread_local! {
