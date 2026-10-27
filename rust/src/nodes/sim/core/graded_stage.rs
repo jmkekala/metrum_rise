@@ -30,8 +30,8 @@ use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    BakeError, Level, SiteBuffer, SiteSource, StageScratch, StageStats, TILE_M, TileKey,
-    TileStage, bake_window, stage_selected, stage_tiles,
+    BakeError, Level, SiteBuffer, SiteSource, StageScratch, StageStats, TILE_M, TileKey, TileStage,
+    bake_window, stage_selected, stage_tiles,
 };
 
 /// The levels the Rust half stages an edit's dirty tiles at. Godot's residency (the Godot
@@ -188,11 +188,8 @@ impl GradedPreview {
             let dz = (z - end[1]).max(end[1] - z - TILE_M).max(0.0);
             dx * dx + dz * dz
         };
-        self.order.sort_by(|a, b| {
-            distance(a)
-                .total_cmp(&distance(b))
-                .then_with(|| a.cmp(b))
-        });
+        self.order
+            .sort_by(|a, b| distance(a).total_cmp(&distance(b)).then_with(|| a.cmp(b)));
         self.next = 0;
         self.pending = Some(PoseInputs {
             terrain: Arc::clone(terrain),

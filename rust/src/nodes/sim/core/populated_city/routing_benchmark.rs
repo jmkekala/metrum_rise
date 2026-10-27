@@ -1281,7 +1281,12 @@ fn profile_commits(
             let poses = branch_poses(core, start, trunk_branch_end(core, start));
             core.refresh_road_terrain_inputs();
             let snapshot = road_tool_snapshot_from_core(core).expect("current roadbed");
-            let drag = drag(&mut RoadPreviewContext::capture(snapshot), &poses, [1, 1], true);
+            let drag = drag(
+                &mut RoadPreviewContext::capture(snapshot),
+                &poses,
+                [1, 1],
+                true,
+            );
             eprintln!(
                 "COMMIT_POSES {}",
                 serde_json::json!({"residents": residents, "sample": sample,

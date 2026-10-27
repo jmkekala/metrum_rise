@@ -12,8 +12,8 @@
 
 use super::road_edit_order::{ARM_M, Stroke, committed, committed_on};
 use super::*;
-use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::graded_stage::{CATCH_UP_FRAME_TILES, GradedPose, POSE_FRAME_TILES};
+use crate::nodes::sim::core::road_commit::RoadCommitRequest;
 use crate::nodes::sim::core::road_preview::{RoadPreview, RoadPreviewRequest};
 use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
 use crate::simulation::network::roadbed::RoadbedSystem;
@@ -197,7 +197,11 @@ pub(crate) struct Drag {
     pub(crate) preview: RoadPreview,
 }
 
-fn frame_record(pose: Option<usize>, graded: &GradedPose, span: serde_json::Value) -> serde_json::Value {
+fn frame_record(
+    pose: Option<usize>,
+    graded: &GradedPose,
+    span: serde_json::Value,
+) -> serde_json::Value {
     let stats = graded.stats;
     serde_json::json!({
         "pose": pose, "span_ms": span, "frame_ms": graded.frame_ms,
@@ -217,7 +221,8 @@ pub(crate) fn drag(
     converge: bool,
 ) -> Drag {
     use crate::thread_pools::spans::ms;
-    let span = |start: std::time::Instant| serde_json::json!([ms(start), ms(std::time::Instant::now())]);
+    let span =
+        |start: std::time::Instant| serde_json::json!([ms(start), ms(std::time::Instant::now())]);
     let (mut frames, mut frame_max_ms, mut last) = (Vec::new(), 0.0f64, None);
     for (step, points) in poses.iter().enumerate() {
         let surface_generation = context.view.surface_generation;
@@ -243,11 +248,8 @@ pub(crate) fn drag(
     }
     let (points, mut preview) = last.expect("a pose");
     let mut catch_up_frames = 0;
-    while converge {
-        let called = std::time::Instant::now();
-        let Some(graded) = context.catch_up_graded() else {
-            break;
-        };
+    let mut called = std::time::Instant::now();
+    while let Some(graded) = converge.then(|| context.catch_up_graded()).flatten() {
         let span = span(called);
         catch_up_frames += 1;
         frame_max_ms = frame_max_ms.max(graded.frame_ms);
@@ -255,6 +257,7 @@ pub(crate) fn drag(
         if let Some(pieces) = preview.pieces.as_mut() {
             pieces.graded = graded;
         }
+        called = std::time::Instant::now();
     }
     Drag {
         frames,
@@ -358,7 +361,10 @@ pub(crate) fn drag_and_click(
 }
 
 fn pose_digests(frames: &[serde_json::Value], poses: usize) -> Vec<serde_json::Value> {
-    frames[..poses].iter().map(|frame| frame["digest"].clone()).collect()
+    frames[..poses]
+        .iter()
+        .map(|frame| frame["digest"].clone())
+        .collect()
 }
 
 // One drag frame's shown tiles (T27 (d)): each is the fresh bake of the frame's pose or the
@@ -374,8 +380,14 @@ fn check_frame(
 ) -> Arc<TileStage> {
     let stage = graded.stage.as_ref().expect("the frame's tiles bake");
     let stats = graded.stats;
-    assert!(stats.adopted + stats.baked <= bound, "{label}: the frame's share");
-    assert!(stage.len() <= stats.wanted, "{label}: only the pose's tiles shown");
+    assert!(
+        stats.adopted + stats.baked <= bound,
+        "{label}: the frame's share"
+    );
+    assert!(
+        stage.len() <= stats.wanted,
+        "{label}: only the pose's tiles shown"
+    );
     let fresh = fresh(&context.view.terrain, roadbed, &core.allocator, stage);
     let before = stage_bits(before);
     let mut posed = 0;
@@ -390,7 +402,10 @@ fn check_frame(
             );
         }
     }
-    assert!(posed >= stats.adopted + stats.baked, "{label}: the staged tiles are the pose's");
+    assert!(
+        posed >= stats.adopted + stats.baked,
+        "{label}: the staged tiles are the pose's"
+    );
     Arc::clone(stage)
 }
 
@@ -445,7 +460,12 @@ fn graded_tiles_of_drags_commits_undo_and_loads_equal_fresh_bakes() {
             assert_eq!(shown.len(), wanted, "{name}: every wanted tile shown");
             assert_eq!(
                 stage_bits(&shown),
-                fresh(&context.view.terrain, &pieces.roadbed, &core.allocator, &shown),
+                fresh(
+                    &context.view.terrain,
+                    &pieces.roadbed,
+                    &core.allocator,
+                    &shown
+                ),
                 "{name}: the converged tiles are the fresh bake of the last pose"
             );
             let (points, pose) = (poses[poses.len() - 1].clone(), Arc::new(pose));
@@ -575,12 +595,18 @@ fn a_commit_right_after_a_fast_drag_bakes_what_the_preview_had_not() {
         if converge {
             assert_eq!(baked, 0, "the converged preview's tiles are all adopted");
         } else {
-            assert!(pending > 0 && baked > 0, "the fast click bakes the unstaged tiles");
+            assert!(
+                pending > 0 && baked > 0,
+                "the fast click bakes the unstaged tiles"
+            );
         }
         runs.push((pose_digests, stage_bits(&tiles)));
     }
     assert_eq!(runs[0].0, runs[1].0, "the pose frames show the same tiles");
-    assert_eq!(runs[0].1, runs[1].1, "the fast click commits the converged click's tiles");
+    assert_eq!(
+        runs[0].1, runs[1].1,
+        "the fast click commits the converged click's tiles"
+    );
 }
 
 #[test]

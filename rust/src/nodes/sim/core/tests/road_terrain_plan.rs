@@ -1101,7 +1101,10 @@ fn benchmark_kuopio_graded_drags() {
         }
     }
     worst.insert("workers".into(), workers.into());
-    eprintln!("GRADED_KUOPIO_DRAG_SUMMARY {}", serde_json::Value::Object(worst));
+    eprintln!(
+        "GRADED_KUOPIO_DRAG_SUMMARY {}",
+        serde_json::Value::Object(worst)
+    );
 }
 
 // T27 (d) on Kuopio: `kuopio_10`'s first stroke (14 tiles on a hillside) dragged in eight
@@ -1123,17 +1126,27 @@ fn a_kuopio_drag_converges_to_the_tiles_it_commits() {
     let record = graded_drag(&mut core, stroke);
     let (commit, fast) = (&record["commit"], &record["fast_commit"]);
     let tiles = commit["tiles"].as_u64().unwrap() as usize;
-    assert!(tiles > POSE_FRAME_TILES, "the stroke outgrows a frame: {tiles}");
+    assert!(
+        tiles > POSE_FRAME_TILES,
+        "the stroke outgrows a frame: {tiles}"
+    );
     assert!(record["pose_frames_equal"].as_bool().unwrap(), "{record}");
     let frames = record["catch_up_frames"].as_u64().unwrap() as usize;
     let last_pose = &record["frames"][7];
     let pending = last_pose["pending"].as_u64().unwrap() as usize;
     assert_eq!(frames, pending.div_ceil(CATCH_UP_FRAME_TILES), "{record}");
-    assert_eq!(commit["adopted"].as_u64().unwrap() as usize, tiles, "{record}");
+    assert_eq!(
+        commit["adopted"].as_u64().unwrap() as usize,
+        tiles,
+        "{record}"
+    );
     assert_eq!(record["converged_digest"], commit["digest"], "{record}");
     assert!(fast["baked"].as_u64().unwrap() > 0, "{record}");
     assert_eq!(fast["digest"], commit["digest"], "{record}");
-    assert_eq!(record["fast_undo"]["digest"], record["undo"]["digest"], "{record}");
+    assert_eq!(
+        record["fast_undo"]["digest"], record["undo"]["digest"],
+        "{record}"
+    );
 }
 
 // T27 (d) diagnostic: each tile of `METRUM_DRAG_CASE`'s stroke `METRUM_DRAG_ATTEMPT` (the
@@ -1146,7 +1159,10 @@ fn kuopio_drag_tile_costs() {
     use crate::simulation::terrain::graded::{Level, bake_tiles};
     let manifest = kuopio_manifest();
     let case_id = std::env::var("METRUM_DRAG_CASE").unwrap();
-    let attempt: i64 = std::env::var("METRUM_DRAG_ATTEMPT").unwrap().parse().unwrap();
+    let attempt: i64 = std::env::var("METRUM_DRAG_ATTEMPT")
+        .unwrap()
+        .parse()
+        .unwrap();
     let case = manifest["cases"]
         .as_array()
         .unwrap()
