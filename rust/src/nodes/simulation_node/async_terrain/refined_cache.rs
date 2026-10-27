@@ -61,6 +61,8 @@ impl SimCore {
         )
     }
 
+    // The exact cut's tests only since `TERRAIN-07-E` (no commit builds refined entries).
+    #[cfg(test)]
     pub(crate) fn terrain_patch_requires_engineered_refinement(
         &self,
         patch_x: usize,
