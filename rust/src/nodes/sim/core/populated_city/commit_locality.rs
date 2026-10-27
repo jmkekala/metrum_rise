@@ -9,7 +9,7 @@
 //! west to the border, in a world of fixed size; the commits are the breakdown's three 120 m
 //! branches off that trunk (`routing_benchmark::profile_commits`, which prints each sample's
 //! stages and frames). The background lies east of the grid, beyond every lot region and
-//! terrain patch the branches touch: straight two-lane streets, each fronted by a row of
+//! terrain patch the branches touch: straight two-lane block streets, each fronted by a row of
 //! one-cell sites with a parcel and one housed agent each. Each tier builds the neighbourhood
 //! and its background afresh, outside timing (`LOCALITY_SETUP`).
 //!
@@ -29,13 +29,17 @@ const WORLD_M: f32 = 12_288.0;
 const NEIGHBOURHOOD_SIDE_M: f32 = 800.0;
 // Everything west of this x is the neighbourhood (the grid, its trunk and the branches).
 const LOCAL_MAX_X: f32 = 700.0;
-// Background streets run east-west from x = 800 m to 5,600 m, 24 m apart from z = -3,000 m,
-// each fronted by 400 sites 12 m apart on its north side.
+// Background streets are 480 m blocks running east-west, nine to a row from x = 800 m with 24 m
+// between blocks, rows 24 m apart from z = -3,000 m; each block is fronted by 40 sites 12 m apart
+// on its north side. Block-length streets, as in a city: the attachment repair's test walks
+// each building's street (4.8 km streets cost it 15-17 ms at 100k sites, part 8's first trial).
 const STREET_WEST_X: f32 = 800.0;
-const STREET_EAST_X: f32 = 5_600.0;
 const STREET_FIRST_Z: f32 = -3_000.0;
 const STREET_SPACING_M: f32 = 24.0;
-const SITES_PER_STREET: usize = 400;
+const BLOCK_M: f32 = 480.0;
+const BLOCK_GAP_M: f32 = 24.0;
+const BLOCKS_PER_ROW: usize = 9;
+const SITES_PER_STREET: usize = 40;
 const SITE_SPACING_M: f32 = 12.0;
 const SITE_SETBACK_M: f32 = 10.0;
 
@@ -97,12 +101,13 @@ fn add_background(core: &mut SimCore, count: usize) {
     core.transit_network.bulk_load = true;
     let mut streets = Vec::new();
     for street in 0..count.div_ceil(SITES_PER_STREET) {
-        let z = STREET_FIRST_Z + street as f32 * STREET_SPACING_M;
+        let z = STREET_FIRST_Z + (street / BLOCKS_PER_ROW) as f32 * STREET_SPACING_M;
+        let west = STREET_WEST_X + (street % BLOCKS_PER_ROW) as f32 * (BLOCK_M + BLOCK_GAP_M);
         let edges = core.region_graph.edge_count();
         let outcome = core.add_road_internal(
             vec![
-                Vector3::new(STREET_WEST_X, 0.0, z),
-                Vector3::new(STREET_EAST_X, 0.0, z),
+                Vector3::new(west, 0.0, z),
+                Vector3::new(west + BLOCK_M, 0.0, z),
             ],
             1,
             1,
@@ -117,7 +122,7 @@ fn add_background(core: &mut SimCore, count: usize) {
         core.transit_network
             .roadbed
             .compile_dirty(&core.region_graph);
-        streets.push((edges, z));
+        streets.push((edges, west, z));
     }
     {
         let core = &mut *core;
@@ -126,8 +131,8 @@ fn add_background(core: &mut SimCore, count: usize) {
     }
     let half = core.config.zone_cell_m * 0.5;
     for index in 0..count {
-        let (edge, z) = streets[index / SITES_PER_STREET];
-        let x = STREET_WEST_X + ((index % SITES_PER_STREET) as f32 + 0.5) * SITE_SPACING_M;
+        let (edge, west, z) = streets[index / SITES_PER_STREET];
+        let x = west + ((index % SITES_PER_STREET) as f32 + 0.5) * SITE_SPACING_M;
         let center = Vector2::new(x, z + SITE_SETBACK_M);
         let mut building = template.clone();
         building.center_x = center.x;
@@ -136,7 +141,7 @@ fn add_background(core: &mut SimCore, count: usize) {
         building.depth_cells = 1;
         building.facing_dir = Vector2::new(0.0, -1.0);
         building.edge_idx = edge;
-        building.frontage_t = (x - STREET_WEST_X) / (STREET_EAST_X - STREET_WEST_X);
+        building.frontage_t = (x - west) / BLOCK_M;
         building.occupancy = 1;
         building.parcel_id = core
             .zoning
