@@ -114,6 +114,22 @@ fn assert_query_index_fresh(core: &SimCore, stage: &str, strict_inputs: bool) {
         query_index: None,
     };
     let (mut a_scratch, mut b_scratch) = (QueryScratch::default(), QueryScratch::default());
+    let cached = indexed.ground_height_at(0.37, 0.19, &mut a_scratch);
+    indexed.base_height_at(180.0, 180.0, &mut a_scratch);
+    assert_eq!(
+        indexed
+            .ground_height_at(0.37, 0.19, &mut a_scratch)
+            .to_bits(),
+        cached.to_bits(),
+        "an authored-base lookup must invalidate the prepared query's base window"
+    );
+    let (x, z) = (-65.690_895_080_566_4, 36.011_367_797_851_56);
+    indexed.gather_near(x, z, 2.5, &mut a_scratch);
+    assert_eq!(
+        indexed.ground_height_near(x, z, &mut a_scratch).to_bits(),
+        gathered.ground_height_at(x, z, &mut b_scratch).to_bits(),
+        "a diagonal seam outside the cap must not disable a gathered tile's base shortcut"
+    );
     for z in (-220..=220).step_by(11) {
         for x in (-220..=220).step_by(13) {
             let (x, z) = (f64::from(x) + 0.37, f64::from(z) + 0.19);

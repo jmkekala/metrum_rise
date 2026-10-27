@@ -134,6 +134,9 @@ pub struct GradedSurface<'a> {
 impl GradedSurface<'_> {
     /// The authored base `b(p)`, metres.
     pub fn base_height_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> f64 {
+        // This fill is not a graded preparation. Do not let a later query reuse its rectangle's
+        // seam state with these unrelated base samples.
+        scratch.rect = None;
         scratch.base.fill(self.terrain, [x, z, x, z]);
         scratch.base.at(x, z)
     }
@@ -737,12 +740,11 @@ impl GradedSurface<'_> {
         if scratch.sites.pad_at(x, z) != NO_SITE {
             return false;
         }
-        let window = grown(rect, CAP_M + WINDOW_PAD_M);
         scratch
             .window
             .iter()
             .chain(scratch.rest.iter().map(|(seam, _)| seam))
-            .all(|seam| box_distance(seam.box_xz(), window) > 0.0)
+            .all(|seam| box_distance(seam.box_xz(), rect) > CAP_M + WINDOW_PAD_M)
     }
 
     // Gathers the portal parts around `rect`, for the opening's test (T22 5 (a)).
@@ -891,6 +893,9 @@ impl GradedSurface<'_> {
                 let x0 = corner[0] + cx as f64 * grid.cell_m;
                 let z0 = corner[1] + cz as f64 * grid.cell_m;
                 let (x1, z1) = (x0 + grid.cell_m, z0 + grid.cell_m);
+                // The base marcher borrows the query scratch but does not prepare graded inputs.
+                // Invalidate their cached rectangle before replacing its base window.
+                scratch.rect = None;
                 scratch.base.fill(self.terrain, [x0, z0, x1, z1]);
                 let corners =
                     [(x0, z0), (x1, z0), (x0, z1), (x1, z1)].map(|(x, z)| scratch.base.at(x, z));
