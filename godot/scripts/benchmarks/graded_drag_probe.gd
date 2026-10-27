@@ -98,6 +98,11 @@ func run(bench: Node) -> void:
 		if _graded == null:
 			_finish("the terrain renderer draws no graded tiles")
 			return
+		# The view right after a load, where round 6's display run showed the holes.
+		_report.loads[-1]["holes"] = _graded.hole_patches()
+		if int(_report.loads[-1]["holes"]) > 0:
+			_failures.append("%s: %d resident patches draw nothing after the load" % [fixture.case_id, int(_report.loads[-1]["holes"])])
+			push_error("[GRADED_DRAG] " + _failures[-1])
 		bench.input_manager.current_tool = bench.input_manager.Tool.ROAD
 		bench.input_manager._activate_tool_logic(bench.input_manager.Tool.ROAD, true)
 		for stroke in fixture.segments:

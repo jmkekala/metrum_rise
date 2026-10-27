@@ -3997,9 +3997,13 @@ km.
   current through the per-tile updates and stays hidden until a tile of it shows graded,
   installed while the patch's list is not empty or previewed; then it flips: its meshes and
   instance uniforms set, its materials bound and synced where its watched parameters moved, its
-  nodes under the patch node, the PlaneMesh collapsed; and back when none does (out of the tree,
-  materials unbound). A hidden set that never drew has no mesh, no instance uniform and no
-  material, so it draws nothing and holds no instance-uniform slot: a node with instance
+  root shown, the PlaneMesh collapsed; and back when none does (root hidden, materials unbound,
+  the PlaneMesh it collapsed restored, whatever patch that node now holds). A set's nodes stay
+  under one root, which waits under its patch's node from the set's build until the patch leaves
+  the residency or the renderer resets, when it leaves the tree (terrain.gd may free a released
+  patch node), so a flip moves no node (`TERRAIN-07-E` round 7). A hidden set that never drew has
+  no mesh, no instance uniform and no material, so it draws nothing and holds no
+  instance-uniform slot: a node with instance
   uniforms set holds its 16 slots whatever its material (round 6's first build set them on
   every prebuilt set and overflowed the buffer). Slots held by cell sets: 5 per set that has
   drawn since the world load (as the released sets of gate D held them), at most
@@ -4281,9 +4285,11 @@ No stage scans the city.
 Accepted exception to the commit row ([T27](#terrain-07-open-questions) (f), the user,
 2026-10-27): a click right after a fast drag, before the preview has caught up, bakes the tiles
 the preview has not staged in its own frame, and that terrain stage may exceed 3.0 ms (measured
-up to 4.72 ms on Kuopio and 4.38 ms at 100k). The commit stays exact in its frame, `ROAD-68`'s
-click-to-committed under 16.7 ms stays binding, and the row's 3.0 ms holds for every other
-commit and undo.
+up to 4.72 ms on Kuopio and 4.38 ms at 100k). Its limit case, a commit with no preview before
+it (no tile staged; [T43](#terrain-07-open-questions) (a), the user, 2026-10-27), may do the
+same (3.5 ms at 10k and 4.3 ms at 100k on the breakdown's first samples). The commit stays
+exact in its frame, `ROAD-68`'s click-to-committed under 16.7 ms stays binding, and the row's
+3.0 ms holds for every other commit and undo.
 
 The spike's 1.64-2.52 ms per edit has none of: the conflict terms of the reach, coverage
 rasterization, sites, materials, the apron, the levels or packing. `TERRAIN-07-A`, `-C` and `-E`
@@ -7472,6 +7478,72 @@ preview (for the user). Not run this round: the landing session (no Rust stage c
 `adopted` flag runs only with a renderer's view, which the benchmarks have not) and
 `./run.sh --test` (waiting on the run lock at the round's end).
 
+Round 7, 2026-10-27, the same branch on `road` at `d456913e` (unmoved; `road` is at `48de2212`, a
+roadmap row).
+
+**Decided by the user: [T43](#terrain-07-open-questions) (a), under T27 (f).** A commit with no
+preview before it may take its terrain stage over 3.0 ms (3.5 ms at 10k and 4.3 ms at 100k on the
+breakdown's first samples); the commit stays exact in its frame and click-to-committed under
+16.7 ms stays binding. The [budgets](#budgets) record it in T27 (f)'s exception beside the commit
+row, which stays as written. That miss no longer holds the gate.
+
+**The holes.** Round 6's check could not fail: `hole_patches()` compared the patch node's
+`visibility_range_end`, which Godot keeps as a 32-bit float, with the 64-bit `HIDDEN_RANGE_M`, so
+no collapsed node ever matched (on `a58a49d8`'s renderer, before the fix, with the check added:
+3 cases, 0 holes, gamescope 17:40). It compares with `is_equal_approx` now, and the probe also
+counts the holes right after each load, where the user saw them.
+
+| Run (gamescope, GPU-backed, no display; library `cc2efec7`) | Loads with holes | Frames with holes |
+| --- | --- | --- |
+| `a58a49d8`'s renderer, the fixed check, `kuopio_01`-`03` (18:01) | 2nd: 2 patches, 3rd: 6 | 56 of 140 (fails) |
+| The tip (18:11, 13 cases, 39 strokes) | none of 13 | 0 of 1,117 (passes) |
+
+Renders of the user's two views in the game scene (gamescope, GPU-backed, `screenshots-C.sh`'s
+method in a copy that runs the harness's scene: `$ARTIFACTS` `t07e7/capture.sh`; Kuopio's source
+world loaded three times with `kuopio_01`'s first two strokes committed between, the load view
+after each load and the T junction at stroke 2's end from the probe's 40 m camera, road tool
+active):
+
+- *The lake hillside after a load*: `road`'s gate D tip (`48de2212`) shows the user's hole after
+  the third load (the same patch of the hillside, sky through it, trees standing on nothing); the
+  renderer before the fix shows it too (`hole_patches` 1 after the second load, 4 after the
+  third); the tip shows none (0 and 0). The holes are gate D's on `road`, fixed here.
+- *The T junction*: grass on the asphalt and the zoning overlay's grey cells, the same on gate D
+  and on the tip: they predate this branch and are `TERRAIN-07-F`'s (its branch has the graded
+  grass mask and the overlay heights). The cells floating over a hill need a slope this flat T
+  does not have; by the code (round 6) they are the same overlay.
+
+**The flips.** Attribution on the pose and catch-up frames (gamescope 18:04, timers in a scratch
+copy of the renderer, every case): 81 flips in 55 frames, 15.74 ms in all; binding the set's
+materials 10.20 ms (65 %), its meshes and instance uniforms 1.87, the material sync 1.70, moving
+its nodes into the patch node 1.53. Built (exact: the same nodes, meshes, materials and
+transforms draw; a hidden set draws nothing either way): a set's nodes stay under one root, which
+waits hidden under its patch's node from the set's build until the patch is released, so a flip
+moves no node ([cell sets](#godot-tile-renderer)). On the tip (18:11) the same 81 flips take
+14.06 ms (-1.68): pose frames over 1.0 ms 5 of 594, at most 1.55 ms (four flips), against 6 and
+2.36 ms. The binding is the rest of a flip, open (below).
+
+**Fresh runs** (release library `cc2efec7`, unchanged since round 6: no Rust changed; RX 7900 XTX
+under gamescope; the install share in ms, frames over 1.0 ms): the tip, 18:11: pose 1.55 (5 of
+594), catch-up 0.90 (0 of 141), fast click 0.77 (0), commit 0.58 (0; no upload: adopted), undo
+0.89 (0); 0 instance-uniform overflows over 13 loads, 0 failures, GPU p50 2.70 ms. Not the share's
+acceptance (no display): the real-display run on this tip is the user's.
+
+Gate checks on the tip (fresh): clippy `--all-targets` the 59-warning baseline set exactly;
+`./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset, 18:21-18:44): exit 0, no script error, debug
+library 1,978 passed, 0 failed, 179 ignored, `tests/growth_scenario.rs` 4 passed, every Godot suite
+passed (`graded_tile_renderer_test.gd` with the fixed hole check, 0 failures;
+`road_junction_preview_test.gd` 13 fixtures, 52 tiles bitwise); skipped: the rendered vegetation
+tests (Forward+ display) and the shader global probe (headless). Lines: `graded/` and `roadbed/`
+unchanged (no change under `rust/src/`).
+
+**Open (not relaxed).** The real-display drag probe and the GPU idle-frame matrix on this tip
+(both the coordinator's; the matrix because hidden sets now wait in the tree, and round 6 changed
+the sets' build, data and load path); the flips' material binding (pose frames to 1.55 ms under
+gamescope): a candidate is binding a set's materials as it is built, which would make every
+built set hold its nodes' instance-uniform slots (Kuopio: 1,296 x 5 x 16 = 103,680 of the
+1,048,576 slots) and reverse gate D round 9's binding while drawing, so it is not taken.
+
 #### `TERRAIN-07-F` — consumers re-pointed
 
 1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
@@ -8571,8 +8643,8 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (six selections and bakes a tile).
     - **Recommendation.** (a): exact, `O(one selection)`, and the rule's numbers stay the
       renderer's. Built in round 5 (`LevelRule`); reversible inside the branch.
-43. **T43. The commit breakdown's commit without a preview (`TERRAIN-07-E` round 6) — open, for
-    the user.**
+43. **T43. The commit breakdown's commit without a preview (`TERRAIN-07-E` round 6) — (a), decided
+    by the user, 2026-10-27, under T27 (f).**
     - **Evidence** (round 5's landing session, [record](#terrain-07-e-record)). Gate E's
       acceptance holds `benchmark_populated_commit_breakdown`'s terrain stage per commit to
       3.0 ms from 0 to 100k. Its commits have no preview, so they stage nothing in advance and
@@ -8588,6 +8660,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       would close it, and gate E stays open on it.
     - **Recommendation.** (a): the same commit, exact in its frame, under the same 16.7 ms
       target; not taken, since it widens an accepted exception.
+    - **Decided by the user, 2026-10-27: (a), under T27 (f).** A commit with no preview before
+      it may take its terrain stage over 3.0 ms (3.5 ms at 10k and 4.3 ms at 100k on the first
+      samples). The commit stays exact in its frame, and click-to-committed under 16.7 ms stays
+      binding; the breakdown keeps measuring it, and the [budgets](#budgets) record it in T27
+      (f)'s exception beside the commit row.
 
 #### Superseded `ROAD-68` questions
 

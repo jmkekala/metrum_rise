@@ -98,8 +98,8 @@ var patch_lists_requested: Dictionary = {}
 # is counted and logged once instead of being re-asked every frame (round 5's populated save).
 var refused: Dictionary = {}
 var patch_lists_refused: Dictionary = {}
-# Patch key -> {nodes: Array[MultiMeshInstance3D], materials: Array[ShaderMaterial] (GL0-GL3),
-# watched: Array}.
+# Patch key -> {root: Node3D (the set's nodes), nodes: Array[MultiMeshInstance3D],
+# materials: Array[ShaderMaterial] (GL0-GL3), watched: Array}.
 var patch_cells: Dictionary = {}
 var _cells_pool: Array[Dictionary] = []
 var _cells_per_patch := 81
@@ -110,9 +110,10 @@ var _dirty_patches: Dictionary = {}
 # Patches whose wall instances must be rewritten (a tile rewritten in place changed its faces).
 var _dirty_walls: Dictionary = {}
 # Cell sets built off the frame paths (`TERRAIN-07-E` round 6): every resident patch gets its set,
-# kept current by the per-tile updates and hidden (out of the tree, no material bound) until one
-# of its tiles shows graded, so a patch's first graded tile is a per-tile update and the set's flip
-# (_apply_shown), never a whole build in a preview's, an edit's or a stream's frame. Patch key ->
+# kept current by the per-tile updates and hidden (its root under the patch's node but not shown,
+# no material bound) until one of its tiles shows graded, so a patch's first graded tile is a
+# per-tile update and the set's flip (_apply_shown), never a whole build in a preview's, an
+# edit's or a stream's frame. Patch key ->
 # true in arrival order; `_builds_urgent` holds the patches a shown tile waits for (it draws once
 # the set is built), taken first (_advance_builds).
 var _builds: Dictionary = {}
@@ -354,13 +355,13 @@ func _notification(what: int) -> void:
 	if what != NOTIFICATION_PREDELETE:
 		return
 	for cells: Dictionary in _cells_pool + patch_cells.values():
-		for node: Variant in cells["nodes"] + [cells["walls"]]:
-			if not is_instance_valid(node):
-				continue
-			if (node as Node).is_inside_tree():
-				(node as Node).queue_free()
-			else:
-				(node as Node).free()
+		var root: Variant = cells["root"]
+		if not is_instance_valid(root):
+			continue
+		if (root as Node).is_inside_tree():
+			(root as Node).queue_free()
+		else:
+			(root as Node).free()
 
 ## Frees every slot and cell resource, as the renderer resets.
 func clear() -> void:
@@ -490,7 +491,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			for cells: Dictionary in patch_cells.values():
 				for index in CELL_MESHES:
 					var node: MultiMeshInstance3D = cells["nodes"][index]
-					if node.visible and node.is_inside_tree():
+					if node.is_visible_in_tree():
 						var count := node.multimesh.visible_instance_count
 						parts["cells_%d" % index] += count
 						parts["cell_triangles_%d" % index] += count * node.multimesh.mesh.surface_get_array_index_len(0) / 3
@@ -1002,6 +1003,8 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 	if not cells.is_empty() and bool(cells["shown"]) and cells["node_parent"] != resident_patches[key]["node"]:
 		_hide_cells(cells)
 		_dirty_shown[key] = true
+	if not cells.is_empty():
+		_park(cells, resident_patches[key]["node"])
 	if cells.is_empty():
 		_builds[key] = true
 	elif int(cells["step"]) != int(resident_patches[key]["step"]):
@@ -1395,6 +1398,7 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	if cells.is_empty():
 		cells = _acquire_cells(patch)
 		patch_cells[key] = cells
+	_park(cells, patch["node"])
 	cells["rect"] = patch["rect"]
 	var step := int(patch["step"])
 	cells["step"] = step
@@ -1525,8 +1529,9 @@ func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
 
 # Patch `key`'s set draws while it is built and a tile of it shows graded (installed while the
 # patch's list is not empty, or previewed); otherwise the patch draws its PlaneMesh and the set
-# waits, kept current, out of the tree with no material bound (so it holds no instance uniform
-# slot). O(1), the material's parameters when the set starts drawing and the preview's tiles.
+# waits, kept current, hidden under the patch's node with no material bound (so a set that never
+# drew holds no instance uniform slot). O(1), the material's parameters when the set starts
+# drawing and the preview's tiles.
 func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	var cells: Dictionary = patch_cells.get(key, {})
 	if cells.is_empty() or not resident_patches.has(key):
@@ -1554,11 +1559,8 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	if _watched_parameters(patch["material"]) != cells["watched"]:
 		_sync_material(cells, patch["material"])
 	_frame_sync_us += Time.get_ticks_usec() - sync_us
-	for node: Node in cells["nodes"] + [cells["walls"]]:
-		if node.get_parent() != patch_node:
-			if node.get_parent() != null:
-				node.get_parent().remove_child(node)
-			patch_node.add_child(node)
+	_park(cells, patch_node)
+	(cells["root"] as Node3D).visible = true
 	cells["node_parent"] = patch_node
 	# The PlaneMesh collapses while the cells draw the patch, and is not drawn at all: its
 	# visibility range ends before any camera, so its vertices do not run (TERRAIN-07-D round 5).
@@ -1576,16 +1578,14 @@ func _previews_in(cells: Dictionary) -> bool:
 			return true
 	return false
 
-# The set stops drawing: out of the tree, its materials unbound, and the PlaneMesh it collapsed
-# (the node it drew under, whatever node the patch holds now) drawing again: terrain.gd pools
-# its patch nodes, and a pooled node left collapsed draws nothing for the next patch it takes
-# (`TERRAIN-07-E` round 6: the holes after a world load, whose clear() released the sets
-# without their nodes).
+# The set stops drawing: its root hidden (still under the patch's node while the patch is
+# resident), its materials unbound, and the PlaneMesh it collapsed (the node it drew under,
+# whatever node the patch holds now) drawing again: terrain.gd pools its patch nodes, and a pooled
+# node left collapsed draws nothing for the next patch it takes (`TERRAIN-07-E` round 6: the holes
+# after a world load, whose clear() released the sets without their nodes).
 func _hide_cells(cells: Dictionary) -> void:
 	cells["shown"] = false
-	for node: Node in cells["nodes"] + [cells["walls"]]:
-		if node.get_parent() != null:
-			node.get_parent().remove_child(node)
+	(cells["root"] as Node3D).visible = false
 	var patch_node: Variant = cells["node_parent"]
 	cells["node_parent"] = null
 	_bind_materials(cells, false)
@@ -1593,13 +1593,29 @@ func _hide_cells(cells: Dictionary) -> void:
 		(patch_node as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 0.0)
 		(patch_node as GeometryInstance3D).visibility_range_end = 0.0
 
+# Puts the set's root under `patch_node` (null: out of the tree), its visibility unchanged. A built
+# set waits under its patch's node, hidden, so starting to draw only shows it (`TERRAIN-07-E` round
+# 7: moving the nodes into the tree was most of a flip on the pose frames); terrain.gd may free a
+# released patch node, so release_patch takes the root out first. O(1).
+func _park(cells: Dictionary, patch_node: Node) -> void:
+	var root: Node3D = cells["root"]
+	var parent := root.get_parent()
+	if parent == patch_node:
+		return
+	if parent != null:
+		parent.remove_child(root)
+	if patch_node != null:
+		patch_node.add_child(root)
+
 ## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
 ## it (a hole showing the sky). For tests and the probe; O(resident patches).
 func hole_patches() -> int:
 	var holes := 0
 	for key: Vector2i in _resident.keys():
 		var node: GeometryInstance3D = _resident[key]["node"]
-		if node == null or node.visibility_range_end != HIDDEN_RANGE_M:
+		# The node keeps the range as a 32-bit float: the value read back is HIDDEN_RANGE_M
+		# rounded to it, never equal to the 64-bit constant (round 6's check counted nothing).
+		if node == null or not is_equal_approx(node.visibility_range_end, HIDDEN_RANGE_M):
 			continue
 		var cells: Dictionary = patch_cells.get(key, {})
 		if cells.is_empty() or not bool(cells["shown"]) or cells["node_parent"] != node:
@@ -1657,6 +1673,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	if cells.is_empty():
 		return
 	_hide_cells(cells)
+	_park(cells, null)
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.visible = false
 		node.multimesh.visible_instance_count = 0
@@ -1730,6 +1747,14 @@ func _new_cells() -> Dictionary:
 	walls.multimesh = wall_multimesh
 	walls.material_override = _wall_material
 	walls.visible = false
+	# The set's nodes stay under one root, which takes the set into a patch's node and out, and
+	# shows it while it draws (_park, _apply_shown); each node's own visibility is whether it has
+	# instances.
+	var root := Node3D.new()
+	root.name = "GradedCellSet"
+	root.visible = false
+	for node: Node in nodes + [walls]:
+		root.add_child(node)
 	# The record of what each cell MultiMesh holds (_rebuild_patch_cells, _update_tile_cell): per
 	# mesh the custom data and tile of each instance and the instance count, per tile place its
 	# (mesh, instance), all sized once here.
@@ -1747,7 +1772,7 @@ func _new_cells() -> Dictionary:
 	var counts: Array[int] = []
 	counts.resize(CELL_MESHES)
 	return {
-		"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
+		"root": root, "nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
 		"custom": records, "tile_at": tile_at, "where": where, "counts": counts,
 		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1, "rect_hm": Vector4i.ZERO,
 		# The tiles its build has written (-1: not begun), whether it synced its material for
