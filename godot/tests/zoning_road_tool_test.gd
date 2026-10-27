@@ -169,7 +169,9 @@ func _test_terrain_consistency() -> void:
 	var edge := simulation.get_zoning_road_at(0.0, 0.0)
 	var flat := simulation.get_zoning_road_preview_packed(edge, 1, 2, 2, 0.0)
 	_expect(flat.get("valid_count", 0) > 0, "Flat ground accepts zoning without assets")
-	simulation.level_terrain(Vector2(0, 40), 32.0, 100.0, 1.0)
+	# A plateau wider than a lot's tie-in reach (the graded terrain's 64 m cap, terrain.md T12 (a)):
+	# the lots beside it cannot grade into the ground beyond it.
+	simulation.level_terrain(Vector2(0, 40), 64.0, 100.0, 1.0)
 	var reference := simulation.get_zoning_road_preview_packed(edge, 1, 2, 2, 0.0)
 	_expect(reference.valid_count > 0 and reference.valid_count < reference.parcel_count, "Steep ground rejects only the affected lots without assets")
 	var colors: PackedColorArray = reference.colors
