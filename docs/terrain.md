@@ -4359,7 +4359,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
-| `TERRAIN-07-E` | in progress (rounds 1-5, 2026-10-26/27, branch `terrain07-E`, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Open: the real-display run on the fixes, the sets' flips on pose frames, T43 (the breakdown's commit without a preview, for the user) | Preview, commit, undo and load |
+| `TERRAIN-07-E` | done 2026-10-27 (rounds 1-7, branch `terrain07-E`, [record](#terrain-07-e-record); T27 (f) and T43 (a) the user's exceptions beside the commit row; the background cell-set builds' window accepted by the user, 2026-10-27; four items carried to `ROAD-68-H` by the user, 2026-10-27): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Round 7: T43 (a) decided by the user; a hole check able to fail and the holes fixed (gate D's on `road` too, shown in renders; the grass on the asphalt and the zoning cells gate D's as well, for `TERRAIN-07-F`); a built set waits hidden under its patch node; the idle-frame matrix judges the steady state, after the background cell-set builds, whose window's cost the user accepted. Final runs on the real display: the drag probe 39 strokes, 0 failures, 0 holes in 13 loads, pose 1.55 ms, catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85; the idle-frame matrix on the steady state (`5972bef8`): Kuopio's poses at the exact cut (`close` +0.01, `overview` -0.00, `ground` -0.02 ms GPU p50), `saved` +0.21 (T35's), `city` -0.41, `city_low` -0.13, 0 overflows. Carried to `ROAD-68-H` by the user, 2026-10-27 ([list](roads.md#road-68-h--acceptance-and-cleanup)): the pose install's 2 of 594 frames over the 1.0 ms share, the probe's 14-20 ms whole frames, the streaming installs' 1.04-1.05 ms (`TERRAIN-07-G`'s), T42 (a) | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
@@ -7194,7 +7194,7 @@ bake's inputs keep gate D's abutment bottoms (the wall seams' bridge mouth rows,
 preview site query beside it; gate D's plain payload for road-owned patches stays, and with the
 commit's exact-cut validation gone (round 1) the patch ownership test is the exact cut's tests'
 only (`terrain_patch_requires_engineered_refinement`, test-only). The rebased round 3 tip
-(`c7bb9cf9`, `R0`) is this round's control: round 3's `F1` predates gate D, whose payloads and
+(`7b296caf`, `R0`) is this round's control: round 3's `F1` predates gate D, whose payloads and
 inputs differ (every Kuopio digest differs from `F1`'s, as gate D's product changes predict).
 
 **What landed (T27 (d); every committed product bitwise).**
@@ -7226,7 +7226,7 @@ inputs differ (every Kuopio digest differs from `F1`'s, as gate D's product chan
   stroke (14 tiles on a hillside) likewise (`a_kuopio_drag_converges_to_the_tiles_it_commits`).
 
 **Kuopio drags (fresh, stage-only runs, not a session; 10:16-10:37, both locks, `taskset -c
-0,2,4,6,8,10,12,14`, four workers; `$TEST_BINARY` builds of `R0` = `c7bb9cf9` (sha256
+0,2,4,6,8,10,12,14`, four workers; `$TEST_BINARY` builds of `R0` = `7b296caf` (sha256
 `22f9ecf5...`) and of each bound).** Products: every stroke's commit, undo, fast commit, fast undo
 and converged digest equal `R0`'s commit, undo and last pose digests (39 of 39), and both drags'
 pose frames are equal in every stroke. `R0` (the round 3 rule, every tile each pose): pose max
@@ -7234,9 +7234,9 @@ pose frames are equal in every stroke. `R0` (the round 3 rule, every tile each p
 
 | Bound (pose / catch-up frame tiles) | Frames | Over 3.0 ms | Frame p50 / p99 / max, ms | Catch-up frames a stroke | Fast click median / max, ms (over 3.0) |
 | --- | --- | --- | --- | --- | --- |
-| 4 / 6 (`73c43f49`) | 357 | 2, 1 | 0.92 / - / 3.28, 3.30 | 0-3 | 1.28 / 3.81, 4.21 (2, 1) |
+| 4 / 6 (`fb447ed8`) | 357 | 2, 1 | 0.92 / - / 3.28, 3.30 | 0-3 | 1.28 / 3.81, 4.21 (2, 1) |
 | 3 / 4 | 390 | 1, 2 | 0.88 / - / 3.18, 3.10 | 1-4 | 1.43 / 4.27, 4.26 (4, 2) |
-| 1 / 3 (`029bdd66`, sha256 `cac15eef...`) | 439 | 0, 0 | 0.77 / 2.14, 2.09 / 2.84, 2.87 | 1-6 (median 3) | 1.68 / 3.95, 4.06 (6, 6) |
+| 1 / 3 (`afb7512d`, sha256 `cac15eef...`) | 439 | 0, 0 | 0.77 / 2.14, 2.09 / 2.84, 2.87 | 1-6 (median 3) | 1.68 / 3.95, 4.06 (6, 6) |
 
 With 1 / 3: pose frames median 0.80 / 0.79 ms (max 2.84 / 2.87: `kuopio_08` attempt 22's last
 pose, its end tile alone beside a 0.24 ms selection), catch-up frames median 0.66 / 0.63 ms (max
@@ -7256,7 +7256,7 @@ parallel; the pass-1 listing, the bins' counting sort and per-bin sorts, the cov
 the row packing run on one thread.
 
 **Populated drags (fresh, not a session; 10:44-10:47, both locks, the same cores, four
-workers; cities prepared per binary and loaded, `R0 R5 R5 R0`, `R5` = `029bdd66`).** Products:
+workers; cities prepared per binary and loaded, `R0 R5 R5 R0`, `R5` = `afb7512d`).** Products:
 every stroke's commit, undo, fast commit, fast undo and converged digest equal `R0`'s (12 of 12,
 0 to 100k residents), and both drags' pose frames are equal in every stroke. `R0`: pose max 4.53
 / 4.17 ms, 4 / 3 poses over 3.0 ms (each tier's first sample). `R5`: every frame within 3.0 ms
@@ -7267,7 +7267,7 @@ ms and undo 1.61 / 1.54 ms. The fast click over 3.0 ms on each tier's first samp
 10k 3.97 / 3.69 ms (10 of 11 tiles baked), 30k 3.02 / 3.06 (7 of 8), 100k 4.25 / 4.29 (12 of
 13); median 1.70 / 1.77 ms.
 
-**Gate checks (fresh, on `348c7bde`).** Clippy `--all-targets`: exit 0, the 59-warning
+**Gate checks (fresh, on `1173822c`).** Clippy `--all-targets`: exit 0, the 59-warning
 baseline set (compared by file and message). Debug `cargo test --lib`, four workers: 1,977
 passed, 0 failed, 179 ignored. `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset): exit 0
 (the library as above, `tests/growth_scenario.rs` 4 passed, 23 Godot suites passed with no
@@ -7333,8 +7333,8 @@ only; round 4's numbers above are round 4's build.
   in one frame.
 
 **The landing session (fresh; 13:31-13:39, both locks, `taskset -c 0,2,4,6,8,10,12,14`, four
-workers, no restic; C F F C with `C` = `R0` (`c7bb9cf9`, sha256 `22f9ecf5...`, round 4's
-control and its saved cities) and `F` = `R2` (`84820119`, sha256 `bc11ea99...`, cities key
+workers, no restic; C F F C with `C` = `R0` (`7b296caf`, sha256 `22f9ecf5...`, round 4's
+control and its saved cities) and `F` = `R2` (`8348bcd9`, sha256 `bc11ea99...`, cities key
 `1a4091d7...` prepared before the session); every city `loaded`).**
 
 - Kuopio drags: `F` every frame within 3.0 ms (439 frames, 299 poses; max 2.79 / 2.92 ms,
@@ -7378,7 +7378,7 @@ Godot's rendering server is a dummy, so the layer uploads cost nothing there and
 script and the image copies only: the 1.0 ms share needs a real-display run of a drag (the
 coordinator's), as does the preview's rendering itself.
 
-**Gate checks (fresh, on `84820119` plus the round's test and doc edits).** Clippy
+**Gate checks (fresh, on `8348bcd9` plus the round's test and doc edits).** Clippy
 `--all-targets`: exit 0, the 59-warning baseline set exactly (compared by file and message).
 Debug `cargo test` inside `./run.sh --test`: library 1,978 passed, 0 failed, 179 ignored
 (`a_level_rule_selects_each_tile_at_its_own_level` new), `tests/growth_scenario.rs` 4 passed.
@@ -7429,14 +7429,14 @@ no longer holds the gate.
 - The commit takes over the preview's slots (Rust's `adopted`); a click with a pose of its own
   shows that pose's tiles first.
 
-**Fresh runs** (release library built once per tip: `a932b48b` for `8aef0f35`, then `cc2efec7`;
+**Fresh runs** (release library built once per tip: `a932b48b` for `8352fb1d`, then `cc2efec7`;
 RX 7900 XTX; the install share in ms, frames over 1.0 ms).
 
 | Run | pose | catch-up | fast click | commit | undo |
 | --- | --- | --- | --- | --- | --- |
-| Real display 15:27, `8aef0f35` | 17.69 (60 of 594) | 3.13 (4 of 141) | 1.13 (1 of 39) | 1.72 (5) | 0.86 (0) |
-| Real display 16:04, `d6aabf1d` | invalid: 36,467 instance-uniform overflows from the tenth load | | | | |
-| gamescope (GPU, no display) 16:34, `c8f33033` | 1.81 (6) | 0.82 (0) | 1.01 (1) | 0.56 (0) | 0.79 (0) |
+| Real display 15:27, `8352fb1d` | 17.69 (60 of 594) | 3.13 (4 of 141) | 1.13 (1 of 39) | 1.72 (5) | 0.86 (0) |
+| Real display 16:04, `b460656b` | invalid: 36,467 instance-uniform overflows from the tenth load | | | | |
+| gamescope (GPU, no display) 16:34, `8859d800` | 1.81 (6) | 0.82 (0) | 1.01 (1) | 0.56 (0) | 0.79 (0) |
 
 - 15:27: 49 of its 70 frames over 1.0 ms held a patch's whole cell build (`cells_ms`, 1-4
   patches, frames 20-32 ms); the others took at most 3.1 ms; the commits' frames were uploads
@@ -7457,11 +7457,11 @@ RX 7900 XTX; the install share in ms, frames over 1.0 ms).
 - `graded_tile_renderer_test.gd` (a set draws exactly while a tile of it shows graded, every
   resident patch's set built, none built by the preview or its commit, the commit adopts every
   previewed slot) and `road_junction_preview_test.gd` (13 fixtures, 52 tiles bitwise) pass on
-  `cc2efec7` headless. Clippy `--all-targets` on `a58a49d8`: the 59-warning baseline set exactly.
+  `cc2efec7` headless. Clippy `--all-targets` on `2202a2cc`: the 59-warning baseline set exactly.
   Lines: `graded/` and `roadbed/` unchanged (no change under `simulation/`; the Rust change is
   the commit's `adopted` flag in `nodes/`).
 
-- Real display 16:42, `a58a49d8` (`c8f33033`'s code): no overflow, 39 strokes, 0 failures;
+- Real display 16:42, `2202a2cc` (`8859d800`'s code): no overflow, 39 strokes, 0 failures;
   pose 1.31 ms (4 of 594 over 1.0, each a frame flipping 1-4 sets, 0.6-0.9 ms of flips),
   catch-up 0.68, fast click 0.87, commit 0.51, undo 0.87, every one within the share but those
   four pose frames; GPU p50 2.63 ms. Not acceptance: the user saw three visual failures.
@@ -7498,13 +7498,13 @@ row, which stays as written. That miss no longer holds the gate.
 
 **The holes.** Round 6's check could not fail: `hole_patches()` compared the patch node's
 `visibility_range_end`, which Godot keeps as a 32-bit float, with the 64-bit `HIDDEN_RANGE_M`, so
-no collapsed node ever matched (on `a58a49d8`'s renderer, before the fix, with the check added:
+no collapsed node ever matched (on `2202a2cc`'s renderer, before the fix, with the check added:
 3 cases, 0 holes, gamescope 17:40). It compares with `is_equal_approx` now, and the probe also
 counts the holes right after each load, where the user saw them.
 
 | Run (gamescope, GPU-backed, no display; library `cc2efec7`) | Loads with holes | Frames with holes |
 | --- | --- | --- |
-| `a58a49d8`'s renderer, the fixed check, `kuopio_01`-`03` (18:01) | 2nd: 2 patches, 3rd: 6 | 56 of 140 (fails) |
+| `2202a2cc`'s renderer, the fixed check, `kuopio_01`-`03` (18:01) | 2nd: 2 patches, 3rd: 6 | 56 of 140 (fails) |
 | The tip (18:11, 13 cases, 39 strokes) | none of 13 | 0 of 1,117 (passes) |
 
 Renders of the user's two views in the game scene (gamescope, GPU-backed, `screenshots-C.sh`'s
@@ -7546,7 +7546,7 @@ passed (`graded_tile_renderer_test.gd` with the fixed hole check, 0 failures;
 tests (Forward+ display) and the shader global probe (headless). Lines: `graded/` and `roadbed/`
 unchanged (no change under `rust/src/`).
 
-**The real-display probe on `d8aed5c2`** (the coordinator, 19:49, `windowed-20261027T185026`,
+**The real-display probe on `b6546173`** (the coordinator, 19:49, `windowed-20261027T185026`,
 no screenshots taken): success, 39 strokes, 0 failures, every log check 0, 0 holes in 13 loads and
 1,117 recorded frames; pose 1.55 ms (2 of 594 over the 1.0 ms share: `kuopio_12` attempts 34 and
 36, four sets starting to draw), catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85 ms; GPU
@@ -7560,7 +7560,7 @@ drag frames of 14-20 ms while the terrain install took under 1.6 ms; the streami
 1.04-1.05 ms (gate D's, named for `TERRAIN-07-G`'s acceptance); [T42](#terrain-07-open-questions)
 (a), the preview levels without hysteresis, pending the user's review.
 
-**The idle-frame matrix on `d8aed5c2`** (the coordinator, the real display, 19:54): every session
+**The idle-frame matrix on `b6546173`** (the coordinator, the real display, 19:54): every session
 0 overflows; graded minus exact GPU p50 `city` -0.52, `city_low` -0.40, `saved` +0.22, `ground`
 +0.03, but `close` +0.76 and `overview` +0.61 ms (gate D's matrix: +0.01 and -0.01) with the same
 primitives and draws; loads Kuopio 2,460 / 2,364 against 2,832 / 2,722 ms, saved 3,376 / 3,405
@@ -7593,11 +7593,43 @@ prewarm and the pools), the settle 1,974 exact, 2,094 graded with no build and 2
 the builds, so the builds add about 70-170 ms of it (one session each): the user's "slower load
 is ok" (2026-10-27) covers it.
 
-**Open (not relaxed).** One more matrix on this tip (the coordinator's); the flips' material
-binding (pose frames to 1.55 ms): a candidate is binding a set's materials as it is built, which
-would make every built set hold its nodes' instance-uniform slots (Kuopio: 1,296 x 5 x 16 =
-103,680 of the 1,048,576 slots) and reverse gate D round 9's binding while drawing, so it is not
-taken.
+**The matrix on the steady state** (the coordinator, the real display, 20:56-21:05, `5972bef8`,
+`73427e1a` before the rebase; 12 sessions, 0 overflows; every graded session's builds waited:
+Kuopio 1,168 / 1,171 in 1,060 / 1,061 frames, 3.13 / 3.03 s, the saved city 972 in 960 / 957
+frames, 6.03 s, the town 48 in 0.53 / 0.65 s). Terrain GPU p50, exact / graded (two rounds each):
+
+| Pose | Exact | Graded | Graded - exact |
+| --- | --- | --- | --- |
+| `close` | 1.09 1.08 | 1.09 1.10 | +0.01 (the same primitives and draws) |
+| `overview` | 1.24 1.25 | 1.26 1.24 | -0.00 |
+| `ground` | 1.01 0.99 | 0.98 0.97 | -0.02 |
+| `saved` | 2.13 2.13 | 2.34 2.34 | +0.21 (T35's residual, accepted by the user) |
+| `city` | | | -0.41 |
+| `city_low` | | | -0.13 |
+
+Camera paths: `orbit_high` +0.22 and `zoom_in` +0.19 (as in gate D's matrix), `orbit_low` +0.01,
+`pan_high` +0.00, `pan_low` -0.10 ms. Loads (the builds' wait outside them): Kuopio 2,548 / 2,350
+against 2,793 / 2,807 ms, saved 3,329 / 3,322 against 3,662 / 3,668, the town 4,560 / 4,586 against
+3,740 / 3,784.
+
+**Gate E passed, 2026-10-27.** Final gate checks on `5972bef8` (`73427e1a` before the rebase;
+fresh): clippy `--all-targets` the 59-warning baseline set exactly (no Rust change since round 6);
+`./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset, 21:06-21:25): exit 0, no script error, debug
+library 1,978 passed, 0 failed, 179 ignored, `tests/growth_scenario.rs` 4 passed, every Godot
+suite passed (`graded_tile_renderer_test.gd` 0 failures, `road_junction_preview_test.gd` 13
+fixtures, 52 tiles bitwise); skipped: the rendered vegetation tests (Forward+ display) and the
+shader global probe (headless). Lines: `graded/` 6,087 and `roadbed/` 9,617 (round 5's count,
+unchanged since: rounds 6-7 changed nothing under `rust/src/simulation/`);
+`terrain_graded_tiles.gd` 1,859 (1,372 on `road`: the preview layer, the staged installs, the
+cell sets built off the frame paths). The gate commit is rebased onto `road` `48de2212` (a roadmap
+row) with the WIP commits; the hashes in this record are the rebased ones, and the round's
+artefacts name the commits before the rebase (`73427e1a` is `5972bef8`, `d8aed5c2` is `b6546173`, `a58a49d8` is `2202a2cc`).
+
+**Open (not relaxed), for later gates.** The items carried to `ROAD-68-H` (above); the flips'
+material binding (pose frames to 1.55 ms): a candidate is binding a set's materials as it is
+built, which would make every built set hold its nodes' instance-uniform slots (Kuopio: 1,296 x 5
+x 16 = 103,680 of the 1,048,576 slots) and reverse gate D round 9's binding while drawing, so it is
+not taken.
 
 #### `TERRAIN-07-F` — consumers re-pointed
 
