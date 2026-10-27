@@ -999,6 +999,9 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 	# Every resident patch builds its set; a drawing set follows a new step in this frame (the
 	# camera moved), a hidden one is built again off the frame.
 	var cells: Dictionary = patch_cells.get(key, {})
+	if not cells.is_empty() and bool(cells["shown"]) and cells["node_parent"] != resident_patches[key]["node"]:
+		_hide_cells(cells)
+		_dirty_shown[key] = true
 	if cells.is_empty():
 		_builds[key] = true
 	elif int(cells["step"]) != int(resident_patches[key]["step"]):
@@ -1538,7 +1541,7 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	var flip_us := Time.get_ticks_usec()
 	_frame_flips += 1
 	if not draw:
-		_hide_cells(cells, patch_node)
+		_hide_cells(cells)
 		_frame_flip_us += Time.get_ticks_usec() - flip_us
 		return
 	cells["shown"] = true
@@ -1573,17 +1576,35 @@ func _previews_in(cells: Dictionary) -> bool:
 			return true
 	return false
 
-# The set stops drawing: out of the tree, its materials unbound, the patch's PlaneMesh back.
-func _hide_cells(cells: Dictionary, patch_node: GeometryInstance3D) -> void:
+# The set stops drawing: out of the tree, its materials unbound, and the PlaneMesh it collapsed
+# (the node it drew under, whatever node the patch holds now) drawing again: terrain.gd pools
+# its patch nodes, and a pooled node left collapsed draws nothing for the next patch it takes
+# (`TERRAIN-07-E` round 6: the holes after a world load, whose clear() released the sets
+# without their nodes).
+func _hide_cells(cells: Dictionary) -> void:
 	cells["shown"] = false
 	for node: Node in cells["nodes"] + [cells["walls"]]:
 		if node.get_parent() != null:
 			node.get_parent().remove_child(node)
+	var patch_node: Variant = cells["node_parent"]
 	cells["node_parent"] = null
 	_bind_materials(cells, false)
-	if patch_node != null:
-		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
-		patch_node.visibility_range_end = 0.0
+	if is_instance_valid(patch_node):
+		(patch_node as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 0.0)
+		(patch_node as GeometryInstance3D).visibility_range_end = 0.0
+
+## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
+## it (a hole showing the sky). For tests and the probe; O(resident patches).
+func hole_patches() -> int:
+	var holes := 0
+	for key: Vector2i in _resident.keys():
+		var node: GeometryInstance3D = _resident[key]["node"]
+		if node == null or node.visibility_range_end != HIDDEN_RANGE_M:
+			continue
+		var cells: Dictionary = patch_cells.get(key, {})
+		if cells.is_empty() or not bool(cells["shown"]) or cells["node_parent"] != node:
+			holes += 1
+	return holes
 
 # The wall faces of the patch's installed tiles, each drawn by the patch holding its midpoint
 # (a face of a tile two patches share draws once), as one instance whose transform carries
@@ -1635,7 +1656,7 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 		patch_node.visibility_range_end = 0.0
 	if cells.is_empty():
 		return
-	_hide_cells(cells, null)
+	_hide_cells(cells)
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.visible = false
 		node.multimesh.visible_instance_count = 0

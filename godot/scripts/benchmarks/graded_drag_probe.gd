@@ -42,6 +42,8 @@ var _frames: Array = []
 var _kind := ""
 var _last_us := 0
 var _seen := {}
+# Recorded frames with a resident patch drawing nothing.
+var _holes := 0
 
 func run(bench: Node) -> void:
 	_bench = bench
@@ -138,6 +140,9 @@ func _stroke(case_id: String, stroke: Dictionary) -> Dictionary:
 	for name: String in CREATED + HEALTH:
 		_expect(int(after[name]) == int(before[name]), record, "%s changed by %d" % [name, int(after[name]) - int(before[name])])
 	_expect(record.fast.committed and record.converged.committed, record, "both clicks commit")
+	_expect(_holes == 0, record, "%d frames drew a resident patch with nothing (a hole)" % _holes)
+	_holes = 0
+	_expect(_graded.hole_patches() == 0, record, "after the stroke a resident patch draws nothing")
 	record.ok = _failures.size() == failures
 	return record
 
@@ -230,7 +235,11 @@ func _next_frame() -> void:
 		"pending": int(_bench.road_tool._graded_pending),
 		"cell_patches": _graded.patch_cells.size(),
 		"cell_builds": int(counters["cell_builds"]) - int(_seen["cell_builds"]),
+		# Resident patches drawing nothing (sky through the ground): a failure in any frame.
+		"holes": _graded.hole_patches(),
 	}
+	if int(row["holes"]) > 0:
+		_holes += 1
 	if int(counters["preview_frames"]) != int(_seen["preview_frames"]):
 		row["preview_ms"] = float(counters["preview_install_ms_last"])
 		row["preview_tiles"] = int(counters["preview_tiles_last"])

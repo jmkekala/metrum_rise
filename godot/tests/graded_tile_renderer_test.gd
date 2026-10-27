@@ -59,6 +59,7 @@ func _run() -> void:
 	if graded.installed.has(junction):
 		_expect(int(graded.installed[junction]["level"]) == 0, "the junction's tile must be at GL0")
 	_expect(graded.patch_cells.size() == resident.size(), "every resident patch has its cell set built: %d of %d" % [graded.patch_cells.size(), resident.size()])
+	_expect(graded.hole_patches() == 0, "every resident patch draws its PlaneMesh or its set")
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 	# A pooled cell set binds no material, so it holds none of Godot's instance uniform slots.
@@ -493,6 +494,7 @@ func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera
 	# The converged preview's tiles are the commit's: each takes over its preview slot, no upload.
 	var adopted := int(graded.counters["edit_adopted"]) - adopted_before
 	_expect(adopted == shown.size(), "the commit adopts every previewed tile's slot: %d of %d" % [adopted, shown.size()])
+	_expect(graded.hole_patches() == 0, "after the commit every resident patch draws its PlaneMesh or its set")
 	# The patches' new generations, as terrain.gd hands them over after the commit.
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1

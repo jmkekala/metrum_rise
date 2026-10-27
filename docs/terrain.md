@@ -4344,7 +4344,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
-| `TERRAIN-07-E` | in progress (rounds 1-5, 2026-10-26/27, branch `terrain07-E`, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget). Not passed yet: the Godot install share needs a real-display run | Preview, commit, undo and load |
+| `TERRAIN-07-E` | in progress (rounds 1-5, 2026-10-26/27, branch `terrain07-E`, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Open: the real-display run on the fixes, the sets' flips on pose frames, T43 (the breakdown's commit without a preview, for the user) | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
@@ -7395,6 +7395,83 @@ click-to-committed under 16.7 ms stays binding, and the [budgets](#budgets) reco
 accepted exception beside the commit row, which stays as written. (g) is not taken. That miss
 no longer holds the gate.
 
+**What landed** ([corrections](#preview-commit-undo-and-load) round 6,
+[cell sets](#godot-tile-renderer)).
+
+- The real-display drag probe: `graded_drag_probe.gd`, the gameplay harness's `graded_drag` matrix.
+  Kuopio's 39 pinned strokes (13 cases, the source world loaded per case) through the production
+  road tool, as `benchmark_kuopio_graded_drags` drags them: eight poses a frame each, a click at
+  once and its undo, then the same drag caught up and clicked; the camera 40 m from the stroke's
+  end (the tiles round the click at `GL0`). Per frame the terrain renderer's install share (the
+  preview's `show_preview`, the edit batch's frame) with its parts, bytes uploaded and the
+  viewport's GPU time; it fails on the renderer's bookkeeping (pools, bakes, creation, batch
+  installs, the preview's release, one catch-up share a frame) and on an instance-uniform overflow
+  in its log. Command: `display-awake.sh t07e6/drag-probe.sh` (`$ARTIFACTS`), windowed
+  1920x1080, vsync, P-cores, both locks.
+- Cell sets built off the frame paths, hidden until they draw, with no mesh, instance uniform or
+  material until then; the renderer frees its sets with itself; a set's MultiMesh data on the CPU
+  from its first build; a tile rewrites its neighbours' sides only when its lattice code changed.
+- The commit takes over the preview's slots (Rust's `adopted`); a click with a pose of its own
+  shows that pose's tiles first.
+
+**Fresh runs** (release library built once per tip: `a932b48b` for `8aef0f35`, then `cc2efec7`;
+RX 7900 XTX; the install share in ms, frames over 1.0 ms).
+
+| Run | pose | catch-up | fast click | commit | undo |
+| --- | --- | --- | --- | --- | --- |
+| Real display 15:27, `8aef0f35` | 17.69 (60 of 594) | 3.13 (4 of 141) | 1.13 (1 of 39) | 1.72 (5) | 0.86 (0) |
+| Real display 16:04, `d6aabf1d` | invalid: 36,467 instance-uniform overflows from the tenth load | | | | |
+| gamescope (GPU, no display) 16:34, `c8f33033` | 1.81 (6) | 0.82 (0) | 1.01 (1) | 0.56 (0) | 0.79 (0) |
+
+- 15:27: 49 of its 70 frames over 1.0 ms held a patch's whole cell build (`cells_ms`, 1-4
+  patches, frames 20-32 ms); the others took at most 3.1 ms; the commits' frames were uploads
+  (`batch_ms` 0.23-0.69), cell updates (0.32-0.97) and material syncs (to 0.41); catch-up
+  uploads at most 0.19 ms, so no byte budget is needed.
+- 16:04 is not valid (cells drew with failed uniforms; its GPU p50 2.37 ms against 3.01): every
+  prebuilt set had its instance uniforms set, and every world load leaked the previous renderer's
+  1,296 sets.
+- Under gamescope (16:17, the overflow fixed: 0 overflows over 13 loads) the pose frames still took
+  up to 2.65 ms, attributed to a tile moving into a level's MultiMesh: 0.5-2.1 ms of writes for 1-4
+  moves (RD reading the bulk buffer back), about 4 us an in-place write; with the data on the CPU
+  the writes take 0.02-0.06 ms a frame (16:29, `kuopio_08` and `kuopio_12`: pose max 0.71 ms).
+  16:34's six pose frames over 1.0 ms are flips of 1-4 sets starting to draw (0.3-0.7 ms each:
+  meshes, uniforms, materials, reparenting) where a pose's first tiles reach patches not drawing.
+- The converged commits adopted every tile (headless 416 of 416; no upload in any commit frame
+  under gamescope); no set was built in any recorded frame. After each load the builds took the
+  streaming budget's spare time until Kuopio's 1,296 sets were built (8-22 s headless).
+- `graded_tile_renderer_test.gd` (a set draws exactly while a tile of it shows graded, every
+  resident patch's set built, none built by the preview or its commit, the commit adopts every
+  previewed slot) and `road_junction_preview_test.gd` (13 fixtures, 52 tiles bitwise) pass on
+  `cc2efec7` headless. Clippy `--all-targets` on `a58a49d8`: the 59-warning baseline set exactly.
+  Lines: `graded/` and `roadbed/` unchanged (no change under `simulation/`; the Rust change is
+  the commit's `adopted` flag in `nodes/`).
+
+- Real display 16:42, `a58a49d8` (`c8f33033`'s code): no overflow, 39 strokes, 0 failures;
+  pose 1.31 ms (4 of 594 over 1.0, each a frame flipping 1-4 sets, 0.6-0.9 ms of flips),
+  catch-up 0.68, fast click 0.87, commit 0.51, undo 0.87, every one within the share but those
+  four pose frames; GPU p50 2.63 ms. Not acceptance: the user saw three visual failures.
+  - *Holes* (sky through patch-shaped areas of a hillside, trees over them): terrain.gd pools its
+    patch nodes, and `clear()` (each world load) released the drawing sets without restoring the
+    PlaneMesh they had collapsed, so a pooled node took its next patch collapsed and drew
+    nothing. Gate D's `clear()` did the same; the probe's 13 loads expose it. Fixed after the run:
+    a set stopping to draw restores the node it collapsed, a drawing set whose patch took another
+    node flips under the new one, and the probe and `graded_tile_renderer_test.gd` fail on a
+    resident patch drawing nothing (`hole_patches`). Not yet verified on the display.
+  - *Grass on the asphalt*: `grass.gd` renders its surface mask from each patch's PlaneMesh with
+    the patch material, which holds no road in graded mode; this branch does not touch it (the
+    same on `road`'s gate D tip by the code; a comparison render is still to do): the graded grass
+    mask is `TERRAIN-07-F`'s.
+  - *Grey cells floating over the hill*: the road tool's zoning cells, at heights from the exact
+    cut's surface, not the graded ground: re-pointing the cell overlays is `TERRAIN-07-F`'s (same
+    caveat: no comparison render yet).
+
+**Open (not relaxed).** The holes' fix on the display; gate D comparison renders for the grass and
+the cells; the pose frames' set flips (up to 1.31 ms on the display); the fast click's uploads of
+tiles an older pose showed; [T43](#terrain-07-open-questions), the breakdown's commit without a
+preview (for the user). Not run this round: the landing session (no Rust stage changed; the
+`adopted` flag runs only with a renderer's view, which the benchmarks have not) and
+`./run.sh --test` (waiting on the run lock at the round's end).
+
 #### `TERRAIN-07-F` — consumers re-pointed
 
 1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
@@ -8494,6 +8571,23 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (six selections and bakes a tile).
     - **Recommendation.** (a): exact, `O(one selection)`, and the rule's numbers stay the
       renderer's. Built in round 5 (`LevelRule`); reversible inside the branch.
+43. **T43. The commit breakdown's commit without a preview (`TERRAIN-07-E` round 6) — open, for
+    the user.**
+    - **Evidence** (round 5's landing session, [record](#terrain-07-e-record)). Gate E's
+      acceptance holds `benchmark_populated_commit_breakdown`'s terrain stage per commit to
+      3.0 ms from 0 to 100k. Its commits have no preview, so they stage nothing in advance and
+      bake every dirty tile in the commit's frame: 1.07-2.01 ms on every sample except each
+      tier's first, 3.53-3.57 ms at 10k and 3.98-4.26 ms at 100k (the control the same: T21's
+      full-edit bake, carried here under T20 (a)). In the game every road commit comes from the
+      road tool with its preview, whose converged commit takes at most 1.90 ms; a click before
+      the preview caught up is T27 (f)'s accepted exception (up to 4.72 / 4.38 ms), of which a
+      commit without a preview is the limit (no tile staged).
+    - **Options.** (a) Count the breakdown's commit without a preview as T27 (f)'s case, beside
+      the same budget row; the breakdown keeps measuring it. (b) Keep it binding: the
+      full-edit bake's levers are spent (T21 (a), T27 rounds 2-5), so only less work per tile
+      would close it, and gate E stays open on it.
+    - **Recommendation.** (a): the same commit, exact in its frame, under the same 16.7 ms
+      target; not taken, since it widens an accepted exception.
 
 #### Superseded `ROAD-68` questions
 
