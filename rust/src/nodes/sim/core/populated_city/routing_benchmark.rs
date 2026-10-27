@@ -1309,6 +1309,10 @@ fn profile_commits(
         let adopt = Instant::now();
         let first = core.step_frame(FRAME_DT_S);
         let first_frame_ms = adopt.elapsed().as_secs_f64() * 1e3;
+        // The sim thread hands the view of the adopted lots to the road tool, as here.
+        if let Some(publication) = core.take_adopted_road_tool_view() {
+            published.publish(publication);
+        }
         // The commit's zoning products, to compare builds that must not change them: cell
         // paint and lot claims, parcels in store order and the queued lot regions; and the
         // generated cell cache, which a build may legitimately fill less.
