@@ -77,6 +77,9 @@ var tile_tokens: Dictionary = {}
 # until every tile of the batch has one, then install in the same frame.
 var _edit_batch: Dictionary = {}
 var _edit_staged: Dictionary = {}
+# Results polled after the frame's install budget ran out, in poll order: the next frame installs
+# them first (Rust hands a result over once). At most POLL_BATCH - 1.
+var _deferred: Array[Dictionary] = []
 # The tiles the last edit batch installed, for tests and the probe.
 var last_edit_batch: Array = []
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
@@ -143,6 +146,8 @@ var counters := {
 	"materials_created": 0,
 	"multimeshes_created": 0,
 	"uploads": 0,
+	# Polled results a frame left to the next one, its budget spent.
+	"installs_deferred": 0,
 	"evictions": 0,
 	"pool_exhausted": 0,
 	"walls_truncated": 0,
@@ -154,6 +159,9 @@ var counters := {
 	"edit_install_ms_max": 0.0,
 	"install_ms_last": 0.0,
 	"install_ms_max": 0.0,
+	# The streaming installs' own part of a frame (the polls and their installs), without the
+	# re-levelling and the edit batch before them.
+	"stream_install_ms_max": 0.0,
 	"poll_ms_max": 0.0,
 	"upload_ms_max": 0.0,
 	# The last edit frame's parts (ms) and the patches whose cells or walls it rewrote.
@@ -304,6 +312,7 @@ func clear() -> void:
 	tile_tokens.clear()
 	_edit_batch.clear()
 	_edit_staged.clear()
+	_deferred.clear()
 	patch_lists.clear()
 	patch_lists_requested.clear()
 	refused.clear()
@@ -353,6 +362,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	if batch_tiles == 0:
 		_poll_and_install(start_us, resident_patches)
 	var polled_us := Time.get_ticks_usec()
+	counters["stream_install_ms_max"] = max(float(counters["stream_install_ms_max"]), float(polled_us - batch_us) / 1000.0)
 	counters["install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
 	for key: Vector2i in changed_patches.keys():
@@ -428,8 +438,20 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
 
+# Installs finished bakes until the frame's install budget is spent, checked before each tile:
+# a frame ends within the budget plus one tile's install (round 7's check after each poll of
+# POLL_BATCH tiles overran it by up to the batch). The frame's first install is unconditional, so
+# installs progress whatever the frame's other work cost. O(installed tiles + POLL_BATCH).
 func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
+	var progressed := false
+	while not _deferred.is_empty():
+		if progressed and _over_budget(start_us):
+			return
+		_install(_deferred.pop_front(), resident_patches)
+		progressed = true
 	while true:
+		if progressed and _over_budget(start_us):
+			return
 		var poll_start_us := Time.get_ticks_usec()
 		var result: Dictionary = simulation_node.poll_graded_tile_results(POLL_BATCH)
 		counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(Time.get_ticks_usec() - poll_start_us) / 1000.0)
@@ -459,11 +481,17 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 			_failed(failure)
 		var tiles: Array = result.get("tiles", [])
 		for tile: Dictionary in tiles:
+			if progressed and _over_budget(start_us):
+				_deferred.append(tile)
+				counters["installs_deferred"] += 1
+				continue
 			_install(tile, resident_patches)
+			progressed = true
 		if tiles.size() < POLL_BATCH:
 			return
-		if float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS:
-			return
+
+static func _over_budget(start_us: int) -> bool:
+	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
 
 # A failed request: a transient one (busy core, unready site index) is asked again; one Rust
 # refuses by contract is recorded with its token, counted and logged once, and not asked again
