@@ -431,7 +431,15 @@ pub(super) fn bake_unless_held(
             .filter_map(|((payload, held), &(level, tile))| {
                 let compare = held.as_deref().map(|held| &held.inputs);
                 let staged = with_scratch(|scratch| {
-                    bake_tile(&inputs, tile, level, Evaluation::Lanes, compare, scratch, payload)
+                    bake_tile(
+                        &inputs,
+                        tile,
+                        level,
+                        Evaluation::Lanes,
+                        compare,
+                        scratch,
+                        payload,
+                    )
                 });
                 match staged {
                     Ok(Bake::Adopted) => None,

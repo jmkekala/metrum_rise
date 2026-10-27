@@ -257,7 +257,10 @@ pub(crate) mod spans {
             op();
             if recording {
                 let span = (at, started, Instant::now());
-                SPANS.lock().unwrap_or_else(PoisonError::into_inner).push(span);
+                SPANS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(span);
             }
         }
     }

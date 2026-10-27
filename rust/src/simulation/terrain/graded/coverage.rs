@@ -43,12 +43,7 @@ pub(super) fn covering_triangles(
 /// (sorted, row-major by `z`): `road[k]` is the highest covering triangle's height at lattice
 /// point `k`, `-inf` where none covers it. Heights are `+ 0.0` so a negative zero never decides
 /// a maximum. `O(K)` for the `K` lattice points in the triangles' boxes.
-pub(super) fn rasterize(
-    triangles: &[[RoadVec3; 3]],
-    xs: &[f64],
-    zs: &[f64],
-    road: &mut Vec<f32>,
-) {
+pub(super) fn rasterize(triangles: &[[RoadVec3; 3]], xs: &[f64], zs: &[f64], road: &mut Vec<f32>) {
     road.clear();
     road.resize(xs.len() * zs.len(), f32::NEG_INFINITY);
     for triangle in triangles {
