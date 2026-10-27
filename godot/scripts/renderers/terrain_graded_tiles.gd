@@ -160,6 +160,8 @@ var counters := {
 	"materials_created": 0,
 	"multimeshes_created": 0,
 	"uploads": 0,
+	# Texel and row bytes written into the pools' layers.
+	"upload_bytes": 0,
 	# Polled results (edits, lists, failures, tiles) a frame left to the next one, its budget
 	# spent.
 	"results_deferred": 0,
@@ -172,8 +174,13 @@ var counters := {
 	"edit_tiles_last": 0,
 	"edit_install_ms_last": 0.0,
 	"edit_install_ms_max": 0.0,
-	# The road preview's installs (show_preview), the most one frame took.
+	# The road preview's installs (show_preview), the most one frame took; the frames that
+	# changed the preview, and the last such frame's milliseconds and tiles.
 	"preview_install_ms_max": 0.0,
+	"preview_frames": 0,
+	"preview_install_ms_last": 0.0,
+	"preview_tiles_last": 0,
+	"preview_parts": {},
 	"install_ms_last": 0.0,
 	"install_ms_max": 0.0,
 	# The streaming installs' own part of a frame (the polls and their installs), without the
@@ -484,10 +491,23 @@ func show_preview(changes: Dictionary) -> float:
 		_drop_preview(Vector2i(removed[index], removed[index + 1]))
 	for tile: Dictionary in tiles:
 		_show_preview_tile(tile)
+	var tiles_us := Time.get_ticks_usec()
+	var cell_patches := _dirty_patches.size()
 	_apply_cell_changes(_resident)
+	var cells_us := Time.get_ticks_usec()
+	var wall_patches := _dirty_walls.size()
 	_apply_wall_changes(_resident)
-	var ms := float(Time.get_ticks_usec() - start_us) / 1000.0
+	var end_us := Time.get_ticks_usec()
+	var ms := float(end_us - start_us) / 1000.0
 	counters["preview_install_ms_max"] = max(float(counters["preview_install_ms_max"]), ms)
+	counters["preview_frames"] += 1
+	counters["preview_install_ms_last"] = ms
+	counters["preview_tiles_last"] = tiles.size()
+	# The frame's slot writes and drops, then the cell and wall rewrites they caused.
+	counters["preview_parts"] = {
+		"tiles_ms": float(tiles_us - start_us) / 1000.0, "cells_ms": float(cells_us - tiles_us) / 1000.0,
+		"walls_ms": float(end_us - cells_us) / 1000.0, "cell_patches": cell_patches, "wall_patches": wall_patches,
+	}
 	return ms
 
 ## Drops the preview tiles of preview epochs `first_epoch` to `last_epoch`: the installed tiles
@@ -562,6 +582,7 @@ func _write_slot(code: int, slot: int, tile: Dictionary) -> void:
 	(pool["rows"] as Texture2DArray).update_layer(row_image, slot)
 	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
 	counters["uploads"] += 1
+	counters["upload_bytes"] += (tile["texels"] as PackedByteArray).size() + (tile["rows"] as PackedByteArray).size()
 
 # Takes finished work (edits, patch lists, failures, tile bakes, in that order per poll) until the
 # frame's install budget is spent, checked before each result and before each tile a list or a

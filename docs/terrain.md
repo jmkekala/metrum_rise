@@ -4139,8 +4139,8 @@ km.
     preview's, updated by each catch-up frame); the commit adopts those whose inputs match and
     bakes the rest in its own frame, so the committed tiles are exact at once. A click right
     after a fast drag finds most of `W` unstaged and bakes it: that stage can exceed 3.0 ms
-    ([T27](#terrain-07-open-questions) round 4, open for the user); it is never spread over
-    frames.
+    ([T27](#terrain-07-open-questions) (f), accepted by the user, 2026-10-27); it is never
+    spread over frames.
   - *What stays exact.* The preview's road surface, markings and junctions every frame; the
     commit, undo and load bitwise in the frame they happen. Cancel swaps back to the published
     tiles as before.
@@ -4240,6 +4240,13 @@ No stage scans the city.
 | Load | not above the exact cut's load in the same session (Kuopio and the populated city) |
 | Memory | the pools of the [memory table](#data), plus the undo records' kept tiles ([T20](#terrain-07-open-questions)); Rust keeps no other baked tile at rest |
 
+Accepted exception to the commit row ([T27](#terrain-07-open-questions) (f), the user,
+2026-10-27): a click right after a fast drag, before the preview has caught up, bakes the tiles
+the preview has not staged in its own frame, and that terrain stage may exceed 3.0 ms (measured
+up to 4.72 ms on Kuopio and 4.38 ms at 100k). The commit stays exact in its frame, `ROAD-68`'s
+click-to-committed under 16.7 ms stays binding, and the row's 3.0 ms holds for every other
+commit and undo.
+
 The spike's 1.64-2.52 ms per edit has none of: the conflict terms of the reach, coverage
 rasterization, sites, materials, the apron, the levels or packing. `TERRAIN-07-A`, `-C` and `-E`
 measure them against this budget; the budget is not relaxed to fit.
@@ -4299,7 +4306,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
-| `TERRAIN-07-E` | in progress (rounds 1-5, 2026-10-26/27, branch `terrain07-E`, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user ((g) recommended: hold the click until the preview has caught up). Not passed: the fast click; the Godot install share needs a real-display run | Preview, commit, undo and load |
+| `TERRAIN-07-E` | in progress (rounds 1-5, 2026-10-26/27, branch `terrain07-E`, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget). Not passed yet: the Godot install share needs a real-display run | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
@@ -7341,6 +7348,15 @@ preview layer.
 4.3 ms, the carried T21 miss, the same as the control); the Godot install share is measured
 headless only. Gate E's acceptance does not pass this round; the commit is WIP.
 
+Round 6, 2026-10-27, the same branch on `road` at `d456913e` (unmoved).
+
+**Decided by the user: T27 (f).** The click right after a fast drag, before the preview has
+caught up, may take more than 3.0 ms of terrain stage (round 5's session: up to 4.72 ms on
+Kuopio, 4.38 ms at 100k); the commit stays exact in its own frame, `ROAD-68`'s
+click-to-committed under 16.7 ms stays binding, and the [budgets](#budgets) record it as the
+accepted exception beside the commit row, which stays as written. (g) is not taken. That miss
+no longer holds the gate.
+
 #### `TERRAIN-07-F` — consumers re-pointed
 
 1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
@@ -8080,8 +8096,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Round 8: (a) built** ([re-levelling by camera travel](#godot-tile-renderer), [cells per
       tile](#godot-tile-renderer)); measured in the [record](#terrain-07-d-record), round 8.
 27. **T27. A drag's poses rebake every tile they select (`TERRAIN-07-E` round 1) — (d), terrain
-    only, decided by the user, 2026-10-27; built in round 4 (the Rust half). Open, not relaxed:
-    the commit right after a fast drag.**
+    only, decided by the user, 2026-10-27; built in round 4 (the Rust half). The commit right
+    after a fast drag: (f), decided by the user, 2026-10-27, the accepted exception beside the
+    3.0 ms budget.**
     - **Evidence** (fresh, [record](#terrain-07-e-record)). A pose adopts a held tile only when the
       tile's window inputs (every seam within the cap, the covering top triangles, the sites, the
       base revisions) equal the last pose's. A growing stroke rebuilds its whole span each pose:
@@ -8242,6 +8259,13 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         the cost of that input delay. More workers ((e)) stay ruled out by the user.
         Recommendation: (g), the only option inside the budget that keeps the commit exact in
         its frame; it changes when a click commits, so it is the user's.
+      - **Decided by the user, 2026-10-27: (f).** On a click right after a fast drag, before
+        the preview has caught up, the commit's terrain stage may exceed 3.0 ms (measured up
+        to 4.72 ms on Kuopio and 4.38 ms at 100k, round 5's session). The commit stays exact in
+        its own frame (it adopts the shown tiles whose inputs match and bakes the rest, never
+        spread over frames); `ROAD-68`'s click-to-committed under 16.7 ms stays binding; the
+        3.0 ms row of the [budgets](#budgets) stays as written, with this exception recorded
+        beside it. (g) is not taken: holding the click would break that commit target.
 34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b), decided by the user,
     2026-10-27: the cut arm under every road replaces the user's T4 decision (`TD11`'s fill
     arm).** Built in round 8.

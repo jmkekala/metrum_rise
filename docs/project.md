@@ -439,8 +439,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   a fast drag finishes the remaining tiles in its own frame, up to 4.3 ms. Round 5 builds the
   Godot half: the preview's tiles show in the game at the camera's levels and the commit's
   tiles install without a rebake, bit for bit the preview's, a fresh bake's and the loaded
-  save's; the click right after a fast drag still misses (bound by its tiles' total work) and
-  goes to the user (`terrain.md` T27). See the
+  save's; the click right after a fast drag still misses (bound by its tiles' total work), and
+  the user accepted it (`terrain.md` T27 (f), 2026-10-27): that click may take its terrain
+  past 3.0 ms, exact in its frame, within the 16.7 ms commit. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records
   ([A](terrain.md#terrain-07-a-record), [C](terrain.md#terrain-07-c-record),
   [D](terrain.md#terrain-07-d-record), [E](terrain.md#terrain-07-e-record)).
