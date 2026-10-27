@@ -905,7 +905,7 @@ A test that cannot pass until a later gate is marked
 | `ROAD-68-D` | done (2026-10-25, part 5) | Footprint chains and terrain patches; watertight terrain, road chunks and site pads in shared frames |
 | `ROAD-68-E` | implemented, acceptance open (2026-10-25, part 2 round 7) | Synchronous preview, commit adoption, undo and load: part 1 has the context, the preview's road and terrain, commit adoption, local undo (pieces, lanes, terrain) and the load check; part 2 the user's decisions on the open questions (order-independent strokes, overlap checks, node moves, pinned knots, the cell store's journal-synced view copy); open: the terrain stage's budget (`TERRAIN-07`) and question 21 (b)'s preview half (paused, question 33) |
 | `ROAD-68-F` | done (2026-10-25, part 2 round 4) | Footpaths, mixed profiles, bridges, tunnels, crossings, street furniture and overlap queries: part 1 builds zebra paint, street lights and signs from the pieces for preview and commit alike (question 26 met); part 2 the road families without terrain (roads without sidewalks, mixed profiles, bridge decks, tunnel road pieces, one overlap walk), and round 4 fixed the preview payload's codegen regression. Moved to `TERRAIN-07`: bridge abutments and tunnel portals (`TERRAIN-07-C`, with closing the grounded chains at structures, open question 19), building sites, driveways and paving (`TERRAIN-07-C`), bridge fascias (`TERRAIN-07-B`). Left open: question 17's item on footpaths in a sector without a sidewalk |
-| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); part 7 (on `terrain07-E`) defers the commit's lots one frame (question 33 (c)), bitwise: first commits 16.0–17.3 ms at 10k–100k (control 25.8–29.7), only the first 100k sample still misses a frame ([open question 21](#road-68-open-questions)) |
+| `ROAD-68-G` | implemented, acceptance open | Commit consequences inside one frame (routing, flow fields): D7 landed; part 2 made the publication, entrances and agent pass follow the edit; part 3 made the commit's lots follow the changed roads (28.6 ms at 100k, 41.7 before); part 4 21.8 ms; part 5 fixed the pure-job deadlock, 19.3 ms median before the `ROAD-68-D` rebase; on `road` the 100k commit is rejected and its terrain validation costs 15–69 ms (`ROAD-68-D` part 6); part 7 (on `terrain07-E`) defers the commit's lots one frame (question 33 (c)), bitwise: first commits 16.0–17.3 ms at 10k–100k (control 25.8–29.7); part 8 starts the routing rebuild after the lot plan and the adoption tick a frame after the commit (question 58): adoption frames 0.3–2.3 ms, first commits 14.9–17.9 ms (three of twelve populated first samples miss), locality products bitwise from 0 to 100k remote sites but about 3 ms dearer at 100k ([open question 21](#road-68-open-questions)) |
 | `ROAD-68-H` | open | Rendered acceptance and final cleanup |
 
 **Plan changes (2026-10-24, user).** Pre-D work, before terrain:
@@ -1793,6 +1793,16 @@ These need a user decision; work that does not depend on them continues.
       (2.4, cloned on the pool since), the agent passes and lanes (3.4-3.6)
       ([commit stages, part 7](#commit-stages-part-7-road-68-g-2026-10-27)). Target still
       missed at 100k, open.
+    - **`ROAD-68-G` part 8 (2026-10-27, fresh, the same branch).** The routing rebuild starts
+      after the lot plan, and the sim thread ticks a frame after a commit that deferred its lots
+      (question 58), so the adoption frame takes 0.3-2.3 ms at every tier. In the landing
+      session the first commits take 14.9-16.5 ms in nine of twelve populated runs and 17.0-17.9
+      ms in three (10k, 30k; control 25.8-30.3), the legacy terrain state their largest stage.
+      The locality fixture keeps the commit's products bitwise from 0 to 100k remote sites, but
+      at 100k each sample costs about 3 ms more (graded stage, graph copy, plan and undo, agent
+      passes) and the adoption's attachment repair 3-6 ms more (its whole-city test)
+      ([commit stages, part 8](#commit-stages-part-8-road-68-g-2026-10-27)). Target and
+      locality still open.
 22. **The 2 ms terrain stage on the sloped T (`ROAD-68-D`) — resolved 2026-10-24 (part 3): met,
     no decision needed.** The grading pass computed its loop's orientation once per edge
     (`O(V^2)` per loop); computed once per loop, bitwise unchanged, the T takes 1.91 / 1.89 ms,
@@ -3518,6 +3528,29 @@ These need a user decision; work that does not depend on them continues.
       `AgentSystem::place_arrival_carrier_at_home`, which leaves the buckets first (test
       `arrival_carrier_placed_at_home_leaves_the_lane_snapshot`). Carriers in the game drive in
       and enter their homes through the tick, which keeps the buckets.
+58. **The tick after a commit that deferred its lots (`ROAD-68-G` part 8) — (b) taken pending
+    the user's review, 2026-10-27.**
+    - **Evidence.** The sim thread runs a tick at once after its commands whenever the tick's
+      deadline passed during them (`begin_due_sim_tick`). In a populated city the previous tick
+      itself takes a few milliseconds, so a 15-17 ms commit always overruns the next deadline,
+      and the frame that adopts the commit's lots (question 33 (c)) ran in the same loop
+      iteration right behind the commit and waited for the whole plan: the breakdown's frame,
+      which starts at once, is what the game ran. Part 7's record assumed the game's next tick
+      comes up to a frame later; the code did not do that.
+    - **Options.** (a) Keep it: the adoption frame waits for the plan, 7.5-13 ms at the first
+      populated samples in part 7. (b) After a commit that deferred a plan, the sim thread
+      publishes the commit's edit snapshot without a tick, as an edit between deadlines does,
+      and moves the next tick to one interval after the commit, so the plan has that frame to
+      finish. The tick is the routing hold's, which advances nothing: no simulated outcome
+      changes, only wall-clock time (the hold, and the routing adoption after it, start up to a
+      frame later). (c) Adopt at the first held frame that finds the plan done: the adoption
+      frame would follow machine speed, which D7 rules out for the routing hold too.
+    - **Recommendation.** (b).
+    - **(b) taken pending the user's review, 2026-10-27** (reversible inside the branch: one
+      call in the sim thread). Built in part 8 (`postpone_sim_tick`, test
+      `a_deferred_lot_plan_moves_the_next_tick_a_frame_past_the_commit`); the breakdown measures
+      the game's frame with `METRUM_COMMIT_NEXT_TICK=frame`
+      ([commit stages, part 8](#commit-stages-part-8-road-68-g-2026-10-27)).
 
 Spec corrections in `ROAD-68-A`:
 
@@ -7611,6 +7644,121 @@ lines, part 6's counting). The change adds about 950 production lines (the adopt
 the planner's deferred plan 134, the store's adoption 89, the allocator's explicit sites 99, the
 editors' adoption calls 66, the pool clone 50) and the test 68.
 
+#### Commit stages, part 8 (`ROAD-68-G`, 2026-10-27)
+
+Branch `road68-G7` on `terrain07-E` (`5f07b2ee`, unmoved), after part 7's `4c99adce`.
+
+**What changed.**
+
+- *The routing rebuild after the lot plan.* A commit that deferred its lots schedules the
+  routing rebuild unstarted and the lot job starts it when its plan ends
+  ([pure jobs](simulation.md#pure-jobs): `PureJob::unstarted`, `JobStart`); a commit that
+  deferred nothing starts it at once. The plan no longer shares the background pool with the
+  rebuild.
+- *The adoption tick a frame after the commit* ([question 58](#road-68-open-questions), (b)
+  taken pending the user's review). The sim thread used to run the adoption frame at once
+  behind a 15-17 ms commit, so the frame waited for the whole plan; it now publishes the
+  commit's edit snapshot without a tick and moves the next tick to one interval after the
+  commit.
+- *Attribution in the breakdown.* The adoption's install is split (plan install, reattachment,
+  repair), every background job's span is listed (`jobs`), and `METRUM_COMMIT_NEXT_TICK=frame`
+  steps the first frame one frame after the commit returned, as the sim thread now does
+  ([Method](#method)).
+- *The locality fixture* (`benchmark_commit_locality`, [Method](#method)): the zoned 800 m
+  grid and its trunk held fixed in a 12,288 m world while 0, 1,000, 10,000 and 100,000 remote
+  sites (each a parcel and a housed agent, on 480 m block streets: 2,583 edges at 100k) grow
+  east of it; the breakdown's three branches are the edits.
+
+**Landing session** (fresh, 2026-10-27 08:15:23-08:21:51, one hold of both locks, `taskset -c
+0,2,4,6,8,10,12,14`, `METRUM_DEBUG=0`, no restic, compiler, cargo or Godot process at its start
+or after any run; release library tests). C = `terrain07-E` `5f07b2ee` (`$TEST_BINARY` sha256
+`293341d6…`, part 7's control), F = this part at `632347b3` (sha256 `d0cefe49…`); every
+populated tier's `COMMIT_FIXTURE` `loaded`. Preview stages C F F C (four workers), the
+breakdown C F F C on the game's path (`METRUM_COMMIT_PREVIEW`, eight workers, tiers 0 to 100k),
+then F twice with `METRUM_COMMIT_NEXT_TICK=frame` and the locality fixture on F twice (eight
+workers, the game's path). All eight breakdown runs print bitwise identical `COMMIT_PRODUCTS`.
+
+Click → ack at the first sample, ms, C (two runs) / F (four runs: two at once, two a frame
+later, the same commit):
+
+| Tier | C | F |
+| --- | --- | --- |
+| 0 | 8.11, 8.00 | 7.47, 7.04, 8.40, 8.25 |
+| 10k | 30.12, 30.28 | 16.04, 17.92, 16.17, 17.00 |
+| 30k | 25.97, 25.80 | 16.52, 15.71, 16.40, 17.83 |
+| 100k | 27.39, 28.32 | 14.94, 15.74, 15.72, 16.16 |
+
+The later samples take 3.9-10.9 ms in F (C 5.5-15.1). At 10k the first sample's largest stages
+are the legacy road-locked terrain state (6.37, 7.31 ms in the two F runs at once; C 8.40,
+8.96) and the render publication (4.13, 4.25); at 100k the tool snapshot is 0.55 ms (C 2.35-2.45,
+part 7's graph copy on the pool).
+
+The adoption frame (the first after the commit), ms at the first samples:
+
+- *At once* (the harness default; what the sim thread ran before question 58): 10k 9.93, 11.56;
+  30k 7.31, 13.20; 100k 8.18, 8.63 (part 7: 13.47, 13.19; 6.47, 17.95; 9.00, 9.05). Of it, the
+  wait for the plan 9.65, 9.84; 6.69, 6.95; 6.51, 7.25; the install 0.20-1.66, once 3.35 ms (30k,
+  all but 0.07 ms of it the repair's whole-city attachment test), the view publication
+  0.06-0.14. The lot job ran 11.1-11.2 ms at 10k and 7.5-8.5 ms at 30k and 100k from the
+  commit's last stage; the routing rebuild then started (15 ms at 10k, 49-52 ms at 30k, about
+  295 ms at 100k), and its adoption frame waits 64-86 ms at 100k (part 7: 59-74).
+- *A frame later* (`METRUM_COMMIT_NEXT_TICK=frame`, the game since question 58): the plan is
+  done in every sample, so the frame takes 0.34-2.33 ms at every tier and sample, the repair
+  0.16-2.01 ms of it.
+- **Against 16.7 ms.** With the tick a frame later no adoption frame comes near the frame
+  budget. The commit itself still misses at the first sample in three of twelve populated runs:
+  10k 17.92 and 17.00, 30k 17.83 (each other F first sample 14.94-16.52).
+- **Preview stages** unchanged: payload p50 0.387-0.395 ms (C 0.380-0.389), graded 1.27-1.29 /
+  1.13-1.14 ms (C 1.27-1.28 / 1.12-1.14), totals 6.94-7.16 ms (C 6.90-7.06).
+
+**Locality** (the same session, F, two runs). The local products (each sample's republished
+chunks 16 / 13 / 13 and graded tile digests, the neighbourhood's cell claims and generated cells
+with grids, lots and roads named by geometry, its 1,264 parcels and 1,264 buildings by geometry)
+are bitwise identical at 0, 1,000, 10,000 and 100,000 remote sites and between the runs. The
+costs are not flat. Click → ack per sample, ms, the two runs:
+
+| Remote sites | Sample 0 | Sample 1 | Sample 2 |
+| --- | --- | --- | --- |
+| 0 | 18.89, 19.22 | 12.08, 12.18 | 11.46, 11.23 |
+| 1,000 | 18.39, 16.79 | 12.26, 12.21 | 12.29, 12.88 |
+| 10,000 | 19.14, 19.04 | 13.49, 12.41 | 12.25, 12.27 |
+| 100,000 | 21.97, 22.09 | 14.87, 14.88 | 14.58, 14.73 |
+
+- Flat to 10,000 sites; at 100,000 each sample gains about 3 ms: the graded surface stage
+  +0.6-0.9 ms, the tool snapshot's graph copy +0.5 (`O(edges)`), the plan and undo (`add`)
+  +0.4-0.6, the agent passes +0.1-1.0 (`O(agents / P)`, question 21 (d)), the lanes +0.2-0.4 and
+  the terrain state +0.2-0.7. The adoption's attachment repair grows from 0.04-0.13 ms (once
+  1.18) to
+  2.8-6.2 ms: its plausibility test visits every building (`O(buildings / P)`), walking each
+  one's street to its frontage point. A first trial with 4.8 km background streets (fresh,
+  heavy run, not a session) put that test at 15-17 ms at 100,000 sites with the same local
+  products, so its cost follows street length too.
+- The neighbourhood's own first commit misses 16.7 ms with no background (18.9-19.2 ms; render
+  publication 8.7-8.9 ms, terrain state 4.3-5.3), larger than the populated cities' first
+  samples: the zoned grid's lots beside the trunk.
+- Setup, outside timing: the neighbourhood 0.24-0.28 s per tier; the background 0.03 / 0.06 /
+  0.38 / 3.5-3.8 s; the breakdown's own setup (`COMMIT_SETUP`: refined terrain 0.14-6.3 s, graded
+  census 0.03-1.65 s) as printed.
+
+**Open (not relaxed).** The 16.7 ms commit: the first 10k and 30k samples miss in three of
+twelve runs by up to 1.2 ms, the legacy terrain state (until `TERRAIN-07-D`/`-G`) their largest
+stage. Locality: products local, cost not flat at 100k remote sites (about 3 ms of commit, and
+the adoption's whole-city repair test); the neighbourhood's own first commit misses 16.7 ms.
+The candidates are question 21 (d) for the agent passes, an attachment repair that tests only
+the buildings the edit can reach, and the graph copy.
+
+**Checks** (fresh). `./run.sh --test` with `DISPLAY` and `WAYLAND_DISPLAY` unset, on part 7's
+tip `4c99adce` (in the control worktree) and on `01aa1189` (this part before the block-street
+background, a change to an ignored benchmark only): exit 0 both; the library 1,962 / 0 / 175
+and 1,964 passed, 0 failed, 176 ignored (the two new tests and the new benchmark);
+`tests/growth_scenario.rs` 4 passed; every Godot script passes with no `SCRIPT ERROR`; skipped
+the shader global probe (headless renderer) and the rendered vegetation tests (Forward+
+display). `cargo clippy --all-targets` on `632347b3`: the baseline's 59 warnings, the same set.
+`roadbed/` is untouched (8,946 production lines). The part adds about 85 production lines (the
+pure job's unstarted start 31, the sim thread's tick 14, the adoption split 19, the commit's
+job order 10, the rebuild's unstarted schedule 9) and about 400 test lines (the locality fixture
+286, the cell store's named digest 49, the breakdown's mode and spans 34, two tests 33).
+
 ### `ROAD-68-H` — acceptance and cleanup
 
 1. The [rendered runs](#targets), with the simulation paused and active, and the populated
@@ -7776,6 +7924,33 @@ METRUM_PERF_CACHE="$ARTIFACTS/snapshots" METRUM_COMMIT_TIERS=0,10000,30000,10000
   digests in `COMMIT_BREAKDOWN` and `GRADED_TILES_COMMIT` only.
 - A snapshot lives as long as its binary is in use; delete `commit_city_*` files with the
   binaries they were made for (about 280 MB a binary).
+- Since `ROAD-68-G` part 8 the first frame after each commit (the one that adopts its lots)
+  starts at once, the default (`METRUM_COMMIT_NEXT_TICK=once`), or one frame (16.667 ms) after
+  the commit returned (`METRUM_COMMIT_NEXT_TICK=frame`), as the sim thread steps it since
+  [question 58](#road-68-open-questions). `COMMIT_BREAKDOWN` splits the adoption's install
+  (`lots_plan_install_ms`, `lots_reattach_ms`, `lots_repair_ms`) and lists every background job
+  that ran in the sample (`jobs`: spawn site, start and end in ms since the click; the lots job
+  is the first `lot_adoption.rs` one, the routing rebuild the second, or `road_commit.rs`
+  when no lots were deferred).
+
+**Commit locality** (`benchmark_commit_locality`, `ROAD-68-G` part 8). The zoned 800 m grid
+with every lot built and its trunk to the border, in a fixed 12,288 m world, is the edited
+neighbourhood; the breakdown's three branches off its trunk are the edits
+(`profile_commits`, with its `COMMIT_BREAKDOWN` lines). East of it, beyond every lot region
+and terrain patch the branches touch, each tier adds straight two-lane 480 m block streets fronted
+by one-cell sites, each with a parcel and one housed agent (`METRUM_LOCALITY_TIERS`, default 0, 1,000,
+10,000 and 100,000 sites). Each tier builds afresh outside timing (`LOCALITY_SETUP`, then the
+breakdown's `COMMIT_SETUP`). The test asserts that `LOCALITY_PRODUCTS` equal tier 0's: each
+sample's republished chunks and graded tiles, and the neighbourhood's cell claims, generated
+cells, parcels and buildings, compared by geometry because everything the commits create takes
+ids after the background's.
+
+```bash
+METRUM_COMMIT_PREVIEW=1 RAYON_NUM_THREADS=8 METRUM_DEBUG=0 \
+  taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" \
+  nodes::sim::core::populated_city::commit_locality::benchmark_commit_locality \
+  --exact --ignored --nocapture
+```
 
 ## Pedestrian Junction Crossings
 

@@ -889,6 +889,27 @@ field diffusion and other read-only precomputation.
   commits adopted by the next commit and by a save. Renderers and the cell overlay see the lots
   one frame later; nothing simulated reads them before the adoption.
 
+**`ROAD-68-G` part 8 (2026-10-27): the routing rebuild after the lot plan, and the adoption tick
+a frame after the commit** ([`roads.md`](roads.md) question 58; record under
+[`ROAD-68-G`](roads.md#commit-stages-part-8-road-68-g-2026-10-27)).
+
+- **Unstarted jobs.** `PureJob::unstarted` makes a job queued nowhere and a `JobStart` that
+  queues it on the background pool; `PureJob::spawn` is both at once. A start that never comes
+  leaves the work to the first thread that waits for it or takes it, as for a job no worker
+  reached, so neither the result nor the frame that adopts it depends on whether or when the job
+  was started.
+- **Routing after the lots.** A commit that deferred its lots schedules the routing rebuild
+  unstarted (`TransitNetwork::schedule_cch_rebuild_unstarted`), and the lot job starts it when
+  its plan ends: the plan, which the next frame adopts, no longer shares the background pool
+  with the rebuild, which is adopted a frame later. A commit that deferred nothing starts the
+  rebuild at once, as before.
+- **The adoption tick.** The sim thread ticks at once after its commands whenever the tick's
+  deadline passed during them (`begin_due_sim_tick`), so a 15-17 ms commit was followed, in the
+  same loop iteration, by the frame that adopts its lots, which waited for the whole plan. After
+  a commit that deferred a plan the sim thread now publishes the commit's edit snapshot without
+  a tick and moves the next tick to one interval after the commit (`postpone_sim_tick`). That
+  tick is the routing hold's, which advances nothing, so only wall-clock time moves.
+
 **Implemented in `SIM-02-I` (part 2): the funding census spread over slots** (decided
 2026-10-17; see [Decided while unattended](#decided-while-unattended)). The census only reads
 the city and writes its own books, but it costs about 96 ms a call at 100k. It is not a pure

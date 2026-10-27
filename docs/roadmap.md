@@ -99,8 +99,12 @@ the commit's background jobs start last, its changed chunks splice on the pool a
 copy is cloned on the pool. In its landing session the first commits fall from 25.8-29.7 ms to
 16.0-17.3 ms at 10k-100k and every other sample takes 3.0-11.8 ms; the first 100k sample (17.3,
 16.9 ms) still misses, with the legacy refined patches' road ownership (3.6-4.2 ms, removed by
-`TERRAIN-07-D`/`-G`) its largest stage. The populated-map locality check of the commit is not
-built yet. The same session attributed the economy contract's baseline-30k rise to
+`TERRAIN-07-D`/`-G`) its largest stage. Part 8 (WIP) starts the routing rebuild after the lot
+plan and moves the adoption tick a frame after a commit that deferred its lots (roads.md question
+58, taken pending the user's review): adoption frames take 0.3-2.3 ms; first commits 14.9-17.9
+ms, three of twelve populated first samples still over 16.7 ms. Its populated-map locality
+check keeps the commit's products bitwise from 0 to 100k remote sites, but at 100k the commit
+costs about 3 ms more and the adoption's attachment repair 3-6 ms more, so locality stays open. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per
