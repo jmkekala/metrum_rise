@@ -75,14 +75,20 @@ impl<T: Send> Shared<T> {
     }
 }
 
-// A job's completion without its result type, for a thread that only waits for it.
+// A job's completion and start without its result type, for a thread that only waits for it
+// or starts it.
 trait Complete: Send + Sync {
     fn complete(&self);
+    fn start(&self);
 }
 
 impl<T: Send> Complete for Shared<T> {
     fn complete(&self) {
         drop(self.finish());
+    }
+
+    fn start(&self) {
+        self.run();
     }
 }
 
@@ -99,6 +105,21 @@ impl JobCompletion {
     }
 }
 
+/// Queues a job made by [`PureJob::unstarted`] on the background pool. A start that is
+/// dropped instead leaves the work to the first thread that waits for it or takes it, so the
+/// result never depends on whether, or when, the job was started.
+pub(crate) struct JobStart(Arc<dyn Complete>);
+
+impl JobStart {
+    /// Queues the job on the background pool, as [`PureJob::spawn`] does; O(1) from any thread,
+    /// a pool worker among them. Work another thread already took is not run twice.
+    #[track_caller]
+    pub(crate) fn start(self) {
+        let job = self.0;
+        crate::thread_pools::spawn(move || job.start());
+    }
+}
+
 /// One pure computation in flight. See the module documentation.
 pub(crate) struct PureJob<T: Send + 'static> {
     shared: Arc<Shared<T>>,
@@ -109,13 +130,22 @@ impl<T: Send + 'static> PureJob<T> {
     /// own pool queues it on that pool. O(1).
     #[track_caller]
     pub(crate) fn spawn(work: impl FnOnce() -> T + Send + 'static) -> Self {
+        let (job, start) = Self::unstarted(work);
+        start.start();
+        job
+    }
+
+    /// A job queued nowhere until its [`JobStart`] starts it, so its owner can start it after
+    /// other work (`ROAD-68-G` part 8: a commit's routing rebuild after its lot plan). Waiting
+    /// for it or taking it before then runs it on that thread, as for a job no worker reached.
+    /// O(1).
+    pub(crate) fn unstarted(work: impl FnOnce() -> T + Send + 'static) -> (Self, JobStart) {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::Queued(Box::new(work))),
             done: Condvar::new(),
         });
-        let worker = Arc::clone(&shared);
-        crate::thread_pools::spawn(move || worker.run());
-        Self { shared }
+        let start = JobStart(Arc::clone(&shared) as Arc<dyn Complete>);
+        (Self { shared }, start)
     }
 
     /// A handle that finishes the work from another thread, so the owner can wait for it
@@ -206,6 +236,23 @@ mod tests {
         pool.install(|| ());
         drop(pool);
         assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    // `ROAD-68-G` part 8: an unstarted job runs once, on the taker when nobody started it
+    // (a later start then runs nothing), or on the background pool once started.
+    #[test]
+    fn an_unstarted_job_runs_once_where_it_is_first_needed() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&runs);
+        let (job, start) = PureJob::unstarted(move || counted.fetch_add(1, Ordering::SeqCst));
+        assert_eq!(job.take(), 0);
+        start.start();
+        let counted = Arc::clone(&runs);
+        let (job, start) = PureJob::unstarted(move || counted.fetch_add(1, Ordering::SeqCst));
+        start.start();
+        job.completion().wait();
+        assert_eq!(job.take(), 1);
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
     // The work runs on a private pool's worker until released. A frame on a shared-pool worker

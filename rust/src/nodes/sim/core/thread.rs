@@ -299,6 +299,13 @@ pub(crate) fn run_sim_thread(
         }
 
         let now = Instant::now();
+        // `ROAD-68-G` part 8 (`docs/roads.md` question 58): a commit that deferred its lot plan
+        // ends this frame with its edit snapshot, and the tick that adopts the plan comes a
+        // frame later rather than at once behind the commit, so the plan has that frame to
+        // finish. That tick is the routing hold's, which advances nothing.
+        if add_road_commands > 0 && lots_completion.is_some() {
+            postpone_sim_tick(&mut next_tick, now, target);
+        }
         let tick_due = begin_due_sim_tick(&mut next_tick, now, target);
         let edit_snapshot_due = add_road_commands + undo_commands + bulldoze_commands > 0;
         if !tick_due && !edit_snapshot_due {
@@ -438,7 +445,7 @@ pub(crate) fn run_sim_thread(
             (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
         if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || step.elapsed_minutes > 0) {
             println!(
-                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} lots_wait_ms={:.3} lots_install_ms={:.3} lots_publish_ms={:.3} cell_prepare_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
+                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} lots_wait_ms={:.3} lots_install_ms={:.3} lots_plan_install_ms={:.3} lots_reattach_ms={:.3} lots_repair_ms={:.3} lots_publish_ms={:.3} cell_prepare_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
                 active_ms,
                 command_ms,
                 lock_wait_ms,
@@ -451,6 +458,9 @@ pub(crate) fn run_sim_thread(
                 step.daily_ms,
                 step.lots_wait_ms,
                 step.lots.install_ms,
+                step.lots.plan_install_ms,
+                step.lots.reattach_ms,
+                step.lots.repair_ms,
                 step.lots.publish_ms,
                 cell_prepare_ms,
                 snapshot_ms,
@@ -481,6 +491,11 @@ fn begin_due_sim_tick(next_tick: &mut Instant, now: Instant, interval: Duration)
     }
     *next_tick = now + interval;
     true
+}
+
+// The next tick no earlier than one interval after `now`; a later deadline stays.
+fn postpone_sim_tick(next_tick: &mut Instant, now: Instant, interval: Duration) {
+    *next_tick = (*next_tick).max(now + interval);
 }
 
 #[cfg(test)]
@@ -514,5 +529,23 @@ mod tests {
         assert!(begin_due_sim_tick(&mut next_tick, late, interval));
         assert!(!begin_due_sim_tick(&mut next_tick, late, interval));
         assert_eq!(next_tick, late + interval);
+    }
+
+    // `ROAD-68-G` part 8: a commit that overran the deadline and deferred its lot plan is not
+    // followed by a tick at once; the tick comes a frame after the commit.
+    #[test]
+    fn a_deferred_lot_plan_moves_the_next_tick_a_frame_past_the_commit() {
+        let start = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let mut next_tick = start;
+        assert!(begin_due_sim_tick(&mut next_tick, start, interval));
+        let commit_end = start + interval + Duration::from_millis(1);
+        postpone_sim_tick(&mut next_tick, commit_end, interval);
+        assert!(!begin_due_sim_tick(&mut next_tick, commit_end, interval));
+        assert!(begin_due_sim_tick(
+            &mut next_tick,
+            commit_end + interval,
+            interval
+        ));
     }
 }

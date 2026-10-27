@@ -269,23 +269,33 @@ impl SimCore {
         let invalidated_refined_cache_entries =
             self.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         let collect_refined_ms = collect_refined_start.elapsed().as_secs_f64() * 1000.0;
-        // The background jobs start last (`ROAD-68-G` part 7): the lot plan, then the routing
-        // rebuild. Neither reads the terrain patch state, and started before it they took its
-        // workers' cores.
-        if let (Some((regions, dirty)), Some(graph)) = (deferred_lots, &routing_graph) {
-            record_crash_phase_for_core(self, "add road cell lots deferred");
-            let lots_start = Instant::now();
-            let view = road_snapshot
-                .as_ref()
-                .map(|publication| (&publication.view.roadbed, &publication.view.cells));
-            self.spawn_commit_cell_lots(regions, dirty, CommitCellLotInputs { graph, view });
-            edit_metrics.lots_spawn_ms = lots_start.elapsed().as_secs_f64() * 1000.0;
-        }
+        // The background jobs start last (`ROAD-68-G` part 7): neither reads the terrain patch
+        // state, and started before it they took its workers' cores. The routing rebuild starts
+        // when the lot plan ends (part 8), so the plan, which the next frame adopts, has the
+        // background pool to itself; the rebuild's adoption frame comes later.
         if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");
             let routing_start = Instant::now();
-            self.transit_network.schedule_cch_rebuild(graph);
+            let routing = self
+                .transit_network
+                .schedule_cch_rebuild_unstarted(std::sync::Arc::clone(&graph));
             edit_metrics.routing_ms = routing_start.elapsed().as_secs_f64() * 1000.0;
+            match deferred_lots {
+                Some((regions, dirty)) => {
+                    record_crash_phase_for_core(self, "add road cell lots deferred");
+                    let lots_start = Instant::now();
+                    let view = road_snapshot
+                        .as_ref()
+                        .map(|publication| (&publication.view.roadbed, &publication.view.cells));
+                    let inputs = CommitCellLotInputs {
+                        graph: &graph,
+                        view,
+                    };
+                    self.spawn_commit_cell_lots(regions, dirty, inputs, routing);
+                    edit_metrics.lots_spawn_ms = lots_start.elapsed().as_secs_f64() * 1000.0;
+                }
+                None => routing.start(),
+            }
         }
         edit_metrics.generation = self.road_tool_surface_generation;
         edit_metrics.committed = road_add.committed;

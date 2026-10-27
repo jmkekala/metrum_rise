@@ -24,7 +24,7 @@ use std::sync::Arc;
 use super::road_tool_context::RoadToolPublication;
 use super::state::SimCore;
 use crate::nodes::sim::zoning::footprint_blocked;
-use crate::simulation::core::pure_job::{JobCompletion, PureJob};
+use crate::simulation::core::pure_job::{JobCompletion, JobStart, PureJob};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::zoning::cells::{CellBounds, CellStore, SharedMaps};
@@ -69,6 +69,12 @@ pub(crate) struct CellLotAdoption {
     pub(crate) adopted: bool,
     /// Installing the plan, reattaching, the repair and the entrance rebuild, in ms.
     pub(crate) install_ms: f64,
+    /// Of `install_ms`: the plan's cell entries and parcel calls (`ROAD-68-G` part 8).
+    pub(crate) plan_install_ms: f64,
+    /// Of `install_ms`: reattaching the lots' occupants.
+    pub(crate) reattach_ms: f64,
+    /// Of `install_ms`: the commit's attachment repair and entrance rebuild.
+    pub(crate) repair_ms: f64,
     /// Publishing the road tool's view of the adopted lots, in ms.
     pub(crate) publish_ms: f64,
 }
@@ -94,13 +100,15 @@ impl SimCore {
     }
 
     /// Starts the deferred plan of `regions` after the commit's publication, on the inputs the
-    /// commit left (module documentation). Without a published view it copies the cell store
+    /// commit left (module documentation), and the commit's routing rebuild (`routing`) when
+    /// the plan ends (`ROAD-68-G` part 8). Without a published view it copies the cell store
     /// and shares the live roadbed. `O(regions + explicit sites)` with a view.
     pub(super) fn spawn_commit_cell_lots(
         &mut self,
         regions: Vec<CellBounds>,
         dirty: HashSet<usize>,
         inputs: CommitCellLotInputs<'_>,
+        routing: JobStart,
     ) {
         let (roadbed, cells) = match inputs.view {
             Some((roadbed, cells)) => (Arc::clone(roadbed), cells.clone()),
@@ -124,9 +132,11 @@ impl SimCore {
             if let Some(delay) = delay {
                 std::thread::sleep(delay);
             }
-            deferred.plan(&graph, |corners| {
+            let planned = deferred.plan(&graph, |corners| {
                 footprint_blocked(&fields, &sites, &roadbed, cell_m, corners)
-            })
+            });
+            routing.start();
+            planned
         });
         self.pending_cell_lots = Some(PendingCellLots {
             job,
@@ -155,17 +165,26 @@ impl SimCore {
         );
         // The entrance cache's state before the plan, as the commit read it.
         let cache_current = self.entrance_cache_current();
+        let lap = std::time::Instant::now();
         let lots = self.zoning.adopt_planned_cell_lots(planned);
+        let plan_install_ms = lap.elapsed().as_secs_f64() * 1000.0;
+        let lap = std::time::Instant::now();
         self.attach_regenerated_cell_lots(&lots);
+        let reattach_ms = lap.elapsed().as_secs_f64() * 1000.0;
+        let lap = std::time::Instant::now();
         crate::thread_pools::install(|| {
             self.repair_commit_entrances(&pending.dirty, cache_current, &lots)
         });
+        let repair_ms = lap.elapsed().as_secs_f64() * 1000.0;
         let install_ms = start.elapsed().as_secs_f64() * 1000.0;
         let start = std::time::Instant::now();
         self.adopted_road_tool_view = self.publish_road_tool_view();
         CellLotAdoption {
             adopted: true,
             install_ms,
+            plan_install_ms,
+            reattach_ms,
+            repair_ms,
             publish_ms: start.elapsed().as_secs_f64() * 1000.0,
         }
     }

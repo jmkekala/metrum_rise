@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use super::graph::RegionGraph;
 use super::{TransitNetwork, log_road_connectivity};
-use crate::simulation::core::pure_job::{JobCompletion, PureJob};
+use crate::simulation::core::pure_job::{JobCompletion, JobStart, PureJob};
 use crate::simulation::pathing::cch::CchGraph;
 
 /// Test-only work a routing rebuild job runs before it builds (`ROAD-68-G`).
@@ -44,9 +44,17 @@ impl TransitNetwork {
     /// installed but unread until adoption. O(1) here; the build runs on the background pool,
     /// beside no frame's work (`crate::thread_pools`).
     pub(crate) fn schedule_cch_rebuild(&mut self, graph: Arc<RegionGraph>) {
+        self.schedule_cch_rebuild_unstarted(graph).start();
+    }
+
+    /// [`Self::schedule_cch_rebuild`] with the build queued only when the caller starts it
+    /// (`ROAD-68-G` part 8: a commit starts it after its lot plan). A build nobody started yet
+    /// runs on the thread that first needs it, the adoption frame's caller or a reader that
+    /// installs it early, so the result and the frame that adopts it are the same. O(1).
+    pub(crate) fn schedule_cch_rebuild_unstarted(&mut self, graph: Arc<RegionGraph>) -> JobStart {
         #[cfg(test)]
         let prelude = self.cch_job_prelude.clone();
-        let job = PureJob::spawn(move || {
+        let (job, start) = PureJob::unstarted(move || {
             #[cfg(test)]
             if let Some(prelude) = prelude {
                 prelude();
@@ -62,6 +70,7 @@ impl TransitNetwork {
             job: Some(job),
             frames_left: CCH_ADOPTION_FRAMES,
         });
+        start
     }
 
     /// Installs a pending rebuild now, waiting for it (or running it here) if it is not done,
