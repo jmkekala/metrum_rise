@@ -388,14 +388,16 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
-`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 5 adds direct indexed grounded-piece
-walks, one coverage-triangle gather per query window, the single world-surface ray for Godot
-inspection, and GPU grass exclusion from the graded `sdf` and class. The matched T37 and landing
-measurements run against `road` `d456913e`; the final full-suite rerun remains. The fresh T37
-C/F/F/C still misses at 100k, 0.895 / 1.340 ms (+0.445), with all products equal; T37 stays open,
-not relaxed. The landing's preview and 0/10k/30k/100k commit products match in every C/F/F/C run.
-The Kuopio digest remains record-for-record equal to round 3 (6,460 plants).
-`PERF-09` owns the control's frame-budget regression. T40 remains pending the user's review. Evidence and acceptance:
+`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 6 validates exact/graded GPU grass before
+and after a Kuopio road edit and fixes disposal of the renderer's detached prewarmed cells; the
+verified render has no shader, script, settle or resource-leak diagnostic. All landing products
+remain equal. T37's fresh 100k profile keeps 1,101 products equal but attributes 74.09% of branch
+pose samples to distributed graded-surface preparation, with no single local exact lever. The
+fresh exclusive `PERF-07` control/branch pair fails all three limits on both sides: mean snapshot
+0.956 / 3.312 ms and mean frame 6.179 / 8.608 ms; the branch is materially worse. The target is not
+relaxed. Recommended decision: authorize an exact persistent local query/seam/coverage index,
+updated atomically with edits, then remeasure; otherwise leave the gate blocked. `PERF-09` still
+owns the control regression. T40 remains pending the user's review. Evidence and acceptance:
 [`terrain.md`](terrain.md#terrain-07-f-record).
 
 | ID         | Kind        | Status        | Priority | Owner doc                                        | Problem                                                                                                                                                                                   | Exit criteria                                                                                                              |

@@ -18,6 +18,7 @@ extends SceneTree
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
+const GrassScript := preload("res://scripts/renderers/grass.gd")
 const WORLD_M := 512.0
 const ARM_M := 80.0
 const SLOPE_RISE_M := 6.4 # over 256 m along +x: 2.5%
@@ -173,6 +174,14 @@ func _fixtures() -> Array[Dictionary]:
 		# The Kuopio reference save's conflict wall site (TERRAIN-07-C round 4, T2 (c)).
 		result.append({"name": "kuopio_t2_wall", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
 			"focus": Vector2(-16.3, 1182.8), "roads": []})
+		# TERRAIN-07-F: exercise the production grass mask on Kuopio before and after the
+		# established 60 m probe spur changes the graded cells under it. Each state reloads the
+		# save so its exact renderer precedes its graded renderer's asynchronous result stream.
+		result.append({"name": "kuopio_grass_before", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+			"focus": Vector2(31.45, -6.71), "roads": [], "grass": true})
+		result.append({"name": "kuopio_grass_after", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+			"focus": Vector2(31.45, -6.71), "grass": true,
+			"roads": [_road(Vector2(31.45, -6.71), Vector2(57.23, 47.47))]})
 	return result
 
 # [label, rise over 256 m]: flat and 2.5%, with the spike's 8% on the T, four-way, bend and grid.
@@ -439,8 +448,16 @@ func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: C
 	var mode := "B" if graded else "exact"
 	await _acknowledge_network("%s %s" % [label, mode])
 	var terrain := _production_terrain(scene, graded)
+	var grass: Node3D = null
+	if fixture.get("grass", false):
+		grass = GrassScript.new()
+		grass.name = "Grass"
+		scene.add_child(grass)
 	var offset := CAMERA_HEIGHT_M / tan(deg_to_rad(CAMERA_PITCH_DEG))
-	var views := [
+	var views: Array = [{
+		"view": "grass", "from": Vector2(-18.0, 31.0), "eye_m": 5.0,
+		"at": Vector2(13.0, 19.0), "at_m": 0.0,
+	}] if fixture.get("grass", false) else [
 		{"view": "oblique"},
 		{"view": "close_east", "from": Vector2(15.0, 30.0), "at": Vector2(5.0, 22.0)},
 		{"view": "close_west", "from": Vector2(-15.0, 30.0), "at": Vector2(-5.0, 22.0)},
@@ -493,6 +510,8 @@ func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: C
 			entry["pinholes"] = holes
 			_expect(holes == 0, "%s %s: %d background pixels in plan_terrain" % [label, mode, holes])
 		images.append(entry)
+	if grass != null:
+		grass.free()
 	terrain.free()
 	await process_frame
 

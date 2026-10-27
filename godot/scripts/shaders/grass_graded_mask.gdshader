@@ -32,10 +32,10 @@ void vertex() {
 void fragment() {
 	if (mask_cell.x < 0) {
 		ALBEDO = vec3(1.0);
-		return;
+	} else {
+		CellMask mask = cell_mask(
+			cell_frame_from(mask_cell, int(round(terrain_cell_m * 2.0))), mask_cell_local_m
+		);
+		ALBEDO = vec3(float(mask.sdf >= 0.0 && mask.class_id == 0));
 	}
-	CellMask mask = cell_mask(
-		cell_frame_from(mask_cell, int(round(terrain_cell_m * 2.0))), mask_cell_local_m
-	);
-	ALBEDO = vec3(float(mask.sdf >= 0.0 && mask.class_id == 0));
 }

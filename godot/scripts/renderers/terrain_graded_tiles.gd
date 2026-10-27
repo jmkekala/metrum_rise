@@ -402,6 +402,16 @@ func clear() -> void:
 	_wanted.clear()
 	_lists_wanted.clear()
 
+# Releases the prewarmed cell Nodes that are intentionally detached while pooled. A Node owner
+# cannot free them with its scene subtree, so renderer replacement and shutdown call this before
+# dropping the RefCounted renderer.
+func dispose() -> void:
+	clear()
+	for cells: Dictionary in _cells_pool:
+		for node: Node in cells["nodes"] + [cells["walls"]]:
+			node.free()
+	_cells_pool.clear()
+
 ## One frame: polls finished work and installs it within the install budget, keeps the tiles of
 ## `resident_patches` (patch key -> {node, material, rect: Rect2, step, generation}) at their
 ## distance's level, evicts the rest and rewrites the instances of the patches that changed.

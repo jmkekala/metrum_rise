@@ -271,6 +271,11 @@ func _ready() -> void:
 		console.visual_mode_changed.connect(_on_visual_mode_changed)
 	rebuild_from_simulation_state()
 
+func _exit_tree() -> void:
+	if graded_tiles != null:
+		graded_tiles.dispose()
+		graded_tiles = null
+
 func rebuild_from_simulation_state() -> void:
 	terrain_world_size = simulation_node.get_terrain_world_size()
 	_world_noise.bake(terrain_world_size)
@@ -290,6 +295,9 @@ func rebuild_from_simulation_state() -> void:
 	_terrain_prewarm_last_deferred_count = 0
 	_reset_terrain_debug_counters()
 	_clear_patches()
+	if graded_tiles != null:
+		graded_tiles.dispose()
+		graded_tiles = null
 	_prewarm_regular_terrain_mesh_variants()
 	_resident_patch_bounds_valid = false
 	_ensure_overlay_texture()
@@ -300,7 +308,6 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_border_visuals()
 	_prewarm_terrain_patch_resource_pool()
 	# _clear_patches released the previous world's tiles; with the switch off none draw.
-	graded_tiles = null
 	if graded_tiles_enabled:
 		graded_tiles = TerrainGradedTiles.new()
 		graded_tiles.setup(simulation_node, terrain_cell_m, terrain_world_size, patch_span_m)
