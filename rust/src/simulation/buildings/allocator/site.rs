@@ -24,7 +24,7 @@ pub(crate) use model::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
 pub use model::SiteChange;
 pub(crate) use query::site_footprint_contains;
 pub(crate) use paving::{SitePavingPartition, foundation_faces_in_frame};
-pub(crate) use query::{NearbySites, SiteSnapshot};
+pub(crate) use query::SiteSnapshot;
 
 #[cfg(test)]
 mod tests;

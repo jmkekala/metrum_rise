@@ -16,8 +16,8 @@
 //! rise above its first-pass value (the bake's second pass, per point). The value is bitwise the
 //! evaluation over every seam within the cap. Allocation-free once the scratch is warm.
 
-use super::coverage::{covered_height_at, mark_covered_cells};
-use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE, may_bind, may_lift};
+use super::coverage::{covered_height_in, gather as gather_coverage, mark_covered_cells};
+use super::grade::{CAP_M, may_bind, may_lift};
 use super::portal::{PortalWindow, cuts};
 use super::prune::box_distance;
 use super::sample::{BaseGrid, BaseWindow, Listed, evaluate};
@@ -25,7 +25,7 @@ use super::seams::{Seam, road_seam};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::tile::{Level, TILE_M, grown};
 use crate::assets::SiteSurfaceMaterial;
-use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
+use crate::simulation::network::roadbed::{GroundedPieceScratch, PieceId, RoadVec3, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 
@@ -71,6 +71,9 @@ pub struct QueryScratch {
     // The prepared rectangle's exact base range, which sorted its seams.
     base_range: (f64, f64),
     base: BaseWindow,
+    // Grounded pieces and top triangles gathered once for the prepared window's coverage reads.
+    grounded: GroundedPieceScratch,
+    coverage: Vec<[RoadVec3; 3]>,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
     portals: PortalWindow,
@@ -159,12 +162,12 @@ impl GradedSurface<'_> {
     /// [`Self::mask_at`] from the last [`Self::gather_near`], equal to it; a point outside the
     /// gathered window is prepared alone.
     pub fn mask_near(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
-        if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_some() {
-            return GroundClass::Road;
-        }
         let point = [x, z, x, z];
         if !scratch.rect.is_some_and(|rect| holds(rect, point)) {
             self.prepare(point, scratch);
+        }
+        if covered_height_in(&scratch.coverage, x, z).is_some() {
+            return GroundClass::Road;
         }
         if !scratch.portal_rect.is_some_and(|rect| holds(rect, point)) {
             self.prepare_portals(point, scratch);
@@ -214,10 +217,10 @@ impl GradedSurface<'_> {
     /// site's support footprint, paved on a site surface, graded where the graded value differs
     /// from the base, else natural.
     pub fn mask_at(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> GroundClass {
-        if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_some() {
+        self.prepare([x, z, x, z], scratch);
+        if covered_height_in(&scratch.coverage, x, z).is_some() {
             return GroundClass::Road;
         }
-        self.prepare([x, z, x, z], scratch);
         self.prepare_portals([x, z, x, z], scratch);
         self.mask_prepared(x, z, scratch)
     }
@@ -335,13 +338,18 @@ impl GradedSurface<'_> {
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
         let cell_m = BaseGrid::of(self.terrain).cell_m;
         scratch.base.fill(self.terrain, grown(rect, cell_m));
+        gather_coverage(
+            self.roadbed,
+            rect,
+            &mut scratch.grounded,
+            &mut scratch.coverage,
+        );
         let band = Level::Gl0.band_m(cell_m);
         let base = scratch.base.bilinear_range(rect);
         let unpruned = Self::unpruned(scratch);
         let QueryScratch {
             window: listed,
             rest,
-            pieces,
             sites,
             ..
         } = scratch;
@@ -350,9 +358,9 @@ impl GradedSurface<'_> {
         let binds = |bounds: [f64; 4], heights: (f64, f64), band: f64| {
             unpruned || may_bind(heights, base, box_distance(bounds, rect), band)
         };
-        self.roadbed.for_each_grounded_seam_in_bounds_where(
+        self.roadbed.for_each_grounded_seam_in_bounds_where_indexed(
             window,
-            pieces,
+            &mut scratch.grounded,
             |bounds, heights| binds(bounds, heights, band),
             |[a, b]| {
                 let seam = road_seam(a, b);
@@ -394,7 +402,6 @@ impl GradedSurface<'_> {
         let (base, unpruned) = (scratch.base_range, Self::unpruned(scratch));
         let QueryScratch {
             rest,
-            pieces,
             sites,
             ..
         } = scratch;
@@ -408,8 +415,12 @@ impl GradedSurface<'_> {
                 rest.push((seam, distance));
             }
         };
-        self.roadbed
-            .for_each_grounded_seam_in_bounds(window, pieces, |[a, b]| sort(road_seam(a, b), band));
+        self.roadbed.for_each_grounded_seam_in_bounds_where_indexed(
+            window,
+            &mut scratch.grounded,
+            |_, _| true,
+            |[a, b]| sort(road_seam(a, b), band),
+        );
         sites.for_each_pad_seam(|seam| sort(seam, 0.0));
         scratch.rest_ready = true;
     }
@@ -484,7 +495,7 @@ impl GradedSurface<'_> {
     // packs there.
     fn vertex(&self, [i, j]: [i64; 2], scratch: &mut QueryScratch) -> f64 {
         let (x, z) = (i as f64 * GL0_M, j as f64 * GL0_M);
-        let road = covered_height_at(self.roadbed, x, z, &mut scratch.pieces);
+        let road = covered_height_in(&scratch.coverage, x, z);
         let base = scratch.base.at(x, z);
         let delta = (self.evaluate(x, z, base, road, scratch) - base) as f32;
         base + f64::from(delta)
@@ -582,7 +593,7 @@ impl GradedSurface<'_> {
             .chain(scratch.rest.iter().map(|(seam, _)| seam))
             .map(|seam| seam.height_range().1)
             .fold(f64::NEG_INFINITY, f64::max);
-        let high = base_high.max(seam_high + TIE_IN_SLOPE * FILL_ARM_MAX_M);
+        let high = base_high.max(seam_high);
         let lowest =
             |a: f64, b: f64| (origin[1] + direction[1] * a).min(origin[1] + direction[1] * b);
         if lowest(t0, t1) > high {
@@ -616,7 +627,7 @@ impl GradedSurface<'_> {
                     });
                 if let Some(t) = t {
                     let [x, _, z] = along(origin, direction, t);
-                    if covered_height_at(self.roadbed, x, z, &mut scratch.pieces).is_none()
+                    if covered_height_in(&scratch.coverage, x, z).is_none()
                         && !self.opened(x, z, scratch)
                     {
                         hit = Some(t);

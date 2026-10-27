@@ -796,10 +796,14 @@ impl SimulationNode {
     #[func]
     pub fn intersect_world_surface(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
         match self.try_lock_core() {
-            Some(mut core) => match core.intersect_graded_surface(ray_origin, ray_dir) {
+            Some(mut core) => {
+                let cell_m = core.config.zone_cell_m;
+                core.allocator.prepare_building_site_query_index(cell_m);
+                match core.intersect_world_surface_internal(ray_origin, ray_dir) {
                 Some(p) => p.to_variant(),
                 None => Variant::nil(),
-            },
+                }
+            }
             None => Variant::nil(),
         }
     }

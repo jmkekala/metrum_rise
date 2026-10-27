@@ -88,63 +88,19 @@ impl SimCore {
 
     /// Raycasts against the visible world surface.
     ///
-    /// Owned road surfaces and building-site top surfaces hide source/visual terrain below them.
-    /// Query paths must not compile geometry.
+    /// Returns the nearer of the compiled roadbed and the graded ground the renderer draws. The
+    /// site index must be ready; query paths do not compile geometry.
     pub fn intersect_world_surface_internal(
-        &mut self,
+        &self,
         ray_origin: Vector3,
         ray_dir: Vector3,
     ) -> Option<Vector3> {
-        self.allocator
-            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
-        let road_hit = self.transit_network.roadbed.raycast(ray_origin, ray_dir);
-        let (half_w, half_h) = self.heightmap.half_world_extents();
-        let site_hit = self.allocator.raycast_building_site_surface(
-            ray_origin,
-            ray_dir,
-            (-half_w, -half_h, half_w, half_h),
-        );
-        let terrain_hit = self
-            .heightmap
-            .raycast_visual_terrain(ray_origin, ray_dir)
-            .filter(|hit| {
-                let pos = Vector2::new(hit.x, hit.z);
-                self.transit_network
-                    .roadbed
-                    .height_at(pos.x, pos.y)
-                    .is_none()
-                    && self.allocator.sample_building_site_height(pos).is_none()
-                    && self.sample_engineered_ground_height(pos).is_none()
-            });
-        let owned_hit = closest_ray_hit(ray_origin, ray_dir, road_hit, site_hit);
-        let owned_hit = closest_ray_hit(
-            ray_origin,
-            ray_dir,
-            owned_hit,
-            self.raycast_engineered_ground(ray_origin, ray_dir),
-        );
-        closest_ray_hit(ray_origin, ray_dir, owned_hit, terrain_hit)
-    }
-}
-
-fn closest_ray_hit(
-    ray_origin: Vector3,
-    ray_dir: Vector3,
-    left: Option<Vector3>,
-    right: Option<Vector3>,
-) -> Option<Vector3> {
-    match (left, right) {
-        (Some(left), Some(right)) => {
-            let denom = ray_dir.length_squared().max(f32::EPSILON);
-            let left_t = (left - ray_origin).dot(ray_dir) / denom;
-            let right_t = (right - ray_origin).dot(ray_dir) / denom;
-            if right_t < left_t {
-                Some(right)
-            } else {
-                Some(left)
-            }
-        }
-        (Some(hit), None) | (None, Some(hit)) => Some(hit),
-        (None, None) => None,
+        let origin = [ray_origin.x, ray_origin.y, ray_origin.z].map(f64::from);
+        let direction = [ray_dir.x, ray_dir.y, ray_dir.z].map(f64::from);
+        self.with_graded_surface(|surface, scratch| {
+            surface
+                .raycast_surface(origin, direction, scratch)
+                .map(|[x, y, z]| Vector3::new(x as f32, y as f32, z as f32))
+        })
     }
 }

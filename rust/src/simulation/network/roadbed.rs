@@ -25,8 +25,7 @@ mod walkways;
 
 pub(crate) use arms::{NodeArms, directions_pass_through, edges_pass_through};
 pub(crate) use geometry::{
-    CoverageTriangle, RoadSurfaceTriangleQueryIndex, ray_xz_interval_for_bounds,
-    road_ray_triangle_intersection_t, triangulate_constrained_rings_xz,
+    CoverageTriangle, RoadSurfaceTriangleQueryIndex, triangulate_constrained_rings_xz,
 };
 pub use layout::{
     ArmBand, ArmInput, ArmKey, ArmKnot, ArmLayout, ArmSide, BoundaryBand, BoundaryTaper, CoreVertex,
@@ -38,6 +37,7 @@ pub(crate) use node::{check_node, terminal_plane};
 pub use node::{NodeError, NodePiece};
 pub use profile::{BandKind, CURB_STEP_HEIGHT_M, Level, ProfileBand, RoadProfile};
 pub(crate) use profile::{preview_candidate_roadbed_half_width_m, visual_roadbed_half_width_m};
+pub(crate) use query::GroundedPieceScratch;
 pub use query::{LaneSurfaceQuery, PieceId, PortalPart, WallSegment};
 pub use section::{RoadBand, RoadSection};
 pub(crate) use span::incident_direction;

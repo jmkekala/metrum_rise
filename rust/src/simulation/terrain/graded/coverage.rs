@@ -5,7 +5,9 @@
 //! no structure span lies over the point. No loops are joined and no side is inferred, so an
 //! open chain flips no region.
 
-use crate::simulation::network::roadbed::{CoverageTriangle, PieceId, RoadVec3, RoadbedSystem};
+use crate::simulation::network::roadbed::{
+    CoverageTriangle, GroundedPieceScratch, PieceId, RoadVec3, RoadbedSystem,
+};
 
 // Bounds padding. The predicate is exact (it holds no point outside a triangle's closed XZ box),
 // so the closed rectangle would visit every triangle that can hold one of its points; the pad,
@@ -116,6 +118,38 @@ pub(super) fn covered_height_at(
             best = best.max(height + 0.0);
         }
     });
+    (best > f32::NEG_INFINITY).then_some(best)
+}
+
+/// Gathers once the grounded coverage triangles meeting `bounds`, in the same piece, grid-cell
+/// and triangle order as the per-point query. The reused buffers allocate nothing once warm.
+pub(super) fn gather(
+    roadbed: &RoadbedSystem,
+    bounds: [f64; 4],
+    pieces: &mut GroundedPieceScratch,
+    triangles: &mut Vec<[RoadVec3; 3]>,
+) {
+    triangles.clear();
+    roadbed.for_each_grounded_top_triangle_in_bounds_indexed(
+        [
+            bounds[0] - PAD_M,
+            bounds[1] - PAD_M,
+            bounds[2] + PAD_M,
+            bounds[3] + PAD_M,
+        ],
+        pieces,
+        |triangle| triangles.push(triangle),
+    );
+}
+
+/// [`covered_height_at`] over triangles gathered once for a window.
+pub(super) fn covered_height_in(triangles: &[[RoadVec3; 3]], x: f64, z: f64) -> Option<f32> {
+    let mut best = f32::NEG_INFINITY;
+    for triangle in triangles {
+        if let Some(height) = RoadbedSystem::top_triangle_height_at(triangle, x, z) {
+            best = best.max(height + 0.0);
+        }
+    }
     (best > f32::NEG_INFINITY).then_some(best)
 }
 

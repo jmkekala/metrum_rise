@@ -11,7 +11,7 @@ use super::geometry::{
     ray_xz_interval_for_bounds, road_ray_triangle_intersection_t, triangle_height_at_xz,
     walk_ray_cells,
 };
-use super::index::{QUERY_CELL_M, query_cell_at};
+use super::index::{IndexedPiece, QUERY_CELL_M, query_cell_at};
 use super::mesh::{PieceMesh, abutment_bottom_height};
 use super::{BandKind, RoadVec2, RoadVec3, RoadbedSystem};
 use godot::prelude::Vector3;
@@ -58,6 +58,13 @@ pub struct LaneSurfaceQuery<'a> {
     // The lane owner's span, or a junction lane's node piece.
     owner: Option<&'a PieceMesh>,
     carriageway_only: bool,
+}
+
+/// Reused direct references to grounded pieces meeting one local bounds query.
+#[derive(Default)]
+pub(crate) struct GroundedPieceScratch {
+    indexed: Vec<IndexedPiece>,
+    fallback: bool,
 }
 
 impl LaneSurfaceQuery<'_> {
@@ -134,6 +141,53 @@ fn triangle_near_disc(triangle: [RoadVec3; 3], point: RoadVec2, radius: f64) -> 
 }
 
 impl RoadbedSystem {
+    // Lists grounded indexed pieces in ascending piece order without reading the owner map.
+    // Large region queries fall back to the owner map rather than walking more cells than pieces.
+    fn gather_grounded_indexed(
+        &self,
+        bounds: [f64; 4],
+        scratch: &mut GroundedPieceScratch,
+    ) {
+        scratch.indexed.clear();
+        scratch.fallback = false;
+        let Some(extent) = self.index.extent_xz() else {
+            return;
+        };
+        let clipped = [
+            bounds[0].max(extent[0]),
+            bounds[1].max(extent[1]),
+            bounds[2].min(extent[2]),
+            bounds[3].min(extent[3]),
+        ];
+        if clipped[0] > clipped[2] || clipped[1] > clipped[3] {
+            return;
+        }
+        let first = query_cell_at(clipped[0], clipped[1]);
+        let last = query_cell_at(clipped[2], clipped[3]);
+        let cells = (i64::from(last.0) - i64::from(first.0) + 1)
+            * (i64::from(last.1) - i64::from(first.1) + 1);
+        if cells as u64 > self.pieces.len() as u64 {
+            scratch.fallback = true;
+            return;
+        }
+        for x in first.0..=last.0 {
+            for z in first.1..=last.1 {
+                for indexed in self.index.cell((x, z)) {
+                    if !indexed.grounded || !bounds_intersect(indexed.mesh.bounds_xz(), bounds) {
+                        continue;
+                    }
+                    match scratch
+                        .indexed
+                        .binary_search_by_key(&indexed.id, |piece| piece.id)
+                    {
+                        Ok(_) => {}
+                        Err(at) => scratch.indexed.insert(at, indexed.clone()),
+                    }
+                }
+            }
+        }
+    }
+
     /// Height of the highest visible road triangle at a world XZ point.
     pub fn height_at(&self, x: f32, z: f32) -> Option<f32> {
         self.top_at(x, z, |_| true).map(|(height_m, _)| height_m)
@@ -406,6 +460,48 @@ impl RoadbedSystem {
         }
     }
 
+    /// The local-query form of [`Self::for_each_grounded_seam_in_bounds_where`], reusing the
+    /// indexed meshes directly so it performs no owner-map lookup or allocation once warm.
+    pub(crate) fn for_each_grounded_seam_in_bounds_where_indexed(
+        &self,
+        bounds_xz: [f64; 4],
+        scratch: &mut GroundedPieceScratch,
+        mut keep: impl FnMut([f64; 4], (f64, f64)) -> bool,
+        mut visit: impl FnMut([RoadVec3; 2]),
+    ) {
+        self.gather_grounded_indexed(bounds_xz, scratch);
+        let mut walk = |mesh: &PieceMesh| {
+            for block in mesh.seam_blocks() {
+                if !bounds_intersect(block.bounds_xz, bounds_xz)
+                    || !keep(block.bounds_xz, block.heights)
+                {
+                    continue;
+                }
+                let chain = mesh.outer_chains()[block.chain as usize].vertices();
+                let (first, last) = (block.vertices.0 as usize, block.vertices.1 as usize);
+                for pair in chain[first..=last].windows(2) {
+                    let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                    let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
+                    if bounds_intersect(segment, bounds_xz) {
+                        visit([a, b]);
+                    }
+                }
+            }
+        };
+        if scratch.fallback {
+            for published in self.pieces.values() {
+                if published.grounded() && bounds_intersect(published.mesh().bounds_xz(), bounds_xz)
+                {
+                    walk(published.mesh());
+                }
+            }
+        } else {
+            for indexed in &scratch.indexed {
+                walk(&indexed.mesh);
+            }
+        }
+    }
+
     /// The wall-run segments ([`PieceMesh::wall_runs`], `TERRAIN-07-C`) of `pieces`, the
     /// grounded pieces [`Self::grounded_pieces_in_bounds`] found for the same bounds, whose own
     /// XZ bounds touch them, sorted and deduplicated by key like
@@ -479,6 +575,46 @@ impl RoadbedSystem {
         }
     }
 
+    /// The local-query form of [`Self::for_each_grounded_top_triangle_in_bounds`], reusing the
+    /// indexed meshes directly so it performs no owner-map lookup or allocation once warm.
+    pub(crate) fn for_each_grounded_top_triangle_in_bounds_indexed(
+        &self,
+        bounds_xz: [f64; 4],
+        scratch: &mut GroundedPieceScratch,
+        mut visit: impl FnMut([RoadVec3; 3]),
+    ) {
+        self.gather_grounded_indexed(bounds_xz, scratch);
+        let mut walk = |mesh: &PieceMesh| {
+            let piece = mesh.bounds_xz();
+            if bounds_xz[0] <= piece[0]
+                && bounds_xz[1] <= piece[1]
+                && piece[2] <= bounds_xz[2]
+                && piece[3] <= bounds_xz[3]
+            {
+                for triangle in 0..mesh.top_triangle_count() {
+                    visit(mesh.triangle_points(triangle));
+                }
+            } else {
+                mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
+                    visit(mesh.triangle_points(triangle));
+                    false
+                });
+            }
+        };
+        if scratch.fallback {
+            for published in self.pieces.values() {
+                if published.grounded() && bounds_intersect(published.mesh().bounds_xz(), bounds_xz)
+                {
+                    walk(published.mesh());
+                }
+            }
+        } else {
+            for indexed in &scratch.indexed {
+                walk(&indexed.mesh);
+            }
+        }
+    }
+
     /// Visits the parts of the tunnel spans with a portal row ([`PieceMesh::portal_rows`],
     /// `TERRAIN-07-C`) whose bounds touch the XZ bounds, piece by piece in ascending piece order:
     /// every portal row, the top triangles whose piece grid cells touch the bounds (a triangle
@@ -536,13 +672,42 @@ impl RoadbedSystem {
     /// bounds touch the XZ bounds, sorted and unique, into `pieces` (`TERRAIN-07-A`).
     pub fn grounded_pieces_in_bounds(&self, bounds: [f64; 4], pieces: &mut Vec<PieceId>) {
         pieces.clear();
-        self.any_piece_in_bounds(bounds, |id, _| {
-            pieces.push(id);
-            false
-        });
+        let Some(extent) = self.index.extent_xz() else {
+            return;
+        };
+        let clipped = [
+            bounds[0].max(extent[0]),
+            bounds[1].max(extent[1]),
+            bounds[2].min(extent[2]),
+            bounds[3].min(extent[3]),
+        ];
+        if clipped[0] > clipped[2] || clipped[1] > clipped[3] {
+            return;
+        }
+        let first = query_cell_at(clipped[0], clipped[1]);
+        let last = query_cell_at(clipped[2], clipped[3]);
+        let cells = (i64::from(last.0) - i64::from(first.0) + 1)
+            * (i64::from(last.1) - i64::from(first.1) + 1);
+        if cells as u64 > self.pieces.len() as u64 {
+            pieces.extend(self.pieces.iter().filter_map(|(&id, published)| {
+                (published.grounded() && bounds_intersect(published.mesh().bounds_xz(), bounds))
+                    .then_some(id)
+            }));
+            return;
+        }
+        for x in first.0..=last.0 {
+            for z in first.1..=last.1 {
+                for indexed in self.index.cell((x, z)) {
+                    if indexed.grounded
+                        && bounds_intersect(indexed.mesh.bounds_xz(), bounds)
+                        && !pieces.contains(&indexed.id)
+                    {
+                        pieces.push(indexed.id);
+                    }
+                }
+            }
+        }
         pieces.sort_unstable();
-        pieces.dedup();
-        pieces.retain(|id| self.pieces[id].grounded());
     }
 
     // Visits pieces whose bounds touch `bounds` until `visit` returns true. Walks the query

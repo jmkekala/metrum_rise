@@ -7,9 +7,7 @@ use crate::nodes::sim::core::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainPatchCacheKey,
 };
 use crate::nodes::simulation_node::SimulationNode;
-use crate::simulation::network::roadbed::{
-    RoadVec2, RoadVec3, ray_xz_interval_for_bounds, road_ray_triangle_intersection_t,
-};
+use crate::simulation::network::roadbed::RoadVec2;
 
 impl SimCore {
     fn current_ground_patch(&self, x: usize, z: usize) -> Option<&CachedRefinedTerrainPatch> {
@@ -63,96 +61,5 @@ impl SimCore {
             }
         }
         None
-    }
-
-    pub(super) fn raycast_engineered_ground(
-        &self,
-        origin: Vector3,
-        direction: Vector3,
-    ) -> Option<Vector3> {
-        if !origin.is_finite()
-            || !direction.is_finite()
-            || direction.length_squared() <= f32::EPSILON
-        {
-            return None;
-        }
-        let origin = RoadVec3::new(
-            f64::from(origin.x),
-            f64::from(origin.y),
-            f64::from(origin.z),
-        );
-        let direction = RoadVec3::new(
-            f64::from(direction.x),
-            f64::from(direction.y),
-            f64::from(direction.z),
-        );
-        let (half_x, half_z) = self.heightmap.half_world_extents();
-        let span = f64::from(
-            self.heightmap.render_patch_interval_cells() as f32 * self.heightmap.cell_size_m(),
-        );
-        let mut closest = f64::INFINITY;
-        // Walk rows of the existing patch grid, then only columns intersected by the ray
-        // within each row. No city-wide cache/triangle scan or query-time compilation.
-        for z in 0..self.heightmap.render_patch_rows() {
-            let min_z = -f64::from(half_z) + z as f64 * span;
-            let max_z = (min_z + span).min(f64::from(half_z));
-            let Some((enter, exit)) = ray_xz_interval_for_bounds(
-                origin,
-                direction,
-                -f64::from(half_x),
-                min_z,
-                f64::from(half_x),
-                max_z,
-            ) else {
-                continue;
-            };
-            if enter.max(0.0) > closest {
-                continue;
-            }
-            let start_x = origin.x + direction.x * enter.max(0.0);
-            let end_x = if exit.is_finite() {
-                origin.x + direction.x * exit.min(closest)
-            } else {
-                start_x
-            };
-            let first = (((start_x.min(end_x) + f64::from(half_x)) / span).floor() as usize)
-                .saturating_sub(1);
-            let last = (((start_x.max(end_x) + f64::from(half_x)) / span).floor() as usize)
-                .min(self.heightmap.render_patch_cols() - 1);
-            for x in first..=last {
-                let Some(patch) = self.current_ground_patch(x, z) else {
-                    continue;
-                };
-                for window in &patch.windows {
-                    let b = window.cdt_patch;
-                    let Some((enter, _)) = ray_xz_interval_for_bounds(
-                        origin, direction, b.min_x, b.min_z, b.max_x, b.max_z,
-                    ) else {
-                        continue;
-                    };
-                    if enter.max(0.0) > closest {
-                        continue;
-                    }
-                    let Ok(mesh) = &window.mesh_result else {
-                        continue;
-                    };
-                    for indices in mesh.triangles.iter().chain(&mesh.retaining_wall_triangles) {
-                        let triangle = indices.map(|i| {
-                            let p = mesh.vertices[i];
-                            RoadVec3::new(p.x, f64::from(p.height_m), p.z)
-                        });
-                        if let Some(t) =
-                            road_ray_triangle_intersection_t(triangle, origin, direction)
-                        {
-                            closest = closest.min(t);
-                        }
-                    }
-                }
-            }
-        }
-        closest.is_finite().then(|| {
-            let p = origin + direction * closest;
-            Vector3::new(p.x as f32, p.y as f32, p.z as f32)
-        })
     }
 }

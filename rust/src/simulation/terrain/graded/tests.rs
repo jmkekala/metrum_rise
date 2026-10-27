@@ -11,7 +11,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::fixtures::{
     SLOPE, bend, connect, point, road_edge, t_junction,
 };
-use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
+use crate::simulation::network::roadbed::{GroundedPieceScratch, PieceId, RoadbedSystem};
 use crate::simulation::network::types::NodeType;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -462,6 +462,7 @@ fn coverage_equals_the_roadbed_height_query_at_every_lattice_point() {
 fn the_coverage_raster_equals_the_predicate_at_every_lattice_point() {
     let (mut xs, mut zs, mut pieces, mut road) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut triangles, mut bits) = (Vec::new(), Vec::new());
+    let (mut grounded, mut gathered) = (GroundedPieceScratch::default(), Vec::new());
     for (name, graph, terrain) in fixtures() {
         let roadbed = compiled(&graph);
         for level in LEVELS {
@@ -476,9 +477,20 @@ fn the_coverage_raster_equals_the_predicate_at_every_lattice_point() {
                     &mut bits,
                 );
                 coverage::rasterize(&triangles, &xs, &zs, &mut road);
+                coverage::gather(
+                    &roadbed,
+                    [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]],
+                    &mut grounded,
+                    &mut gathered,
+                );
                 for (j, &z) in zs.iter().enumerate() {
                     for (i, &x) in xs.iter().enumerate() {
                         let point = coverage::covered_height_at(&roadbed, x, z, &mut pieces);
+                        assert_eq!(
+                            coverage::covered_height_in(&gathered, x, z).map(f32::to_bits),
+                            point.map(f32::to_bits),
+                            "{name} gathered {level:?} ({x}, {z})"
+                        );
                         assert_eq!(
                             road[j * xs.len() + i].to_bits(),
                             point.unwrap_or(f32::NEG_INFINITY).to_bits(),

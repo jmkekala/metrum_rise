@@ -387,8 +387,6 @@ pub struct SimCore {
     /// thread's scratch while slots run, so it is prepared once (at load) rather than on each
     /// pool worker that first runs a slot (`SIM-02-K`); scratch, not state.
     pub(crate) slot_route_scratch: crate::simulation::economy::agents::tick::TripQueryScratch,
-    /// Buffers of the graded surface queries Godot asks (`TERRAIN-07-D`); scratch, not state.
-    pub(crate) graded_query_scratch: crate::simulation::terrain::graded::QueryScratch,
     /// Whether the zoning cell overlay is shown; stale warm cell chunks then regenerate in the
     /// same tick as the edit that invalidated them. UI state, kept across world resets.
     pub(crate) cell_overlay_visible: bool,
@@ -497,7 +495,6 @@ impl SimCore {
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             snapshot_agent_scratch: Default::default(),
             slot_route_scratch: Default::default(),
-            graded_query_scratch: Default::default(),
             cell_overlay_visible: false,
             vehicle_ground_support: Default::default(),
         }

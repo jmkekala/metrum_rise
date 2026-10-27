@@ -389,6 +389,20 @@ fn a_node_piece_where_only_structures_meet_stands_off_the_terrain() {
             let bounds = hub.mesh().bounds_xz();
             let (mut pieces, mut seams) = (Vec::new(), Vec::new());
             roadbed.grounded_pieces_in_bounds(bounds, &mut pieces);
+            let expected = roadbed
+                .pieces
+                .iter()
+                .filter_map(|(&id, published)| {
+                    let piece = published.mesh().bounds_xz();
+                    (published.grounded()
+                        && piece[0] <= bounds[2]
+                        && bounds[0] <= piece[2]
+                        && piece[1] <= bounds[3]
+                        && bounds[1] <= piece[3])
+                        .then_some(id)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(pieces, expected, "{name}: indexed grounded piece order");
             assert_eq!(pieces.contains(&PieceId::Node(0)), *grounded, "{name}");
             // Structure spans publish no seams either, so only a grounded hub's road gives any.
             roadbed.grounded_seams_in_bounds(bounds, &mut pieces, &mut seams);

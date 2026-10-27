@@ -30,7 +30,9 @@ fn surface_queries_answer_from_the_graded_surface() {
         for j in 0..12 {
             let (x, z) = (-30.0 + 1.07 * i as f32, -14.0 + 2.31 * j as f32);
             let expected = graded_height(&core, x, z);
-            let height = core.graded_surface_height(Vector2::new(x, z));
+            let cell_m = core.config.zone_cell_m;
+            core.allocator.prepare_building_site_query_index(cell_m);
+            let height = core.get_world_surface_height_internal(Vector2::new(x, z));
             assert_eq!(height.to_bits(), expected.to_bits(), "({x}, {z})");
             match core.transit_network.roadbed.height_at(x, z) {
                 Some(road) => {
@@ -46,7 +48,10 @@ fn surface_queries_answer_from_the_graded_surface() {
             // A vertical ray meets the same surface at the same point (one plane, two
             // evaluation orders: f32 rounding apart).
             let hit = core
-                .intersect_graded_surface(Vector3::new(x, 200.0, z), Vector3::new(0.0, -1.0, 0.0))
+                .intersect_world_surface_internal(
+                    Vector3::new(x, 200.0, z),
+                    Vector3::new(0.0, -1.0, 0.0),
+                )
                 .expect("a vertical ray meets the surface");
             assert_eq!((hit.x, hit.z), (x, z));
             assert!(

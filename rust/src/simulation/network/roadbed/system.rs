@@ -735,8 +735,9 @@ impl RoadbedSystem {
             self.changed_chains.count(old, -1);
         }
         if let Some(published) = published {
+            let grounded = published.grounded();
             let (mesh, footprint) = published.parts();
-            self.index.insert(id, mesh, footprint);
+            self.index.insert(id, mesh, footprint, grounded);
             changed.extend(footprint.render_chunks().iter().copied());
             self.changed_bounds.push(published.mesh().bounds_xz());
             self.changed_portals.extend(portal_bounds(published.mesh()));

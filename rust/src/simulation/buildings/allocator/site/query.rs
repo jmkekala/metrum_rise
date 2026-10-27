@@ -54,7 +54,6 @@ impl BuildingAllocator {
     // Visits the sites a graded terrain query of `rect` reads, through the 64 m site cells.
     fn visit_graded_sites(&self, rect: [f64; 4], mut visit: impl FnMut(&BuildingSiteClient)) {
         let query = SiteRectQuery::new(rect, self.max_site_radius_m);
-        let [min_x, min_z, max_x, max_z] = query.rect;
         self.site_cells.visit(query.rect, |idx| {
             if let Some(site) = self.building_sites.get(idx)
                 && query.holds(site)

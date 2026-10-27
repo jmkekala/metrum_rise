@@ -129,13 +129,20 @@ fn covered_keys(
 pub(super) struct IndexedPiece {
     pub(super) id: PieceId,
     pub(super) mesh: Arc<PieceMesh>,
+    // Whether this piece contributes terrain seams and coverage.
+    pub(super) grounded: bool,
 }
 
 /// Query cells and render-chunk reference counts of the published pieces.
 #[derive(Clone, Default)]
 pub(super) struct PieceIndex {
     // Sorted by piece id within each cell.
-    cells: imbl::HashMap<QueryCell, Arc<Vec<IndexedPiece>>>,
+    cells: imbl::GenericHashMap<
+        QueryCell,
+        Arc<Vec<IndexedPiece>>,
+        foldhash::fast::FixedState,
+        imbl::shared_ptr::DefaultSharedPtr,
+    >,
     chunk_refs: imbl::OrdMap<SurfaceChunkKey, u32>,
     // Grows with every insert and resets on clear: bounds rays and region scans.
     extent_xz: Option<[f64; 4]>,
@@ -147,11 +154,13 @@ impl PieceIndex {
         id: PieceId,
         mesh: &Arc<PieceMesh>,
         footprint: &PieceFootprint,
+        grounded: bool,
     ) {
         for &cell in footprint.query_cells.iter() {
             let entry = IndexedPiece {
                 id,
                 mesh: Arc::clone(mesh),
+                grounded,
             };
             if let Some(list) = self.cells.get_mut(&cell) {
                 let list = Arc::make_mut(list);
