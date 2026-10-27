@@ -153,7 +153,9 @@ impl SimCore {
                     };
                     let region_graph = match offered {
                         Some(graph) => graph,
-                        None if copy_graph => Arc::new(graph.clone()),
+                        // The commit's copy, on the pool beside the cell follow (`ROAD-68-G`
+                        // part 7).
+                        None if copy_graph => Arc::new(graph.clone_on_pool()),
                         None => Arc::clone(&previous.view.region_graph),
                     };
                     let terrain = if terrain_changed {

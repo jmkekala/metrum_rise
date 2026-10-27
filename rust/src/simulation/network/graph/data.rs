@@ -4,6 +4,7 @@
 
 use super::super::types::*;
 use godot::prelude::*;
+use rayon::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 use std::collections::{HashMap, HashSet};
 
@@ -145,6 +146,55 @@ pub struct RegionGraph {
     // Bumped by `set_node_type`, which changes a node's role without a topology edit (and so
     // without a CCH rebuild); caches of node roles key on it.
     node_role_revision: u64,
+}
+
+impl RegionGraph {
+    /// [`Clone::clone`] with its fields cloned on the pool (`ROAD-68-G` part 7): each field by its
+    /// own `clone`, the node, edge and adjacency records in parallel and collected in order, so
+    /// the copy equals `clone()`'s field for field. For the commit's one graph copy, which a
+    /// single thread made in about 2.4 ms at 100k residents. Call it on a pool worker or inside
+    /// `crate::thread_pools::install`. `O(graph / P)`.
+    pub(crate) fn clone_on_pool(&self) -> Self {
+        // Destructured whole, so a new field cannot be left out of the copy.
+        let Self {
+            nodes,
+            edges,
+            node_aliases,
+            spatial_edge_rt,
+            adjacency,
+            spatial_node_grid,
+            node_role_revision,
+        } = self;
+        let ((nodes, edges), ((spatial_edge_rt, adjacency), (node_aliases, spatial_node_grid))) =
+            rayon::join(
+                || {
+                    rayon::join(
+                        || nodes.par_iter().cloned().collect(),
+                        || edges.par_iter().cloned().collect(),
+                    )
+                },
+                || {
+                    rayon::join(
+                        || {
+                            rayon::join(
+                                || spatial_edge_rt.clone(),
+                                || adjacency.par_iter().cloned().collect(),
+                            )
+                        },
+                        || rayon::join(|| node_aliases.clone(), || spatial_node_grid.clone()),
+                    )
+                },
+            );
+        Self {
+            nodes,
+            edges,
+            node_aliases,
+            spatial_edge_rt,
+            adjacency,
+            spatial_node_grid,
+            node_role_revision: *node_role_revision,
+        }
+    }
 }
 
 /// Local authoritative graph checkpoint used by the bounded undo history.
