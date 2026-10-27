@@ -6214,9 +6214,16 @@ headless backend, P-cores.
   (medians over the scenes): `orbit_high` +0.22, `zoom_in` +0.19, `pan_low` -0.18, `orbit_low`
   -0.05, `pan_high` -0.01 ms. Loads: Kuopio exact 2,540 and 2,573 ms, graded 3,068 and 3,144; saved
   3,533 and 3,531 against 4,063 and 4,057; town 5,177 and 4,750 against 3,696 and 3,643. `saved`'s
-  0.20 ms is about the mask's share there (0.19 ms at the old levels); levers in the handoff: the
-  mask's colour-pass class search skipped where the four samples share a class (exact), and a
-  graded variant without the mask for tiles whose lattice holds no covered sample.
+  0.20 ms is attributed below and is [T35](#terrain-07-open-questions).
+- **`saved`'s remaining 0.20 ms (attributed, fresh, GPU probes as above, two rounds).** Graded
+  minus exact GPU p50 on the `saved` pose: the fix +0.196 (the matrix +0.20); without cells (the
+  `PlaneMesh`es, now at the base lattice) -0.048; the fix without the mask and discard +0.107;
+  with the mask but no discard +0.176; without the material class search +0.193. So of the 0.20
+  ms the cells' own work over the `PlaneMesh` is 0.155 (their 2 m `GL2` lattice and vertex
+  fetches; the saved pose draws its graded tiles mostly at `GL2` and `GL3`), the mask's
+  arithmetic 0.07, its discard 0.02, the class search none, and graded mode's lighter base
+  0.05 back. Not a defect: the cost of drawing the graded slopes at 2 m to 2 km and of the exact
+  mask (T35).
 - **T26 (a) (built; target met on the town's high paths).** [Re-levelling by camera
   travel](#godot-tile-renderer) and [cells per tile](#godot-tile-renderer). Probes as round 7's
   (the town's `pan_high` and `orbit_high`, gamescope paced at 60 Hz, the perf channel, matrix
@@ -7080,6 +7087,27 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (`gl0_triangles_stay_at_or_below_the_seam_height_across_straight_edges`: at most the seam's
       height on the seam, through it on the cut, a sag of at most `k s/2` on the fill, 0.12 m
       measured), and `kuopio_t2_edge_steps` finds no uncovered step on the T2 site's six chains.
+35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — open for the user.**
+    - **Evidence.** The matrix on the fix (`6826a11c`): graded below the exact cut on five poses,
+      `saved` +0.20 ms (2.14 -> 2.34, both rounds). Attributed ([record](#terrain-07-d-record),
+      round 8): the cells' own work over the base lattice 0.155 ms, the mask's arithmetic 0.07,
+      its discard 0.02, graded mode's lighter base -0.05. The Kuopio reference save's roads sit
+      on natural ground, so most of its graded tiles are slopes drawn at `GL2` (2 m) to 2 km.
+    - **Measured levers (fresh, probes).** `GL2` to 1 km (`GL3` from there): +0.189 against the
+      fix's +0.197, the same primitives (the pose's graded tiles all lie within 1 km): no lever.
+      The near levels are: `GL0` to 128 m and `GL1` to 256 m left +0.46, 64 and 128 m +0.19.
+    - **Options.** (a) Nearer levels still (`GL0` to 32 m, `GL1` to 64 m, `GL2` beyond; `T5`'s
+      tuning): 2 m cells from 64 m, about 30 pixels a cell there, so the graded slopes near a road
+      show their facets in close views. (b) A graded variant without the mask for tiles whose
+      lattice holds no covered sample and no paving class (exact and invisible; four more
+      `MultiMesh`es and materials per prewarmed cell set, `T25`): at most the mask's 0.09 ms on
+      those tiles. (c) Cheaper cell vertices (the delta gradient precomputed into the payload; a
+      payload change). (d) (b) with (c).
+    - **Recommendation.** (b) then (c), measured on `saved` with the matrix: both exact and
+      invisible; (a) only if they do not close it, since it trades visible slope detail. Gate D's
+      criterion stays: graded not above exact on every pose.
+
+#### Superseded `ROAD-68` questions
 
 - **18** (grading envelope cap): carried into [TD5](#product-decisions); the reach is an
   exact bound under the cap ([T1](#terrain-07-open-questions)).
