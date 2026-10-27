@@ -388,16 +388,36 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
-`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 8 implements the user's 2026-10-27 T37
+`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 9 implements the user's 2026-10-27 T44
+shared-index trial and T45 contact lift on top of T37's vehicle-ground LOD. Off-lane vehicles
+keep their exact rigid contact solve through 250 m; beyond it the centre normal and all support
+heights come from one prepared query, with the origin lifted to at least 0.020 m clearance. Fresh
+10k/30k/100k minimum clearance is 0.019999988 m. The shared index retains only canonical road
+piece IDs while road meshes and allocator sites own each input once: 0.426/1.210/4.374 MB at
+10k/30k/100k including tree overhead, about 43.7 MB projected at 1M versus 10.97 GB for the copied
+representation. The user chooses shared versus LOD-only after the fresh matched timing. Round 8
+implemented the user's 2026-10-27 T37
 decision: off-lane vehicles keep their exact rigid contact solve through 250 m from the camera and
 take one rendered centre height/normal query beyond it; snapshots and interpolation share the
 render-only rule. Fresh 100k culled/full side means are 0.834/5.600 ms control, 1.254/6.118 ms
 LOD-only and 0.860/5.744 ms LOD+round-7-index, with all 1,101 products equal. Fresh `PERF-07`
 snapshot/frame means are 0.921/6.451, 1.323/6.782 and 0.987/6.611 ms; every variant fails all
-three existing guards. The index still retains 1.10 GB before tree overhead, so T44 recommends
-reverting it. A far centre plane can put a contact 0.345 m below the exact surface; T45 recommends
-allowing contact evaluations from the same prepared query to restore clearance, but remains open
-because this changes the user's one-evaluation rule. The exact 250 m boundary keeps 0.020 m.
+three existing guards. Those are historical until round 9's matched session; the exact 250 m
+boundary remains unchanged.
+Round 9's fresh 10k/100k culled side means are 1.018/2.951 ms LOD-only, 0.885/2.715 copied and
+1.250/4.078 shared (control 0.219/0.879); every product matches and T45 clearance holds. Shared is
+slower than no index, and copied retains 108 MB/1.10 GB for its 0.133/0.236 ms gain, so T44
+recommends no index pending the user's choice. T46 tracks the larger result: T45 makes the far path
+evaluate contacts plus the centre normal and removes the LOD's historical speedup; run an exact-only
+same-session comparator, then prefer the exact rigid solve unless it disproves that result.
+Fresh 100k `PERF-07` snapshot/frame means are 0.994/6.447 ms control, 3.011/8.498 copied and
+4.677/10.154 shared; every variant fails all three guards.
+Final Clippy adds no warning. Two fresh full debug-library runs pass 1,979 tests with 182 ignores
+and fail only the vegetation bulldoze/brush-equivalence test, which passes focused; all terrain
+tests pass. `run.sh --test` therefore stops before the Godot half and the gate remains in progress.
+The final gameplay capture found and fixed a shared-query quiet-tile mismatch for diagonal seams
+outside the 64 m Euclidean cap plus stale base-window reuse; its targeted regression and four-view
+capture pass, with no script error or T-junction asphalt grass/floating zoning cells.
 `PERF-09` owns the control regression; no target is relaxed. T40 remains pending the user's review.
 Evidence and acceptance:
 [`terrain.md`](terrain.md#terrain-07-f-record).
