@@ -3984,9 +3984,37 @@ km.
   patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
   empty world is [T25](#terrain-07-open-questions). A set's four graded materials are bound to
-  its nodes only while it draws a patch (acquired from the pool, unbound on release; the base
-  cells take the patch's material at each rewrite): binding a made material creates nothing, and a
-  pooled node with no material holds no instance uniform slot (`TERRAIN-07-D` round 9).
+  its nodes only while it draws a patch (bound as it starts drawing, unbound as it stops; the base
+  cells take the patch's material then): binding a made material creates nothing, and a node with
+  no material holds no instance uniform slot (`TERRAIN-07-D` round 9).
+- **Every resident patch's set is built off the frame paths** (`TERRAIN-07-E` round 6). A patch
+  draws either its PlaneMesh or its set, which holds an instance for each of its tiles (81), so a
+  set built when its first tile showed graded wrote all 81 in that frame: on the real display a
+  pose's frame took up to 17.7 ms where a stroke entered patches without one. Now a patch
+  arriving in the residency (or at a new step while hidden) queues its set's build, which syncs
+  the set's materials and writes its tiles within the streaming install budget, a few tiles a
+  frame, the patches a shown tile waits for first (at least one tile a frame). A built set stays
+  current through the per-tile updates and stays hidden until a tile of it shows graded,
+  installed while the patch's list is not empty or previewed; then it flips: its meshes and
+  instance uniforms set, its materials bound and synced where its watched parameters moved, its
+  nodes under the patch node, the PlaneMesh collapsed; and back when none does (out of the tree,
+  materials unbound). A hidden set that never drew has no mesh, no instance uniform and no
+  material, so it draws nothing and holds no instance-uniform slot: a node with instance
+  uniforms set holds its 16 slots whatever its material (round 6's first build set them on
+  every prebuilt set and overflowed the buffer). Slots held by cell sets: 5 per set that has
+  drawn since the world load (as the released sets of gate D held them), at most
+  5 x the resident patches. The renderer frees its sets' nodes with itself (each world load
+  makes a new one; before round 6 every load leaked the previous world's sets). A set's
+  MultiMeshes keep their data on the CPU from its first build, which writes the instances'
+  identity transforms one by one: a bulk buffer lives on the GPU only, and the first
+  per-instance write after it reads the whole buffer back, stalling 0.5-2.1 ms (a pose's
+  tile moving into a level's mesh paid it). A patch's first graded
+  tile is so a per-tile update and a flip, `O(1)` in the patch's tiles, in any frame. A tile whose
+  patch's set is not built yet (after a load or a step change) draws once it is: the preview's
+  lag of [T27](#terrain-07-open-questions) (d) for a previewed tile, the streaming's otherwise. A
+  drawing set whose patch changes step (a camera move) is still rewritten whole in that frame,
+  as before. After a world load the builds take the streaming budget's spare time until every
+  resident patch has its set (Kuopio: 1,296 sets, 8-22 s headless).
 - **Instance uniforms.** The cells place themselves from instance uniforms (`cell_mode`, the patch
   rectangle, the lattice anchor), and Godot holds every instance's instance uniforms in one global
   buffer of `rendering/limits/global_shader_variables/buffer_size` vec4 slots, 16 per instance; an
@@ -4185,6 +4213,16 @@ km.
     tile's dear samples lie in a few rows near the road, and finer bands spread them over the
     workers. The bytes do not depend on the band height (every sample is its own and the counts
     are integers).
+- **Corrections (`TERRAIN-07-E` round 6, the real display; [record](#terrain-07-e-record)).**
+  - *The commit takes over the preview's slots.* Rust flags each staged commit tile whose
+    payload is the one the preview showed (`adopted`: the same payload as the epoch's shown tile,
+    which the renderer holds). Godot moves that tile's preview slot to the installed tile in the
+    batch: nothing is uploaded and nothing drawn changes, so neither its instance nor its walls
+    are rewritten. A converged commit so uploads none of its tiles; the tiles an older pose
+    showed (a click right after a fast drag) still upload in the batch. A click that previews a
+    pose of its own shows that pose's tiles before it commits, so the renderer holds what the
+    commit adopts.
+  - *No cell set is built in an edit's or a preview's frame* ([cell sets](#godot-tile-renderer)).
 
 ### Queries for consumers
 
