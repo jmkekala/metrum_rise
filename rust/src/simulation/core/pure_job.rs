@@ -105,6 +105,7 @@ pub(crate) struct PureJob<T: Send + 'static> {
 impl<T: Send + 'static> PureJob<T> {
     /// Queues `work` on the shared pool (`crate::thread_pools`); from a pool worker it queues on
     /// that worker's pool. O(1).
+    #[track_caller]
     pub(crate) fn spawn(work: impl FnOnce() -> T + Send + 'static) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::Queued(Box::new(work))),

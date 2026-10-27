@@ -177,8 +177,62 @@ pub(crate) fn install<R: Send>(op: impl FnOnce() -> R + Send) -> R {
 
 /// Queues `op` on the shared pool without waiting for it; [`stop`] waits for it to finish.
 /// A Rayon worker queues it on its own pool.
+#[track_caller]
 pub(crate) fn spawn(op: impl FnOnce() + Send + 'static) {
+    #[cfg(test)]
+    let op = spans::recorded(op, std::panic::Location::caller());
     SHARED.spawn(op);
+}
+
+/// When each spawned job ran, for benchmarks that place a frame's stall against the background
+/// work beside it (`TERRAIN-07-E` round 3). Off until a benchmark turns it on.
+#[cfg(test)]
+pub(crate) mod spans {
+    use std::panic::Location;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, PoisonError};
+    use std::time::Instant;
+
+    /// One spawned job: where it was spawned, when it started and ended.
+    pub(crate) type Span = (&'static Location<'static>, Instant, Instant);
+
+    static RECORDING: AtomicBool = AtomicBool::new(false);
+    static SPANS: Mutex<Vec<Span>> = Mutex::new(Vec::new());
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+    /// Milliseconds from the first [`start`] (or call) in this process to `at`, so a benchmark
+    /// prints its stages and the recorded jobs on one clock.
+    pub(crate) fn ms(at: Instant) -> f64 {
+        let epoch = *EPOCH.get_or_init(Instant::now);
+        at.saturating_duration_since(epoch).as_secs_f64() * 1000.0
+    }
+
+    pub(super) fn recorded(
+        op: impl FnOnce() + Send + 'static,
+        at: &'static Location<'static>,
+    ) -> impl FnOnce() + Send + 'static {
+        let recording = RECORDING.load(Ordering::Relaxed);
+        move || {
+            let started = Instant::now();
+            op();
+            if recording {
+                let span = (at, started, Instant::now());
+                SPANS.lock().unwrap_or_else(PoisonError::into_inner).push(span);
+            }
+        }
+    }
+
+    /// Records the jobs spawned from now on, dropping any recorded before.
+    pub(crate) fn start() {
+        ms(Instant::now());
+        SPANS.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        RECORDING.store(true, Ordering::Relaxed);
+    }
+
+    /// The jobs recorded so far that have ended, in end order.
+    pub(crate) fn take() -> Vec<Span> {
+        std::mem::take(&mut *SPANS.lock().unwrap_or_else(PoisonError::into_inner))
+    }
 }
 
 /// Waits for the shared pool's work in flight, then joins its workers. Called once before the

@@ -18,6 +18,7 @@ pub(crate) struct AsyncJobs {
 impl AsyncJobs {
     /// Queues `job` on the extension's shared pool. [`Self::wait`] returns only after `job` has
     /// returned and dropped everything it captured.
+    #[track_caller]
     pub(crate) fn spawn(self: &Arc<Self>, job: impl FnOnce() + Send + 'static) {
         *self.count() += 1;
         let jobs = Arc::clone(self);

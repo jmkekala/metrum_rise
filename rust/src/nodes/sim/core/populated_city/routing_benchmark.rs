@@ -976,7 +976,9 @@ fn benchmark_populated_commit_breakdown() {
 // pose the graded stage, then the commit's (the pose's tiles adopted by inputs) and the undo's
 // (the kept tiles), each the stage's wall clock. The stroke is then committed again, untimed,
 // and the next sample follows on that city. Cities as the breakdown loads them
-// (`METRUM_PERF_CACHE`, `METRUM_COMMIT_TIERS`). Set the workers with RAYON_NUM_THREADS.
+// (`METRUM_PERF_CACHE`, `METRUM_COMMIT_TIERS`). Set the workers with RAYON_NUM_THREADS. Round 3:
+// every timed call's span and, per tier, the spawned background jobs' spans on the same clock
+// (`GRADED_POPULATED_JOBS`, `thread_pools::spans`), to place a stall against the work beside it.
 #[test]
 #[ignore = "release TERRAIN-07-E populated drags; loads or builds the requested cities outside timing"]
 fn benchmark_populated_graded_drags() {
@@ -989,6 +991,7 @@ fn benchmark_populated_graded_drags() {
         eprintln!("COMMIT_FIXTURE {fixture}");
         core.precompute_road_mesh_data();
         prepare_graded_sites(&mut core);
+        crate::thread_pools::spans::start();
         for (sample, start) in trunk_branch_starts(&core).into_iter().enumerate() {
             let end = trunk_branch_end(&core, start);
             let mut record = graded_drag(&mut core, start, end);
@@ -998,7 +1001,26 @@ fn benchmark_populated_graded_drags() {
             record["workers"] = crate::thread_pools::install(rayon::current_num_threads).into();
             eprintln!("GRADED_POPULATED_DRAG {record}");
         }
+        // Untimed: the last rebuild ends before its span is taken.
+        core.transit_network.settle_cch();
+        let jobs: Vec<_> = crate::thread_pools::spans::take()
+            .into_iter()
+            .map(|(at, start, end)| {
+                use crate::thread_pools::spans::ms;
+                serde_json::json!([format!("{}:{}", at.file(), at.line()), ms(start), ms(end)])
+            })
+            .collect();
+        eprintln!(
+            "GRADED_POPULATED_JOBS {}",
+            serde_json::json!({"residents": residents, "jobs": jobs})
+        );
     }
+}
+
+// A timed call's span on the benchmark clock (`thread_pools::spans::ms`).
+fn span_ms(start: Instant) -> serde_json::Value {
+    use crate::thread_pools::spans::ms;
+    serde_json::json!([ms(start), ms(Instant::now())])
 }
 
 // One 1 + 1 stroke from `start` to `end` as a timed drag of eight poses, its commit with the
@@ -1019,7 +1041,9 @@ fn graded_drag(
         preview,
     };
     core.benchmark_mode = false;
-    let outcome = core.commit_road(request(Some(preview)), Instant::now(), Default::default());
+    let called = Instant::now();
+    let outcome = core.commit_road(request(Some(preview)), called, Default::default());
+    let commit_span = span_ms(called);
     assert!(outcome.committed, "{}", outcome.rejection);
     let commit = core.last_graded_stats;
     let commit_digest = core.last_graded_tiles.as_deref().ok().map(stage_digest);
@@ -1032,13 +1056,19 @@ fn graded_drag(
         .wait()
         .map(|kept| (kept.len(), kept.payload_bytes()))
         .expect("the kept tiles bake");
+    let called = Instant::now();
     assert!(core.undo_action_internal(), "undo");
+    let undo_span = span_ms(called);
     let undo = core.last_graded_stats;
     let undo_digest = core.last_graded_tiles.as_deref().ok().map(stage_digest);
     core.benchmark_mode = true;
-    let outcome = core.commit_road(request(None), Instant::now(), Default::default());
+    let called = Instant::now();
+    let outcome = core.commit_road(request(None), called, Default::default());
+    let recommit_span = span_ms(called);
     assert!(outcome.committed, "{}", outcome.rejection);
     serde_json::json!({
+        "commit_span_ms": commit_span, "undo_span_ms": undo_span,
+        "recommit_span_ms": recommit_span,
         "poses": poses, "pose_max_ms": pose_max_ms,
         "commit_digest": commit_digest, "undo_digest": undo_digest,
         "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
@@ -1079,6 +1109,7 @@ fn drag_poses(
         point.y = core.heightmap.sample_height_world(point.x, point.z);
         let points = vec![start, point];
         let surface_generation = context.view.surface_generation;
+        let called = Instant::now();
         let preview = context.preview_road(RoadPreviewRequest {
             surface_generation,
             points: points.clone(),
@@ -1086,12 +1117,14 @@ fn drag_poses(
             bkw_lanes: 1,
             snap_to_existing_roads: true,
         });
+        let span = span_ms(called);
         match preview.pieces.as_ref() {
             Some(pieces) => {
                 let stats = pieces.graded.stats;
                 pose_max_ms = pose_max_ms.max(stats.total_ms());
                 poses.push(serde_json::json!({
-                    "step": step, "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
+                    "step": step, "span_ms": span,
+                    "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
                     "inputs_ms": stats.inputs_ms, "bake_ms": stats.bake_ms,
                     "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
                     "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
@@ -1099,7 +1132,7 @@ fn drag_poses(
                 }));
             }
             None => poses.push(serde_json::json!({
-                "step": step, "invalid": preview.validation.invalid_reason,
+                "step": step, "span_ms": span, "invalid": preview.validation.invalid_reason,
             })),
         }
         last = Some((points, std::sync::Arc::new(preview)));
