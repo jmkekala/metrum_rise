@@ -390,7 +390,9 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 7 implements the user's 2026-10-27
 authorized T37 (a) trial: an exact, deterministic, unsaved sparse 64 m query-input index maintained
-with road, site and base publications; acceptance awaits the trial's fresh measurements. Round 6 validates exact/graded GPU grass before
+with road, site and base publications. It misses the fresh 100k pose control (1.096 vs 0.838 ms)
+and retains 1.10 GB before tree overhead; recommendation: revert it or share immutable inputs before
+another trial. Round 6 validates exact/graded GPU grass before
 and after a Kuopio road edit and fixes disposal of the renderer's detached prewarmed cells; the
 verified render has no shader, script, settle or resource-leak diagnostic. All landing products
 remain equal. T37's fresh 100k profile keeps 1,101 products equal but attributes 74.09% of branch

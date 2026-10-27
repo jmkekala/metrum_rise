@@ -1699,6 +1699,8 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     core.allocator.recompute_max_site_radius_m();
     let cell_m = core.config.zone_cell_m;
     core.allocator.prepare_building_site_query_index(cell_m);
+    core.terrain_query_index
+        .rebuild_all(&core.transit_network.roadbed, &core.allocator);
     let shrub = |x: f32, z: f32| Plant {
         x,
         z,

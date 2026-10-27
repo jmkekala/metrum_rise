@@ -327,7 +327,7 @@ impl GradedSurface<'_> {
         query: impl FnOnce(&GradedSurface<'_>, &mut QueryScratch) -> T,
     ) {
         let sample = x.to_bits().wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ z.to_bits().rotate_left(23);
-        if self.query_index.is_none() || (!cfg!(test) && sample & 0xff != 0) {
+        if self.query_index.is_none() || sample & 0xff != 0 {
             return;
         }
         let mut reference = scratch.reference.take().unwrap_or_default();
