@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use godot::prelude::Vector3;
 
-use super::graded_stage::{GradedPose, PreviewSites};
+use super::graded_stage::GradedPose;
 use super::road_edit_plan::{ReservedOverlap, RoadEditPlan};
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
@@ -215,8 +215,8 @@ pub(crate) struct RoadPreviewTimes {
     pub(crate) payload_ms: f64,
     /// The refined terrain patches the pieces touch, built on the shared pool.
     pub(crate) terrain_ms: f64,
-    /// The graded tiles of the pose (`TERRAIN-07-E`): the dirty tile selection, the input
-    /// gathers and the bakes of the tiles whose inputs differ from the last pose's.
+    /// The graded tiles of the pose's frame (`TERRAIN-07-E`, T27 (d)): the dirty tile
+    /// selection and the frame's share of the pose's tiles, gathered and adopted or baked.
     pub(crate) graded_ms: f64,
 }
 
@@ -312,6 +312,10 @@ impl RoadPreviewContext {
             .is_valid
             .then(|| self.compile_plan_pieces(&plan, &mut times))
             .flatten();
+        if pieces.is_none() {
+            // A pose without pieces supersedes the last pose's unstaged graded tiles.
+            self.graded.supersede();
+        }
         // The commit would refuse the overlap; the preview shows it before the click.
         let validation = match pieces.as_ref().and_then(|pieces| pieces.overlap) {
             Some(overlap) => validation.with_invalid_reason(overlap.reason()),
@@ -324,6 +328,23 @@ impl RoadPreviewContext {
             pieces,
             times,
         }
+    }
+
+    /// One frame without a new pose (T27 (d)): stages the next share of the latest pose's
+    /// graded tiles and returns the tiles shown after it; the latest preview then offers them
+    /// to its commit, unless a commit already holds it. `None` once the shown tiles are the
+    /// pose's. No core lock; `O(share's gathers and bakes + wanted log wanted)`.
+    pub(crate) fn catch_up_graded(&mut self) -> Option<GradedPose> {
+        let pose = self.graded.catch_up()?;
+        if let Some(pieces) = self
+            .last_preview
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .and_then(|preview| preview.pieces.as_mut())
+        {
+            pieces.graded = pose.clone();
+        }
+        Some(pose)
     }
 
     // Applies the plan's topology to the replica, compiles what it dirtied, emits the changed
@@ -379,12 +400,18 @@ impl RoadPreviewContext {
         );
         times.terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
+        let end = plan
+            .request()
+            .points
+            .last()
+            .map_or([0.0; 2], |end| [f64::from(end.x), f64::from(end.z)]);
         let graded = self.graded.stage_pose(
             &self.view.terrain,
             &self.view.roadbed,
             &roadbed,
-            &PreviewSites::new(&self.view.terrain, &self.view.terrain_inputs),
+            &self.view.terrain_inputs,
             &terrain_changes,
+            end,
         );
         times.graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         let payload_start = Instant::now();

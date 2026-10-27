@@ -59,6 +59,26 @@ impl TileStage {
         self.tiles.is_empty()
     }
 
+    /// The tiles of `wanted` (`(level, tile)` sorted and unique) that `over` holds, else those
+    /// `under` holds; a wanted tile neither holds is left out, and so is every tile outside
+    /// `wanted` (`TERRAIN-07-E` T27 (d): a preview frame's newly staged tiles over the tiles it
+    /// showed). The payloads are shared. `O(wanted log n)`.
+    pub fn overlay(wanted: &[(Level, TileKey)], over: &Self, under: &Self) -> Self {
+        debug_assert!(wanted.is_sorted(), "wanted tiles in (level, tile) order");
+        let tiles = wanted
+            .iter()
+            .filter_map(|&(level, tile)| {
+                let payload = over.get(level, tile).or_else(|| under.get(level, tile))?;
+                Some(StagedTile {
+                    level,
+                    tile,
+                    payload: Arc::clone(payload),
+                })
+            })
+            .collect();
+        Self { tiles }
+    }
+
     /// Bytes of the held texels and rows: what a stage keeps at rest.
     pub fn payload_bytes(&self) -> usize {
         self.tiles

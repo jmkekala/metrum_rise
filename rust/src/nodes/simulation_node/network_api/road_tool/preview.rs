@@ -271,6 +271,7 @@ impl SimulationNode {
             let stats = pieces.graded.stats;
             dict.set("graded_adopted", stats.adopted as i64);
             dict.set("graded_baked", stats.baked as i64);
+            dict.set("graded_pending", pieces.graded.pending as i64);
         }
         let packing_start = std::time::Instant::now();
         let mut chunks = PackedInt32Array::new();
@@ -321,6 +322,29 @@ impl SimulationNode {
         );
         dict.set("has_pieces", preview.pieces.is_some());
         dict.set("changed_chunks", chunks);
+        dict
+    }
+
+    /// One frame of the road preview's graded terrain without a new pose (`TERRAIN-07-E`,
+    /// `docs/terrain.md` T27 (d)): stages the next bounded share of the latest pose's tiles.
+    /// Returns `{}` once the shown tiles are the pose's, else `graded_ms` (the frame's terrain
+    /// work), `graded_adopted`, `graded_baked` and `graded_pending` (the pose's tiles still to
+    /// stage), as `preview_road` reports them for a pose's frame. Takes the context lock only.
+    #[func]
+    pub fn advance_road_preview_terrain(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let pose = self
+            .road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned")
+            .catch_up_graded();
+        if let Some(pose) = pose {
+            dict.set("graded_ms", pose.frame_ms);
+            dict.set("graded_adopted", pose.stats.adopted as i64);
+            dict.set("graded_baked", pose.stats.baked as i64);
+            dict.set("graded_pending", pose.pending as i64);
+        }
         dict
     }
 

@@ -3,9 +3,11 @@
 //! The graded terrain's tiles in the road tool's preview poses, the commit and undo
 //! (`TERRAIN-07-E`, `docs/terrain.md` "Preview, commit, undo and load"): the Rust half.
 //!
-//! - A pose selects the dirty tiles of the preview roadbed against the published one and bakes
-//!   only those whose inputs differ from the last pose's staged tiles, so a drag pays per pose
-//!   for what the pose changed.
+//! - A pose selects the dirty tiles of the preview roadbed against the published one and
+//!   stages a bounded share of them per frame (T27 (d), decided by the user, 2026-10-27),
+//!   nearest the stroke's moving end first, adopting a shown tile whose inputs equal the pose's
+//!   and baking the rest; the frames after it stage the rest, the earlier poses' tiles shown
+//!   until then, so a frame's terrain work stays within its share whatever the edit.
 //! - The commit selects its own dirty tiles over the live roadbed and sites, adopts the matching
 //!   preview's staged tiles whose inputs equal the committed ones and bakes the rest. Its undo
 //!   record keeps the tiles the commit replaced (T20 (a)): a pure job bakes them from the
@@ -15,7 +17,8 @@
 //!   placed) is baked again, so a kept tile is never stale.
 //!
 //! Inputs decide every reuse, so each staged tile is bitwise the fresh bake of the state it
-//! stands for (invariant 9). The tiles of the last commit or undo stay on the core for the
+//! stands for (invariant 9); a shown preview tile is the exact bake of some pose's inputs,
+//! never a blend or a part of one. The tiles of the last commit or undo stay on the core for the
 //! Godot install (the Godot half, after `TERRAIN-07-D` lands).
 
 use std::sync::{Arc, OnceLock};
@@ -27,8 +30,8 @@ use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    BakeError, Level, SiteBuffer, SiteSource, StageScratch, StageStats, TileStage, bake_window,
-    stage_selected, stage_tiles,
+    BakeError, Level, SiteBuffer, SiteSource, StageScratch, StageStats, TILE_M, TileKey,
+    TileStage, bake_window, stage_selected, stage_tiles,
 };
 
 /// The levels the Rust half stages an edit's dirty tiles at. Godot's residency (the Godot
@@ -39,13 +42,13 @@ pub(crate) const GRADED_EDIT_LEVELS: [Level; 1] = [Level::Gl0];
 /// The building sites the road tool's view captured per render patch
 /// ([`RoadTerrainInputs`]), answered with the allocator's own test: a graded bake from them
 /// equals the bake from the allocator, inputs included, while the captured patches are current.
-pub(crate) struct PreviewSites<'a> {
+struct PreviewSites<'a> {
     terrain: &'a TerrainSystem,
     inputs: &'a RoadTerrainInputs,
 }
 
 impl<'a> PreviewSites<'a> {
-    pub(crate) fn new(terrain: &'a TerrainSystem, inputs: &'a RoadTerrainInputs) -> Self {
+    fn new(terrain: &'a TerrainSystem, inputs: &'a RoadTerrainInputs) -> Self {
         Self { terrain, inputs }
     }
 }
@@ -90,61 +93,180 @@ impl SiteSource for PreviewSites<'_> {
     }
 }
 
-/// One pose's graded tiles: the staged tiles, or why the pose could not bake them, with what
-/// the staging did.
+/// Tiles one pose's frame stages at most after its selection (T27 (d), decided by the user,
+/// 2026-10-27): each is gathered, then adopted from the shown tiles or baked. A bound on the
+/// work, never on time, measured to fit the 3.0 ms terrain stage on four workers with the
+/// selection (`docs/terrain.md` "Preview, commit, undo and load"); a pose with more tiles
+/// finishes them in the frames after it.
+pub(crate) const POSE_FRAME_TILES: usize = 4;
+
+/// Tiles a catch-up frame stages at most: a frame without a new pose has no selection.
+pub(crate) const CATCH_UP_FRAME_TILES: usize = 6;
+
+/// One frame's graded tiles of the road tool's preview: the tiles shown after it, or why the
+/// frame could not stage them, with what the frame staged.
 #[derive(Clone, Debug)]
 pub(crate) struct GradedPose {
+    /// Per wanted tile of the latest pose, its exact bake of this pose's inputs once staged,
+    /// else the tile an earlier pose showed (no tile: the published terrain shows).
     pub(crate) stage: Result<Arc<TileStage>, BakeError>,
+    /// The frame's staging: `wanted` the pose's tiles, `adopted` and `baked` this frame's.
     pub(crate) stats: StageStats,
+    /// The pose's tiles still to stage in later frames; 0 once the shown tiles are the pose's.
+    pub(crate) pending: usize,
+    /// The frame's whole terrain work, milliseconds: the selection, the staging and the shown
+    /// tiles.
+    pub(crate) frame_ms: f64,
 }
 
-/// The road tool's staged graded tiles between poses, and their buffers.
+// What the latest pose's remaining tiles bake from: the inputs it was selected over, `O(1)`
+// copies.
+struct PoseInputs {
+    terrain: Arc<TerrainSystem>,
+    roadbed: RoadbedSystem,
+    sites: RoadTerrainInputs,
+}
+
+/// The road tool's graded preview between frames (T27 (d)): the tiles it shows and the latest
+/// pose's tiles still to stage, and their buffers. Each frame stages a bounded share of the
+/// latest pose's tiles in a fixed order (nearest the stroke's moving end first, then `(level,
+/// tile)`), so the shown tiles after every frame depend only on the pose sequence, never on
+/// timing or the worker count. A new pose supersedes the older pose's unstaged tiles; once the
+/// poses stop, the shown tiles become the pose's in `ceil(remaining / CATCH_UP_FRAME_TILES)`
+/// frames, bitwise its fresh bake.
 #[derive(Default)]
 pub(crate) struct GradedPreview {
-    stage: Arc<TileStage>,
+    shown: Arc<TileStage>,
+    pending: Option<PoseInputs>,
+    // The latest pose's tiles in `(level, tile)` order, then in staging order, of which the
+    // first `next` are staged.
+    wanted: Vec<(Level, TileKey)>,
+    order: Vec<(Level, TileKey)>,
+    next: usize,
+    // One frame's share, in `(level, tile)` order.
+    share: Vec<(Level, TileKey)>,
     scratch: StageScratch,
 }
 
 impl GradedPreview {
-    /// Stages one pose: the dirty tiles of `changes` from the published roadbed `before` to the
-    /// pose's roadbed `after`, baking only those whose inputs differ from the last pose's.
-    /// `O(selection + dirty tiles' gathers + changed tiles' bakes)`.
+    /// One pose's frame: selects the dirty tiles of `changes` from the published roadbed
+    /// `before` to the pose's roadbed `after` and stages the first [`POSE_FRAME_TILES`] of them
+    /// nearest `end` (the stroke's moving end, world XZ), adopting shown tiles whose inputs
+    /// equal the pose's. `O(selection + share's gathers and bakes + wanted log wanted)`.
     pub(crate) fn stage_pose(
         &mut self,
-        terrain: &TerrainSystem,
+        terrain: &Arc<TerrainSystem>,
         before: &RoadbedSystem,
         after: &RoadbedSystem,
-        sites: &impl SiteSource,
+        sites: &RoadTerrainInputs,
         changes: &TerrainChanges,
+        end: [f64; 2],
     ) -> GradedPose {
-        let select_start = Instant::now();
-        let mut stats = StageStats::default();
-        let staged = if sites.ready() {
-            self.scratch.select_road_edit(
-                terrain,
-                before,
-                after,
-                sites,
-                changes,
-                &GRADED_EDIT_LEVELS,
-            );
-            stats.select_ms = select_start.elapsed().as_secs_f64() * 1000.0;
-            stage_selected(terrain, after, sites, &self.stage, &mut self.scratch)
-        } else {
-            Err(BakeError::SitesUnavailable)
+        let start = Instant::now();
+        self.pending = None;
+        let preview_sites = PreviewSites::new(terrain, sites);
+        if !preview_sites.ready() {
+            return self.failed(BakeError::SitesUnavailable, start);
+        }
+        self.scratch.select_road_edit(
+            terrain,
+            before,
+            after,
+            &preview_sites,
+            changes,
+            &GRADED_EDIT_LEVELS,
+        );
+        let select_ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.wanted.clear();
+        self.wanted.extend_from_slice(self.scratch.selected());
+        self.order.clone_from(&self.wanted);
+        // Nearest the moving end first: the squared distance from `end` to the tile's square
+        // (non-negative, so its order is total), then `(level, tile)`.
+        let distance = |&(_, tile): &(Level, TileKey)| {
+            let [x, z] = tile.origin();
+            let dx = (x - end[0]).max(end[0] - x - TILE_M).max(0.0);
+            let dz = (z - end[1]).max(end[1] - z - TILE_M).max(0.0);
+            dx * dx + dz * dz
         };
-        let stage = staged.map(|(stage, staged)| {
-            stats = StageStats {
-                select_ms: stats.select_ms,
-                ..staged
-            };
-            let stage = Arc::new(stage);
-            let old = std::mem::replace(&mut self.stage, Arc::clone(&stage));
-            let old = Arc::try_unwrap(old).unwrap_or_else(|shared| TileStage::clone(&shared));
-            self.scratch.retire(old, &stage);
-            stage
+        self.order.sort_by(|a, b| {
+            distance(a)
+                .total_cmp(&distance(b))
+                .then_with(|| a.cmp(b))
         });
-        GradedPose { stage, stats }
+        self.next = 0;
+        self.pending = Some(PoseInputs {
+            terrain: Arc::clone(terrain),
+            roadbed: after.snapshot(),
+            sites: sites.clone(),
+        });
+        self.advance(POSE_FRAME_TILES, select_ms, start)
+    }
+
+    /// One frame without a new pose: stages the next [`CATCH_UP_FRAME_TILES`] of the latest
+    /// pose's tiles. `None` once the shown tiles are the pose's (or no pose is pending).
+    pub(crate) fn catch_up(&mut self) -> Option<GradedPose> {
+        self.pending.as_ref()?;
+        Some(self.advance(CATCH_UP_FRAME_TILES, 0.0, Instant::now()))
+    }
+
+    /// Drops the latest pose's unstaged tiles: a newer pose that compiled no pieces, or a
+    /// publication that replaced the view, supersedes them. The shown tiles stay for adoption.
+    pub(crate) fn supersede(&mut self) {
+        self.pending = None;
+    }
+
+    // Stages the next `count` tiles of the pending pose against the shown tiles and shows them
+    // over the shown tiles of the pose's other wanted tiles.
+    fn advance(&mut self, count: usize, select_ms: f64, start: Instant) -> GradedPose {
+        let inputs = self.pending.as_ref().expect("a pending pose");
+        let end = (self.next + count).min(self.order.len());
+        self.share.clear();
+        self.share.extend_from_slice(&self.order[self.next..end]);
+        self.share.sort_unstable();
+        let sites = PreviewSites::new(&inputs.terrain, &inputs.sites);
+        let staged = stage_tiles(
+            &inputs.terrain,
+            &inputs.roadbed,
+            &sites,
+            &self.share,
+            &self.shown,
+            &mut self.scratch,
+        );
+        let (staged, stats) = match staged {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.pending = None;
+                return self.failed(error, start);
+            }
+        };
+        self.next = end;
+        let pending = self.order.len() - end;
+        if pending == 0 {
+            self.pending = None;
+        }
+        let shown = Arc::new(TileStage::overlay(&self.wanted, &staged, &self.shown));
+        let old = std::mem::replace(&mut self.shown, Arc::clone(&shown));
+        let old = Arc::try_unwrap(old).unwrap_or_else(|shared| TileStage::clone(&shared));
+        self.scratch.retire(old, &shown);
+        GradedPose {
+            stage: Ok(shown),
+            stats: StageStats {
+                wanted: self.wanted.len(),
+                select_ms,
+                ..stats
+            },
+            pending,
+            frame_ms: start.elapsed().as_secs_f64() * 1000.0,
+        }
+    }
+
+    fn failed(&self, error: BakeError, start: Instant) -> GradedPose {
+        GradedPose {
+            stage: Err(error),
+            stats: StageStats::default(),
+            pending: 0,
+            frame_ms: start.elapsed().as_secs_f64() * 1000.0,
+        }
     }
 }
 

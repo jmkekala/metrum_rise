@@ -970,11 +970,12 @@ fn benchmark_populated_commit_breakdown() {
     }
 }
 
-// `TERRAIN-07-E`'s populated frame paths (`terrain.md` T21): each tier's commit-breakdown edits
-// (the 120 m branches off the border trunk, `commit_trunk_branch`) replayed as drags of eight
-// poses on the road tool's preview, then committed with the last pose's preview and undone; per
-// pose the graded stage, then the commit's (the pose's tiles adopted by inputs) and the undo's
-// (the kept tiles), each the stage's wall clock. The stroke is then committed again, untimed,
+// `TERRAIN-07-E`'s populated frame paths (`terrain.md` T21, T27 (d)): each tier's
+// commit-breakdown edits (the 120 m branches off the border trunk, `commit_trunk_branch`)
+// replayed as drags of eight poses on the road tool's preview, a frame a pose, as
+// `drag_and_click` runs them: clicked at once and undone, then dragged again, converged, clicked
+// and undone; per frame its graded terrain work, then the commits' (the shown tiles adopted by
+// inputs, the rest baked) and the undos' (the kept tiles), each the stage's wall clock. The stroke is then committed again, untimed,
 // and the next sample follows on that city. Cities as the breakdown loads them
 // (`METRUM_PERF_CACHE`, `METRUM_COMMIT_TIERS`). Set the workers with RAYON_NUM_THREADS. Round 3:
 // every timed call's span and, per tier, the spawned background jobs' spans on the same clock
@@ -1023,129 +1024,54 @@ fn span_ms(start: Instant) -> serde_json::Value {
     serde_json::json!([ms(start), ms(Instant::now())])
 }
 
-// One 1 + 1 stroke from `start` to `end` as a timed drag of eight poses, its commit with the
-// last pose's preview and that commit's undo, then committed again untimed (see
-// `benchmark_populated_graded_drags`). A pose's end lies on the ground under its point.
+// One 1 + 1 stroke from `start` to `end` as the timed drags and clicks of `drag_and_click`
+// (T27 (d)), then committed again untimed (see `benchmark_populated_graded_drags`); the poses
+// are `branch_poses`'.
 fn graded_drag(
     core: &mut crate::nodes::sim::core::state::SimCore,
     start: godot::prelude::Vector3,
     end: godot::prelude::Vector3,
 ) -> serde_json::Value {
     use crate::nodes::sim::core::road_commit::RoadCommitRequest;
-    let (poses, pose_max_ms, points, preview) = drag_poses(core, start, end);
-    let request = |preview| RoadCommitRequest {
-        points: points.clone(),
-        fwd_lanes: 1,
-        bkw_lanes: 1,
-        snap_to_existing_roads: true,
-        preview,
-    };
-    core.benchmark_mode = false;
-    let called = Instant::now();
-    let outcome = core.commit_road(request(Some(preview)), called, Default::default());
-    let commit_span = span_ms(called);
-    assert!(outcome.committed, "{}", outcome.rejection);
-    let commit = core.last_graded_stats;
-    let commit_digest = core.last_graded_tiles.as_deref().ok().map(stage_digest);
-    let reused = core.last_road_edit_metrics.preview_plan_reused;
-    let kept = core
-        .undo_stack
-        .back()
-        .and_then(|record| record.graded.as_ref())
-        .expect("the commit keeps its replaced tiles")
-        .wait()
-        .map(|kept| (kept.len(), kept.payload_bytes()))
-        .expect("the kept tiles bake");
-    let called = Instant::now();
-    assert!(core.undo_action_internal(), "undo");
-    let undo_span = span_ms(called);
-    let undo = core.last_graded_stats;
-    let undo_digest = core.last_graded_tiles.as_deref().ok().map(stage_digest);
+    use crate::nodes::sim::core::tests::graded_stage::drag_and_click;
+    let poses = branch_poses(core, start, end);
+    let mut record = drag_and_click(core, &poses, [1, 1]);
     core.benchmark_mode = true;
     let called = Instant::now();
-    let outcome = core.commit_road(request(None), called, Default::default());
-    let recommit_span = span_ms(called);
-    assert!(outcome.committed, "{}", outcome.rejection);
-    serde_json::json!({
-        "commit_span_ms": commit_span, "undo_span_ms": undo_span,
-        "recommit_span_ms": recommit_span,
-        "poses": poses, "pose_max_ms": pose_max_ms,
-        "commit_digest": commit_digest, "undo_digest": undo_digest,
-        "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
-        "commit_bake_ms": commit.bake_ms,
-        "commit_tiles": commit.wanted, "commit_adopted": commit.adopted,
-        "commit_baked": commit.baked, "preview_reused": reused,
-        "undo_ms": undo.total_ms(), "undo_tiles": undo.wanted, "undo_adopted": undo.adopted,
-        "undo_baked": undo.baked, "kept_tiles": kept.0, "kept_mb": kept.1 as f64 / 1e6,
-    })
-}
-
-// A 1 + 1 stroke from `start` to `end` dragged in eight poses on the road tool's preview, each
-// pose's end on the ground under its point (the last's `end`): per pose its graded stage's record, the slowest
-// pose's stage, and the last pose's points and preview for its commit (`TERRAIN-07-E`).
-fn drag_poses(
-    core: &mut crate::nodes::sim::core::state::SimCore,
-    start: godot::prelude::Vector3,
-    end: godot::prelude::Vector3,
-) -> (
-    Vec<serde_json::Value>,
-    f64,
-    Vec<godot::prelude::Vector3>,
-    std::sync::Arc<crate::nodes::sim::core::road_preview::RoadPreview>,
-) {
-    use crate::nodes::sim::core::road_preview::{RoadPreviewRequest, road_tool_snapshot_from_core};
-    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
-    core.refresh_road_terrain_inputs();
-    let mut context =
-        RoadPreviewContext::capture(road_tool_snapshot_from_core(core).expect("current roadbed"));
-    let (mut poses, mut pose_max_ms, mut last) = (Vec::new(), 0.0f64, None);
-    for step in 1..=8 {
-        // The last pose ends at `end` itself, so its commit is the stroke's.
-        let mut point = if step == 8 {
-            end
-        } else {
-            start.lerp(end, step as f32 / 8.0)
-        };
-        point.y = core.heightmap.sample_height_world(point.x, point.z);
-        let points = vec![start, point];
-        let surface_generation = context.view.surface_generation;
-        let called = Instant::now();
-        let preview = context.preview_road(RoadPreviewRequest {
-            surface_generation,
-            points: points.clone(),
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: poses[7].clone(),
             fwd_lanes: 1,
             bkw_lanes: 1,
             snap_to_existing_roads: true,
-        });
-        let span = span_ms(called);
-        match preview.pieces.as_ref() {
-            Some(pieces) => {
-                let stats = pieces.graded.stats;
-                pose_max_ms = pose_max_ms.max(stats.total_ms());
-                poses.push(serde_json::json!({
-                    "step": step, "span_ms": span,
-                    "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
-                    "bake_ms": stats.bake_ms,
-                    "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
-                    "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
-                    "digest": pieces.graded.stage.as_ref().ok().map(|stage| stage_digest(stage)),
-                }));
-            }
-            None => poses.push(serde_json::json!({
-                "step": step, "span_ms": span, "invalid": preview.validation.invalid_reason,
-            })),
-        }
-        last = Some((points, std::sync::Arc::new(preview)));
-    }
-    let (points, preview) = last.expect("eight poses");
-    (poses, pose_max_ms, points, preview)
+            preview: None,
+        },
+        called,
+        Default::default(),
+    );
+    record["recommit_span_ms"] = span_ms(called);
+    assert!(outcome.committed, "{}", outcome.rejection);
+    record
 }
 
-// A digest of a stage's products, untimed, to compare builds bitwise.
-fn stage_digest(stage: &crate::simulation::terrain::graded::TileStage) -> String {
-    let payloads = stage.tiles().iter().map(|held| &*held.payload);
-    let digest = crate::simulation::terrain::graded::tests::payload_digest(payloads);
-    format!("{digest:016x}")
+// A 1 + 1 stroke from `start` to `end` in eight poses, each pose's end on the ground under its
+// point; the last pose ends at `end` itself, so its commit is the stroke's.
+fn branch_poses(
+    core: &crate::nodes::sim::core::state::SimCore,
+    start: godot::prelude::Vector3,
+    end: godot::prelude::Vector3,
+) -> Vec<Vec<godot::prelude::Vector3>> {
+    (1..=8)
+        .map(|step| {
+            let mut point = if step == 8 {
+                end
+            } else {
+                start.lerp(end, step as f32 / 8.0)
+            };
+            point.y = core.heightmap.sample_height_world(point.x, point.z);
+            vec![start, point]
+        })
+        .collect()
 }
 
 // `ROAD-68-K22`: generates and checks this binary's saved commit-breakdown cities for
@@ -1348,14 +1274,21 @@ fn profile_commits(
         // The roadbed before the commit, for the graded terrain's dirty tiles (`O(1)`).
         let before_roadbed = core.transit_network.roadbed.snapshot();
         let preview = preview_mode.then(|| {
-            let (poses, pose_max_ms, _, preview) =
-                drag_poses(core, start, trunk_branch_end(core, start));
+            use crate::nodes::sim::core::road_preview::road_tool_snapshot_from_core;
+            use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+            use crate::nodes::sim::core::tests::graded_stage::drag;
+            // Dragged and converged (T27 (d)): the click adopts every tile.
+            let poses = branch_poses(core, start, trunk_branch_end(core, start));
+            core.refresh_road_terrain_inputs();
+            let snapshot = road_tool_snapshot_from_core(core).expect("current roadbed");
+            let drag = drag(&mut RoadPreviewContext::capture(snapshot), &poses, [1, 1], true);
             eprintln!(
                 "COMMIT_POSES {}",
                 serde_json::json!({"residents": residents, "sample": sample,
-                    "pose_max_ms": pose_max_ms, "poses": poses})
+                    "frame_max_ms": drag.frame_max_ms, "catch_up_frames": drag.catch_up_frames,
+                    "frames": drag.frames})
             );
-            preview
+            std::sync::Arc::new(drag.preview)
         });
         crate::debug::Channel::EconomyPhases.set_enabled(phases);
         profile_control("enable");
