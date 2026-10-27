@@ -154,7 +154,11 @@ input, and display debug data. They must not:
    (shared by the mesh, crosswalks and pedestrian lanes) and heights (`plane + level`) are each
    computed once and copied, never recomputed independently.
 3. **WYSIWYG.** Preview, commit, undo and load produce bitwise-identical pieces from the same graph
-   inputs. Road queries answer from the triangles that render.
+   inputs. Road queries answer from the triangles that render. The preview's terrain is the
+   exception (decided by the user, 2026-10-27): while a stroke is dragged its graded terrain may
+   approximate, a large pose finishing its tiles over the following frames with the previous
+   pose's tiles shown until then (`terrain.md` T27 (d)); the road surface, markings and junctions
+   stay exact, and commit, undo and load stay bitwise.
 4. **Watertight by construction.** Adjacent bands share vertex sequences, curb faces share their
    edges with both levels, spans and nodes share mouth vertices, and terrain seams reuse the road's
    outer-edge vertices. The terrain half is superseded by [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07): terrain meets the
@@ -7563,7 +7567,10 @@ These apply in road-and-terrain mode on the reference machine and settings, to `
 
 - **Moving.** With the simulation paused, every sampled pose's exact result renders within 16.7 ms
   of sampling. With the simulation active on the populated fixture, at least 99% do, and the report
-  attributes every miss. A stale or superseded result counts as a miss.
+  attributes every miss. A stale or superseded result counts as a miss. The pose's terrain is
+  exempt (the user, 2026-10-27): it may lag the pose's road by the frames T27 (d)'s catch-up
+  takes, each frame's terrain work within its 3.0 ms stage, and is a miss only if it has not
+  caught up when the drag stops.
 - **Stationary.** Input-to-frame p99 under 16.7 ms, and stop to exact frame under 16.7 ms.
 - **Commit.** Click → committed generation acknowledged in under 16.7 ms, with no frame that shows
   neither the preview nor the committed road.
