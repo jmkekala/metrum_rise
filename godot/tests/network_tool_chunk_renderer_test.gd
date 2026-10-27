@@ -229,6 +229,13 @@ class MockRoadCandidateSimulation:
 	func check_border_candidate(_pos: Vector3) -> int:
 		return border_node
 
+	# The preview's graded tiles (TERRAIN-07-E): the mock shows none.
+	func advance_road_preview_terrain() -> Dictionary:
+		return {}
+
+	func release_road_preview_terrain() -> int:
+		return 0
+
 	func preview_road(points, _fwd, _bkw, _snap) -> Dictionary:
 		preview_calls += 1
 		last_preview_points = points
@@ -288,7 +295,6 @@ func _run() -> void:
 	await _test_road_preview_process_phases()
 	_test_road_pointer_frame_updates()
 	_test_road_preview_swaps_on_installed_commit()
-	_test_road_preview_stages_terrain_on_the_real_renderer()
 	await _test_native_road_cursor_contract()
 	_test_road_preview_context_revision()
 	_test_road_commit_acknowledgment()
@@ -1398,85 +1404,6 @@ func _test_road_preview_swaps_on_installed_commit() -> void:
 	tool._road_mesh_installed(5)
 	_expect(tool._swap_display == null and shown._instances.is_empty(), "the committed chunks replace the preview in the same call")
 	tool.free()
-	simulation.free()
-
-func _test_road_preview_stages_terrain_on_the_real_renderer() -> void:
-	# One frame stages the preview's terrain patch on the real terrain renderer and shows it with
-	# the road chunks; an accepted commit holds both, and the commit's own patch replaces the
-	# held terrain preview inside the call that installs it, so no frame shows neither.
-	var simulation := MockRoadCandidateSimulation.new()
-	var terrain := TestTerrainRenderer.new()
-	terrain.simulation_node = simulation
-	terrain.patch_cols = 8
-	terrain.patch_rows = 8
-	terrain.patch_interval_cells = 1
-	terrain.terrain_cell_m = 1.0
-	var key := Vector2i(2, 2)
-	_install_terrain_patch(terrain, key, "resident")
-	# The preview stages only over a resident patch in the payload's frame.
-	terrain.patches[key]["node"].position = Vector3(key.x + 0.5, 0.0, key.y + 0.5)
-	terrain.patches[key]["world_size_x"] = 1.0
-	terrain.patches[key]["world_size_z"] = 1.0
-	var resident: MeshInstance3D = terrain.patches[key]["node"]
-	var resident_mesh: Mesh = resident.mesh
-	var tool := _pointer_road_tool(simulation)
-	tool.terrain_node = terrain
-	tool.road_mesh_root = Node3D.new()
-	tool.add_child(tool.road_mesh_root)
-	var preview_generation := 30
-	simulation.validation = {
-		"is_valid": true,
-		"has_road_chunks": true,
-		"chunk_span_m": CHUNK_SPAN_M,
-		"road_chunks": [_triangle_chunk(0, 0)],
-		"terrain_generation": preview_generation,
-		"terrain_patches": [_engineered_terrain_payload(key, preview_generation)],
-	}
-	tool.pointer = Vector3(40.0, 0.0, 0.0)
-	_road_frame(tool)
-	var held = tool._terrain_preview
-	var slot: MeshInstance3D = held._patches[key]["slot"]["node"] if held._patches.has(key) else null
-	_expect(tool.draws == 1 and simulation.preview_calls == 1, "one frame previews and shows the stroke once")
-	_expect(tool._preview_display._instances.size() == 1, "the frame shows the preview's road chunk")
-	_expect(
-		slot != null and slot.get_parent() == resident and slot.mesh is ArrayMesh and resident.mesh == null,
-		"the same call shows the preview's terrain patch in place of the resident mesh"
-	)
-	_expect(terrain.patches[key]["last_patch_data"]["marker"] == "resident", "staging never changes the resident patch")
-
-	_expect(tool._commit_segment(tool.pointer), "a valid click queues the previewed stroke")
-	simulation.commit_result = {"committed": true, "generation": 5}
-	tool._poll_road_commit_result()
-	_expect(tool._swap_terrain == held and slot.get_parent() == resident, "an accepted commit keeps its terrain preview shown")
-	tool._road_mesh_generation = 5
-	tool._road_mesh_installed(5)
-	_expect(
-		tool._swap_display == null and slot.get_parent() == resident and resident.mesh == null,
-		"the committed chunks do not end the terrain preview before the commit's patch arrives"
-	)
-
-	# The commit's own refined patch arrives through the renderer's terrain transaction.
-	var commit_generation := preview_generation + 1
-	_configure_dirty_terrain_batch(simulation, [key], commit_generation)
-	simulation.engineered_terrain_patches = PackedInt32Array([key.x, key.y])
-	var committed := _engineered_terrain_payload(key, commit_generation)
-	committed["marker"] = "committed"
-	terrain.patch_payload_ready[key] = committed
-	var prepared := terrain.prepare_terrain_visual_update(false)
-	_expect(not prepared.is_empty(), "the commit's patch stages on the real renderer")
-	_expect(slot.get_parent() == resident and resident.mesh == null, "staging the commit's patch keeps the preview shown")
-	_expect(terrain.commit_prepared_terrain_visual_update(prepared), "the commit's patch installs")
-	_expect(
-		held._patches.is_empty() and slot.get_parent() == null,
-		"the commit's patch releases the held terrain preview in the call that installs it"
-	)
-	_expect(
-		resident.mesh is ArrayMesh and resident.mesh != resident_mesh
-		and terrain.patches[key]["last_patch_data"]["marker"] == "committed",
-		"the resident patch then shows the commit's own mesh"
-	)
-	tool.free()
-	terrain.free()
 	simulation.free()
 
 func _test_road_preview_context_revision() -> void:

@@ -863,6 +863,13 @@ patch's source signature: the previous entry it reuses (by identity), the scope,
 flags and margin, and the sites it reads. The payloads are the dictionaries
 `poll_ready_terrain_patch_payloads` returns, with the shading masks baked as the payload
 workers bake them; Godot stages them with `road_terrain_preview.gd` beside the road chunks.
+Correction (`TERRAIN-07-E` round 5): the preview's terrain is now the graded tiles
+([`terrain.md` "Preview, commit, undo and load"](terrain.md#preview-commit-undo-and-load)): each
+frame hands Godot its changed shown tiles, which the graded renderer draws from slots of its own
+over the installed tiles. The exact cut's preview patches above (`build_road_preview_terrain`,
+`terrain_patches`, `terrain_generation`, `terrain_error`, `terrain_ms`) and
+`road_terrain_preview.gd` are retired, with the road tool view's per-patch refined entries,
+ledgers and site ownership that only they read; the view keeps the patches' sites.
 
 **Commit.** A click submits the preview's plan as an ordered simulation operation.
 

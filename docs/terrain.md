@@ -4144,6 +4144,47 @@ km.
   - *What stays exact.* The preview's road surface, markings and junctions every frame; the
     commit, undo and load bitwise in the frame they happen. Cancel swaps back to the published
     tiles as before.
+- **Corrections (`TERRAIN-07-E` round 5, the Godot half; [record](#terrain-07-e-record)).**
+  - *Levels* ([T42](#terrain-07-open-questions), taken pending the user's review,
+    2026-10-27). The preview and the commit stage each dirty tile at the level the renderer's
+    distance rule gives it from the camera (`LevelRule`: the renderer's level ends and `GL3`
+    step ends, set by `set_road_preview_terrain_view` when the camera moves), without the
+    hysteresis the renderer keeps around a held tile's level. The selection runs at each level
+    some candidate tile may take (the levels whose distance interval meets the edit's
+    candidate extent) over the candidates the rule gives that level, so each candidate is
+    tested once, at its own level: `O(one selection)`. A pose's pending tiles keep the levels
+    they were selected at; a commit stages by its preview's rule and undo by its commit's.
+    Without a renderer (tests, benchmarks) every tile stays at `GL0`, as the budgets were
+    measured. This replaces round 1's *Residency in the Rust half*.
+  - *The frames' tiles reach Godot.* `preview_road` and `advance_road_preview_terrain` return
+    the frame's changed shown tiles (`graded_tiles`, packed as the residency poll's tiles, the
+    token the preview epoch) and the tiles shown no more (`graded_removed`). The graded
+    renderer draws a shown tile from a free slot of its level's pool in place of the installed
+    tile (`show_preview`, the preview layer; the installed tiles and residency are untouched) and
+    a removed one returns to the installed tile, in the same frame as the road chunks.
+  - *Epochs.* `release_road_preview_terrain` ends the preview's epoch at a click (the commit
+    adopts that epoch's shown tiles) or at cancel (the road tool drops that epoch's tiles); the
+    next poses send theirs under the next epoch, from no shown tiles.
+  - *The commit's tiles install, the journal does not rebake them.* A commit's or undo's
+    staged tiles, staged for a renderer's view, ride on the edit journal's record of the install
+    (`GradedInstallTiles`, with the adopted preview epoch); the edit worker packs them beside
+    the edit's selection. Godot installs them in the edit's batch instead of rebaking them; the
+    journal's other dirty held tiles (another level, or outside the commit's selection) rebake
+    as before, and the batch installs together. The batch's frame releases the preview tiles of
+    every epoch up to the commit's, so no frame shows neither. A staged tile Godot neither holds
+    nor wants installs only where the preview shows it graded; its patch's list, refreshed with
+    the edit's patch generations, then wants it; any other waits for that list. A commit
+    without a preview (no renderer view) attaches nothing and the journal rebakes as gate D
+    built it.
+  - *Retired.* The exact cut's preview patches (`RoadPreviewPieces::terrain`,
+    `build_road_preview_terrain`, `RoadPreviewTimes::terrain_ms`) and `road_terrain_preview.gd`,
+    with the road tool view's per-patch refined entries, ledgers and site ownership (only they
+    read them; the view keeps the sites the graded preview reads). A pose no longer pays
+    `terrain_ms`.
+  - *Sampling bands.* A tile's sampling runs in bands of four lattice rows (was 16): a steep
+    tile's dear samples lie in a few rows near the road, and finer bands spread them over the
+    workers. The bytes do not depend on the band height (every sample is its own and the counts
+    are integers).
 
 ### Queries for consumers
 
@@ -4258,7 +4299,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
-| `TERRAIN-07-E` | in progress (rounds 1-4, 2026-10-26/27, branch `terrain07-E`, the Rust half, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). The Godot half next | Preview, commit, undo and load |
+| `TERRAIN-07-E` | in progress (rounds 1-5, 2026-10-26/27, branch `terrain07-E`, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user ((g) recommended: hold the click until the preview has caught up). Not passed: the fast click; the Godot install share needs a real-display run | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
@@ -7191,6 +7232,115 @@ The kept tiles' job beside a routing rebuild and the kept tiles' memory (round 3
 round: the landing session (gate E's acceptance waits for the Godot half),
 `benchmark_road_preview_stages` and the commit breakdown.
 
+Round 5, 2026-10-27, the same branch on `road` at `d456913e` (unmoved). The Godot half (the
+round 4 handoff's step 1 a-e), the fast click's lever measured, the landing session. Fresh runs
+only; round 4's numbers above are round 4's build.
+
+**What landed (the Godot half; [corrections](#preview-commit-undo-and-load) round 5).**
+
+- Levels ([T42](#terrain-07-open-questions), (a) taken pending the user's review): `LevelRule`
+  (`graded/stage.rs`) evaluates the renderer's distance rule from the camera
+  `set_road_preview_terrain_view` hands over on each camera move; `StageScratch::select_road_edit`
+  runs `dirty_tiles_for_road_changes_where` at each level some candidate may take
+  (`road_change_extent`, `LevelRule::may_take`) over the candidates of that level. Without a
+  renderer every tile stays at `GL0`: the Rust benchmarks' products are unchanged.
+- The frames' tiles: `GradedPreview::take_shown_changes` (the shown tiles against what the
+  renderer holds, by payload identity) and `release` (epochs); `preview_road` and
+  `advance_road_preview_terrain` return `graded_tiles`, `graded_removed`, `graded_epoch` and
+  `graded_pack_ms`; `release_road_preview_terrain` ends an epoch.
+- The commit's tiles: `GradedInstallTiles` on the journal's record of a commit's or undo's
+  install (`attach_graded_install_tiles`, only when staged for a renderer's view); the edit
+  worker packs them (`pack_install_tiles`); the poll returns them as each edit's `staged`
+  with its `preview_epoch`.
+- Godot: `terrain_graded_tiles.gd`'s preview layer (`preview`, `show_preview`,
+  `release_preview`; the cells and walls draw `_shown(tile)`); `_apply_edit` installs the
+  staged tiles in the batch instead of rebaking them and the batch releases the adopted
+  epoch's preview tiles in its frame; `road_tool.gd` shows each frame's tiles, stages a
+  catch-up frame while `graded_pending > 0`, releases the epoch at the click (refused: drops
+  it) and at cancel. The renderer reports the road preview's camera rule.
+- Retired: the exact cut's preview patches and `road_terrain_preview.gd` (above), with
+  `RoadTerrainPatchInputs`' refined entry, ledger and site ownership and the dead
+  `BuildingSiteTerrainSnapshot::within_bounds`, `append_site_bounds_for_world_bounds` and
+  `has_site_for_world_bounds`; `benchmark_road_preview_stages` no longer reports `terrain_ms`.
+- Four-row sampling bands (T27 round 5).
+- Tests: `a_level_rule_selects_each_tile_at_its_own_level` (the rule's selection equals, level
+  by level, the plain selection over the tiles of that level); `road_junction_preview_test.gd`
+  stages its fixtures for a camera 90 m above the junction (no `GL0` tile) and checks, through
+  the road tool and the bridge, that the converged preview's tiles are the commit's staged
+  tiles, a fresh bake and the bake after save and load, bitwise (every packed field);
+  `graded_tile_renderer_test.gd` draws a preview over installed tiles at three levels, leaves
+  the installed tiles untouched, and installs the commit's tiles while releasing the preview's
+  in one frame.
+
+**The landing session (fresh; 13:31-13:39, both locks, `taskset -c 0,2,4,6,8,10,12,14`, four
+workers, no restic; C F F C with `C` = `R0` (`c7bb9cf9`, sha256 `22f9ecf5...`, round 4's
+control and its saved cities) and `F` = `R2` (`84820119`, sha256 `bc11ea99...`, cities key
+`1a4091d7...` prepared before the session); every city `loaded`).**
+
+- Kuopio drags: `F` every frame within 3.0 ms (439 frames, 299 poses; max 2.79 / 2.92 ms,
+  median 0.77 / 0.78), the converged commit at most 1.29 / 0.95 ms and undo 0.91 / 0.98 ms;
+  the fast click median 1.85 / 1.79 ms, max 4.31 / 4.72 ms, 6 / 7 of 39 over 3.0 ms (up to 18
+  tiles baked). `C` (round 3's rule, every tile each pose): pose max 4.00 / 4.19 ms, 9 strokes
+  over. Products: every stroke's commit, undo, fast commit, fast undo and converged digest equal
+  `C`'s in both `C` runs (39 of 39), the two drags' pose frames equal (39 of 39).
+- Populated drags 0-100k: `F` every frame within 3.0 ms (120 frames; max 1.88 / 1.74 ms), the
+  converged commit at most 1.53 / 1.90 ms, undo 2.34 / 1.57 ms; the fast click max 4.38 /
+  4.01 ms, 3 of 12 over 3.0 ms (each tier's first sample from 10k). `C`: pose max 4.45 / 4.17 ms,
+  3 over. Products equal `C`'s, 12 of 12.
+- Preview stages (`sloped_t`, `sloped_branch`, two C F F C): the exact cut's terrain stage is
+  gone (`C`'s `terrain_ms` p50 4.48-4.97 ms), so a pose takes p50 2.47-3.05 ms in all against
+  6.87-7.17 (p95 3.43-4.44 against 7.49-8.06). The graded stage per pose frame p50 1.25-1.52,
+  p95 1.76-2.24 ms (`C` 1.12-1.26 / 1.33-1.62: `C` staged every tile of each pose adopting most,
+  `F` stages one, which the benchmark's cycling poses bake). Its click without catch-up bakes
+  the unstaged tiles: 0.86-1.28 ms (`C` 0.29-0.48 ms, all adopted).
+- Commit breakdown 0-100k (commits without a preview, every dirty tile baked): the terrain
+  stage per commit `F` 1.07-2.01 ms except each tier's first sample, 3.53-3.57 ms at 10k and
+  3.98-4.26 ms at 100k (`C` 3.41-3.45 and 3.92-3.93: the same miss, T21's carried full-edit
+  bake under T20 (a)); `COMMIT_PRODUCTS` equal `C`'s in all four pairings.
+
+**Found, not fixed (legacy).** A crossing committed across the renderer test's trunk ((60,
+-50) to (60, 70) on its 10 m world) panics in the exact cut's legacy road loops
+(`road_clip.rs` `road_terrain_loop`, a loop with more edges than points) while the commit
+grades its road margins (`road_terrain_patch_margin_m`, still called by the commit),
+poisoning the core lock, so the game would stop there too. This round's changes do not reach
+that path (not re-run on `road`'s tip). Named for `TERRAIN-07-G`, which deletes the exact cut
+and with it this call; the renderer test commits a T instead.
+
+**The fast click's lever (fresh, stage-only runs, not a session; 12:58, both locks, the same
+cores, four workers; a probe build with the band height from the environment, every product
+equal to `R0`'s).** T27 round 5: the profile, the band heights and the click; four-row bands
+taken.
+
+**The Godot install share (fresh, headless only).** `graded_tile_renderer_test.gd`'s T at three
+levels: the preview frames' installs at most 0.20-0.25 ms (4 tiles over 2 frames); the first
+build's crossing, with `GL0` tiles (275 KB of texels each), 1.10 ms over 6 tiles. Headless
+Godot's rendering server is a dummy, so the layer uploads cost nothing there and these are the
+script and the image copies only: the 1.0 ms share needs a real-display run of a drag (the
+coordinator's), as does the preview's rendering itself.
+
+**Gate checks (fresh, on `84820119` plus the round's test and doc edits).** Clippy
+`--all-targets`: exit 0, the 59-warning baseline set exactly (compared by file and message).
+Debug `cargo test` inside `./run.sh --test`: library 1,978 passed, 0 failed, 179 ignored
+(`a_level_rule_selects_each_tile_at_its_own_level` new), `tests/growth_scenario.rs` 4 passed.
+`./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset; 13:39-13:53): exit 0, every Godot suite
+passed with no script error (`road_junction_preview_test.gd`: 13 fixtures' commits staged
+graded tiles, 52 tiles bitwise; the renderer test's preview frames 0.14 ms headless); it skipped
+the rendered vegetation tests (Forward+ display) and the shader global probe (headless). Its
+first run failed on `network_tool_chunk_renderer_test.gd`, whose mock lacked the new calls and
+which still tested the retired exact-cut staging (fixed: the mock answers them, that test is
+removed with what it tested). **Lines** (production,
+tests excluded, round 4's method): `graded/` 6,087 against 5,944 in round 4 and 5,309 on `road`
+(+143: `LevelRule` and the per-level selection), `roadbed/` 9,617 (unchanged). Outside them the
+round removes more than it adds: the exact cut's preview builder and payloads (`node_jobs.rs`
+-110, `preview.rs`' patch payloads), `road_terrain_preview.gd` (393 lines) and the dead site
+helpers; `graded_tiles_api.rs` and the renderer gain the packing, the staged installs and the
+preview layer.
+
+**Not passed (not relaxed).** The click right after a fast drag (T27 round 5, for the user:
+(g) recommended); the breakdown's commit without a preview at each tier's first sample (3.5 /
+4.3 ms, the carried T21 miss, the same as the control); the Godot install share is measured
+headless only. Gate E's acceptance does not pass this round; the commit is WIP.
+
 #### `TERRAIN-07-F` — consumers re-pointed
 
 1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
@@ -8070,6 +8220,28 @@ measures it and the recommendation's condition decides; T2 was decided by the us
         exact: parallelise the bake's serial part (above; at best about 0.9 ms off the worst
         tile's 2.3-2.5 ms on four workers), which also lets a frame take more tiles and so converge sooner;
         or a larger catch-up share where the measured tiles allow. The budget is not relaxed.
+      - **Round 5: the lever measured; the click still misses (for the user).** A one-worker
+        profile of `kuopio_08` attempt 22's tiles (200 bakes each, fresh) puts 76 % of the
+        samples in the row bands' sampling, 3.6 % in the pass-1 listing and 3.4 % in the bins'
+        build and sorts: the worst tile's poor scaling (5.3 ms on one worker, 2.3-2.7 on four)
+        is mostly the bands' imbalance (a steep tile's dear samples lie in a few rows near the
+        road), not a serial stage. Finer bands are the exact lever there: alone on four workers
+        the worst tiles take 2.67 / 2.06 / 1.16 ms with 16-row bands, 2.46 / 1.94 / 1.18 with 8,
+        2.30 / 1.90 / 1.14 with 4 and 2.28 / 1.85 / 1.12 with 2 (`kuopio_08` 22, `kuopio_04` 10,
+        `kuopio_11` 33); round 5 takes 4. The click does not follow: it bakes 10-18 tiles
+        whose costs alone on four workers sum to 6.6-9.7 ms, and the shared pool already runs
+        them side by side, so it costs about their total work over the four workers (Kuopio
+        drags, 16 / 4 / 4 / 16-row bands, every product equal to `R0`'s: fast click max 4.97,
+        4.29, 4.34, 4.58 ms, 6-8 of 39 over 3.0 ms; the pose frames still take one tile, max
+        2.86-3.26 ms, so no larger share fits). No exact parallel lever is left; only less work
+        per tile would close it. The click's own options: (f) accept the click right after a
+        fast drag over 3.0 ms (measured worst 4.3-5.0 ms on Kuopio, 4.3 ms populated; the
+        converged click within 1.1 / 1.6 ms); (g) the road tool holds a click until the preview
+        has caught up (at most `ceil((|W| - 1) / 3)` frames, measured 1-6, about 0.1 s at
+        60 fps) and then commits, adopting every tile within 3.0 ms and exact in its frame, at
+        the cost of that input delay. More workers ((e)) stay ruled out by the user.
+        Recommendation: (g), the only option inside the budget that keeps the commit exact in
+        its frame; it changes when a click commits, so it is the user's.
 34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b), decided by the user,
     2026-10-27: the cut arm under every road replaces the user's T4 decision (`TD11`'s fill
     arm).** Built in round 8.
@@ -8242,6 +8414,24 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       primitives). (c) (b) only for patches meeting water.
     - **Recommendation.** (a) for gate D; (c) when the mirror gains roads and bridges, which
       the reflected grading belongs to.
+42. **T42. The level a preview and a commit stage each tile at (`TERRAIN-07-E` round 5) — (a)
+    taken pending the user's review, 2026-10-27.**
+    - **Evidence.** Round 1 staged every dirty tile at `GL0`, which the budgets were measured
+      at; Godot holds each tile at the level its camera distance gives it, with 32 m of
+      hysteresis around the installed level (`terrain_graded_tiles.gd`), mostly `GL2` (to 2 km).
+      A preview tile shown at another level than the commit installs, or than the renderer then
+      requests, is either not the committed tile or rebaked once more. The selection depends on
+      the level (its band), so a tile's level must be known before it is selected.
+    - **Options.** (a) Rust evaluates the renderer's distance rule from the camera and the level
+      ends the renderer hands it on each camera move, without the hysteresis; each candidate is
+      tested at its own level (one selection's cost). A tile the renderer holds within its
+      hysteresis at the neighbouring level is staged and installed at the rule's level and stays
+      there (the rule's level is within the hysteresis of itself). (b) Godot passes its held
+      `(tile, level)` set with every pose (`O(resident tiles)` a pose, and a level still needed
+      for tiles it does not hold). (c) Select and stage at every level the renderer may hold
+      (six selections and bakes a tile).
+    - **Recommendation.** (a): exact, `O(one selection)`, and the rule's numbers stay the
+      renderer's. Built in round 5 (`LevelRule`); reversible inside the branch.
 
 #### Superseded `ROAD-68` questions
 
