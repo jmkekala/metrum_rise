@@ -250,7 +250,9 @@ func _update_camera_aabb():
 		x_min = min(x_min, pt.x); x_max = max(x_max, pt.x)
 		z_min = min(z_min, pt.z); z_max = max(z_max, pt.z)
 	var pad = SimulationNode.get_agent_cull_padding_m()
-	simulation_node.set_camera_aabb(x_min - pad, x_max + pad, z_min - pad, z_max + pad)
+	simulation_node.set_camera_aabb(
+		x_min - pad, x_max + pad, z_min - pad, z_max + pad, camera.global_position
+	)
 
 func update_swarm(delta: float = 0.0):
 	# Walkers (Grouped by variant)

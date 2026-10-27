@@ -66,10 +66,22 @@ impl SimulationNode {
     /// rect are excluded from the next `RenderSnapshot` transform buffers, reducing
     /// GPU upload cost from O(A_total) to O(A_visible).
     #[func]
-    pub fn set_camera_aabb(&mut self, x_min: f32, x_max: f32, z_min: f32, z_max: f32) {
-        let _ = self
-            .cmd_tx
-            .send(SimCommand::SetCameraAabb(x_min, x_max, z_min, z_max));
+    pub fn set_camera_aabb(
+        &mut self,
+        x_min: f32,
+        x_max: f32,
+        z_min: f32,
+        z_max: f32,
+        camera_position: Vector3,
+    ) {
+        let camera = camera_position
+            .is_finite()
+            .then_some(Vector2::new(camera_position.x, camera_position.z));
+        self.render_camera_position = camera;
+        let _ = self.cmd_tx.send(SimCommand::SetCameraAabb {
+            bounds: (x_min, x_max, z_min, z_max),
+            camera,
+        });
     }
 
     /// Maximum far-plane distance used when building the camera frustum AABB for agent culling.
@@ -82,6 +94,12 @@ impl SimulationNode {
     #[func]
     pub fn get_agent_cull_padding_m() -> f32 {
         crate::config::AGENT_CULL_PADDING_M
+    }
+
+    /// Horizontal camera radius for the exact off-lane vehicle support solve.
+    #[func]
+    pub fn get_vehicle_ground_full_detail_m() -> f32 {
+        crate::nodes::sim::render::vehicle_ground::VEHICLE_GROUND_FULL_DETAIL_M
     }
 
     /// Returns the current simulation day count.
@@ -255,7 +273,12 @@ impl SimulationNode {
         let Ok(vehicle) = u8::try_from(vehicle) else {
             return PackedFloat32Array::new();
         };
-        if core.ground_vehicle_transforms(vehicle, transforms.as_mut_slice(), flags.as_slice()) {
+        if core.ground_vehicle_transforms(
+            vehicle,
+            transforms.as_mut_slice(),
+            flags.as_slice(),
+            self.render_camera_position,
+        ) {
             transforms
         } else {
             PackedFloat32Array::new()
@@ -350,6 +373,7 @@ impl SimulationNode {
                             vehicle,
                             poses.as_mut_slice(),
                             flags.as_slice(),
+                            self.render_camera_position,
                         )
                     })
                 });

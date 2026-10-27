@@ -265,7 +265,12 @@ impl SimCore {
     fn ground_off_lane_cars(&self, snapshot: &mut RenderSnapshot) {
         let flags = &snapshot.car_ground_flags;
         par_for_each_bucket(&mut snapshot.car_transforms, |key, buffer| {
-            self.solve_vehicle_transforms(key / 10, buffer, &flags[&key]);
+            self.solve_vehicle_transforms(
+                key / 10,
+                buffer,
+                &flags[&key],
+                self.render_camera_position,
+            );
         });
     }
 }

@@ -162,7 +162,10 @@ struct Run {
     // Off-lane cars grounded, and the 16 m bins they occupy, summed over frames: how many poses
     // one shared graded-surface gather could serve (`TERRAIN-07-F` round 3).
     off_lane_cars: usize,
+    off_lane_near: usize,
+    off_lane_far: usize,
     off_lane_bins: usize,
+    far_min_clearance_m: f32,
 }
 
 fn count_framed(
@@ -193,6 +196,10 @@ fn compare_frames(core: &mut SimCore, frames: usize, speed: f32, run: &mut Run) 
         let (boxes, by_kind) = cameras(core, frame);
         for (index, &camera) in boxes.iter().enumerate() {
             core.camera_aabb = camera;
+            core.render_camera_position = Some(Vector2::new(
+                (camera.0 + camera.1) * 0.5,
+                (camera.2 + camera.3) * 0.5,
+            ));
             core.agent_instances_both_ways(&mut culled, &mut full);
             let context = format!(
                 "speed {speed} frame {frame} camera {index} {camera:?} day {} minute {}",
@@ -205,6 +212,7 @@ fn compare_frames(core: &mut SimCore, frames: usize, speed: f32, run: &mut Run) 
     }
     // The default "show all" camera poses every visible agent.
     core.camera_aabb = (0.0, 0.0, 0.0, 0.0);
+    core.render_camera_position = None;
     core.agent_instances_both_ways(&mut culled, &mut full);
     run.instances += assert_same("show all", &culled, &full);
     run.comparisons += 1;
@@ -277,7 +285,7 @@ fn assert_surface_queries_match(core: &SimCore, stride: usize) -> (usize, usize)
     for (k, &point) in points.iter().enumerate().step_by(3) {
         let heading = headings[k % headings.len()];
         assert_eq!(
-            pose_bits(core.vehicle_ground_pose(0, point, heading)),
+            pose_bits(core.vehicle_ground_pose_exact(0, point, heading)),
             pose_bits(core.vehicle_ground_pose_per_point(0, point, heading)),
             "vehicle pose differs at {point:?} heading {heading:?}"
         );
@@ -341,6 +349,13 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
         .unwrap_or(1.0);
     let mut city = super::super::snapshot::load_snapshot(residents(), &cache_dir());
     let core = &mut city.core;
+    core.vehicle_ground_full_detail_m = std::env::var("METRUM_VEHICLE_GROUND_FULL_DETAIL_M")
+        .map(|value| {
+            value
+                .parse()
+                .expect("METRUM_VEHICLE_GROUND_FULL_DETAIL_M must be a number")
+        })
+        .unwrap_or(crate::nodes::sim::render::vehicle_ground::VEHICLE_GROUND_FULL_DETAIL_M);
     let rebuild_started = Instant::now();
     let mut rebuilt_index = TerrainQueryIndex::default();
     rebuilt_index.rebuild_all(&core.transit_network.roadbed, &core.allocator);
@@ -353,6 +368,7 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
     let mut timed = Run::default();
     // The PERF-07 camera box.
     core.camera_aabb = (-1000.0, 1000.0, -1000.0, 1000.0);
+    core.render_camera_position = Some(Vector2::ZERO);
     compare_frames_timed(core, frames, speed, &mut timed);
     eprintln!(
         "K2_SNAPSHOT_PREPARED {}",
@@ -364,7 +380,11 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
             "perf07_camera_instances_per_frame":
                 timed.instances as f64 / timed.comparisons.max(1) as f64,
             "off_lane_cars_per_frame": timed.off_lane_cars as f64 / frames.max(1) as f64,
+            "off_lane_near_per_frame": timed.off_lane_near as f64 / frames.max(1) as f64,
+            "off_lane_far_per_frame": timed.off_lane_far as f64 / frames.max(1) as f64,
             "off_lane_bins_per_frame": timed.off_lane_bins as f64 / frames.max(1) as f64,
+            "far_min_clearance_m": timed.far_min_clearance_m,
+            "vehicle_ground_full_detail_m": core.vehicle_ground_full_detail_m,
             "culled_mean_ms": mean_ms(&timed.culled),
             "culled_p99_ms": percentile_ms(&mut timed.culled, 0.99),
             "full_pose_mean_ms": mean_ms(&timed.full),
@@ -389,20 +409,70 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
         run.full.push(full_time);
         run.instances += assert_same(&format!("timed frame {frame}"), &culled, &full);
         run.comparisons += 1;
-        let mut bins: Vec<[i32; 2]> = culled
+        let off_lane: Vec<&[f32; 12]> = culled
             .car_ground_flags
             .iter()
             .flat_map(|(key, flags)| {
                 let transforms = culled.car_transforms[key].as_chunks::<12>().0;
                 transforms.iter().zip(flags).filter(|(_, flag)| **flag != 0)
             })
-            .map(|(t, _)| [t[3], t[11]].map(|v| (v / 16.0).floor() as i32))
+            .map(|(transform, _)| transform)
             .collect();
-        run.off_lane_cars += bins.len();
+        run.off_lane_cars += off_lane.len();
+        let camera_position = core.render_camera_position.unwrap();
+        for transform in &off_lane {
+            let point = Vector2::new(transform[3], transform[11]);
+            if camera_position.distance_squared_to(point)
+                <= core.vehicle_ground_full_detail_m * core.vehicle_ground_full_detail_m
+            {
+                run.off_lane_near += 1;
+            } else {
+                run.off_lane_far += 1;
+            }
+        }
+        let mut bins: Vec<[i32; 2]> = off_lane
+            .iter()
+            .map(|transform| [transform[3], transform[11]].map(|v| (v / 16.0).floor() as i32))
+            .collect();
         bins.sort_unstable();
         bins.dedup();
         run.off_lane_bins += bins.len();
     }
+    run.far_min_clearance_m = far_min_clearance(core, &culled);
+}
+
+fn far_min_clearance(core: &SimCore, snapshot: &RenderSnapshot) -> f32 {
+    let camera = core.render_camera_position.unwrap();
+    let mut minimum = f32::INFINITY;
+    for (&key, flags) in &snapshot.car_ground_flags {
+        for (transform, &flag) in snapshot.car_transforms[&key]
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .zip(flags)
+        {
+            let centre = Vector2::new(transform[3], transform[11]);
+            if flag == 0
+                || camera.distance_squared_to(centre)
+                    <= core.vehicle_ground_full_detail_m * core.vehicle_ground_full_detail_m
+            {
+                continue;
+            }
+            let origin = Vector3::new(transform[3], transform[7], transform[11]);
+            let basis = [
+                Vector3::new(transform[0], transform[4], transform[8]),
+                Vector3::new(transform[1], transform[5], transform[9]),
+                Vector3::new(transform[2], transform[6], transform[10]),
+            ];
+            for contact in core.vehicle_ground_support[usize::from(key / 10)].contacts() {
+                let point =
+                    origin + basis[0] * contact.x + basis[1] * contact.y + basis[2] * contact.z;
+                let ground = core.get_world_surface_height_internal(Vector2::new(point.x, point.z));
+                minimum = minimum.min(point.y - ground);
+            }
+        }
+    }
+    minimum
 }
 
 // `TERRAIN-07-F` water cell digest (T32) over the 2k city, compared across builds

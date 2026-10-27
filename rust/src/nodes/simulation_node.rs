@@ -265,6 +265,8 @@ pub struct SimulationNode {
     pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
     /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
     pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
+    /// Last camera origin reported with agent culling, shared by interpolated vehicle grounding.
+    pub(crate) render_camera_position: Option<Vector2>,
     /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
     junction_stalls:
         Option<crate::simulation::economy::agents::junction_stalls::JunctionStallDetector>,
@@ -491,6 +493,7 @@ impl INode3D for SimulationNode {
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             car_visuals: Default::default(),
+            render_camera_position: None,
             junction_stalls: None,
             terrain_patch_payload_jobs,
             graded_jobs: Default::default(),

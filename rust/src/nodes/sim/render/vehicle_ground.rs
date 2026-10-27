@@ -10,9 +10,42 @@ use rayon::prelude::*;
 // contact outside the gather is still answered exactly, by its own query.
 const CONTACT_SLACK_M: f64 = 0.01;
 
+/// Default horizontal camera distance for the exact off-lane vehicle support solve.
+pub(crate) const VEHICLE_GROUND_FULL_DETAIL_M: f32 = 250.0;
+
+const VEHICLE_SURFACE_CLEARANCE_M: f32 = 0.02;
+
 impl SimCore {
-    /// Shared off-lane support solve for simulation snapshots and interpolated render poses.
+    /// Shared render-only off-lane solve for snapshots and interpolated poses at one camera.
     pub(crate) fn vehicle_ground_pose(
+        &self,
+        vehicle: u8,
+        position: Vector2,
+        heading: Vector3,
+        camera_position: Option<Vector2>,
+    ) -> (f32, [Vector3; 3]) {
+        if camera_position.is_none_or(|camera| {
+            camera.distance_squared_to(position)
+                <= self.vehicle_ground_full_detail_m * self.vehicle_ground_full_detail_m
+        }) {
+            return self.vehicle_ground_pose_exact(vehicle, position, heading);
+        }
+        self.with_graded_surface(|surface, scratch| {
+            let (height, normal) = surface.surface_height_and_normal_at(
+                f64::from(position.x),
+                f64::from(position.y),
+                scratch,
+            );
+            let heading = horizontal_heading(heading);
+            (
+                height as f32 + VEHICLE_SURFACE_CLEARANCE_M,
+                ground_vehicle_basis(heading, Vector3::from_array(normal.map(|v| v as f32))),
+            )
+        })
+    }
+
+    /// Exact rigid support reference used near the camera and by non-render inspection/tests.
+    pub(crate) fn vehicle_ground_pose_exact(
         &self,
         vehicle: u8,
         position: Vector2,
@@ -34,7 +67,7 @@ impl SimCore {
         })
     }
 
-    /// [`Self::vehicle_ground_pose`] with a per-point surface query at every contact, the
+    /// [`Self::vehicle_ground_pose_exact`] with a per-point surface query at every contact, the
     /// reference the gathered query must reproduce.
     #[cfg(test)]
     pub(crate) fn vehicle_ground_pose_per_point(
@@ -58,6 +91,7 @@ impl SimCore {
         vehicle: u8,
         transforms: &mut [f32],
         flags: &[u8],
+        camera_position: Option<Vector2>,
     ) -> bool {
         if usize::from(vehicle) >= self.vehicle_ground_support.len()
             || transforms.len() != flags.len() * 12
@@ -66,7 +100,7 @@ impl SimCore {
         {
             return false;
         }
-        self.solve_vehicle_transforms(vehicle, transforms, flags);
+        self.solve_vehicle_transforms(vehicle, transforms, flags, camera_position);
         true
     }
 
@@ -76,6 +110,7 @@ impl SimCore {
         vehicle: u8,
         transforms: &mut [f32],
         flags: &[u8],
+        camera_position: Option<Vector2>,
     ) {
         // Godot's main thread grounds cars every frame: shared pool (CODE-17).
         crate::thread_pools::install(|| {
@@ -89,7 +124,8 @@ impl SimCore {
                     }
                     let point = Vector2::new(transform[3], transform[11]);
                     let heading = Vector3::new(transform[2], 0.0, transform[10]);
-                    let (height, [x, y, z]) = self.vehicle_ground_pose(vehicle, point, heading);
+                    let (height, [x, y, z]) =
+                        self.vehicle_ground_pose(vehicle, point, heading, camera_position);
                     transform[0] = x.x;
                     transform[1] = y.x;
                     transform[2] = z.x;
@@ -186,6 +222,15 @@ pub(crate) fn ground_vehicle_basis(heading: Vector3, normal: Vector3) -> [Vector
     [x, z.cross(x).normalized(), z]
 }
 
+fn horizontal_heading(heading: Vector3) -> Vector3 {
+    let heading = Vector3::new(heading.x, 0.0, heading.z);
+    if heading.length_squared() > 1e-6 {
+        heading.normalized()
+    } else {
+        Vector3::BACK
+    }
+}
+
 /// Fits cross/longitudinal grades over the whole footprint, then solves the minimum height
 /// satisfying every contact at its final rotated XZ. No allocations or query-time mesh work.
 pub(crate) fn vehicle_support_pose(
@@ -194,12 +239,7 @@ pub(crate) fn vehicle_support_pose(
     heading: Vector3,
     mut height: impl FnMut(Vector2) -> f32,
 ) -> (f32, [Vector3; 3]) {
-    let heading = Vector3::new(heading.x, 0.0, heading.z);
-    let z = if heading.length_squared() > 1e-6 {
-        heading.normalized()
-    } else {
-        Vector3::BACK
-    };
+    let z = horizontal_heading(heading);
     let x = Vector3::UP.cross(z);
     let xz = |offset: Vector3| position + Vector2::new(offset.x, offset.z);
     let [left, front, right, rear] = support.bounds;
@@ -218,7 +258,7 @@ pub(crate) fn vehicle_support_pose(
         let offset = basis[0] * point.x + basis[1] * point.y + basis[2] * point.z;
         support_y = support_y.max(height(xz(offset)) - offset.y);
     }
-    (support_y + 0.02, basis)
+    (support_y + VEHICLE_SURFACE_CLEARANCE_M, basis)
 }
 
 #[cfg(test)]

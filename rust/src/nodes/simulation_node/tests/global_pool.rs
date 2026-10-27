@@ -324,7 +324,7 @@ fn editing_a_town(e: &mut Entries, core: &mut SimCore) {
         let mut cars = core.build_snapshot();
         for (&key, transforms) in cars.car_transforms.iter_mut() {
             let flags = &cars.car_ground_flags[&key];
-            core.ground_vehicle_transforms(0, transforms, flags);
+            core.ground_vehicle_transforms(0, transforms, flags, None);
             let ids = &cars.car_render_ids[&key];
             CarVisualSmoother::default().interpolate(transforms, ids, flags, 0.5);
         }
@@ -381,7 +381,10 @@ fn running_the_node_threads(e: &mut Entries, core: SimCore) {
     let (road_done, road_done_rx) = std::sync::mpsc::sync_channel::<RoadCommitAck>(1);
     for command in [
         SimCommand::SetSpeed(32.0),
-        SimCommand::SetCameraAabb(-1_000.0, 1_000.0, -1_000.0, 1_000.0),
+        SimCommand::SetCameraAabb {
+            bounds: (-1_000.0, 1_000.0, -1_000.0, 1_000.0),
+            camera: Some(Vector2::ZERO),
+        },
         SimCommand::SetCellOverlayVisible(true),
         SimCommand::PrepareCellChunk {
             chunk: (0, 0),

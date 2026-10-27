@@ -101,6 +101,12 @@ func _run() -> void:
 								distance = 2.0 - distance
 							var heading := Vector3(0.0, 0.0, -side * direction)
 							var pose := Transform3D(Basis(Vector3.UP.cross(heading), Vector3.UP, heading), Vector3(0.0, -100.0, side * distance))
+							# Exactly on the full-detail boundary: the LOD rule must keep the rigid
+							# support solve and its 0.020 m contact clearance bit-for-bit.
+							simulation.set_camera_aabb(
+								-1000.0, 1000.0, -1000.0, 1000.0,
+								Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, pose.origin.z)
+							)
 							var request := _pack(pose)
 							target = simulation.ground_car_transforms(kind, request, PackedByteArray([1]))
 							var deadline := Time.get_ticks_msec() + 5000
@@ -141,7 +147,11 @@ func _run() -> void:
 		simulation.smooth_car_render_data({}, 0.0)
 		var start := _pack(Transform3D(Basis.IDENTITY, Vector3(0, -50, 0)))
 		simulation.smooth_car_render_data({0: {"transforms": start, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([1 if previous else 0])}}, 0.0)
-		var target := _pack(Transform3D(Basis.IDENTITY, Vector3(0, 2, 2)))
+	var target := _pack(Transform3D(Basis.IDENTITY, Vector3(0, 2, 2)))
+	simulation.set_camera_aabb(
+		-1000.0, 1000.0, -1000.0, 1000.0,
+		Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, 2.0)
+	)
 		var result: Dictionary = simulation.smooth_car_render_data({0: {"transforms": target, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([0 if previous else 1])}}, 0.4 / 24.0)
 		var drawn: PackedFloat32Array = result[0]
 		_expect(drawn[3] == target[3] and drawn[11] == target[11], "height owner handoff must use target pose")
@@ -153,7 +163,7 @@ func _run() -> void:
 		_benchmark(renderer, source)
 	renderer.free()
 	simulation.free()
-	print("vehicle_ground_support_test: poses=%d tilted=%d minimum_contact_clearance_m=%.6f largest_center_lift_m=%.4f %s" % [_poses, _tilted_poses, _minimum_clearance, _largest_center_lift, "PASS" if _failures == 0 else "FAIL"])
+	print("vehicle_ground_support_test: full_detail_m=%.1f poses=%d tilted=%d minimum_contact_clearance_m=%.6f largest_center_lift_m=%.4f %s" % [SimulationNode.get_vehicle_ground_full_detail_m(), _poses, _tilted_poses, _minimum_clearance, _largest_center_lift, "PASS" if _failures == 0 else "FAIL"])
 	quit(_failures)
 
 func _benchmark(renderer: Node3D, source: RenderSource) -> void:

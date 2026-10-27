@@ -260,6 +260,10 @@ fn query_heights_and_bands_equal_the_rendered_triangles() {
                     Some(best.map_or(h, |b| b.max(h)))
                 });
             assert_eq!(roadbed.height_at(x, z), expected, "{id:?}");
+            let (surface_height, normal) = roadbed.height_and_normal_at(x, z).unwrap();
+            assert_eq!(Some(surface_height), expected, "{id:?}");
+            assert!(normal.is_finite() && normal.y > 0.0);
+            assert!((normal.length() - 1.0).abs() < 1e-5);
             let kind = mesh.triangle_band(triangle).unwrap();
             if kind == BandKind::Carriageway {
                 assert_eq!(roadbed.carriageway_height_at(x, z), expected);

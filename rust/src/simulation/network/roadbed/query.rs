@@ -85,16 +85,26 @@ fn top_at(
     point: RoadVec2,
     accept: impl Fn(BandKind) -> bool,
 ) -> Option<(f32, BandKind)> {
-    let mut best: Option<(f32, BandKind)> = None;
+    surface_at(mesh, point, accept).map(|(height, kind, _)| (height, kind))
+}
+
+// Highest accepted top triangle of one piece at `point`, with its band kind and points.
+fn surface_at(
+    mesh: &PieceMesh,
+    point: RoadVec2,
+    accept: impl Fn(BandKind) -> bool,
+) -> Option<(f32, BandKind, [RoadVec3; 3])> {
+    let mut best: Option<(f32, BandKind, [RoadVec3; 3])> = None;
     for &item in mesh.grid().cell_items(point) {
         let triangle = item as usize;
         let Some(kind) = mesh.triangle_band(triangle).filter(|&kind| accept(kind)) else {
             continue;
         };
-        if let Some(height_m) = triangle_height_at_xz(&mesh.triangle_points(triangle), point)
-            && best.is_none_or(|(best_m, _)| height_m > best_m)
+        let points = mesh.triangle_points(triangle);
+        if let Some(height_m) = triangle_height_at_xz(&points, point)
+            && best.is_none_or(|(best_m, _, _)| height_m > best_m)
         {
-            best = Some((height_m, kind));
+            best = Some((height_m, kind, points));
         }
     }
     best
@@ -143,11 +153,7 @@ fn triangle_near_disc(triangle: [RoadVec3; 3], point: RoadVec2, radius: f64) -> 
 impl RoadbedSystem {
     // Lists grounded indexed pieces in ascending piece order without reading the owner map.
     // Large region queries fall back to the owner map rather than walking more cells than pieces.
-    fn gather_grounded_indexed(
-        &self,
-        bounds: [f64; 4],
-        scratch: &mut GroundedPieceScratch,
-    ) {
+    fn gather_grounded_indexed(&self, bounds: [f64; 4], scratch: &mut GroundedPieceScratch) {
         scratch.indexed.clear();
         scratch.fallback = false;
         let Some(extent) = self.index.extent_xz() else {
@@ -191,6 +197,29 @@ impl RoadbedSystem {
     /// Height of the highest visible road triangle at a world XZ point.
     pub fn height_at(&self, x: f32, z: f32) -> Option<f32> {
         self.top_at(x, z, |_| true).map(|(height_m, _)| height_m)
+    }
+
+    /// Height and upward face normal of the highest visible road triangle at a world XZ point.
+    pub fn height_and_normal_at(&self, x: f32, z: f32) -> Option<(f32, Vector3)> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best: Option<(f32, [RoadVec3; 3])> = None;
+        for indexed in self.index.cell(query_cell_at(point.x, point.y)) {
+            if let Some((height_m, _, triangle)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|(best_m, _)| height_m > best_m)
+            {
+                best = Some((height_m, triangle));
+            }
+        }
+        best.map(|(height_m, [a, b, c])| {
+            let mut normal = (b - a).cross(c - a).normalize();
+            if normal.y < 0.0 {
+                normal = -normal;
+            }
+            (
+                height_m,
+                Vector3::new(normal.x as f32, normal.y as f32, normal.z as f32),
+            )
+        })
     }
 
     /// Height of the highest visible carriageway triangle at a world XZ point.

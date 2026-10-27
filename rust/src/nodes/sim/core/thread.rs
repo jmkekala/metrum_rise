@@ -29,7 +29,12 @@ pub(crate) enum SimCommand {
     SetWeatherAutomatic(bool),
     /// Update the camera world-space AABB used for agent frustum culling.
     /// Values: (x_min, x_max, z_min, z_max) in world units, padded by ~200 m.
-    SetCameraAabb(f32, f32, f32, f32),
+    SetCameraAabb {
+        /// Padded world-space XZ bounds.
+        bounds: (f32, f32, f32, f32),
+        /// Camera XZ, absent only before a renderer has a valid camera.
+        camera: Option<godot::prelude::Vector2>,
+    },
     /// Show or hide the zoning cell overlay; shown overlays regenerate edited chunks eagerly.
     SetCellOverlayVisible(bool),
     /// Prepare one visible cell chunk using current authority, including while paused.
@@ -135,10 +140,10 @@ pub(crate) fn run_sim_thread(
                     set_speed_commands += 1;
                     pending_speed = Some(s);
                 }
-                Ok(SimCommand::SetCameraAabb(x0, x1, z0, z1)) => {
+                Ok(SimCommand::SetCameraAabb { bounds, camera }) => {
                     commands_processed += 1;
                     camera_aabb_commands += 1;
-                    pending_camera_aabb = Some((x0, x1, z0, z1));
+                    pending_camera_aabb = Some((bounds, camera));
                 }
                 Ok(SimCommand::SetCellOverlayVisible(visible)) => {
                     commands_processed += 1;
@@ -338,8 +343,9 @@ pub(crate) fn run_sim_thread(
                 core.time.speed_multiplier = speed;
                 record_crash_command_for_core(&core, CrashCommand::SetSpeed { speed });
             }
-            if let Some(camera_aabb) = pending_camera_aabb.take() {
+            if let Some((camera_aabb, camera)) = pending_camera_aabb.take() {
                 core.camera_aabb = camera_aabb;
+                core.render_camera_position = camera;
                 record_crash_command_for_core(
                     &core,
                     CrashCommand::SetCameraAabb {

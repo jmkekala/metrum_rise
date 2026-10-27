@@ -16,6 +16,7 @@ use super::super::snapshot::RenderSnapshot;
 use super::super::state::SimCore;
 use super::contract::{cache_dir, residents, timing_mode};
 use super::snapshot;
+use godot::prelude::Vector2;
 use preemption::RunQueueWaits;
 use std::time::Instant;
 
@@ -132,6 +133,14 @@ fn perf07_frame_budget() {
     let load_s = load.elapsed().as_secs_f64();
     let core = &mut city.core;
     core.time.speed_multiplier = speed;
+    core.vehicle_ground_full_detail_m = std::env::var("METRUM_VEHICLE_GROUND_FULL_DETAIL_M")
+        .map(|value| {
+            value
+                .parse()
+                .expect("METRUM_VEHICLE_GROUND_FULL_DETAIL_M must be a number")
+        })
+        .unwrap_or(crate::nodes::sim::render::vehicle_ground::VEHICLE_GROUND_FULL_DETAIL_M);
+    core.render_camera_position = Some(Vector2::ZERO);
     core.camera_aabb = (
         -CAMERA_HALF_SPAN_M,
         CAMERA_HALF_SPAN_M,
@@ -230,6 +239,7 @@ fn perf07_frame_budget() {
         "PERF07_DAY {}",
         serde_json::json!({
             "residents":residents(), "speed":speed, "load_s":load_s, "run_s":run_s,
+            "vehicle_ground_full_detail_m":core.vehicle_ground_full_detail_m,
             "frames":samples.len(), "max_ms":sorted.last().copied().unwrap_or(0.0),
             "p99_ms":percentile(&sorted, 0.99), "p999_ms":percentile(&sorted, 0.999),
             "mean_ms":sorted.iter().sum::<f64>() / sorted.len() as f64,

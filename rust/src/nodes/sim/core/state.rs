@@ -57,7 +57,7 @@ use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredOpenWaterFill};
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 
 const MINUTES_PER_DAY_U64: u64 = 24 * 60;
 const DEMAND_SPAWN_ACTIONS_PER_MINUTE: usize = 1;
@@ -385,6 +385,10 @@ pub struct SimCore {
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
     pub camera_aabb: (f32, f32, f32, f32),
+    /// Last reported render camera XZ, or `None` until a renderer reports one.
+    pub(crate) render_camera_position: Option<Vector2>,
+    /// Horizontal radius in which off-lane vehicle rendering uses the exact support solve.
+    pub(crate) vehicle_ground_full_detail_m: f32,
     /// Per-chunk posed-agent buffers the render snapshot reuses; render scratch, not state.
     pub(crate) snapshot_agent_scratch: super::snapshot::AgentPoseScratch,
     /// Route scratch of the slots' serial trip pricing and planning, installed as the frame
@@ -499,6 +503,9 @@ impl SimCore {
             road_tool_publisher: Default::default(),
             road_terrain_inputs: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
+            render_camera_position: None,
+            vehicle_ground_full_detail_m:
+                crate::nodes::sim::render::vehicle_ground::VEHICLE_GROUND_FULL_DETAIL_M,
             snapshot_agent_scratch: Default::default(),
             slot_route_scratch: Default::default(),
             cell_overlay_visible: false,

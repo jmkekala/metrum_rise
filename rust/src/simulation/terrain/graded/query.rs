@@ -168,6 +168,30 @@ impl GradedSurface<'_> {
         }
     }
 
+    /// Visible height and rendered normal at one point, prepared as one graded query window.
+    pub fn surface_height_and_normal_at(
+        &self,
+        x: f64,
+        z: f64,
+        scratch: &mut QueryScratch,
+    ) -> (f64, [f64; 3]) {
+        if let Some((height, normal)) = self.roadbed.height_and_normal_at(x as f32, z as f32) {
+            return (f64::from(height), normal.to_array().map(f64::from));
+        }
+        let cell = Cell::at(x, z);
+        // A seam anywhere in a rendered tile switches that tile from its bilinear base mesh to
+        // the GL0 lattice. Prepare the whole tile once so the height makes the same choice as
+        // `surface_height_at`, with one GL0 ring for the centre normal's differences.
+        let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
+        self.prepare(grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M), scratch);
+        let height = if self.quiet(scratch) {
+            scratch.base.at(x, z)
+        } else {
+            self.ground_prepared(&cell, scratch)
+        };
+        (height, self.normal_prepared(&cell, scratch))
+    }
+
     /// Prepares the `_near` queries ([`Self::ground_height_near`], [`Self::surface_height_near`])
     /// for every point within `reach` metres of `(x, z)` on each axis: one gather for clustered
     /// points, such as a vehicle's contacts. The window is wider than one point's, so it lists
@@ -274,6 +298,10 @@ impl GradedSurface<'_> {
     fn normal_at_unchecked(&self, x: f64, z: f64, scratch: &mut QueryScratch) -> [f64; 3] {
         let cell = Cell::at(x, z);
         self.prepare(cell.rect(1), scratch);
+        self.normal_prepared(&cell, scratch)
+    }
+
+    fn normal_prepared(&self, cell: &Cell, scratch: &mut QueryScratch) -> [f64; 3] {
         let cell_m = scratch.base.grid().cell_m;
         let mut normal = [0.0; 3];
         for (weight, [i, j]) in cell.weights().into_iter().zip(cell.vertices()) {

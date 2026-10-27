@@ -792,8 +792,9 @@ fn pruned_queries_equal_the_evaluation_over_every_seam() {
             );
             let (kept, all) = pruned.listed(&surface);
             (listed, gathered) = (listed + kept, gathered + all);
+            let height = surface.surface_height_at(x, z, &mut pruned).to_bits();
             assert_eq!(
-                surface.surface_height_at(x, z, &mut pruned).to_bits(),
+                height,
                 surface.surface_height_at(x, z, &mut reference).to_bits(),
                 "surface {at}"
             );
@@ -802,11 +803,26 @@ fn pruned_queries_equal_the_evaluation_over_every_seam() {
                 surface.mask_at(x, z, &mut reference),
                 "mask {at}"
             );
+            let normal = surface.normal_at(x, z, &mut pruned).map(f64::to_bits);
             assert_eq!(
-                surface.normal_at(x, z, &mut pruned).map(f64::to_bits),
+                normal,
                 surface.normal_at(x, z, &mut reference).map(f64::to_bits),
                 "normal {at}"
             );
+            let pose = surface.surface_height_and_normal_at(x, z, &mut pruned);
+            let pose_reference = surface.surface_height_and_normal_at(x, z, &mut reference);
+            assert_eq!(
+                (pose.0.to_bits(), pose.1.map(f64::to_bits)),
+                (
+                    pose_reference.0.to_bits(),
+                    pose_reference.1.map(f64::to_bits)
+                ),
+                "surface pose {at}"
+            );
+            assert_eq!(pose.0.to_bits(), height);
+            if roadbed.height_at(x as f32, z as f32).is_none() {
+                assert_eq!(pose.1.map(f64::to_bits), normal);
+            }
             // A vehicle's contacts: one gather within 2.5 m, every contact as its own query.
             surface.gather_near(x, z, 2.5, &mut pruned);
             for (dx, dz) in [(0.0, 0.0), (2.5, -2.5), (-2.4, 1.3), (0.7, 2.5)] {

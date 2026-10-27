@@ -120,10 +120,23 @@ fn assert_query_index_fresh(core: &SimCore, stage: &str, strict_inputs: bool) {
             let a = indexed.surface_height_at(x, z, &mut a_scratch);
             let b = gathered.surface_height_at(x, z, &mut b_scratch);
             assert_eq!(a.to_bits(), b.to_bits(), "height at ({x}, {z})");
+            let expected_height = a.to_bits();
             assert_eq!(indexed.mask_at(x, z, &mut a_scratch), gathered.mask_at(x, z, &mut b_scratch));
             let a = indexed.normal_at(x, z, &mut a_scratch);
             let b = gathered.normal_at(x, z, &mut b_scratch);
             assert_eq!(a.map(f64::to_bits), b.map(f64::to_bits), "normal at ({x}, {z})");
+            let expected_normal = a.map(f64::to_bits);
+            let a = indexed.surface_height_and_normal_at(x, z, &mut a_scratch);
+            let b = gathered.surface_height_and_normal_at(x, z, &mut b_scratch);
+            assert_eq!(
+                (a.0.to_bits(), a.1.map(f64::to_bits)),
+                (b.0.to_bits(), b.1.map(f64::to_bits)),
+                "surface pose at ({x}, {z})"
+            );
+            assert_eq!(a.0.to_bits(), expected_height);
+            if core.transit_network.roadbed.height_at(x as f32, z as f32).is_none() {
+                assert_eq!(a.1.map(f64::to_bits), expected_normal);
+            }
         }
     }
 }
@@ -1540,7 +1553,7 @@ fn interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz() {
         1.0, 0.0, 0.0, point.x, 0.0, 1.0, 0.0, -100.0, 0.0, 0.0, 1.0, point.y,
     ];
     let mut transforms = original.repeat(2);
-    assert!(core.ground_vehicle_transforms(0, &mut transforms, &[1, 0]));
+    assert!(core.ground_vehicle_transforms(0, &mut transforms, &[1, 0], None));
     check_vehicle_contacts(&core, &transforms[..12]);
     assert_eq!(&transforms[12..], &original);
     assert_eq!(transforms[3], original[3]);
@@ -1548,12 +1561,12 @@ fn interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz() {
     // Input failures are atomic, including malformed model IDs and nonfinite lane entries.
     for (vehicle, flags) in [(5, vec![1, 0]), (0, vec![1])] {
         let before = transforms.clone();
-        assert!(!core.ground_vehicle_transforms(vehicle, &mut transforms, &flags));
+        assert!(!core.ground_vehicle_transforms(vehicle, &mut transforms, &flags, None));
         assert_eq!(transforms, before);
     }
     transforms[19] = f32::INFINITY;
     let before = transforms.clone();
-    assert!(!core.ground_vehicle_transforms(0, &mut transforms, &[1, 0]));
+    assert!(!core.ground_vehicle_transforms(0, &mut transforms, &[1, 0], None));
     assert_eq!(transforms, before);
 
     spawn_yard_access_agent(&mut core, 0, point, MODE_CAR, TRANSIT_ACCESS_INGRESS);
@@ -1567,6 +1580,59 @@ fn interpolated_vehicle_batch_keeps_lane_poses_and_supports_changed_xz() {
     assert!(recycled.car_transforms.values().all(Vec::is_empty));
     assert!(recycled.car_render_ids.values().all(Vec::is_empty));
     assert!(recycled.car_ground_flags.values().all(Vec::is_empty));
+}
+
+#[test]
+fn vehicle_ground_lod_keeps_boundary_exact_and_shares_the_far_pose() {
+    use crate::nodes::sim::render::vehicle_ground::ground_vehicle_basis;
+
+    let core = kuopio_yard_fixture();
+    let site = &core.allocator.building_sites[0];
+    let p = &site.surfaces[0].vertices_world;
+    let point = p[0].lerp(p[1], 0.43).lerp(p[3].lerp(p[2], 0.43), 0.2);
+    let heading = Vector3::BACK;
+    let bits = |(height, basis): (f32, [Vector3; 3])| {
+        let mut answer = vec![height.to_bits()];
+        for axis in basis {
+            answer.extend(axis.to_array().map(f32::to_bits));
+        }
+        answer
+    };
+    let exact = core.vehicle_ground_pose_exact(0, point, heading);
+    let boundary = point + Vector2::new(core.vehicle_ground_full_detail_m, 0.0);
+    assert_eq!(
+        bits(core.vehicle_ground_pose(0, point, heading, Some(boundary))),
+        bits(exact),
+        "the full-detail boundary is inclusive"
+    );
+
+    let camera = boundary + Vector2::new(0.25, 0.0);
+    let expected = core.with_graded_surface(|surface, scratch| {
+        let (height, normal) =
+            surface.surface_height_and_normal_at(f64::from(point.x), f64::from(point.y), scratch);
+        (
+            height as f32 + 0.02,
+            ground_vehicle_basis(heading, Vector3::from_array(normal.map(|v| v as f32))),
+        )
+    });
+    let far = core.vehicle_ground_pose(0, point, heading, Some(camera));
+    assert_eq!(bits(far), bits(expected));
+
+    let mut transform = vec![
+        1.0, 0.0, 0.0, point.x, 0.0, 1.0, 0.0, -100.0, 0.0, 0.0, 1.0, point.y,
+    ];
+    assert!(core.ground_vehicle_transforms(0, &mut transform, &[1], Some(camera)));
+    let (height, [x, y, z]) = far;
+    assert_eq!(
+        transform
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>(),
+        [
+            x.x, y.x, z.x, point.x, x.y, y.y, z.y, height, x.z, y.z, z.z, point.y,
+        ]
+        .map(f32::to_bits)
+    );
 }
 
 #[test]
@@ -1586,7 +1652,7 @@ fn graded_yard_vehicle_support_batch_benchmark() {
             ]);
         }
         for _ in 0..10 {
-            assert!(core.ground_vehicle_transforms(0, &mut transforms, &flags));
+            assert!(core.ground_vehicle_transforms(0, &mut transforms, &flags, None));
         }
         let mut samples = Vec::with_capacity(100);
         for _ in 0..100 {
@@ -1594,7 +1660,8 @@ fn graded_yard_vehicle_support_batch_benchmark() {
             assert!(std::hint::black_box(core.ground_vehicle_transforms(
                 0,
                 &mut transforms,
-                &flags
+                &flags,
+                None,
             )));
             samples.push(start.elapsed().as_secs_f64() * 1000.0);
         }

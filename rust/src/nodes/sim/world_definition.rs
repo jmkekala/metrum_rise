@@ -629,6 +629,7 @@ impl SimCore {
         self.last_road_edit_metrics = Default::default();
         self.last_surface_debug_edges.clear();
         self.camera_aabb = (0.0, 0.0, 0.0, 0.0);
+        self.render_camera_position = None;
     }
 
     fn snap_world_position_to_terrain_cell(&self, pos: Vector2) -> (f32, f32) {
