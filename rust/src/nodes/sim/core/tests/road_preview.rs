@@ -677,7 +677,12 @@ fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
                 let mut core = committed_on(1024.0, &[trunk], &[0], sloped);
                 let points = stroke(&core, side);
                 let mut context = context(&mut core);
-                let preview = Arc::new(preview(&mut context, &points));
+                let mut preview = preview(&mut context, &points);
+                // T27 (d): the preview's terrain catches up before the click.
+                while let Some(graded) = context.catch_up_graded() {
+                    preview.pieces.as_mut().expect("the pose's pieces").graded = graded;
+                }
+                let preview = Arc::new(preview);
                 let scope = previewed_scope(&preview);
                 commit(&mut core, &points, Some(preview));
                 // `TERRAIN-07-E`: the commit adopts the preview's graded tiles, the same tiles
