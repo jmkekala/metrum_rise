@@ -576,8 +576,8 @@ func _drop_preview(key: Vector2i) -> void:
 # What `key` draws changed from `before`: its instance and its neighbours' sides, the walls when
 # its faces changed, and the sets of the patches meeting it (_await_cells).
 func _shown_changed(key: Vector2i, before: Dictionary) -> void:
-	_cell_changed(key)
 	var after := _shown(key)
+	_cell_changed(key, before.is_empty() or after.is_empty() or int(before["code"]) != int(after["code"]))
 	if after.get("walls", PackedFloat32Array()) != before.get("walls", PackedFloat32Array()):
 		_walls_changed(key)
 	_await_cells(key, _resident)
@@ -778,7 +778,9 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites its own
 	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
 	if current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code:
-		_cell_changed(key)
+		# Under a preview tile nothing drawn changes until the preview drops it (_drop_preview).
+		if not preview.has(key):
+			_cell_changed(key, current.is_empty() or int(current["code"]) != cell_code)
 		_await_cells(key, resident_patches)
 	if walls != current.get("walls", PackedFloat32Array()):
 		_walls_changed(key)
@@ -905,11 +907,13 @@ func _patches_meeting(rect: Rect2) -> Array[Vector2i]:
 			keys.append(Vector2i(x, z))
 	return keys
 
-# Tile `key` was installed at a new slot or lattice, or evicted: its own instance and the sides
-# of its four neighbours change (the cell code is all a side reads of its neighbour), each in
-# the patches that draw it. O(1).
-func _cell_changed(key: Vector2i) -> void:
+# Tile `key` was installed at a new slot or lattice, or evicted: its own instance changes, and with
+# `sides` (its lattice code changed) the sides of its four neighbours too (the cell code is all a
+# side reads of its neighbour), each in the patches that draw it. O(1).
+func _cell_changed(key: Vector2i, sides := true) -> void:
 	_dirty_cell_tiles[key] = true
+	if not sides:
+		return
 	for offset: Vector2i in SIDE_OFFSETS:
 		_dirty_cell_tiles[key + offset] = true
 
@@ -1475,8 +1479,11 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	cells["shown"] = true
 	_bind_materials(cells, true)
 	(cells["nodes"][CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
+	# The set synced its material as it was built; a drawing set follows its patch's material
+	# changes (process), a hidden one catches up here, as the watched parameters tell.
 	var sync_us := Time.get_ticks_usec()
-	_sync_material(cells, patch["material"])
+	if _watched_parameters(patch["material"]) != cells["watched"]:
+		_sync_material(cells, patch["material"])
 	_frame_sync_us += Time.get_ticks_usec() - sync_us
 	for node: Node in cells["nodes"] + [cells["walls"]]:
 		if node.get_parent() != patch_node:
@@ -1694,6 +1701,10 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -
 		values.resize(_uniform_names.size())
 	var index := int(cells["sync_next"]) if start_us >= 0 else 0
 	var first := index
+	# The watched parameters as the pass starts: one changing during a pass spread over frames
+	# shows as a difference later, which syncs again.
+	if index == 0:
+		cells["watched"] = _watched_parameters(source)
 	while index < _uniform_names.size():
 		if start_us >= 0 and index > first and _over_budget(start_us):
 			cells["sync_next"] = index
@@ -1707,7 +1718,6 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -
 		for material: ShaderMaterial in cells["materials"]:
 			material.set_shader_parameter(name, value)
 	cells["sync_next"] = 0
-	cells["watched"] = _watched_parameters(source)
 	return true
 
 ## Pool sizes, use and creation counters, for tests and the memory record.
