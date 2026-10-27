@@ -71,11 +71,12 @@ struct TileResult {
     walls: Vec<u8>,
 }
 
-// One edit's selection with its install's staged tiles packed (token: the edit's serial) and
-// the preview epoch they release.
+// One edit's selection with its install's staged tiles packed (token: the edit's serial), which
+// of them the preview showed (`GradedInstallTiles::adopted`) and the preview epoch they release.
 struct EditResult {
     selection: GradedEditSelection,
     staged: Vec<TileResult>,
+    adopted: Vec<bool>,
     epoch: Option<u64>,
 }
 
@@ -540,7 +541,9 @@ impl SimulationNode {
 
     /// Returns finished graded residency work: `edits` (per published edit its `serial`, `all`
     /// for a reset, and per level `level`, `step` and the dirty `tiles`, flat `(x, z)` pairs in
-    /// key order; Godot rebakes the tiles it holds at that level), `patches` (per list `patch_x`, `patch_z`,
+    /// key order; Godot rebakes the tiles it holds at that level; a commit's or undo's own tiles
+    /// in `staged`, packed as `tiles` are, each with `adopted`, true where it is the payload the
+    /// road preview showed, and the `preview_epoch` it releases), `patches` (per list `patch_x`, `patch_z`,
     /// `token` and `tiles`, flat `(x, z)` pairs in key order), at most `max_tiles` baked tiles in
     /// `tiles` (per tile `tile_x`, `tile_z`, `level`, `step`, `token`, `samples_x`, `samples_z`,
     /// `graded`, `seam_count`, `edge_count`, `wall_count`, the slot layers' little-endian
@@ -558,8 +561,11 @@ impl SimulationNode {
             dict.set("serial", edit.serial as i64);
             dict.set("all", edit.all);
             let mut staged = VarArray::new();
-            for tile in result.staged {
-                staged.push(&tile.to_dict().to_variant());
+            for (index, tile) in result.staged.into_iter().enumerate() {
+                let mut packed = tile.to_dict();
+                let adopted = result.adopted.get(index).copied().unwrap_or(false);
+                packed.set("adopted", adopted);
+                staged.push(&packed.to_variant());
                 jobs.buffers.extend([tile.texels, tile.rows, tile.walls]);
             }
             dict.set("staged", staged);
@@ -674,15 +680,22 @@ impl SimulationNode {
             let results: Vec<EditResult> = selections
                 .into_iter()
                 .map(|mut selection| {
-                    let (staged, epoch) = match selection.staged.take() {
-                        Some(GradedInstallTiles { stage, epoch }) => {
-                            (pack_install_tiles(&stage, selection.serial, &edits), epoch)
-                        }
-                        None => (Vec::new(), None),
+                    let (staged, adopted, epoch) = match selection.staged.take() {
+                        Some(GradedInstallTiles {
+                            stage,
+                            epoch,
+                            adopted,
+                        }) => (
+                            pack_install_tiles(&stage, selection.serial, &edits),
+                            adopted,
+                            epoch,
+                        ),
+                        None => (Vec::new(), Vec::new(), None),
                     };
                     EditResult {
                         selection,
                         staged,
+                        adopted,
                         epoch,
                     }
                 })

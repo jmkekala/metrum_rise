@@ -58,7 +58,7 @@ func _run() -> void:
 	_expect(graded.installed.has(junction), "the junction's tile must be graded")
 	if graded.installed.has(junction):
 		_expect(int(graded.installed[junction]["level"]) == 0, "the junction's tile must be at GL0")
-	_expect(graded.patch_cells.size() > 0, "patches with graded tiles must draw cells")
+	_expect(graded.patch_cells.size() == resident.size(), "every resident patch has its cell set built: %d of %d" % [graded.patch_cells.size(), resident.size()])
 	for key: Vector2i in graded.patch_cells.keys():
 		_check_cells(graded, key, resident)
 	# A pooled cell set binds no material, so it holds none of Godot's instance uniform slots.
@@ -282,7 +282,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused: %s" % terrain.patch_payload_refused)
 	_expect(int(graded.get_pool_counters()["refused"]) == 0, "no graded request is refused: %s" % graded.refused)
 	_expect(graded.installed.has(Vector2i(0, 0)), "the junction's tile installs graded")
-	_expect(graded.patch_cells.has(junction_patch), "the junction's patch draws cells")
+	_expect(graded.patch_cells.has(junction_patch) and bool(graded.patch_cells[junction_patch]["shown"]), "the junction's patch draws cells")
 
 	var edge: int = simulation.get_hovered_edge(0.0, 100.0)
 	_expect(edge >= 0, "the side road has an edge at (0, 100)")
@@ -295,7 +295,8 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 		faces += (graded.installed[tile]["walls"] as PackedFloat32Array).size() / GradedTiles.WALL_FACE_FLOATS
 	var instances := 0
 	for key: Vector2i in graded.patch_cells.keys():
-		instances += ((graded.patch_cells[key]["walls"] as MultiMeshInstance3D).multimesh).visible_instance_count
+		if bool(graded.patch_cells[key]["shown"]):
+			instances += ((graded.patch_cells[key]["walls"] as MultiMeshInstance3D).multimesh).visible_instance_count
 	_expect(faces > 0, "the bridge's mouth has wall faces")
 	_expect(instances == faces, "every wall face draws once: %d instances of %d faces" % [instances, faces])
 	_expect(int(graded.counters["walls_truncated"]) == 0, "no patch runs out of wall instances")
@@ -330,6 +331,8 @@ func _settle_production(terrain, simulation: SimulationNode) -> bool:
 			and graded.patch_lists_requested.is_empty()
 			and graded._counts.is_empty()
 			and graded._edit_batch.is_empty()
+			and graded._builds.is_empty()
+			and graded._builds_urgent.is_empty()
 		)
 		stable = stable + 1 if idle else 0
 		if stable >= 3:
@@ -382,7 +385,8 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 	for frame in TIMEOUT_FRAMES:
 		_frame(graded, camera, resident)
 		await process_frame
-		var idle: bool = graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
+		var idle: bool = (graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
+			and graded._builds.is_empty() and graded._builds_urgent.is_empty())
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
 		if stable >= 3:
 			return true
@@ -408,8 +412,11 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	# The headless renderer keeps no MultiMesh custom data; the renderer's own record of what it
 	# wrote stands for it.
 	var counts: Array[int] = cells["counts"]
+	var shown := bool(cells["shown"])
+	_expect(shown == (counts[0] + counts[1] + counts[2] + counts[3] > 0), "patch %s: a set draws while a tile of it shows graded" % key)
 	for index in nodes.size():
-		_expect((nodes[index] as GeometryInstance3D).material_override != null, "a set drawing a patch binds its materials")
+		_expect((nodes[index] as GeometryInstance3D).material_override != null if shown else (nodes[index] as GeometryInstance3D).material_override == null,
+			"a set binds its materials while it draws its patch, and only then")
 		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
 		var written: Array = (cells["custom"][index] as Array).slice(0, counts[index])
 		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
@@ -436,6 +443,10 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 # commit's edit installs the tiles it staged and releases the preview's in the same frame.
 func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera: Vector3, resident: Dictionary) -> void:
 	var installed_before: Dictionary = graded.installed.duplicate(true)
+	# Every resident patch's set is built off the frame paths (round 6): neither the preview's
+	# frames nor its commit's builds one.
+	var builds_before := int(graded.counters["cell_builds"])
+	var adopted_before := int(graded.counters["edit_adopted"])
 	# A T off the trunk. (A crossing here, (60, -50) to (60, 70), panics in the exact cut's
 	# legacy road loops while the commit grades its margins: road_clip.rs, TERRAIN-07-G's.)
 	var points := PackedVector3Array([Vector3(60.0, 0.0, 10.0), Vector3(60.0, 0.0, 80.0)])
@@ -478,6 +489,10 @@ func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera
 	_expect(installed_frame, "the commit's edit releases the preview's tiles in its batch's frame")
 	for key: Vector2i in shown:
 		_expect(graded.last_edit_batch.has(key), "the batch installs the committed tile %s" % key)
+	_expect(int(graded.counters["cell_builds"]) == builds_before, "the preview and its commit build no cell set")
+	# The converged preview's tiles are the commit's: each takes over its preview slot, no upload.
+	var adopted := int(graded.counters["edit_adopted"]) - adopted_before
+	_expect(adopted == shown.size(), "the commit adopts every previewed tile's slot: %d of %d" % [adopted, shown.size()])
 	# The patches' new generations, as terrain.gd hands them over after the commit.
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1

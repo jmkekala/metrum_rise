@@ -38,6 +38,10 @@ pub(crate) struct GradedInstallTiles {
     /// The preview epoch whose shown tiles the commit adopted: Godot releases that epoch's
     /// preview tiles as it installs these. `None` for an undo or a commit without a preview.
     pub(crate) epoch: Option<u64>,
+    /// Per tile of `stage`, whether it is the very payload the preview showed (adopted from
+    /// it): Godot then takes over the preview's slot instead of uploading it again. Empty for
+    /// an undo or a commit without a preview.
+    pub(crate) adopted: Vec<bool>,
 }
 
 /// What one published edit changed for the graded tiles.
@@ -165,6 +169,7 @@ impl SimCore {
         &mut self,
         stage: Arc<TileStage>,
         epoch: Option<u64>,
+        adopted: Vec<bool>,
     ) {
         let journal = &mut self.graded_edits;
         let Some(serial) = journal.awaiting.take() else {
@@ -175,7 +180,11 @@ impl SimCore {
             .last_mut()
             .filter(|edit| edit.serial == serial);
         if let Some(edit) = edit.filter(|edit| matches!(edit.kind, GradedEditKind::Roads { .. })) {
-            edit.staged = Some(GradedInstallTiles { stage, epoch });
+            edit.staged = Some(GradedInstallTiles {
+                stage,
+                epoch,
+                adopted,
+            });
         }
     }
 

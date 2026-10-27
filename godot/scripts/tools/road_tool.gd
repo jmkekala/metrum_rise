@@ -657,6 +657,10 @@ func _commit_segment(end_pos: Vector3) -> bool:
 		# Rust logs the full report on events: why, where and the exact stroke for replay.
 		simulation_node.log_road_tool_rejection(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), validation)
 	if points.size() > 1 and preview_valid:
+		# A click that previewed a pose of its own shows that pose's graded tiles first: Rust handed
+		# them over once, and the commit's tiles adopted from them take over the renderer's slots.
+		if int(validation.get("sequence", 0)) != _preview_drawn_sequence:
+			_show_graded(validation)
 		var add_road_start_us := Time.get_ticks_usec()
 		_commit_request_id = simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 		# The commit adopts this epoch's graded tiles; they show until its edit installs.

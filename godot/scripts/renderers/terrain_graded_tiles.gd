@@ -111,6 +111,16 @@ var _wall_material: ShaderMaterial = null
 var _dirty_patches: Dictionary = {}
 # Patches whose wall instances must be rewritten (a tile rewritten in place changed its faces).
 var _dirty_walls: Dictionary = {}
+# Cell sets built off the frame paths (`TERRAIN-07-E` round 6): every resident patch gets its set,
+# kept current by the per-tile updates and hidden (out of the tree, no material bound) until one
+# of its tiles shows graded, so a patch's first graded tile is a per-tile update and the set's flip
+# (_apply_shown), never a whole build in a preview's, an edit's or a stream's frame. Patch key ->
+# true in arrival order; `_builds_urgent` holds the patches a shown tile waits for (it draws once
+# the set is built), taken first (_advance_builds).
+var _builds: Dictionary = {}
+var _builds_urgent: Dictionary = {}
+# Patches whose set may start or stop drawing.
+var _dirty_shown: Dictionary = {}
 var _uniform_names: PackedStringArray = PackedStringArray()
 # Tile key -> {level: Vector2i(code, step), token, bucket}: every tile a resident patch's list
 # names. It follows the changes: a patch entering, leaving or getting a new list adds and
@@ -172,6 +182,8 @@ var counters := {
 	"edits": 0,
 	"edit_batches": 0,
 	"edit_tiles_last": 0,
+	# Committed tiles that took over the preview's slot instead of an upload (_adopt_preview).
+	"edit_adopted": 0,
 	"edit_install_ms_last": 0.0,
 	"edit_install_ms_max": 0.0,
 	# The road preview's installs (show_preview), the most one frame took; the frames that
@@ -194,6 +206,8 @@ var counters := {
 	"frame_parts": {},
 	# The cell sets prewarmed at setup and the time it took (T25's load cost).
 	"cell_sets_prewarmed": 0,
+	# Cell sets built (_build_tiles), and the patches waiting for one.
+	"cell_builds": 0,
 	"cell_prewarm_ms": 0.0,
 }
 # Per-frame accumulators of the parts the edit frame reports.
@@ -350,6 +364,9 @@ func clear() -> void:
 	_patch_steps.clear()
 	for key in patch_cells.keys():
 		release_patch(key, null)
+	_builds.clear()
+	_builds_urgent.clear()
+	_dirty_shown.clear()
 	_desired.clear()
 	_tile_lists.clear()
 	_counted.clear()
@@ -398,6 +415,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	counters["install_ms_max"] = max(float(counters["install_ms_max"]), float(counters["install_ms_last"]))
 	for key: Vector2i in changed_patches.keys():
 		_patch_changed(key, resident_patches)
+	_advance_builds(start_us, resident_patches)
 	if not _lists_wanted.is_empty():
 		_request_patch_lists(resident_patches)
 	if not _wanted.is_empty():
@@ -406,7 +424,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	# A patch's cells follow its material's parameters (a changed patch's LOD step in
 	# _patch_changed). O(changed materials).
 	for key: Vector2i in changed_materials.keys():
-		if not patch_cells.has(key) or not resident_patches.has(key):
+		if not patch_cells.has(key) or not resident_patches.has(key) or not bool(patch_cells[key]["shown"]):
 			continue
 		var material: ShaderMaterial = resident_patches[key]["material"]
 		var cells: Dictionary = patch_cells[key]
@@ -468,10 +486,13 @@ func _apply_cell_changes(resident_patches: Dictionary) -> void:
 	if not _dirty_cell_tiles.is_empty():
 		_update_cell_tiles(resident_patches)
 	_dirty_patches.clear()
+	for key: Vector2i in _dirty_shown.keys():
+		_apply_shown(key, resident_patches)
+	_dirty_shown.clear()
 
 func _apply_wall_changes(resident_patches: Dictionary) -> void:
 	for key: Vector2i in _dirty_walls.keys():
-		if resident_patches.has(key) and patch_cells.has(key):
+		if resident_patches.has(key) and patch_cells.has(key) and _built(patch_cells[key]):
 			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
 	_dirty_walls.clear()
 
@@ -553,16 +574,25 @@ func _drop_preview(key: Vector2i) -> void:
 	_shown_changed(key, entry)
 
 # What `key` draws changed from `before`: its instance and its neighbours' sides, the walls when
-# its faces changed, and a resident patch meeting it without cells is built whole (one left
-# without a graded cell returns to its PlaneMesh in _update_cell_tiles).
+# its faces changed, and the sets of the patches meeting it (_await_cells).
 func _shown_changed(key: Vector2i, before: Dictionary) -> void:
 	_cell_changed(key)
 	var after := _shown(key)
 	if after.get("walls", PackedFloat32Array()) != before.get("walls", PackedFloat32Array()):
 		_walls_changed(key)
+	_await_cells(key, _resident)
+
+# Tile `key` shows something new: each resident patch meeting it starts or stops drawing its set,
+# or, without a built set yet, builds one first (urgent); the tile draws there once it is built.
+# O(1).
+func _await_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
-		if _resident.has(patch_key) and not patch_cells.has(patch_key):
-			_dirty_patches[patch_key] = true
+		if not resident_patches.has(patch_key):
+			continue
+		if patch_cells.has(patch_key) and _built(patch_cells[patch_key]):
+			_dirty_shown[patch_key] = true
+		else:
+			_builds_urgent[patch_key] = true
 
 # What a tile draws: its preview tile while the road preview shows one, else its installed tile.
 func _shown(tile: Vector2i) -> Dictionary:
@@ -651,11 +681,13 @@ func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
 	var previous: Array = patch_lists.get(key, {}).get("tiles", [])
 	if patch_lists.has(key) and previous == tiles:
 		_frame_lists_same += 1
-	# The cells show the installed tiles of the patch's rectangle, not its list: a list
-	# rewrites them only when the patch has none yet or the list empties or fills
-	# (_rebuild_patch_cells); listed tiles install or evict on their own.
-	if not patch_cells.has(key) or previous.is_empty() != tiles.is_empty():
-		_dirty_patches[key] = true
+	# The cells show the installed tiles of the patch's rectangle, not its list: a list that
+	# empties or fills only starts or stops the set's drawing (_apply_shown); listed tiles install
+	# or evict on their own.
+	if not patch_cells.has(key):
+		_builds[key] = true
+	elif previous.is_empty() != tiles.is_empty():
+		_dirty_shown[key] = true
 	patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
 	_recount(key, resident_patches)
 	# A list baked for an older generation is asked again.
@@ -747,10 +779,7 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
 	if current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code:
 		_cell_changed(key)
-		# A resident patch meeting the tile without cells yet is built whole.
-		for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
-			if resident_patches.has(patch_key) and not patch_cells.has(patch_key):
-				_dirty_patches[patch_key] = true
+		_await_cells(key, resident_patches)
 	if walls != current.get("walls", PackedFloat32Array()):
 		_walls_changed(key)
 
@@ -764,7 +793,8 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 	if _edit_batch.is_empty() or _edit_staged.size() < _edit_batch.size():
 		return 0
 	for key: Vector2i in _edit_staged.keys():
-		_upload(key, _edit_staged[key], resident_patches)
+		if not _adopt_preview(key, _edit_staged[key]):
+			_upload(key, _edit_staged[key], resident_patches)
 	last_edit_batch = _edit_staged.keys()
 	var count := _edit_staged.size()
 	_edit_batch.clear()
@@ -776,6 +806,32 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 				_drop_preview(key)
 		_edit_release = -1
 	return count
+
+# A committed tile that is the very payload the preview shows (Rust's `adopted`, the preview tile
+# of the commit's epoch at the same level) takes over the preview's slot as the installed tile
+# (`TERRAIN-07-E` round 6): nothing is uploaded and nothing drawn changes, so neither its instance
+# nor its walls are rewritten. Returns whether it did. O(1).
+func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
+	var shown: Dictionary = preview.get(key, {})
+	if (not bool(tile.get("adopted", false)) or shown.is_empty()
+			or int(shown["token"]) != int(tile["preview_epoch"])
+			or int(shown["level"]) != int(tile["level"]) or int(shown["step"]) != int(tile["step"])):
+		return false
+	var current: Dictionary = installed.get(key, {})
+	if not current.is_empty():
+		_free_slot(current)
+	var token := int(tile["token"])
+	installed[key] = {"code": shown["code"], "level": shown["level"], "step": shown["step"], "slot": shown["slot"], "token": token, "walls": shown["walls"]}
+	preview.erase(key)
+	counters["edit_adopted"] += 1
+	# As _upload: the installed level moves the hysteresis, and a bake of another level or token
+	# is still wanted.
+	var want: Dictionary = _desired.get(key, {})
+	if not want.is_empty():
+		_level_tile(key, want)
+		if want["level"] != Vector2i(int(tile["level"]), int(tile["step"])) or int(want["token"]) != token:
+			_wanted[key] = true
+	return true
 
 # Rebakes the tiles an edit dirtied at the level each is held at, installed or in flight.
 func _apply_edit(edit: Dictionary) -> void:
@@ -813,6 +869,7 @@ func _apply_edit(edit: Dictionary) -> void:
 		_dirty_tile(key, serial)
 		_edit_batch[key] = int(tile_tokens[key])
 		tile["token"] = int(tile_tokens[key])
+		tile["preview_epoch"] = int(edit.get("preview_epoch", -1))
 		_edit_staged[key] = tile
 	_edit_release = max(_edit_release, int(edit.get("preview_epoch", -1)))
 
@@ -899,9 +956,17 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 		_lists_wanted.erase(key)
 		return
 	_lists_wanted[key] = true
+	# Every resident patch builds its set; a drawing set follows a new step in this frame (the
+	# camera moved), a hidden one is built again off the frame.
 	var cells: Dictionary = patch_cells.get(key, {})
-	if not cells.is_empty() and int(cells.get("step", -1)) != int(resident_patches[key]["step"]):
-		_dirty_patches[key] = true
+	if cells.is_empty():
+		_builds[key] = true
+	elif int(cells["step"]) != int(resident_patches[key]["step"]):
+		if bool(cells["shown"]):
+			_dirty_patches[key] = true
+		else:
+			cells["built"] = -1
+			_builds[key] = true
 
 # The tiles patch `key` adds to the desired set: its list while it is resident (a patch whose
 # list is being refreshed keeps its last one until the new one arrives, so an edit's patch shows
@@ -1190,9 +1255,9 @@ static func _cell_place(cells: Dictionary, tile: Vector2i) -> int:
 	var last: Vector2i = cells["last"]
 	return (tile.x - first.x) + (last.x - first.x + 1) * (tile.y - first.y)
 
-# Rewrites the queued tiles' instances in every patch drawing cells that holds them (the patches
-# rewritten whole this frame excepted), and returns a patch left without a graded cell to its
-# PlaneMesh. O(queued tiles).
+# Rewrites the queued tiles' instances in every patch's set that holds them (the sets rewritten
+# whole this frame excepted, a set being built only where its build has written them); a set
+# whose instances changed may start or stop drawing. O(queued tiles).
 func _update_cell_tiles(resident_patches: Dictionary) -> void:
 	var touched := {}
 	for tile: Vector2i in _dirty_cell_tiles.keys():
@@ -1203,9 +1268,7 @@ func _update_cell_tiles(resident_patches: Dictionary) -> void:
 				touched[key] = true
 	_dirty_cell_tiles.clear()
 	for key: Vector2i in touched.keys():
-		var counts: Array[int] = patch_cells[key]["counts"]
-		if counts[0] + counts[1] + counts[2] + counts[3] == 0:
-			release_patch(key, resident_patches[key]["node"])
+		_dirty_shown[key] = true
 
 # One tile's instance in a patch's cells (T26): its custom data rewritten in place while its
 # mesh is unchanged; otherwise it leaves the old mesh's MultiMesh by a swap-remove (the last
@@ -1220,6 +1283,9 @@ func _update_tile_cell(cells: Dictionary, tile: Vector2i, patch: Dictionary, res
 	var where: Array[Vector2i] = cells["where"]
 	var place := _cell_place(cells, tile)
 	var at: Vector2i = where[place]
+	if at.x < 0:
+		# Not written yet: its build writes it as it stands then.
+		return false
 	var mesh_index := _cell_mesh(tile)
 	var custom := _cell_custom(tile, first, patch, resident_patches)
 	var records: Array = cells["custom"]
@@ -1253,20 +1319,26 @@ static func _set_cell_count(node: MultiMeshInstance3D, counts: Array[int], index
 	node.multimesh.visible_instance_count = count
 	node.visible = count > 0
 
+# Builds patch `key`'s set whole in this frame: a drawing set whose patch changed step (the
+# camera moved), and the tests' reference for the per-tile updates. O(the patch's tiles).
 func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	var patch: Dictionary = resident_patches[key]
-	var list: Dictionary = patch_lists.get(key, {})
-	var tiles := _patch_tiles(patch["rect"])
-	var any_graded := false
-	var any_preview := false
-	for tile in tiles:
-		any_graded = any_graded or installed.has(tile)
-		any_preview = any_preview or preview.has(tile)
-	var patch_node: GeometryInstance3D = patch["node"]
-	if not any_preview and (not any_graded or list.is_empty()):
-		if patch_cells.has(key):
-			release_patch(key, patch_node)
-		return
+	var cells := _begin_build(key, patch)
+	_build_tiles(cells, patch, resident_patches, -1, 0)
+	if bool(cells["shown"]):
+		(cells["nodes"][CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
+		var sync_us := Time.get_ticks_usec()
+		_sync_material(cells, patch["material"])
+		_frame_sync_us += Time.get_ticks_usec() - sync_us
+	_dirty_shown[key] = true
+
+# Whether a set's build has written every tile of its patch.
+static func _built(cells: Dictionary) -> bool:
+	return int(cells["built"]) >= 0 and int(cells["built"]) == (cells["tiles"] as Array).size()
+
+# Starts (or restarts) patch `key`'s set for its patch as it stands: a pooled set taken if it has
+# none, its rectangle, step and meshes set, no tile written. O(1) and the set's records.
+func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	var cells: Dictionary = patch_cells.get(key, {})
 	if cells.is_empty():
 		cells = _acquire_cells(patch)
@@ -1279,18 +1351,53 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		int(round(rect.position.x * 2.0)), int(round(rect.position.y * 2.0)),
 		int(round(rect.end.x * 2.0)), int(round(rect.end.y * 2.0))
 	)
-	var nodes: Array = cells["nodes"]
+	var tiles := _patch_tiles(rect)
+	cells["tiles"] = tiles
 	# The tile holding the patch rectangle's lower corner, as the shader finds it, and the last.
-	var first: Vector2i = tiles[0] if not tiles.is_empty() else Vector2i.ZERO
-	cells["first"] = first
+	cells["first"] = tiles[0] if not tiles.is_empty() else Vector2i.ZERO
 	cells["last"] = tiles[-1] if not tiles.is_empty() else Vector2i(-1, -1)
-	# What each MultiMesh holds, kept beside it (the per-tile updates move instances by it).
+	cells["built"] = 0
+	cells["synced"] = false
+	# What each MultiMesh holds, kept beside it (the per-tile updates move instances by it); a
+	# place not written yet is (-1, -1).
 	var counts: Array[int] = cells["counts"]
 	counts.fill(0)
+	var where: Array[Vector2i] = cells["where"]
+	where.fill(Vector2i(-1, -1))
+	var nodes: Array = cells["nodes"]
+	for index in CELL_MESHES:
+		var node: MultiMeshInstance3D = nodes[index]
+		var multimesh := node.multimesh
+		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
+		# vertices onto its sides.
+		var code := index if index < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
+		multimesh.mesh = _meshes[min(code, 6)]
+		multimesh.visible_instance_count = 0
+		node.visible = false
+		node.set_instance_shader_parameter("cell_patch_rect_hm", rect_hm)
+		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
+	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
+	return cells
+
+# Writes the set's next tiles, each as it stands (its shown level's cell, else a base cell); with
+# `start_us` >= 0 it stops once the frame's install budget is spent and at least `minimum` tiles
+# were written. The last tile completes the set: its counts, walls and build counter. Returns
+# whether the set is built. O(tiles written).
+func _build_tiles(cells: Dictionary, patch: Dictionary, resident_patches: Dictionary, start_us: int, minimum: int) -> bool:
+	var tiles: Array[Vector2i] = cells["tiles"]
+	var first: Vector2i = cells["first"]
+	var nodes: Array = cells["nodes"]
+	var counts: Array[int] = cells["counts"]
 	var records: Array = cells["custom"]
 	var tile_at: Array = cells["tile_at"]
 	var where: Array[Vector2i] = cells["where"]
-	for tile in tiles:
+	var built := int(cells["built"])
+	var written := 0
+	while built < tiles.size():
+		if start_us >= 0 and written >= minimum and _over_budget(start_us):
+			cells["built"] = built
+			return false
+		var tile := tiles[built]
 		var mesh_index := _cell_mesh(tile)
 		var custom := _cell_custom(tile, first, patch, resident_patches)
 		var index := counts[mesh_index]
@@ -1299,36 +1406,110 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		tile_at[mesh_index][index] = tile
 		where[_cell_place(cells, tile)] = Vector2i(mesh_index, index)
 		counts[mesh_index] = index + 1
+		built += 1
+		written += 1
+	cells["built"] = built
 	for index in CELL_MESHES:
-		var node: MultiMeshInstance3D = nodes[index]
-		var multimesh := node.multimesh
-		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
-		# vertices onto its sides.
-		var code := index if index < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
-		multimesh.mesh = _meshes[min(code, 6)]
-		multimesh.visible_instance_count = counts[index]
-		node.visible = counts[index] > 0
-		node.set_instance_shader_parameter("cell_patch_rect_hm", rect_hm)
-		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
-	(nodes[CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
-	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
-	if cells.get("node_parent", null) != patch_node:
-		for node: Node in nodes + [cells["walls"]]:
+		_set_cell_count(nodes[index], counts, index, counts[index])
+	var walls_us := Time.get_ticks_usec()
+	_rebuild_patch_walls(cells, patch)
+	_frame_walls_us += Time.get_ticks_usec() - walls_us
+	counters["cell_builds"] += 1
+	return true
+
+# Builds the queued sets off the frame paths: the patches a shown tile waits for first, at least
+# one tile of the first of them in every frame, then the rest while the frame's install budget
+# lasts. A set first syncs its material, then writes its tiles; a built set starts drawing if a
+# tile of it shows graded. O(tiles written this frame + uniforms synced).
+func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
+	var minimum := 1
+	while not (_builds_urgent.is_empty() and _builds.is_empty()):
+		var urgent := not _builds_urgent.is_empty()
+		var queue: Dictionary = _builds_urgent if urgent else _builds
+		if not urgent:
+			minimum = 0
+		if minimum == 0 and _over_budget(start_us):
+			return
+		var key := Vector2i.ZERO
+		for queued: Vector2i in queue:
+			key = queued
+			break
+		if not resident_patches.has(key):
+			_builds.erase(key)
+			_builds_urgent.erase(key)
+			continue
+		var patch: Dictionary = resident_patches[key]
+		var cells: Dictionary = patch_cells.get(key, {})
+		if cells.is_empty() or int(cells["built"]) < 0:
+			cells = _begin_build(key, patch)
+		var done := _built(cells)
+		if not done and not bool(cells["synced"]):
+			cells["synced"] = _sync_material(cells, patch["material"], start_us)
+		if not done and bool(cells["synced"]):
+			done = _build_tiles(cells, patch, resident_patches, start_us, minimum)
+		minimum = 0
+		if not done:
+			return
+		_builds.erase(key)
+		_builds_urgent.erase(key)
+		_dirty_shown[key] = true
+
+# Patch `key`'s set draws while it is built and a tile of it shows graded (installed while the
+# patch's list is not empty, or previewed); otherwise the patch draws its PlaneMesh and the set
+# waits, kept current, out of the tree with no material bound (so it holds no instance uniform
+# slot). O(1), the material's parameters when the set starts drawing and the preview's tiles.
+func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
+	var cells: Dictionary = patch_cells.get(key, {})
+	if cells.is_empty() or not resident_patches.has(key):
+		return
+	var counts: Array[int] = cells["counts"]
+	var listed: bool = not (patch_lists.get(key, {}).get("tiles", []) as Array).is_empty()
+	var draw := _built(cells) and counts[0] + counts[1] + counts[2] + counts[3] > 0 and (listed or _previews_in(cells))
+	if draw == bool(cells["shown"]):
+		return
+	var patch: Dictionary = resident_patches[key]
+	var patch_node: GeometryInstance3D = patch["node"]
+	if not draw:
+		_hide_cells(cells, patch_node)
+		return
+	cells["shown"] = true
+	_bind_materials(cells, true)
+	(cells["nodes"][CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
+	var sync_us := Time.get_ticks_usec()
+	_sync_material(cells, patch["material"])
+	_frame_sync_us += Time.get_ticks_usec() - sync_us
+	for node: Node in cells["nodes"] + [cells["walls"]]:
+		if node.get_parent() != patch_node:
 			if node.get_parent() != null:
 				node.get_parent().remove_child(node)
 			patch_node.add_child(node)
-		cells["node_parent"] = patch_node
-	var sync_us := Time.get_ticks_usec()
-	_sync_material(cells, patch["material"])
-	var walls_us := Time.get_ticks_usec()
-	_rebuild_patch_walls(cells, patch)
-	_frame_sync_us += walls_us - sync_us
-	_frame_walls_us += Time.get_ticks_usec() - walls_us
+	cells["node_parent"] = patch_node
 	# The PlaneMesh collapses while the cells draw the patch, and is not drawn at all: its
 	# visibility range ends before any camera, so its vertices do not run (TERRAIN-07-D round 5).
 	# It stays visible, since grass and the water reflection read the patch node's visibility.
 	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
 	patch_node.visibility_range_end = HIDDEN_RANGE_M
+
+# Whether a preview tile lies in the set's patch. O(preview tiles).
+func _previews_in(cells: Dictionary) -> bool:
+	var first: Vector2i = cells["first"]
+	var last: Vector2i = cells["last"]
+	for tile: Vector2i in preview:
+		if tile.x >= first.x and tile.y >= first.y and tile.x <= last.x and tile.y <= last.y:
+			return true
+	return false
+
+# The set stops drawing: out of the tree, its materials unbound, the patch's PlaneMesh back.
+func _hide_cells(cells: Dictionary, patch_node: GeometryInstance3D) -> void:
+	cells["shown"] = false
+	for node: Node in cells["nodes"] + [cells["walls"]]:
+		if node.get_parent() != null:
+			node.get_parent().remove_child(node)
+	cells["node_parent"] = null
+	_bind_materials(cells, false)
+	if patch_node != null:
+		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
+		patch_node.visibility_range_end = 0.0
 
 # The wall faces of the patch's installed tiles, each drawn by the patch holding its midpoint
 # (a face of a tile two patches share draws once), as one instance whose transform carries
@@ -1368,22 +1549,23 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 	node.visible = count > 0
 
 ## Returns a patch to its PlaneMesh and its cell resources to the pool. Called when the patch
-## recycles or loses its last graded tile.
+## recycles (leaves the residency or the renderer resets).
 func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	var cells: Dictionary = patch_cells.get(key, {})
 	patch_cells.erase(key)
+	_builds.erase(key)
+	_builds_urgent.erase(key)
+	_dirty_shown.erase(key)
 	if patch_node != null:
 		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
 		patch_node.visibility_range_end = 0.0
 	if cells.is_empty():
 		return
+	_hide_cells(cells, null)
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.visible = false
 		node.multimesh.visible_instance_count = 0
-		if node.get_parent() != null:
-			node.get_parent().remove_child(node)
-	cells["node_parent"] = null
-	_bind_materials(cells, false)
+	cells["built"] = -1
 	_cells_pool.append(cells)
 
 # A pooled cell set, bounded to the patch's culling box. The pool holds one per patch of the
@@ -1394,11 +1576,10 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 	for node: MultiMeshInstance3D in cells["nodes"] + [cells["walls"]]:
 		node.multimesh.custom_aabb = aabb
 		node.custom_aabb = aabb
-	_bind_materials(cells, true)
 	return cells
 
 # A set's graded materials are bound to its nodes only while it draws a patch (the base cells take
-# the patch's material in _rebuild_patch_cells): Godot reserves a node's instance uniforms, 16 of
+# the patch's material as it starts drawing, _apply_shown): Godot reserves a node's instance uniforms, 16 of
 # its global buffer's slots, while the node's material declares them, so the pooled sets hold none
 # (prewarmed bound, Kuopio's 1,296 sets held 5,184 nodes' slots, TERRAIN-07-D round 9). No
 # material is created: the set's own are bound.
@@ -1474,7 +1655,10 @@ func _new_cells() -> Dictionary:
 	return {
 		"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
 		"custom": records, "tile_at": tile_at, "where": where, "counts": counts,
-		"first": Vector2i.ZERO, "last": Vector2i(-1, -1),
+		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1,
+		# The tiles its build has written (-1: not begun), whether it synced its material for
+		# this build and whether it draws its patch.
+		"built": -1, "synced": false, "shown": false, "values": [], "sync_next": 0,
 	}
 
 # The patch material parameters whose change means the graded material must be synced: the
@@ -1491,7 +1675,11 @@ func _watched_parameters(material: ShaderMaterial) -> Array:
 		material.get_shader_parameter("terrain_debug_lod_step"),
 	]
 
-func _sync_material(cells: Dictionary, source: ShaderMaterial) -> void:
+# Copies the patch material's parameters into the set's four materials. With `start_us` >= 0 (a
+# build off the frame paths) it goes on from where the last call stopped and stops once the frame's
+# install budget is spent, after one parameter at least; returns whether it finished. Without, it
+# goes over every parameter.
+func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -> bool:
 	if _uniform_names.is_empty():
 		for uniform: Dictionary in source.shader.get_shader_uniform_list():
 			var name := String(uniform["name"])
@@ -1499,21 +1687,28 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial) -> void:
 				_uniform_names.append(name)
 	# The values the cell set's materials hold, by uniform: only the parameters that differ are
 	# copied into the four materials (a payload commit changes a few of about a hundred). A set
-	# keeps its values through the pool, so a reused set copies what differs from its last patch.
-	var values: Array = cells.get("values", [])
-	var all := values.size() != _uniform_names.size()
-	if all:
+	# keeps its values through the pool, so a reused set copies what differs from its last patch;
+	# a new set holds none (null, an unset parameter's value, which needs no copy).
+	var values: Array = cells["values"]
+	if values.size() != _uniform_names.size():
 		values.resize(_uniform_names.size())
-		cells["values"] = values
-	for index in _uniform_names.size():
+	var index := int(cells["sync_next"]) if start_us >= 0 else 0
+	var first := index
+	while index < _uniform_names.size():
+		if start_us >= 0 and index > first and _over_budget(start_us):
+			cells["sync_next"] = index
+			return false
 		var name := _uniform_names[index]
 		var value: Variant = source.get_shader_parameter(name)
-		if not all and typeof(value) == typeof(values[index]) and value == values[index]:
+		index += 1
+		if typeof(value) == typeof(values[index - 1]) and value == values[index - 1]:
 			continue
-		values[index] = value
+		values[index - 1] = value
 		for material: ShaderMaterial in cells["materials"]:
 			material.set_shader_parameter(name, value)
+	cells["sync_next"] = 0
 	cells["watched"] = _watched_parameters(source)
+	return true
 
 ## Pool sizes, use and creation counters, for tests and the memory record.
 func get_pool_counters() -> Dictionary:
@@ -1529,6 +1724,7 @@ func get_pool_counters() -> Dictionary:
 	out["installed"] = installed.size()
 	out["preview"] = preview.size()
 	out["patches_with_cells"] = patch_cells.size()
+	out["cell_builds_queued"] = _builds.size() + _builds_urgent.size()
 	out["cell_sets_free"] = _cells_pool.size()
 	out["refused"] = refused.size() + patch_lists_refused.size()
 	out["desired"] = _desired.size()

@@ -425,9 +425,19 @@ impl SimCore {
                     self.graded_scratch.retire(old, &stage);
                 }
                 // Staged for a renderer's view, the tiles stand at the levels it holds them;
-                // without one (a commit without a preview) its edit journal rebakes them.
+                // without one (a commit without a preview) its edit journal rebakes them. A
+                // commit's tile adopted from the preview is the payload the renderer shows.
                 if rule.view.is_some() {
-                    self.attach_graded_install_tiles(Arc::clone(&stage), epoch);
+                    let adopted = match (epoch, held) {
+                        (Some(_), Some(held)) => (stage.tiles().iter())
+                            .map(|tile| {
+                                (held.get(tile.level, tile.tile))
+                                    .is_some_and(|shown| Arc::ptr_eq(shown, &tile.payload))
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    self.attach_graded_install_tiles(Arc::clone(&stage), epoch, adopted);
                 }
                 StageStats { select_ms, ..stats }
             }

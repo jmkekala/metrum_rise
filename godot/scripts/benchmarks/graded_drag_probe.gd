@@ -47,7 +47,7 @@ func run(bench: Node) -> void:
 	_bench = bench
 	_report = {
 		"schema_version": 1, "benchmark": "graded_drag", "success": false, "mode": bench.mode,
-		"share_ms": SHARE_MS, "poses": POSES, "strokes": [], "failures": _failures,
+		"share_ms": SHARE_MS, "poses": POSES, "strokes": [], "loads": [], "failures": _failures,
 		"timing_contract": "frame-start samples of the terrain renderer's counters; install ms are main-thread CPU time of show_preview and of the edit batch's frame (uploads queue on the rendering device); headless renders nothing",
 	}
 	bench._metrics = _report
@@ -85,10 +85,14 @@ func run(bench: Node) -> void:
 			return
 		bench.input_manager.set_simulation_speed(0.0)
 		var loaded := {}
+		var load_us := Time.get_ticks_usec()
 		if not await _settle(loaded):
 			_finish("%s: the loaded world did not settle: %s" % [fixture.case_id, loaded])
 			return
 		_graded = bench.terrain.get("graded_tiles")
+		# The settle includes every resident patch's cell set build (off the frame paths).
+		_report.loads.append({"case": fixture.case_id, "settle_ms": float(Time.get_ticks_usec() - load_us) / 1000.0,
+			"cell_builds": int(_graded.counters["cell_builds"]), "patches_with_cells": _graded.patch_cells.size()})
 		if _graded == null:
 			_finish("the terrain renderer draws no graded tiles")
 			return
@@ -208,7 +212,7 @@ func _begin_frames() -> void:
 	_remember()
 
 func _remember() -> void:
-	for name in ["uploads", "upload_bytes", "preview_frames", "edit_batches"]:
+	for name in ["uploads", "upload_bytes", "preview_frames", "edit_batches", "edit_adopted", "cell_builds"]:
 		_seen[name] = int(_graded.counters[name])
 
 # Awaits the next frame and records the one that just ran (`_kind`): resumed at the frame's start,
@@ -225,6 +229,7 @@ func _next_frame() -> void:
 		"upload_bytes": int(counters["upload_bytes"]) - int(_seen["upload_bytes"]),
 		"pending": int(_bench.road_tool._graded_pending),
 		"cell_patches": _graded.patch_cells.size(),
+		"cell_builds": int(counters["cell_builds"]) - int(_seen["cell_builds"]),
 	}
 	if int(counters["preview_frames"]) != int(_seen["preview_frames"]):
 		row["preview_ms"] = float(counters["preview_install_ms_last"])
@@ -233,13 +238,14 @@ func _next_frame() -> void:
 	if int(counters["edit_batches"]) != int(_seen["edit_batches"]):
 		row["batch_ms"] = float(counters["edit_install_ms_last"])
 		row["batch_tiles"] = int(counters["edit_tiles_last"])
+		row["batch_adopted"] = int(counters["edit_adopted"]) - int(_seen["edit_adopted"])
 		row["batch_parts"] = (counters["edit_frame_parts"] as Dictionary).duplicate()
 	_frames.append(row)
 	_last_us = now
 	_remember()
 
-# The harness's idle wait, then the graded tiles idle (no tile or list in flight, no count queued)
-# for three frames in a row.
+# The harness's idle wait, then the graded tiles idle (no tile or list in flight, no count queued,
+# no cell set to build) for three frames in a row.
 func _settle(record: Dictionary) -> bool:
 	var wait: Dictionary = await _bench._wait_for_idle(_bench.settle_timeout_sec)
 	var graded = _bench.terrain.get("graded_tiles")
@@ -248,7 +254,8 @@ func _settle(record: Dictionary) -> bool:
 	while bool(wait.get("ok", false)) and graded != null and stable < 3 and frames < SETTLE_FRAME_LIMIT:
 		await _bench.get_tree().process_frame
 		frames += 1
-		var idle: bool = graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
+		var idle: bool = (graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
+			and graded._builds.is_empty() and graded._builds_urgent.is_empty())
 		stable = stable + 1 if idle else 0
 	if stable < 3:
 		record["error"] = "the terrain did not settle"
