@@ -345,17 +345,20 @@ fn fill_buckets<T: Send>(
 
 // Runs `visit` on every bucket on the current pool without allocating: rayon's map adapter
 // stages the entries in a `Vec` and `par_bridge` allocates its thread flags on every call, so
-// the buckets (at most one per `u8` key) are borrowed into a stack array instead.
+// the buckets (at most one per `u8` key) are borrowed into a stack array instead. One bucket per
+// task, as `par_bridge` handed them out: the buckets' costs differ widely.
 fn par_for_each_bucket<T: Send>(
     buckets: &mut HashMap<u8, Vec<T>>,
     visit: impl Fn(u8, &mut Vec<T>) + Sync,
 ) {
     let mut entries: [Option<(u8, &mut Vec<T>)>; 256] = std::array::from_fn(|_| None);
+    let count = buckets.len();
     for (entry, (&key, bucket)) in entries.iter_mut().zip(buckets.iter_mut()) {
         *entry = Some((key, bucket));
     }
-    entries
+    entries[..count]
         .par_iter_mut()
+        .with_max_len(1)
         .flatten()
         .for_each(|(key, bucket)| visit(*key, bucket));
 }
