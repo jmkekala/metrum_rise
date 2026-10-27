@@ -93,11 +93,12 @@ impl QueryScratch {
 
 /// The graded surface over a base heightmap, a roadbed and building sites: the read API every
 /// consumer moves to. A point query walks the grounded chain segments and the sites within the
-/// cap of its window (`O(P + V)` for the pieces met and their chain vertices, plus the sites of
-/// the 512 m site chunks), keeps the `K` seams the pruning lists, `O(K log K)`, then costs `O(K)`
-/// per lattice point read (three for a height, twelve for a normal), plus `O(V)` for a point a
-/// cut holds below its base. The `_near` variants share one gather between the points within a
-/// reach of a centre.
+/// cap of its window (`O(P + V / 8)` for the pieces met and their runs of chain segments, plus
+/// the sites of the 64 m site cells and the corners of the runs and sites that may bind), keeps
+/// the `K` seams the pruning lists, `O(K log K)`, then costs `O(K)` per lattice point read (three
+/// for a height, twelve for a normal), plus `O(V)` once per window when a point a cut holds below
+/// its base needs the other seams. The `_near` variants share one gather between the points
+/// within a reach of a centre.
 #[derive(Clone, Copy)]
 pub struct GradedSurface<'a> {
     /// The base heightmap (its source samples).

@@ -31,7 +31,7 @@ const SURFACE_PAD_M: f64 = 1.0e-6;
 const SPAN_MARGIN_M: f64 = 0.01;
 
 /// What the graded terrain reads of building sites: the sites whose bounds meet a rectangle,
-/// through a spatial index (the allocator's 512 m site chunks), never a scan of every site.
+/// through a spatial index (the allocator's 64 m site cells), never a scan of every site.
 pub trait SiteSource: Sync {
     /// Whether rectangle queries can be answered without scanning every site: false while
     /// the source's index is being rebuilt. Fixed while the source is borrowed.
