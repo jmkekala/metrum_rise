@@ -418,8 +418,8 @@ func _production_terrain(scene: Node3D, graded: bool) -> Node3D:
 	scene.add_child(terrain)
 	return terrain
 
-# Waits until the terrain has no pending patch work and, for B, no tile list or bake in flight,
-# for three frames in a row at the current camera.
+# Waits until the terrain has no pending patch work and, for B, no tile list or bake in flight and
+# no count queued, for three frames in a row at the current camera.
 func _settle_terrain(terrain, label: String) -> void:
 	var stable := 0
 	var deadline := Time.get_ticks_msec() + 60000
@@ -428,7 +428,7 @@ func _settle_terrain(terrain, label: String) -> void:
 		var graded = terrain.graded_tiles
 		var idle: bool = not terrain.has_pending_render_work(false)
 		if graded != null:
-			idle = idle and graded.requested.is_empty() and graded.patch_lists_requested.is_empty()
+			idle = idle and graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
 		stable = stable + 1 if idle else 0
 	_expect(stable >= 3, "%s: the terrain must settle" % label)
 

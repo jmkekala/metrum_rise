@@ -324,6 +324,7 @@ func _settle_production(terrain, simulation: SimulationNode) -> bool:
 			and not simulation.is_terrain_dirty()
 			and graded.requested.is_empty()
 			and graded.patch_lists_requested.is_empty()
+			and graded._counts.is_empty()
 			and graded._edit_batch.is_empty()
 		)
 		stable = stable + 1 if idle else 0
@@ -377,7 +378,7 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 	for frame in TIMEOUT_FRAMES:
 		_frame(graded, camera, resident)
 		await process_frame
-		var idle: bool = graded.requested.is_empty() and graded.patch_lists_requested.is_empty()
+		var idle: bool = graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
 		if stable >= 3:
 			return true

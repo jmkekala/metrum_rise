@@ -108,6 +108,12 @@ var _uniform_names: PackedStringArray = PackedStringArray()
 var _desired: Dictionary = {}
 var _tile_lists: Dictionary = {}
 var _counted: Dictionary = {}
+# The counts _recount queued that are not applied yet, in order, as (x, z, +1 or -1): the poll
+# applies them one tile at a time under the install budget, before the next result (a list
+# counted at once took up to 0.35 ms past the budget on the populated save, TERRAIN-07-D round
+# 10). _counted already holds what they count to.
+var _counts: Array[Vector3i] = []
+var _counts_next := 0
 # The camera (XZ, with its height above the ground as y) and the distance it has travelled since
 # setup. A tile's distance changes by at most the camera's travel, so a tile levelled at travel t
 # with its distance m from the nearest distance where its level can change keeps its level until
@@ -323,6 +329,8 @@ func clear() -> void:
 	_desired.clear()
 	_tile_lists.clear()
 	_counted.clear()
+	_counts.clear()
+	_counts_next = 0
 	_camera_set = false
 	_travel = 0.0
 	_buckets.clear()
@@ -437,14 +445,24 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
 
 # Takes finished work (edits, patch lists, failures, tile bakes, in that order per poll) until the
-# frame's install budget is spent, checked before each result: a frame ends within the budget
-# plus one result's work (round 7 checked it after each poll, and a poll hands over every
-# finished list at once: 17 lists took 2.1 ms in one frame on the populated save, round 10).
-# The frame's first result is taken unconditionally, so the work progresses whatever the frame's
-# other work cost. O(results taken + one poll's results).
+# frame's install budget is spent, checked before each result and before each tile a list or a
+# patch change counts: a frame ends within the budget plus one result's or one count's work
+# (round 7 checked it after each poll, and a poll hands over every finished list at once: 17
+# lists took 2.1 ms in one frame on the populated save; round 10 checked it before each result,
+# and one list counted up to 0.35 ms past it). Each result is taken after the counts the one
+# before it queued, so the order of the changes is the arrival order whatever the frame breaks.
+# The frame's first count or result is taken unconditionally, so the work progresses whatever
+# the frame's other work cost. O(results and counts taken + one poll's results).
 func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 	var progressed := false
-	while not _deferred.is_empty():
+	while true:
+		while not _counts.is_empty():
+			if progressed and _over_budget(start_us):
+				return
+			_apply_count()
+			progressed = true
+		if _deferred.is_empty():
+			break
 		if progressed and _over_budget(start_us):
 			return
 		var item: Array = _deferred.pop_front()
@@ -464,6 +482,9 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 					continue
 				_take_result(kind, entry, resident_patches)
 				progressed = true
+				# The budget spent, the rest of the counts and every later result wait.
+				while not _counts.is_empty() and not _over_budget(start_us):
+					_apply_count()
 		if result.get("tiles", []).size() < POLL_BATCH:
 			return
 
@@ -728,8 +749,7 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 
 # The tiles patch `key` adds to the desired set: its list while it is resident (a patch whose
 # list is being refreshed keeps its last one until the new one arrives, so an edit's patch shows
-# its tiles meanwhile). A tile enters the desired set with the first list naming it and leaves
-# with the last. O(the patch's old and new tiles).
+# its tiles meanwhile), queued as counts (_apply_count). O(the patch's old and new tiles).
 func _recount(key: Vector2i, resident_patches: Dictionary) -> void:
 	var tiles: Array = []
 	if resident_patches.has(key):
@@ -739,21 +759,31 @@ func _recount(key: Vector2i, resident_patches: Dictionary) -> void:
 		return
 	# The new list counts first, so a tile on both lists never leaves.
 	for tile: Vector2i in tiles:
-		var count := int(_tile_lists.get(tile, 0)) + 1
-		_tile_lists[tile] = count
-		if count == 1:
-			_desire(tile)
+		_counts.append(Vector3i(tile.x, tile.y, 1))
 	for tile: Vector2i in old:
-		var count := int(_tile_lists[tile]) - 1
-		if count > 0:
-			_tile_lists[tile] = count
-			continue
-		_tile_lists.erase(tile)
-		_undesire(tile)
+		_counts.append(Vector3i(tile.x, tile.y, -1))
 	if tiles.is_empty():
 		_counted.erase(key)
 	else:
 		_counted[key] = tiles
+
+# Applies the next queued count: a tile enters the desired set with the first list naming it and
+# leaves with the last.
+func _apply_count() -> void:
+	var counted: Vector3i = _counts[_counts_next]
+	_counts_next += 1
+	if _counts_next == _counts.size():
+		_counts.clear()
+		_counts_next = 0
+	var tile := Vector2i(counted.x, counted.y)
+	var count := int(_tile_lists.get(tile, 0)) + counted.z
+	if count > 0:
+		_tile_lists[tile] = count
+		if count == 1 and counted.z > 0:
+			_desire(tile)
+		return
+	_tile_lists.erase(tile)
+	_undesire(tile)
 
 # A tile some resident patch lists: its level at the camera's distance, with hysteresis around
 # the level it is installed at.
