@@ -47,13 +47,13 @@ func _run() -> void:
 
 	var resident := _resident_patches(host, layout, world_size, 1)
 	_mark_changed(resident)
-	var camera := Vector3(0.0, 120.0, 10.0)
+	var camera := Vector3(0.0, 40.0, 10.0)
 	_expect(await _settle(graded, camera, resident), "the junction's tiles must install")
 	var counters: Dictionary = graded.get_pool_counters()
 	_expect(int(counters["installed"]) > 0, "graded tiles must be installed: %s" % counters)
 	_expect(int(counters["bake_failures"]) == 0 and int(counters["refused"]) == 0, "no bake may fail: %s" % counters)
 	_expect(int(counters["pool_exhausted"]) == 0, "the pools must not run out: %s" % counters)
-	# The tiles under the junction are graded and, 120 m above it, at GL0.
+	# The tiles under the junction are graded and, 40 m above it, at GL0 (to 64 m).
 	var junction := Vector2i(0, 0)
 	_expect(graded.installed.has(junction), "the junction's tile must be graded")
 	if graded.installed.has(junction):
@@ -139,8 +139,8 @@ func _run() -> void:
 func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
 	var levels_seen := {}
 	var exact := true
-	for target_height: float in [700.0, 120.0]:
-		var camera := Vector3(0.0, 120.0 if target_height > 120.0 else 700.0, 10.0)
+	for target_height: float in [700.0, 40.0]:
+		var camera := Vector3(0.0, 40.0 if target_height > 40.0 else 700.0, 10.0)
 		while camera.y != target_height:
 			camera.y = move_toward(camera.y, target_height, 40.0)
 			_frame(graded, camera, resident)

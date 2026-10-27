@@ -6202,6 +6202,21 @@ headless backend, P-cores.
   ([T5](#terrain-07-open-questions)); road patches at the base lattice. Expected from the probes:
   the town 0.2-0.5 ms below the exact cut, `saved` still about 0.19 ms above it (open: the mask's
   0.19 ms and the cells' own work there; levers below).
+- **GPU idle-frame matrix on the fix (fresh, run by the coordinator on the user's display, 02:21-02:39;
+  valid; `saved` still a miss).** Tree `6826a11c` (clean; code `4a06db22`), release library
+  `7d16361d…`, the same saves, two rounds. Every session logs 0 overflow errors. GPU p50 (exact /
+  graded, each round): `overview` 1.25 1.22 / 1.23 1.23, `close` 1.09 1.08 / 1.08 1.07, `ground` 0.99
+  1.00 / 0.97 1.02, `saved` 2.14 2.14 / 2.34 2.34, `city` 4.82 4.83 / 4.37 4.38, `city_low` 3.38
+  3.35 / 3.06 2.98; graded minus exact of the medians -0.00, -0.01, +0.00, **+0.20**, -0.45, -0.34.
+  The acceptance holds on five poses and misses on `saved` by 0.20 ms, as the probes put it
+  (+0.19). Primitives per frame: `saved` 1.76 M / 1.81 M (round 8's first run: 3.22 M), the saved
+  `orbit_high` 3.02 M / 2.78 M (9.04 M): the reflection's road-patch proxies are gone. Camera paths
+  (medians over the scenes): `orbit_high` +0.22, `zoom_in` +0.19, `pan_low` -0.18, `orbit_low`
+  -0.05, `pan_high` -0.01 ms. Loads: Kuopio exact 2,540 and 2,573 ms, graded 3,068 and 3,144; saved
+  3,533 and 3,531 against 4,063 and 4,057; town 5,177 and 4,750 against 3,696 and 3,643. `saved`'s
+  0.20 ms is about the mask's share there (0.19 ms at the old levels); levers in the handoff: the
+  mask's colour-pass class search skipped where the four samples share a class (exact), and a
+  graded variant without the mask for tiles whose lattice holds no covered sample.
 - **T26 (a) (built; target met on the town's high paths).** [Re-levelling by camera
   travel](#godot-tile-renderer) and [cells per tile](#godot-tile-renderer). Probes as round 7's
   (the town's `pan_high` and `orbit_high`, gamescope paced at 60 Hz, the perf channel, matrix
@@ -6242,6 +6257,29 @@ headless backend, P-cores.
   step is `kuopio_t2_edge_steps`' sampling on `bridge_t`'s mouth: the lattice surface on the
   wall seam, the band's faces and the abutment face's bottom edge, at the level drawn.
 - **`mouth_side`'s 6 sky pixels (open).** Unchanged by the band, a2 and T34; not attributed.
+- **Renders (fresh, `screenshots-C.sh` compare mode, the render worktree with this round's
+  changes; crops before and after in `$ARTIFACTS`).** `kuopio_t2_wall`: B `close_corner` 0
+  background pixels where round 7 had 1,762 (the exact cut 0); plan pinholes B 1 (at the T2
+  conflict), exact 1; 2 failures, those two pinholes. `t` flat, 2.5% and 8%: 0 failures, 0
+  pinholes in every half; against round 7's renders the close views change 232-536 pixels each
+  (the edges, among them the fill side's, where the cut edge now sags onto the skirt), the
+  distance views 81-1,052 (the levels' new distances at 400 m), no crack and no background. The
+  close views look at the edges from 8-30 m, where a `GL0` fill's sag (at most 12.5 cm) covers a
+  few pixels; no view of the reference test frames a fill's skirt from beside the road.
+
+**Tests (fresh, round 8).** Debug `cargo test --lib` on the code tip `4a06db22`: 1,971 passed, 0 failed, 176 ignored (the new diagnostic among the ignored).
+Targeted debug tests (`simulation::terrain::graded`, `simulation::network::roadbed`, the round's
+Rust): 96 passed, 0 failed, 4 ignored. `graded_tile_renderer_test.gd` (headless, the round's T26
+scripts, matrix library): 0 failures; its first run on T26 failed with two levels' slots not freed
+(the leak above); with the levels at 64 and 128 m its camera moves to 40 m above the junction (at
+120 m the junction's tile is `GL1` now). Clippy `--all-targets`: the 59-warning baseline set
+exactly. Not run this round: `./run.sh --test` (next round, after the matrix re-run).
+
+**Lines** (production, tests excluded, as round 7 counted). `simulation/terrain/graded/` 5,253
+against 5,258 at round 7's tip (-5: the fill arm and its cap). `roadbed/` unchanged (8,990; 8,909 on
+`road` `d80bf36f`). Godot: `terrain_graded_tiles.gd` 1,284 (+237: T26's records, per-tile updates,
+travel buckets, the border rewrite), `terrain.gd` 4,611 (+3), `terrain_surface.gdshaderinc` 1,013
+(-17: a2), `road_sidewalk_face.gdshader` 104 (+7: the skirt bands).
 
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
