@@ -6522,6 +6522,31 @@ gamescope's headless backend, P-cores, `.run.lock` only.
   within 1.0 ms would need each result's cost known before it is taken. Recorded open, named for
   `TERRAIN-07-G`'s acceptance.
 
+**Tests (fresh, round 11).** On the round's code `34108492`: clippy `--all-targets` the 59-warning
+baseline set exactly; the debug lib suite 1,973 passed, 0 failed, 176 ignored (round 10: 1,974;
+`plain_tiles_are_never_masked` removed with (b)); the graded tests (`simulation::terrain::graded`,
+on the revert) 32 passed, 0 failed, 4 ignored; `graded_tile_renderer_test.gd` (headless, the
+worktree's debug library) 0 failures. `./run.sh --test` on `1d022537` (the round's code and record;
+DISPLAY and WAYLAND_DISPLAY unset): exit 0, 0 SCRIPT ERROR; the debug lib suite 1,973 / 0 / 176,
+integration 4 passed; every Godot suite passes, among them `graded_tile_renderer_test.gd`,
+`graded_cells_shader_test.gd`, `network_tool_chunk_renderer_test.gd`,
+`road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`
+and both plot lighting suites; skipped as before: the headless shader global probe and the
+Forward+ vegetation tests. The gate's GPU idle-frame matrix on its tip: below.
+
+**Lines** (production, tests excluded, counted to each file's inline test module).
+`simulation/terrain/graded/` 5,360 (round 10 5,373: `TilePayload::plain` out), against 4,774 on
+`road` `0e17e997`: gate D's +586 are `residency.rs` 272 (new: residency requests, bakes on the
+payload workers, patch tile lists), `tile.rs` +171 (slot and wall packing, the bridge mouth rows
+in the mask), `query.rs` +52 (the surface queries Godot's height and ray answer from), `select.rs`
++33 (the edit journal's selection), `walls.rs` +26, `grade.rs` +18 (T34's cut arm), `graded.rs`
+and `seams.rs` +7 each. `roadbed/` 8,990 against 8,909 on `road` (+81, all round 7's abutment band: the
+roadbed publishes the abutment face's bottom edge; no change since).
+`nodes/simulation_node/graded_tiles_api.rs` 600 (new). Godot: `terrain_graded_tiles.gd` 1,372
+(round 10 1,374: the plain routing out, the count queue in), `terrain_cells.gdshaderinc` 405 and
+`terrain_surface.gdshaderinc` 1,013 (the plain branches out), `terrain.gd` 4,611 (4,488 on
+`road`), `terrain_graded_walls.gdshader` 48, `terrain_graded.gdshader` 7.
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
