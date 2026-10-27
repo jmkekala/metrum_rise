@@ -388,20 +388,18 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
-`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 7 implements the user's 2026-10-27
-authorized T37 (a) trial: an exact, deterministic, unsaved sparse 64 m query-input index maintained
-with road, site and base publications. It misses the fresh 100k pose control (1.096 vs 0.838 ms)
-and retains 1.10 GB before tree overhead; recommendation: revert it or share immutable inputs before
-another trial. Round 6 validates exact/graded GPU grass before
-and after a Kuopio road edit and fixes disposal of the renderer's detached prewarmed cells; the
-verified render has no shader, script, settle or resource-leak diagnostic. All landing products
-remain equal. T37's fresh 100k profile keeps 1,101 products equal but attributes 74.09% of branch
-pose samples to distributed graded-surface preparation, with no single local exact lever. The
-fresh exclusive `PERF-07` control/branch pair fails all three limits on both sides: mean snapshot
-0.956 / 3.312 ms and mean frame 6.179 / 8.608 ms; the branch is materially worse. The target is not
-relaxed. Recommended decision: authorize an exact persistent local query/seam/coverage index,
-updated atomically with edits, then remeasure; otherwise leave the gate blocked. `PERF-09` still
-owns the control regression. T40 remains pending the user's review. Evidence and acceptance:
+`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 8 implements the user's 2026-10-27 T37
+decision: off-lane vehicles keep their exact rigid contact solve through 250 m from the camera and
+take one rendered centre height/normal query beyond it; snapshots and interpolation share the
+render-only rule. Fresh 100k culled/full side means are 0.834/5.600 ms control, 1.254/6.118 ms
+LOD-only and 0.860/5.744 ms LOD+round-7-index, with all 1,101 products equal. Fresh `PERF-07`
+snapshot/frame means are 0.921/6.451, 1.323/6.782 and 0.987/6.611 ms; every variant fails all
+three existing guards. The index still retains 1.10 GB before tree overhead, so T44 recommends
+reverting it. A far centre plane can put a contact 0.345 m below the exact surface; T45 recommends
+allowing contact evaluations from the same prepared query to restore clearance, but remains open
+because this changes the user's one-evaluation rule. The exact 250 m boundary keeps 0.020 m.
+`PERF-09` owns the control regression; no target is relaxed. T40 remains pending the user's review.
+Evidence and acceptance:
 [`terrain.md`](terrain.md#terrain-07-f-record).
 
 | ID         | Kind        | Status        | Priority | Owner doc                                        | Problem                                                                                                                                                                                   | Exit criteria                                                                                                              |

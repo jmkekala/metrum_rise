@@ -94,6 +94,7 @@ func _run() -> void:
 					# A frame without cars forgets every drawn pose.
 					simulation.smooth_car_render_data({}, 0.0)
 					var target := PackedFloat32Array()
+					var previous_visual_z := NAN
 					for frame in range(121):
 						if frame % 5 == 0:
 							var distance := -5.0 + float(frame) / 10.0
@@ -101,8 +102,7 @@ func _run() -> void:
 								distance = 2.0 - distance
 							var heading := Vector3(0.0, 0.0, -side * direction)
 							var pose := Transform3D(Basis(Vector3.UP.cross(heading), Vector3.UP, heading), Vector3(0.0, -100.0, side * distance))
-							# Exactly on the full-detail boundary: the LOD rule must keep the rigid
-							# support solve and its 0.020 m contact clearance bit-for-bit.
+							# The direct target solve is exactly on the full-detail boundary.
 							simulation.set_camera_aabb(
 								-1000.0, 1000.0, -1000.0, 1000.0,
 								Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, pose.origin.z)
@@ -117,9 +117,17 @@ func _run() -> void:
 							if target.is_empty():
 								quit(1)
 								return
+						# Keep the lagging interpolated pose, rather than only its snapshot target,
+						# exactly on the boundary tested by the per-frame grounding path.
+						var predicted_visual_z: float = target[11] if is_nan(previous_visual_z) else lerpf(previous_visual_z, target[11], 0.4)
+						simulation.set_camera_aabb(
+							-1000.0, 1000.0, -1000.0, 1000.0,
+							Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, predicted_visual_z)
+						)
 						source.cars = {kind * 10: {"transforms": target, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([1])}}
 						renderer.update_swarm(1.0 / 60.0)
 						var visual := _unpack(source.drawn[kind * 10])
+						previous_visual_z = visual.origin.z
 						if DisplayServer.get_name() != "headless":
 							var uploaded: Transform3D = renderer.car_mmis[kind * 10].multimesh.get_instance_transform(0)
 							_expect(uploaded.is_equal_approx(visual), "GPU buffer layout must preserve corrected pose")
@@ -147,11 +155,11 @@ func _run() -> void:
 		simulation.smooth_car_render_data({}, 0.0)
 		var start := _pack(Transform3D(Basis.IDENTITY, Vector3(0, -50, 0)))
 		simulation.smooth_car_render_data({0: {"transforms": start, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([1 if previous else 0])}}, 0.0)
-	var target := _pack(Transform3D(Basis.IDENTITY, Vector3(0, 2, 2)))
-	simulation.set_camera_aabb(
-		-1000.0, 1000.0, -1000.0, 1000.0,
-		Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, 2.0)
-	)
+		var target := _pack(Transform3D(Basis.IDENTITY, Vector3(0, 2, 2)))
+		simulation.set_camera_aabb(
+			-1000.0, 1000.0, -1000.0, 1000.0,
+			Vector3(SimulationNode.get_vehicle_ground_full_detail_m(), 0.0, 2.0)
+		)
 		var result: Dictionary = simulation.smooth_car_render_data({0: {"transforms": target, "ids": PackedInt64Array([1]), "ground_flags": PackedByteArray([0 if previous else 1])}}, 0.4 / 24.0)
 		var drawn: PackedFloat32Array = result[0]
 		_expect(drawn[3] == target[3] and drawn[11] == target[11], "height owner handoff must use target pose")
