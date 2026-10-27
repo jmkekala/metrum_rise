@@ -264,6 +264,14 @@ impl SimCore {
             (None, self.publish_road_tool_view())
         };
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+        let collect_refined_start = Instant::now();
+        record_crash_phase_for_core(self, "add road terrain patch state");
+        let invalidated_refined_cache_entries =
+            self.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        let collect_refined_ms = collect_refined_start.elapsed().as_secs_f64() * 1000.0;
+        // The background jobs start last (`ROAD-68-G` part 7): the lot plan, then the routing
+        // rebuild. Neither reads the terrain patch state, and started before it they took its
+        // workers' cores.
         if let (Some((regions, dirty)), Some(graph)) = (deferred_lots, &routing_graph) {
             record_crash_phase_for_core(self, "add road cell lots deferred");
             let lots_start = Instant::now();
