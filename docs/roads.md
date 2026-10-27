@@ -7569,8 +7569,9 @@ These apply in road-and-terrain mode on the reference machine and settings, to `
   of sampling. With the simulation active on the populated fixture, at least 99% do, and the report
   attributes every miss. A stale or superseded result counts as a miss. The pose's terrain is
   exempt (the user, 2026-10-27): it may lag the pose's road by the frames T27 (d)'s catch-up
-  takes, each frame's terrain work within its 3.0 ms stage, and is a miss only if it has not
-  caught up when the drag stops.
+  takes, each frame's terrain work within its 3.0 ms stage, and must converge to the exact tiles
+  (bitwise the commit's) once it has caught up; the Stationary target's exact frame likewise
+  means the road's.
 - **Stationary.** Input-to-frame p99 under 16.7 ms, and stop to exact frame under 16.7 ms.
 - **Commit.** Click → committed generation acknowledged in under 16.7 ms, with no frame that shows
   neither the preview nor the committed road.
