@@ -383,8 +383,8 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
             .car_ground_flags
             .iter()
             .flat_map(|(key, flags)| {
-                let transforms = culled.car_transforms[key].chunks_exact(12);
-                transforms.zip(flags).filter(|(_, flag)| **flag != 0)
+                let transforms = culled.car_transforms[key].as_chunks::<12>().0;
+                transforms.iter().zip(flags).filter(|(_, flag)| **flag != 0)
             })
             .map(|(t, _)| [t[3], t[11]].map(|v| (v / 16.0).floor() as i32))
             .collect();
