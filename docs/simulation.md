@@ -234,9 +234,10 @@ A declaration names:
   - `Events` — consumes this slot's [timed events](#deadlines-and-timed-events).
   - `Queue { quota }` — serves up to `quota` [requests](#request-queues) per slot.
   - `Rolling { period, chunks }` — advances one chunk of a [rolling snapshot](#snapshots).
-  - `PureJob { latency }` — see [pure jobs](#pure-jobs). The one pure job so far, the routing
-    rebuild after a road edit (`ROAD-68-G`), is not a declared kind: an edit starts it between
-    frames and the frame adopts it, as [pure jobs](#pure-jobs) records.
+  - `PureJob { latency }` — see [pure jobs](#pure-jobs). The two pure jobs so far, the routing
+    rebuild after a road edit (`ROAD-68-G`) and a commit's cell lots (`ROAD-68-G` part 7), are
+    not a declared kind: an edit starts them between frames and the frame adopts them, as
+    [pure jobs](#pure-jobs) records.
 - **Reads and writes**: the state it touches, so ordering conflicts are visible and independent
   systems can later run together.
 - **Cost bound** per slot, in entities or cells.
@@ -855,6 +856,38 @@ field diffusion and other read-only precomputation.
 - **Cost.** An edit holds the clock for one frame or the build, whichever is longer: 17 ms of
   wall time up to about 10k residents, 311 ms at 100k ([`NET-09`](roadmap.md)); game time is
   delayed, not lost. Edits repeated inside the hold extend it.
+
+**Implemented in `ROAD-68-G` part 7 (2026-10-27): a commit's cell lots**
+([`roads.md`](roads.md) open question 33 (c), decided by the user; record under
+[`ROAD-68-G`](roads.md#commit-stages-part-7-road-68-g-2026-10-27)).
+
+- **Job.** A road commit whose edit queued lot regions takes them from the `cell lots` queue and
+  publishes its road without planning them. After its last stage it starts a pure job on the
+  background pool that plans the regions in order, as the commit planned them, on the road tool
+  view's copy of the cell store (`O(1)` to share, journal-synced, `roads.md` question 32), the
+  parcel store as the commit left it (shared copy-on-write, `SharedParcelStore`), the view's
+  graph and roadbed, the field index and a snapshot of the explicit cell sites
+  (`ExplicitSiteSnapshot`, `O(explicit sites)`, answering the allocator's own candidate query).
+  The commit's attachment repair and entrance update, which followed the lots, wait with it.
+  Taking the inputs is `O(regions + explicit sites)`.
+- **Adoption.** The next frame adopts it before anything else, waiting for a late job before the
+  frame enters the pool (and on the sim thread before the frame takes the core lock): that frame
+  is the routing hold's ([D7](#pure-jobs) above), which advances nothing. The adoption copies the
+  cell entries the plan wrote into the live store (`CellStore::adopt_plan`, journaled for the
+  view), makes the plan's parcel calls, reattaches occupants, repairs attachments, derives the
+  changed entrances and publishes the road tool's view of the lots.
+- **Every editor adopts first.** Commits, undo, bulldoze, node, lane, class, crosswalk and
+  border edits, terrain strokes, building and field placement, cell gestures and chunk
+  preparation, lot preparation and saves adopt a pending plan before they read or write the
+  lots, parcels or attachments; loads and world resets drop it. Test builds assert that nothing
+  wrote the parcel or cell store while the plan was pending and that every edit adopted before
+  it recorded its undo. The cell overlay's stale chunks wait for the adoption, which generates
+  them first.
+- **Exact.** The adopted zoning, attachments and entrances equal planning in the commit, bitwise:
+  `deferred_cell_lots_equal_lots_planned_in_the_commit` compares a city that defers with one
+  that plans in the commit over a T split adopted by the frame, an undo while the job runs, and
+  commits adopted by the next commit and by a save. Renderers and the cell overlay see the lots
+  one frame later; nothing simulated reads them before the adoption.
 
 **Implemented in `SIM-02-I` (part 2): the funding census spread over slots** (decided
 2026-10-17; see [Decided while unattended](#decided-while-unattended)). The census only reads

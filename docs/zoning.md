@@ -1191,9 +1191,13 @@ A road commit queues, and invalidates the generated cells of, the corridors of i
 roads and of the roads whose curb frames the refresh changed or which have none (`ROAD-68-G`).
 A road the commit only touched (an arm at a re-solved junction whose geometry, clips and frames
 stayed; the adjacency ring) queues nothing of its own: its cells change only near the changed
-roads, whose corridors cover them, and the commit derives every queued region before it
-returns, so the queue is left as the whole ring would leave it. The adopted road plan names the
-changed roads. Every other road edit (undo, rollback, bulldoze, node moves, class, no-build and
+roads, whose corridors cover them, and the commit takes every queued region at once, so the
+queue is left as the whole ring would leave it. The adopted road plan names the changed roads.
+Since `ROAD-68-G` part 7 the commit plans those regions in a pure job on its road tool view's
+cell copy and the parcel store as it left them, and the next frame (or the next edit, save or
+lot preparation, whichever comes first) adopts the plan with the attachment repair and entrance
+update that follow it; the result equals planning in the commit bitwise
+([`simulation.md`](simulation.md#pure-jobs), [`roads.md`](roads.md#commit-stages-part-7-road-68-g-2026-10-27)). Every other road edit (undo, rollback, bulldoze, node moves, class, no-build and
 border edits) queues the corridors of its roads and of the whole ring at their ends, as before
 part 3: undo and border edits leave their regions to the `cell lots` queue, where fewer regions
 would be served at other slots. A digest test runs each edit kind with the narrow and the

@@ -92,7 +92,15 @@ reattachment search, street lights and signs and retained frontage lines on the 
 bit: 20.5 / 17.9 / 16.0 ms per sample at 100k before the rebase (control 23.4 / 19.2 / 13.7).
 It still misses
 a frame (open question 21: snapshot publish and copy, which `ROAD-68-E`'s road-tool context
-owns, then the lots, publication and agent passes), so its acceptance stays open. The same session attributed the economy contract's baseline-30k rise to
+owns, then the lots, publication and agent passes), so its acceptance stays open. Part 7
+(2026-10-27, branch `road68-G7` on `terrain07-E`, WIP) builds question 33 (c): the commit's lots
+are planned in a pure job and adopted by the next frame, bitwise as planning in the commit, and
+the commit's background jobs start last, its changed chunks splice on the pool and its graph
+copy is cloned on the pool. In its landing session the first commits fall from 25.8-29.7 ms to
+16.0-17.3 ms at 10k-100k and every other sample takes 3.0-11.8 ms; the first 100k sample (17.3,
+16.9 ms) still misses, with the legacy refined patches' road ownership (3.6-4.2 ms, removed by
+`TERRAIN-07-D`/`-G`) its largest stage. The populated-map locality check of the commit is not
+built yet. The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per
