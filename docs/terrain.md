@@ -7166,6 +7166,18 @@ ms and undo 1.61 / 1.54 ms. The fast click over 3.0 ms on each tier's first samp
 10k 3.97 / 3.69 ms (10 of 11 tiles baked), 30k 3.02 / 3.06 (7 of 8), 100k 4.25 / 4.29 (12 of
 13); median 1.70 / 1.77 ms.
 
+**Gate checks (fresh, on `348c7bde`).** Clippy `--all-targets`: exit 0, the 59-warning
+baseline set (compared by file and message). Debug `cargo test --lib`, four workers: 1,977
+passed, 0 failed, 179 ignored. `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset): exit 0
+(the library as above, `tests/growth_scenario.rs` 4 passed, 23 Godot suites passed with no
+script error, `road_junction_preview_test.gd` among them on the exact cut's preview); it skipped
+the rendered vegetation tests (Forward+ display) and the shader global probe (headless).
+**Lines** (production, tests excluded: each file to its inline test module, `*tests*.rs`
+files left out). `simulation/terrain/graded/` 5,944 against 5,309 on `road` `d456913e` (+635:
+gate E's rounds 1-4, of which this round's `TileStage::overlay` +20; the frame state is
+`nodes/sim/core/graded_stage.rs`, outside the count), `roadbed/` 9,617 against 9,580 (+37,
+round 1's chain geometry).
+
 **Open (not relaxed).** The click right after a fast drag (T27 round 4, for the user): 6 of 39
 Kuopio strokes (worst 4.06 ms) and the populated tiers' first samples (worst 4.29 ms at 100k)
 exceed 3.0 ms; the exact lever is the bake's serial part. The Godot half, now that gate D is on
