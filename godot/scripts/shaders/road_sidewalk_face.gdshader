@@ -18,7 +18,11 @@ uniform vec3 granite_albedo = vec3(0.40, 0.395, 0.38);
 // UV.y is 1 on a skirt's bottom vertex, 0.5 m below the outer chain, and 0 on the chain (in
 // between at chunk-line clip points). Coarser terrain far away sags further below a road's edge,
 // so the bottom deepens with the camera distance, measured as terrain.gd measures patch LOD:
-// 0.5 m to 2 km, 2.5 m to 5 km, 5 m to 12 km and 10 m beyond (T5). A clip point moves in
+// 0.5 m to 64 m, 1 m to 2 km, 7.5 m to 5 km, 15 m to 12 km and 30 m beyond (TERRAIN-07-D round
+// 8, T34 (b): under the cut arm a fill's edge sags by up to k s / sqrt(2) for a lattice spacing s,
+// across a cell's diagonal: GL0's and GL1's 0.5 and 1 m within 160 m, GL2's 2 m from 128 m, the GL3
+// base lattice's 20, 40 and 80 m past 2 km; before it 0.5, 2.5, 5 and 10 m, a cut's k s / 4). A
+// clip point moves in
 // proportion, so within one distance band a deepened strip stays planar; a point two chunks
 // share gets the same drop in both.
 uniform bool skirt = false;
@@ -33,16 +37,19 @@ uniform float specular = 0.5;
 #include "res://scripts/shaders/weather_rain.gdshaderinc"
 
 float skirt_depth_m(float distance_m) {
-	if (distance_m <= 2000.0) {
+	if (distance_m <= 64.0) {
 		return SKIRT_NEAR_DEPTH_M;
 	}
+	if (distance_m <= 2000.0) {
+		return 1.0;
+	}
 	if (distance_m <= 5000.0) {
-		return 2.5;
+		return 7.5;
 	}
 	if (distance_m <= 12000.0) {
-		return 5.0;
+		return 15.0;
 	}
-	return 10.0;
+	return 30.0;
 }
 
 void vertex() {

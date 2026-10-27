@@ -15,8 +15,6 @@ use super::seams::Seam;
 pub const TIE_IN_SLOPE: f64 = 0.5;
 /// The cap `C`: a seam farther than this from a point never affects it, metres.
 pub const CAP_M: f64 = 64.0;
-/// Largest depth `σ_max` the inside rule's fill arm rises over, one `GL0` texel diagonal, metres.
-pub const FILL_ARM_MAX_M: f64 = 0.5 * std::f64::consts::SQRT_2;
 /// Depth `D_in` within which the inside rule follows the nearest road seam's tie-in arm, the
 /// `GL0` footprint distance band, metres. Every level's band is at least this wide, so the
 /// nearest road seam within it is found exactly at every level.
@@ -75,26 +73,23 @@ pub fn overlap(base: f64, lower: f64, upper: f64) -> f64 {
     }
 }
 
-/// The inside rule under a road, `depth` inside the nearest road seam at height `height`: on a
-/// cut (`base >= height`) the seam's tie-in arm continued down, on a fill continued up for at
-/// most [`FILL_ARM_MAX_M`]. Triangles across a straight edge are then linear through the seam.
-pub(super) fn inside(base: f64, height: f64, depth: f64) -> f64 {
-    if base >= height {
-        height - TIE_IN_SLOPE * depth
-    } else {
-        height + TIE_IN_SLOPE * depth.min(FILL_ARM_MAX_M)
-    }
+/// The inside rule under a road, `depth` inside the nearest road seam at height `height`: the
+/// seam's tie-in arm continued down, on cuts and fills alike (`TERRAIN-07-D` round 8, T34 (b)).
+/// Outside, the seam's own cone bounds the ground by `h + k d`, so every lattice value is at
+/// most `h + k s` for its signed distance `s` from a straight seam and any triangle's surface on
+/// the seam is at most `h`: the cut edge never stands above a road edge but in a conflict, whose
+/// walls close it, and the skirt covers its sag (at most `k s / 2` for a lattice spacing `s`).
+/// The fill arm that rose under fills put the cut edge above the edge where the ground beyond
+/// rose too.
+pub(super) fn inside(height: f64, depth: f64) -> f64 {
+    height - TIE_IN_SLOPE * depth
 }
 
 /// The inside rule deeper than [`INSIDE_REACH_M`] from every road seam, from the road surface
-/// `road` there: the arm's value at that depth on a cut, the capped fill arm on a fill. Only
-/// coarse levels' triangles reach such samples, and the mask discards them.
-pub(super) fn inside_deep(base: f64, road: f64) -> f64 {
-    if base >= road {
-        road - TIE_IN_SLOPE * INSIDE_REACH_M
-    } else {
-        road + TIE_IN_SLOPE * FILL_ARM_MAX_M
-    }
+/// `road` there: the arm's value at that depth. Only coarse levels' triangles reach such
+/// samples, and the mask discards them.
+pub(super) fn inside_deep(road: f64) -> f64 {
+    road - TIE_IN_SLOPE * INSIDE_REACH_M
 }
 
 /// Whether a point under a road, `road_distance` from its nearest road seam (`+∞` with none
@@ -102,7 +97,7 @@ pub(super) fn inside_deep(base: f64, road: f64) -> f64 {
 /// structure mouth (`TERRAIN-07-C`, `docs/terrain.md` T22 4 (a)) lies strictly nearer, within
 /// the band `band`. Along a road seam the inside rule's arm continues the seam's cone, so the
 /// rendered cut edge is the seam; a mouth row has no cone to continue, and a hidden inside value
-/// there (up to the capped fill arm above the road) would lift the cut edge and the terrain
+/// there (the fill arm rose up to 0.35 m above the road before T34) would lift the cut edge and the terrain
 /// beyond the row above the deck (`TERRAIN-07-D` round 5). With the ground's value on both sides
 /// the cut edge along the row is the graded ground the structure walls close. `O(walls)`.
 pub(super) fn continues_ground(
@@ -280,13 +275,11 @@ mod tests {
     }
 
     #[test]
-    fn the_inside_rule_continues_the_arm_and_caps_the_fill() {
-        // Cut: the arm runs down at 1:2 at any depth.
-        assert_eq!(inside(5.0, 1.0, 1.5), 1.0 - 0.75);
-        // Fill: up at 1:2, no more than one texel diagonal.
-        assert_eq!(inside(0.0, 1.0, 0.25), 1.0 + 0.125);
-        assert_eq!(inside(0.0, 1.0, 3.0), 1.0 + 0.5 * FILL_ARM_MAX_M);
-        assert!(inside_deep(5.0, 1.0) < 1.0 && inside_deep(0.0, 1.0) <= 1.0 + 0.36);
+    fn the_inside_rule_continues_the_arm_down() {
+        // The arm runs down at 1:2 at any depth, on cuts and fills alike.
+        assert_eq!(inside(1.0, 1.5), 1.0 - 0.75);
+        assert_eq!(inside(1.0, 0.25), 1.0 - 0.125);
+        assert_eq!(inside_deep(1.0), 1.0 - TIE_IN_SLOPE * INSIDE_REACH_M);
     }
 
     #[test]

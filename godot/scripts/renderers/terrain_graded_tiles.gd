@@ -22,9 +22,10 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const TILE_M := 64.0
-# Level distances with their hysteresis (T5, TD10): GL0 to 256 m, GL1 to 512 m, GL2 to 2 km,
-# GL3 beyond, at the patch LOD rule's steps (2 to 5 km, 4 to 12 km, 8 beyond).
-const LEVEL_END_M := [256.0, 512.0, 2000.0]
+# Level distances with their hysteresis (T5, TD10): GL0 to 64 m, GL1 to 128 m, GL2 to 2 km,
+# GL3 beyond, at the patch LOD rule's steps (2 to 5 km, 4 to 12 km, 8 beyond). Tuned by the GPU
+# idle frame in TERRAIN-07-D round 8 (256 and 512 m drew GL0 and GL1 cells down to 1.8 px).
+const LEVEL_END_M := [64.0, 128.0, 2000.0]
 const GL3_STEP_END_M := [[2, 5000.0], [4, 12000.0], [8, INF]]
 const LEVEL_HYSTERESIS_M := 32.0
 # Slots per level. GL0 and GL1 follow the memory table; GL2 and GL3 stop at 2,048 layers, the
@@ -46,6 +47,7 @@ const MAX_WALLS_PER_PATCH := 256
 # A visibility range no camera is within (metres): a patch's PlaneMesh while its cells draw it.
 const HIDDEN_RANGE_M := 0.001
 const WALL_FACE_FLOATS := 8
+const SIDE_OFFSETS := [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]
 # Every (level code, GL3 step) a tile can be requested at.
 const LEVEL_STEPS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 2), Vector2i(3, 4), Vector2i(3, 8)]
 
@@ -93,21 +95,39 @@ var _dirty_patches: Dictionary = {}
 # Patches whose wall instances must be rewritten (a tile rewritten in place changed its faces).
 var _dirty_walls: Dictionary = {}
 var _uniform_names: PackedStringArray = PackedStringArray()
-# Tile key -> {level: Vector2i(code, step), token, distance}: every tile a resident patch's list
+# Tile key -> {level: Vector2i(code, step), token, bucket}: every tile a resident patch's list
 # names. It follows the changes: a patch entering, leaving or getting a new list adds and
 # removes its own tiles (each tile counts the lists naming it, in _tile_lists, and the patch's
-# counted tiles are kept in _counted), and a camera move of 8 m re-levels the desired tiles.
+# counted tiles are kept in _counted), and a camera move re-levels only the tiles due (T26).
 var _desired: Dictionary = {}
 var _tile_lists: Dictionary = {}
 var _counted: Dictionary = {}
-var _desired_camera := Vector3(INF, INF, INF)
+# The camera (XZ, with its height above the ground as y) and the distance it has travelled since
+# setup. A tile's distance changes by at most the camera's travel, so a tile levelled at travel t
+# with its distance m from the nearest distance where its level can change keeps its level until
+# the travel reaches t + m: it waits in bucket floor((t + m) / LEVEL_BUCKET_M) (bucket -> {tile:
+# true}), and a frame re-levels the buckets the travel has reached since the last, its own
+# included. Exact: every desired tile has its distance's level in every frame.
+var _camera := Vector3.ZERO
+var _camera_set := false
+var _travel := 0.0
+var _buckets: Dictionary = {}
+var _bucket_first := 0
+const LEVEL_BUCKET_M := 8.0
+# The distances are float64 from float32 positions; their rounding is far below this.
+const LEVEL_MARGIN_SLACK_M := 1e-6
+# A patch's cells change per tile (T26): tiles whose instance or a side's code may have changed
+# this frame (a tile installed at a new slot or lattice or evicted, with its four neighbours; the
+# tiles along a patch whose residency or step changed).
+var _dirty_cell_tiles: Dictionary = {}
+# Patch key -> the LOD step of each resident patch, to tell a step change from other changes.
+var _patch_steps: Dictionary = {}
 # The tiles and patch lists that may need a request: a tile whose desire, level or token
 # changed, whose request failed or did not go out (the per-frame budget or Rust's in-flight
 # bound); a patch that changed or whose list arrived, failed or was not accepted. An idle frame
 # has none.
 var _wanted: Dictionary = {}
 var _lists_wanted: Dictionary = {}
-const DESIRED_REFRESH_MOVE_M := 8.0
 # Patch list requests per frame: Rust holds at most 32 in flight.
 const LIST_REQUESTS_PER_FRAME := 32
 var counters := {
@@ -143,6 +163,8 @@ var _frame_sync_us := 0
 var _frame_walls_us := 0
 var _frame_lists := 0
 var _frame_lists_same := 0
+var _frame_relevelled := 0
+var _frame_cell_tiles := 0
 
 ## Reads the slot layout and prewarms the pools and cell meshes. `pool_slots` overrides the
 ## per-level slot counts (tests use small pools).
@@ -281,12 +303,17 @@ func clear() -> void:
 	refused.clear()
 	patch_lists_refused.clear()
 	_dirty_walls.clear()
+	_dirty_cell_tiles.clear()
+	_patch_steps.clear()
 	for key in patch_cells.keys():
 		release_patch(key, null)
 	_desired.clear()
 	_tile_lists.clear()
 	_counted.clear()
-	_desired_camera = Vector3(INF, INF, INF)
+	_camera_set = false
+	_travel = 0.0
+	_buckets.clear()
+	_bucket_first = 0
 	_wanted.clear()
 	_lists_wanted.clear()
 
@@ -305,13 +332,13 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	_frame_walls_us = 0
 	_frame_lists = 0
 	_frame_lists_same = 0
+	_frame_relevelled = 0
+	_frame_cell_tiles = 0
 	var uploads_before := int(counters["uploads"])
 	var requests_before := requested.size()
-	# A camera move re-levels the desired tiles first, so the tiles this frame adds take the
-	# camera's position too. O(desired tiles) per 8 m.
-	if camera_position.distance_to(_desired_camera) >= DESIRED_REFRESH_MOVE_M:
-		_desired_camera = camera_position
-		_relevel_desired()
+	# A camera move re-levels the tiles due first, so the tiles this frame adds take the camera's
+	# position too. O(tiles due + buckets passed).
+	_move_camera(camera_position)
 	var relevel_us := Time.get_ticks_usec()
 	# An edit's batch installs in a frame of its own: the poll that completes it leaves it for
 	# the next frame, which installs it and polls nothing.
@@ -339,11 +366,15 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		if _watched_parameters(material) != cells["watched"]:
 			_sync_material(cells, material)
 	var watched_us := Time.get_ticks_usec()
+	# A patch-wide change rewrites the patch's cells; every other change rewrites its own tiles'
+	# instances in the patches that draw them. O(changed patches' tiles + changed tiles).
 	var cell_patches := _dirty_patches.size()
 	for key: Vector2i in _dirty_patches.keys():
 		if resident_patches.has(key):
 			_rebuild_patch_cells(key, resident_patches)
 		_dirty_walls.erase(key)
+	if not _dirty_cell_tiles.is_empty():
+		_update_cell_tiles(resident_patches)
 	_dirty_patches.clear()
 	var cells_us := Time.get_ticks_usec()
 	var wall_patches := _dirty_walls.size()
@@ -363,6 +394,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			"cells_walls_ms": float(_frame_walls_us) / 1000.0, "walls_ms": ms.call(cells_us, end_us),
 			"total_ms": ms.call(start_us, end_us),
 			"cell_patches": cell_patches, "wall_patches": wall_patches,
+			"cell_tiles": _frame_cell_tiles, "relevelled": _frame_relevelled,
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
 			"uploads": int(counters["uploads"]) - uploads_before,
 			"requested": requested.size() - requests_before, "wanted": _wanted.size(),
@@ -502,21 +534,29 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
 	counters["uploads"] += 1
 	var cell_code := code if code < 3 else base_code(step)
-	if not current.is_empty() and int(current["slot"]) != slot:
+	# A tile moving between levels frees its slot in the old level's pool (slot numbers repeat
+	# across pools: round 7 compared the numbers and kept a GL0 slot 0 moving to GL1 slot 0).
+	if not current.is_empty() and int(current["level"]) != code:
 		_free_slot(current)
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
 	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls}
-	# A bake of an older level or token (the camera moved, an edit dirtied it) still wants one.
+	# The installed level moves the hysteresis: the tile is levelled again at once. A bake of an
+	# older level or token (the camera moved, an edit dirtied it) still wants one.
 	var want: Dictionary = _desired.get(key, {})
-	if not want.is_empty() and (want["level"] != Vector2i(code, step) or int(want["token"]) != token):
-		_wanted[key] = true
-	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites the cells
-	# that show it or stitch to it, and changed faces the walls of the patches that draw them.
-	if current.is_empty() or int(current["slot"]) != slot or int(current["code"]) != cell_code:
-		_mark_tile_patches(key, resident_patches)
-	elif walls != current["walls"]:
+	if not want.is_empty():
+		_level_tile(key, want)
+		if want["level"] != Vector2i(code, step) or int(want["token"]) != token:
+			_wanted[key] = true
+	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites its own
+	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
+	if current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code:
+		_cell_changed(key)
+		# A resident patch meeting the tile without cells yet is built whole.
 		for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
-			_dirty_walls[patch_key] = true
+			if resident_patches.has(patch_key) and not patch_cells.has(patch_key):
+				_dirty_patches[patch_key] = true
+	if walls != current.get("walls", PackedFloat32Array()):
+		_walls_changed(key)
 
 # Installs the edit batch once every tile of it has its result, all in this frame. Returns how
 # many tiles it installed.
@@ -587,17 +627,53 @@ func _patches_meeting(rect: Rect2) -> Array[Vector2i]:
 			keys.append(Vector2i(x, z))
 	return keys
 
-# The patches whose cells show `key` or stitch to it.
-func _mark_tile_patches(key: Vector2i, resident_patches: Dictionary) -> void:
-	var rect := Rect2(Vector2(key) * TILE_M - Vector2.ONE * TILE_M, Vector2.ONE * TILE_M * 3.0)
-	for patch_key in _patches_meeting(rect):
-		if resident_patches.has(patch_key):
-			_dirty_patches[patch_key] = true
+# Tile `key` was installed at a new slot or lattice, or evicted: its own instance and the sides
+# of its four neighbours change (the cell code is all a side reads of its neighbour), each in
+# the patches that draw it. O(1).
+func _cell_changed(key: Vector2i) -> void:
+	_dirty_cell_tiles[key] = true
+	for offset: Vector2i in SIDE_OFFSETS:
+		_dirty_cell_tiles[key + offset] = true
+
+# Patch `key`'s residency or step changed: the tiles just outside its sides that lie on tile
+# lines stitch across them to its step (_side_code), so their instances are rewritten. O(the
+# patch's side tiles).
+func _border_changed(key: Vector2i) -> void:
+	var origin := world_min + Vector2(key) * patch_span_m
+	var rect := Rect2(origin, (-world_min - origin).min(Vector2.ONE * patch_span_m))
+	var first := Vector2i((rect.position / TILE_M).floor()) - Vector2i.ONE
+	var last := Vector2i((rect.end / TILE_M).ceil())
+	for axis in 2:
+		var across := 1 - axis
+		for side: float in [rect.position[axis], rect.end[axis]]:
+			if fposmod(side, TILE_M) != 0.0:
+				continue
+			# The tile on the far side of the line from the patch.
+			var column := int(side / TILE_M) - (1 if side == rect.position[axis] else 0)
+			for row in range(first[across], last[across] + 1):
+				var tile := Vector2i.ZERO
+				tile[axis] = column
+				tile[across] = row
+				_dirty_cell_tiles[tile] = true
+
+# Tile `key`'s wall faces changed: the patches that may draw one (a face draws in the patch
+# holding its midpoint) rewrite their wall instances.
+func _walls_changed(key: Vector2i) -> void:
+	for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
+		_dirty_walls[patch_key] = true
 
 # A resident patch entry was added, rewritten or removed: its counted tiles follow its residency,
 # its list is asked again if its generation moved, and its cells follow its LOD step.
 func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 	_recount(key, resident_patches)
+	# The cells across its sides stitch to its step, or to their own while it is not resident.
+	var step := int(resident_patches[key]["step"]) if resident_patches.has(key) else -1
+	if step != int(_patch_steps.get(key, -1)):
+		_border_changed(key)
+		if step < 0:
+			_patch_steps.erase(key)
+		else:
+			_patch_steps[key] = step
 	if not resident_patches.has(key):
 		_lists_wanted.erase(key)
 		return
@@ -638,21 +714,25 @@ func _recount(key: Vector2i, resident_patches: Dictionary) -> void:
 # A tile some resident patch lists: its level at the camera's distance, with hysteresis around
 # the level it is installed at.
 func _desire(tile: Vector2i) -> void:
-	var distance := _tile_distance(tile)
-	var current_code := int(installed.get(tile, {}).get("level", -1))
-	_desired[tile] = {"level": desired_level(distance, current_code), "token": int(tile_tokens.get(tile, 0)), "distance": distance}
+	var want := {"level": Vector2i(-1, -1), "token": int(tile_tokens.get(tile, 0)), "bucket": -1}
+	_desired[tile] = want
+	_level_tile(tile, want)
 	_wanted[tile] = true
 
 # A tile no resident patch lists any more: its slot is freed and its requests, token and
 # refusals dropped (only held tiles keep a token).
 func _undesire(tile: Vector2i) -> void:
+	_unbucket(tile, int(_desired[tile]["bucket"]))
 	_desired.erase(tile)
 	_wanted.erase(tile)
 	if installed.has(tile):
-		_free_slot(installed[tile])
+		var entry: Dictionary = installed[tile]
+		_free_slot(entry)
 		installed.erase(tile)
 		counters["evictions"] += 1
-		_dirty_patches_around(tile)
+		_cell_changed(tile)
+		if not (entry["walls"] as PackedFloat32Array).is_empty():
+			_walls_changed(tile)
 	_edit_batch.erase(tile)
 	_edit_staged.erase(tile)
 	for level: Vector2i in LEVEL_STEPS:
@@ -663,22 +743,82 @@ func _undesire(tile: Vector2i) -> void:
 
 # The camera's distance to a tile (docs/terrain.md "LOD and distant tiles"): to the tile's centre
 # on the ground under the camera, from the camera's height above that ground, so a camera high
-# over a tile takes the level of its distance, not of its offset along the ground.
+# over a tile takes the level of its distance, not of its offset along the ground. In float64.
 func _tile_distance(tile: Vector2i) -> float:
-	var centre := (Vector2(tile) + Vector2(0.5, 0.5)) * TILE_M
-	return Vector3(centre.x, 0.0, centre.y).distance_to(_desired_camera)
+	var dx := (float(tile.x) + 0.5) * TILE_M - _camera.x
+	var dz := (float(tile.y) + 0.5) * TILE_M - _camera.z
+	return sqrt(dx * dx + _camera.y * _camera.y + dz * dz)
 
-# Every desired tile's distance and level at the camera's new position; a tile whose level
-# changed wants a bake at it. O(desired tiles).
-func _relevel_desired() -> void:
-	for tile: Vector2i in _desired.keys():
-		var want: Dictionary = _desired[tile]
-		var distance := _tile_distance(tile)
-		var level := desired_level(distance, int(installed.get(tile, {}).get("level", -1)))
-		want["distance"] = distance
-		if level != want["level"]:
-			want["level"] = level
-			_wanted[tile] = true
+# The camera moved: its travel grows by the move and the buckets it reached since the last move
+# are levelled again, the last one included (a tile due within it waits there). O(tiles due +
+# buckets passed).
+func _move_camera(camera_position: Vector3) -> void:
+	if not _camera_set:
+		_camera = camera_position
+		_camera_set = true
+		return
+	var dx := float(camera_position.x) - _camera.x
+	var dy := float(camera_position.y) - _camera.y
+	var dz := float(camera_position.z) - _camera.z
+	var moved := sqrt(dx * dx + dy * dy + dz * dz)
+	if moved == 0.0:
+		return
+	_camera = camera_position
+	_travel += moved
+	var last := int(floor(_travel / LEVEL_BUCKET_M))
+	for bucket in range(_bucket_first, last + 1):
+		if not _buckets.has(bucket):
+			continue
+		var tiles: Dictionary = _buckets[bucket]
+		_buckets.erase(bucket)
+		for tile: Vector2i in tiles.keys():
+			var want: Dictionary = _desired[tile]
+			want["bucket"] = -1
+			_level_tile(tile, want)
+			_frame_relevelled += 1
+	_bucket_first = last
+
+# A desired tile's level at the camera's distance, with hysteresis around its installed level (a
+# tile whose level changed wants a bake at it), and its bucket: the travel at which its distance
+# can first reach a distance where that level changes.
+func _level_tile(tile: Vector2i, want: Dictionary) -> void:
+	var distance := _tile_distance(tile)
+	var current_code := int(installed.get(tile, {}).get("level", -1))
+	var level := desired_level(distance, current_code)
+	if level != want["level"]:
+		want["level"] = level
+		_wanted[tile] = true
+	var margin: float = max(_level_margin(distance, current_code) - LEVEL_MARGIN_SLACK_M, 0.0)
+	var bucket := int(floor((_travel + margin) / LEVEL_BUCKET_M))
+	if bucket == int(want["bucket"]):
+		return
+	_unbucket(tile, int(want["bucket"]))
+	if not _buckets.has(bucket):
+		_buckets[bucket] = {}
+	_buckets[bucket][tile] = true
+	want["bucket"] = bucket
+
+func _unbucket(tile: Vector2i, bucket: int) -> void:
+	if not _buckets.has(bucket):
+		return
+	var tiles: Dictionary = _buckets[bucket]
+	tiles.erase(tile)
+	if tiles.is_empty():
+		_buckets.erase(bucket)
+
+# The distance from `distance_m` to the nearest distance at which desired_level(_, current_code)
+# changes value: each level's end, with the hysteresis desired_level adds around the installed
+# level, and the GL3 steps' ends.
+func _level_margin(distance_m: float, current_code: int) -> float:
+	var margin := INF
+	for index in LEVEL_END_M.size():
+		var end_m: float = LEVEL_END_M[index]
+		if current_code >= 0 and current_code <= index:
+			end_m += LEVEL_HYSTERESIS_M
+		margin = min(margin, abs(distance_m - end_m))
+	for entry: Array in GL3_STEP_END_M:
+		margin = min(margin, abs(distance_m - float(entry[1])))
+	return margin
 
 # Asks for the lists of the wanted patches whose list is not of their generation, not in flight
 # and not refused at it, within Rust's in-flight bound; the rest stay wanted.
@@ -731,7 +871,7 @@ func _request_tiles() -> void:
 		if int(requested.get(request_key, -1)) == token or int(refused.get(request_key, -1)) == token:
 			_wanted.erase(tile)
 			continue
-		wanted.append([float(want["distance"]), tile, level, token, request_key])
+		wanted.append([_tile_distance(tile), tile, level, token, request_key])
 	if wanted.is_empty():
 		return
 	wanted.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
@@ -747,12 +887,6 @@ func _request_tiles() -> void:
 		if index < accepted.size() and accepted[index] != 0:
 			requested[sent[index][4]] = sent[index][3]
 			_wanted.erase(sent[index][1])
-
-func _dirty_patches_around(tile: Vector2i) -> void:
-	var rect := Rect2(Vector2(tile) * TILE_M - Vector2.ONE * TILE_M, Vector2.ONE * TILE_M * 3.0)
-	for key in _patches_meeting(rect):
-		if patch_cells.has(key):
-			_dirty_patches[key] = true
 
 # The tiles whose interior meets a patch rectangle.
 static func _patch_tiles(rect: Rect2) -> Array[Vector2i]:
@@ -791,6 +925,98 @@ func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, p
 			return max(own, _cell_code(neighbour, int(resident_patches[key]["step"])))
 	return own
 
+# The cell MultiMesh a tile draws in: its installed level's, else the base cells'.
+func _cell_mesh(tile: Vector2i) -> int:
+	var entry: Dictionary = installed.get(tile, {})
+	return int(entry["level"]) if not entry.is_empty() else CELL_BASE
+
+# A tile's instance custom data in a patch's cells, for the patch's rewrite and the per-tile
+# updates alike: its place in the patch (column + PATCH_TILE_ROW * row from `first`, the tile
+# holding the patch's lower corner), its slot (-1 for a base cell), its own lattice code and
+# each side's stitching code. Every channel an integer below 2048: the Compatibility renderer
+# keeps instance custom data as half floats.
+func _cell_custom(tile: Vector2i, first: Vector2i, patch: Dictionary, resident_patches: Dictionary) -> Color:
+	var own := _cell_code(tile, int(patch["step"]))
+	var origin := Vector2(tile) * TILE_M
+	var codes := own
+	codes |= _side_code(own, tile, tile + Vector2i(-1, 0), origin.x, patch, resident_patches, 0) << 3
+	codes |= _side_code(own, tile, tile + Vector2i(1, 0), origin.x + TILE_M, patch, resident_patches, 0) << 6
+	codes |= _side_code(own, tile, tile + Vector2i(0, -1), origin.y, patch, resident_patches, 1) << 9
+	codes |= _side_code(own, tile, tile + Vector2i(0, 1), origin.y + TILE_M, patch, resident_patches, 1) << 12
+	var entry: Dictionary = installed.get(tile, {})
+	var slot := int(entry["slot"]) if not entry.is_empty() else -1
+	var place := tile - first
+	return Color(place.x + PATCH_TILE_ROW * place.y, slot, codes & 511, codes >> 9)
+
+# A tile's index in its cell set's per-place record (`where`), row-major over the patch's tiles.
+static func _cell_place(cells: Dictionary, tile: Vector2i) -> int:
+	var first: Vector2i = cells["first"]
+	var last: Vector2i = cells["last"]
+	return (tile.x - first.x) + (last.x - first.x + 1) * (tile.y - first.y)
+
+# Rewrites the queued tiles' instances in every patch drawing cells that holds them (the patches
+# rewritten whole this frame excepted), and returns a patch left without a graded cell to its
+# PlaneMesh. O(queued tiles).
+func _update_cell_tiles(resident_patches: Dictionary) -> void:
+	var touched := {}
+	for tile: Vector2i in _dirty_cell_tiles.keys():
+		for key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
+			if _dirty_patches.has(key) or not patch_cells.has(key) or not resident_patches.has(key):
+				continue
+			if _update_tile_cell(patch_cells[key], tile, resident_patches[key], resident_patches):
+				touched[key] = true
+	_dirty_cell_tiles.clear()
+	for key: Vector2i in touched.keys():
+		var counts: Array[int] = patch_cells[key]["counts"]
+		if counts[0] + counts[1] + counts[2] + counts[3] == 0:
+			release_patch(key, resident_patches[key]["node"])
+
+# One tile's instance in a patch's cells (T26): its custom data rewritten in place while its
+# mesh is unchanged; otherwise it leaves the old mesh's MultiMesh by a swap-remove (the last
+# instance takes its index) and is appended to the new one's. Returns whether anything changed.
+# O(1).
+func _update_tile_cell(cells: Dictionary, tile: Vector2i, patch: Dictionary, resident_patches: Dictionary) -> bool:
+	var first: Vector2i = cells["first"]
+	var last: Vector2i = cells["last"]
+	if tile.x < first.x or tile.y < first.y or tile.x > last.x or tile.y > last.y:
+		return false
+	_frame_cell_tiles += 1
+	var where: Array[Vector2i] = cells["where"]
+	var place := _cell_place(cells, tile)
+	var at: Vector2i = where[place]
+	var mesh_index := _cell_mesh(tile)
+	var custom := _cell_custom(tile, first, patch, resident_patches)
+	var records: Array = cells["custom"]
+	var nodes: Array = cells["nodes"]
+	if at.x == mesh_index:
+		if records[at.x][at.y] == custom:
+			return false
+		records[at.x][at.y] = custom
+		(nodes[at.x] as MultiMeshInstance3D).multimesh.set_instance_custom_data(at.y, custom)
+		return true
+	var counts: Array[int] = cells["counts"]
+	var tile_at: Array = cells["tile_at"]
+	var end := counts[at.x] - 1
+	if at.y != end:
+		var moved: Vector2i = tile_at[at.x][end]
+		records[at.x][at.y] = records[at.x][end]
+		tile_at[at.x][at.y] = moved
+		where[_cell_place(cells, moved)] = at
+		(nodes[at.x] as MultiMeshInstance3D).multimesh.set_instance_custom_data(at.y, records[at.x][at.y])
+	_set_cell_count(nodes[at.x], counts, at.x, end)
+	var index := counts[mesh_index]
+	records[mesh_index][index] = custom
+	tile_at[mesh_index][index] = tile
+	where[place] = Vector2i(mesh_index, index)
+	(nodes[mesh_index] as MultiMeshInstance3D).multimesh.set_instance_custom_data(index, custom)
+	_set_cell_count(nodes[mesh_index], counts, mesh_index, index + 1)
+	return true
+
+static func _set_cell_count(node: MultiMeshInstance3D, counts: Array[int], index: int, count: int) -> void:
+	counts[index] = count
+	node.multimesh.visible_instance_count = count
+	node.visible = count > 0
+
 func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	var patch: Dictionary = resident_patches[key]
 	var list: Dictionary = patch_lists.get(key, {})
@@ -817,35 +1043,26 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 		int(round(rect.position.x * 2.0)), int(round(rect.position.y * 2.0)),
 		int(round(rect.end.x * 2.0)), int(round(rect.end.y * 2.0))
 	)
-	var counts := PackedInt32Array()
-	counts.resize(CELL_MESHES)
 	var nodes: Array = cells["nodes"]
-	# What each MultiMesh holds, kept beside it: per mesh the instance custom data written.
-	var instances: Array[PackedColorArray] = []
-	for index in CELL_MESHES:
-		instances.append(PackedColorArray())
-	# The tile holding the patch rectangle's lower corner, as the shader finds it.
+	# The tile holding the patch rectangle's lower corner, as the shader finds it, and the last.
 	var first: Vector2i = tiles[0] if not tiles.is_empty() else Vector2i.ZERO
+	cells["first"] = first
+	cells["last"] = tiles[-1] if not tiles.is_empty() else Vector2i(-1, -1)
+	# What each MultiMesh holds, kept beside it (the per-tile updates move instances by it).
+	var counts: Array[int] = cells["counts"]
+	counts.fill(0)
+	var records: Array = cells["custom"]
+	var tile_at: Array = cells["tile_at"]
+	var where: Array[Vector2i] = cells["where"]
 	for tile in tiles:
-		var own := _cell_code(tile, step)
-		var entry: Dictionary = installed.get(tile, {})
-		var mesh_index := int(entry["level"]) if not entry.is_empty() else CELL_BASE
-		var origin := Vector2(tile) * TILE_M
-		var codes := own
-		codes |= _side_code(own, tile, tile + Vector2i(-1, 0), origin.x, patch, resident_patches, 0) << 3
-		codes |= _side_code(own, tile, tile + Vector2i(1, 0), origin.x + TILE_M, patch, resident_patches, 0) << 6
-		codes |= _side_code(own, tile, tile + Vector2i(0, -1), origin.y, patch, resident_patches, 1) << 9
-		codes |= _side_code(own, tile, tile + Vector2i(0, 1), origin.y + TILE_M, patch, resident_patches, 1) << 12
-		var slot := int(entry["slot"]) if not entry.is_empty() else -1
-		var multimesh: MultiMesh = (nodes[mesh_index] as MultiMeshInstance3D).multimesh
-		# Every channel an integer below 2048: the Compatibility renderer keeps instance custom
-		# data as half floats.
-		var place := tile - first
-		var custom := Color(place.x + PATCH_TILE_ROW * place.y, slot, codes & 511, codes >> 9)
-		multimesh.set_instance_custom_data(counts[mesh_index], custom)
-		instances[mesh_index].append(custom)
-		counts[mesh_index] += 1
-	cells["instances"] = instances
+		var mesh_index := _cell_mesh(tile)
+		var custom := _cell_custom(tile, first, patch, resident_patches)
+		var index := counts[mesh_index]
+		(nodes[mesh_index] as MultiMeshInstance3D).multimesh.set_instance_custom_data(index, custom)
+		records[mesh_index][index] = custom
+		tile_at[mesh_index][index] = tile
+		where[_cell_place(cells, tile)] = Vector2i(mesh_index, index)
+		counts[mesh_index] = index + 1
 	for index in CELL_MESHES:
 		var node: MultiMeshInstance3D = nodes[index]
 		var multimesh := node.multimesh
@@ -988,7 +1205,27 @@ func _new_cells() -> Dictionary:
 	walls.multimesh = wall_multimesh
 	walls.material_override = _wall_material
 	walls.visible = false
-	return {"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null}
+	# The record of what each cell MultiMesh holds (_rebuild_patch_cells, _update_tile_cell): per
+	# mesh the custom data and tile of each instance and the instance count, per tile place its
+	# (mesh, instance), all sized once here.
+	var records := []
+	var tile_at := []
+	for index in CELL_MESHES:
+		var custom: Array[Color] = []
+		custom.resize(_cells_per_patch)
+		records.append(custom)
+		var tiles: Array[Vector2i] = []
+		tiles.resize(_cells_per_patch)
+		tile_at.append(tiles)
+	var where: Array[Vector2i] = []
+	where.resize(_cells_per_patch)
+	var counts: Array[int] = []
+	counts.resize(CELL_MESHES)
+	return {
+		"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
+		"custom": records, "tile_at": tile_at, "where": where, "counts": counts,
+		"first": Vector2i.ZERO, "last": Vector2i(-1, -1),
+	}
 
 # The patch material parameters whose change means the graded material must be synced: the
 # textures and per-patch values terrain.gd swaps on commits, masks, water and overlays.

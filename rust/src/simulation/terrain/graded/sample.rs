@@ -236,8 +236,8 @@ fn value(
         (Some(road), _) => (
             Class::Road,
             match nearest.filter(|&(_, d, _)| d < INSIDE_REACH_M) {
-                Some((_, d, h)) => inside(base, h, d),
-                None => inside_deep(base, f64::from(road)),
+                Some((_, d, h)) => inside(h, d),
+                None => inside_deep(f64::from(road)),
             },
         ),
         (None, Some(pad)) => (Class::Pad, pad),

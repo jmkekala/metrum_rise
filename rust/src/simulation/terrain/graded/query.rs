@@ -10,7 +10,7 @@
 //! reads it. Allocation-free once the scratch is warm.
 
 use super::coverage::covered_height_at;
-use super::grade::{CAP_M, FILL_ARM_MAX_M, TIE_IN_SLOPE, continues_ground};
+use super::grade::{CAP_M, continues_ground};
 use super::portal::{PortalWindow, cuts};
 use super::sample::{BaseGrid, BaseWindow, Listed, Value, evaluate};
 use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
@@ -382,15 +382,15 @@ impl GradedSurface<'_> {
         rect: [f64; 4],
         scratch: &mut QueryScratch,
     ) -> Option<f64> {
-        // The ground outside footprints lies in `[min(b, H_lo), max(b, H_hi)]`; triangles that
-        // straddle an edge rise at most the capped fill arm above a seam.
+        // The ground outside footprints lies in `[min(b, H_lo), max(b, H_hi)]`; under a road the
+        // inside rule's arm runs down from a seam.
         let base_high = scratch.base.range(rect).1;
         let seam_high = scratch
             .window
             .iter()
             .map(|seam| seam.height_range().1)
             .fold(f64::NEG_INFINITY, f64::max);
-        let high = base_high.max(seam_high + TIE_IN_SLOPE * FILL_ARM_MAX_M);
+        let high = base_high.max(seam_high);
         let lowest =
             |a: f64, b: f64| (origin[1] + direction[1] * a).min(origin[1] + direction[1] * b);
         if lowest(t0, t1) > high {

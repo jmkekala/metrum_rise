@@ -734,6 +734,105 @@ fn kuopio_plan_pinhole_sides() {
     }
 }
 
+// `TERRAIN-07-D` round 8: `kuopio_t2_wall`'s `close_corner` background sliver. Along every
+// grounded outer chain within 40 m of the fixture's focus, the `GL0` surface on the chain (the
+// terrain's cut edge, where the mask discards the road's side) against the chain's height, and
+// whether a wall face of the chain's `GL0` tile covers that step (a face along the chain from
+// below the chain to above the surface there).
+#[test]
+#[ignore = "TERRAIN-07-D diagnostic: cargo test --lib kuopio_t2_edge_steps -- --ignored --nocapture"]
+fn kuopio_t2_edge_steps() {
+    use crate::simulation::terrain::graded::{
+        GradedSurface, Level, QueryScratch, TILE_M, TileKey, bake_tiles,
+    };
+    let mut core = test_core();
+    core.load_game_internal(KUOPIO_REFERENCE_SAVE).unwrap();
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let roadbed = &core.transit_network.roadbed;
+    let surface = GradedSurface {
+        terrain: &core.heightmap,
+        roadbed,
+        sites: &core.allocator,
+    };
+    let mut scratch = QueryScratch::default();
+    let focus = [-16.3f64, 1182.8f64];
+    let mut faces = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    let spans = (0..core.region_graph.edge_count()).filter_map(|edge| roadbed.span_piece(edge).map(|p| (format!("edge {edge}"), p.mesh())));
+    let nodes = (0..core.region_graph.node_count() as u32).filter_map(|node| roadbed.node_piece(node).map(|p| (format!("node {node}"), p.mesh())));
+    for (piece, mesh) in spans.chain(nodes) {
+        for (chain_index, chain) in mesh.outer_chains().iter().enumerate() {
+            let (mut samples, mut stepped, mut uncovered, mut worst) = (0, 0, 0, (0.0f64, [0.0f64; 2], 0usize, 0.0f64));
+            for pair in chain.vertices().windows(2) {
+                let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                let (dx, dz) = (b.x - a.x, b.z - a.z);
+                let len = (dx * dx + dz * dz).sqrt();
+                let steps = (len / 0.02).ceil().max(1.0) as usize;
+                for k in 0..=steps {
+                    let t = k as f64 / steps as f64;
+                    let p = [a.x + dx * t, a.z + dz * t];
+                    if ((p[0] - focus[0]).powi(2) + (p[1] - focus[1]).powi(2)).sqrt() > 40.0 {
+                        continue;
+                    }
+                    samples += 1;
+                    let h = a.y + (b.y - a.y) * t;
+                    let step = surface.ground_height_at(p[0], p[1], &mut scratch) - h;
+                    if step <= 0.002 {
+                        continue;
+                    }
+                    stepped += 1;
+                    let tile = TileKey { x: (p[0] / TILE_M).floor() as i32, z: (p[1] / TILE_M).floor() as i32 };
+                    let walls: &Vec<_> = faces.entry(tile).or_insert_with(|| {
+                        bake_tiles(&core.heightmap, roadbed, &core.allocator, &[tile], Level::Gl0, &mut out).unwrap();
+                        out[0].walls.clone()
+                    });
+                    let o = tile.origin();
+                    let covered = walls.iter().any(|f| {
+                        let fa = [o[0] + f64::from(f.a[0]), o[1] + f64::from(f.a[1])];
+                        let fb = [o[0] + f64::from(f.b[0]), o[1] + f64::from(f.b[1])];
+                        let (ex, ez) = (fb[0] - fa[0], fb[1] - fa[1]);
+                        let l2 = ex * ex + ez * ez;
+                        let s = if l2 > 0.0 { (((p[0] - fa[0]) * ex + (p[1] - fa[1]) * ez) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                        let d = ((p[0] - fa[0] - s * ex).powi(2) + (p[1] - fa[1] - s * ez).powi(2)).sqrt();
+                        let bottom = f64::from(f.bottom[0]) + (f64::from(f.bottom[1]) - f64::from(f.bottom[0])) * s;
+                        let top = f64::from(f.top[0]) + (f64::from(f.top[1]) - f64::from(f.top[0])) * s;
+                        d < 1e-3 && bottom <= h + 1e-3 && top >= h + step - 1e-3
+                    });
+                    if !covered {
+                        uncovered += 1;
+                        if step > worst.0 {
+                            worst = (step, p, walls.len(), h);
+                        }
+                    }
+                }
+            }
+            if stepped > 0 {
+                // The worst point's GL0 cell corners: their graded values, whether a road covers
+                // them and its top there, against the chain's height at the point.
+                let p = worst.1;
+                let corners: Vec<_> = [[0.0, 0.0], [0.5, 0.0], [0.0, 0.5], [0.5, 0.5]]
+                    .iter()
+                    .map(|o| {
+                        let q = [(p[0] / 0.5).floor() * 0.5 + o[0], (p[1] / 0.5).floor() * 0.5 + o[1]];
+                        let g = surface.ground_height_at(q[0], q[1], &mut scratch);
+                        let road = roadbed.height_at(q[0] as f32, q[1] as f32);
+                        serde_json::json!({"at": q, "g": g, "road_top": road,
+                            "base": surface.base_height_at(q[0], q[1], &mut scratch)})
+                    })
+                    .collect();
+                eprintln!(
+                    "EDGE_STEP {}",
+                    serde_json::json!({"piece": piece, "chain": chain_index, "samples": samples,
+                        "stepped": stepped, "uncovered": uncovered, "worst_step": worst.0,
+                        "worst_at": worst.1, "chain_height": worst.3, "tile_faces": worst.2, "corners": corners})
+                );
+            }
+        }
+    }
+}
+
 // `TERRAIN-07-A` `T18` (a): the two-pass exact pruning on Kuopio's steepest road, the 4 x 4
 // tiles around the dead end on a 1:2 side slope (`KUOPIO_DEAD_END`): pruned equals
 // unpruned bitwise in any batch, order and worker count, with second-pass samples; and the

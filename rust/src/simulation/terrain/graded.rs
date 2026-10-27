@@ -25,7 +25,7 @@ mod sites;
 mod tile;
 mod walls;
 
-pub use grade::{CAP_M, FILL_ARM_MAX_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
+pub use grade::{CAP_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
 pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
 pub use residency::{

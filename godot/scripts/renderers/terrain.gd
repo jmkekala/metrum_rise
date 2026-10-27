@@ -3133,7 +3133,10 @@ func _mesh_subdivisions_for_sample_count(
 	return max(0, lod_vertex_count - 2)
 
 func _mesh_subdivision_factor_for_patch(key: Vector2i, sample_step_m: float) -> int:
-	if not engineered_patch_lookup.has(key):
+	# Graded terrain draws a road's patch with its cells, and its PlaneMesh samples the plain base:
+	# a finer grid adds only vertices (the water reflection mirrored them, 5.8 M extra primitives on
+	# the saved Kuopio paths, TERRAIN-07-D round 8).
+	if not engineered_patch_lookup.has(key) or graded_tiles_enabled:
 		return 1
 	return max(1, int(ceili(sample_step_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M)))
 

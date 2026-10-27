@@ -485,8 +485,12 @@ fn a_missing_node_piece_uncovers_its_gap_and_flips_no_other_region() {
     );
 }
 
+// T34 (b) (`TERRAIN-07-D` round 8): under the cut arm the `GL0` triangles across a straight edge
+// stand at most at the seam's height on the seam, on the cut side through it and on the fill side
+// below it by at most `k s / 2`, the sag the skirt covers (the fill arm ran them through the seam
+// on a fill but above it where the ground beyond rose).
 #[test]
-fn gl0_triangles_pass_through_the_seam_height_across_straight_edges() {
+fn gl0_triangles_stay_at_or_below_the_seam_height_across_straight_edges() {
     // A level road on an 8% cross slope: a cut on one side, a fill on the other.
     let mut graph = RegionGraph::new();
     let a = graph.add_node(Vector3::new(-90.0, 0.0, 0.3), NodeType::Junction);
@@ -507,7 +511,7 @@ fn gl0_triangles_pass_through_the_seam_height_across_straight_edges() {
     let (mut pieces, mut segments) = (Vec::new(), Vec::new());
     roadbed.grounded_seams_in_bounds([-40.0, -20.0, 40.0, 20.0], &mut pieces, &mut segments);
     assert!(segments.len() >= 4);
-    let mut worst: f64 = 0.0;
+    let (mut above, mut cut_miss, mut sag): (f64, f64, f64) = (f64::NEG_INFINITY, 0.0, 0.0);
     for [start, end] in &segments {
         if start.x.min(end.x) < -40.0 || start.x.max(end.x) > 40.0 {
             continue;
@@ -515,10 +519,19 @@ fn gl0_triangles_pass_through_the_seam_height_across_straight_edges() {
         for step in 1..8 {
             let t = step as f64 / 8.0;
             let p = *start + (*end - *start) * t;
-            worst = worst.max((surface.ground_height_at(p.x, p.z, &mut scratch) - p.y).abs());
+            let d = surface.ground_height_at(p.x, p.z, &mut scratch) - p.y;
+            above = above.max(d);
+            // The ground rises with z: the seam at the larger z is the cut's.
+            if p.z > 0.3 {
+                cut_miss = cut_miss.max(d.abs());
+            } else {
+                sag = sag.max(-d);
+            }
         }
     }
-    assert!(worst < 1.0e-4, "graded ground misses the seam by {worst} m");
+    assert!(above < 1.0e-4, "the cut edge stands {above} m above the seam");
+    assert!(cut_miss < 1.0e-4, "on the cut the graded ground misses the seam by {cut_miss} m");
+    assert!(sag > 0.0 && sag <= TIE_IN_SLOPE * 0.5 * 0.5 + 1.0e-4, "the fill sags {sag} m");
 }
 
 // TD7 (`T2` (c)): at every seam vertex the graded ground is at least the seam height, exactly

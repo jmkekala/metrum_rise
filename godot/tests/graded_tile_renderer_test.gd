@@ -110,6 +110,8 @@ func _run() -> void:
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
 		int(counters["edit_tiles_last"]), float(counters["edit_install_ms_last"])])
 
+	await _check_moving_camera(graded, resident)
+
 	# Far away every tile is evicted and every slot freed.
 	var far := _resident_patches(host, layout, world_size, 1)
 	for key: Vector2i in far.keys():
@@ -129,6 +131,47 @@ func _run() -> void:
 	await process_frame
 	print("Graded tile renderer tests: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
+
+# T26: the camera climbs away from the junction and back in 40 m steps. In every frame each
+# desired tile has its distance's level with hysteresis around its installed level (the travel
+# buckets re-level only the tiles due), and after the tiles settle at each end every patch's
+# cells, moved per tile, hold what a rewrite of the whole patch writes.
+func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
+	var levels_seen := {}
+	var exact := true
+	for target_height: float in [700.0, 120.0]:
+		var camera := Vector3(0.0, 120.0 if target_height > 120.0 else 700.0, 10.0)
+		while camera.y != target_height:
+			camera.y = move_toward(camera.y, target_height, 40.0)
+			_frame(graded, camera, resident)
+			await process_frame
+			for tile: Vector2i in graded._desired.keys():
+				var installed: Dictionary = graded.installed.get(tile, {})
+				var level: Vector2i = graded.desired_level(graded._tile_distance(tile), int(installed.get("level", -1)))
+				if graded._desired[tile]["level"] != level:
+					exact = false
+		_expect(await _settle(graded, camera, resident), "the tiles settle at %.0f m" % target_height)
+		for tile: Vector2i in graded.installed.keys():
+			levels_seen[int(graded.installed[tile]["level"])] = true
+		for key: Vector2i in graded.patch_cells.keys():
+			var moved := _cell_record(graded.patch_cells[key])
+			graded._rebuild_patch_cells(key, resident)
+			_expect(moved == _cell_record(graded.patch_cells[key]), "patch %s: the per-tile cells equal the patch's rewrite" % key)
+			_check_cells(graded, key, resident)
+	_expect(exact, "every desired tile has its distance's level in every frame")
+	_expect(levels_seen.has(0) and levels_seen.has(2), "the climb moves tiles between levels: %s" % levels_seen)
+
+# Per cell mesh, the sorted custom data of its instances, with the visible counts.
+func _cell_record(cells: Dictionary) -> Array:
+	var out := []
+	var counts: Array[int] = cells["counts"]
+	for index in GradedTiles.CELL_MESHES:
+		var written: Array = []
+		for data: Color in (cells["custom"][index] as Array).slice(0, counts[index]):
+			written.append(str(data))
+		written.sort()
+		out.append([(cells["nodes"][index] as MultiMeshInstance3D).multimesh.visible_instance_count, written])
+	return out
 
 # A stand-in bridge that refuses every tile bake by contract (retry false), as Rust refused round
 # 5's populated GL2 tiles: each patch lists tiles (0, 0) and (1, 0).
@@ -355,13 +398,13 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	var nodes: Array = cells["nodes"]
 	# The headless renderer keeps no MultiMesh custom data; the renderer's own record of what it
 	# wrote stands for it.
-	var instances: Array = cells["instances"]
+	var counts: Array[int] = cells["counts"]
 	for index in nodes.size():
 		var multimesh: MultiMesh = (nodes[index] as MultiMeshInstance3D).multimesh
-		var written: PackedColorArray = instances[index]
+		var written: Array = (cells["custom"][index] as Array).slice(0, counts[index])
 		_expect(multimesh.visible_instance_count == written.size(), "visible instances match the written ones")
 		total += written.size()
-		for data in written:
+		for data: Color in written:
 			# The tile's place in the patch (column + 32 row) and the codes in two channels.
 			var place := int(data.r)
 			var tile: Vector2i = tiles[0] + Vector2i(place % GradedTiles.PATCH_TILE_ROW, place / GradedTiles.PATCH_TILE_ROW)
