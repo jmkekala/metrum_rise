@@ -428,6 +428,49 @@ fn a_terrain_edit_that_steepens_a_road_past_one_in_three_is_refused() {
     assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
 }
 
+// A large stroke's undo restores the terrain before it (`TERRAIN-07-E` round 3, asked after
+// `TERRAIN-07-F` round 2 saw a 120 m stroke's mound stay after undo): a 10 m mound of 120 m
+// radius over a road, gentle enough to keep the road under 1:3, is accepted, and undo restores
+// the source and the visual terrain bit for bit, and the road.
+#[test]
+fn a_large_terrain_stroke_undoes_to_the_terrain_before_it() {
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    commit_ready(
+        &mut core,
+        vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)],
+    );
+    let (source, visual) = (
+        core.heightmap.clone_source_dense(),
+        core.heightmap.clone_visual_dense(),
+    );
+    let profile = core.region_graph.edge(0).physical_geometry.clone();
+    let undo_count = core.undo_stack.len();
+    core.start_terrain_stroke_internal();
+    core.sculpt_terrain_stroke_step_internal(
+        Vector2::new(0.0, 40.0),
+        120.0,
+        10.0 / crate::config::HEIGHT_SCALE,
+    );
+    assert!(core.end_terrain_stroke_internal());
+    assert_eq!(
+        core.undo_stack.len(),
+        undo_count + 1,
+        "the stroke is accepted"
+    );
+    assert!(core.heightmap.clone_source_dense() != source);
+    assert!(core.undo_action_internal());
+    assert!(
+        core.heightmap.clone_source_dense() == source,
+        "the source terrain is restored"
+    );
+    assert!(
+        core.heightmap.clone_visual_dense() == visual,
+        "the visual terrain is restored"
+    );
+    assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
+}
+
 #[test]
 fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
     let mut core = test_core();
