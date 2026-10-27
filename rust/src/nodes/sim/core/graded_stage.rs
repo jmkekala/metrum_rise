@@ -98,10 +98,10 @@ impl SiteSource for PreviewSites<'_> {
 /// work, never on time, measured to fit the 3.0 ms terrain stage on four workers with the
 /// selection (`docs/terrain.md` "Preview, commit, undo and load"); a pose with more tiles
 /// finishes them in the frames after it.
-pub(crate) const POSE_FRAME_TILES: usize = 4;
+pub(crate) const POSE_FRAME_TILES: usize = 1;
 
 /// Tiles a catch-up frame stages at most: a frame without a new pose has no selection.
-pub(crate) const CATCH_UP_FRAME_TILES: usize = 6;
+pub(crate) const CATCH_UP_FRAME_TILES: usize = 3;
 
 /// One frame's graded tiles of the road tool's preview: the tiles shown after it, or why the
 /// frame could not stage them, with what the frame staged.

@@ -1136,6 +1136,82 @@ fn a_kuopio_drag_converges_to_the_tiles_it_commits() {
     assert_eq!(record["fast_undo"]["digest"], record["undo"]["digest"], "{record}");
 }
 
+// T27 (d) diagnostic: each tile of `METRUM_DRAG_CASE`'s stroke `METRUM_DRAG_ATTEMPT` (the
+// case's earlier strokes committed first), baked alone at the stroke's full pose, a few times:
+// a frame's share cannot be faster than its slowest tile.
+#[test]
+#[ignore = "TERRAIN-07-E diagnostic: METRUM_DRAG_CASE=kuopio_08 METRUM_DRAG_ATTEMPT=22 cargo test --release --lib kuopio_drag_tile_costs -- --ignored --nocapture"]
+fn kuopio_drag_tile_costs() {
+    use crate::nodes::sim::core::road_tool_context::RoadPreviewContext;
+    use crate::simulation::terrain::graded::{Level, bake_tiles};
+    let manifest = kuopio_manifest();
+    let case_id = std::env::var("METRUM_DRAG_CASE").unwrap();
+    let attempt: i64 = std::env::var("METRUM_DRAG_ATTEMPT").unwrap().parse().unwrap();
+    let case = manifest["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["case_id"] == case_id.as_str())
+        .expect("the case");
+    let mut core = kuopio_source_core();
+    for stroke in case["segments"].as_array().unwrap() {
+        if stroke["attempt"].as_i64() != Some(attempt) {
+            commit_recorded_stroke(&mut core, stroke);
+            continue;
+        }
+        let ends = ["start_xz", "end_xz"]
+            .map(|key| [0, 1].map(|i| stroke[key][i].as_f64().unwrap() as f32));
+        let lanes = ["fwd_lanes", "bkw_lanes"].map(|key| stroke[key].as_i64().unwrap() as i32);
+        core.precompute_road_mesh_data();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let points = road_tool_points(&mut core, ends);
+        core.refresh_road_terrain_inputs();
+        let mut context = RoadPreviewContext::capture(
+            road_tool_snapshot_from_core(&core).expect("current roadbed"),
+        );
+        let drag = super::graded_stage::drag(&mut context, &[points], lanes, true);
+        let pieces = drag.preview.pieces.as_ref().expect("the pose's pieces");
+        let stage = pieces.graded.stage.as_ref().expect("the pose's tiles");
+        let end = ends[1];
+        // `METRUM_DRAG_TILE_REPS` repeats each bake (a profile's samples), 7 by default.
+        let reps: usize = std::env::var("METRUM_DRAG_TILE_REPS")
+            .ok()
+            .and_then(|reps| reps.parse().ok())
+            .unwrap_or(7);
+        for held in stage.tiles() {
+            let mut out = Vec::new();
+            let mut times = Vec::new();
+            for _ in 0..reps {
+                let start = std::time::Instant::now();
+                bake_tiles(
+                    &core.heightmap,
+                    &pieces.roadbed,
+                    &core.allocator,
+                    &[held.tile],
+                    Level::Gl0,
+                    &mut out,
+                )
+                .expect("the tile bakes");
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            times.sort_by(f64::total_cmp);
+            let median = times[times.len() / 2];
+            let [x, z] = held.tile.origin();
+            eprintln!(
+                "GRADED_TILE_COST {}",
+                serde_json::json!({
+                    "tile": [held.tile.x, held.tile.z], "median_ms": median, "min_ms": times[0],
+                    "end_distance_m": ((x + 32.0 - f64::from(end[0])).hypot(z + 32.0 - f64::from(end[1]))),
+                    "stats": format!("{:?}", out[0].stats), "walls": out[0].walls.len(),
+                    "seams": out[0].seams.len(), "graded": out[0].graded,
+                })
+            );
+        }
+        return;
+    }
+}
+
 // One recorded stroke as the drags and clicks of `drag_and_click`, then committed again (see
 // `benchmark_kuopio_graded_drags`); the poses' ends at the heights the road tool picks.
 fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Value {
