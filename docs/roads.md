@@ -7582,7 +7582,7 @@ commit window (it then started before the terrain state).
 
 Diagnostic after the levers (fresh, 06:32-06:41, a heavy run, not a session: `.run.lock` and
 the shared timing lock, P-cores, eight workers, saved cities, no compiler running, one C and one
-F run): C as above against `540d7b9d` (sha256 `40777b93…`). Click → ack per sample: 0 tier
+F run): C as above against `540d7b9d` (sha256 `40777b93…`). Click → ack per sample: tier 0
 8.21 / 7.63, 5.28 / 4.72, 3.84 / 3.34; 10k 29.97 / 17.21, 16.38 / 7.68, 5.51 / 4.49; 30k
 25.74 / 16.42, 10.31 / 7.87, 10.20 / 6.81; 100k 25.63 / 15.45, 15.41 / 10.10, 9.91 / 5.63 ms.
 The tool snapshot at 100k falls from 2.17-2.33 to 0.52-0.71 ms; `COMMIT_PRODUCTS` equal C's
