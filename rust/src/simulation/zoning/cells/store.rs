@@ -336,6 +336,55 @@ impl<M: CellMaps> CellStore<M> {
         )
     }
 
+    /// Test-only [`Self::digests`] of the cells whose centre `keep` accepts, with each grid
+    /// named by its frame and each lot id and frontage road by `lot` and `road`, so stores whose
+    /// ids differ compare by what their ids name (`ROAD-68-G` part 8, the commit locality
+    /// fixture). The valid masks follow their block's first cell.
+    #[cfg(test)]
+    pub(crate) fn digests_by<L: Ord + std::fmt::Debug, R: Ord + std::fmt::Debug>(
+        &self,
+        keep: impl Fn(DVec2) -> bool,
+        lot: impl Fn(u64) -> L,
+        road: impl Fn(usize) -> R,
+    ) -> (u64, u64) {
+        use crate::debug::work::debug_hash;
+        let frame = |grid| self.frame(grid).expect("every stored cell's grid has a frame");
+        let local = |key: CellKey| {
+            keep(frame(key.grid).world(f64::from(key.x) + 0.5, f64::from(key.y) + 0.5))
+        };
+        let named = |key: CellKey| (frame(key.grid), key.x, key.y);
+        let mut claims = Vec::new();
+        let mut valid = Vec::new();
+        for (&key, block) in self.blocks.iter() {
+            if local(key.cell(0)) {
+                valid.push((named(key.cell(0)), block.valid));
+            }
+            for offset in 0..BLOCK_CELLS {
+                let cell = key.cell(offset);
+                if (block.profiles[offset] != 0 || block.lots[offset] != 0) && local(cell) {
+                    let named_lot = (block.lots[offset] != 0).then(|| lot(block.lots[offset]));
+                    claims.push((named(cell), block.profiles[offset], named_lot));
+                }
+            }
+        }
+        claims.sort_unstable();
+        valid.sort_unstable();
+        let mut frontages: Vec<_> = self
+            .frontages
+            .iter()
+            .filter(|&(&key, _)| local(key))
+            .map(|(&key, list)| {
+                let list: Vec<_> = list
+                    .iter()
+                    .map(|f| (road(f.edge), f.side, f.boundary, f.start, f.end))
+                    .collect();
+                (named(key), list)
+            })
+            .collect();
+        frontages.sort_unstable();
+        (debug_hash(&claims), debug_hash(&(valid, frontages)))
+    }
+
     /// Test-only digest of everything a copy must equal, independent of map order: frames,
     /// every block, chunk entry (its lists in their order), frontage list and curve source,
     /// the alignments, counts and revision. The stale-chunk list and the journal are left out.

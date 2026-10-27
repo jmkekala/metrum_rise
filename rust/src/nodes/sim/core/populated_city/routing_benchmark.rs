@@ -955,7 +955,10 @@ fn benchmark_populated_work_counts() {
 // (`commit_city`); `COMMIT_FIXTURE` says where each city came from, `COMMIT_SETUP` where the
 // untimed setup went, and `COMMIT_PRODUCTS` lists the products two runs must share bitwise.
 // `ROAD-68-K24` (open question 50): the test-only checks are off, as in the economy runners, so
-// the reported stages and frames hold no verification work.
+// the reported stages and frames hold no verification work. `ROAD-68-G` part 8: the first frame
+// after the commit starts at once, or with `METRUM_COMMIT_NEXT_TICK=frame` one frame after the
+// commit returned, as the sim thread steps it (question 58); `jobs` lists each background job
+// that ran in the sample (spawn site, start, end, ms since the click).
 #[test]
 #[ignore = "release ROAD-68-G commit breakdown; loads or builds the requested cities outside timing"]
 fn benchmark_populated_commit_breakdown() {
@@ -965,7 +968,7 @@ fn benchmark_populated_commit_breakdown() {
         let (mut core, mut fixture) = commit_city(residents);
         fixture["city_s"] = started.elapsed().as_secs_f64().into();
         eprintln!("COMMIT_FIXTURE {fixture}");
-        let products = profile_commits(residents, &mut core);
+        let products = profile_commits(residents, &mut core, true);
         eprintln!("COMMIT_PRODUCTS {products}");
     }
 }
@@ -1115,12 +1118,16 @@ fn commit_breakdown_products_survive_the_snapshot() {
             .expect("system clock must be after Unix epoch")
             .as_nanos()
     ));
-    let built = profile_commits(residents, &mut PopulatedCity::build(residents).core);
+    let built = profile_commits(
+        residents,
+        &mut PopulatedCity::build(residents).core,
+        true,
+    );
     let (generation, _) = super::snapshot::ensure_commit_snapshot(residents, &cache_dir);
     assert!(generation.is_some());
     let mut loaded = super::snapshot::load_commit_snapshot(residents, &cache_dir).core;
     std::fs::remove_dir_all(&cache_dir).expect("remove the temporary snapshot directory");
-    assert_eq!(built, profile_commits(residents, &mut loaded));
+    assert_eq!(built, profile_commits(residents, &mut loaded, true));
 }
 
 fn commit_tiers() -> Vec<u32> {
@@ -1171,10 +1178,13 @@ fn road_vertices(core: &crate::nodes::sim::core::state::SimCore) -> usize {
 }
 
 // The tier's commits, stage by stage; returns the products that must not depend on where the
-// city came from (`ROAD-68-K22`), and logs the untimed setup's phases as `COMMIT_SETUP`.
-fn profile_commits(
+// city came from (`ROAD-68-K22`), and logs the untimed setup's phases as `COMMIT_SETUP`. After
+// the commits a middle building is removed for the graded site stage when `remove_site` is set
+// (not in the locality fixture, where the middle building is a background one).
+pub(super) fn profile_commits(
     residents: u32,
     core: &mut crate::nodes::sim::core::state::SimCore,
+    remove_site: bool,
 ) -> serde_json::Value {
     use crate::nodes::sim::core::frame::FRAME_DT_S;
 
@@ -1252,6 +1262,11 @@ fn profile_commits(
     // its commit, untimed, and commits with the last pose's preview, as the game does
     // (`TERRAIN-07-E`): the graded stage then adopts the pose's tiles instead of baking the edit.
     let preview_mode = std::env::var_os("METRUM_COMMIT_PREVIEW").is_some();
+    let next_tick_frame = match std::env::var("METRUM_COMMIT_NEXT_TICK").as_deref() {
+        Ok("frame") => true,
+        Ok("once") | Err(_) => false,
+        Ok(other) => panic!("METRUM_COMMIT_NEXT_TICK must be once or frame, not {other}"),
+    };
     for (sample, start) in starts.into_iter().enumerate() {
         // Godot also uploads and acknowledges every terrain patch dirtied before the click
         // (`acknowledge_uploads`), so the commit's road-locked terrain state walks its own.
@@ -1283,9 +1298,11 @@ fn profile_commits(
         });
         crate::debug::Channel::EconomyPhases.set_enabled(phases);
         profile_control("enable");
+        crate::thread_pools::spans::start();
         let road_total = Instant::now();
         let outcome = commit_trunk_branch(core, start, road_total, preview);
-        let commit_ms = road_total.elapsed().as_secs_f64() * 1e3;
+        let commit_end = Instant::now();
+        let commit_ms = commit_end.duration_since(road_total).as_secs_f64() * 1e3;
         profile_control("disable");
         crate::debug::Channel::EconomyPhases.set_enabled(false);
         assert!(
@@ -1306,6 +1323,10 @@ fn profile_commits(
         // The first frame adopts the commit's deferred cell lots (`ROAD-68-G` part 7). It is
         // the routing hold's, which advances nothing, so the zoning products after it are the
         // commit's, as a build that plans the lots in the commit leaves them before any frame.
+        if next_tick_frame {
+            let tick = commit_end + std::time::Duration::from_micros(16_667);
+            std::thread::sleep(tick.saturating_duration_since(Instant::now()));
+        }
         let adopt = Instant::now();
         let first = core.step_frame(FRAME_DT_S);
         let first_frame_ms = adopt.elapsed().as_secs_f64() * 1e3;
@@ -1371,6 +1392,14 @@ fn profile_commits(
             .and_then(|record| record.graded.as_ref())
             .and_then(|graded| graded.wait().ok().and(graded.span()))
             .map(|(start, end)| [since_click(start), since_click(end)]);
+        let jobs: Vec<_> = crate::thread_pools::spans::take()
+            .into_iter()
+            .map(|(at, start, end)| {
+                let file = at.file().rsplit('/').next().unwrap_or(at.file());
+                serde_json::json!([format!("{file}:{}", at.line()), since_click(start),
+                    since_click(end)])
+            })
+            .collect();
         // Isolated costs, after the measured path: the snapshot's clones and the hierarchy.
         let time = |run: &mut dyn FnMut()| {
             let begin = Instant::now();
@@ -1409,6 +1438,9 @@ fn profile_commits(
             "lots_adopted": first.lots.adopted, "lots_frame_ms": first_frame_ms,
             "lots_wait_ms": first.lots_wait_ms, "lots_install_ms": first.lots.install_ms,
             "lots_publish_ms": first.lots.publish_ms,
+            "lots_plan_install_ms": first.lots.plan_install_ms,
+            "lots_reattach_ms": first.lots.reattach_ms, "lots_repair_ms": first.lots.repair_ms,
+            "next_tick": if next_tick_frame { "frame" } else { "once" },
             "adoption_latency_ms": adoption_latency_ms,
             "adoption_frame_pathing_ms": next.pathing_ms,
             "adoption_frame_agent_ms": next.agent_ms,
@@ -1416,7 +1448,7 @@ fn profile_commits(
             "following_frame_pathing_ms": after.pathing_ms,
             "following_frame_agent_ms": after.agent_ms,
             "adoption_start_ms": since_click(adopt), "frames_end_ms": frames_end_ms,
-            "kept_job_ms": kept_job,
+            "kept_job_ms": kept_job, "jobs": jobs,
             "terrain_clone_ms": terrain_clone_ms, "graph_clone_ms": graph_clone_ms,
             "graph_drop_ms": graph_drop_ms,
             "roadbed_clone_ms": roadbed_clone_ms, "water_clone_ms": water_clone_ms,
@@ -1465,7 +1497,9 @@ fn profile_commits(
             "copy_ms": copy_ms})
     );
     let cell_copy_s = lap();
-    let removal = graded_site_removal(residents, core);
+    let removal = remove_site
+        .then(|| graded_site_removal(residents, core))
+        .flatten();
     let site_removal_s = lap();
     eprintln!(
         "COMMIT_SETUP {}",

@@ -13,6 +13,8 @@
 #[cfg(test)]
 pub(super) mod census_churn;
 #[cfg(test)]
+mod commit_locality;
+#[cfg(test)]
 mod contract;
 #[cfg(test)]
 mod envelope;
@@ -292,6 +294,17 @@ pub(super) fn zoned_city(side_m: f32) -> SimCore {
     core
 }
 
+// [`zoned_city`] in a square world `world_m` wide instead of the grid's own margin, its trunk
+// continuing to that world's west edge (`ROAD-68-G` part 8, the commit locality fixture).
+#[cfg(test)]
+fn zoned_city_in_world(side_m: f32, world_m: f32) -> SimCore {
+    let (mut core, row_z, half_x) =
+        street_grid_in_world(side_m, crosses_for(side_m), Some(world_m));
+    paint_districts(&mut core, &row_z, half_x);
+    fill_lots(&mut core);
+    core
+}
+
 // Zones every row street in the repeating district pattern with the player's brush.
 fn paint_districts(core: &mut SimCore, row_z: &[f32], half_x: f32) {
     let brush = CellSelectionShape::Brush {
@@ -322,10 +335,19 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
 
 // `street_grid` with `crosses` cross streets instead of the side's floored count.
 fn street_grid_with_crosses(side_m: f32, crosses: usize) -> (SimCore, Vec<f32>, f32) {
+    street_grid_in_world(side_m, crosses, None)
+}
+
+// `street_grid_with_crosses` in a world `world_m` wide, or the grid's own margin around it.
+fn street_grid_in_world(
+    side_m: f32,
+    crosses: usize,
+    world_m: Option<f32>,
+) -> (SimCore, Vec<f32>, f32) {
     let rows = (side_m / ROW_SPACING_M) as usize + 1;
     let half_x = (crosses - 1) as f32 * CROSS_SPACING_M * 0.5;
     let half_z = (rows - 1) as f32 * ROW_SPACING_M * 0.5;
-    let world = 2.0 * half_x.max(half_z) + 2.0 * WORLD_MARGIN_M;
+    let world = world_m.unwrap_or(2.0 * half_x.max(half_z) + 2.0 * WORLD_MARGIN_M);
     let mut core = SimCore {
         treasury: CityTreasury::new(FUNDED_TREASURY),
         benchmark_mode: true,
