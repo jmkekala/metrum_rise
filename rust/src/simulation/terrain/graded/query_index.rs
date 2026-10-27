@@ -7,13 +7,11 @@
 //! cap/apron reach as dirty-tile selection; a world replacement rebuilds the sparse set.
 
 use super::grade::CAP_M;
-use super::seams::{Seam, road_seam};
-use super::sites::{SiteBuffer, SiteSource};
+use super::seams::road_seam;
+use super::sites::SiteSource;
 use super::tile::{TILE_M, TileKey, grown};
 use crate::simulation::buildings::allocator::{BuildingAllocator, SiteChange};
-use crate::simulation::network::roadbed::{
-    PieceId, RoadVec3, RoadbedSystem, TerrainChanges, WallSegment,
-};
+use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
 use std::collections::{BTreeMap, BTreeSet};
 
 // The rendered `GL0` tile's one-lattice-point apron also covers a point normal's central
@@ -24,39 +22,26 @@ const WINDOW_PAD_M: f64 = 1.0;
 // the tile rebuild itself still filters every input against the exact complete-tile window.
 const CHANGE_PAD_M: f64 = QUERY_APRON_M + WINDOW_PAD_M + 2.0;
 
-/// Inputs any graded query point in one 64 m tile can need. Coverage keeps the local piece ids
-/// so point preparation can retain each piece's exact triangle-grid candidate order.
+/// Owner references any graded query point in one 64 m tile can need. Road seams and walls are
+/// read from `road_pieces`; coverage keeps its narrower piece list so point preparation retains
+/// each piece's exact triangle-grid candidate order. Sites stay in the allocator's `SiteCells`.
 #[derive(Clone, Default)]
 pub(super) struct QueryTileInputs {
-    pub(super) road_seams: Vec<Seam>,
+    pub(super) road_pieces: Vec<PieceId>,
     pub(super) coverage_pieces: Vec<PieceId>,
-    pub(super) walls: Vec<Seam>,
-    pub(super) sites: SiteBuffer,
 }
 
 impl QueryTileInputs {
     fn is_empty(&self) -> bool {
-        self.road_seams.is_empty()
-            && self.coverage_pieces.is_empty()
-            && self.walls.is_empty()
-            && self.sites.is_empty()
+        self.road_pieces.is_empty() && self.coverage_pieces.is_empty()
     }
 
     #[cfg(test)]
     fn bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.road_seams.capacity() * std::mem::size_of::<Seam>()
+            + self.road_pieces.capacity() * std::mem::size_of::<PieceId>()
             + self.coverage_pieces.capacity() * std::mem::size_of::<PieceId>()
-            + self.walls.capacity() * std::mem::size_of::<Seam>()
-            + self.sites.estimated_bytes()
     }
-}
-
-#[derive(Default)]
-struct BuildScratch {
-    pieces: Vec<PieceId>,
-    segments: Vec<[RoadVec3; 2]>,
-    wall_segments: Vec<WallSegment>,
 }
 
 /// Sparse per-tile candidate inputs used by every production graded point query.
@@ -81,12 +66,38 @@ impl Default for TerrainQueryIndex {
 }
 
 impl TerrainQueryIndex {
-    pub(super) fn get(&self, tile: TileKey) -> Option<&QueryTileInputs> {
-        if self.ready {
-            self.tiles.get(&tile)
-        } else {
-            None
+    /// Collects the canonical owner ids from every indexed tile `rect` touches. A point reads
+    /// one tile; a prepared vehicle-support window may read up to four. Duplicate owners at a
+    /// tile boundary collapse back to the roadbed gather's ascending piece order.
+    pub(super) fn gather(
+        &self,
+        rect: [f64; 4],
+        road_pieces: &mut Vec<PieceId>,
+        coverage_pieces: &mut Vec<PieceId>,
+    ) -> bool {
+        road_pieces.clear();
+        coverage_pieces.clear();
+        if !self.ready {
+            return false;
         }
+        let first = TileKey::at(rect[0], rect[1]);
+        let last = TileKey::at(rect[2], rect[3]);
+        let mut found = false;
+        for x in first.x..=last.x {
+            for z in first.z..=last.z {
+                let Some(inputs) = self.tiles.get(&TileKey { x, z }) else {
+                    continue;
+                };
+                found = true;
+                road_pieces.extend_from_slice(&inputs.road_pieces);
+                coverage_pieces.extend_from_slice(&inputs.coverage_pieces);
+            }
+        }
+        road_pieces.sort_unstable();
+        road_pieces.dedup();
+        coverage_pieces.sort_unstable();
+        coverage_pieces.dedup();
+        found
     }
 
     pub(super) fn ready(&self) -> bool {
@@ -113,9 +124,8 @@ impl TerrainQueryIndex {
             push_tiles(grown(bounds, CAP_M + CHANGE_PAD_M), &mut keys);
         }
         self.tiles.clear();
-        let mut scratch = BuildScratch::default();
         for key in keys {
-            self.rebuild_tile(key, roadbed, sites, &mut scratch);
+            self.rebuild_tile(key, roadbed, sites);
         }
         self.ready = true;
         self.generation = self.generation.wrapping_add(1);
@@ -188,55 +198,42 @@ impl TerrainQueryIndex {
         roadbed: &RoadbedSystem,
         sites: &BuildingAllocator,
     ) {
-        let mut scratch = BuildScratch::default();
         for key in keys {
-            self.rebuild_tile(key, roadbed, sites, &mut scratch);
+            self.rebuild_tile(key, roadbed, sites);
         }
     }
 
-    fn rebuild_tile(
-        &mut self,
-        key: TileKey,
-        roadbed: &RoadbedSystem,
-        sites: &BuildingAllocator,
-        scratch: &mut BuildScratch,
-    ) {
+    fn rebuild_tile(&mut self, key: TileKey, roadbed: &RoadbedSystem, sites: &BuildingAllocator) {
         let [x, z] = key.origin();
         let rect = grown([x, z, x + TILE_M, z + TILE_M], QUERY_APRON_M);
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
         let mut inputs = QueryTileInputs::default();
-        roadbed.grounded_seams_in_bounds(window, &mut scratch.pieces, &mut scratch.segments);
-        inputs
-            .road_seams
-            .extend(scratch.segments.iter().map(|&[a, b]| road_seam(a, b)));
-        roadbed.grounded_pieces_in_bounds(grown(rect, 0.02), &mut scratch.pieces);
-        inputs.coverage_pieces.extend_from_slice(&scratch.pieces);
-        inputs.sites.gather(sites, window);
-        roadbed.grounded_pieces_in_bounds(window, &mut scratch.pieces);
-        roadbed.wall_seams_in_bounds(window, &scratch.pieces, &mut scratch.wall_segments);
-        inputs
-            .walls
-            .extend(scratch.wall_segments.iter().map(|wall| {
-                let [a, b] = wall.points;
-                Seam {
-                    kind: super::seams::SeamKind::Wall,
-                    ..road_seam(a, b)
-                }
-            }));
-        if inputs.is_empty() {
+        roadbed.grounded_pieces_in_bounds(window, &mut inputs.road_pieces);
+        roadbed.grounded_pieces_in_bounds(grown(rect, 0.02), &mut inputs.coverage_pieces);
+        let has_sites = sites.any_graded_site_in_bounds(window);
+        if inputs.is_empty() && !has_sites {
             self.tiles.remove(&key);
         } else {
             self.tiles.insert(key, inputs);
         }
     }
 
-    /// Active tile count and retained input bytes (including vector capacities, excluding tree
-    /// node allocator overhead).
+    /// Active tile count and retained bytes, including vector capacities and a conservative
+    /// per-entry allowance for the `BTreeMap` keys, links and partially filled nodes.
     #[cfg(test)]
     pub(crate) fn memory(&self) -> (usize, usize) {
         (
             self.tiles.len(),
-            self.tiles.values().map(|inputs| inputs.bytes()).sum(),
+            std::mem::size_of::<Self>()
+                + self
+                    .tiles
+                    .values()
+                    .map(|inputs| {
+                        inputs.bytes()
+                            + std::mem::size_of::<TileKey>()
+                            + 3 * std::mem::size_of::<usize>()
+                    })
+                    .sum::<usize>(),
         )
     }
 
@@ -249,10 +246,7 @@ impl TerrainQueryIndex {
             let Some(b) = other.tiles.get(key) else {
                 return false;
             };
-            a.road_seams == b.road_seams
-                && a.coverage_pieces == b.coverage_pieces
-                && a.walls == b.walls
-                && a.sites.same_inputs(&b.sites)
+            a.road_pieces == b.road_pieces && a.coverage_pieces == b.coverage_pieces
         })
     }
 
@@ -272,16 +266,14 @@ impl TerrainQueryIndex {
                 return format!("missing tile {key:?}");
             };
             let equal = [
-                a.road_seams == b.road_seams,
+                a.road_pieces == b.road_pieces,
                 a.coverage_pieces == b.coverage_pieces,
-                a.walls == b.walls,
-                a.sites.same_inputs(&b.sites),
             ];
             if !equal.into_iter().all(|value| value) {
                 return format!(
                     "tile {key:?} equal {equal:?} lengths {:?}/{:?}",
-                    [a.road_seams.len(), a.coverage_pieces.len(), a.walls.len()],
-                    [b.road_seams.len(), b.coverage_pieces.len(), b.walls.len()],
+                    [a.road_pieces.len(), a.coverage_pieces.len()],
+                    [b.road_pieces.len(), b.coverage_pieces.len()],
                 );
             }
         }

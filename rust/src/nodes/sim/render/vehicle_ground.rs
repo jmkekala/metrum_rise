@@ -30,17 +30,30 @@ impl SimCore {
         }) {
             return self.vehicle_ground_pose_exact(vehicle, position, heading);
         }
+        let support = self
+            .vehicle_ground_support
+            .get(vehicle as usize)
+            .unwrap_or(&self.vehicle_ground_support[0]);
         self.with_graded_surface(|surface, scratch| {
-            let (height, normal) = surface.surface_height_and_normal_at(
-                f64::from(position.x),
-                f64::from(position.y),
-                scratch,
-            );
+            let (x, z) = (f64::from(position.x), f64::from(position.y));
+            surface.gather_near(x, z, f64::from(support.reach_m) + CONTACT_SLACK_M, scratch);
+            let (height, normal) = surface.surface_height_and_normal_near(x, z, scratch);
             let heading = horizontal_heading(heading);
-            (
-                height as f32 + VEHICLE_SURFACE_CLEARANCE_M,
-                ground_vehicle_basis(heading, Vector3::from_array(normal.map(|v| v as f32))),
-            )
+            let basis = ground_vehicle_basis(
+                heading,
+                Vector3::from_array(normal.map(|value| value as f32)),
+            );
+            let mut support_y = height as f32;
+            for point in &support.contacts {
+                let offset = basis[0] * point.x + basis[1] * point.y + basis[2] * point.z;
+                let contact = position + Vector2::new(offset.x, offset.z);
+                support_y = support_y.max(
+                    surface.surface_height_near(f64::from(contact.x), f64::from(contact.y), scratch)
+                        as f32
+                        - offset.y,
+                );
+            }
+            (support_y + VEHICLE_SURFACE_CLEARANCE_M, basis)
         })
     }
 

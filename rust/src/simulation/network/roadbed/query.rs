@@ -443,6 +443,40 @@ impl RoadbedSystem {
         out.dedup_by_key(|segment| key(segment));
     }
 
+    /// Appends the grounded outer-chain segments from an already-local candidate piece list,
+    /// preserving [`Self::grounded_seams_in_bounds`]'s canonical segment order and deduplication.
+    pub(crate) fn grounded_seams_from_pieces(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &[PieceId],
+        out: &mut Vec<[RoadVec3; 2]>,
+    ) {
+        out.clear();
+        for id in pieces {
+            let Some(published) = self.pieces.get(id).filter(|piece| piece.grounded()) else {
+                continue;
+            };
+            let mesh = published.mesh();
+            for block in mesh.seam_blocks() {
+                if !bounds_intersect(block.bounds_xz, bounds_xz) {
+                    continue;
+                }
+                let chain = mesh.outer_chains()[block.chain as usize].vertices();
+                let (first, last) = (block.vertices.0 as usize, block.vertices.1 as usize);
+                for pair in chain[first..=last].windows(2) {
+                    let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                    let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
+                    if bounds_intersect(segment, bounds_xz) {
+                        out.push([a, b]);
+                    }
+                }
+            }
+        }
+        let key = |[a, b]: &[RoadVec3; 2]| [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits);
+        out.sort_unstable_by_key(key);
+        out.dedup_by_key(|segment| key(segment));
+    }
+
     /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order: a segment two
     /// pieces share is visited twice. `O(P log P + V / 8 + S)` for the `S` segments in the runs
     /// of eight that meet the bounds.

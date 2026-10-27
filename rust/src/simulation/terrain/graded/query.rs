@@ -82,6 +82,9 @@ pub struct QueryScratch {
     grounded: GroundedPieceScratch,
     coverage: Vec<[RoadVec3; 3]>,
     pieces: Vec<PieceId>,
+    indexed_road_pieces: Vec<PieceId>,
+    indexed_coverage_pieces: Vec<PieceId>,
+    road_segments: Vec<[RoadVec3; 2]>,
     wall_segments: Vec<WallSegment>,
     walls: Vec<Seam>,
     sites: SiteBuffer,
@@ -192,16 +195,37 @@ impl GradedSurface<'_> {
         (height, self.normal_prepared(&cell, scratch))
     }
 
+    /// Visible height and rendered normal from the last [`Self::gather_near`]. The prepared
+    /// window is retained for subsequent contact heights; a point outside it is prepared alone.
+    pub(crate) fn surface_height_and_normal_near(
+        &self,
+        x: f64,
+        z: f64,
+        scratch: &mut QueryScratch,
+    ) -> (f64, [f64; 3]) {
+        if let Some((height, normal)) = self.roadbed.height_and_normal_at(x as f32, z as f32) {
+            return (f64::from(height), normal.to_array().map(f64::from));
+        }
+        let cell = Cell::at(x, z);
+        if !scratch.rect.is_some_and(|rect| holds(rect, cell.rect(1))) {
+            let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
+            self.prepare(grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M), scratch);
+        }
+        let [tx, tz] = [x, z].map(|value| (value / TILE_M).floor() * TILE_M);
+        let tile = grown([tx, tz, tx + TILE_M, tz + TILE_M], GL0_M);
+        let height = if self.quiet_for(tile, x, z, scratch) {
+            scratch.base.at(x, z)
+        } else {
+            self.ground_prepared(&cell, scratch)
+        };
+        (height, self.normal_prepared(&cell, scratch))
+    }
+
     /// Prepares the `_near` queries ([`Self::ground_height_near`], [`Self::surface_height_near`])
     /// for every point within `reach` metres of `(x, z)` on each axis: one gather for clustered
     /// points, such as a vehicle's contacts. The window is wider than one point's, so it lists
     /// more seams; every value stays exact.
     pub fn gather_near(&self, x: f64, z: f64, reach: f64, scratch: &mut QueryScratch) {
-        if self.query_index.is_some_and(TerrainQueryIndex::ready) {
-            scratch.rect = None;
-            scratch.portal_rect = None;
-            return;
-        }
         // A seam anywhere in a rendered tile switches that tile from bilinear base to its `GL0`
         // lattice. Gather the complete tiles the points may occupy so `_near` makes the same
         // tile-level choice as an independent point query.
@@ -492,8 +516,6 @@ impl GradedSurface<'_> {
     // the `K` seams of the runs and sites that may bind.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
         if let Some(index) = self.query_index.filter(|index| index.ready()) {
-            let tile =
-                super::tile::TileKey::at((rect[0] + rect[2]) * 0.5, (rect[1] + rect[3]) * 0.5);
             if scratch.rect == Some(rect) && scratch.index_generation == index.generation() {
                 return;
             }
@@ -514,33 +536,48 @@ impl GradedSurface<'_> {
                         band,
                     )
             };
-            if let Some(inputs) = index.get(tile) {
+            let found = index.gather(
+                rect,
+                &mut scratch.indexed_road_pieces,
+                &mut scratch.indexed_coverage_pieces,
+            );
+            if found {
                 scratch.coverage.clear();
                 gather_from_pieces(
                     self.roadbed,
                     rect,
-                    &inputs.coverage_pieces,
+                    &scratch.indexed_coverage_pieces,
                     &mut scratch.coverage,
                 );
-                scratch.sites.copy_inputs_in_bounds_from(&inputs.sites, window);
-                scratch.walls.clear();
-                scratch.walls.extend(
-                    inputs
-                        .walls
-                        .iter()
-                        .copied()
-                        .filter(|seam| meets(seam.box_xz(), window)),
+                scratch.sites.gather_unordered(self.sites, window);
+                self.roadbed.grounded_seams_from_pieces(
+                    window,
+                    &scratch.indexed_road_pieces,
+                    &mut scratch.road_segments,
                 );
-                for seam in &inputs.road_seams {
-                    if !meets(seam.box_xz(), window) {
-                        continue;
-                    }
-                    if binds(seam, band) {
-                        scratch.window.push(*seam);
+                scratch.walls.clear();
+                self.roadbed.wall_seams_in_bounds(
+                    window,
+                    &scratch.indexed_road_pieces,
+                    &mut scratch.wall_segments,
+                );
+                scratch
+                    .walls
+                    .extend(scratch.wall_segments.iter().map(|wall| {
+                        let [a, b] = wall.points;
+                        Seam {
+                            kind: super::seams::SeamKind::Wall,
+                            ..road_seam(a, b)
+                        }
+                    }));
+                for &[a, b] in &scratch.road_segments {
+                    let seam = road_seam(a, b);
+                    if binds(&seam, band) {
+                        scratch.window.push(seam);
                     } else {
                         let distance = box_distance(seam.box_xz(), rect);
                         if distance <= CAP_M + WINDOW_PAD_M {
-                            scratch.rest.push((*seam, distance));
+                            scratch.rest.push((seam, distance));
                         }
                     }
                 }

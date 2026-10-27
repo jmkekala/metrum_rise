@@ -1607,16 +1607,33 @@ fn vehicle_ground_lod_keeps_boundary_exact_and_shares_the_far_pose() {
     );
 
     let camera = boundary + Vector2::new(0.25, 0.0);
-    let expected = core.with_graded_surface(|surface, scratch| {
+    let (centre_height, expected_basis) = core.with_graded_surface(|surface, scratch| {
         let (height, normal) =
             surface.surface_height_and_normal_at(f64::from(point.x), f64::from(point.y), scratch);
         (
-            height as f32 + 0.02,
+            height as f32,
             ground_vehicle_basis(heading, Vector3::from_array(normal.map(|v| v as f32))),
         )
     });
+    let mut support_y = centre_height;
+    for contact in core.vehicle_ground_support[0].contacts() {
+        let offset = expected_basis[0] * contact.x
+            + expected_basis[1] * contact.y
+            + expected_basis[2] * contact.z;
+        support_y = support_y.max(
+            core.get_world_surface_height_internal(point + Vector2::new(offset.x, offset.z))
+                - offset.y,
+        );
+    }
+    let expected = (support_y + 0.02, expected_basis);
     let far = core.vehicle_ground_pose(0, point, heading, Some(camera));
     assert_eq!(bits(far), bits(expected));
+    for contact in core.vehicle_ground_support[0].contacts() {
+        let offset = far.1[0] * contact.x + far.1[1] * contact.y + far.1[2] * contact.z;
+        let ground =
+            core.get_world_surface_height_internal(point + Vector2::new(offset.x, offset.z));
+        assert!(far.0 + offset.y - ground >= 0.019_999);
+    }
 
     let mut transform = vec![
         1.0, 0.0, 0.0, point.x, 0.0, 1.0, 0.0, -100.0, 0.0, 0.0, 1.0, point.y,
