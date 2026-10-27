@@ -77,9 +77,11 @@ var tile_tokens: Dictionary = {}
 # until every tile of the batch has one, then install in the same frame.
 var _edit_batch: Dictionary = {}
 var _edit_staged: Dictionary = {}
-# Results polled after the frame's install budget ran out, in poll order: the next frame installs
-# them first (Rust hands a result over once). At most POLL_BATCH - 1.
-var _deferred: Array[Dictionary] = []
+# Results polled after the frame's install budget ran out, in arrival order, as [kind, result]:
+# the next frame takes them first (Rust hands a result over once).
+var _deferred: Array[Array] = []
+# A poll's result kinds, in the order a poll's results are taken.
+const RESULT_KINDS := ["edits", "patches", "failed", "tiles"]
 # The tiles the last edit batch installed, for tests and the probe.
 var last_edit_batch: Array = []
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
@@ -146,8 +148,9 @@ var counters := {
 	"materials_created": 0,
 	"multimeshes_created": 0,
 	"uploads": 0,
-	# Polled results a frame left to the next one, its budget spent.
-	"installs_deferred": 0,
+	# Polled results (edits, lists, failures, tiles) a frame left to the next one, its budget
+	# spent.
+	"results_deferred": 0,
 	"evictions": 0,
 	"pool_exhausted": 0,
 	"walls_truncated": 0,
@@ -438,16 +441,19 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
 
-# Installs finished bakes until the frame's install budget is spent, checked before each tile:
-# a frame ends within the budget plus one tile's install (round 7's check after each poll of
-# POLL_BATCH tiles overran it by up to the batch). The frame's first install is unconditional, so
-# installs progress whatever the frame's other work cost. O(installed tiles + POLL_BATCH).
+# Takes finished work (edits, patch lists, failures, tile bakes, in that order per poll) until the
+# frame's install budget is spent, checked before each result: a frame ends within the budget
+# plus one result's work (round 7 checked it after each poll, and a poll hands over every
+# finished list at once: 17 lists took 2.1 ms in one frame on the populated save, round 10).
+# The frame's first result is taken unconditionally, so the work progresses whatever the frame's
+# other work cost. O(results taken + one poll's results).
 func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 	var progressed := false
 	while not _deferred.is_empty():
 		if progressed and _over_budget(start_us):
 			return
-		_install(_deferred.pop_front(), resident_patches)
+		var item: Array = _deferred.pop_front()
+		_take_result(item[0], item[1], resident_patches)
 		progressed = true
 	while true:
 		if progressed and _over_budget(start_us):
@@ -455,40 +461,49 @@ func _poll_and_install(start_us: int, resident_patches: Dictionary) -> void:
 		var poll_start_us := Time.get_ticks_usec()
 		var result: Dictionary = simulation_node.poll_graded_tile_results(POLL_BATCH)
 		counters["poll_ms_max"] = max(float(counters["poll_ms_max"]), float(Time.get_ticks_usec() - poll_start_us) / 1000.0)
-		for edit: Dictionary in result.get("edits", []):
-			_apply_edit(edit)
-		for list: Dictionary in result.get("patches", []):
-			var key := Vector2i(int(list["patch_x"]), int(list["patch_z"]))
-			patch_lists_requested.erase(key)
-			var tiles: Array[Vector2i] = []
-			var flat: PackedInt32Array = list["tiles"]
-			for index in range(0, flat.size(), 2):
-				tiles.append(Vector2i(flat[index], flat[index + 1]))
-			_frame_lists += 1
-			var previous: Array = patch_lists.get(key, {}).get("tiles", [])
-			if patch_lists.has(key) and previous == tiles:
-				_frame_lists_same += 1
-			# The cells show the installed tiles of the patch's rectangle, not its list: a list
-			# rewrites them only when the patch has none yet or the list empties or fills
-			# (_rebuild_patch_cells); listed tiles install or evict on their own.
-			if not patch_cells.has(key) or previous.is_empty() != tiles.is_empty():
-				_dirty_patches[key] = true
-			patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
-			_recount(key, resident_patches)
-			# A list baked for an older generation is asked again.
-			_lists_wanted[key] = true
-		for failure: Dictionary in result.get("failed", []):
-			_failed(failure)
-		var tiles: Array = result.get("tiles", [])
-		for tile: Dictionary in tiles:
-			if progressed and _over_budget(start_us):
-				_deferred.append(tile)
-				counters["installs_deferred"] += 1
-				continue
-			_install(tile, resident_patches)
-			progressed = true
-		if tiles.size() < POLL_BATCH:
+		for kind: String in RESULT_KINDS:
+			for entry: Dictionary in result.get(kind, []):
+				if progressed and _over_budget(start_us):
+					_deferred.append([kind, entry])
+					counters["results_deferred"] += 1
+					continue
+				_take_result(kind, entry, resident_patches)
+				progressed = true
+		if result.get("tiles", []).size() < POLL_BATCH:
 			return
+
+func _take_result(kind: String, entry: Dictionary, resident_patches: Dictionary) -> void:
+	match kind:
+		"edits":
+			_apply_edit(entry)
+		"patches":
+			_take_list(entry, resident_patches)
+		"failed":
+			_failed(entry)
+		"tiles":
+			_install(entry, resident_patches)
+
+# A patch's graded tile list from Rust: recorded, its tiles counted in the desired set.
+func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
+	var key := Vector2i(int(list["patch_x"]), int(list["patch_z"]))
+	patch_lists_requested.erase(key)
+	var tiles: Array[Vector2i] = []
+	var flat: PackedInt32Array = list["tiles"]
+	for index in range(0, flat.size(), 2):
+		tiles.append(Vector2i(flat[index], flat[index + 1]))
+	_frame_lists += 1
+	var previous: Array = patch_lists.get(key, {}).get("tiles", [])
+	if patch_lists.has(key) and previous == tiles:
+		_frame_lists_same += 1
+	# The cells show the installed tiles of the patch's rectangle, not its list: a list
+	# rewrites them only when the patch has none yet or the list empties or fills
+	# (_rebuild_patch_cells); listed tiles install or evict on their own.
+	if not patch_cells.has(key) or previous.is_empty() != tiles.is_empty():
+		_dirty_patches[key] = true
+	patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
+	_recount(key, resident_patches)
+	# A list baked for an older generation is asked again.
+	_lists_wanted[key] = true
 
 static func _over_budget(start_us: int) -> bool:
 	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
