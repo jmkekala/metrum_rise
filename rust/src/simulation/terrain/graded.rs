@@ -43,7 +43,7 @@ pub use sites::{NoSites, SiteBuffer, SiteSource};
 pub use stage::{StageScratch, StageStats, StagedTile, TileStage, stage_selected, stage_tiles};
 pub use tile::{
     BakeError, BakeStats, Level, TILE_M, TileInputs, TileKey, TilePayload, bake_tiles, bake_window,
-    gather_inputs, tile_inputs,
+    tile_inputs,
 };
 pub use walls::WallFace;
 

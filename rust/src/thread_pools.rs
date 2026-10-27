@@ -7,15 +7,21 @@
 //! [`rayon::ThreadPool`] only tells its workers to exit, so the extension uses neither:
 //!
 //! - [`JoinedPool`] is a Rayon pool that joins its workers when dropped.
-//! - The shared pool replaces the global pool for all extension work. It is sized like the
-//!   global pool and built on first use, in the game and in test binaries alike. Threads
+//! - Two pools replace the global pool, each sized like it and built on first use, in the game
+//!   and in test binaries alike. The shared pool runs the work a caller waits for: threads
 //!   outside every Rayon pool (Godot's main thread and `WorkerThreadPool`, the simulation
-//!   thread, test threads) enter it through [`install`] and [`spawn`]; code already on a pool
-//!   worker stays in that pool.
+//!   thread, test threads) enter it through [`install`], and code already on a pool worker
+//!   stays in that pool. The background pool runs the work nobody waits for in a frame
+//!   ([`spawn`]): pure jobs such as the routing hierarchy rebuild, the undo record's kept
+//!   terrain tiles, deferred frees and payload jobs.
+//! - They share no worker (`TERRAIN-07-E` round 3). An entry waits for a free worker, and a
+//!   worker waiting in a join runs whatever it steals, so on one pool a road tool pose, a
+//!   commit or an undo waited behind a routing rebuild of tens of milliseconds.
 //! - [`disable_global_pool`] runs when the extension loads, so work that bypasses the entry
 //!   points panics where it starts instead of starting threads nobody joins. [`stop`] waits
-//!   for work in flight and joins the shared pool's workers before the library unloads.
+//!   for work in flight and joins both pools' workers before the library unloads.
 
+use std::cell::Cell;
 use std::ops::Deref;
 use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
@@ -84,16 +90,31 @@ enum State {
     Stopped,
 }
 
-/// The extension's shared pool, built on first use and joined by [`SharedPool::stop`].
+// Which of the extension's pools a worker belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Role {
+    Shared,
+    Background,
+}
+
+thread_local! {
+    // Set on each extension pool worker when it starts; read by `on_pool_worker` and by a
+    // pool's own spawns.
+    static ROLE: Cell<Option<Role>> = const { Cell::new(None) };
+}
+
+/// One of the extension's pools, built on first use and joined by [`SharedPool::stop`].
 struct SharedPool {
     state: RwLock<State>,
+    role: Role,
     builder: fn() -> ThreadPoolBuilder,
 }
 
 impl SharedPool {
-    const fn new(builder: fn() -> ThreadPoolBuilder) -> Self {
+    const fn new(role: Role, builder: fn() -> ThreadPoolBuilder) -> Self {
         Self {
             state: RwLock::new(State::Idle),
+            role,
             builder,
         }
     }
@@ -114,10 +135,15 @@ impl SharedPool {
         if rayon::current_thread_index().is_some() {
             return None;
         }
+        Some(self.started())
+    }
+
+    // The state, the pool built first if no entry has run yet.
+    fn started(&self) -> RwLockReadGuard<'_, State> {
         let read = || self.state.read().unwrap_or_else(PoisonError::into_inner);
         let state = read();
         if !matches!(*state, State::Idle) {
-            return Some(state);
+            return state;
         }
         drop(state);
         {
@@ -125,10 +151,10 @@ impl SharedPool {
             // Rechecked under the lock: another entry or `stop` may have run since.
             if matches!(*state, State::Idle) {
                 let pool = JoinedPool::build((self.builder)());
-                *state = State::Running(pool.expect("the shared thread pool must start"));
+                *state = State::Running(pool.expect("the extension's thread pools must start"));
             }
         }
-        Some(read())
+        read()
     }
 
     fn install<R: Send>(&self, op: impl FnOnce() -> R + Send) -> R {
@@ -138,34 +164,41 @@ impl SharedPool {
         }
     }
 
+    // Queues `op` on this pool from any thread of the extension. Its own workers queue without
+    // the lock, so a job never waits for `stop`, which waits for the jobs.
     fn spawn(&self, op: impl FnOnce() + Send + 'static) {
-        match self.entry().as_deref() {
-            Some(State::Running(pool)) => pool.spawn(op),
-            // A worker queues on its own pool; after `stop`, Rayon's global pool refuses it.
+        let foreign = || ROLE.get().is_none() && rayon::current_thread_index().is_some();
+        // A worker of a pool outside the extension (a test's own pool) queues on that pool.
+        if ROLE.get() == Some(self.role) || foreign() {
+            return rayon::spawn(op);
+        }
+        match &*self.started() {
+            State::Running(pool) => pool.spawn(op),
+            // After `stop`, Rayon's global pool refuses it.
             _ => rayon::spawn(op),
         }
     }
 }
 
-thread_local! {
-    // Set on each shared-pool worker when it starts; read by `on_shared_worker`.
-    static SHARED_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-// Sized like the global pool it replaces: Rayon's builder reads RAYON_NUM_THREADS, else one
-// thread per logical CPU.
-static SHARED: SharedPool = SharedPool::new(|| {
+// Each sized like the global pool they replace: Rayon's builder reads RAYON_NUM_THREADS, else
+// one thread per logical CPU.
+static SHARED: SharedPool = SharedPool::new(Role::Shared, || {
     ThreadPoolBuilder::new()
         .thread_name(|index| format!("metrum-{index}"))
-        .start_handler(|_| SHARED_WORKER.set(true))
+        .start_handler(|_| ROLE.set(Some(Role::Shared)))
+});
+static BACKGROUND: SharedPool = SharedPool::new(Role::Background, || {
+    ThreadPoolBuilder::new()
+        .thread_name(|index| format!("metrum-bg-{index}"))
+        .start_handler(|_| ROLE.set(Some(Role::Background)))
 });
 
-/// Whether the calling thread is a worker of the shared pool. Such a thread must never block on
-/// work it did not start: a worker waiting in a join runs whatever it steals, so the work it
-/// would wait for, or a part of it, may lie lower on its own stack or on another blocked
-/// worker's ([`crate::simulation::core::pure_job`]). O(1).
-pub(crate) fn on_shared_worker() -> bool {
-    SHARED_WORKER.get()
+/// Whether the calling thread is a worker of one of the extension's pools. Such a thread must
+/// never block on work it did not start: a worker waiting in a join runs whatever it steals, so
+/// the work it would wait for, or a part of it, may lie lower on its own stack or on another
+/// blocked worker's ([`crate::simulation::core::pure_job`]). O(1).
+pub(crate) fn on_pool_worker() -> bool {
+    ROLE.get().is_some()
 }
 
 /// Runs `op` in the shared pool and returns its result, as Rayon runs work that a thread
@@ -175,13 +208,20 @@ pub(crate) fn install<R: Send>(op: impl FnOnce() -> R + Send) -> R {
     SHARED.install(op)
 }
 
-/// Queues `op` on the shared pool without waiting for it; [`stop`] waits for it to finish.
-/// A Rayon worker queues it on its own pool.
+/// Runs `op` in the background pool and returns its result: [`install`] for work that belongs
+/// there, a pure job its owner finishes. Runs inline when the caller already is a Rayon worker,
+/// or after [`stop`].
+pub(crate) fn install_background<R: Send>(op: impl FnOnce() -> R + Send) -> R {
+    BACKGROUND.install(op)
+}
+
+/// Queues `op` on the background pool without waiting for it, from any thread of the extension
+/// (a worker of a test's own pool queues it there); [`stop`] waits for it to finish.
 #[track_caller]
 pub(crate) fn spawn(op: impl FnOnce() + Send + 'static) {
     #[cfg(test)]
     let op = spans::recorded(op, std::panic::Location::caller());
-    SHARED.spawn(op);
+    BACKGROUND.spawn(op);
 }
 
 /// When each spawned job ran, for benchmarks that place a frame's stall against the background
@@ -235,10 +275,12 @@ pub(crate) mod spans {
     }
 }
 
-/// Waits for the shared pool's work in flight, then joins its workers. Called once before the
-/// extension unloads, after the nodes that submit work have been freed.
+/// Waits for the pools' work in flight, then joins their workers. Called once before the
+/// extension unloads, after the nodes that submit work have been freed. The shared pool goes
+/// first: its workers may still queue background work, and no background job enters it.
 pub(crate) fn stop() {
     SHARED.stop();
+    BACKGROUND.stop();
 }
 
 /// Spends Rayon's one-time global pool initialization on a pool that cannot start. Every
@@ -263,7 +305,7 @@ pub(crate) fn disable_global_pool() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{JoinedPool, SharedPool};
+    use super::{JoinedPool, Role, SharedPool};
     use rayon::ThreadPoolBuilder;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
@@ -335,7 +377,7 @@ mod tests {
 
     #[test]
     fn shared_pool_starts_on_first_entry_and_stop_joins_it() {
-        let shared = SharedPool::new(|| counted("shared-test", &SHARED_LIVE));
+        let shared = SharedPool::new(Role::Shared, || counted("shared-test", &SHARED_LIVE));
         assert_eq!(SHARED_LIVE.load(Ordering::SeqCst), 0);
         let (name, nested, threads) = shared.install(|| {
             // A worker's own entry stays on that worker.

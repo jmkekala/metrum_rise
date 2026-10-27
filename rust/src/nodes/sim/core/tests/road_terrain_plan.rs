@@ -1024,8 +1024,8 @@ fn benchmark_kuopio_graded_edits() {
 // `TERRAIN-07-E`'s frame paths on Kuopio (T20 (a)): every stroke of
 // `benchmark_kuopio_graded_edits`'s cases replayed as a drag of eight poses growing from its
 // start to its end on the road tool's preview, then the commit of the last pose and its undo.
-// Per pose the graded stage (selection, input gathers, the bakes of the tiles whose inputs
-// differ from the last pose's), the commit's (the last pose's tiles adopted where their inputs
+// Per pose the graded stage (selection, then the bakes, which gather each tile's inputs and
+// stop for a tile whose inputs equal the last pose's), the commit's (the last pose's tiles adopted where their inputs
 // equal the committed ones, the rest baked) and the undo's (the kept tiles adopted), each the
 // stage's wall-clock time on the shared pool. The stroke is then committed again (untimed) and
 // the case goes on. Set the workers with RAYON_NUM_THREADS.
@@ -1101,7 +1101,7 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
                 });
                 poses.push(serde_json::json!({
                     "u": u, "stage_ms": stats.total_ms(), "select_ms": stats.select_ms,
-                    "inputs_ms": stats.inputs_ms, "bake_ms": stats.bake_ms,
+                    "bake_ms": stats.bake_ms,
                     "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
                     "error": pieces.graded.stage.as_ref().err().map(|e| format!("{e:?}")),
                     "digest": digest,
@@ -1155,7 +1155,7 @@ fn graded_drag(core: &mut SimCore, stroke: &serde_json::Value) -> serde_json::Va
         "poses": poses, "pose_max_ms": pose_max_ms,
         "commit_digest": commit_digest, "undo_digest": undo_digest,
         "commit_ms": commit.total_ms(), "commit_select_ms": commit.select_ms,
-        "commit_inputs_ms": commit.inputs_ms, "commit_bake_ms": commit.bake_ms,
+        "commit_bake_ms": commit.bake_ms,
         "commit_tiles": commit.wanted, "commit_adopted": commit.adopted,
         "commit_baked": commit.baked, "commit_surface_graded_ms": surface_graded_ms,
         "preview_reused": preview_reused,

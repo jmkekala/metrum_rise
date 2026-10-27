@@ -151,7 +151,6 @@ impl SimCore {
         metrics.surface_graded_ms = graded_start.elapsed().as_secs_f64() * 1000.0;
         let stats = self.last_graded_stats;
         metrics.graded_select_ms = stats.select_ms;
-        metrics.graded_inputs_ms = stats.inputs_ms;
         metrics.graded_bake_ms = stats.bake_ms;
         metrics.graded_adopted = stats.adopted;
         metrics.graded_baked = stats.baked;

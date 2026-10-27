@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use super::select::{SelectScratch, dirty_tiles_for_road_changes};
 use super::sites::SiteSource;
-use super::tile::{BakeError, Level, TileInputs, TileKey, TilePayload, bake_tiles, gather_inputs};
+use super::tile::{BakeError, Level, TileKey, TilePayload, bake_unless_held};
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 
@@ -82,16 +82,15 @@ pub struct StageStats {
     pub baked: usize,
     /// The dirty tile selection, milliseconds (0 when the caller supplies the tiles).
     pub select_ms: f64,
-    /// The wanted tiles' input gathers and the comparison, milliseconds.
-    pub inputs_ms: f64,
-    /// The bakes, milliseconds.
+    /// The wanted tiles' bakes, milliseconds: one pass whose bakes gather each tile's inputs
+    /// first and stop for an adopted tile (`TERRAIN-07-E` round 3).
     pub bake_ms: f64,
 }
 
 impl StageStats {
     /// The stage's wall-clock time, milliseconds.
     pub fn total_ms(&self) -> f64 {
-        self.select_ms + self.inputs_ms + self.bake_ms
+        self.select_ms + self.bake_ms
     }
 }
 
@@ -102,9 +101,7 @@ pub struct StageScratch {
     select: SelectScratch,
     dirty: Vec<TileKey>,
     wanted: Vec<(Level, TileKey)>,
-    inputs: Vec<TileInputs>,
     adopted: Vec<Option<Arc<TilePayload>>>,
-    rebake: Vec<TileKey>,
     baked: Vec<TilePayload>,
     retired: Vec<Arc<TilePayload>>,
 }
@@ -201,10 +198,11 @@ pub fn stage_selected(
 }
 
 /// Stages `wanted` (`(level, tile)` sorted and unique) over the terrain, `roadbed` and
-/// `sites`: each wanted tile's inputs are gathered ([`gather_inputs`]); a tile `held` holds at
-/// the same level with equal inputs is adopted (the same payload, shared), the others are
-/// baked, one batch per level. The result is bitwise the bake of every wanted tile, whatever
-/// `held` holds. `O(wanted gathers + rebaked bakes)`, in parallel on the shared pool.
+/// `sites` in one pass ([`bake_unless_held`]): each wanted tile's bake gathers its inputs first;
+/// a tile `held` holds at the same level with equal inputs is adopted (the same payload,
+/// shared) and not sampled, the others are baked. The result is bitwise the bake of every
+/// wanted tile, whatever `held` holds. `O(wanted gathers + rebaked bakes)`, in parallel on the
+/// shared pool.
 pub fn stage_tiles(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
@@ -218,74 +216,43 @@ pub fn stage_tiles(
         wanted: wanted.len(),
         ..StageStats::default()
     };
-    let inputs_start = Instant::now();
-    gather_inputs(terrain, roadbed, sites, wanted, &mut scratch.inputs)?;
+    let bake_start = Instant::now();
     scratch.adopted.clear();
     scratch.adopted.extend(
         wanted
             .iter()
-            .zip(&scratch.inputs)
-            .map(|(&(level, tile), inputs)| {
-                held.get(level, tile)
-                    .filter(|payload| payload.inputs == *inputs)
-                    .cloned()
-            }),
+            .map(|&(level, tile)| held.get(level, tile).cloned()),
     );
-    stats.inputs_ms = inputs_start.elapsed().as_secs_f64() * 1000.0;
-
-    let bake_start = Instant::now();
     scratch.recycle();
+    bake_unless_held(
+        terrain,
+        roadbed,
+        sites,
+        wanted,
+        &mut scratch.adopted,
+        &mut scratch.baked,
+    )?;
     let mut tiles = Vec::with_capacity(wanted.len());
-    let mut start = 0;
-    while start < wanted.len() {
-        let level = wanted[start].0;
-        let end = start + wanted[start..].partition_point(|&(other, _)| other == level);
-        scratch.rebake.clear();
-        scratch.rebake.extend(
-            (start..end)
-                .filter(|&index| scratch.adopted[index].is_none())
-                .map(|index| wanted[index].1),
-        );
-        if !scratch.rebake.is_empty() {
-            bake_tiles(
-                terrain,
-                roadbed,
-                sites,
-                &scratch.rebake,
-                level,
-                &mut scratch.baked,
-            )?;
-        }
-        let mut baked = scratch.baked.drain(..);
-        let run = scratch.adopted[start..end].iter_mut();
-        for ((&(_, tile), adopted), inputs) in wanted[start..end]
-            .iter()
-            .zip(run)
-            .zip(&scratch.inputs[start..end])
-        {
-            let payload = match adopted.take() {
-                Some(payload) => {
-                    stats.adopted += 1;
-                    payload
-                }
-                None => {
-                    stats.baked += 1;
-                    let payload = baked.next().expect("one bake per rebaked tile");
-                    debug_assert_eq!(
-                        payload.inputs, *inputs,
-                        "a bake records the inputs its gather finds"
-                    );
-                    Arc::new(payload)
-                }
-            };
-            tiles.push(StagedTile {
-                level,
-                tile,
-                payload,
-            });
-        }
-        drop(baked);
-        start = end;
+    let staged = wanted
+        .iter()
+        .zip(&mut scratch.adopted)
+        .zip(&mut scratch.baked);
+    for ((&(level, tile), adopted), baked) in staged {
+        let payload = match adopted.take() {
+            Some(payload) => {
+                stats.adopted += 1;
+                payload
+            }
+            None => {
+                stats.baked += 1;
+                Arc::new(std::mem::take(baked))
+            }
+        };
+        tiles.push(StagedTile {
+            level,
+            tile,
+            payload,
+        });
     }
     stats.bake_ms = bake_start.elapsed().as_secs_f64() * 1000.0;
     Ok((TileStage { tiles }, stats))

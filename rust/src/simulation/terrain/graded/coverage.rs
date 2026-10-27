@@ -13,57 +13,47 @@ use crate::simulation::network::roadbed::{CoverageTriangle, PieceId, RoadVec3, R
 // `PIECE_PAD_M` assumes for the visited triangles (the coverage inputs).
 const PAD_M: f64 = 0.01;
 
-/// Rasterizes the grounded top triangles over the lattice `xs` x `zs` (sorted, row-major by
-/// `z`): `road[k]` is the highest covering triangle's height at lattice point `k`, `-inf`
-/// where none covers it. Heights are `+ 0.0` so a negative zero never decides a maximum. With
-/// `triangles`, the bits of every triangle visited, sorted and unique, are the coverage
-/// inputs. `O(T + K)` for the `T` triangles met and the `K` lattice points in their boxes.
-pub(super) fn rasterize(
+/// The grounded top triangles whose closed boxes, grown by the pad, meet the lattice `xs` x
+/// `zs`: into `out` in the roadbed's visit order, and their bits, sorted and unique, into
+/// `bits`, the coverage inputs. One visit serves a tile's inputs and its raster
+/// ([`rasterize`]), so a stage that compares a tile's inputs before baking it visits the
+/// triangles once (`TERRAIN-07-E` round 3). `O(T log T)` for the `T` triangles met.
+pub(super) fn covering_triangles(
     roadbed: &RoadbedSystem,
     xs: &[f64],
     zs: &[f64],
     pieces: &mut Vec<PieceId>,
+    out: &mut Vec<[RoadVec3; 3]>,
+    bits: &mut Vec<[u64; 9]>,
+) {
+    out.clear();
+    bits.clear();
+    let Some(bounds) = lattice_bounds(xs, zs) else {
+        return;
+    };
+    roadbed.for_each_grounded_top_triangle_in_bounds(bounds, pieces, |triangle| {
+        bits.push(triangle_bits(&triangle));
+        out.push(triangle);
+    });
+    bits.sort_unstable();
+    bits.dedup();
+}
+
+/// Rasterizes `triangles` ([`covering_triangles`] of the lattice) over the lattice `xs` x `zs`
+/// (sorted, row-major by `z`): `road[k]` is the highest covering triangle's height at lattice
+/// point `k`, `-inf` where none covers it. Heights are `+ 0.0` so a negative zero never decides
+/// a maximum. `O(K)` for the `K` lattice points in the triangles' boxes.
+pub(super) fn rasterize(
+    triangles: &[[RoadVec3; 3]],
+    xs: &[f64],
+    zs: &[f64],
     road: &mut Vec<f32>,
-    mut triangles: Option<&mut Vec<[u64; 9]>>,
 ) {
     road.clear();
     road.resize(xs.len() * zs.len(), f32::NEG_INFINITY);
-    if let Some(triangles) = triangles.as_deref_mut() {
-        triangles.clear();
+    for triangle in triangles {
+        raise_covered(triangle, xs, zs, road);
     }
-    let Some(bounds) = lattice_bounds(xs, zs) else {
-        return;
-    };
-    roadbed.for_each_grounded_top_triangle_in_bounds(bounds, pieces, |triangle| {
-        if let Some(triangles) = triangles.as_deref_mut() {
-            triangles.push(triangle_bits(&triangle));
-        }
-        raise_covered(&triangle, xs, zs, road);
-    });
-    if let Some(triangles) = triangles {
-        triangles.sort_unstable();
-        triangles.dedup();
-    }
-}
-
-/// The coverage inputs [`rasterize`] records over the lattice `xs` x `zs`, without the raster
-/// (`TERRAIN-07-E`): the bits of every grounded top triangle it visits, sorted and unique.
-pub(super) fn visited_triangles(
-    roadbed: &RoadbedSystem,
-    xs: &[f64],
-    zs: &[f64],
-    pieces: &mut Vec<PieceId>,
-    out: &mut Vec<[u64; 9]>,
-) {
-    out.clear();
-    let Some(bounds) = lattice_bounds(xs, zs) else {
-        return;
-    };
-    roadbed.for_each_grounded_top_triangle_in_bounds(bounds, pieces, |triangle| {
-        out.push(triangle_bits(&triangle));
-    });
-    out.sort_unstable();
-    out.dedup();
 }
 
 // The rectangle whose triangles the coverage of a lattice visits: its closed box grown by the

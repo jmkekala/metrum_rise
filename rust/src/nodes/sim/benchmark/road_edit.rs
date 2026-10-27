@@ -25,13 +25,12 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) surface_ms: f64,
     // Children of surface_ms: roadbed compile or preview install with the undo capture, the
     // field and cell overlap test, and the graded tiles (`TERRAIN-07-E`; no terrain validation
-    // since): their selection, input gathers and bakes, and how many tiles were adopted from
-    // the preview and baked.
+    // since): their selection, then the bakes that gather each tile's inputs and stop for an
+    // adopted tile (round 3), and how many tiles were adopted from the preview and baked.
     pub(crate) surface_roadbed_ms: f64,
     pub(crate) surface_overlap_ms: f64,
     pub(crate) surface_graded_ms: f64,
     pub(crate) graded_select_ms: f64,
-    pub(crate) graded_inputs_ms: f64,
     pub(crate) graded_bake_ms: f64,
     pub(crate) graded_adopted: usize,
     pub(crate) graded_baked: usize,
@@ -73,7 +72,6 @@ impl RoadEditMetrics {
             surface_overlap_ms,
             surface_graded_ms,
             graded_select_ms,
-            graded_inputs_ms,
             graded_bake_ms,
             undo_ms,
             topology_ms,

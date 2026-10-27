@@ -41,7 +41,8 @@ pub(super) struct PendingCch {
 impl TransitNetwork {
     /// Starts rebuilding the routing hierarchy from `graph`, the live graph's immutable
     /// snapshot, replacing any rebuild still pending; the hold restarts. The old hierarchy stays
-    /// installed but unread until adoption. O(1) here; the build runs on the shared pool.
+    /// installed but unread until adoption. O(1) here; the build runs on the background pool,
+    /// beside no frame's work (`crate::thread_pools`).
     pub(crate) fn schedule_cch_rebuild(&mut self, graph: Arc<RegionGraph>) {
         #[cfg(test)]
         let prelude = self.cch_job_prelude.clone();
@@ -65,7 +66,8 @@ impl TransitNetwork {
 
     /// Installs a pending rebuild now, waiting for it (or running it here) if it is not done,
     /// with a fresh build generation. The hold continues to its adoption frame. Call it outside
-    /// the shared pool, or after [`Self::cch_adoption_completion`] finished the job (`pure_job`).
+    /// the extension's pools, or after [`Self::cch_adoption_completion`] finished the job
+    /// (`pure_job`).
     /// O(1) without a pending result.
     pub(crate) fn install_pending_cch(&mut self) {
         if let Some(job) = self
@@ -105,7 +107,7 @@ impl TransitNetwork {
     }
 
     /// The pending rebuild's completion when the next frame adopts it and it may not have
-    /// finished, so the frame's caller can wait for it outside the shared pool (and the sim
+    /// finished, so the frame's caller can wait for it outside the extension's pools (and the sim
     /// thread without the core lock). O(1).
     pub(crate) fn cch_adoption_completion(&self) -> Option<JobCompletion> {
         let pending = self.pending_cch.as_ref()?;

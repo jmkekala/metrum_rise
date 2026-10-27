@@ -461,12 +461,21 @@ fn coverage_equals_the_roadbed_height_query_at_every_lattice_point() {
 #[test]
 fn the_coverage_raster_equals_the_predicate_at_every_lattice_point() {
     let (mut xs, mut zs, mut pieces, mut road) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut triangles, mut bits) = (Vec::new(), Vec::new());
     for (name, graph, terrain) in fixtures() {
         let roadbed = compiled(&graph);
         for level in LEVELS {
             for tile in window_tiles() {
                 lattice(&terrain, tile, level, &mut xs, &mut zs);
-                coverage::rasterize(&roadbed, &xs, &zs, &mut pieces, &mut road, None);
+                coverage::covering_triangles(
+                    &roadbed,
+                    &xs,
+                    &zs,
+                    &mut pieces,
+                    &mut triangles,
+                    &mut bits,
+                );
+                coverage::rasterize(&triangles, &xs, &zs, &mut road);
                 for (j, &z) in zs.iter().enumerate() {
                     for (i, &x) in xs.iter().enumerate() {
                         let point = coverage::covered_height_at(&roadbed, x, z, &mut pieces);

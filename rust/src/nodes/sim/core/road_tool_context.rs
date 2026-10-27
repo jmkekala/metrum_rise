@@ -66,7 +66,7 @@ pub(crate) struct RoadToolPublication {
 
 // What one publication replaced: the previous views and, after a full replacement, the old
 // replica. They may hold the last copies of a graph, a heightmap and a watermap, whose frees
-// are `O(city)` and decide nothing, so `retire` frees them on the shared pool instead of on
+// are `O(city)` and decide nothing, so `retire` frees them on the background pool instead of on
 // the simulation thread under the road tool's locks (`ROAD-68-E`).
 struct RetiredRoadToolState {
     views: [Option<RoadToolQuerySnapshot>; 3],
@@ -74,7 +74,7 @@ struct RetiredRoadToolState {
 }
 
 impl RetiredRoadToolState {
-    // Frees everything on the shared pool without waiting.
+    // Frees everything on the background pool without waiting.
     fn retire(self) {
         if self.views.iter().any(Option::is_some) || self.replica.is_some() {
             crate::thread_pools::spawn(move || drop(self));
@@ -278,7 +278,7 @@ impl RoadToolShared {
 
     /// Applies a publication to the context and, when it was newer, to the view. Terrain inputs
     /// newer than the publication's (published since by [`Self::publish_terrain_inputs`]) stay.
-    /// The replaced views are swapped out under the locks and freed on the shared pool.
+    /// The replaced views are swapped out under the locks and freed on the background pool.
     pub(crate) fn publish(&self, mut publication: RoadToolPublication) {
         let mut retired = RetiredRoadToolState {
             views: [publication.retired.take(), None, None],

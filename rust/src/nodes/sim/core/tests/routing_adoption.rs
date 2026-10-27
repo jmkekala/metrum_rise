@@ -102,9 +102,9 @@ fn a_late_rebuild_blocks_the_adoption_frame_only() {
     assert_current(&core);
 }
 
-// The rebuild needs every shared-pool worker (a broadcast) once the adoption frame has begun.
+// The rebuild needs every worker of its pool (a broadcast) once the adoption frame has begun.
 // An adoption frame that waited for it on a pool worker would hold one of them, so the
-// rebuild and the frame would wait for each other: the hold's caller waits outside the pool.
+// rebuild and the frame would wait for each other: the hold's caller waits outside the pools.
 #[test]
 fn the_adoption_wait_leaves_every_pool_worker_to_the_rebuild() {
     let mut core = world();

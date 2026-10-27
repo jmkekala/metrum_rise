@@ -7,7 +7,7 @@
 //! A bake reads only its tile's window (the lattice grown by the cap or the band), so a tile's
 //! bytes never depend on the batch, tile order or worker count.
 
-use super::coverage::{rasterize, visited_triangles};
+use super::coverage::{covering_triangles, rasterize};
 use super::grade::{CAP_M, continues_ground};
 use super::portal::{Finished, PortalWindow, open};
 use super::prune::{
@@ -20,10 +20,10 @@ use super::seams::{Seam, SeamScratch, gather_road_seams, gather_wall_seams};
 use super::sites::{NO_SITE, SiteBuffer, SiteSource};
 use super::walls::{WallFace, WallScratch, abutment_bottom, build_structure_walls, build_walls};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
+use crate::simulation::network::roadbed::{PieceId, RoadVec3, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// Tile side, metres; tiles are aligned to the world origin.
 pub const TILE_M: f64 = 64.0;
@@ -253,10 +253,12 @@ pub enum BakeError {
 }
 
 impl BakeError {
-    // The failing tile, for the lowest-tile rule; none before any tile is baked.
-    fn tile(&self) -> Option<TileKey> {
+    // The failing tile at its level, for the lowest-tile rule; none before any tile is baked.
+    fn key(&self) -> Option<(Level, TileKey)> {
         match *self {
-            Self::SeamCapacity { tile, .. } | Self::EdgeCapacity { tile, .. } => Some(tile),
+            Self::SeamCapacity { tile, level, .. } | Self::EdgeCapacity { tile, level, .. } => {
+                Some((level, tile))
+            }
             Self::SitesUnavailable => None,
         }
     }
@@ -288,6 +290,11 @@ pub(super) struct BakeScratch {
     first: BinLists,
     second: BinLists,
     pieces: Vec<PieceId>,
+    // The grounded top triangles that can cover the lattice, in visit order (the raster's).
+    covering: Vec<[RoadVec3; 3]>,
+    // The tile's inputs, gathered before its samples; a bake hands them to its payload and
+    // keeps the payload's old buffers.
+    inputs: TileInputs,
     road: Vec<f32>,
     nearest: Vec<u32>,
     row_of: Vec<u32>,
@@ -384,12 +391,70 @@ pub(super) fn bake_tiles_with(
             .zip(tiles.par_iter())
             .filter_map(|(payload, &tile)| {
                 with_scratch(|scratch| {
-                    bake_tile(&inputs, tile, level, evaluation, scratch, payload).err()
+                    bake_tile(&inputs, tile, level, evaluation, None, scratch, payload).err()
                 })
             })
-            .min_by_key(BakeError::tile)
+            .min_by_key(BakeError::key)
     });
     failure.map_or(Ok(()), Err)
+}
+
+/// Bakes each `(level, tile)` of `wanted` (sorted and unique) unless `held` holds that tile
+/// with the same inputs, in one pass on the shared pool (`TERRAIN-07-E` round 3, T27): each
+/// bake gathers its window and assembles its inputs first ([`tile_inputs`]) and stops there
+/// when they equal the held tile's, so a stage gathers each wanted tile once. On return
+/// `held[i]` is `Some` for an adopted tile and `None` for a baked one, whose bake is `out[i]`
+/// (`out` resized to one payload per wanted tile, its buffers reused). The bytes are the bake's
+/// whatever `held` holds. Returns the error of the lowest failing `(level, tile)`.
+pub(super) fn bake_unless_held(
+    terrain: &TerrainSystem,
+    roadbed: &RoadbedSystem,
+    sites: &impl SiteSource,
+    wanted: &[(Level, TileKey)],
+    held: &mut [Option<Arc<TilePayload>>],
+    out: &mut Vec<TilePayload>,
+) -> Result<(), BakeError> {
+    if !sites.ready() {
+        return Err(BakeError::SitesUnavailable);
+    }
+    debug_assert_eq!(held.len(), wanted.len(), "one held slot per wanted tile");
+    out.resize_with(wanted.len(), TilePayload::default);
+    let inputs = Inputs {
+        terrain,
+        roadbed,
+        sites,
+    };
+    let failure = crate::thread_pools::install(|| {
+        out.par_iter_mut()
+            .zip(held.par_iter_mut())
+            .zip(wanted.par_iter())
+            .filter_map(|((payload, held), &(level, tile))| {
+                let compare = held.as_deref().map(|held| &held.inputs);
+                let staged = with_scratch(|scratch| {
+                    bake_tile(&inputs, tile, level, Evaluation::Lanes, compare, scratch, payload)
+                });
+                match staged {
+                    Ok(Bake::Adopted) => None,
+                    Ok(Bake::Baked) => {
+                        *held = None;
+                        None
+                    }
+                    Err(error) => {
+                        *held = None;
+                        Some(error)
+                    }
+                }
+            })
+            .min_by_key(BakeError::key)
+    });
+    failure.map_or(Ok(()), Err)
+}
+
+// What `bake_tile` did with a tile.
+enum Bake {
+    // Its inputs equal the held tile's: nothing sampled.
+    Adopted,
+    Baked,
 }
 
 // The lattice coordinates of one axis of a tile at `level`, apron included: one spacing
@@ -586,18 +651,24 @@ fn name_mouth_rows(
     named
 }
 
-// Bakes one tile with `evaluation`.
+// Bakes one tile with `evaluation`. Its window's gathers and inputs come first; with `held`,
+// the inputs of a held tile at the same level, a tile whose inputs equal them is that tile and
+// is not sampled (`Bake::Adopted`, `out` untouched).
 fn bake_tile(
     inputs: &Inputs<'_, impl SiteSource>,
     tile: TileKey,
     level: Level,
     evaluation: Evaluation,
+    held: Option<&TileInputs>,
     scratch: &mut BakeScratch,
     out: &mut TilePayload,
-) -> Result<(), BakeError> {
-    let (terrain, roadbed) = (inputs.terrain, inputs.roadbed);
+) -> Result<Bake, BakeError> {
+    let window = gather_window(inputs, tile, level, scratch);
+    if held.is_some_and(|held| *held == scratch.inputs) {
+        return Ok(Bake::Adopted);
+    }
+    let terrain = inputs.terrain;
     let BakeScratch {
-        seams: seam_scratch,
         window: seams,
         wall_seams,
         wall_bottoms,
@@ -612,7 +683,7 @@ fn bake_tile(
         pairs,
         first,
         second,
-        pieces,
+        covering,
         road,
         nearest,
         row_of,
@@ -625,25 +696,17 @@ fn bake_tile(
         portals,
         decks,
         bores_near,
+        inputs: gathered,
+        ..
     } = scratch;
     let grid = BaseGrid::of(terrain);
     let band = level.band_m(grid.cell_m);
     let spacing = level.spacing_m(grid.cell_m);
     let origin = tile.origin();
-    lattice(terrain, tile, level, xs, zs);
     let rect = [xs[0], zs[0], xs[xs.len() - 1], zs[zs.len() - 1]];
-    let window = window(rect, band);
-    gather_road_seams(roadbed, window, seam_scratch, seams);
-    gather_wall_seams(
-        roadbed,
-        grown(rect, band),
-        seam_scratch,
-        (wall_seams, wall_bottoms),
-    );
     // Road seams first (indices `0..road_count`, in key order, the rows the texels name), then
     // the sites' pad seams in key order.
     let road_count = seams.len();
-    sites.gather(inputs.sites, window);
     sites.push_pad_seams(seams);
     base.fill(terrain, window);
     let mut stats = BakeStats {
@@ -657,15 +720,7 @@ fn bake_tile(
     list_first_pass(seams, bins, base, band, prune, seam_bins, pairs, &mut stats);
     first.build(bins.len(), pairs);
 
-    rasterize(
-        roadbed,
-        xs,
-        zs,
-        pieces,
-        road,
-        Some(&mut out.inputs.triangles),
-    );
-    portals.gather(roadbed, rect, band, pieces);
+    rasterize(covering, xs, zs, road);
     portals.rasterize(xs, zs, decks);
     // Without sites every lattice point is outside pads and surfaces: the rasters stay empty,
     // which reads as no pad, class 0 and no edge. The nearest edges are searched in the row
@@ -912,15 +967,7 @@ fn bake_tile(
     out.samples = [xs.len(), zs.len()];
     out.graded = graded;
     out.stats = stats;
-    finish_inputs(
-        terrain,
-        window,
-        &seams[..road_count],
-        (wall_seams, wall_bottoms),
-        portals,
-        sites,
-        &mut out.inputs,
-    );
+    std::mem::swap(&mut out.inputs, gathered);
     let capacity = level.seam_capacity();
     if out.seams.len() > capacity {
         return Err(BakeError::SeamCapacity {
@@ -939,7 +986,7 @@ fn bake_tile(
             capacity,
         });
     }
-    Ok(())
+    Ok(Bake::Baked)
 }
 
 // What the row bands of one tile read (`TERRAIN-07-E`, T27 (a)): the set-up's products, shared
@@ -1104,10 +1151,9 @@ impl Sampling<'_> {
 }
 
 /// The inputs a bake of `tile` at `level` records ([`TilePayload::inputs`]), gathered without
-/// sampling (`TERRAIN-07-E`): the window's seams, the coverage's visited triangles, the portal
-/// parts, the sites and the base revisions, by the bake's own gathers and assembly, so they
-/// equal the bake's inputs exactly. A preview, commit or undo compares them with a held tile's
-/// to adopt it. `O(P + S log S + T + sites)` for the window, without the lattice's samples.
+/// sampling (`TERRAIN-07-E`): the window's seams, the coverage's triangles, the portal parts,
+/// the sites and the base revisions, by the bake's own set-up, so they equal the bake's inputs
+/// exactly. `O(P + S log S + T log T + sites)` for the window, without the lattice's samples.
 pub fn tile_inputs(
     terrain: &TerrainSystem,
     roadbed: &RoadbedSystem,
@@ -1124,7 +1170,10 @@ pub fn tile_inputs(
         roadbed,
         sites,
     };
-    with_scratch(|scratch| gather_tile_inputs(&inputs, tile, level, scratch, out));
+    with_scratch(|scratch| {
+        gather_window(&inputs, tile, level, scratch);
+        out.clone_from(&scratch.inputs);
+    });
     Ok(())
 }
 
@@ -1140,42 +1189,15 @@ pub fn bake_window(terrain: &TerrainSystem, tile: TileKey, level: Level) -> [f64
     })
 }
 
-/// [`tile_inputs`] of every `(level, tile)` of `wanted` into `out` (one per entry, in order,
-/// its buffers reused), in parallel on the shared pool.
-pub fn gather_inputs(
-    terrain: &TerrainSystem,
-    roadbed: &RoadbedSystem,
-    sites: &impl SiteSource,
-    wanted: &[(Level, TileKey)],
-    out: &mut Vec<TileInputs>,
-) -> Result<(), BakeError> {
-    if !sites.ready() {
-        return Err(BakeError::SitesUnavailable);
-    }
-    out.resize_with(wanted.len(), TileInputs::default);
-    let inputs = Inputs {
-        terrain,
-        roadbed,
-        sites,
-    };
-    crate::thread_pools::install(|| {
-        out.par_iter_mut()
-            .zip(wanted.par_iter())
-            .for_each(|(out, &(level, tile))| {
-                with_scratch(|scratch| gather_tile_inputs(&inputs, tile, level, scratch, out))
-            })
-    });
-    Ok(())
-}
-
-// The bake's gathers of one tile's window, without its samples.
-fn gather_tile_inputs(
+// A bake's set-up up to its inputs: the lattice, the window's road and wall seams, its sites,
+// the covering top triangles, the portal parts and the inputs they make, into `scratch`.
+// Returns the window.
+fn gather_window(
     inputs: &Inputs<'_, impl SiteSource>,
     tile: TileKey,
     level: Level,
     scratch: &mut BakeScratch,
-    out: &mut TileInputs,
-) {
+) -> [f64; 4] {
     let (terrain, roadbed) = (inputs.terrain, inputs.roadbed);
     let BakeScratch {
         seams: seam_scratch,
@@ -1185,8 +1207,10 @@ fn gather_tile_inputs(
         xs,
         zs,
         pieces,
+        covering,
         sites,
         portals,
+        inputs: out,
         ..
     } = scratch;
     let band = level.band_m(BaseGrid::of(terrain).cell_m);
@@ -1201,7 +1225,7 @@ fn gather_tile_inputs(
         (wall_seams, wall_bottoms),
     );
     sites.gather(inputs.sites, window);
-    visited_triangles(roadbed, xs, zs, pieces, &mut out.triangles);
+    covering_triangles(roadbed, xs, zs, pieces, covering, &mut out.triangles);
     portals.gather(roadbed, rect, band, pieces);
     finish_inputs(
         terrain,
@@ -1212,11 +1236,11 @@ fn gather_tile_inputs(
         sites,
         out,
     );
+    window
 }
 
 // The inputs once the window's road and wall seams, portal parts and sites are gathered and
-// `out.triangles` holds the coverage's visited triangles: one assembly for the bake and
-// [`tile_inputs`].
+// `out.triangles` holds the coverage's triangles.
 fn finish_inputs(
     terrain: &TerrainSystem,
     window: [f64; 4],

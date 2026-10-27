@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Pure jobs ([`docs/simulation.md#pure-jobs`]): a pure function of an immutable snapshot,
-//! started on the shared pool and taken by the simulation at a fixed frame.
+//! started on the background pool and taken by the simulation at a fixed frame.
 //!
-//! The work runs on whichever thread reaches it first: a shared-pool worker, or the thread that
-//! takes the result and finds it not yet started, which then runs it itself (in the shared pool
-//! when it is outside every pool). The result is the same function of the snapshot either way,
-//! and dropping an unstarted job drops its work and the snapshot it holds.
+//! The work runs on whichever thread reaches it first: a background-pool worker, or the thread
+//! that takes the result and finds it not yet started, which then runs it itself (in the
+//! background pool when it is outside every pool), which shares no worker with the frame's work
+//! on the shared pool (`crate::thread_pools`). The result is the same function of the snapshot
+//! either way, and dropping an unstarted job drops its work and the snapshot it holds.
 //!
-//! Only a thread outside the shared pool waits for work another thread runs. A shared-pool
+//! Only a thread outside the extension's pools waits for work another thread runs. A pool
 //! worker waiting in a join runs whatever it steals, an injected frame among it, so the job that
 //! frame would wait for, or a part of the job's own joins, may lie lower on that worker's stack
 //! or on another waiting worker's: a blocking wait there deadlocks the pool (`ROAD-68-G` part
 //! 4). The owner therefore finishes the job before it enters the pool ([`PureJob::completion`]),
-//! and a wait on a shared-pool worker panics instead of blocking.
+//! and a wait on a pool worker panics instead of blocking.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -38,7 +39,7 @@ impl<T: Send> Shared<T> {
     }
 
     // Runs the work if nobody has started it; O(1) otherwise. A thread outside every pool runs
-    // it in the shared pool, as a worker would.
+    // it in the background pool, as a worker would.
     fn run(&self) {
         let work = {
             let mut state = self.lock();
@@ -50,13 +51,13 @@ impl<T: Send> Shared<T> {
                 }
             }
         };
-        let result = crate::thread_pools::install(work);
+        let result = crate::thread_pools::install_background(work);
         *self.lock() = State::Done(result);
         self.done.notify_all();
     }
 
     // Runs the work if nobody has started it, otherwise waits for the thread that has. Panics
-    // where a shared-pool worker would wait (module documentation).
+    // where a pool worker would wait (module documentation).
     fn finish(&self) -> MutexGuard<'_, State<T>> {
         self.run();
         let state = self.lock();
@@ -64,9 +65,9 @@ impl<T: Send> Shared<T> {
             return state;
         }
         assert!(
-            !crate::thread_pools::on_shared_worker(),
-            "a shared-pool worker must not wait for a pure job: its owner finishes it before \
-             entering the pool (PureJob::completion)"
+            !crate::thread_pools::on_pool_worker(),
+            "a pool worker must not wait for a pure job: its owner finishes it before entering \
+             the pool (PureJob::completion)"
         );
         self.done
             .wait_while(state, |state| matches!(state, State::Running))
@@ -89,9 +90,10 @@ impl<T: Send> Complete for Shared<T> {
 pub(crate) struct JobCompletion(Arc<dyn Complete>);
 
 impl JobCompletion {
-    /// Runs the job in the shared pool if nobody has started it, otherwise waits for the thread
-    /// that has; returns at once for a finished or dropped job. Call it outside the shared pool,
-    /// before entering it: on a shared-pool worker that would have to wait, it panics.
+    /// Runs the job in the background pool if nobody has started it, otherwise waits for the
+    /// thread that has; returns at once for a finished or dropped job. Call it outside the
+    /// extension's pools, before entering one: on a pool worker that would have to wait, it
+    /// panics.
     pub(crate) fn wait(&self) {
         self.0.complete();
     }
@@ -103,8 +105,8 @@ pub(crate) struct PureJob<T: Send + 'static> {
 }
 
 impl<T: Send + 'static> PureJob<T> {
-    /// Queues `work` on the shared pool (`crate::thread_pools`); from a pool worker it queues on
-    /// that worker's pool. O(1).
+    /// Queues `work` on the background pool (`crate::thread_pools::spawn`); a worker of a test's
+    /// own pool queues it on that pool. O(1).
     #[track_caller]
     pub(crate) fn spawn(work: impl FnOnce() -> T + Send + 'static) -> Self {
         let shared = Arc::new(Shared {
@@ -117,14 +119,15 @@ impl<T: Send + 'static> PureJob<T> {
     }
 
     /// A handle that finishes the work from another thread, so the owner can wait for it
-    /// outside the shared pool and without holding what owns the job; [`Self::take`] then
+    /// outside the extension's pools and without holding what owns the job; [`Self::take`] then
     /// returns at once, also on a pool worker. O(1).
     pub(crate) fn completion(&self) -> JobCompletion {
         JobCompletion(Arc::clone(&self.shared) as Arc<dyn Complete>)
     }
 
     /// The result, running the work here if no worker has started it, otherwise waiting for
-    /// the worker that has: outside the shared pool, or after [`Self::completion`] finished it.
+    /// the worker that has: outside the extension's pools, or after [`Self::completion`]
+    /// finished it.
     pub(crate) fn take(self) -> T {
         let mut state = self.shared.finish();
         match std::mem::replace(&mut *state, State::Gone) {
@@ -230,7 +233,7 @@ mod tests {
         drop(wake.wait_while(state.lock().unwrap(), |state| !state.0).unwrap());
         let completion = job.completion();
         let refused = crate::thread_pools::install(|| {
-            assert!(crate::thread_pools::on_shared_worker());
+            assert!(crate::thread_pools::on_pool_worker());
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| completion.wait())).is_err()
         });
         state.lock().unwrap().1 = true;

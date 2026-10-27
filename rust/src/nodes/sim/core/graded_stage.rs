@@ -261,7 +261,8 @@ impl SimCore {
             return None;
         }
         // The tiles the commit replaced: the same dirty tiles over the pre-commit roadbed and
-        // the same sites (a commit changes none), baked off the frame.
+        // the same sites (a commit changes none), baked off the frame on the background pool,
+        // which the commit's own later stages and the next frames do not share.
         let wanted = self.graded_scratch.selected().to_vec();
         let windows = wanted
             .iter()
