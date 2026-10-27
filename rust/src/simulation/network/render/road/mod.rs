@@ -9,6 +9,7 @@ use crate::simulation::terrain::render_frame_local;
 use crate::simulation::terrain::graded::{NoSites, SiteSource};
 use crate::{debug, debug_log};
 use godot::prelude::*;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -270,20 +271,32 @@ fn splice_chunks(
     target_chunks: &BTreeSet<SurfaceChunkKey>,
     published: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     fresh: &mut BTreeMap<SurfaceChunkKey, NetworkMeshData>,
-    keep: impl Fn(NetworkMeshOwner) -> bool,
+    keep: impl Fn(NetworkMeshOwner) -> bool + Sync,
 ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
-    let mut chunks = BTreeMap::new();
-    for chunk in target_chunks {
-        let fresh_chunk = fresh.remove(chunk).unwrap_or_default();
-        let mesh = match published.get(chunk) {
-            Some(old) => NetworkMeshData::splice_owners(old, &fresh_chunk, &keep)?,
-            None => fresh_chunk,
-        };
-        if !mesh.is_empty() {
-            chunks.insert(*chunk, mesh);
-        }
-    }
-    Some(chunks)
+    // Each chunk is spliced from its own published and fresh meshes alone, so the chunks are
+    // spliced on the pool and collected in chunk order (`ROAD-68-G` part 7). O(chunks) setup.
+    let chunks: Vec<_> = target_chunks
+        .iter()
+        .map(|&chunk| (chunk, fresh.remove(&chunk).unwrap_or_default()))
+        .collect();
+    let spliced: Option<Vec<_>> = crate::thread_pools::install(|| {
+        chunks
+            .into_par_iter()
+            .map(|(chunk, fresh_chunk)| {
+                let mesh = match published.get(&chunk) {
+                    Some(old) => NetworkMeshData::splice_owners(old, &fresh_chunk, &keep)?,
+                    None => fresh_chunk,
+                };
+                Some((chunk, mesh))
+            })
+            .collect()
+    });
+    Some(
+        spliced?
+            .into_iter()
+            .filter(|(_, mesh)| !mesh.is_empty())
+            .collect(),
+    )
 }
 
 // Test builds: a spliced publication equals emitting every covered piece, chunk for chunk.
