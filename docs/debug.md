@@ -621,7 +621,7 @@ Every thread the extension starts now ends before the library unloads:
 | Road-preview worker | Its request channel disconnecting when the node is freed; it finishes the running request | `SimulationNode`'s drop |
 | Preview Rayon pool (`road-preview-N`) and reclaim thread (`road-preview-reclaim`) | The worker returning; the reclaim thread frees what is queued first | The worker, before it returns |
 | Terrain and water payload jobs and water-mesh jobs | They run to completion | `SimulationNode`'s drop waits for them |
-| Shared Rayon pool (`metrum-N`) | The Scene-level deinit hook (`thread_pools::stop`), once its running and spawned work is done | The same hook |
+| Shared and background Rayon pools (`metrum-N`, `metrum-bg-N`) | The Scene-level deinit hook (`thread_pools::stop`), the shared pool first, each once its running and spawned work is done | The same hook |
 | Hang watchdog (`metrum-hang-watchdog`) | The Scene-level deinit hook (`debug::shutdown`) | The same hook |
 
 After that wait the node holds the only `SimCore` reference, so the core is freed on Godot's main
@@ -630,15 +630,19 @@ thread, while the node is freed and before Godot deinitializes the extension.
 Rayon's global pool cannot be stopped or joined: after one full `run.sh --test` with the joins
 above, `growth_meter_test` still crashed on a global-pool worker caught in Rayon's idle spin
 (`yield_now`, round 13 of 32) when the library unmapped. The extension therefore never uses it.
-All of its Rayon work runs in one shared pool
-([`thread_pools.rs`](../rust/src/thread_pools.rs)), sized like the global pool
+All of its Rayon work runs in two pools
+([`thread_pools.rs`](../rust/src/thread_pools.rs)), each sized like the global pool
 (`RAYON_NUM_THREADS`, else one thread per logical CPU) and built on first use, in the game and in
 test binaries alike:
 
 - A thread outside every Rayon pool (Godot's main thread and `WorkerThreadPool`, the simulation
-  thread, a test thread) enters it through `thread_pools::install`, which blocks the caller as a
-  global-pool call does, or queues a job with `thread_pools::spawn`. Code already on a worker of
-  any pool runs inline, so nested entries cost nothing.
+  thread, a test thread) enters the shared pool through `thread_pools::install`, which blocks the
+  caller as a global-pool call does. Code already on a worker of any pool runs inline, so nested
+  entries cost nothing.
+- Work nobody waits for in a frame is queued with `thread_pools::spawn` on the background pool,
+  from any thread: pure jobs such as the routing rebuild, the undo record's kept terrain tiles,
+  deferred frees and the payload jobs. The two pools share no worker, so a road tool pose, a
+  commit or an undo never waits behind a routing rebuild (`TERRAIN-07-E` round 3).
 - The functions that do the parallel work enter the pool themselves, not the `#[func]` bodies:
   the frame step, the render snapshot, cell-chunk preparation, the road commit, undo and
   bulldoze, loads and world resets, the routing rebuild, and leaf rebuilds such as the entrance
@@ -652,7 +656,8 @@ test binaries alike:
   initialized" instead of starting threads that outlive the library.
 - At Scene deinit, after Godot has deleted the scene tree and every node has joined its own
   threads, `thread_pools::stop` waits for entries in flight and spawned jobs, then joins the
-  workers. A later install runs on the caller.
+  workers, the shared pool's first (its workers may still queue background work). A later
+  install runs on the caller.
 
 Two checks find a call that bypasses the pool. A panicked `#[func]` returns a default value and
 GDScript errors exit 0, so grep the Godot test logs for `global thread pool has not been

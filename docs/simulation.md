@@ -790,14 +790,25 @@ field diffusion and other read-only precomputation.
   frame among it, so the job that frame would wait for, or a part of the job's own joins, can
   lie lower on that worker's stack or on another waiting worker's: the adoption frame used to
   wait inside the pool, and with the new-lane lift and chunk seal on the pool 18 frame-stepping
-  tests deadlocked. A wait on a shared-pool worker now panics instead of blocking
-  (`thread_pools::on_shared_worker`). Regression test
+  tests deadlocked. A wait on a pool worker now panics instead of blocking
+  (`thread_pools::on_pool_worker`). Regression test
   `the_adoption_wait_leaves_every_pool_worker_to_the_rebuild`: the rebuild needs every worker
   (a broadcast) after the adoption frame began; the old adoption deadlocks there.
 - **Pool.** The shared pool, not a dedicated one: while the rebuild runs the frame holds (below),
   so it competes only with render-snapshot building, cell-chunk preparation and Godot's terrain
   jobs. The dedicated-pool reason above (a long job must not starve per-frame movement) does not
   arise, because movement waits for the adoption.
+  Correction (`TERRAIN-07-E` round 3, 2026-10-27): a dedicated pool after all. The frame holds,
+  but the road tool does not: its next preview pose, a commit's own later stages and an undo
+  run their graded terrain stage on the shared pool while the rebuild runs, and on one pool
+  they waited behind it (an entry waits for a free worker, and a worker waiting in a join runs
+  whatever it steals): the populated drags' 23-47 ms stalls
+  ([`terrain.md`](terrain.md#terrain-07-e-record)).
+  `crate::thread_pools` now keeps a background pool for all spawned work (pure jobs, the undo
+  record's kept terrain tiles, deferred frees, payload jobs), sized like the shared pool and
+  sharing no worker with it; the shared pool runs only work a caller waits for (`install`). A
+  pure job's owner that finds it unstarted runs it in the background pool. The no-wait rule
+  below covers the workers of both pools (`thread_pools::on_pool_worker`).
 - **Not a declared kind.** A road commit, an undo or a road bulldoze starts it between frames, not
   a slot, and its adoption counts frames, because the clock does not move while it waits.
 - **The wait gate is the frame.** Every phase of a frame reads routing: the flow-field refresh,
