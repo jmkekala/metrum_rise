@@ -775,7 +775,7 @@ fn pruned_queries_equal_the_evaluation_over_every_seam() {
                 expected.to_bits(),
                 "ground {at}"
             );
-            let (kept, all) = pruned.listed();
+            let (kept, all) = pruned.listed(&surface);
             (listed, gathered) = (listed + kept, gathered + all);
             assert_eq!(
                 surface.surface_height_at(x, z, &mut pruned).to_bits(),

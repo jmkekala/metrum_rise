@@ -473,7 +473,7 @@ fn benchmark_cell_load_reservations() {
                     area_m2: 900.0,
                 });
                 allocator.buildings.push(building);
-                allocator.building_sites.push(site);
+                allocator.push_site_client(site);
             }
             let agriculture = AgricultureSystem::from_sites(fields);
             let run = || {

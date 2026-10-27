@@ -2,6 +2,7 @@
 
 //! Building-site derivation, grading, terrain ownership, and spatial queries.
 
+mod cells;
 mod derive;
 mod geometry;
 mod grading;
@@ -10,6 +11,7 @@ mod paving;
 mod query;
 mod terrain_clip;
 
+pub(crate) use cells::SiteCells;
 pub(crate) use derive::zoning_support_footprint;
 pub(crate) use grading::{
     BuildingSiteGradingRequest, SiteRoads, building_site_support_tie_in_is_valid,

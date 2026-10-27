@@ -823,15 +823,13 @@ impl SimCore {
             let removed_site = sites
                 .remove(&building_idx)
                 .expect("building-site undo journal was prevalidated");
-            if building_idx < last_site_idx {
-                let moved_site = sites
+            let moved_site = (building_idx < last_site_idx).then(|| {
+                sites
                     .remove(&last_site_idx)
-                    .expect("moved building-site undo record was prevalidated");
-                self.allocator.building_sites.push(moved_site);
-                self.allocator.building_sites[building_idx] = removed_site;
-            } else {
-                self.allocator.building_sites.push(removed_site);
-            }
+                    .expect("moved building-site undo record was prevalidated")
+            });
+            self.allocator
+                .restore_removed_site_client(building_idx, removed_site, moved_site);
         }
         if self.allocator.building_sites.len() != undo.original_site_count {
             self.allocator

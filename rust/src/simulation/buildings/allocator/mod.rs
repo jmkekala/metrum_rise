@@ -520,6 +520,8 @@ pub struct BuildingAllocator {
     pub(crate) entrances: Vec<BuildingEntrance>,
     /// Derived flat building-site clients keyed by building index.
     pub(crate) building_sites: Vec<BuildingSiteClient>,
+    /// The site clients by the 64 m cells their bounds meet, changed with them (`TERRAIN-07-F`).
+    pub(crate) site_cells: site::SiteCells,
     /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode:
     /// one box per site change, never merged, so changes far apart refresh only the terrain
     /// patches each touches (`SIM-02-K`).
@@ -917,6 +919,7 @@ impl BuildingAllocator {
             entrance_ref_revision: 0,
             entrances: Vec::new(),
             building_sites: Vec::new(),
+            site_cells: site::SiteCells::default(),
             building_site_dirty_bounds: Vec::new(),
             graded_site_changes: Vec::new(),
             cell_site_dirty_bounds: Vec::new(),
@@ -1153,6 +1156,7 @@ impl BuildingAllocator {
         self.pending_yards.clear();
         self.level_changes.clear();
         self.building_sites.clear();
+        self.site_cells.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {
             list.clear();

@@ -361,17 +361,48 @@ impl RoadbedSystem {
     }
 
     /// [`Self::grounded_seams_in_bounds`] unsorted, in piece and chain order: a segment two
-    /// pieces share is visited twice. `O(P log P + V)`.
+    /// pieces share is visited twice. `O(P log P + V / 8 + S)` for the `S` segments in the runs
+    /// of eight that meet the bounds.
     pub fn for_each_grounded_seam_in_bounds(
         &self,
         bounds_xz: [f64; 4],
         pieces: &mut Vec<PieceId>,
+        visit: impl FnMut([RoadVec3; 2]),
+    ) {
+        self.for_each_grounded_seam_in_bounds_where(bounds_xz, pieces, |_, _| true, visit);
+    }
+
+    /// [`Self::for_each_grounded_seam_in_bounds`] over the runs of consecutive chain segments
+    /// that `keep` accepts by their XZ bounds `[min_x, min_z, max_x, max_z]` and height range
+    /// `(lowest, highest)`, which hold each segment's own (`TERRAIN-07-F`, `docs/terrain.md`
+    /// T37 (b)): a test that a segment's bounds can only fail where its run's fail skips no
+    /// segment that passes it. `O(P log P + V / 8 + S)` for the `S` segments of the runs kept.
+    pub fn for_each_grounded_seam_in_bounds_where(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &mut Vec<PieceId>,
+        mut keep: impl FnMut([f64; 4], (f64, f64)) -> bool,
         mut visit: impl FnMut([RoadVec3; 2]),
     ) {
         self.grounded_pieces_in_bounds(bounds_xz, pieces);
         for id in pieces.iter() {
             let mesh = self.pieces[id].mesh();
-            for_each_segment_in_bounds(mesh, mesh.outer_chains(), bounds_xz, &mut visit);
+            for block in mesh.seam_blocks() {
+                if !bounds_intersect(block.bounds_xz, bounds_xz)
+                    || !keep(block.bounds_xz, block.heights)
+                {
+                    continue;
+                }
+                let chain = mesh.outer_chains()[block.chain as usize].vertices();
+                let (first, last) = (block.vertices.0 as usize, block.vertices.1 as usize);
+                for pair in chain[first..=last].windows(2) {
+                    let [a, b] = [pair[0], pair[1]].map(|v| mesh.positions()[v as usize]);
+                    let segment = [a.x.min(b.x), a.z.min(b.z), a.x.max(b.x), a.z.max(b.z)];
+                    if bounds_intersect(segment, bounds_xz) {
+                        visit([a, b]);
+                    }
+                }
+            }
         }
     }
 

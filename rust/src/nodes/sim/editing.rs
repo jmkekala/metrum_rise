@@ -3368,6 +3368,7 @@ mod tests {
         let point = site.footprint_world.iter().copied().sum::<Vector2>()
             / site.footprint_world.len() as f32;
         core.allocator.recompute_max_site_radius_m();
+        core.allocator.reindex_site_clients();
         core.allocator.rebuild_zone_index();
         let target = core.resolve_bulldoze_target(point.x, point.y).unwrap();
         assert_eq!(Vector2::new(target.center.x, target.center.z), point);

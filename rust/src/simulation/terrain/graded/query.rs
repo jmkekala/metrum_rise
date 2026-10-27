@@ -63,8 +63,13 @@ pub struct QueryScratch {
     // seams in key order.
     window: Vec<Seam>,
     // The other seams whose box comes within the cap of `rect`, with their box's distance from
-    // it: only a point below its base after the first pass reads them.
+    // it: only a point below its base after the first pass reads them, so they are gathered
+    // when the first such point needs them ([`GradedSurface::gather_rest`]).
     rest: Vec<(Seam, f64)>,
+    // Whether `rest` holds the prepared rectangle's other seams.
+    rest_ready: bool,
+    // The prepared rectangle's exact base range, which sorted its seams.
+    base_range: (f64, f64),
     base: BaseWindow,
     pieces: Vec<PieceId>,
     sites: SiteBuffer,
@@ -80,7 +85,8 @@ pub struct QueryScratch {
 #[cfg(test)]
 impl QueryScratch {
     // The seams the last preparation listed, and those it gathered within the cap.
-    pub(super) fn listed(&self) -> (usize, usize) {
+    pub(super) fn listed(&mut self, surface: &GradedSurface<'_>) -> (usize, usize) {
+        surface.gather_rest(self);
         (self.window.len(), self.window.len() + self.rest.len())
     }
 }
@@ -318,20 +324,19 @@ impl GradedSurface<'_> {
     }
 
     // Prepares the queries of the lattice points in `rect`: the base samples one base cell around
-    // it, the sites within the cap, and the seams within the cap sorted by the bake's first-pass
-    // test over the rectangle's exact base range (its cone may bind that base, or a road seam lies
-    // within the band) into the listed window (road seams in key order, then the pad seams) and
-    // the rest. `O(P + V + K log K)` plus the sites.
+    // it, the sites within the cap, and the seams within the cap the bake's first pass lists over
+    // the rectangle's exact base range (their cone may bind that base, or a road seam lies within
+    // the band): road seams in key order, then the pad seams. The runs of chain segments and the
+    // sites whose bounds fail that test hold no listed seam and are skipped; the other seams
+    // within the cap wait for [`Self::gather_rest`]. `O(P + V / 8 + K log K)` plus the sites, for
+    // the `K` seams of the runs and sites that may bind.
     fn prepare(&self, rect: [f64; 4], scratch: &mut QueryScratch) {
         let window = grown(rect, CAP_M + WINDOW_PAD_M);
         let cell_m = BaseGrid::of(self.terrain).cell_m;
         scratch.base.fill(self.terrain, grown(rect, cell_m));
         let band = Level::Gl0.band_m(cell_m);
         let base = scratch.base.bilinear_range(rect);
-        #[cfg(test)]
-        let unpruned = scratch.unpruned;
-        #[cfg(not(test))]
-        let unpruned = false;
+        let unpruned = Self::unpruned(scratch);
         let QueryScratch {
             window: listed,
             rest,
@@ -341,18 +346,20 @@ impl GradedSurface<'_> {
         } = scratch;
         listed.clear();
         rest.clear();
-        let sort = |seam: Seam, band: f64, listed: &mut Vec<Seam>, rest: &mut Vec<(Seam, f64)>| {
-            let distance = box_distance(seam.box_xz(), rect);
-            if unpruned || may_bind(seam.height_range(), base, distance, band) {
-                listed.push(seam);
-            } else if distance <= CAP_M + WINDOW_PAD_M {
-                rest.push((seam, distance));
-            }
+        let binds = |bounds: [f64; 4], heights: (f64, f64), band: f64| {
+            unpruned || may_bind(heights, base, box_distance(bounds, rect), band)
         };
-        self.roadbed
-            .for_each_grounded_seam_in_bounds(window, pieces, |[a, b]| {
-                sort(road_seam(a, b), band, listed, rest)
-            });
+        self.roadbed.for_each_grounded_seam_in_bounds_where(
+            window,
+            pieces,
+            |bounds, heights| binds(bounds, heights, band),
+            |[a, b]| {
+                let seam = road_seam(a, b);
+                if binds(seam.box_xz(), seam.height_range(), band) {
+                    listed.push(seam);
+                }
+            },
+        );
         // A segment two pieces share comes twice; key order is the nearest seam's tie order.
         listed.sort_unstable_by_key(Seam::key);
         listed.dedup_by_key(|seam| seam.key());
@@ -360,13 +367,66 @@ impl GradedSurface<'_> {
         // The queries read the sites in any order (`SiteBuffer::gather_unordered`).
         sites.gather_unordered(self.sites, window);
         // No sample names a pad seam, so it takes no band.
-        sites.for_each_pad_seam(|seam| sort(seam, 0.0, listed, rest));
+        sites.for_each_pad_seam_where(
+            |bounds, height| binds(bounds, (height, height), 0.0),
+            |seam| {
+                if binds(seam.box_xz(), seam.height_range(), 0.0) {
+                    listed.push(seam);
+                }
+            },
+        );
         listed[roads..].sort_unstable_by_key(Seam::key);
         scratch.rect = Some(rect);
+        scratch.rest_ready = false;
+        scratch.base_range = base;
+    }
+
+    // Gathers the prepared rectangle's other seams within the cap into `rest`, once per
+    // preparation: the road and pad seams of the window the first pass does not list, with their
+    // box's distance from the rectangle. `O(P + V)` plus the sites' corners.
+    fn gather_rest(&self, scratch: &mut QueryScratch) {
+        let Some(rect) = scratch.rect.filter(|_| !scratch.rest_ready) else {
+            return;
+        };
+        let window = grown(rect, CAP_M + WINDOW_PAD_M);
+        let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
+        let (base, unpruned) = (scratch.base_range, Self::unpruned(scratch));
+        let QueryScratch {
+            rest,
+            pieces,
+            sites,
+            ..
+        } = scratch;
+        rest.clear();
+        let mut sort = |seam: Seam, band: f64| {
+            let distance = box_distance(seam.box_xz(), rect);
+            if !unpruned
+                && !may_bind(seam.height_range(), base, distance, band)
+                && distance <= CAP_M + WINDOW_PAD_M
+            {
+                rest.push((seam, distance));
+            }
+        };
+        self.roadbed
+            .for_each_grounded_seam_in_bounds(window, pieces, |[a, b]| sort(road_seam(a, b), band));
+        sites.for_each_pad_seam(|seam| sort(seam, 0.0));
+        scratch.rest_ready = true;
+    }
+
+    // Whether the test reference lists every gathered seam.
+    #[cfg(test)]
+    fn unpruned(scratch: &QueryScratch) -> bool {
+        scratch.unpruned
+    }
+
+    #[cfg(not(test))]
+    fn unpruned(_: &QueryScratch) -> bool {
+        false
     }
 
     // Whether no seam comes within the cap of the prepared rectangle, listed or not.
-    fn quiet(scratch: &QueryScratch) -> bool {
+    fn quiet(&self, scratch: &mut QueryScratch) -> bool {
+        self.gather_rest(scratch);
         scratch.window.is_empty() && scratch.rest.is_empty()
     }
 
@@ -390,7 +450,7 @@ impl GradedSurface<'_> {
         z: f64,
         base: f64,
         road: Option<f32>,
-        scratch: &QueryScratch,
+        scratch: &mut QueryScratch,
     ) -> f64 {
         let seams = &scratch.window;
         let band = Level::Gl0.band_m(scratch.base.grid().cell_m);
@@ -401,6 +461,7 @@ impl GradedSurface<'_> {
         if road.is_some() || pad.is_some() || first.height >= base {
             return first.height;
         }
+        self.gather_rest(scratch);
         let mut cones = first.cones;
         for (seam, distance) in &scratch.rest {
             if may_lift(seam.height_range().1, first.height, *distance) {
@@ -460,7 +521,7 @@ impl GradedSurface<'_> {
                     self.prepare(grown(rect, GL0_M), scratch);
                     self.prepare_portals(grown(rect, GL0_M), scratch);
                 }
-                hit = if !graded || Self::quiet(scratch) {
+                hit = if !graded || self.quiet(scratch) {
                     self.march_base(origin, direction, (t0, t1), &grid, scratch)
                 } else {
                     self.march_graded(origin, direction, (t0, t1), rect, scratch)

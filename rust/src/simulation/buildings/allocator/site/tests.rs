@@ -127,6 +127,68 @@ fn site_radius_tracks_replacement_removal_and_cross_chunk_height_queries() {
     assert_eq!(allocator.max_site_radius_m, 0.0);
 }
 
+// The 64 m site cells (`TERRAIN-07-F`, `docs/terrain.md` T40) list each site whose bounds meet
+// a rectangle exactly once, through pushes, rebuilds of one site, swap-removals and their undo.
+#[test]
+fn site_cells_list_every_site_meeting_a_rectangle_once_through_site_changes() {
+    use crate::simulation::zoning::ZoneType;
+    let mut allocator = BuildingAllocator::new();
+    let check = |allocator: &BuildingAllocator, step: &str| {
+        let mut met = 0;
+        for i in 0..60 {
+            let t = i as f32 * 0.618_034;
+            let (x, z) = (
+                -150.0 + (t.fract() * 300.0),
+                -150.0 + ((t * 7.3).fract() * 300.0),
+            );
+            let half = 1.0 + (t * 3.1).fract() * 90.0;
+            let rect = [x - half, z - half, x + half, z + half];
+            let mut listed = Vec::new();
+            allocator.site_cells.visit(rect, |idx| listed.push(idx));
+            listed.sort_unstable();
+            let expected: Vec<usize> = (0..allocator.building_sites.len())
+                .filter(|&idx| {
+                    allocator.building_sites[idx]
+                        .overlaps_bounds(rect[0], rect[1], rect[2], rect[3])
+                })
+                .collect();
+            assert_eq!(listed, expected, "{step}: rect {rect:?}");
+            met += listed.len();
+        }
+        assert!(met > 60, "{step}: the rectangles met {met} sites");
+    };
+    for index in 0..24 {
+        let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+        // Lots on both sides of cell boundaries, some spanning several cells.
+        building.center_x = -140.0 + (index % 6) as f32 * 47.0;
+        building.center_y = -130.0 + (index / 6) as f32 * 61.0;
+        building.width_cells = 2 + (index % 5) as u16;
+        building.depth_cells = 2 + (index % 3) as u16;
+        allocator.buildings.push(building);
+        allocator.push_building_site_client(index, 10.0);
+    }
+    check(&allocator, "pushed");
+    for (index, width) in [(0, 9), (5, 1), (11, 12), (23, 3)] {
+        allocator.buildings[index].width_cells = width;
+        allocator.rebuild_building_site_client(index, 10.0);
+    }
+    check(&allocator, "rebuilt");
+    for index in [3, 0, 20, 7] {
+        let last = allocator.building_sites.len() - 1;
+        let removed = allocator.building_sites[index].clone();
+        let moved = (index < last).then(|| allocator.building_sites[last].clone());
+        allocator.remove_building_site_client(index);
+        allocator.buildings.swap_remove(index);
+        check(&allocator, "removed");
+        allocator.restore_removed_site_client(index, removed, moved);
+        check(&allocator, "restored");
+        allocator.remove_building_site_client(index);
+        check(&allocator, "removed again");
+    }
+    allocator.reindex_site_clients();
+    check(&allocator, "reindexed");
+}
+
 #[test]
 fn tied_site_radii_survive_shrinking_growing_and_swap_removal() {
     use crate::simulation::zoning::ZoneType;
@@ -524,7 +586,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
 #[test]
 fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
     let mut allocator = BuildingAllocator::new();
-    allocator.building_sites.push(square_site_with_surface());
+    allocator.push_site_client(square_site_with_surface());
     let snapshot = allocator.terrain_site_snapshot_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
     let direct = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
 

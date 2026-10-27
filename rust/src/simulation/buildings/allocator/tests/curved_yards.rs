@@ -211,8 +211,7 @@ vertices = [[-3, 8], [2, 8], [2, 15], [-3, 15]]
             front_gap_m: gaps,
             ..building.clone()
         }];
-        allocator.building_sites.clear();
-        allocator.push_building_site_client(0, 10.0);
+        allocator.rebuild_building_site_clients(10.0);
         allocator.building_sites[0].surfaces[0]
             .vertices_world
             .clone()

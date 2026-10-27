@@ -133,6 +133,47 @@ pub(super) fn wall_run(positions: &[RoadVec3], row: impl Iterator<Item = u32>) -
     }
 }
 
+// Segments per seam block: a block's bounds cost one test per this many chain segments.
+const SEAM_BLOCK_SEGMENTS: usize = 8;
+
+/// A run of at most `SEAM_BLOCK_SEGMENTS` consecutive segments of one outer chain, with the XZ
+/// bounds and height range of its vertices, which hold every segment's own: a walk skips a run
+/// none of whose segments can meet its bounds or pass its test (`TERRAIN-07-F`, T37 (b)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct SeamBlock {
+    pub(super) chain: u32,
+    // Positions in the chain's vertex list of the run's first and last vertex.
+    pub(super) vertices: (u32, u32),
+    pub(super) bounds_xz: [f64; 4],
+    pub(super) heights: (f64, f64),
+}
+
+// The seam blocks of `chains`, in chain order, each chain's runs from its first vertex.
+// `O(chain vertices)`.
+fn seam_blocks(positions: &[RoadVec3], chains: &[OuterChain]) -> Vec<SeamBlock> {
+    let mut blocks = Vec::new();
+    for (chain, outer) in chains.iter().enumerate() {
+        let segments = outer.vertices.len().saturating_sub(1);
+        for first in (0..segments).step_by(SEAM_BLOCK_SEGMENTS) {
+            let last = (first + SEAM_BLOCK_SEGMENTS).min(segments);
+            let points = || {
+                outer.vertices[first..=last]
+                    .iter()
+                    .map(|&v| positions[v as usize])
+            };
+            blocks.push(SeamBlock {
+                chain: chain as u32,
+                vertices: (first as u32, last as u32),
+                bounds_xz: bounds_xz(points()),
+                heights: points().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                    (lo.min(p.y), hi.max(p.y))
+                }),
+            });
+        }
+    }
+    blocks
+}
+
 /// Immutable mesh of one roadbed piece.
 #[derive(Debug, PartialEq)]
 pub struct PieceMesh {
@@ -143,6 +184,8 @@ pub struct PieceMesh {
     triangles: Vec<[u32; 3]>,
     group_starts: [u32; GROUPS + 1],
     outer_chains: Vec<OuterChain>,
+    // The outer chains' segments in runs, with their bounds (`TERRAIN-07-F`).
+    seam_blocks: Vec<SeamBlock>,
     // The wall runs across the structure mouths a grounded piece meets (`TERRAIN-07-C`), and per
     // run whether the structure is a bridge, whose abutment face hangs below the row.
     wall_runs: Vec<OuterChain>,
@@ -214,6 +257,11 @@ impl PieceMesh {
     /// Footprint boundary chains.
     pub fn outer_chains(&self) -> &[OuterChain] {
         &self.outer_chains
+    }
+
+    // The outer chains' segments in runs of consecutive segments, with their bounds.
+    pub(super) fn seam_blocks(&self) -> &[SeamBlock] {
+        &self.seam_blocks
     }
 
     /// The wall runs across the structure mouths a grounded piece meets (`TERRAIN-07-C`,
@@ -764,6 +812,7 @@ impl PieceMesh {
         );
         Self {
             bounds_xz: bounds_xz(positions.iter().copied()),
+            seam_blocks: seam_blocks(&positions, &outer_chains),
             positions,
             road_space,
             triangles,

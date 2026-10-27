@@ -97,6 +97,7 @@ impl BuildingAllocator {
                 .collect_into_vec(&mut sites)
         });
         self.building_sites = sites;
+        self.site_cells.rebuild(&self.building_sites);
         self.recompute_max_site_radius_m();
     }
 
@@ -111,6 +112,9 @@ impl BuildingAllocator {
                 self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
             let radius_m = site_radius_m(&client);
             let previous = site_radius_m(&self.building_sites[building_idx]);
+            self.site_cells
+                .remove(building_idx, &self.building_sites[building_idx]);
+            self.site_cells.insert(building_idx, &client);
             self.building_sites[building_idx] = client;
             self.update_site_radius(Some(previous), Some(radius_m));
         }
@@ -121,7 +125,7 @@ impl BuildingAllocator {
             let client =
                 self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
             let radius = site_radius_m(&client);
-            self.building_sites.push(client);
+            self.push_site_client(client);
             self.update_site_radius(None, Some(radius));
         } else {
             self.rebuild_building_site_clients(zone_cell_m);
@@ -134,8 +138,46 @@ impl BuildingAllocator {
             return;
         };
         let radius = site_radius_m(site);
+        self.site_cells.remove(building_idx, site);
+        let last = self.building_sites.len() - 1;
+        if building_idx != last {
+            self.site_cells
+                .rename(last, building_idx, &self.building_sites[last]);
+        }
         self.building_sites.swap_remove(building_idx);
         self.update_site_radius(Some(radius), None);
+    }
+
+    /// Appends a site client and indexes it; the caller keeps the radius maximum.
+    pub(crate) fn push_site_client(&mut self, client: BuildingSiteClient) {
+        self.site_cells.insert(self.building_sites.len(), &client);
+        self.building_sites.push(client);
+    }
+
+    /// Undoes [`Self::remove_building_site_client`] from its journal: `removed` back at
+    /// `building_idx`, and `moved`, the site its swap-remove brought there, back at the end.
+    /// The caller recomputes the radius maximum.
+    pub(crate) fn restore_removed_site_client(
+        &mut self,
+        building_idx: usize,
+        removed: BuildingSiteClient,
+        moved: Option<BuildingSiteClient>,
+    ) {
+        let Some(moved) = moved else {
+            self.push_site_client(removed);
+            return;
+        };
+        self.site_cells
+            .remove(building_idx, &self.building_sites[building_idx]);
+        self.push_site_client(moved);
+        self.site_cells.insert(building_idx, &removed);
+        self.building_sites[building_idx] = removed;
+    }
+
+    /// Indexes the site clients again after a test edited them in place.
+    #[cfg(test)]
+    pub(crate) fn reindex_site_clients(&mut self) {
+        self.site_cells.rebuild(&self.building_sites);
     }
 
     // A tied maximum survives local replacement/removal. Only losing its last owner

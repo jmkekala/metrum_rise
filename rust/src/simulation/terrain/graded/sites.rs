@@ -241,11 +241,23 @@ impl SiteBuffer {
     /// support height, oriented counter-clockwise (positive signed area in XZ), each site's
     /// sides from its first corner. A footprint of fewer than three corners holds no point and
     /// gives none. `O(corners)`.
-    pub(super) fn for_each_pad_seam(&mut self, mut visit: impl FnMut(Seam)) {
+    pub(super) fn for_each_pad_seam(&mut self, visit: impl FnMut(Seam)) {
+        self.for_each_pad_seam_where(|_, _| true, visit);
+    }
+
+    /// [`Self::for_each_pad_seam`] over the sites `keep` accepts by their footprint's XZ bounds
+    /// (`[min_x, min_z, max_x, max_z]`, which hold each of its pad seams) and support height
+    /// (every pad seam's), skipping the others' footprints (`TERRAIN-07-F`, T37 (b)).
+    /// `O(sites + corners of the sites kept)`.
+    pub(super) fn for_each_pad_seam_where(
+        &mut self,
+        mut keep: impl FnMut([f64; 4], f64) -> bool,
+        mut visit: impl FnMut(Seam),
+    ) {
         for index in 0..self.sites.len() {
             let site = self.sites[index];
             let height = f64::from(site.height);
-            if site.footprint.1 - site.footprint.0 < 3 {
+            if site.footprint.1 - site.footprint.0 < 3 || !keep(site.bounds, height) {
                 continue;
             }
             self.oriented_ring(site.footprint);
