@@ -114,6 +114,7 @@ func _run() -> void:
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
 		int(counters["edit_tiles_last"]), float(counters["edit_install_ms_last"])])
 
+	await _check_road_preview(graded, simulation, camera, resident)
 	await _check_moving_camera(graded, resident)
 
 	# Far away every tile is evicted and every slot freed.
@@ -205,6 +206,9 @@ class RefusingBridge extends Node:
 			_failed.append({"kind": "tile", "keys": keys, "token": flat[index + 4], "reason": "edge_capacity", "retry": false})
 			accepted.append(1)
 		return accepted
+
+	func set_road_preview_terrain_view(_camera: Vector3, _level_end_m: PackedFloat64Array, _gl3_end_m: PackedFloat64Array) -> void:
+		pass
 
 	func poll_graded_tile_results(_max_tiles: int) -> Dictionary:
 		var out := {"edits": [], "patches": _lists, "tiles": [], "failed": _failed}
@@ -417,7 +421,7 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 			var codes := int(data.b) | (int(data.a) << 9)
 			_expect(data.r < 2048.0 and data.b < 2048.0 and data.a < 2048.0, "custom channels are exact as half floats")
 			var own := codes & 7
-			var entry: Dictionary = graded.installed.get(tile, {})
+			var entry: Dictionary = graded._shown(tile)
 			if index != GradedTiles.CELL_BASE:
 				_expect(not entry.is_empty() and int(data.g) == int(entry["slot"]), "a graded instance names its slot")
 			else:
@@ -426,6 +430,63 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 				var side_code := (codes >> (3 + side * 3)) & 7
 				_expect(side_code >= own, "a side stitches to its own or a coarser lattice")
 	_expect(total == tiles.size(), "patch %s: every tile is one cell (%d of %d)" % [key, total, tiles.size()])
+
+# TERRAIN-07-E: a road preview's graded tiles draw from slots of their own in place of the
+# installed tiles, staged at the camera's levels, and leave the installed tiles as they were; the
+# commit's edit installs the tiles it staged and releases the preview's in the same frame.
+func _check_road_preview(graded: GradedTiles, simulation: SimulationNode, camera: Vector3, resident: Dictionary) -> void:
+	var installed_before: Dictionary = graded.installed.duplicate(true)
+	# A T off the trunk. (A crossing here, (60, -50) to (60, 70), panics in the exact cut's
+	# legacy road loops while the commit grades its margins: road_clip.rs, TERRAIN-07-G's.)
+	var points := PackedVector3Array([Vector3(60.0, 0.0, 10.0), Vector3(60.0, 0.0, 80.0)])
+	var frame: Dictionary = simulation.preview_road(points, 1, 1, true)
+	_expect(frame.get("is_valid", false), "the preview stroke must validate: %s" % frame.get("invalid_reason", ""))
+	var install_ms := graded.show_preview(frame)
+	var pending := int(frame.get("graded_pending", 0))
+	var frames := 1
+	while pending > 0 and frames < 64:
+		_frame(graded, camera, resident)
+		var step: Dictionary = simulation.advance_road_preview_terrain()
+		install_ms = maxf(install_ms, graded.show_preview(step))
+		pending = int(step.get("graded_pending", 0))
+		frames += 1
+	_expect(pending == 0 and graded.preview.size() > 0, "the preview's tiles converge and show (%d)" % graded.preview.size())
+	var levels := {}
+	for entry: Dictionary in graded.preview.values():
+		levels[int(entry["level"])] = true
+	_expect(levels.size() > 1, "the preview's tiles take the camera's levels: %s" % [levels.keys()])
+	_expect(graded.installed == installed_before, "a preview leaves the installed tiles as they were")
+	for key: Vector2i in graded.patch_cells.keys():
+		_check_cells(graded, key, resident)
+	var shown := graded.preview.keys()
+	print("graded preview: %d tiles over %d frames, levels %s, install ms max %.3f (headless)" % [shown.size(), frames, levels.keys(), install_ms])
+	# The click: the commit adopts the shown tiles; its edit installs them and drops the preview's.
+	var batches := int(graded.counters["edit_batches"])
+	var request: int = simulation.add_road_with_snap(points, 1, 1, true)
+	simulation.release_road_preview_terrain()
+	for wait in TIMEOUT_FRAMES:
+		if simulation.get_road_commit_result(request) != null:
+			break
+		await process_frame
+	var installed_frame := false
+	for wait in TIMEOUT_FRAMES:
+		_frame(graded, camera, resident)
+		await process_frame
+		if int(graded.counters["edit_batches"]) > batches:
+			installed_frame = graded.preview.is_empty()
+			break
+	_expect(installed_frame, "the commit's edit releases the preview's tiles in its batch's frame")
+	for key: Vector2i in shown:
+		_expect(graded.last_edit_batch.has(key), "the batch installs the committed tile %s" % key)
+	# The patches' new generations, as terrain.gd hands them over after the commit.
+	for key: Vector2i in resident.keys():
+		resident[key]["generation"] = int(resident[key]["generation"]) + 1
+	_mark_changed(resident)
+	_expect(await _settle(graded, camera, resident), "the residency settles after the commit")
+	for key: Vector2i in shown:
+		_expect(graded._desired.has(key), "the committed tile %s is listed" % key)
+	for key: Vector2i in graded.patch_cells.keys():
+		_check_cells(graded, key, resident)
 
 func _add_road(simulation: Node, points: Array) -> void:
 	var request: int = simulation.add_road_with_snap(PackedVector3Array(points), 1, 1, true)

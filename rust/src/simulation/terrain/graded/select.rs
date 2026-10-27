@@ -79,6 +79,34 @@ pub fn dirty_tiles_for_road_changes(
     scratch: &mut SelectScratch,
     out: &mut Vec<TileKey>,
 ) {
+    dirty_tiles_for_road_changes_where(
+        terrain,
+        before,
+        after,
+        sites,
+        changes,
+        level,
+        |_| true,
+        scratch,
+        out,
+    );
+}
+
+/// [`dirty_tiles_for_road_changes`] over the candidate tiles `keep` accepts only: the tiles
+/// an edit stages at `level` when each tile takes its own level (`TERRAIN-07-E`, T42). The
+/// candidates are filtered before their tests, so a level few tiles take costs few tests.
+#[allow(clippy::too_many_arguments)]
+pub fn dirty_tiles_for_road_changes_where(
+    terrain: &TerrainSystem,
+    before: &RoadbedSystem,
+    after: &RoadbedSystem,
+    sites: &impl SiteSource,
+    changes: &TerrainChanges,
+    level: Level,
+    keep: impl Fn(TileKey) -> bool,
+    scratch: &mut SelectScratch,
+    out: &mut Vec<TileKey>,
+) {
     out.clear();
     let grid = BaseGrid::of(terrain);
     let band = level.band_m(grid.cell_m);
@@ -105,6 +133,7 @@ pub fn dirty_tiles_for_road_changes(
             &mut scratch.candidates,
         );
     }
+    scratch.candidates.retain(|&tile| keep(tile));
     sort_unique(&mut scratch.candidates);
     let changed = &scratch.changed;
     let (pieces, portals) = (&changes.pieces, &changes.portals);
@@ -338,6 +367,25 @@ pub fn selection_site_reach_m(level: Level, cell_m: f64) -> f64 {
     let (reach, apron) = (CAP_M.max(level.band_m(cell_m)), level.spacing_m(cell_m));
     // The window's pad and the piece pad are below 2 m.
     reach + apron + TILE_M + apron + reach + 2.0
+}
+
+/// A rectangle holding every candidate tile of a road change's selection at `level`
+/// ([`dirty_tiles_for_road_changes`]): the changed pieces, portals and segments grown by that
+/// level's reach. `None` for a change without pieces or segments. `O(changes)`.
+pub fn road_change_extent(changes: &TerrainChanges, level: Level, cell_m: f64) -> Option<[f64; 4]> {
+    let (band, apron) = (level.band_m(cell_m), level.spacing_m(cell_m));
+    let reach = apron + PIECE_PAD_M + CAP_M.max(band).max(PORTAL_REACH_M) + TILE_M;
+    let boxes = (changes.pieces.iter().copied())
+        .chain(changes.portals.iter().copied())
+        .chain(
+            changes
+                .segments
+                .iter()
+                .map(|[a, b]| road_seam(*a, *b).box_xz()),
+        );
+    boxes
+        .reduce(|[a, b, c, d], [e, f, g, h]| [a.min(e), b.min(f), c.max(g), d.max(h)])
+        .map(|rect| grown(rect, reach))
 }
 
 // Whether a changed seam may change a value of the tile's lattice: the bake's pass 1 lists it

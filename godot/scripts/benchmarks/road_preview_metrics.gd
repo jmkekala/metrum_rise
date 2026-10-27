@@ -101,7 +101,7 @@ func poll(id: int, elapsed_us: int, payload: Variant) -> void:
 		# The synchronous preview's native stages (`docs/roads.md` "Stage budgets").
 		if payload.has("plan_ms"):
 			var stages := {}
-			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "terrain_ms", "packing_ms"]:
+			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "graded_ms", "packing_ms"]:
 				stages[stage] = float(payload.get(stage, 0.0))
 			row["stages"] = stages
 		if not row.native.is_empty():

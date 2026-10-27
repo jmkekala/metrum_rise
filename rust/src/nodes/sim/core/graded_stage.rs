@@ -18,8 +18,10 @@
 //!
 //! Inputs decide every reuse, so each staged tile is bitwise the fresh bake of the state it
 //! stands for (invariant 9); a shown preview tile is the exact bake of some pose's inputs,
-//! never a blend or a part of one. The tiles of the last commit or undo stay on the core for the
-//! Godot install (the Godot half, after `TERRAIN-07-D` lands).
+//! never a blend or a part of one. Each tile is staged at the level the renderer's distance
+//! rule gives it ([`LevelRule`], T42). The renderer takes each frame's changed shown tiles
+//! ([`GradedPreview::take_shown_changes`]); the tiles of a commit or undo ride on the graded
+//! edit journal's record of the install, so the renderer installs them instead of rebaking.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -30,14 +32,9 @@ use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    BakeError, Level, SiteBuffer, SiteSource, StageScratch, StageStats, TILE_M, TileKey, TileStage,
-    bake_window, stage_selected, stage_tiles,
+    BakeError, Level, LevelRule, SiteBuffer, SiteSource, StageScratch, StageStats, StagedTile,
+    TILE_M, TileKey, TileStage, bake_window, stage_selected, stage_tiles,
 };
-
-/// The levels the Rust half stages an edit's dirty tiles at. Godot's residency (the Godot
-/// half) gives each resident tile its own level; until then every dirty tile is staged at
-/// `GL0`, the finest and dearest level and the one the budgets were measured at.
-pub(crate) const GRADED_EDIT_LEVELS: [Level; 1] = [Level::Gl0];
 
 /// The building sites the road tool's view captured per render patch
 /// ([`RoadTerrainInputs`]), answered with the allocator's own test: a graded bake from them
@@ -117,6 +114,11 @@ pub(crate) struct GradedPose {
     /// The frame's whole terrain work, milliseconds: the selection, the staging and the shown
     /// tiles.
     pub(crate) frame_ms: f64,
+    /// The level rule the pose's tiles were selected and staged by; a commit of the pose
+    /// stages by it too, so its tiles meet the preview's at the same levels.
+    pub(crate) rule: LevelRule,
+    /// The preview epoch the shown tiles belong to ([`GradedPreview::release`]).
+    pub(crate) epoch: u64,
 }
 
 // What the latest pose's remaining tiles bake from: the inputs it was selected over, `O(1)`
@@ -125,6 +127,7 @@ struct PoseInputs {
     terrain: Arc<TerrainSystem>,
     roadbed: RoadbedSystem,
     sites: RoadTerrainInputs,
+    rule: LevelRule,
 }
 
 /// The road tool's graded preview between frames (T27 (d)): the tiles it shows and the latest
@@ -137,6 +140,15 @@ struct PoseInputs {
 #[derive(Default)]
 pub(crate) struct GradedPreview {
     shown: Arc<TileStage>,
+    // The shown tiles the renderer holds: as of the last `take_shown_changes`.
+    sent: Arc<TileStage>,
+    // Counts releases and cancels: the renderer tags the tiles it shows with it, and a commit's
+    // install releases the tiles of the epoch its pose belonged to.
+    epoch: u64,
+    // The renderer's view the poses select for.
+    rule: LevelRule,
+    // The tile keys of `shown`, sorted (scratch of `take_shown_changes`).
+    keys: Vec<TileKey>,
     pending: Option<PoseInputs>,
     // The latest pose's tiles in `(level, tile)` order, then in staging order, of which the
     // first `next` are staged.
@@ -168,14 +180,8 @@ impl GradedPreview {
         if !preview_sites.ready() {
             return self.failed(BakeError::SitesUnavailable, start);
         }
-        self.scratch.select_road_edit(
-            terrain,
-            before,
-            after,
-            &preview_sites,
-            changes,
-            &GRADED_EDIT_LEVELS,
-        );
+        self.scratch
+            .select_road_edit(terrain, before, after, &preview_sites, changes, &self.rule);
         let select_ms = start.elapsed().as_secs_f64() * 1000.0;
         self.wanted.clear();
         self.wanted.extend_from_slice(self.scratch.selected());
@@ -195,6 +201,7 @@ impl GradedPreview {
             terrain: Arc::clone(terrain),
             roadbed: after.snapshot(),
             sites: sites.clone(),
+            rule: self.rule,
         });
         self.advance(POSE_FRAME_TILES, select_ms, start)
     }
@@ -212,10 +219,66 @@ impl GradedPreview {
         self.pending = None;
     }
 
+    /// Sets the renderer's view the next poses select their tiles' levels by (a pending pose
+    /// keeps the levels it was selected at).
+    pub(crate) fn set_rule(&mut self, rule: LevelRule) {
+        self.rule = rule;
+    }
+
+    /// Hands the shown tiles over and starts a new epoch with none: at a click, whose commit
+    /// installs the tiles of the epoch returned and lets the renderer release that epoch's,
+    /// or at cancel. The renderer keeps what it shows until then; the next poses send theirs
+    /// under the new epoch. Returns the released epoch.
+    pub(crate) fn release(&mut self) -> u64 {
+        let released = self.epoch;
+        self.epoch += 1;
+        self.pending = None;
+        self.shown = Arc::default();
+        self.sent = Arc::default();
+        released
+    }
+
+    /// The preview epoch the shown tiles belong to.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// The shown tiles changed since the last call, for the renderer: into `changed` the tiles
+    /// shown now with a payload it does not hold, into `removed` the tiles it holds that are
+    /// shown no more. `O(shown + sent log shown)`.
+    pub(crate) fn take_shown_changes(
+        &mut self,
+        changed: &mut Vec<StagedTile>,
+        removed: &mut Vec<TileKey>,
+    ) {
+        changed.clear();
+        removed.clear();
+        changed.extend(
+            (self.shown.tiles().iter())
+                .filter(|tile| {
+                    !(self.sent.get(tile.level, tile.tile))
+                        .is_some_and(|sent| Arc::ptr_eq(sent, &tile.payload))
+                })
+                .cloned(),
+        );
+        // A wanted tile takes one level, so the shown tiles' keys are unique.
+        self.keys.clear();
+        self.keys
+            .extend(self.shown.tiles().iter().map(|tile| tile.tile));
+        self.keys.sort_unstable();
+        removed.extend(
+            (self.sent.tiles().iter())
+                .map(|tile| tile.tile)
+                .filter(|tile| self.keys.binary_search(tile).is_err()),
+        );
+        self.sent = Arc::clone(&self.shown);
+    }
+
     // Stages the next `count` tiles of the pending pose against the shown tiles and shows them
     // over the shown tiles of the pose's other wanted tiles.
     fn advance(&mut self, count: usize, select_ms: f64, start: Instant) -> GradedPose {
         let inputs = self.pending.as_ref().expect("a pending pose");
+        let inputs_rule = inputs.rule;
         let end = (self.next + count).min(self.order.len());
         self.share.clear();
         self.share.extend_from_slice(&self.order[self.next..end]);
@@ -254,6 +317,8 @@ impl GradedPreview {
             },
             pending,
             frame_ms: start.elapsed().as_secs_f64() * 1000.0,
+            rule: inputs_rule,
+            epoch: self.epoch,
         }
     }
 
@@ -263,6 +328,8 @@ impl GradedPreview {
             stats: StageStats::default(),
             pending: 0,
             frame_ms: start.elapsed().as_secs_f64() * 1000.0,
+            rule: self.rule,
+            epoch: self.epoch,
         }
     }
 }
@@ -272,6 +339,8 @@ impl GradedPreview {
 /// whose inputs equal the restored ones; until the job finishes it has none to adopt and bakes.
 pub(crate) struct GradedUndo {
     kept: Arc<OnceLock<Result<TileStage, BakeError>>>,
+    // The commit's level rule: undo selects by it, so the kept tiles meet its own.
+    rule: LevelRule,
     // When the job started and finished (benchmarks: the frames after the commit share the
     // pool with it).
     #[cfg(test)]
@@ -307,12 +376,16 @@ impl SimCore {
     }
 
     // Stages the dirty tiles of the last roadbed install from `before` (`last_road_terrain_
-    // changes`) over the live roadbed, sites and terrain, adopting `held`'s matching tiles;
-    // the result becomes the core's last graded tiles.
+    // changes`) over the live roadbed, sites and terrain, each at the level `rule` gives it,
+    // adopting `held`'s matching tiles; the result becomes the core's last graded tiles and,
+    // staged for a renderer's view, rides on the journal's record of the install, tagged with
+    // the preview `epoch` whose tiles it adopted, for the renderer.
     fn stage_live_graded_tiles(
         &mut self,
         before: &RoadbedSystem,
         held: Option<&TileStage>,
+        rule: &LevelRule,
+        epoch: Option<u64>,
     ) -> StageStats {
         self.prepare_graded_sites();
         let select_start = Instant::now();
@@ -331,7 +404,7 @@ impl SimCore {
             roadbed,
             &*allocator,
             last_road_terrain_changes,
-            &GRADED_EDIT_LEVELS,
+            rule,
         );
         let select_ms = select_start.elapsed().as_secs_f64() * 1000.0;
         let empty = TileStage::default();
@@ -350,6 +423,11 @@ impl SimCore {
                     let old =
                         Arc::try_unwrap(old).unwrap_or_else(|shared| TileStage::clone(&shared));
                     self.graded_scratch.retire(old, &stage);
+                }
+                // Staged for a renderer's view, the tiles stand at the levels it holds them;
+                // without one (a commit without a preview) its edit journal rebakes them.
+                if rule.view.is_some() {
+                    self.attach_graded_install_tiles(Arc::clone(&stage), epoch);
                 }
                 StageStats { select_ms, ..stats }
             }
@@ -373,9 +451,16 @@ impl SimCore {
     pub(crate) fn stage_committed_graded_tiles(
         &mut self,
         before: RoadbedSystem,
-        held: Option<&TileStage>,
+        pose: Option<&GradedPose>,
     ) -> Option<GradedUndo> {
-        self.stage_live_graded_tiles(&before, held);
+        let held = pose.and_then(|pose| pose.stage.as_ref().ok());
+        let rule = pose.map(|pose| pose.rule).unwrap_or_default();
+        self.stage_live_graded_tiles(
+            &before,
+            held.map(Arc::as_ref),
+            &rule,
+            pose.map(|pose| pose.epoch),
+        );
         if self.benchmark_mode {
             return None;
         }
@@ -417,6 +502,7 @@ impl SimCore {
         });
         Some(GradedUndo {
             kept,
+            rule,
             #[cfg(test)]
             span,
         })
@@ -431,6 +517,6 @@ impl SimCore {
         before: &RoadbedSystem,
         undo: GradedUndo,
     ) {
-        self.stage_live_graded_tiles(before, undo.kept());
+        self.stage_live_graded_tiles(before, undo.kept(), &undo.rule, None);
     }
 }

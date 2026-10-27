@@ -183,14 +183,6 @@ impl SimulationNode {
             && cached.surface_generation == surface_generation
     }
 
-    /// True when a refined entry was built under the current CDT contract, so a later build may
-    /// reuse its windows.
-    pub(crate) fn refined_terrain_entry_contract_is_current(
-        cached: &CachedRefinedTerrainPatch,
-    ) -> bool {
-        cached.contract_revision == TERRAIN_CDT_CONTRACT_REVISION
-    }
-
     pub(in crate::nodes::simulation_node) fn append_cdt_diagnostic_metadata(
         dict: &mut VarDictionary,
         backend_label: &str,

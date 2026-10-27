@@ -8,10 +8,12 @@ mod state;
 
 pub(in crate::nodes::simulation_node) use state::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
-    TerrainPatchPayloadKey, TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
+    TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
     WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
     WaterPatchPayloadRequestState,
 };
 
 #[cfg(test)]
-pub(in crate::nodes::simulation_node) use state::{PayloadDeferral, WaterPatchPayloadKey};
+pub(in crate::nodes::simulation_node) use state::{
+    PayloadDeferral, TerrainPatchPayloadKey, WaterPatchPayloadKey,
+};

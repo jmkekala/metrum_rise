@@ -14,10 +14,8 @@ use super::graded_stage::GradedPose;
 use super::road_edit_plan::{ReservedOverlap, RoadEditPlan};
 use super::road_terrain_inputs::RoadTerrainInputs;
 use super::road_tool_context::RoadPreviewContext;
-use super::state::{SimCore, road_terrain_tiles};
-use super::terrain_payloads::RoadPreviewTerrain;
+use super::state::SimCore;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
-use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::render::road::RoadRenderer;
@@ -213,8 +211,6 @@ pub(crate) struct RoadPreviewTimes {
     pub(crate) roadbed_ms: f64,
     /// The changed render chunks: the pieces emitted and spliced into the published chunks.
     pub(crate) payload_ms: f64,
-    /// The refined terrain patches the pieces touch, built on the shared pool.
-    pub(crate) terrain_ms: f64,
     /// The graded tiles of the pose's frame (`TERRAIN-07-E`, T27 (d)): the dirty tile
     /// selection and the frame's share of the pose's tiles, gathered and adopted or baked.
     pub(crate) graded_ms: f64,
@@ -228,9 +224,6 @@ pub(crate) struct RoadPreviewPieces {
     pub(crate) roadbed: RoadbedSystem,
     /// Render chunks the delta changed, in ascending order.
     pub(crate) changed_chunks: Vec<SurfaceChunkKey>,
-    /// The exact cut's terrain patches the delta's old and new pieces touch, for Godot's
-    /// preview of the exact cut, or why they could not be built. No commit reads them.
-    pub(crate) terrain: Result<RoadPreviewTerrain, String>,
     /// The pose's staged graded tiles (`TERRAIN-07-E`): the commit adopts those whose inputs
     /// equal its own.
     pub(crate) graded: GradedPose,
@@ -275,9 +268,10 @@ impl RoadPreview {
 
 impl RoadPreviewContext {
     /// `preview_road(context, stroke)`: plans the stroke on the context, applies the plan to the
-    /// replica, compiles the dirty closure into an `O(1)` copy of the published roadbed, builds
-    /// the terrain patches its pieces touch and restores the replica. The plan, marks and compile are the commit's own functions, so a
-    /// commit with a current fingerprint installs these pieces bitwise. No core lock; cost
+    /// replica, compiles the dirty closure into an `O(1)` copy of the published roadbed, stages
+    /// the frame's share of its graded tiles and restores the replica. The plan, marks and
+    /// compile are the commit's own functions, so a commit with a current fingerprint installs
+    /// these pieces bitwise. No core lock; cost
     /// `O(stroke + local excerpt + closure pieces)`, independent of the city.
     pub(crate) fn preview_road(&mut self, request: RoadPreviewRequest) -> RoadPreview {
         let plan_start = Instant::now();
@@ -376,29 +370,7 @@ impl RoadPreviewContext {
             &before,
         );
         times.roadbed_ms = roadbed_start.elapsed().as_secs_f64() * 1000.0;
-        let terrain_start = Instant::now();
-        let inputs = &self.view.terrain_inputs;
         let terrain_changes = roadbed.take_terrain_changes();
-        let tiles = road_terrain_tiles(
-            &self.view.terrain,
-            &terrain_changes,
-            |patch, [min_x, min_z, max_x, max_z], sites| {
-                if let Some(inputs) = inputs.patch(patch) {
-                    inputs
-                        .sites
-                        .append_site_bounds_for_world_bounds(min_x, min_z, max_x, max_z, sites);
-                }
-            },
-        );
-        let terrain = SimulationNode::build_road_preview_terrain(
-            &self.view.terrain,
-            &self.view.terrain_inputs,
-            &self.replica,
-            &roadbed,
-            self.view.surface_generation,
-            &tiles,
-        );
-        times.terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
         let graded_start = Instant::now();
         let end = plan
             .request()
@@ -443,7 +415,6 @@ impl RoadPreviewContext {
             delta,
             roadbed,
             changed_chunks,
-            terrain,
             graded,
             chunks,
             overlap,

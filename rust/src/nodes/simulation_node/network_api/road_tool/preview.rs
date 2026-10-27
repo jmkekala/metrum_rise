@@ -216,7 +216,9 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> VarDictionary {
-        let (preview, span_m, origin, view_terrain) = {
+        let mut graded_tiles = Vec::new();
+        let mut graded_removed = Vec::new();
+        let (preview, span_m, origin, view_terrain, graded_epoch) = {
             let mut context = self
                 .road_tool
                 .context
@@ -231,6 +233,9 @@ impl SimulationNode {
                 snap_to_existing_roads,
             }));
             context.last_preview = Some(Arc::clone(&preview));
+            context
+                .graded
+                .take_shown_changes(&mut graded_tiles, &mut graded_removed);
             let roadbed = &context.view.roadbed;
             let (origin_x, origin_z) = roadbed.chunk_origin_m();
             (
@@ -238,6 +243,7 @@ impl SimulationNode {
                 roadbed.chunk_span_m(),
                 (origin_x, origin_z),
                 Arc::clone(&context.view.terrain),
+                context.graded.epoch(),
             )
         };
         let mut dict = Self::road_candidate_validation_to_dictionary(
@@ -265,7 +271,6 @@ impl SimulationNode {
         dict.set("plan_ms", preview.times.plan_ms);
         dict.set("roadbed_ms", preview.times.roadbed_ms);
         dict.set("payload_ms", preview.times.payload_ms);
-        dict.set("terrain_ms", preview.times.terrain_ms);
         dict.set("graded_ms", preview.times.graded_ms);
         if let Some(pieces) = &preview.pieces {
             let stats = pieces.graded.stats;
@@ -276,8 +281,6 @@ impl SimulationNode {
         let packing_start = std::time::Instant::now();
         let mut chunks = PackedInt32Array::new();
         let mut road_chunks = VarArray::new();
-        let mut terrain_patches = VarArray::new();
-        let mut terrain_error = String::new();
         if let Some(pieces) = &preview.pieces {
             for &(x, z) in &pieces.changed_chunks {
                 chunks.push(x);
@@ -286,18 +289,14 @@ impl SimulationNode {
             if let Some(meshes) = &pieces.chunks {
                 road_chunks = Self::preview_road_chunk_updates(&pieces.changed_chunks, meshes);
             }
-            match &pieces.terrain {
-                Ok(terrain) => {
-                    terrain_patches = Self::preview_terrain_patch_payloads(&view_terrain, terrain);
-                }
-                Err(reason) => terrain_error.clone_from(reason),
-            }
         }
-        dict.set("terrain_patches", terrain_patches);
-        dict.set("terrain_error", terrain_error.as_str());
-        dict.set(
-            "terrain_generation",
-            generation(crate::nodes::sim::core::ROAD_PREVIEW_TERRAIN_GENERATION),
+        let cell_m = f64::from(view_terrain.cell_size_m());
+        Self::set_graded_preview_changes(
+            &mut dict,
+            &graded_tiles,
+            &graded_removed,
+            graded_epoch,
+            cell_m,
         );
         let has_road_chunks = preview
             .pieces
@@ -329,84 +328,109 @@ impl SimulationNode {
     /// `docs/terrain.md` T27 (d)): stages the next bounded share of the latest pose's tiles.
     /// Returns `{}` once the shown tiles are the pose's, else `graded_ms` (the frame's terrain
     /// work), `graded_adopted`, `graded_baked` and `graded_pending` (the pose's tiles still to
-    /// stage), as `preview_road` reports them for a pose's frame. Takes the context lock only.
+    /// stage), as `preview_road` reports them for a pose's frame, with the shown tiles' changes
+    /// as `preview_road` returns them. Takes the context lock only.
     #[func]
     pub fn advance_road_preview_terrain(&self) -> VarDictionary {
         let mut dict = VarDictionary::new();
-        let pose = self
-            .road_tool
-            .context
-            .lock()
-            .expect("road tool context lock poisoned")
-            .catch_up_graded();
+        let mut tiles = Vec::new();
+        let mut removed = Vec::new();
+        let (pose, epoch, cell_m) = {
+            let mut context = self
+                .road_tool
+                .context
+                .lock()
+                .expect("road tool context lock poisoned");
+            let pose = context.catch_up_graded();
+            if pose.is_some() {
+                context.graded.take_shown_changes(&mut tiles, &mut removed);
+            }
+            let cell_m = f64::from(context.view.terrain.cell_size_m());
+            (pose, context.graded.epoch(), cell_m)
+        };
         if let Some(pose) = pose {
             dict.set("graded_ms", pose.frame_ms);
             dict.set("graded_adopted", pose.stats.adopted as i64);
             dict.set("graded_baked", pose.stats.baked as i64);
             dict.set("graded_pending", pose.pending as i64);
+            Self::set_graded_preview_changes(&mut dict, &tiles, &removed, epoch, cell_m);
         }
         dict
     }
 
-    // The preview's terrain patches in the format `poll_ready_terrain_patch_payloads` returns
-    // them, shading masks baked as the payload workers bake them (in parallel on the shared
-    // pool): a refined patch's entry, or the raw heightmap patch of one the edit leaves raw.
-    // `surface_generation` is the provisional preview generation, never acknowledged.
-    fn preview_terrain_patch_payloads(
-        terrain: &TerrainSystem,
-        preview: &crate::nodes::sim::core::RoadPreviewTerrain,
-    ) -> VarArray {
-        use crate::nodes::sim::core::ROAD_PREVIEW_TERRAIN_GENERATION;
-        let payloads: Vec<TerrainPatchPayload> = crate::thread_pools::install(|| {
-            preview
-                .patches
-                .par_iter()
-                .filter_map(|patch| {
-                    let (key, data) = match &patch.entry {
-                        Some(entry) => (
-                            TerrainPatchPayloadKey {
-                                patch_x: entry.key.patch_x,
-                                patch_z: entry.key.patch_z,
-                                render_step_mm: entry.key.render_step_mm,
-                            },
-                            TerrainPatchPayloadData::Refined {
-                                patch: Arc::clone(entry),
-                            },
-                        ),
-                        None => {
-                            let snapshot =
-                                terrain.visual_patch_snapshot(patch.key.0, patch.key.1)?;
-                            let height_bytes = Self::f32_bytes_vec(&snapshot.height_data);
-                            (
-                                TerrainPatchPayloadKey {
-                                    patch_x: patch.key.0,
-                                    patch_z: patch.key.1,
-                                    render_step_mm: 0,
-                                },
-                                TerrainPatchPayloadData::Regular {
-                                    patch: snapshot,
-                                    height_bytes,
-                                },
-                            )
-                        }
-                    };
-                    let mut payload = TerrainPatchPayload {
-                        key,
-                        request_id: 0,
-                        surface_generation: ROAD_PREVIEW_TERRAIN_GENERATION,
-                        data,
-                        mask_bytes: Vec::new(),
-                    };
-                    payload.bake_shading_masks();
-                    Some(payload)
-                })
-                .collect()
-        });
-        let mut patches = VarArray::new();
-        for payload in &payloads {
-            patches.push(&Self::terrain_patch_payload_dict(payload).to_variant());
-        }
-        patches
+    /// The graded terrain renderer's view (`TERRAIN-07-E`, T42): `camera` (XZ, with its height
+    /// above the ground as `y`), where `GL0`-`GL2` end (`level_end_m`) and where `GL3` at steps
+    /// 2, 4 and 8 ends (`gl3_end_m`, the last infinite). The road preview's next poses stage
+    /// each tile at the level this distance rule gives it, without the hysteresis the renderer
+    /// keeps around a held tile's level; a commit stages at its preview's levels. Called when
+    /// the camera moves. Takes the context lock only.
+    #[func]
+    pub fn set_road_preview_terrain_view(
+        &self,
+        camera: Vector3,
+        level_end_m: PackedFloat64Array,
+        gl3_end_m: PackedFloat64Array,
+    ) {
+        let (Ok(level_end_m), Ok(gl3_end_m)) = (
+            <[f64; 3]>::try_from(level_end_m.as_slice()),
+            <[f64; 3]>::try_from(gl3_end_m.as_slice()),
+        ) else {
+            return;
+        };
+        let rule = crate::simulation::terrain::graded::LevelRule {
+            view: Some(crate::simulation::terrain::graded::LevelView {
+                camera: [camera.x, camera.y, camera.z].map(f64::from),
+                level_end_m,
+                gl3_end_m,
+            }),
+        };
+        self.road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned")
+            .graded
+            .set_rule(rule);
+    }
+
+    /// Ends the road preview's graded tiles (`TERRAIN-07-E`): at a click, whose commit installs
+    /// the tiles of the returned epoch and releases the renderer's preview tiles of it, or at
+    /// cancel, after which the renderer drops them itself. The next poses send their tiles
+    /// under the next epoch. Takes the context lock only.
+    #[func]
+    pub fn release_road_preview_terrain(&self) -> i64 {
+        let epoch = self
+            .road_tool
+            .context
+            .lock()
+            .expect("road tool context lock poisoned")
+            .graded
+            .release();
+        i64::try_from(epoch).unwrap_or(i64::MAX)
+    }
+
+    // The shown graded tiles' changes of a preview frame: `graded_tiles` (packed as
+    // `poll_graded_tile_results` packs its tiles, the token the epoch), `graded_removed` (flat
+    // `(x, z)` pairs of the tiles shown no more) and `graded_epoch`.
+    fn set_graded_preview_changes(
+        dict: &mut VarDictionary,
+        tiles: &[crate::simulation::terrain::graded::StagedTile],
+        removed: &[crate::simulation::terrain::graded::TileKey],
+        epoch: u64,
+        cell_m: f64,
+    ) {
+        let epoch = i64::try_from(epoch).unwrap_or(i64::MAX);
+        let pack_start = std::time::Instant::now();
+        dict.set(
+            "graded_tiles",
+            super::super::super::graded_tiles_api::packed_tile_dicts(tiles, epoch, cell_m),
+        );
+        let flat: Vec<i32> = removed.iter().flat_map(|tile| [tile.x, tile.z]).collect();
+        dict.set("graded_removed", PackedInt32Array::from(flat.as_slice()));
+        dict.set("graded_epoch", epoch);
+        dict.set(
+            "graded_pack_ms",
+            pack_start.elapsed().as_secs_f64() * 1000.0,
+        );
     }
 
     // The preview's changed chunks in the committed publication's update format: a chunk the

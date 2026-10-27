@@ -120,54 +120,6 @@ impl BuildingAllocator {
 }
 
 impl BuildingSiteTerrainSnapshot {
-    /// The captured sites overlapping the bounds, in capture order: what
-    /// [`BuildingAllocator::terrain_site_snapshot_for_world_bounds`] returns for bounds inside
-    /// the captured ones, since both keep the overlapping sites in building order.
-    pub(crate) fn within_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> Self {
-        Self {
-            sites: self
-                .sites
-                .iter()
-                .filter(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
-                .cloned()
-                .collect(),
-            max_site_radius_m: self.max_site_radius_m,
-        }
-    }
-
-    /// Whether a captured site overlaps the bounds, as
-    /// [`BuildingAllocator::has_building_site_for_world_bounds`] answers for bounds inside the
-    /// captured ones (`ROAD-68-E`).
-    pub(crate) fn has_site_for_world_bounds(
-        &self,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> bool {
-        self.sites
-            .iter()
-            .any(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
-    }
-
-    /// Appends the bounds `[min_x, min_z, max_x, max_z]` of every captured site overlapping the
-    /// bounds, in site order, as
-    /// [`BuildingAllocator::append_building_site_bounds_for_world_bounds`] does for bounds inside
-    /// the captured ones (`ROAD-68-E`, `ROAD-68-D` part 6).
-    pub(crate) fn append_site_bounds_for_world_bounds(
-        &self,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-        out: &mut Vec<[f32; 4]>,
-    ) {
-        out.extend(self.sites.iter().filter_map(|site| {
-            let bounds = site.bounds();
-            overlaps(bounds, (min_x, min_z, max_x, max_z)).then_some(<[f32; 4]>::from(bounds))
-        }));
-    }
-
     /// Returns the captured local sites' support pads, in site order.
     pub(crate) fn foundations(&self) -> Vec<super::model::BuildingSiteFoundation> {
         self.sites

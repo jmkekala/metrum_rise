@@ -263,23 +263,3 @@ pub(crate) struct CachedRefinedTerrainPatch {
     pub(crate) reused_windows: usize,
 }
 
-/// The provisional terrain payload generation of a preview's patches (`ROAD-68-E`): later than
-/// every stamp, as the commit's new generation is. A commit that adopts the entries re-stamps
-/// them with its own generation.
-pub(crate) const ROAD_PREVIEW_TERRAIN_GENERATION: u64 = u64::MAX;
-
-/// One patch a preview's pieces touch.
-#[derive(Clone, Debug)]
-pub(crate) struct RoadPreviewTerrainPatch {
-    pub(crate) key: (usize, usize),
-    /// The refined entry, with [`ROAD_PREVIEW_TERRAIN_GENERATION`]; `None` for raw terrain.
-    pub(crate) entry: Option<Arc<CachedRefinedTerrainPatch>>,
-}
-
-/// The terrain stage of one preview (`ROAD-68-E`): every patch its pieces touch, in key order,
-/// built by the commit's own source and build functions.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct RoadPreviewTerrain {
-    pub(crate) patches: Vec<RoadPreviewTerrainPatch>,
-}
-

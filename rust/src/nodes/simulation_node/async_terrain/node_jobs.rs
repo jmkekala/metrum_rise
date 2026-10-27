@@ -4,11 +4,9 @@
 
 use super::super::*;
 use super::state::*;
-use crate::nodes::sim::core::{
-    ROAD_LOCKED_TERRAIN_RENDER_STEP_M, ROAD_PREVIEW_TERRAIN_GENERATION,
-    RefinedTerrainAssemblyLedger, RefinedTerrainAssemblyScope, RoadPreviewTerrain,
-    RoadPreviewTerrainPatch, RoadTerrainInputs, RoadTerrainPatchInputs,
-};
+#[cfg(test)]
+use crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+use crate::nodes::sim::core::{RefinedTerrainAssemblyLedger, RefinedTerrainAssemblyScope};
 use std::collections::BTreeSet;
 
 // What one patch's refined source reads besides the heightmap and the site query.
@@ -67,6 +65,7 @@ impl SimulationNode {
 
     // Builds the sources' refined entries in parallel (the caller is inside the shared pool)
     // and fails on the first typed CDT failure, as an edit must.
+    #[cfg(test)]
     fn build_road_terrain_sources(
         graph: &crate::simulation::network::graph::RegionGraph,
         roadbed: &crate::simulation::network::roadbed::RoadbedSystem,
@@ -104,125 +103,6 @@ impl SimulationNode {
             }
         }
         Ok(entries)
-    }
-
-    /// The preview's terrain stage (`ROAD-68-E`): the patches and tiles `tiles` names (what a
-    /// commit of the same pieces stamps), built from the road tool's terrain inputs, the edited
-    /// `graph` and the preview's `roadbed` through the exact cut's ownership, source and build
-    /// functions, in parallel on the shared pool, for Godot's preview of the exact cut until
-    /// the graded tiles replace it there. Entries carry [`ROAD_PREVIEW_TERRAIN_GENERATION`].
-    /// `O(touched patches * their dirty tiles' CDT)`, independent of the city.
-    pub(crate) fn build_road_preview_terrain(
-        terrain: &TerrainSystem,
-        inputs: &RoadTerrainInputs,
-        graph: &crate::simulation::network::graph::RegionGraph,
-        roadbed: &crate::simulation::network::roadbed::RoadbedSystem,
-        road_surface_generation: u64,
-        tiles: &std::collections::BTreeMap<(usize, usize), BTreeSet<(i64, i64)>>,
-    ) -> Result<RoadPreviewTerrain, String> {
-        if inputs.stroke_active || !roadbed.is_current() {
-            return Err("terrain_input_unavailable".to_owned());
-        }
-        crate::thread_pools::install(|| {
-            Self::build_road_preview_terrain_on_pool(
-                terrain,
-                inputs,
-                graph,
-                roadbed,
-                road_surface_generation,
-                tiles,
-            )
-        })
-    }
-
-    // The preview's terrain stage inside the shared pool: the patches' road margins grade in
-    // parallel (an indexed collect keeps them in key order), the sources follow in key order,
-    // then the patches build in parallel.
-    fn build_road_preview_terrain_on_pool(
-        terrain: &TerrainSystem,
-        inputs: &RoadTerrainInputs,
-        graph: &crate::simulation::network::graph::RegionGraph,
-        roadbed: &crate::simulation::network::roadbed::RoadbedSystem,
-        road_surface_generation: u64,
-        tiles: &std::collections::BTreeMap<(usize, usize), BTreeSet<(i64, i64)>>,
-    ) -> Result<RoadPreviewTerrain, String> {
-        let step_m = ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
-        let site_margin_m =
-            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain, step_m);
-        let none = RoadTerrainPatchInputs::default();
-        let keys: Vec<(usize, usize)> = tiles.keys().copied().collect();
-        let road_margins: Vec<Option<f32>> = keys
-            .par_iter()
-            .map(|&key| {
-                SimCore::road_terrain_patch_margin_m(terrain, (graph, roadbed), key, step_m)
-            })
-            .collect();
-        let mut patches = Vec::with_capacity(tiles.len());
-        let mut sources = Vec::with_capacity(tiles.len());
-        for ((&key, patch_tiles), road_margin_m) in tiles.iter().zip(road_margins) {
-            let patch_inputs = inputs.patch(key).unwrap_or(&none);
-            let engineered_margin_m = SimCore::engineered_terrain_margin_m(
-                road_margin_m,
-                patch_inputs.site_owned,
-                site_margin_m,
-            );
-            if engineered_margin_m.is_none() {
-                patches.push(RoadPreviewTerrainPatch { key, entry: None });
-                continue;
-            }
-            let patch = terrain
-                .visual_patch_snapshot(key.0, key.1)
-                .ok_or_else(|| format!("terrain_input_unavailable patch=({},{})", key.0, key.1))?;
-            // The ledger as the commit's stamps leave it.
-            let mut ledger = patch_inputs.ledger.clone().unwrap_or_default();
-            for &tile in patch_tiles {
-                ledger
-                    .road_tile_dirty_at
-                    .insert(tile, ROAD_PREVIEW_TERRAIN_GENERATION);
-            }
-            let request = TerrainPatchPayloadRequest {
-                key: TerrainPatchPayloadKey {
-                    patch_x: key.0,
-                    patch_z: key.1,
-                    render_step_mm: Self::refined_patch_cache_key(key.0, key.1, step_m)
-                        .render_step_mm,
-                },
-                request_id: 0,
-                surface_generation: ROAD_PREVIEW_TERRAIN_GENERATION,
-            };
-            let source = Self::refined_terrain_patch_source(
-                terrain,
-                RefinedTerrainSourceInputs {
-                    request,
-                    patch,
-                    previous: patch_inputs.entry.clone(),
-                    global_generation: inputs.global_generation,
-                    ledger: Some(&ledger),
-                    engineered_margin_m,
-                    road_locked: road_margin_m.is_some(),
-                    road_surface_generation,
-                },
-                |min_x, min_z, max_x, max_z| {
-                    patch_inputs.sites.within_bounds(min_x, min_z, max_x, max_z)
-                },
-            );
-            patches.push(RoadPreviewTerrainPatch { key, entry: None });
-            sources.push(TerrainPatchPayloadBuildSource::Refined(source));
-        }
-        let entries = Self::build_road_terrain_sources(
-            graph,
-            roadbed,
-            terrain,
-            road_surface_generation,
-            sources,
-        )?;
-        for entry in entries {
-            let key = (entry.key.patch_x, entry.key.patch_z);
-            if let Some(patch) = patches.iter_mut().find(|patch| patch.key == key) {
-                patch.entry = Some(entry);
-            }
-        }
-        Ok(RoadPreviewTerrain { patches })
     }
 
     pub(in crate::nodes::simulation_node) fn lock_water_patch_mesh_jobs(

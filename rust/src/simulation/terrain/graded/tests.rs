@@ -724,6 +724,55 @@ fn road_changes_select_every_tile_they_alter() {
     }
 }
 
+// `TERRAIN-07-E`, T42: a selection by a camera's level rule is, at each level, the plain
+// selection at that level over the tiles the rule gives that level.
+#[test]
+fn a_level_rule_selects_each_tile_at_its_own_level() {
+    let rule = LevelRule {
+        view: Some(LevelView {
+            // Ends closer than the renderer's, so the fixtures' few changed tiles span levels.
+            camera: [10.0, 5.0, -20.0],
+            level_end_m: [48.0, 96.0, 2000.0],
+            gl3_end_m: [5000.0, 12000.0, f64::INFINITY],
+        }),
+    };
+    let mut spanning = 0;
+    for (name, graph, terrain) in conflict_fixtures() {
+        let roadbed = compiled(&graph);
+        let mut edited = roadbed.clone();
+        drop(edited.take_terrain_changes());
+        edited.remove_piece_for_test(PieceId::Node(0));
+        let changes = edited.take_terrain_changes();
+        let mut scratch = StageScratch::default();
+        let selected = scratch
+            .select_road_edit(&terrain, &roadbed, &edited, &NoSites, &changes, &rule)
+            .to_vec();
+        let mut expected = Vec::new();
+        for level in ALL_LEVELS {
+            let mut dirty = Vec::new();
+            dirty_tiles_for_road_changes(
+                &terrain,
+                &roadbed,
+                &edited,
+                &NoSites,
+                &changes,
+                level,
+                &mut SelectScratch::default(),
+                &mut dirty,
+            );
+            let own = dirty
+                .into_iter()
+                .filter(|&tile| rule.level_of(tile) == level);
+            expected.extend(own.map(|tile| (level, tile)));
+        }
+        assert_eq!(selected, expected, "{name}");
+        let levels: std::collections::BTreeSet<_> =
+            selected.iter().map(|&(level, _)| level).collect();
+        spanning += usize::from(levels.len() > 1);
+    }
+    assert!(spanning > 0, "some fixture's tiles span levels");
+}
+
 // `TERRAIN-07-E`: the inputs gathered without sampling are the bake's own on every fixture and
 // level, and a stage adopts exactly the held tiles whose inputs are unchanged: after a node
 // piece's removal every staged tile is the fresh bake, and the tiles beyond its reach are adopted.

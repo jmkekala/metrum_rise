@@ -550,9 +550,8 @@ fn benchmark_road_preview_stages() {
         let strokes: Vec<Vec<Vector3>> = (0..8)
             .map(|index| stroke(&core, [start, pose(index as f32 / 8.0)]))
             .collect();
-        let mut stages = [(); 6].map(|()| Vec::new());
+        let mut stages = [(); 5].map(|()| Vec::new());
         let (mut graded_tiles, mut graded_adopted, mut graded_baked) = (0, 0, 0);
-        let mut terrain_patches = 0;
         // Payload vertices over the first repetition's poses, all layers and the skirts'.
         let (mut payload_vertices, mut skirt_vertices) = (0, 0);
         for repetition in 0..60 {
@@ -565,11 +564,6 @@ fn benchmark_road_preview_stages() {
                     "{name}: every pose previews its chunks: {}",
                     preview.validation.invalid_reason
                 );
-                let terrain = preview.pieces.as_ref().map(|pieces| &pieces.terrain);
-                let Some(Ok(terrain)) = terrain else {
-                    panic!("{name}: every pose previews its terrain: {terrain:?}");
-                };
-                terrain_patches = terrain_patches.max(terrain.patches.len());
                 if repetition == 0 {
                     let chunks = preview
                         .pieces
@@ -594,7 +588,6 @@ fn benchmark_road_preview_stages() {
                         times.plan_ms,
                         times.roadbed_ms,
                         times.payload_ms,
-                        times.terrain_ms,
                         times.graded_ms,
                         total_ms,
                     ]) {
@@ -603,7 +596,7 @@ fn benchmark_road_preview_stages() {
                 }
             }
         }
-        let [plan, roadbed, payload, terrain, graded, total] = stages.map(|mut samples| {
+        let [plan, roadbed, payload, graded, total] = stages.map(|mut samples| {
             (percentile(&mut samples, 0.5), percentile(&mut samples, 0.95))
         });
         // One commit of the first pose: its graph copy and the context refresh it publishes.
@@ -619,7 +612,7 @@ fn benchmark_road_preview_stages() {
         assert!(context.apply(&publication));
         let apply_ms = refresh_start.elapsed().as_secs_f64() * 1000.0;
         eprintln!(
-            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} terrain_ms_p50={:.3} terrain_ms_p95={:.3} terrain_patches={} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
+            "road_preview_stages fixture={name} workers={} poses=8 samples={} payload_vertices_per_pose={} skirt_vertices_per_pose={} plan_ms_p50={:.3} plan_ms_p95={:.3} roadbed_ms_p50={:.3} roadbed_ms_p95={:.3} payload_ms_p50={:.3} payload_ms_p95={:.3} graded_ms_p50={:.3} graded_ms_p95={:.3} graded_tiles_per_pose={:.2} graded_adopted_per_pose={:.2} graded_baked_per_pose={:.2} commit_graded_ms={:.3} commit_graded_adopted={} commit_graded_baked={} total_ms_p50={:.3} total_ms_p95={:.3} commit_publication_ms={:.3} context_apply_ms={:.3} graph_copy_ms={:.3} edges={}",
             crate::thread_pools::install(rayon::current_num_threads),
             8 * 50,
             payload_vertices / 8,
@@ -630,9 +623,6 @@ fn benchmark_road_preview_stages() {
             roadbed.1,
             payload.0,
             payload.1,
-            terrain.0,
-            terrain.1,
-            terrain_patches,
             graded.0,
             graded.1,
             graded_tiles as f64 / 400.0,
@@ -651,22 +641,9 @@ fn benchmark_road_preview_stages() {
     }
 }
 
-// The refined patches the preview built.
-fn previewed_scope(preview: &RoadPreview) -> Vec<(usize, usize)> {
-    let terrain = preview
-        .pieces
-        .as_ref()
-        .expect("a valid stroke compiles pieces")
-        .terrain
-        .as_ref()
-        .expect("the preview's terrain builds");
-    terrain.patches.iter().map(|patch| patch.key).collect()
-}
-
 // A T on a straight trunk changes the terrain only around the junction: the split trunk's far
-// half keeps its chain segments, so the preview builds the same exact-cut patches, and the
-// commit adopts the same graded tiles, on a 220 m trunk as on a 660 m one, flat and sloped
-// (`ROAD-68-E` and `TERRAIN-07-E` locality).
+// half keeps its chain segments, so the commit adopts the same graded tiles on a 220 m trunk as
+// on a 660 m one, flat and sloped (`ROAD-68-E` and `TERRAIN-07-E` locality).
 #[test]
 fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
     let side = [Vector2::new(0.0, -80.0), Vector2::new(25.0, 0.0)];
@@ -682,9 +659,7 @@ fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
                 while let Some(graded) = context.catch_up_graded() {
                     preview.pieces.as_mut().expect("the pose's pieces").graded = graded;
                 }
-                let preview = Arc::new(preview);
-                let scope = previewed_scope(&preview);
-                commit(&mut core, &points, Some(preview));
+                commit(&mut core, &points, Some(Arc::new(preview)));
                 // `TERRAIN-07-E`: the commit adopts the preview's graded tiles, the same tiles
                 // on either trunk.
                 assert_eq!(
@@ -697,12 +672,12 @@ fn a_split_trunk_rebuilds_only_the_terrain_near_the_junction() {
                     .iter()
                     .map(|held| (held.tile.x, held.tile.z))
                     .collect();
-                (scope, tiles)
+                tiles
             })
             .into_iter()
             .collect();
         assert!(
-            !scopes[0].0.is_empty() && !scopes[0].1.is_empty(),
+            !scopes[0].is_empty(),
             "sloped {sloped}: the T touches terrain"
         );
         assert_eq!(

@@ -10,10 +10,12 @@
 //!
 //! Edits (item 5): the poll takes the core's graded edit journal under `try_lock` and a worker
 //! selects each edit's dirty tiles at every level from the edit's own snapshots; Godot rebakes
-//! the dirty tiles it holds at those levels and installs them together.
+//! the dirty tiles it holds at those levels and installs them together. A road commit's or
+//! undo's install carries the tiles it staged (`TERRAIN-07-E`), packed by the same worker:
+//! Godot installs those with the edit instead of rebaking them.
 
 use super::*;
-use crate::nodes::sim::core::GradedEditSelection;
+use crate::nodes::sim::core::{GradedEditSelection, GradedInstallTiles};
 use crate::simulation::buildings::allocator::SiteSnapshot;
 use crate::simulation::terrain::graded::{
     BakeError, CAP_M, Level, PatchTilesScratch, SelectScratch, TILE_M, TileKey, TilePayload,
@@ -69,6 +71,90 @@ struct TileResult {
     walls: Vec<u8>,
 }
 
+// One edit's selection with its install's staged tiles packed (token: the edit's serial) and
+// the preview epoch they release.
+struct EditResult {
+    selection: GradedEditSelection,
+    staged: Vec<TileResult>,
+    epoch: Option<u64>,
+}
+
+impl TileResult {
+    // Packs `payload` for upload into `buffers` (texels, rows, walls).
+    fn packed(
+        request: GradedTileRequest,
+        payload: &TilePayload,
+        side: usize,
+        buffers: [Vec<u8>; 3],
+    ) -> Self {
+        let [mut texels, mut rows, mut walls] = buffers;
+        pack_slot(payload, side, &mut texels, &mut rows);
+        pack_walls(payload, &mut walls);
+        Self {
+            request,
+            samples: payload.samples,
+            graded: payload.graded,
+            seams: payload.seams.len(),
+            edges: payload.edges.len(),
+            texels,
+            rows,
+            walls,
+        }
+    }
+
+    // The tile as `poll_graded_tile_results` returns it.
+    fn to_dict(&self) -> VarDictionary {
+        let (code, step) = level_code(self.request.level);
+        let mut dict = VarDictionary::new();
+        dict.set("tile_x", i64::from(self.request.tile.x));
+        dict.set("tile_z", i64::from(self.request.tile.z));
+        dict.set("level", code);
+        dict.set("step", step);
+        dict.set("token", self.request.token);
+        dict.set("samples_x", self.samples[0] as i64);
+        dict.set("samples_z", self.samples[1] as i64);
+        dict.set("graded", self.graded);
+        dict.set("seam_count", self.seams as i64);
+        dict.set("edge_count", self.edges as i64);
+        dict.set("wall_count", (self.walls.len() / WALL_FACE_BYTES) as i64);
+        dict.set("texels", PackedByteArray::from(self.texels.as_slice()));
+        dict.set("rows", PackedByteArray::from(self.rows.as_slice()));
+        dict.set("walls", PackedByteArray::from(self.walls.as_slice()));
+        dict
+    }
+}
+
+/// The slot side of `level`'s pool: one pool per level code, `GL3` layers sized for its finest
+/// step.
+pub(crate) fn pool_side(level: Level, cell_m: f64) -> usize {
+    let pool_level = match level {
+        Level::Gl3 { .. } => Level::Gl3 { step: GL3_STEPS[0] },
+        level => level,
+    };
+    slot_side(pool_level, cell_m)
+}
+
+/// Staged tiles packed as `poll_graded_tile_results` returns its tiles, each with `token`
+/// (`TERRAIN-07-E`: the road preview's shown tiles, a commit's installed tiles).
+pub(crate) fn packed_tile_dicts(
+    tiles: &[crate::simulation::terrain::graded::StagedTile],
+    token: i64,
+    cell_m: f64,
+) -> VarArray {
+    let mut out = VarArray::new();
+    for staged in tiles {
+        let request = GradedTileRequest {
+            tile: staged.tile,
+            level: staged.level,
+            token,
+        };
+        let side = pool_side(staged.level, cell_m);
+        let result = TileResult::packed(request, &staged.payload, side, Default::default());
+        out.push(&result.to_dict().to_variant());
+    }
+    out
+}
+
 /// The graded residency jobs of one node: requests in flight, finished results and failures
 /// waiting for Godot's poll, and the byte buffers results are packed into, reused.
 #[derive(Default)]
@@ -77,7 +163,7 @@ pub(crate) struct GradedResidencyJobs {
     patches_in_flight: HashSet<(usize, usize)>,
     tiles: Vec<TileResult>,
     patches: Vec<(GradedPatchRequest, Vec<TileKey>)>,
-    edits: Vec<GradedEditSelection>,
+    edits: Vec<EditResult>,
     failed_tiles: Vec<(GradedTileRequest, Failure)>,
     failed_patches: Vec<(GradedPatchRequest, Failure)>,
     buffers: Vec<Vec<u8>>,
@@ -202,12 +288,7 @@ fn bake_level(
 ) {
     let tiles: Vec<TileKey> = requests.iter().map(|request| request.tile).collect();
     let cell_m = f64::from(inputs.terrain.cell_size_m());
-    // One pool per level code: `GL3` layers are sized for its finest step.
-    let pool_level = match level {
-        Level::Gl3 { .. } => Level::Gl3 { step: GL3_STEPS[0] },
-        level => level,
-    };
-    let side = slot_side(pool_level, cell_m);
+    let side = pool_side(level, cell_m);
     with_scratch(&BAKED, |baked| {
         let mut outcomes: Vec<Result<(), BakeError>> = Vec::with_capacity(tiles.len());
         match bake_tiles(
@@ -471,10 +552,21 @@ impl SimulationNode {
         self.spawn_graded_edit_selection();
         let mut jobs = self.graded_jobs.lock().unwrap();
         let mut edits = VarArray::new();
-        for edit in std::mem::take(&mut jobs.edits) {
+        for result in std::mem::take(&mut jobs.edits) {
+            let edit = result.selection;
             let mut dict = VarDictionary::new();
             dict.set("serial", edit.serial as i64);
             dict.set("all", edit.all);
+            let mut staged = VarArray::new();
+            for tile in result.staged {
+                staged.push(&tile.to_dict().to_variant());
+                jobs.buffers.extend([tile.texels, tile.rows, tile.walls]);
+            }
+            dict.set("staged", staged);
+            dict.set(
+                "preview_epoch",
+                result.epoch.map_or(-1, |epoch| epoch as i64),
+            );
             let mut levels = VarArray::new();
             for (level, tiles) in &edit.levels {
                 let (code, step) = level_code(*level);
@@ -504,24 +596,9 @@ impl SimulationNode {
         let mut tiles = VarArray::new();
         let ready: Vec<TileResult> = jobs.tiles.drain(..take).collect();
         for result in ready {
-            let (code, step) = level_code(result.request.level);
-            let mut dict = VarDictionary::new();
-            dict.set("tile_x", i64::from(result.request.tile.x));
-            dict.set("tile_z", i64::from(result.request.tile.z));
-            dict.set("level", code);
-            dict.set("step", step);
-            dict.set("token", result.request.token);
-            dict.set("samples_x", result.samples[0] as i64);
-            dict.set("samples_z", result.samples[1] as i64);
-            dict.set("graded", result.graded);
-            dict.set("seam_count", result.seams as i64);
-            dict.set("edge_count", result.edges as i64);
-            dict.set("wall_count", (result.walls.len() / WALL_FACE_BYTES) as i64);
-            dict.set("texels", PackedByteArray::from(result.texels.as_slice()));
-            dict.set("rows", PackedByteArray::from(result.rows.as_slice()));
-            dict.set("walls", PackedByteArray::from(result.walls.as_slice()));
-            jobs.buffers.extend([result.texels, result.rows, result.walls]);
-            tiles.push(&dict.to_variant());
+            tiles.push(&result.to_dict().to_variant());
+            jobs.buffers
+                .extend([result.texels, result.rows, result.walls]);
         }
         let mut failed = VarArray::new();
         let failures = std::mem::take(&mut jobs.failed_tiles)
@@ -594,7 +671,50 @@ impl SimulationNode {
             let selections: Vec<GradedEditSelection> = with_scratch(&SELECT, |scratch| {
                 edits.iter().map(|edit| edit.select(scratch)).collect()
             });
-            jobs.lock().unwrap().edits.extend(selections);
+            let results: Vec<EditResult> = selections
+                .into_iter()
+                .map(|mut selection| {
+                    let (staged, epoch) = match selection.staged.take() {
+                        Some(GradedInstallTiles { stage, epoch }) => {
+                            (pack_install_tiles(&stage, selection.serial, &edits), epoch)
+                        }
+                        None => (Vec::new(), None),
+                    };
+                    EditResult {
+                        selection,
+                        staged,
+                        epoch,
+                    }
+                })
+                .collect();
+            jobs.lock().unwrap().edits.extend(results);
         });
     }
+}
+
+// Packs an install's staged tiles with the edit's serial as their token, at the base cell size
+// of the edit's own heightmap.
+fn pack_install_tiles(
+    stage: &crate::simulation::terrain::graded::TileStage,
+    serial: u64,
+    edits: &[crate::nodes::sim::core::GradedEdit],
+) -> Vec<TileResult> {
+    let Some(edit) = edits.iter().find(|edit| edit.serial == serial) else {
+        return Vec::new();
+    };
+    let cell_m = f64::from(edit.terrain.cell_size_m());
+    let token = i64::try_from(serial).unwrap_or(i64::MAX);
+    stage
+        .tiles()
+        .iter()
+        .map(|staged| {
+            let request = GradedTileRequest {
+                tile: staged.tile,
+                level: staged.level,
+                token,
+            };
+            let side = pool_side(staged.level, cell_m);
+            TileResult::packed(request, &staged.payload, side, Default::default())
+        })
+        .collect()
 }

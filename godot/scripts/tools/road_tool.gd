@@ -8,9 +8,13 @@
 ## context and returns the changed road chunks exactly as the commit publishes them, and shows
 ## them in that frame in place of the resident chunks. A click submits that preview; the
 ## preview stays shown until the committed generation's chunks are installed, then both swap
-## in one call. Also checkbox-controlled zoning-grid snapping, angle snapping (Shift draws
-## free) and the distance + angle HUD label.
-## Rust methods called: preview_road(), add_road_with_snap(), get_road_commit_result(),
+## in one call. The preview's graded terrain tiles (`TERRAIN-07-E`) show on the terrain
+## renderer's graded tiles from the frame that staged them; frames without a new pose stage the
+## pose's rest, and the commit's edit replaces them with the committed tiles in one frame. Also
+## checkbox-controlled zoning-grid snapping, angle snapping (Shift draws free) and the
+## distance + angle HUD label.
+## Rust methods called: preview_road(), advance_road_preview_terrain(),
+## release_road_preview_terrain(), add_road_with_snap(), get_road_commit_result(),
 ## get_road_tool_cursor_pos(), get_road_tool_start_direction().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
 ## Drawing is continuous: an accepted road starts the next one at its end, using its end
@@ -21,7 +25,6 @@
 extends "res://scripts/tools/network_tool.gd"
 
 const PreviewDisplay := preload("res://scripts/renderers/road_preview_display.gd")
-const TerrainPreview := preload("res://scripts/renderers/road_terrain_preview.gd")
 # Early, so the preview of this frame's pointer is staged before the frame renders.
 const PREVIEW_SAMPLE_PROCESS_PRIORITY := -100
 
@@ -80,11 +83,12 @@ var _commit_validation: Dictionary = {}
 var _commit_border_check: Array = []
 var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
-# Reversible terrain staging of the preview's terrain patches, shown with its road chunks
-# (`ROAD-68-E`).
-var _terrain_preview = TerrainPreview.new()
-# An accepted commit's terrain preview, shown until the commit's own patches replace it.
-var _swap_terrain = null
+# The latest pose's graded tiles still to stage (`TERRAIN-07-E`, T27 (d)): each frame without a
+# new pose stages the next share until none is left.
+var _graded_pending := 0
+# The preview epoch a queued commit adopted: its graded tiles show until the commit's edit
+# installs the committed ones, or until the commit is refused.
+var _graded_commit_epoch := -1
 
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
@@ -111,9 +115,7 @@ var _angle_snapped: bool = false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
-		_terrain_preview.reset()
-		if _swap_terrain != null:
-			_swap_terrain.reset()
+		_release_graded_preview()
 
 func begin_preview_measurement() -> RefCounted:
 	preview_metrics = preload("res://scripts/benchmarks/road_preview_metrics.gd").new()
@@ -176,6 +178,9 @@ func _process(delta):
 	if _preview_update_pending:
 		_preview_update_pending = false
 		_update_preview()
+	elif _graded_pending > 0 and _commit_request_id == 0 and current_path != null:
+		# A frame without a new pose stages the next share of the pose's graded tiles.
+		_show_graded(simulation_node.advance_road_preview_terrain())
 	# Project the HUD label world position to screen space each frame so the label
 	# stays the same pixel size regardless of camera zoom.
 	if _info_label and _info_label.visible and is_inside_tree():
@@ -327,50 +332,47 @@ func _show_preview(points: PackedVector3Array) -> void:
 			_preview_metric_row = preview_metrics.request(sequence)
 		var stage_us := Time.get_ticks_usec()
 		var shown := false
-		var terrain_ready := true
+		# The pose's graded tiles show in its frame, whatever the road chunks do: Rust handed
+		# them over once.
+		var graded_ms := _show_graded(_preview)
 		if is_valid and bool(_preview.get("has_road_chunks", false)):
-			# Road and terrain stage before either is shown, so a frame shows both or neither.
-			var staged: Variant = _stage_preview_terrain()
-			terrain_ready = staged != null
 			shown = _preview_display.show(self, _preview, sequence)
-			if shown and terrain_ready:
-				_terrain_preview.commit(terrain_node, staged, sequence, _terrain_preview_invalidated.bind(_terrain_preview))
-			else:
-				if terrain_ready:
-					_terrain_preview.discard(staged)
-				_terrain_preview.clear()
 		if not shown:
 			_preview_display.clear()
-			_terrain_preview.clear()
-		# Terrain the renderer cannot stage yet (a streaming patch) is staged again next frame.
-		_preview_drawn_sequence = sequence if terrain_ready else 0
+		_preview_drawn_sequence = sequence
 		if preview_metrics != null:
 			_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
+			_preview_metric_row["graded_install_ms"] = graded_ms
 			preview_metrics.installed(sequence)
 	_update_preview_measurement_label(_preview.get("prepared_points", points), _preview)
 
-# The preview's terrain patches staged on the terrain renderer, or null when the renderer cannot
-# stage them yet. Nothing to stage (no patches, or no terrain renderer) is an empty batch.
-func _stage_preview_terrain() -> Variant:
-	var payloads: Variant = _preview.get("terrain_patches", [])
-	if not payloads is Array or payloads.is_empty() or not is_instance_valid(terrain_node):
-		return []
-	var staged: Array = _terrain_preview.stage(terrain_node, payloads, int(_preview.get("terrain_generation", 0)))
-	return staged if not staged.is_empty() else null
+# The terrain renderer's graded tiles, or null without one (tests without terrain).
+func _graded_renderer():
+	if not is_instance_valid(terrain_node):
+		return null
+	return terrain_node.get("graded_tiles")
 
-# A resident patch under a terrain preview is about to change. The commit's own patch replaces a
-# held preview, which restores the originals in the same call; a live preview is staged again
-# next frame. The emitting helper stays referenced: the next hold or reset releases it.
-func _terrain_preview_invalidated(preview) -> void:
-	if _swap_terrain != null and is_same(preview, _swap_terrain):
-		_swap_terrain.clear()
-	elif is_same(preview, _terrain_preview):
-		_terrain_preview.clear()
-		_preview_drawn_sequence = 0
+# Shows one frame's graded tile changes (a pose's or a catch-up frame's) and returns the
+# milliseconds the renderer took.
+func _show_graded(frame: Dictionary) -> float:
+	_graded_pending = int(frame.get("graded_pending", 0))
+	var graded = _graded_renderer()
+	return graded.show_preview(frame) if graded != null else 0.0
+
+# Ends the preview's graded tiles: Rust starts a new epoch and the renderer drops the tiles of the
+# one that ends (a queued commit's epoch stays until its edit installs).
+func _release_graded_preview() -> void:
+	_graded_pending = 0
+	if not is_instance_valid(simulation_node):
+		return
+	var epoch: int = simulation_node.release_road_preview_terrain()
+	var graded = _graded_renderer()
+	if graded != null:
+		graded.release_preview(epoch, epoch)
 
 func _clear_preview_visual() -> void:
 	_preview_display.clear()
-	_terrain_preview.clear()
+	_release_graded_preview()
 	_preview_drawn_sequence = 0
 	if blueprint_mesh:
 		blueprint_mesh.mesh = null
@@ -385,10 +387,6 @@ func _hold_preview_until(generation: int) -> void:
 	_swap_display = _preview_display
 	_swap_generation = generation
 	_preview_display = PreviewDisplay.new()
-	if _swap_terrain != null:
-		_swap_terrain.reset()
-	_swap_terrain = _terrain_preview
-	_terrain_preview = TerrainPreview.new()
 	_preview_drawn_sequence = 0
 	_release_swapped_preview()
 
@@ -661,6 +659,9 @@ func _commit_segment(end_pos: Vector3) -> bool:
 	if points.size() > 1 and preview_valid:
 		var add_road_start_us := Time.get_ticks_usec()
 		_commit_request_id = simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
+		# The commit adopts this epoch's graded tiles; they show until its edit installs.
+		_graded_commit_epoch = simulation_node.release_road_preview_terrain()
+		_graded_pending = 0
 		_commit_path_id = current_path.get_instance_id()
 		_commit_points = points
 		_commit_validation = validation
@@ -733,6 +734,9 @@ func _poll_road_commit_result() -> void:
 	_commit_request_id = 0
 	if not committed:
 		_pending_border_checks.erase(_commit_border_check)
+		var graded = _graded_renderer()
+		if graded != null and _graded_commit_epoch >= 0:
+			graded.release_preview(_graded_commit_epoch, _graded_commit_epoch)
 	else:
 		# The preview shows until the commit's own chunks are installed (`ROAD-68-E`).
 		_hold_preview_until(int(result.get("generation", 0)))
@@ -750,6 +754,9 @@ func _poll_road_commit_result() -> void:
 			rejected["is_valid"] = false
 			rejected["is_pending"] = false
 			rejected["invalid_reason"] = "road_commit_rejected"
+			# Its graded tiles were handed over at the click.
+			for key in ["graded_tiles", "graded_removed", "graded_pending"]:
+				rejected.erase(key)
 			rejected["surface_generation"] = simulation_node.get_road_tool_surface_generation()
 			rejected["sequence"] = _preview_sequence + 1
 			_preview_sequence += 1
@@ -759,6 +766,7 @@ func _poll_road_commit_result() -> void:
 	_commit_points = PackedVector3Array()
 	_commit_validation = {}
 	_commit_border_check = []
+	_graded_commit_epoch = -1
 
 # A road touching the map edge asks about an external connection; the chain ends there so the
 # dialog never sits over a stroke still following the pointer off the map.
@@ -775,7 +783,6 @@ func cancel_road():
 	_angle_snapped = false
 	_clear_sticky_network_snap()
 	_clear_preview_visual()
-	_terrain_preview.reset()
 	if current_path:
 		current_path.queue_free()
 	current_path = null
@@ -791,10 +798,6 @@ func reset_main_mesh_chunks() -> void:
 		_swap_display.reset()
 		_swap_display = null
 		_swap_generation = -1
-	_terrain_preview.reset()
-	if _swap_terrain != null:
-		_swap_terrain.reset()
-		_swap_terrain = null
 	_clear_preview_cache()
 	super.reset_main_mesh_chunks()
 	_queue_preview_update()

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! The road tool's terrain inputs (`ROAD-68-E`): per render patch, what the refined source of a
-//! road-touched patch reads from the core besides the heightmap (the patch's refined cache
-//! entry, its assembly ledger, its site ownership and the building sites within the widest
-//! road query margin), in a persistent map the road tool's view shares in `O(1)`.
+//! The road tool's terrain inputs (`ROAD-68-E`): per render patch, the building sites within the
+//! widest road query margin, which the preview's graded tiles read (`TERRAIN-07-E`; the exact
+//! cut's preview patches, which also read the patch's refined cache entry, assembly ledger and
+//! site ownership, are retired), in a persistent map the road tool's view shares in `O(1)`.
 //!
 //! The core notes every patch whose inputs may have changed (generation bumps, ledger stamps
 //! and acknowledgements, cache inserts and removals, ownership refreshes, site changes) and
@@ -18,22 +18,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::state::SimCore;
-use super::terrain_payloads::{
-    CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
-};
-use crate::nodes::simulation_node::SimulationNode;
+use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 
-/// One render patch's inputs to a road-touched refined source, as the core held them.
+/// One render patch's inputs to the preview's graded tiles, as the core held them.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RoadTerrainPatchInputs {
-    /// The patch's refined cache entry of the current CDT contract, if any.
-    pub(crate) entry: Option<Arc<CachedRefinedTerrainPatch>>,
-    /// The patch's pending assembly stamps.
-    pub(crate) ledger: Option<RefinedTerrainAssemblyLedger>,
-    /// Whether a building site lies within the local sample margin, as the ownership refresh
-    /// decides it.
-    pub(crate) site_owned: bool,
     /// The building sites within the widest road query margin of the patch, in building order;
     /// a source filters them to its own query bounds. Shared until a site near the patch
     /// changes.
@@ -169,35 +159,21 @@ impl SimCore {
         inputs.clone()
     }
 
-    // One patch's inputs: the same queries the commit's ownership refresh and source phase run,
-    // the sites widened to the largest margin a road edit can give the patch. With `kept`, the
-    // patch's sites did not change, so its sites and site ownership are kept.
+    // One patch's inputs: the sites widened to the largest margin a road edit can give the
+    // patch. With `kept`, the patch's sites did not change and are kept.
     fn road_terrain_patch_inputs(
         &self,
         key: (usize, usize),
         kept: Option<&RoadTerrainPatchInputs>,
     ) -> RoadTerrainPatchInputs {
-        let step_m = ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
-        let cache_key = SimulationNode::refined_patch_cache_key(key.0, key.1, step_m);
-        let entry = self
-            .refined_terrain_patch_cache
-            .get(&cache_key)
-            .filter(|entry| SimulationNode::refined_terrain_entry_contract_is_current(entry))
-            .cloned();
+        if let Some(kept) = kept {
+            return kept.clone();
+        }
         let Some((min_x, min_z, max_x, max_z)) =
             self.heightmap.render_patch_world_bounds(key.0, key.1)
         else {
             return RoadTerrainPatchInputs::default();
         };
-        let ledger = self.refined_terrain_assembly_ledgers.get(&key).cloned();
-        if let Some(kept) = kept {
-            return RoadTerrainPatchInputs {
-                entry,
-                ledger,
-                site_owned: kept.site_owned,
-                sites: Arc::clone(&kept.sites),
-            };
-        }
         let widest_m = road_terrain_sites_margin_m(&self.heightmap);
         let sites = self.allocator.terrain_site_snapshot_for_world_bounds(
             min_x - widest_m,
@@ -205,20 +181,7 @@ impl SimCore {
             max_x + widest_m,
             max_z + widest_m,
         );
-        // The widest margin holds the local one, so the snapshot answers the ownership refresh's
-        // site test with the same overlap rule.
-        let site_margin_m =
-            crate::simulation::terrain::terrain_cdt_local_sample_margin_m(&self.heightmap, step_m);
-        let site_owned = sites.has_site_for_world_bounds(
-            min_x - site_margin_m,
-            min_z - site_margin_m,
-            max_x + site_margin_m,
-            max_z + site_margin_m,
-        );
         RoadTerrainPatchInputs {
-            entry,
-            ledger,
-            site_owned,
             sites: Arc::new(sites),
         }
     }

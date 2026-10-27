@@ -95,7 +95,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	var before := simulation.get_road_benchmark_state()
 	var samples := []
 	var process_times := []
-	var stage_times := {"plan_ms": [], "roadbed_ms": [], "payload_ms": [], "terrain_ms": [], "packing_ms": [], "godot_ms": []}
+	var stage_times := {"plan_ms": [], "roadbed_ms": [], "payload_ms": [], "graded_ms": [], "packing_ms": [], "godot_ms": []}
 	var started_us := Time.get_ticks_usec()
 	var shown_frames := 0
 	var final_points := PackedVector3Array()
@@ -127,7 +127,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		if valid and shown:
 			shown_frames += 1
 			var native := 0.0
-			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "terrain_ms", "packing_ms"]:
+			for stage in ["plan_ms", "roadbed_ms", "payload_ms", "graded_ms", "packing_ms"]:
 				var ms := float(preview.get(stage, 0.0))
 				stage_times[stage].append(ms)
 				native += ms

@@ -99,7 +99,7 @@ impl SimCore {
     pub(crate) fn validate_staged_road_render_installing(
         &mut self,
         delta: Option<&RoadbedDelta>,
-        graded: Option<&crate::simulation::terrain::graded::TileStage>,
+        graded: Option<&crate::nodes::sim::core::GradedPose>,
         metrics: &mut RoadEditMetrics,
     ) -> bool {
         let roadbed_start = Instant::now();

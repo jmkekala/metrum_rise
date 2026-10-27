@@ -13,9 +13,13 @@
 ## its own slot when its level is unchanged. The tiles' wall faces (conflict walls, abutments,
 ## headwalls) draw as instances of one quad in a pooled MultiMesh per patch, placed by
 ## terrain_graded_walls.gdshader from the values in their instance transforms.
+## The road preview's graded tiles (TERRAIN-07-E) draw over the installed ones from slots of
+## their own (show_preview); a commit's or undo's edit carries the tiles it staged, which install
+## with the edit's batch instead of rebaking, and the batch releases the preview tiles of the
+## epoch the commit adopted, in the same frame.
 ##
 ## Rust methods called: get_graded_tile_layout(), request_graded_patch_tiles(),
-##   request_graded_tiles(), poll_graded_tile_results()
+##   request_graded_tiles(), poll_graded_tile_results(), set_road_preview_terrain_view()
 extends RefCounted
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -79,6 +83,13 @@ var _deferred: Array[Array] = []
 const RESULT_KINDS := ["edits", "patches", "failed", "tiles"]
 # The tiles the last edit batch installed, for tests and the probe.
 var last_edit_batch: Array = []
+# The road preview's tiles (TERRAIN-07-E): tile key -> {code, level, step, slot, token (the
+# preview epoch), walls}, drawn in place of the installed tile. Their slots are their own.
+var preview: Dictionary = {}
+# The highest preview epoch the edits in the batch release when it installs (-1: none).
+var _edit_release := -1
+# The resident patches of the last process() call, for preview changes between frames.
+var _resident: Dictionary = {}
 # Patch key -> {token, tiles: Array[Vector2i]}; patch key -> token of a list in flight.
 var patch_lists: Dictionary = {}
 var patch_lists_requested: Dictionary = {}
@@ -161,6 +172,8 @@ var counters := {
 	"edit_tiles_last": 0,
 	"edit_install_ms_last": 0.0,
 	"edit_install_ms_max": 0.0,
+	# The road preview's installs (show_preview), the most one frame took.
+	"preview_install_ms_max": 0.0,
 	"install_ms_last": 0.0,
 	"install_ms_max": 0.0,
 	# The streaming installs' own part of a frame (the polls and their installs), without the
@@ -312,6 +325,10 @@ func clear() -> void:
 	for key in installed.keys():
 		_free_slot(installed[key])
 	installed.clear()
+	for key in preview.keys():
+		_free_slot(preview[key])
+	preview.clear()
+	_edit_release = -1
 	requested.clear()
 	tile_tokens.clear()
 	_edit_batch.clear()
@@ -349,6 +366,7 @@ func clear() -> void:
 ## O(changes) per frame: a changed patch or an arriving list costs its own tiles.
 func process(camera_position: Vector3, resident_patches: Dictionary, changed_patches: Dictionary, changed_materials: Dictionary) -> void:
 	var start_us := Time.get_ticks_usec()
+	_resident = resident_patches
 	_frame_sync_us = 0
 	_frame_walls_us = 0
 	_frame_lists = 0
@@ -388,22 +406,11 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		if _watched_parameters(material) != cells["watched"]:
 			_sync_material(cells, material)
 	var watched_us := Time.get_ticks_usec()
-	# A patch-wide change rewrites the patch's cells; every other change rewrites its own tiles'
-	# instances in the patches that draw them. O(changed patches' tiles + changed tiles).
 	var cell_patches := _dirty_patches.size()
-	for key: Vector2i in _dirty_patches.keys():
-		if resident_patches.has(key):
-			_rebuild_patch_cells(key, resident_patches)
-		_dirty_walls.erase(key)
-	if not _dirty_cell_tiles.is_empty():
-		_update_cell_tiles(resident_patches)
-	_dirty_patches.clear()
+	_apply_cell_changes(resident_patches)
 	var cells_us := Time.get_ticks_usec()
 	var wall_patches := _dirty_walls.size()
-	for key: Vector2i in _dirty_walls.keys():
-		if resident_patches.has(key) and patch_cells.has(key):
-			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
-	_dirty_walls.clear()
+	_apply_wall_changes(resident_patches)
 	var perf := PerfDebug.is_enabled()
 	if batch_tiles > 0 or perf:
 		var end_us := Time.get_ticks_usec()
@@ -443,6 +450,118 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_tiles_last"] = batch_tiles
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
+
+# A patch-wide change rewrites the patch's cells; every other change rewrites its own tiles'
+# instances in the patches that draw them. O(changed patches' tiles + changed tiles).
+func _apply_cell_changes(resident_patches: Dictionary) -> void:
+	for key: Vector2i in _dirty_patches.keys():
+		if resident_patches.has(key):
+			_rebuild_patch_cells(key, resident_patches)
+		_dirty_walls.erase(key)
+	if not _dirty_cell_tiles.is_empty():
+		_update_cell_tiles(resident_patches)
+	_dirty_patches.clear()
+
+func _apply_wall_changes(resident_patches: Dictionary) -> void:
+	for key: Vector2i in _dirty_walls.keys():
+		if resident_patches.has(key) and patch_cells.has(key):
+			_rebuild_patch_walls(patch_cells[key], resident_patches[key])
+	_dirty_walls.clear()
+
+## Shows one road preview frame's graded tiles (TERRAIN-07-E, docs/terrain.md "Preview, commit,
+## undo and load"): `changes` holds `graded_tiles` (packed as poll_graded_tile_results packs its
+## tiles, the token the preview epoch) and `graded_removed` (flat (x, z) pairs), as preview_road
+## and advance_road_preview_terrain return them. A shown tile takes a free slot of its level's
+## pool and draws in place of the installed tile from this frame; a removed one returns to the
+## installed tile. Returns the milliseconds it took. O(changed tiles x slot bytes).
+func show_preview(changes: Dictionary) -> float:
+	var start_us := Time.get_ticks_usec()
+	var removed: PackedInt32Array = changes.get("graded_removed", PackedInt32Array())
+	var tiles: Array = changes.get("graded_tiles", [])
+	if removed.is_empty() and tiles.is_empty():
+		return 0.0
+	for index in range(0, removed.size(), 2):
+		_drop_preview(Vector2i(removed[index], removed[index + 1]))
+	for tile: Dictionary in tiles:
+		_show_preview_tile(tile)
+	_apply_cell_changes(_resident)
+	_apply_wall_changes(_resident)
+	var ms := float(Time.get_ticks_usec() - start_us) / 1000.0
+	counters["preview_install_ms_max"] = max(float(counters["preview_install_ms_max"]), ms)
+	return ms
+
+## Drops the preview tiles of preview epochs `first_epoch` to `last_epoch`: the installed tiles
+## draw again. A cancelled preview drops its own epoch; an edit batch drops every epoch up to the
+## one its commit adopted.
+func release_preview(first_epoch: int, last_epoch: int) -> void:
+	for key: Vector2i in preview.keys():
+		var token := int(preview[key]["token"])
+		if token >= first_epoch and token <= last_epoch:
+			_drop_preview(key)
+	_apply_cell_changes(_resident)
+	_apply_wall_changes(_resident)
+
+func _show_preview_tile(tile: Dictionary) -> void:
+	var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
+	var code := int(tile["level"])
+	var current: Dictionary = preview.get(key, {})
+	var slot := -1
+	if not current.is_empty() and int(current["level"]) == code:
+		slot = int(current["slot"])
+	else:
+		var free: Array[int] = pools[code]["free"]
+		if free.is_empty():
+			counters["pool_exhausted"] += 1
+			MetrumDebug.log("terrain", "graded pool %d exhausted at preview tile %s" % [code, str(key)])
+			return
+		if not current.is_empty():
+			_free_slot(current)
+		slot = free.pop_back()
+	var before := _shown(key)
+	_write_slot(code, slot, tile)
+	var step := int(tile["step"])
+	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
+	preview[key] = {"code": code if code < 3 else base_code(step), "level": code, "step": step, "slot": slot, "token": int(tile["token"]), "walls": walls}
+	_shown_changed(key, before)
+
+func _drop_preview(key: Vector2i) -> void:
+	var entry: Dictionary = preview.get(key, {})
+	if entry.is_empty():
+		return
+	_free_slot(entry)
+	preview.erase(key)
+	_shown_changed(key, entry)
+
+# What `key` draws changed from `before`: its instance and its neighbours' sides, the walls when
+# its faces changed, and a resident patch meeting it without cells is built whole (one left
+# without a graded cell returns to its PlaneMesh in _update_cell_tiles).
+func _shown_changed(key: Vector2i, before: Dictionary) -> void:
+	_cell_changed(key)
+	var after := _shown(key)
+	if after.get("walls", PackedFloat32Array()) != before.get("walls", PackedFloat32Array()):
+		_walls_changed(key)
+	for patch_key in _patches_meeting(Rect2(Vector2(key) * TILE_M, Vector2.ONE * TILE_M)):
+		if _resident.has(patch_key) and not patch_cells.has(patch_key):
+			_dirty_patches[patch_key] = true
+
+# What a tile draws: its preview tile while the road preview shows one, else its installed tile.
+func _shown(tile: Vector2i) -> Dictionary:
+	var entry: Dictionary = preview.get(tile, {})
+	return entry if not entry.is_empty() else installed.get(tile, {})
+
+# Writes a polled or previewed tile's texels and rows into `slot` of level `code`'s pool.
+func _write_slot(code: int, slot: int, tile: Dictionary) -> void:
+	var pool: Dictionary = pools[code]
+	var upload_start_us := Time.get_ticks_usec()
+	var side := int(pool["side"])
+	var texel_image: Image = pool["texel_image"]
+	texel_image.set_data(side, side, false, Image.FORMAT_RGBAF, tile["texels"])
+	(pool["texels"] as Texture2DArray).update_layer(texel_image, slot)
+	var row_image: Image = pool["row_image"]
+	row_image.set_data(int(pool["row_texels"]), 1, false, Image.FORMAT_RGBAF, tile["rows"])
+	(pool["rows"] as Texture2DArray).update_layer(row_image, slot)
+	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
+	counters["uploads"] += 1
 
 # Takes finished work (edits, patch lists, failures, tile bakes, in that order per poll) until the
 # frame's install budget is spent, checked before each result and before each tile a list or a
@@ -588,16 +707,7 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 			MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(key)])
 			return
 		slot = free.pop_back()
-	var upload_start_us := Time.get_ticks_usec()
-	var side := int(pool["side"])
-	var texel_image: Image = pool["texel_image"]
-	texel_image.set_data(side, side, false, Image.FORMAT_RGBAF, tile["texels"])
-	(pool["texels"] as Texture2DArray).update_layer(texel_image, slot)
-	var row_image: Image = pool["row_image"]
-	row_image.set_data(int(pool["row_texels"]), 1, false, Image.FORMAT_RGBAF, tile["rows"])
-	(pool["rows"] as Texture2DArray).update_layer(row_image, slot)
-	counters["upload_ms_max"] = max(float(counters["upload_ms_max"]), float(Time.get_ticks_usec() - upload_start_us) / 1000.0)
-	counters["uploads"] += 1
+	_write_slot(code, slot, tile)
 	var cell_code := code if code < 3 else base_code(step)
 	# A tile moving between levels frees its slot in the old level's pool (slot numbers repeat
 	# across pools: round 7 compared the numbers and kept a GL0 slot 0 moving to GL1 slot 0).
@@ -626,6 +736,10 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 # Installs the edit batch once every tile of it has its result, all in this frame. Returns how
 # many tiles it installed.
 func _install_edit_batch(resident_patches: Dictionary) -> int:
+	if _edit_batch.is_empty() and _edit_release >= 0:
+		# A commit whose staged tiles no held tile takes: its preview ends with the edit.
+		release_preview(0, _edit_release)
+		_edit_release = -1
 	if _edit_batch.is_empty() or _edit_staged.size() < _edit_batch.size():
 		return 0
 	for key: Vector2i in _edit_staged.keys():
@@ -634,6 +748,12 @@ func _install_edit_batch(resident_patches: Dictionary) -> int:
 	var count := _edit_staged.size()
 	_edit_batch.clear()
 	_edit_staged.clear()
+	# The committed tiles replace the preview's in the same frame.
+	if _edit_release >= 0:
+		for key: Vector2i in preview.keys():
+			if int(preview[key]["token"]) <= _edit_release:
+				_drop_preview(key)
+		_edit_release = -1
 	return count
 
 # Rebakes the tiles an edit dirtied at the level each is held at, installed or in flight.
@@ -659,6 +779,21 @@ func _apply_edit(edit: Dictionary) -> void:
 			# A refused tile is held too: the edit may have changed what refused it.
 			if held or requested.has(request_key) or refused.has(request_key):
 				_dirty_tile(tile, serial)
+	# A commit's or undo's own tiles (TERRAIN-07-E): bitwise the rebakes of the edit's inputs, so
+	# they install with the batch instead of rebaking. A tile neither held nor wanted installs
+	# only where the preview shows it graded, so it draws on in the batch's frame; its patch's
+	# list, refreshed with the edit's patch generations, then wants it. Any other tile waits for
+	# that list, as a newly graded tile does.
+	for tile: Dictionary in edit.get("staged", []):
+		var key := Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))
+		var held := installed.has(key) or _desired.has(key)
+		if not held and not (preview.has(key) and bool(tile["graded"])):
+			continue
+		_dirty_tile(key, serial)
+		_edit_batch[key] = int(tile_tokens[key])
+		tile["token"] = int(tile_tokens[key])
+		_edit_staged[key] = tile
+	_edit_release = max(_edit_release, int(edit.get("preview_epoch", -1)))
 
 # A dirty tile takes the edit's serial as its token, so a bake in flight with an older one is
 # dropped and the tile is requested again, a refused one too; an installed tile joins the edit
@@ -827,6 +962,12 @@ func _tile_distance(tile: Vector2i) -> float:
 # are levelled again, the last one included (a tile due within it waits there). O(tiles due +
 # buckets passed).
 func _move_camera(camera_position: Vector3) -> void:
+	if not _camera_set or camera_position != _camera:
+		# The road preview stages its tiles at this rule's levels, without the hysteresis (T42).
+		var gl3_end_m := PackedFloat64Array()
+		for entry: Array in GL3_STEP_END_M:
+			gl3_end_m.append(float(entry[1]))
+		simulation_node.set_road_preview_terrain_view(camera_position, PackedFloat64Array(LEVEL_END_M), gl3_end_m)
 	if not _camera_set:
 		_camera = camera_position
 		_camera_set = true
@@ -974,7 +1115,7 @@ static func _patch_tiles(rect: Rect2) -> Array[Vector2i]:
 
 # A cell's lattice code: its installed level's, else the patch's base cells'.
 func _cell_code(tile: Vector2i, step: int) -> int:
-	var entry: Dictionary = installed.get(tile, {})
+	var entry := _shown(tile)
 	return int(entry["code"]) if not entry.is_empty() else base_code(step)
 
 # The code a cell's side stitches to: the coarser of its own and its neighbour's, where the
@@ -1001,7 +1142,7 @@ func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, p
 
 # The cell MultiMesh a tile draws in: its installed level's, else the base cells'.
 func _cell_mesh(tile: Vector2i) -> int:
-	var entry: Dictionary = installed.get(tile, {})
+	var entry := _shown(tile)
 	return int(entry["level"]) if not entry.is_empty() else CELL_BASE
 
 # A tile's instance custom data in a patch's cells, for the patch's rewrite and the per-tile
@@ -1017,7 +1158,7 @@ func _cell_custom(tile: Vector2i, first: Vector2i, patch: Dictionary, resident_p
 	codes |= _side_code(own, tile, tile + Vector2i(1, 0), origin.x + TILE_M, patch, resident_patches, 0) << 6
 	codes |= _side_code(own, tile, tile + Vector2i(0, -1), origin.y, patch, resident_patches, 1) << 9
 	codes |= _side_code(own, tile, tile + Vector2i(0, 1), origin.y + TILE_M, patch, resident_patches, 1) << 12
-	var entry: Dictionary = installed.get(tile, {})
+	var entry := _shown(tile)
 	var slot := int(entry["slot"]) if not entry.is_empty() else -1
 	var place := tile - first
 	return Color(place.x + PATCH_TILE_ROW * place.y, slot, codes & 511, codes >> 9)
@@ -1096,12 +1237,12 @@ func _rebuild_patch_cells(key: Vector2i, resident_patches: Dictionary) -> void:
 	var list: Dictionary = patch_lists.get(key, {})
 	var tiles := _patch_tiles(patch["rect"])
 	var any_graded := false
+	var any_preview := false
 	for tile in tiles:
-		if installed.has(tile):
-			any_graded = true
-			break
+		any_graded = any_graded or installed.has(tile)
+		any_preview = any_preview or preview.has(tile)
 	var patch_node: GeometryInstance3D = patch["node"]
-	if not any_graded or list.is_empty():
+	if not any_preview and (not any_graded or list.is_empty()):
 		if patch_cells.has(key):
 			release_patch(key, patch_node)
 		return
@@ -1181,7 +1322,7 @@ func _rebuild_patch_walls(cells: Dictionary, patch: Dictionary) -> void:
 	var count := 0
 	var truncated := 0
 	for tile in _patch_tiles(rect):
-		var entry: Dictionary = installed.get(tile, {})
+		var entry := _shown(tile)
 		if entry.is_empty():
 			continue
 		var faces: PackedFloat32Array = entry["walls"]
@@ -1365,6 +1506,7 @@ func get_pool_counters() -> Dictionary:
 		bytes += int(pool["slots"]) * (int(pool["side"]) * int(pool["side"]) + int(pool["row_texels"])) * 16
 	out["pool_bytes"] = bytes
 	out["installed"] = installed.size()
+	out["preview"] = preview.size()
 	out["patches_with_cells"] = patch_cells.size()
 	out["cell_sets_free"] = _cells_pool.size()
 	out["refused"] = refused.size() + patch_lists_refused.size()

@@ -2,8 +2,37 @@
 
 ## The road tool's synchronous preview against the native bridge (`ROAD-68-E`): one frame
 ## previews a stroke and shows its compiled chunks in place of the resident ones; a click commits
-## exactly that preview, which stays shown until the committed chunks are installed.
+## exactly that preview, which stays shown until the committed chunks are installed. The
+## preview's graded tiles (`TERRAIN-07-E`), staged at the levels of a fixed camera, equal the
+## commit's, a fresh bake and the bake after save and load, bitwise.
 extends SceneTree
+
+# What a terrain renderer's graded tiles would draw of the road tool's preview: the tiles shown,
+# by key, as the tool hands them over (show_preview, release_preview).
+class GradedRecorder extends RefCounted:
+	var shown := {}
+
+	func show_preview(frame: Dictionary) -> float:
+		var removed: PackedInt32Array = frame.get("graded_removed", PackedInt32Array())
+		for index in range(0, removed.size(), 2):
+			shown.erase(Vector2i(removed[index], removed[index + 1]))
+		for tile: Dictionary in frame.get("graded_tiles", []):
+			shown[Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))] = tile
+		return 0.0
+
+	func release_preview(first_epoch: int, last_epoch: int) -> void:
+		for key: Vector2i in shown.keys():
+			var token := int(shown[key]["token"])
+			if token >= first_epoch and token <= last_epoch:
+				shown.erase(key)
+
+class TerrainStub extends Node3D:
+	var graded_tiles := GradedRecorder.new()
+
+# The camera the graded levels are staged for: 90 m above the junction, so its tiles take GL1
+# and GL2 by distance.
+const GRADED_CAMERA := Vector3(0.0, 90.0, 0.0)
+const GRADED_FIELDS := ["level", "step", "samples_x", "samples_z", "graded", "seam_count", "edge_count", "wall_count", "texels", "rows", "walls"]
 
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
@@ -13,6 +42,9 @@ var _failures := 0
 var simulation: SimulationNode
 var _capture_baseline_sky := {}
 var _capture_preview_sky := {}
+# Fixtures whose commit staged graded tiles, and their tiles.
+var _graded_fixtures := 0
+var _graded_tiles := 0
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -56,6 +88,8 @@ func _run() -> void:
 		{"name": "sloped_t", "end_z": 0.0, "forward": 1, "backward": 1, "sloped": true},
 	]:
 		await _fixture(fixture)
+	_expect(_graded_fixtures >= 10, "most fixtures stage graded tiles: %d" % _graded_fixtures)
+	print("graded preview tiles bitwise: %d fixtures, %d tiles" % [_graded_fixtures, _graded_tiles])
 	simulation.free()
 	if _failures == 0:
 		print("road_junction_preview_test: PASS")
@@ -171,9 +205,12 @@ func _fixture(fixture: Dictionary) -> void:
 	if fixture["name"] == "double_t":
 		if not await _commit(PackedVector3Array([Vector3(-32.0, 0.0, -48.0), Vector3(-32.0, 0.0, 0.0)])):
 			return
+	simulation.set_road_preview_terrain_view(GRADED_CAMERA, PackedFloat64Array([64.0, 128.0, 2000.0]), PackedFloat64Array([5000.0, 12000.0, INF]))
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
 	tool.simulation_node = simulation
+	var terrain_stub := TerrainStub.new()
+	tool.terrain_node = terrain_stub
 	tool.road_mesh_root = Node3D.new()
 	tool.add_child(tool.road_mesh_root)
 	tool.blueprint_mesh = MeshInstance3D.new()
@@ -266,19 +303,31 @@ func _fixture(fixture: Dictionary) -> void:
 	_expect(tool._preview_display._instances.is_empty(), "cancel must remove the preview chunks")
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, fixture["name"] + "_cancelled")
-	await _commit_previewed(tool, points, preview, not isolated)
+	await _commit_previewed(tool, points, preview, not isolated, fixture["name"])
 	tool.free()
+	terrain_stub.free()
 	await process_frame
 
 # Clicks the previewed stroke: the commit installs the preview's pieces, and the preview stays
 # shown until the committed generation's chunks are installed, which replace it in one call.
 # `crossed`: the stroke's closure holds crossings, whose paint and signs the preview must carry.
-func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, crossed: bool) -> void:
+func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictionary, crossed: bool, label: String) -> void:
 	tool._begin_stroke(points[0], 0, Vector3.ZERO)
 	tool.set_scripted_pointer(true, points[-1])
 	tool._process(1.0 / 60.0)
+	# The frames after the pose stage the rest of its graded tiles (T27 (d)); the click then
+	# commits what the preview shows.
+	var catch_up := 0
+	while tool._graded_pending > 0 and catch_up < 64:
+		tool._process(1.0 / 60.0)
+		catch_up += 1
+	_expect(tool._graded_pending == 0, "%s: the preview's graded tiles converge" % label)
+	var shown: Dictionary = tool.terrain_node.graded_tiles.shown.duplicate()
+	# The first poll starts the graded edit journal, which carries the commit's tiles.
+	simulation.poll_graded_tile_results(0)
 	var generation := simulation.get_network_render_generation()
 	_expect(tool._commit_segment(points[-1]), "the click must queue the previewed stroke")
+	var epoch: int = tool._graded_commit_epoch
 	var held = tool._preview_display
 	var deadline := Time.get_ticks_msec() + 20000
 	while (tool._commit_request_id > 0 or simulation.get_network_render_generation() == generation) and Time.get_ticks_msec() < deadline:
@@ -327,6 +376,80 @@ func _commit_previewed(tool: Node3D, points: PackedVector3Array, preview: Dictio
 		_expect(painted and signed, "a crossing stroke's preview carries crosswalk paint (%s) and signs (%s)" % [painted, signed])
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, preview.get("name", "fixture") + "_committed")
+	await _check_graded_tiles(shown, epoch, label)
+
+# TERRAIN-07-E: the tiles the converged preview showed are the commit's staged tiles, a fresh bake
+# of them and their bake after save and load, bitwise, at the same levels.
+func _check_graded_tiles(shown: Dictionary, epoch: int, label: String) -> void:
+	var levels := {}
+	for tile: Dictionary in shown.values():
+		levels[int(tile["level"])] = true
+	_expect(not levels.has(0), "%s: the camera's distance rule stages no GL0 tile: %s" % [label, levels.keys()])
+	var staged := await _graded_staged(epoch, label)
+	_expect(_same_tiles(shown, staged), "%s: the preview's graded tiles are the commit's (%d, %d)" % [label, shown.size(), staged.size()])
+	if staged.is_empty():
+		return
+	_graded_fixtures += 1
+	_graded_tiles += staged.size()
+	var fresh := await _graded_bakes(staged, label)
+	_expect(_same_tiles(staged, fresh), "%s: the committed graded tiles are a fresh bake" % label)
+	var path := OS.get_user_data_dir().path_join("graded_preview_%s.sav" % label)
+	_expect(simulation.save_game(path), "%s: the fixture saves" % label)
+	_expect(simulation.load_game(path), "%s: the fixture loads" % label)
+	simulation.set_simulation_speed(0.0)
+	DirAccess.remove_absolute(path)
+	var loaded := await _graded_bakes(staged, label)
+	_expect(_same_tiles(staged, loaded), "%s: the committed graded tiles bake the same after save and load" % label)
+
+# The staged tiles of the commit that adopted preview epoch `epoch`, from the graded edit journal.
+func _graded_staged(epoch: int, label: String) -> Dictionary:
+	var deadline := Time.get_ticks_msec() + 20000
+	while Time.get_ticks_msec() < deadline:
+		var result: Dictionary = simulation.poll_graded_tile_results(0)
+		for edit: Dictionary in result.get("edits", []):
+			if int(edit.get("preview_epoch", -1)) != epoch:
+				continue
+			var staged := {}
+			for tile: Dictionary in edit["staged"]:
+				staged[Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))] = tile
+			return staged
+		await process_frame
+	_expect(false, "%s: the commit's edit carries its staged tiles" % label)
+	return {}
+
+# Fresh bakes of `tiles` at their levels, through the residency requests.
+func _graded_bakes(tiles: Dictionary, label: String) -> Dictionary:
+	var baked := {}
+	var wanted := tiles.keys()
+	var deadline := Time.get_ticks_msec() + 20000
+	while baked.size() < tiles.size() and Time.get_ticks_msec() < deadline:
+		if not wanted.is_empty():
+			var flat := PackedInt64Array()
+			for key: Vector2i in wanted:
+				flat.append_array(PackedInt64Array([key.x, key.y, int(tiles[key]["level"]), int(tiles[key]["step"]), 1]))
+			simulation.request_graded_tiles(flat)
+			wanted = []
+		var result: Dictionary = simulation.poll_graded_tile_results(64)
+		for tile: Dictionary in result.get("tiles", []):
+			baked[Vector2i(int(tile["tile_x"]), int(tile["tile_z"]))] = tile
+		for failure: Dictionary in result.get("failed", []):
+			var keys: PackedInt64Array = failure["keys"]
+			_expect(bool(failure["retry"]), "%s: a fresh bake is refused: %s" % [label, failure])
+			wanted.append(Vector2i(keys[0], keys[1]))
+		await process_frame
+	_expect(baked.size() == tiles.size(), "%s: every fresh bake arrives" % label)
+	return baked
+
+static func _same_tiles(a: Dictionary, b: Dictionary) -> bool:
+	if a.size() != b.size():
+		return false
+	for key: Vector2i in a.keys():
+		if not b.has(key):
+			return false
+		for field: String in GRADED_FIELDS:
+			if a[key][field] != b[key][field]:
+				return false
+	return true
 
 func _ground_point(x: float, z: float) -> Vector3:
 	return Vector3(x, simulation.get_world_surface_height(Vector2(x, z)), z)

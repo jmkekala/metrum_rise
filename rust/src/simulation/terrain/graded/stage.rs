@@ -11,9 +11,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::select::{SelectScratch, dirty_tiles_for_road_changes};
+use super::select::{SelectScratch, dirty_tiles_for_road_changes_where, road_change_extent};
 use super::sites::SiteSource;
-use super::tile::{BakeError, Level, TileKey, TilePayload, bake_unless_held};
+use super::tile::{BakeError, Level, TILE_M, TileKey, TilePayload, bake_unless_held};
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 
@@ -114,6 +114,90 @@ impl StageStats {
     }
 }
 
+/// Every level a tile can take, finest first.
+pub const ALL_LEVELS: [Level; 6] = [
+    Level::Gl0,
+    Level::Gl1,
+    Level::Gl2,
+    Level::Gl3 { step: 2 },
+    Level::Gl3 { step: 4 },
+    Level::Gl3 { step: 8 },
+];
+
+/// The renderer's view an edit's tiles are staged for (`TERRAIN-07-E`, T42): the camera and
+/// where each level ends, as the renderer's distance rule reads them (`docs/terrain.md`
+/// "Residency and eviction").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LevelView {
+    /// The camera's XZ, with its height above the ground under it as the middle value.
+    pub camera: [f64; 3],
+    /// The distances where `GL0`, `GL1` and `GL2` end.
+    pub level_end_m: [f64; 3],
+    /// Where `GL3` at each step (2, 4, 8) ends; the last should be infinite.
+    pub gl3_end_m: [f64; 3],
+}
+
+/// The level each tile of an edit is staged at (`TERRAIN-07-E`, T42): the renderer's distance
+/// rule from its last reported camera, without the hysteresis it keeps around a held tile's
+/// level, so the preview, the commit and the renderer's next request agree on a tile's level;
+/// without a renderer (`None`: tests and benchmarks) every tile is staged at `GL0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LevelRule {
+    /// The renderer's view, if one reported it.
+    pub view: Option<LevelView>,
+}
+
+impl LevelRule {
+    // The camera's distance to the tile's centre on the ground, as the renderer measures it.
+    fn distance(view: &LevelView, tile: TileKey) -> f64 {
+        let [x, z] = tile.origin();
+        let [cx, height, cz] = view.camera;
+        let (dx, dz) = (x + 0.5 * TILE_M - cx, z + 0.5 * TILE_M - cz);
+        (dx * dx + height * height + dz * dz).sqrt()
+    }
+
+    // The level at `distance` and the distances where it starts and ends.
+    fn level_at(view: &LevelView, distance: f64) -> Level {
+        let mut index = 0;
+        while index < ALL_LEVELS.len() - 1 {
+            let end = match index {
+                0..3 => view.level_end_m[index],
+                _ => view.gl3_end_m[index - 3],
+            };
+            if distance < end {
+                break;
+            }
+            index += 1;
+        }
+        ALL_LEVELS[index]
+    }
+
+    /// The level `tile` is staged at.
+    pub fn level_of(&self, tile: TileKey) -> Level {
+        match &self.view {
+            Some(view) => Self::level_at(view, Self::distance(view, tile)),
+            None => Level::Gl0,
+        }
+    }
+
+    /// Whether a tile whose square lies within `rect` may take `level`: the level's distance
+    /// interval meets the rectangle's. `O(1)`.
+    pub fn may_take(&self, level: Level, rect: [f64; 4]) -> bool {
+        let Some(view) = &self.view else {
+            return level == Level::Gl0;
+        };
+        let [cx, height, cz] = view.camera;
+        let near_x = (rect[0] - cx).max(cx - rect[2]).max(0.0);
+        let near_z = (rect[1] - cz).max(cz - rect[3]).max(0.0);
+        let far_x = (cx - rect[0]).abs().max((rect[2] - cx).abs());
+        let far_z = (cz - rect[1]).abs().max((rect[3] - cz).abs());
+        let near = (near_x * near_x + height * height + near_z * near_z).sqrt();
+        let far = (far_x * far_x + height * height + far_z * far_z).sqrt();
+        // The levels are monotone in distance: those from the nearest point's to the farthest's.
+        (Self::level_at(view, near)..=Self::level_at(view, far)).contains(&level)
+    }
+}
+
 /// Reused buffers of the staging. Payloads a stage drops are kept until nothing else shares
 /// them and their buffers reused by later bakes, so a drag allocates no texel buffer once warm.
 #[derive(Default)]
@@ -130,9 +214,11 @@ pub struct StageScratch {
 const RETIRED_MAX: usize = 64;
 
 impl StageScratch {
-    /// The tiles a road change from `before` to `after` can alter at each of `levels` (the
-    /// dirty tile selection, [`dirty_tiles_for_road_changes`]), in `(level, tile)` order, kept
-    /// in the scratch for [`stage_tiles`]. `levels` must be sorted.
+    /// The tiles a road change from `before` to `after` can alter, each at the level `rule`
+    /// gives it (the dirty tile selection, [`super::dirty_tiles_for_road_changes`], at each
+    /// level some candidate may take, over the candidates that take it), in `(level, tile)`
+    /// order, kept in the scratch for [`stage_tiles`]. `O(one selection)`: each candidate is
+    /// tested once, at its own level.
     #[allow(clippy::too_many_arguments)]
     pub fn select_road_edit(
         &mut self,
@@ -141,18 +227,25 @@ impl StageScratch {
         after: &RoadbedSystem,
         sites: &impl SiteSource,
         changes: &TerrainChanges,
-        levels: &[Level],
+        rule: &LevelRule,
     ) -> &[(Level, TileKey)] {
-        debug_assert!(levels.is_sorted(), "levels in order");
         self.wanted.clear();
-        for &level in levels {
-            dirty_tiles_for_road_changes(
+        let cell_m = f64::from(terrain.cell_size_m());
+        for level in ALL_LEVELS {
+            let Some(extent) = road_change_extent(changes, level, cell_m) else {
+                break;
+            };
+            if !rule.may_take(level, extent) {
+                continue;
+            }
+            dirty_tiles_for_road_changes_where(
                 terrain,
                 before,
                 after,
                 sites,
                 changes,
                 level,
+                |tile| rule.level_of(tile) == level,
                 &mut self.select,
                 &mut self.dirty,
             );

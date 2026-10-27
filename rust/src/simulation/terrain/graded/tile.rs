@@ -31,8 +31,10 @@ pub const TILE_M: f64 = 64.0;
 const WINDOW_PAD_M: f64 = 1.0;
 // Lattice rows per band of a tile's sampling (`TERRAIN-07-E`, T27 (a)): the unit the shared
 // pool balances a batch's samples in, so a few dear tiles spread over every worker. Each
-// sample's value is its own, so the bytes do not depend on it.
-const BAND_ROWS: usize = 16;
+// sample's value is its own, so the bytes do not depend on it. Four rows, not 16: a steep
+// tile's dear samples lie in a few rows near the road, and finer bands spread them (round 5:
+// the worst Kuopio tile alone on four workers 2.67 -> 2.30 ms, bitwise).
+const BAND_ROWS: usize = 4;
 
 /// A 64 m tile: `floor(x / 64 m)`, `floor(z / 64 m)`.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]

@@ -4,16 +4,21 @@
 //! commit, undo and load"): what each published edit changed for the graded tiles, recorded
 //! where the core publishes it, with the `O(1)` snapshots and the copied sites its dirty tile
 //! selection reads, so the payload workers select the dirty tiles off the simulation lock with
-//! exactly the edit's inputs and Godot rebakes only the dirty resident tiles. Recording starts
-//! with Godot's first residency poll: a core no graded renderer reads keeps nothing.
+//! exactly the edit's inputs and Godot rebakes only the dirty resident tiles. A road commit's
+//! or undo's install carries the tiles it staged (`TERRAIN-07-E`), which Godot installs in
+//! place of rebaking them. Recording starts with Godot's first residency poll: a core no graded
+//! renderer reads keeps nothing.
+
+use std::sync::Arc;
 
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::{SiteChange, SiteSnapshot};
 use crate::simulation::network::roadbed::{RoadbedSystem, TerrainChanges};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::graded::{
-    Level, SelectScratch, SiteBuffer, SiteSource, TileKey, dirty_tiles_for_base_area,
-    dirty_tiles_for_road_changes, dirty_tiles_for_site_changes, selection_site_reach_m,
+    ALL_LEVELS, Level, SelectScratch, SiteBuffer, SiteSource, TileKey, TileStage,
+    dirty_tiles_for_base_area, dirty_tiles_for_road_changes, dirty_tiles_for_site_changes,
+    selection_site_reach_m,
 };
 
 /// Edits kept between two polls; one more collapses them into [`GradedEditKind::All`], so a
@@ -22,14 +27,18 @@ const MAX_PENDING_EDITS: usize = 64;
 
 /// Every level a resident tile can take, in Godot's code order: an edit's selection runs at
 /// each.
-pub(crate) const EDIT_LEVELS: [Level; 6] = [
-    Level::Gl0,
-    Level::Gl1,
-    Level::Gl2,
-    Level::Gl3 { step: 2 },
-    Level::Gl3 { step: 4 },
-    Level::Gl3 { step: 8 },
-];
+pub(crate) const EDIT_LEVELS: [Level; 6] = ALL_LEVELS;
+
+/// The tiles a road commit or undo staged for its install (`TERRAIN-07-E`), each at its own
+/// level: bitwise the bakes of the install's inputs, which Godot installs with the edit in place
+/// of rebaking them.
+#[derive(Clone)]
+pub(crate) struct GradedInstallTiles {
+    pub(crate) stage: Arc<TileStage>,
+    /// The preview epoch whose shown tiles the commit adopted: Godot releases that epoch's
+    /// preview tiles as it installs these. `None` for an undo or a commit without a preview.
+    pub(crate) epoch: Option<u64>,
+}
 
 /// What one published edit changed for the graded tiles.
 // At most `MAX_PENDING_EDITS` records live between two polls; boxing the roadbed snapshots
@@ -63,6 +72,7 @@ pub(crate) struct GradedEdit {
     pub(crate) serial: u64,
     pub(crate) terrain: TerrainSystem,
     pub(crate) kind: GradedEditKind,
+    pub(crate) staged: Option<GradedInstallTiles>,
 }
 
 /// The edits recorded since Godot last took them.
@@ -74,6 +84,8 @@ pub(crate) struct GradedEditJournal {
     // The roadbed when the last install was recorded: the terrain changes a road edit takes
     // accumulate from there, an undo's restore included.
     roadbed: Option<RoadbedSystem>,
+    // The serial of the road install recorded last, until its staged tiles attach.
+    awaiting: Option<u64>,
 }
 
 // The world rectangles a selection's site snapshot covers: each change's bounds grown by the
@@ -111,12 +123,14 @@ impl SimCore {
             serial: journal.serial,
             terrain: self.heightmap.clone(),
             kind,
+            staged: None,
         });
     }
 
     /// Records a roadbed install with the terrain changes it took (`O(1)` roadbed snapshots,
     /// the sites within reach of the changed pieces copied). Nothing while the journal is off.
     pub(crate) fn record_graded_road_edit(&mut self, changes: &TerrainChanges) {
+        self.graded_edits.awaiting = None;
         if !self.graded_edits.enabled {
             return;
         }
@@ -140,6 +154,29 @@ impl SimCore {
             changes: changes.clone(),
             sites,
         });
+        let journal = &mut self.graded_edits;
+        journal.awaiting = Some(journal.serial);
+    }
+
+    /// Attaches the tiles a commit or undo staged to the journal's record of its install, the
+    /// last one recorded. Nothing when the journal is off, the install changed nothing or the
+    /// record was collapsed into [`GradedEditKind::All`].
+    pub(crate) fn attach_graded_install_tiles(
+        &mut self,
+        stage: Arc<TileStage>,
+        epoch: Option<u64>,
+    ) {
+        let journal = &mut self.graded_edits;
+        let Some(serial) = journal.awaiting.take() else {
+            return;
+        };
+        let edit = journal
+            .edits
+            .last_mut()
+            .filter(|edit| edit.serial == serial);
+        if let Some(edit) = edit.filter(|edit| matches!(edit.kind, GradedEditKind::Roads { .. })) {
+            edit.staged = Some(GradedInstallTiles { stage, epoch });
+        }
     }
 
     /// Records published site changes. Nothing while the journal is off or without changes.
@@ -180,6 +217,8 @@ pub(crate) struct GradedEditSelection {
     pub(crate) serial: u64,
     pub(crate) all: bool,
     pub(crate) levels: Vec<(Level, Vec<TileKey>)>,
+    /// The tiles the install staged, which Godot installs instead of rebaking.
+    pub(crate) staged: Option<GradedInstallTiles>,
 }
 
 // The sites of a selection that may not read any: `GL3`, whose band reaches past the edit's
@@ -212,6 +251,7 @@ impl GradedEdit {
             serial: self.serial,
             all: matches!(self.kind, GradedEditKind::All),
             levels: Vec::with_capacity(EDIT_LEVELS.len()),
+            staged: self.staged.clone(),
         };
         if selection.all {
             return selection;

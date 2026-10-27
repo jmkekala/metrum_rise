@@ -177,9 +177,7 @@ impl SimCore {
             let preview_pieces = preview.as_ref().and_then(|preview| preview.pieces.as_ref());
             road_add.committed = self.validate_staged_road_render_installing(
                 preview_pieces.map(|pieces| &pieces.delta),
-                preview_pieces
-                    .and_then(|pieces| pieces.graded.stage.as_ref().ok())
-                    .map(|stage| stage.as_ref()),
+                preview_pieces.map(|pieces| &pieces.graded),
                 &mut edit_metrics,
             );
             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
