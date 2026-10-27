@@ -518,7 +518,8 @@ fn named_seam<'a>(
 // mask moves: heights are final. Returns the points named. `O(points within the band of the rows
 // x rows)`.
 fn name_mouth_rows(
-    (seams, bores, walls, bottoms): (&[Seam], &[Seam], &[Seam], &[Option<[f64; 2]>]),
+    (seams, bores): (&[Seam], &[Seam]),
+    (walls, bottoms): (&[Seam], &[Option<[f64; 2]>]),
     (xs, zs): (&[f64], &[f64]),
     road: &[f32],
     band: f64,
@@ -821,7 +822,8 @@ fn bake_tile(
     // The bridge mouths' rows in the mask, on the final names.
     if wall_bottoms.iter().any(Option::is_some) {
         let named = name_mouth_rows(
-            (seams, portals.bores(), wall_seams, wall_bottoms),
+            (seams, portals.bores()),
+            (wall_seams, wall_bottoms),
             (xs, zs),
             road,
             band,

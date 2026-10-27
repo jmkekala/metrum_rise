@@ -3984,6 +3984,9 @@ km.
   4,096 instances, and the game's trees had passed it before them, [`WATER-05`](roadmap.md#validated-bugs)).
   `project.godot` sets 1,048,576 slots (65,536 instances, 16 MB): twice the most a session asked
   for (the round 7 matrix's saved sessions refused 26,581 allocations past the 4,096 with the trees), the `T7` rule.
+  Since round 9 only sets drawing a patch hold slots ([cell sets](#godot-tile-renderer)): with
+  Godot's default buffer the saved pose refuses 43 allocations (the exact cut 6,173, round 8's
+  scripts 11,387).
 - **Shader.** One source with three variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
@@ -4198,7 +4201,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); open: the matrix re-run, a background sliver at the T2 site's road edge and under the bridge's abutment edge, the bridge mouth's sky pixels, T26, the water reflection proxy (it draws the 5.8 M extra primitives of the saved paths), the undo swap test) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; open: T35, T34's confirmation, the undo swap test) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -6317,6 +6320,85 @@ against 5,258 at round 7's tip (-5: the fill arm and its cap). `roadbed/` unchan
 travel buckets, the border rewrite), `terrain.gd` 4,611 (+3), `terrain_surface.gdshaderinc` 1,013
 (-17: a2), `road_sidewalk_face.gdshader` 104 (+7: the skirt bands).
 
+Round 9, 2026-10-27 night, the same branch: T35 (b) and (c), the bridge mouth's mask, T34's
+fill view. Fresh runs on this branch unless marked; probes on release libraries in gamescope's
+headless backend, P-cores, `.run.lock` only.
+
+- **T35 (b) built, (c) bounded; `saved` still +0.17 ms (open for the user).** The [plain
+  cells](#godot-tile-renderer) and the numbers are in [T35](#terrain-07-open-questions). Probe
+  `gpub` (one release library `114e7f33…` for every variant: the branch's Rust with the plain
+  flag, which the tip's scripts ignore; the tip `91e0006b`'s scripts as the control; 300 frames
+  after 120, two rounds mirrored, unpaced): `saved` exact 2.129 / 2.134 ms, the fix +0.188, plain
+  +0.174, plain without delta-gradient fetches +0.179; 0 overflow and 0 script errors in the 16
+  sessions. The town's rounds in that session were disturbed (one run of `city` read 6.38 ms and
+  one of `city_low` 4.17 ms, the other rounds of the same variants 4.34 and 3.01): its first
+  round reads `city` exact 4.97, fix 4.32, plain 4.34, `city_low` exact 3.49, plain 2.99; not
+  used for (b). Round 8's last probe (`gpu7`, (a)) is in T35. No `matrix-ready`: `saved` does not
+  read graded at or below exact.
+- **Cell sets bind their materials while they draw (built).** Godot reserves 16 instance-uniform
+  slots for every instance whose material declares instance uniforms, prewarmed and pooled or
+  not, so the tip's prewarmed sets held 5,184 nodes' slots on Kuopio and the plain forms would
+  have doubled it (the `T7` margin of the 1,048,576-slot buffer, 2x the most asked, would have
+  failed). A set now binds its eight graded materials when it is acquired and unbinds them, and
+  the base cells' patch material, on release. Census on the saved pose with Godot's default
+  4,096-instance buffer (allocations refused): exact 6,173, the tip's scripts 11,387, this
+  round's 43. Kuopio (`graded_edit_probe.gd`, two rounds each, same session): video memory
+  graded 725 MiB with the tip's scripts, 766 with this round's (buffers 96 -> 118 MiB: (b)'s
+  MultiMeshes), prewarm 132-143 -> 273-297 ms, the edit's install frame 0.18-0.22 -> 0.18-0.20 ms,
+  nothing created after setup.
+- **The `bridge_t` `under_bridge` dashed line (attributed, fixed).** Sampling the mask against
+  coverage across a bridge's mouth (`structure_mouth`, `GL0`, 2 cm over 4 m either side of the
+  row): 9,938 of 640,000 points beyond the row were discarded, up to 0.98 m from it. The mouth row
+  is a wall seam, not a road seam, so the samples there named only the road seams, and the cut
+  edge fell on the bilinear zero of their clamped distances, short of the row on the bridge's
+  side: under the bridge the ground stopped before the abutment wall and the view passed under
+  the wall into the void below the approach. The bake now names the [bridge mouth
+  rows](#the-exact-seam-mask) in the mask: 0 mismatches at `GL0` and `GL1`
+  (`the_exact_mask_equals_coverage_across_a_bridge_mouth`). Renders (fresh, `screenshots-C.sh`,
+  the branch worktree before and after the fix, the same scripts): `under_bridge` 183 background
+  pixels along the joint -> 0 (443 pixels changed, all there); `mouth_side` 14 sky pixels in the
+  grass below the slab's end -> 0 (round 7 counted 6; the same cause); `bridge_t`, `tunnel_t` and
+  `t` flat, 2.5% and 8%: 0 failures and 0 plan pinholes in every half. A tunnel's portal row is
+  not named: past it the opening's cut is the mask's by design (the same sampling finds the
+  opening's 100,000 points cut, as `structure_mouths_wall_the_graded_ground` requires).
+- **The plain cells are invisible (fresh renders).** `t` in all three slopes with the tip's
+  scripts against this round's, the same tree and library: the exact cut's 27 views bitwise
+  equal; B's 27 differ in 1,126 pixels, all at a road's edge (the outer-band overlap's
+  equal-depth ties, which Godot's draw order settles: the plain shader and the late material
+  binding change the opaque sort), plan pinholes 0 in both. `graded_cells_shader_test.gd` renders
+  a plain slot in both variants: the same pixels.
+- **T34's fill view (for the user).** `t_cutfill`'s new `fill_corner` view looks at the kerb
+  curve between the west arm and the side arm, where the level road stands on a fill of about
+  0.5 m, from about 7 m at the road's height; rendered with T34 (b) (the branch worktree) and with
+  TD11's fill arm restored (the render worktree at `26bbe071` with `grade::inside` and its callers
+  reverted, the same scripts), the exact cut in both. With (b) a band of the skirt's concrete
+  shows between the sidewalk's outer edge and the grass along the curve: 1,794 pixels change
+  against the fill arm, over 282 columns, up to 11 pixels tall (median 7; about 11 and 7 cm at
+  that distance, within `k s/2` = 12.5 cm); with the fill arm, as in the exact cut, the grass meets
+  the edge. The straight edges lie on `GL0` lattice lines here and do not sag (two framings along
+  them changed 286-301 pixels, all near the corner). 0 failures and 0 plan pinholes in both. Crops
+  in `$ARTIFACTS` (`crop-fill_corner-before-after.png`, `crop-fill_corner-exact-B.png`).
+- **Tests (fresh, round 9).** `./run.sh --test` on `9291181e` (DISPLAY and WAYLAND_DISPLAY unset):
+  exit 0, 0 SCRIPT ERROR; the debug lib suite 1,973 passed, 0 failed, 176 ignored (round 8:
+  1,971; the two new tests `plain_tiles_are_never_masked` and
+  `the_exact_mask_equals_coverage_across_a_bridge_mouth`), integration 4 passed; every Godot
+  suite passes, among them `graded_tile_renderer_test.gd` (nine meshes, a pooled set binds no
+  material, nothing created after setup), `graded_cells_shader_test.gd` (xvfb, Compatibility: the
+  plain variant links and draws the masked variant's pixels), `network_tool_chunk_renderer_test.gd`,
+  `road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`
+  and both plot lighting suites; skipped as before: the headless shader global probe and the
+  Forward+ vegetation tests. After it the mouth rows' parameters were split for clippy (no
+  behaviour change): clippy `--all-targets` the 59-warning baseline set exactly, the graded
+  tests (`simulation::terrain::graded`) 33 passed, 0 failed, 7 ignored. Not run: the GPU
+  idle-frame matrix (no `matrix-ready`, T35).
+
+**Lines** (production, tests excluded, counted to each file's inline test module).
+`simulation/terrain/graded/` 5,371 against 5,278 at the round 8 tip (+93, all `tile.rs`: the
+plain flag 13, the mouth rows' naming and the named-seam lookup 80); `graded_tiles_api.rs` +4.
+`roadbed/` unchanged. Godot: `terrain_graded_tiles.gd` 1,331 (+47:
+nine meshes, the plain routing, the material binding), `terrain_cells.gdshaderinc` 421 (+16),
+`terrain_surface.gdshaderinc` 1,032 (+19), `terrain_graded_plain.gdshader` 9 (new).
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
@@ -7116,10 +7198,15 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (`gl0_triangles_stay_at_or_below_the_seam_height_across_straight_edges`: at most the seam's
       height on the seam, through it on the cut, a sag of at most `k s/2` on the fill, 0.12 m
       measured), and `kuopio_t2_edge_steps` finds no uncovered step on the T2 site's six chains.
+    - **Round 9: the fill view for the user.** `t_cutfill`'s `fill_corner` (the reference test,
+      compare mode) frames a fill's kerb curve from about 7 m: with (b) the skirt's concrete shows
+      below the sidewalk edge in a band up to about 11 cm (median 7 cm) along the curve; with the
+      fill arm restored, as in the exact cut, the grass meets the edge ([record](#terrain-07-d-record),
+      round 9). Still pending the user's confirmation.
 35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — (b) then (c) decided by the
-    coordinator under the user's delegation, 2026-10-27 night, for review; to build in round 9.
-    (a) stays the user's: it changes visible slope detail. If (b) and (c) together do not close
-    the pose, T35 stays open for the user with the numbers.**
+    coordinator under the user's delegation, 2026-10-27 night, for review; round 9: (b) built and
+    (c) bounded, neither closes the pose (+0.17 ms left); open for the user. (a) stays the
+    user's: it changes visible slope detail.**
     - **Evidence.** The matrix on the fix (`6826a11c`): graded below the exact cut on five poses,
       `saved` +0.20 ms (2.14 -> 2.34, both rounds). Attributed ([record](#terrain-07-d-record),
       round 8): the cells' own work over the base lattice 0.155 ms, the mask's arithmetic 0.07,
@@ -7139,9 +7226,30 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       `MultiMesh`es and materials per prewarmed cell set, `T25`): at most the mask's 0.09 ms on
       those tiles. (c) Cheaper cell vertices (the delta gradient precomputed into the payload; a
       payload change). (d) (b) with (c).
-    - **Recommendation.** (b) then (c), measured on `saved` with the matrix: both exact and
-      invisible; (a) only if they do not close it, since it trades visible slope detail. Gate D's
-      criterion stays: graded not above exact on every pose.
+    - **Recommendation (round 8).** (b) then (c), measured on `saved` with the matrix: both exact
+      and invisible; (a) only if they do not close it, since it trades visible slope detail. Gate
+      D's criterion stays: graded not above exact on every pose.
+    - **Round 9: (b) built, (c) bounded (fresh probes, [record](#terrain-07-d-record)).** The
+      [plain cells](#godot-tile-renderer): on the settled `saved` pose 15 of the 110 graded `GL1`
+      and `GL2` cells are plain (43k of their 256k triangles; none of the 287 `GL3` cells;
+      Kuopio's probe camera: 70 of 301 installed tiles). GPU p50 graded minus exact (exact 2.132 ms; one library, two rounds
+      mirrored, unpaced gamescope): the fix +0.188, (b) +0.174, (b) with no delta-gradient fetch
+      at all (attribution only, the bound of (c) and more) +0.179. So (b) takes 0.014 ms, within
+      the runs' spread, and (c), which removes three of the four fetches, can take nothing: it is
+      not built. (b)'s cost (`T25`): Kuopio's prewarm 132-143 ms -> 273-297 ms, buffers 96 ->
+      118 MiB, video memory 725 -> 766 MiB (graded, same session), 5,184 more `MultiMesh`es and
+      materials. The cells' instance uniform slots went the other way: a pooled set binds no
+      material now, so the saved pose's allocations past Godot's default 4,096 instances fell
+      from 11,387 (the tip's scripts) to 43 (exact cut 6,173); the 1,048,576-slot buffer keeps
+      far more than the `T7` margin.
+    - **Options left (round 9).** (a) as above: +0.142 alone (0.066 of the 0.19), with (b) about
+      +0.13 by the sum. (e) Keep (b) or revert it: it is exact, but 41 MiB of video memory and
+      0.15 s of load buy 0.014 ms. (f) Attribute the remaining cost by pass before another lever:
+      the depth prepass against the colour pass (Godot's per-pass GPU timings), since the cells
+      draw no more primitives than the exact cut (1.81 M against 1.76 M) and their vertex
+      fetches are not the cost.
+    - **Recommendation (round 9).** Revert (b) unless (a) is taken with it (it does not pay
+      alone), keep the material binding, and take (f) next; (a) is the user's.
 
 #### Superseded `ROAD-68` questions
 
