@@ -3567,8 +3567,8 @@ For a world point `p`, in `f64`:
    the seam height on straight edges (the spike's arm continuation). The cap on fills changes no
    `GL0` triangle that straddles the edge, and keeps coarser levels from rising more than 0.35 m
    above a road.
-   Correction (`TERRAIN-07-D` round 8, [T34](#terrain-07-open-questions) (b), taken pending the
-   user's confirmation: it replaces `TD11`'s fill arm, the user's T4 decision): on cuts
+   Correction (`TERRAIN-07-D` round 8, [T34](#terrain-07-open-questions) (b), decided by the
+   user, 2026-10-27: it replaces `TD11`'s fill arm, the user's T4 decision): on cuts
    and fills alike `g = h_s* - kσ`, and deeper than `D_in` `g = ρ - k D_in`. The fill arm rose
    where the covered sample's own base lay below the seam, also where the ground beyond the
    seam rose, so the triangles across the edge stood above it (up to 11.6 cm at `GL0` on the
@@ -3892,8 +3892,8 @@ km.
   round 4; Rust had kept the exact cut's refusal of plain payloads for road-owned patches, so no
   patch under a road installed).
 - **Cells.** A patch with graded tiles renders its cells, each tile clipped to the patch, as
-  instances: one `MultiMesh` per patch and mesh, at most nine (the base cell mesh, the four
-  levels, and the four levels again for plain tiles: [plain cells](#godot-tile-renderer)). Instance data carries the tile's place in the patch, the slot, the level and each side's
+  instances: one `MultiMesh` per patch and mesh, at most five (the base cell mesh and the four
+  levels). Instance data carries the tile's place in the patch, the slot, the level and each side's
   neighbour level, every channel an integer below 2,048: the Compatibility renderer keeps instance
   custom data as half floats (`TERRAIN-07-D` round 2). Vertices clamp to the patch rectangle, which
   is a lattice line of every level.
@@ -3925,18 +3925,24 @@ km.
   within the terrain share of `ROAD-68`'s 2.0 ms Godot stage: the rebaked tiles of an edit wait
   until the last of them arrives. Streaming installs closest first, within 1.0 ms of the main
   thread, like the existing patch installs: the budget is checked before each polled result
-  (an edit, a patch's tile list, a failure, a tile bake; the frame's first result excepted, so
-  the work progresses whatever the frame's other work cost), and results polled past it wait
-  in arrival order for the next frame, which takes them first (Rust hands a result over once),
-  so a frame ends within the budget plus one result's work (`TERRAIN-07-D` round 10; the check
-  after each poll overran it by a poll's results, all of the finished lists at once).
+  (an edit, a patch's tile list, a failure, a tile bake) and before each tile a list or a patch
+  change counts into the desired set (the frame's first excepted, so the work progresses
+  whatever the frame's other work cost). A list queues its counts, the new list's tiles before
+  the old one's, and they are applied in order before the next result is taken; results polled
+  past the budget wait in arrival order for the next frame, which applies the queued counts and
+  then takes them first (Rust hands a result over once). So the changes keep their arrival
+  order wherever a frame ends, and a frame ends within the budget plus one result's or one
+  tile's work (`TERRAIN-07-D` round 11; round 10 checked it before each result, and one list
+  counted at once ran up to 0.35 ms past it; the check after each poll overran it by a poll's
+  results, all of the finished lists at once).
 - **Work on changes, not frames** (`TERRAIN-07-D` rounds 5 and 6). `terrain.gd` keeps the
   renderer's resident patch entries (node, material, rectangle, LOD step, payload generation) as
   patches become resident, leave, commit a payload or change LOD step, and hands over the keys
   changed since the last frame, with the keys whose material parameters the cells copy were set.
   Each change costs its own tiles: a changed patch or an arriving list adds and removes its own
   listed tiles in the desired set (every tile counts the resident lists naming it, entering with
-  the first and evicted with the last), a changed material syncs that patch's cells, copying only
+  the first and evicted with the last; the counts are queued under the streaming budget), a
+  changed material syncs that patch's cells, copying only
   the parameters that differ, and only tiles whose desire, level or token changed, or whose
   request failed or did not go out, are considered for requests. An idle frame polls Rust once:
   `O(changes)` per frame (round 5 rebuilt the desired set from every resident list on any change:
@@ -3952,7 +3958,7 @@ km.
   hysteresis moved). Exact: every desired tile has its distance's level in every frame (round 7
   re-levelled every desired tile per 8 m of travel, so a level could switch up to 8 m late), at
   `O(tiles due + buckets passed)` per frame instead of `O(desired)`.
-- **Cells per tile** (T26 (a), round 8). Each pooled cell set records what its nine
+- **Cells per tile** (T26 (a), round 8). Each pooled cell set records what its five
   `MultiMesh`es hold: per mesh the instance count and each instance's custom data and tile, per
   tile place of the patch its (mesh, instance). A tile installed at a new slot or lattice, or
   evicted, rewrites its own instance in every patch drawing cells that holds it (in place while
@@ -3977,7 +3983,7 @@ km.
   `MultiMesh`es for patches newly drawing cells). Each cell `MultiMesh` holds the most tiles a
   patch meets (`(ceil(span / 64 m) + 1)^2`, 81 on 510 m patches) and the wall `MultiMesh` 256
   faces (the census's most per patch: 42 on Kuopio). The memory this costs on a large, mostly
-  empty world is [T25](#terrain-07-open-questions). A set's eight graded materials are bound to
+  empty world is [T25](#terrain-07-open-questions). A set's four graded materials are bound to
   its nodes only while it draws a patch (acquired from the pool, unbound on release; the base
   cells take the patch's material at each rewrite): binding a made material creates nothing, and a
   pooled node with no material holds no instance uniform slot (`TERRAIN-07-D` round 9).
@@ -3992,28 +3998,18 @@ km.
   Since round 9 only sets drawing a patch hold slots ([cell sets](#godot-tile-renderer)): with
   Godot's default buffer the saved pose refuses 43 allocations (the exact cut 6,173, round 8's
   scripts 11,387).
-- **Shader.** One source with three variants, an include plus thin wrappers as the paving shaders
+- **Shader.** One source with two variants, an include plus thin wrappers as the paving shaders
   have. The base variant is today's `terrain.gdshader` and has no discard, so ungraded terrain keeps
   early depth. The graded variant adds the height `base + delta` (`texelFetch` at the vertex's
   lattice point), the normal from today's base gradient plus the central difference of `delta`
-  over the apron, the exact mask and the material class. The plain variant
-  (`terrain_graded_plain.gdshader`, `TERRAIN_GRADED_PLAIN`) is the graded variant without the
-  mask, its discard and the class, for the plain cells below; its `sdf` debug view reads the
-  samples' bilinear value, which is the mask's on a plain tile. All share the grass and paving includes,
+  over the apron, the exact mask and the material class. Both share the grass and paving includes,
   the baked world noise (`TERRAIN-04`), the patch masks (`TERRAIN-06`), the overlays, the shoreline
   sampling of the water texture and the cloud shadow in `light()`.
-- **Plain cells** ([T35](#terrain-07-open-questions) (b), `TERRAIN-07-D` round 9). A tile whose
-  samples are none covered, none named by a seam and none painted (no material word:
-  `TilePayload::plain`, `O(texels)` in the bake, reported as `plain` in the poll) draws in its
-  level's plain `MultiMesh` with the plain variant. It renders exactly as the graded variant
-  would: every fragment's `sdf` is the bilinear one of samples at or above zero (an unnamed
-  sample lies at least the band, three spacings, from every seam, so no road passes between
-  samples) and its class 0, so the mask discards and paints nothing there. Without the discard
-  the plain cells keep early depth and draw no fragment in the depth prepass. A tile rebaked
-  plain or not moves between the two meshes like a level change (`_update_tile_cell`).
-  `plain_tiles_are_never_masked` ports the mask over every plain tile of the fixtures and a high
-  fill's tiles past its tile line; `graded_cells_shader_test.gd` renders a plain slot in both
-  variants and compares the pixels.
+- **No plain cells** ([T35](#terrain-07-open-questions) (b), built in `TERRAIN-07-D` round 9,
+  reverted in round 11). Drawing the tiles whose samples are none covered, named or painted with
+  a variant without the mask was exact and invisible, but took 0.014 ms of the saved pose's
+  0.19 ms for 41 MiB of video memory, twice the cell sets' prewarm and four more `MultiMesh`es
+  and materials per set; the binding of a set's materials while it draws stays.
 - **Walls.** A tile's wall faces (conflict walls, abutments, headwalls, the portal opening's
   sides) reach Godot with its slot bytes, eight little-endian `f32` per face (`pack_walls`:
   `a`, `b`, the bottoms and the tops). Each pooled cell set holds one more `MultiMesh`, of one
@@ -4188,7 +4184,7 @@ measure them against this budget; the budget is not relaxed to fit.
 | TD8 | Tile | 64 m, aligned to the world origin | decided by the user 2026-10-25 ([T17](#terrain-07-open-questions)) |
 | TD9 | Footprint distance band | `max(2 m, 3 × spacing)`: 2 m at `GL0` | proposed |
 | TD10 | Levels | `GL0`-`GL3` to 256 m, 512 m, 2 km and the cull distance | decided by the user 2026-10-25 ([T5](#terrain-07-open-questions); distances tuned in `TERRAIN-07-D`) |
-| TD11 | Inside rule | `h - kσ` on cuts and fills (round 8; before: fill `h + k min(σ, 0.35 m)`) | decided by the user 2026-10-25 ([T4](#terrain-07-open-questions)); the fill arm replaced in round 8, pending the user's confirmation ([T34](#terrain-07-open-questions)) |
+| TD11 | Inside rule | `h - kσ` on cuts and fills (round 8; before: fill `h + k min(σ, 0.35 m)`) | decided by the user 2026-10-27 ([T34](#terrain-07-open-questions) (b), the cut arm under every road; it replaces the fill arm decided 2026-10-25, [T4](#terrain-07-open-questions)) |
 
 ### Implementation plan
 
@@ -5389,7 +5385,8 @@ Acceptance:
   cell or level borders, no road hidden by terrain, the skirt not visible
 - the idle-frame matrix (`overview`, `close`, `ground`, `city`, `city_low`, and `saved` on the
   `kuopio-city` save): GPU frame p50 not above the exact cut in the same session; triangle counts
-  and the mask's fragment cost recorded
+  and the mask's fragment cost recorded (`saved` +0.17 ms over the exact cut accepted by the
+  user, 2026-10-27: [T35](#terrain-07-open-questions))
 - the Godot install of a populated edit's dirty tiles within 1.0 ms, release library; no texture,
   material or mesh created per edit (pool counters)
 - slot pool sizes and video memory on Kuopio and the 100k city; Kuopio and populated-city load
@@ -6480,6 +6477,51 @@ exactly. `graded_edits` (debug): 2 passed. Not run: the GPU idle-frame matrix (n
 unchanged (no Rust production change). Godot: `terrain_graded_tiles.gd` 1,374 (+43: the result
 queue, the list's own function, two counters).
 
+Round 11, 2026-10-27 morning, the same branch rebased onto `road` `0e17e997` (two `roads.md`
+documentation commits; no conflicts): the user's decisions, T35 (b) reverted, the tile lists'
+counts under the streaming budget, the gate checks. Fresh runs on this branch unless marked;
+probes on the release library `51c539ca…` (round 10's Rust; this round changes no bake) in
+gamescope's headless backend, P-cores, `.run.lock` only.
+
+- **The user's decisions.** [T34](#terrain-07-open-questions) (b) is decided (the cut arm under
+  every road replaces `TD11`'s fill arm, the user's T4 decision); [T35](#terrain-07-open-questions)
+  is accepted: the saved pose's graded GPU p50 +0.17 ms over the exact cut (2.1 ms frame), every
+  other pose at or below. The preview's terrain may approximate while dragging (`roads.md`
+  WYSIWYG, recorded on `road`): gate E's to build (T27 (d), on gate E's branch); nothing in gate
+  D changes for it. Still for the user's review, unchanged: T25 (a), T38 (a) and
+  `WATER-05`'s buffer setting.
+- **T35 (b) reverted (fresh products and renders).** `TilePayload::plain`, the poll's `plain`
+  key, `terrain_graded_plain.gdshader` and its include branches, the four plain cell meshes and
+  materials per set, `plain_tiles_are_never_masked` and the shader test's plain comparison (it
+  compared the plain variant with the masked one, so it no longer applies); the material binding
+  of round 9 stays. Products (`graded_edit_probe.gd`, the pre-revert tip `34586730` in the render
+  worktree against the revert, two rounds mirrored): Kuopio video memory 766.6 -> 715.4 MiB,
+  buffers 118.7 -> 93.0 MiB, the cell sets' prewarm 285-291 -> 119-143 ms, 10,369 -> 5,185
+  materials and 12,960 -> 7,776 `MultiMesh`es at setup, none created after it; the populated save
+  (49 sets) 560-561 -> 560 MiB, prewarm 75-82 -> 27-35 ms; the edit's install 0.16-0.33 ms either
+  way. Renders (`screenshots-C.sh` compare mode, `t` flat, 2.5% and 8%, the render worktree at
+  `34586730` against the branch worktree at `34108492`, each with its own debug library): the
+  exact cut's 27 views bitwise equal; of B's 27, five bitwise equal and 22 differing in 1,091
+  pixels, every one by at most 23 of 255 in a channel (none past the round 8 diff tool's 24),
+  seven of them between grass and another colour; 0 failures and 0 plan pinholes in both. Rust:
+  the bake is untouched (the removed function only read the texels).
+- **The tile lists' counts under the streaming budget (built; the lever of round 10's open
+  item).** A list counted its tiles into the desired set at once, about 5 µs a tile, so one list
+  of 70 tiles took the frame 0.35 ms past the budget. `_recount` now queues its counts (the new
+  list's tiles before the old one's) and the poll applies them one at a time under the budget,
+  before the next result ([budgets per frame](#godot-tile-renderer)); the changes keep their
+  arrival order wherever a frame ends, so the residency reaches the same state. The renderer
+  test, the reference test and the probe settle only with the queue empty. Measured (the same
+  probe, the revert alone against the revert with the queue, two rounds mirrored): the populated
+  save's worst streaming frame 1.114 / 1.121 -> 1.047 / 1.039 ms (the pre-revert tip 1.159 /
+  1.143 in the same session; round 10's session read it 1.37 / 1.35), 70-118 results deferred
+  while it settles; Kuopio 1.000 / 0.775 -> 0.906 / 1.020 (its worst frame is a tile upload
+  batch, not lists); settling 1.47-1.50 -> 1.45-1.55 s and 2.25-3.02 -> 2.58-3.20 s; the edit's
+  install 0.29-0.31 and 0.20-0.57 ms; nothing created. The frame ends within the budget plus one
+  result's work (a tile's install, at most about 0.05 ms), as the rule states; a frame strictly
+  within 1.0 ms would need each result's cost known before it is taken. Recorded open, named for
+  `TERRAIN-07-G`'s acceptance.
+
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
 1. The terrain half of `preview_road` bakes graded tiles in place of refined patches; Godot stages
@@ -6650,6 +6692,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
      rule. (c) Cap at the road surface (the spike's untested fix): a few centimetres of gap at
      curb returns at 0.5 m, the dark line of artefact 1.
    - **Recommendation.** (a): identical at `GL0`, bounded at every coarser level.
+   - **Superseded by [T34](#terrain-07-open-questions) (b), decided by the user, 2026-10-27:** the
+     cut arm under every road replaces the fill arm (a), which stood above road edges where the
+     ground beside a road is about level with it.
 5. **T5. Levels, their distances and the far representation.**
    - **Evidence.** A fully graded patch at 0.5 m would be about 2.1 million triangles (64 tiles ×
      32,768), against about 200k faces for a refined patch today; at 1080p a pixel covers about
@@ -7228,9 +7273,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       rule of the renderer.
     - **Round 8: (a) built** ([re-levelling by camera travel](#godot-tile-renderer), [cells per
       tile](#godot-tile-renderer)); measured in the [record](#terrain-07-d-record), round 8.
-34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b) built, taken pending
-    the user's confirmation: it replaces the user's T4 decision (`TD11`'s fill arm), which the
-    night delegation does not cover. Gate D lands on `road` only once the user confirms it.**
+34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b), decided by the user,
+    2026-10-27: the cut arm under every road replaces the user's T4 decision (`TD11`'s fill
+    arm).** Built in round 8.
     - **Evidence.** `kuopio_t2_wall` B `close_corner`'s background sliver (1,762 pixels; the
       exact cut 0) is a step between a road's outer chain and the terrain's cut edge, the `GL0`
       surface on the chain line, with no wall face to close it, so the view passes under the
@@ -7283,12 +7328,15 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       compare mode) frames a fill's kerb curve from about 7 m: with (b) the skirt's concrete shows
       below the sidewalk edge in a band up to about 11 cm (median 7 cm) along the curve; with the
       fill arm restored, as in the exact cut, the grass meets the edge ([record](#terrain-07-d-record),
-      round 9). Still pending the user's confirmation.
-35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — (b) then (c) decided by the
-    coordinator under the user's delegation, 2026-10-27 night, for review; round 9: (b) built and
-    (c) bounded, neither closes the pose (+0.17 ms left); open for the user. (a) stays the
-    user's: it changes visible slope detail. Round 10: split by pass and level (the colour
-    pass's fragments of `GL1` and `GL2`); no exact lever closes it.**
+      round 9).
+    - **Decided by the user, 2026-10-27: (b).** The skirt's band on fills (up to `k s/2` below
+      the edge in close views) is the accepted trade for no step above any road edge.
+35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — accepted by the user,
+    2026-10-27: the saved pose's graded GPU p50 +0.17 ms over the exact cut (2.1 ms frame); every
+    other pose at or below.** (b) and (c) were taken under the delegation (round 9: (b) built,
+    (c) bounded, neither closes the pose); round 10 split it by pass and level (the colour pass's
+    fragments of `GL1` and `GL2`), no exact lever closing it; (a) not taken; (b) reverted in
+    round 11.
     - **Evidence.** The matrix on the fix (`6826a11c`): graded below the exact cut on five poses,
       `saved` +0.20 ms (2.14 -> 2.34, both rounds). Attributed ([record](#terrain-07-d-record),
       round 8): the cells' own work over the base lattice 0.155 ms, the mask's arithmetic 0.07,
@@ -7357,6 +7405,17 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (with (b), about +0.13 - 0.05 by the sums, not closing alone); if (a) is refused, (g)
       can take at most 0.075 and the pose stays a recorded miss. Revert (b) unless (a) or (g)
       is taken.
+    - **Accepted by the user, 2026-10-27: the saved pose's graded GPU p50 +0.17 ms over the exact
+      cut (2.1 ms frame); every other pose at or below.** The evidence: the matrix on the fix
+      (`6826a11c`, round 8, on the user's display) read `saved` 2.14 / 2.34 ms (+0.20) and the
+      other five poses -0.45 to +0.00 (`overview` -0.00, `close` -0.01, `ground` +0.00, `city`
+      -0.45, `city_low` -0.34); the probes since put the pose at +0.17 to +0.19 (round 9 `gpub`
+      +0.174 with (b), round 10 `gpuc` +0.166 with the timestamps off), all of it the colour and
+      depth passes of the `GL1` and `GL2` cells within 1 km (`GL1` 0.123 ms, `GL2` 0.071: the
+      finer lattices 0.10, the mask 0.075), with no exact lever left (above). (a) is not taken,
+      the levels stay `GL0` to 64 m and `GL1` to 128 m, and (b) is reverted (round 11): it took
+      0.014 ms for 41 MiB of video memory and twice the prewarm. The gate's matrix on its tip
+      records the poses fresh.
 38. **T38. The water reflection's ground where graded cells draw (`TERRAIN-07-D` round 10) —
     (a) decided by the coordinator under the user's delegation, 2026-10-27 night, for review.**
     - **Evidence.** The reflection world mirrors each resident patch's `PlaneMesh` node as a
