@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Graded terrain cells (TERRAIN-07-D) through the real shaders: a GL0 cell whose slot names a
-## road seam is discarded exactly on the road's side and drawn elsewhere, a plain tile (T35 (b))
-## draws the same pixels in the plain variant as in the masked one, and a base cell of the base
-## variant draws the whole tile. Requires a rendering display.
+## road seam is discarded exactly on the road's side and drawn elsewhere, and a base cell of the
+## base variant draws the whole tile. Requires a rendering display.
 extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -42,21 +41,6 @@ func _slot_pools() -> Array[Texture2DArray]:
 	texel_array.create_from_images([texels])
 	var row_array := Texture2DArray.new()
 	row_array.create_from_images([rows])
-	return [texel_array, row_array]
-
-# One plain GL0 slot: graded (a delta rising along x and z, so the normal moves), no sample covered,
-# named by a seam or painted.
-func _plain_pools() -> Array[Texture2DArray]:
-	var texels := Image.create_empty(SIDE, SIDE, false, Image.FORMAT_RGBAF)
-	for j in SIDE:
-		for i in SIDE:
-			var x := float(i - 1) * 0.5
-			var z := float(j - 1) * 0.5
-			texels.set_pixel(i, j, Color(0.004 * x * x + 0.05 * z, 2.0 + 0.1 * x, -1.0, 0.0))
-	var texel_array := Texture2DArray.new()
-	texel_array.create_from_images([texels])
-	var row_array := Texture2DArray.new()
-	row_array.create_from_images([Image.create_empty(ROW_TEXELS, 1, false, Image.FORMAT_RGBAF)])
 	return [texel_array, row_array]
 
 func _material(shader_path: String, pools: Array[Texture2DArray]) -> ShaderMaterial:
@@ -157,15 +141,6 @@ func _run() -> void:
 			if _failures > 8:
 				break
 	_expect(road_px > 0 and ground_px > 0, "both sides must be sampled")
-	# A plain tile: the plain variant draws exactly the masked variant's pixels.
-	var plain_pools := _plain_pools()
-	var masked: Image = await _render(_cells(tiles._meshes[0], _material("res://assets/materials/terrain_graded.gdshader", plain_pools), Color(0.0, 0.0, 0.0, 0.0), 0.0))
-	var plain: Image = await _render(_cells(tiles._meshes[0], _material("res://assets/materials/terrain_graded_plain.gdshader", plain_pools), Color(0.0, 0.0, 0.0, 0.0), 0.0))
-	var differ := 0
-	for y in 64:
-		for x in 64:
-			differ += 1 if masked.get_pixel(x, y) != plain.get_pixel(x, y) else 0
-	_expect(differ == 0 and not _is_background(plain.get_pixel(32, 32)), "the plain variant must draw the masked variant's pixels: %d differ" % differ)
 	# A base cell (base variant, the patch material's shader) draws the whole tile. Its codes
 	# (every side the base code) travel in two channels below 2048: the Compatibility renderer
 	# keeps instance custom data as half floats.

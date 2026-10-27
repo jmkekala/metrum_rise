@@ -1,7 +1,6 @@
 // Graded terrain cells (TERRAIN-07-D, docs/terrain.md "Godot tile renderer"): the instanced
 // 64 m cells of a patch with graded tiles, their lattices, stitching and clamping to the patch,
-// the exact base and the graded texel reads, the exact seam mask and the material class (the
-// plain variant, TERRAIN_GRADED_PLAIN, draws tiles that need neither: T35 (b)).
+// the exact base and the graded texel reads, the exact seam mask and the material class.
 //
 // Positions are integer half-metres (hm) in the tile's frame, 0..128, so every vertex is exact
 // and a border vertex two cells share gets the same bits on both. rust/src/simulation/terrain/
@@ -285,21 +284,6 @@ vec2 cell_axis_stop(CellFrame frame, float x_m, int axis) {
 	float p1 = float(cell_index_hm(frame.code, index + 1, spacing, phase)) * 0.5;
 	return vec2(float(index), clamp((x_m - p0) / max(p1 - p0, 1e-6), 0.0, 1.0));
 }
-
-#ifdef TERRAIN_GRADED_PLAIN
-// cell_mask's signed distance on a plain tile, for the sdf debug view: the bilinear one of the
-// four samples around p, since none names a seam.
-float cell_plain_sdf(CellFrame frame, vec2 p) {
-	vec2 sx = cell_axis_stop(frame, p.x, 0);
-	vec2 sz = cell_axis_stop(frame, p.y, 1);
-	ivec2 i0 = ivec2(int(sx.x), int(sz.x));
-	float s00 = cell_texel(i0, frame.slot).g;
-	float s10 = cell_texel(i0 + ivec2(1, 0), frame.slot).g;
-	float s01 = cell_texel(i0 + ivec2(0, 1), frame.slot).g;
-	float s11 = cell_texel(i0 + ivec2(1, 1), frame.slot).g;
-	return mix(mix(s00, s10, sx.y), mix(s01, s11, sx.y), sz.y);
-}
-#endif
 
 struct CellSeamHit {
 	float distance;

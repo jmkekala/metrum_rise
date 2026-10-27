@@ -106,9 +106,9 @@ func _run() -> void:
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
 		_expect(after[name] == created[name], "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
-	# Each pooled cell set holds nine cell MultiMeshes, the wall MultiMesh and the four graded
-	# levels' materials with their plain forms; the wall material is one, made at setup.
-	_expect((int(after["materials_created"]) - 1) * (GradedTiles.CELL_MESHES + 1) == int(after["multimeshes_created"]) * 8, "cell materials are pooled with their cells: %s" % after)
+	# Each pooled cell set holds five cell MultiMeshes, the wall MultiMesh and the four graded
+	# levels' materials; the wall material is one, made at setup.
+	_expect((int(after["materials_created"]) - 1) * (GradedTiles.CELL_MESHES + 1) == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
 	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d, edit %d tiles in %.3f ms" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
@@ -419,7 +419,6 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 			var entry: Dictionary = graded.installed.get(tile, {})
 			if index != GradedTiles.CELL_BASE:
 				_expect(not entry.is_empty() and int(data.g) == int(entry["slot"]), "a graded instance names its slot")
-				_expect(not entry.is_empty() and GradedTiles.mesh_level(index) == int(entry["level"]) and (index >= GradedTiles.CELL_PLAIN) == bool(entry["plain"]), "a graded instance draws in its level's mesh, plain or masked")
 			else:
 				_expect(entry.is_empty() and int(data.g) == -1, "a base cell has no slot")
 			for side in 4:

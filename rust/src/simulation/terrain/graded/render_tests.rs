@@ -11,12 +11,8 @@ use super::coverage::covered_height_at;
 use super::tests::{LEVELS, compiled, fixtures, window_tiles};
 use super::tile::{Evaluation, bake_tiles_with, lattice};
 use super::*;
-use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::roadbed::fixtures::road_edge;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
-use crate::simulation::network::types::NodeType;
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::Vector3;
 
 const SIDE_HM: i32 = 128;
 
@@ -528,58 +524,6 @@ fn the_exact_mask_equals_coverage_across_a_bridge_mouth() {
             "{level:?}: {wrong} of {tested} points; first {first}"
         );
     }
-}
-
-// A straight road on a 12 m fill 40 m from the origin over flat ground: its 1:2 fill reaches
-// past the tile line z = 64 m, where no sample lies within the `GL0`-`GL2` band of its seams.
-fn high_fill() -> (&'static str, RegionGraph, TerrainSystem) {
-    let mut graph = RegionGraph::new();
-    let a = graph.add_node(Vector3::new(-90.0, 12.0, 40.0), NodeType::Junction);
-    let b = graph.add_node(Vector3::new(90.0, 12.0, 40.0), NodeType::Junction);
-    let points = (0..=9)
-        .map(|i| Vector3::new(-90.0 + 20.0 * i as f32, 12.0, 40.0))
-        .collect();
-    graph.add_edge(road_edge(a, b, points, 7.0));
-    graph.rebuild_intersection_clips();
-    let terrain = TerrainSystem::with_chunking(53, 53, 10.0, 53, 0.0);
-    ("high_fill", graph, terrain)
-}
-
-// The plain cells (`T35` (b)) draw without the mask and the class: on every tile the bake calls
-// plain, the ported mask discards no point and no point is covered. The high fill's tiles past
-// its tile line are graded and plain, so the variant draws.
-#[test]
-fn plain_tiles_are_never_masked() {
-    let mut pieces: Vec<PieceId> = Vec::new();
-    let mut plain_graded = 0;
-    for (name, graph, terrain) in fixtures().into_iter().chain([high_fill()]) {
-        let roadbed = compiled(&graph);
-        let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
-        for level in LEVELS {
-            for payload in bake_level(&terrain, &roadbed, &window_tiles(), level) {
-                if !payload.plain() {
-                    continue;
-                }
-                plain_graded += usize::from(payload.texels.iter().any(|&t| texel_renders(t)));
-                let frame = frame(level_code(level), payload.tile, anchor, cell);
-                let [ox, oz] = payload.tile.origin();
-                for j in 0..173 {
-                    for i in 0..173 {
-                        let p = [i as f32 * 0.37 + 0.011, j as f32 * 0.37 + 0.017];
-                        let (x, z) = (ox + f64::from(p[0]), oz + f64::from(p[1]));
-                        let sdf = mask_sdf(frame, &payload, p);
-                        let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
-                        assert!(
-                            sdf >= 0.0 && !covered,
-                            "{name} {level:?} {:?} p {p:?}: sdf {sdf} covered {covered}",
-                            payload.tile
-                        );
-                    }
-                }
-            }
-        }
-    }
-    assert!(plain_graded > 0, "no plain tile is graded");
 }
 
 #[test]

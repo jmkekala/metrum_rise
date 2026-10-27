@@ -206,19 +206,6 @@ pub struct TilePayload {
     pub stats: BakeStats,
 }
 
-impl TilePayload {
-    /// Whether the cells draw the tile exactly without the seam mask and the material class
-    /// (`T35` (b)): no sample is covered, names a seam or carries a material word. Every
-    /// fragment's signed distance is then the bilinear one of samples at or above zero (an
-    /// unnamed sample lies at least the band, three spacings, from every seam, so no road
-    /// passes between samples), so the mask discards nothing, and its class is 0. `O(texels)`.
-    pub fn plain(&self) -> bool {
-        self.texels
-            .iter()
-            .all(|&[_, sdf, seam, material]| sdf >= 0.0 && seam < 0.0 && material == 0.0)
-    }
-}
-
 /// Why a tile cannot be represented (`T7`): nothing is dropped silently.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BakeError {
