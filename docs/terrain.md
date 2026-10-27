@@ -3567,8 +3567,8 @@ For a world point `p`, in `f64`:
    the seam height on straight edges (the spike's arm continuation). The cap on fills changes no
    `GL0` triangle that straddles the edge, and keeps coarser levels from rising more than 0.35 m
    above a road.
-   Correction (`TERRAIN-07-D` round 8, [T34](#terrain-07-open-questions) (b), decided by the
-   coordinator under the user's delegation, for review; it replaces `TD11`'s fill arm): on cuts
+   Correction (`TERRAIN-07-D` round 8, [T34](#terrain-07-open-questions) (b), taken pending the
+   user's confirmation: it replaces `TD11`'s fill arm, the user's T4 decision): on cuts
    and fills alike `g = h_s* - kσ`, and deeper than `D_in` `g = ρ - k D_in`. The fill arm rose
    where the covered sample's own base lay below the seam, also where the ground beyond the
    seam rose, so the triangles across the edge stood above it (up to 11.6 cm at `GL0` on the
@@ -3756,11 +3756,12 @@ are the grounded skirts' bottoms there and the terrain's abutment wall continues
 Built in
 `TERRAIN-07-B`: the payload's skirt layer, UV `y` the bottom attribute, drawn with the curb-face
 shader's skirt variant, which measures the distance as `terrain.gd` measures patch LOD (camera
-to point): 0.5 m to 200 m, 1 m to 2 km, 7.5 m to 5 km, 15 m to 12 km and 30 m beyond
+to point): 0.5 m to 64 m, 1 m to 2 km, 7.5 m to 5 km, 15 m to 12 km and 30 m beyond
 (`TERRAIN-07-D` round 8 with [T34](#terrain-07-open-questions) (b); before, 0.5 m to 2 km and 2.5,
 5 and 10 m, a cut's sag of `ks/4`). Under the cut arm a fill's edge sags by up to `ks/√2` for a
-lattice spacing `s`, across a cell's diagonal: `GL1`'s 0.35 m within 256 m, `GL2`'s 0.71 m from
-256 m, 7.1, 14.1 and 28.3 m at the `GL3` base lattice's 20, 40 and 80 m past 2 km.
+lattice spacing `s`, across a cell's diagonal: `GL0`'s 0.18 m and `GL1`'s 0.35 m within 160 m,
+`GL2`'s 0.71 m from 128 m, 7.1, 14.1 and 28.3 m at the `GL3` base lattice's 20, 40 and 80 m past 2
+km.
 
 ### Sites, pads and paving
 
@@ -3854,10 +3855,10 @@ lattice spacing `s`, across a cell's diagonal: `GL1`'s 0.35 m within 256 m, `GL2
 
 - The patch LOD steps are unchanged: step 1 (10 m) to 2 km, 2 to 5 km, 4 to 12 km, 8 beyond.
 - A graded tile takes its level from the camera's distance to the tile ([T5](#terrain-07-open-questions)),
-  with 32 m of hysteresis (proposed): `GL0` to 128 m, `GL1` to 256 m, `GL2` to 2 km, `GL3`
-  beyond (`TERRAIN-07-D` round 8, tuned by the GPU idle frame as T5 recommends: at 256 and 512 m a
-  `GL0` or `GL1` cell covered 1.8 pixels, and the fine cells cost the town's `city` pose 0.5-0.75
-  ms of GPU). The distance is the camera's to the tile's centre on the ground under the camera, from
+  with 32 m of hysteresis (proposed): `GL0` to 64 m, `GL1` to 128 m, `GL2` to 2 km, `GL3`
+  beyond (`TERRAIN-07-D` round 8, tuned by the GPU idle frame as T5 recommends: at the earlier 256
+  and 512 m a `GL0` or `GL1` cell covered 1.8 pixels, and the fine cells cost the matrix poses up to
+  0.75 ms of GPU; at 64 and 128 m a cell covers 7 pixels). The distance is the camera's to the tile's centre on the ground under the camera, from
   its height above that ground (`TERRAIN-07-D` round 7: the renderer had measured along the
   ground, so a camera high over the city drew `GL0` tiles 300-400 m away). At 1920×1080 and the game's 60 degree field of view a pixel covers about 1 mm per metre
   of distance, so 0.5 m texels resolve within about 500 m.
@@ -4146,7 +4147,7 @@ measure them against this budget; the budget is not relaxed to fit.
 | TD8 | Tile | 64 m, aligned to the world origin | decided by the user 2026-10-25 ([T17](#terrain-07-open-questions)) |
 | TD9 | Footprint distance band | `max(2 m, 3 × spacing)`: 2 m at `GL0` | proposed |
 | TD10 | Levels | `GL0`-`GL3` to 256 m, 512 m, 2 km and the cull distance | decided by the user 2026-10-25 ([T5](#terrain-07-open-questions); distances tuned in `TERRAIN-07-D`) |
-| TD11 | Inside rule | `h - kσ` on cuts and fills (round 8; before: fill `h + k min(σ, 0.35 m)`) | decided by the user 2026-10-25 ([T4](#terrain-07-open-questions)); the fill arm replaced by the coordinator under the user's delegation 2026-10-27, for review ([T34](#terrain-07-open-questions)) |
+| TD11 | Inside rule | `h - kσ` on cuts and fills (round 8; before: fill `h + k min(σ, 0.35 m)`) | decided by the user 2026-10-25 ([T4](#terrain-07-open-questions)); the fill arm replaced in round 8, pending the user's confirmation ([T34](#terrain-07-open-questions)) |
 
 ### Implementation plan
 
@@ -6181,8 +6182,10 @@ headless backend, P-cores.
   write costs 0.71 / 0.42 / 0.27 ms (the graded cells lose the early depth test), the mask and its
   discard 0.36 / 0.27 / 0.19, and the cells' fine levels most of the rest: `GL0`'s 0.5 m cells
   reached 256 m (1.8 pixels a cell there; on `saved` 29 `GL0` tiles submit 0.95 M of the cells'
-  1.38 M triangles). Combined (second batch, same session): a2 off with `GL0` to 128 m and `GL1`
-  to 256 m -0.40 / -0.25 on the town, a2 off with 64 and 128 m -0.53 / -0.26.
+  1.38 M triangles). Combined (second batch, same session; `saved` one round): a2 off with `GL0`
+  to 128 m and `GL1` to 256 m -0.40 / -0.25 / +0.46, a2 off with 64 and 128 m -0.53 / -0.26 /
+  +0.19. The whole fix with 128 and 256 m (the round's scripts, one round before the batch was
+  cut short): `city` -0.42, `city_low` -0.20.
 - **Graded mode's road patches drew 2 m `PlaneMesh`es (found, fixed).** Without cells, graded
   mode still drew 0.93 M more primitives than the exact cut on `saved` (+0.29 ms): `terrain.gd`
   kept the exact cut's subdivision factor for road-owned patches (`ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M`,
@@ -6195,8 +6198,50 @@ headless backend, P-cores.
 - **The fix (built; matrix re-run pending).** T24 (a2) withdrawn (the graded variant writes no
   `DEPTH` again; [T24](#terrain-07-open-questions)), with [T34](#terrain-07-open-questions) (b)
   the cut arm, under which the ground just inside a seam lies below the road top so (a) keeps it
-  and the plan pinholes stay closed; levels `GL0` to 128 m and `GL1` to 256 m
-  ([T5](#terrain-07-open-questions)); road patches at the base lattice.
+  and the plan pinholes stay closed; levels `GL0` to 64 m and `GL1` to 128 m
+  ([T5](#terrain-07-open-questions)); road patches at the base lattice. Expected from the probes:
+  the town 0.2-0.5 ms below the exact cut, `saved` still about 0.19 ms above it (open: the mask's
+  0.19 ms and the cells' own work there; levers below).
+- **T26 (a) (built; target met on the town's high paths).** [Re-levelling by camera
+  travel](#godot-tile-renderer) and [cells per tile](#godot-tile-renderer). Probes as round 7's
+  (the town's `pan_high` and `orbit_high`, gamescope paced at 60 Hz, the perf channel, matrix
+  library), the round 7 scripts against this round's (T26 with the round's levels), mirrored;
+  graded renderer work per frame (`total_ms`) against the exact cut's terrain renderer:
+  `pan_high` 1.94 ms (round 7's scripts 5.14) against 2.21, `orbit_high` 0.67 (2.69) against
+  0.18, within the target of the exact cut plus the streaming upload's 1.0 ms on both. Of it,
+  `pan_high`: re-levelling 0.32 ms for 59 tiles due a frame (2.09 ms for all 1,610), cell
+  updates 0.91 ms for 38 tiles' instances after 7.3 uploads (2.73 ms rewriting 5.2 patches),
+  the poll 0.26 and requests 0.44; `orbit_high`: 0.30 for 53 tiles, 0.18 for 13 tiles after 2.4
+  uploads. The terrain renderer's own counter reads 2.42 and 1.21 ms (it includes the perf
+  channel's per-mesh cell census, which runs only with the channel on). A second T26 run, which
+  overlapped a debug build of the render worktree, read 2.66 and 0.91 ms (not used). The 100k
+  city's 10,500 listed tiles: re-levelling costs the tiles due, which a camera moving `v` a frame
+  finds within `v + 8 m` of a level boundary, about `0.055 D` tiles per boundary at distance `D`
+  on a fully listed city at `v` = 10 m (`2 π D · 2 (v + 8 m) / 64²`): about 280 at the 512, 544,
+  2,000 and 2,032 m boundaries, 1.5 ms at the measured 5.4 µs a tile (round 7's rule re-levelled
+  all 10,500, about 11 ms); cell updates follow the uploads, which the request and install
+  budgets bound.
+- **The cross-pool slot leak (found by T26's test, fixed).** A tile moving between levels freed
+  its old slot only when the slot numbers differed, so a `GL0` slot 0 moving to `GL1` slot 0 was
+  never freed; the renderer test's climb exposed it (two levels' slots not freed after eviction).
+  The old level's slot is now freed on every level move.
+- **The background sliver at the T2 site (attributed, fixed with T34 (b)).** Not the conflict
+  wall: the steps above the road edges of [T34](#terrain-07-open-questions), up to 11.6 cm on
+  the six chains within 40 m of the focus with no face to close them (`kuopio_t2_edge_steps`,
+  fresh); the conflict wall's own 591 stepped samples were all covered. Under the cut arm no
+  uncovered step remains, and the render (fresh, `screenshots-C.sh` compare mode on the render
+  worktree with this round's changes) shows none: `close_corner` B 0 background pixels in the
+  region (round 7: 1,762; the exact cut 0); plan pinholes B 1 at the conflict (T24's entry).
+- **`bridge_t` `under_bridge`'s dashed line (open, attributed only in part).** In round 7's
+  render the background pixels lie on one line along the abutment face's bottom edge, a run of
+  7-12 pixels on each pixel row it crosses and 3 pixels between runs (186 pixels): about two
+  thirds of the line's length is open, the pattern of a gap about one pixel wide (about 1 cm at
+  that distance) along the whole joint, not of sparse rasterization cracks at T-junctions or of
+  the 1e-4 m rounding between the road's and the terrain's frames. The faces' tops meet the edge
+  within 0.1 mm (`a_bridge_mouth_over_a_valley_keeps_the_terrain_below_the_deck`), so the next
+  step is `kuopio_t2_edge_steps`' sampling on `bridge_t`'s mouth: the lattice surface on the
+  wall seam, the band's faces and the abutment face's bottom edge, at the level drawn.
+- **`mouth_side`'s 6 sky pixels (open).** Unchanged by the band, a2 and T34; not attributed.
 
 #### `TERRAIN-07-E` — preview, commit, undo and load
 
@@ -6380,10 +6425,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
      road ever hidden, but fills sag by up to half the spacing).
    - **Recommendation.** (a), with the distances tuned by the distance renders and the idle-frame
      matrix in `TERRAIN-07-D`.
-   - **`TERRAIN-07-D` round 8 (tuned, under the recommendation).** `GL0` to 128 m and `GL1` to
-     256 m (from 256 and 512 m): the GPU probes put the fine cells' cost at 0.5-0.75 ms on the
-     town's `city` pose ([record](#terrain-07-d-record), round 8); `GL2` stays to 2 km and `GL3`
-     beyond, so the skirt schedule's far bands keep their distances.
+   - **`TERRAIN-07-D` round 8 (tuned, under the recommendation).** `GL0` to 64 m and `GL1` to
+     128 m (from 256 and 512 m): the GPU probes put the fine cells' cost at up to 0.75 ms on the
+     matrix poses ([record](#terrain-07-d-record), round 8; 128 and 256 m left `saved` 0.46 ms
+     above the exact cut, 64 and 128 m 0.19); `GL2` stays to 2 km and `GL3` beyond, so the skirt
+     schedule's far bands keep their distances.
 6. **T6. Texel format.**
    - **Evidence.** RGBAF (16 B) is the spike's format, one fetch per sample. A half-float delta
      rounds to 1.6 cm steps between 16 m and 32 m of grading, so pads and seams would be off by up
@@ -6895,7 +6941,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       put the hidden ground just inside the chain above the road top (round 6, 5 mm to 28 cm);
       under [T34](#terrain-07-open-questions) (b) it lies below the road top at three of the four
       probed pinholes (5.1 to 8.8 cm below), so (a) keeps it there, and at the fourth, beside the
-      T2 site's conflict wall, 21 to 28 cm above (a pinhole there may stay; the render records it).
+      T2 site's conflict wall, 21 to 28 cm above. The render (fresh, round 8's scripts and T34
+      (b)): B 1 pinhole, at that pixel (`(768, 468)`), the exact cut 1 (round 6's B 3, round 7's
+      with a2 0).
       The trade for the user: a2 closes every plan pinhole at 0.27-0.71 ms of GPU; (a) with T34
       (b) costs nothing and leaves at most the conflict's.
 25. **T25. Cell sets prewarmed per grid patch (`TERRAIN-07-D` round 6; taken pending the user's
@@ -6943,9 +6991,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       rule of the renderer.
     - **Round 8: (a) built** ([re-levelling by camera travel](#godot-tile-renderer), [cells per
       tile](#godot-tile-renderer)); measured in the [record](#terrain-07-d-record), round 8.
-34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b) taken by the coordinator
-    under the user's delegation, 2026-10-27, for review; built. It replaces `TD11`'s fill arm,
-    which the user decided (T4).**
+34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b) built, taken pending
+    the user's confirmation: it replaces the user's T4 decision (`TD11`'s fill arm), which the
+    night delegation does not cover. Gate D lands on `road` only once the user confirms it.**
     - **Evidence.** `kuopio_t2_wall` B `close_corner`'s background sliver (1,762 pixels; the
       exact cut 0) is a step between a road's outer chain and the terrain's cut edge, the `GL0`
       surface on the chain line, with no wall face to close it, so the view passes under the
@@ -6979,11 +7027,16 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (c) Walls wherever the cut edge stands above the seam (from the seam to the edge): closes
       every step without touching `g`, but a face per lattice crossing of every stepped stretch
       (about 90 faces for one 22 m chain at `GL0`) against 256 per patch.
+    - **The visible trade, for the user.** Today: steps up to 11.6 cm above road edges where
+      the ground beside a road is about level with it, see-through to the background (the T2
+      site's sliver). With (b): no step above any road edge; on fills the skirt's concrete shows
+      below the edge in close views, up to `k s/2` = 12.5 cm at `GL0` (`k s/√2` across a
+      diagonal). Crops before and after: [record](#terrain-07-d-record), round 8.
     - **Recommendation.** (b): exact by a bound, cheaper than today's branch, no new faces; the
       visible skirt on fills replaces a see-through slit. With it T24 (a) keeps the hidden ground
       at the plan pinholes, so T24 (a2)'s depth write, 0.27-0.71 ms of GPU, can go.
     - **Round 8 (built).** `grade::inside` returns `h - kσ` and `inside_deep` `ρ - k D_in`; the
-      [skirt](#skirts) deepens to 1 m from 200 m (`GL2`'s 2 m cells sag by up to `k s/√2` = 0.71 m
+      [skirt](#skirts) deepens to 1 m from 64 m (`GL2`'s 2 m cells sag by up to `k s/√2` = 0.71 m
       across a diagonal) and to 7.5, 15 and 30 m past 2, 5 and 12 km; the raycast's tile bound drops the
       fill arm. The straight-edge test now asserts the new contract
       (`gl0_triangles_stay_at_or_below_the_seam_height_across_straight_edges`: at most the seam's
