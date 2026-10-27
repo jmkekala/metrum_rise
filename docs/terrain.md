@@ -4206,7 +4206,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-A` | done 2026-10-25 (branch `terrain07-A`, round 4; [record](#terrain-07-a-record)): on the re-recorded Kuopio save every exact and local check passes and the populated edits take 1.02-2.77 ms from 0 to 100k; under T20 (a) (coordinator, under the user's delegation, for review) the Kuopio full-edit bakes (33 of 44 within 3.0 ms, worst 6.70 ms) are evidence and their frame paths are gate E's | Grading core and queries in Rust, roads only, beside the legacy path |
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
-| `TERRAIN-07-D` | in progress (branch `terrain07-D`, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); open: T35, T34's confirmation) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
+| `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load budget open for the user, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); open for the user: the Load budget (Kuopio about +250 ms, saved about +200 ms; beside T25), so the acceptance is not passed; for the user's review: T25 (a), T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | open | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
@@ -6532,7 +6532,47 @@ integration 4 passed; every Godot suite passes, among them `graded_tile_renderer
 `graded_cells_shader_test.gd`, `network_tool_chunk_renderer_test.gd`,
 `road_junction_preview_test.gd`, `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd`
 and both plot lighting suites; skipped as before: the headless shader global probe and the
-Forward+ vegetation tests. The gate's GPU idle-frame matrix on its tip: below.
+Forward+ vegetation tests.
+
+- **GPU idle-frame matrix on the gate tip (fresh, run by the coordinator on the user's display,
+  09:15-09:39; valid).** Tree `fe70b910` (clean; code `34108492`), release library `3a56920a…`,
+  Kuopio reference save `8fa19a1e`, the populated town `42af609c`, two rounds; every one of the
+  12 sessions logs 0 "Too many instances using shader instance variables" errors, and the
+  display stayed awake. GPU p50 in ms (exact / graded, each round; graded minus exact of the
+  medians): `overview` 1.24 1.24 / 1.24 1.23 (-0.01), `close` 1.07 1.08 / 1.08 1.08 (+0.01),
+  `ground` 1.00 1.00 / 0.98 1.00 (-0.01), `saved` 2.14 2.14 / 2.34 2.35 (**+0.21**), `city` 4.88
+  4.84 / 4.25 4.36 (-0.56), `city_low` 3.37 3.39 / 2.93 3.04 (-0.40); round 8's matrix on the fix
+  read -0.00, -0.01, +0.00, +0.20, -0.45, -0.34. `close` is at the exact cut: the same 829,698
+  primitives and 1,439 draws in both modes (it draws no graded cell), and its +0.01 lies within
+  the exact cut's own round spread (1.07 / 1.08). `saved` +0.21 is
+  [T35](#terrain-07-open-questions)'s residual with (b) reverted, which the user accepted; the
+  +0.17 the user accepted was measured with (b). Primitives per frame: `saved` 1.76 M / 1.81 M,
+  `city` 50.47 M / 49.35 M, `city_low` 28.66 M / 27.66 M. Camera paths (medians over the three
+  scenes): `orbit_high` +0.23 (Kuopio 0.00, saved +0.22, town -0.85), `zoom_in` +0.20 (the saved
+  scene again), `pan_high` 0.00, `pan_low` -0.15, `orbit_low` -0.21 ms: the paths' plus is the
+  saved scene's, the same cause as T35 (its graded slopes within 1 km).
+- **Loads (fresh, the same matrix; a miss, open for the user).** [Budgets](#budgets): not above
+  the exact cut's load in the same session. Total ms (exact / graded, each round): Kuopio 2,365
+  2,323 / 2,638 2,557 (about +250), saved 3,381 3,286 / 3,551 3,515 (about +200), the town 4,597
+  4,612 / 3,540 3,527 (about -1,070). Split from the sessions' own phases (the benchmark's load
+  call, then its idle wait, which counts patch work only): Kuopio load call 400 / 398 -> 544 /
+  534 ms (+136 to +144), wait 1,965 / 1,926 -> 2,094 / 2,023 (+97 to +130); saved load call 275 /
+  273 -> 409 / 413 (+134 to +140), wait 3,105 / 3,013 -> 3,142 / 3,103 (+37 to +90); the town
+  load call 2,581 / 2,584 -> 2,644 / 2,639 (+55 to +63), wait 2,016 / 2,028 -> 896 / 888 (graded
+  patches install plain payloads, no refined cut). The load call's rise is the graded renderer's
+  setup: [T25](#terrain-07-open-questions)'s prewarm of one cell set per grid patch (1,296 on the
+  Kuopio map: 0.10-0.14 s in round 6, 119-143 ms in this round's probes) and the slot pools' and
+  level meshes' setup, the same on every world (the town's load call rises 55-63 ms with 49 sets
+  prewarmed in 27-35 ms in the probes: about 25-30 ms for the pools' eight `Texture2DArray`s,
+  127 MiB). What is left is the wait's +37 to +130 ms on the Kuopio map: the patch settle's
+  frames run longer in graded mode beside the graded tiles' own streaming (the lists, the bakes
+  on the payload workers beside the patch payloads, and the installs of about 300 tiles at up to
+  1.0 ms a frame), which this run's metrics do not split further. Earlier rounds recorded the
+  same rise: round 7 Kuopio 3.49-3.55 s graded against 2.82 s exact; round 8's matrix on the fix
+  Kuopio 3,068 / 3,144 against 2,540 / 2,573 and saved 4,063 / 4,057 against 3,533 / 3,531 (with
+  (b) the prewarm doubled in round 9). Gate D's acceptance is not passed while Load misses; the
+  gate lands with it open for the user, beside T25 (whose options (b), sets for the listed
+  patches plus a reserve, and (c), lighter sets, address the load call's part).
 
 **Lines** (production, tests excluded, counted to each file's inline test module).
 `simulation/terrain/graded/` 5,360 (round 10 5,373: `TilePayload::plain` out), against 4,774 on
@@ -7271,6 +7311,12 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       buffer (4,096 instances by default; 6,480 cell instances prewarmed) and its cells drew with
       default uniforms; the buffer is now sized for them ([instance uniforms](#godot-tile-renderer)). Loads in the round 7 matrix: Kuopio
       3.49-3.55 s graded against 2.82 s exact, of which the prewarm 0.10-0.14 s (round 6).
+    - **Round 11: the Load budget misses (open for the user).** The gate's matrix on its tip
+      (fresh): Kuopio graded 2,638 / 2,557 ms against exact 2,365 / 2,323 (about +250), saved about
+      +200, the populated town below exact. The load call's +134 to +144 ms is this prewarm (the
+      1,296 sets) with the slot pools' setup; the idle wait's +37 to +130 ms is the patch settle
+      beside the graded tiles' streaming ([record](#terrain-07-d-record), round 11). (b) or (c)
+      would take the prewarm's part.
 26. **T26. The moving camera's graded work (`TERRAIN-07-D` round 7) — recommendation taken by the
     coordinator under the user's delegation, 2026-10-26 night, for review; to build next round.**
     - **Evidence.** On the populated town's `pan_high` and `orbit_high` (the camera 400 m from the
