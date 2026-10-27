@@ -7087,7 +7087,10 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       (`gl0_triangles_stay_at_or_below_the_seam_height_across_straight_edges`: at most the seam's
       height on the seam, through it on the cut, a sag of at most `k s/2` on the fill, 0.12 m
       measured), and `kuopio_t2_edge_steps` finds no uncovered step on the T2 site's six chains.
-35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — open for the user.**
+35. **T35. The saved pose's last 0.20 ms (`TERRAIN-07-D` round 8) — (b) then (c) decided by the
+    coordinator under the user's delegation, 2026-10-27 night, for review; to build in round 9.
+    (a) stays the user's: it changes visible slope detail. If (b) and (c) together do not close
+    the pose, T35 stays open for the user with the numbers.**
     - **Evidence.** The matrix on the fix (`6826a11c`): graded below the exact cut on five poses,
       `saved` +0.20 ms (2.14 -> 2.34, both rounds). Attributed ([record](#terrain-07-d-record),
       round 8): the cells' own work over the base lattice 0.155 ms, the mask's arithmetic 0.07,
