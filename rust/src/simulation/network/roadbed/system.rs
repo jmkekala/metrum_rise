@@ -201,6 +201,11 @@ impl RoadbedRestore {
 }
 
 impl RoadbedSystem {
+    /// Bounds of every published road piece, for rebuilding derived terrain-query tiles.
+    pub(crate) fn terrain_query_input_bounds(&self) -> impl Iterator<Item = [f64; 4]> + '_ {
+        self.pieces.values().map(|piece| piece.mesh().bounds_xz())
+    }
+
     /// Creates an empty roadbed whose render chunks span `chunk_span_m` metres from the origin.
     pub fn new(chunk_span_m: f32) -> Self {
         Self::new_with_chunk_grid(chunk_span_m, 0.0, 0.0)

@@ -57,7 +57,7 @@ impl SiteSource for NoSites {
 
 // One site of a buffer: its footprint corners and surfaces (ranges into the buffer's points and
 // surfaces), the footprint's XZ bounds and its support height.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SiteRecord {
     footprint: (u32, u32),
     bounds: [f64; 4],
@@ -66,7 +66,7 @@ struct SiteRecord {
 }
 
 // One surface polygon: its material, corners and XZ bounds.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SurfaceRecord {
     material: SiteSurfaceMaterial,
     points: (u32, u32),
@@ -91,6 +91,45 @@ pub struct SiteBuffer {
 }
 
 impl SiteBuffer {
+    pub(super) fn copy_inputs_in_bounds_from(&mut self, source: &Self, rect: [f64; 4]) {
+        self.clear();
+        for site in &source.sites {
+            if site.bounds[0] > rect[2]
+                || rect[0] > site.bounds[2]
+                || site.bounds[1] > rect[3]
+                || rect[1] > site.bounds[3]
+            {
+                continue;
+            }
+            self.push_site(source.footprint(site), site.height);
+            for surface in site.surfaces.0..site.surfaces.1 {
+                let record = source.surfaces[surface as usize];
+                let polygon = &source.points[record.points.0 as usize..record.points.1 as usize];
+                self.push_surface(record.material, polygon);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn estimated_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.sites.capacity() * std::mem::size_of::<SiteRecord>()
+            + self.points.capacity() * std::mem::size_of::<Vector2>()
+            + self.surfaces.capacity() * std::mem::size_of::<SurfaceRecord>()
+            + self.order.capacity() * std::mem::size_of::<u32>()
+            + self.edges.capacity() * std::mem::size_of::<[f64; 4]>()
+            + self.edge_keys.capacity() * std::mem::size_of::<([u64; 4], usize)>()
+            + self.ring.capacity() * std::mem::size_of::<[f64; 2]>()
+    }
+
+    #[cfg(test)]
+    pub(super) fn same_inputs(&self, other: &Self) -> bool {
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        self.inputs(&mut a);
+        other.inputs(&mut b);
+        a == b
+    }
+
     /// Adds one site: its support footprint corners (world XZ) and flat support height. Its
     /// surfaces follow with [`Self::push_surface`].
     pub fn push_site(&mut self, footprint: &[Vector2], support_height_m: f32) {

@@ -17,7 +17,7 @@ use crate::simulation::terrain::graded::{
 use godot::prelude::Vector3;
 use std::collections::BTreeMap;
 
-fn commit_stroke(core: &mut SimCore, (ends, lanes): Stroke) {
+pub(super) fn commit_stroke(core: &mut SimCore, (ends, lanes): Stroke) {
     let points = ends
         .map(|point| {
             Vector3::new(

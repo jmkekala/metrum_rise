@@ -560,6 +560,7 @@ fn gl0_triangles_stay_at_or_below_the_seam_height_across_straight_edges() {
         terrain: &terrain,
         roadbed: &roadbed,
         sites: &NoSites,
+        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     let (mut pieces, mut segments) = (Vec::new(), Vec::new());
@@ -709,6 +710,7 @@ fn cells_met_by_roads_and_pads_hold_every_road_and_pad_point() {
             terrain: &terrain,
             roadbed: &roadbed,
             sites: if with_sites { &sites } else { &NoSites },
+            query_index: None,
         };
         let mut scratch = QueryScratch::default();
         let mut marked = Vec::new();
@@ -772,6 +774,7 @@ fn pruned_queries_equal_the_evaluation_over_every_seam() {
             terrain: &terrain,
             roadbed: &roadbed,
             sites: if with_sites { &sites } else { &NoSites },
+            query_index: None,
         };
         let mut pruned = QueryScratch::default();
         let mut reference = QueryScratch::default();
@@ -834,6 +837,7 @@ fn queries_answer_from_the_baked_lattice() {
             terrain: &terrain,
             roadbed: &roadbed,
             sites: &NoSites,
+            query_index: None,
         };
         let mut scratch = QueryScratch::default();
         let tile = TileKey { x: -1, z: 0 };
@@ -901,6 +905,7 @@ fn a_gathered_quiet_surface_equals_the_bilinear_base_bitwise() {
         terrain: &terrain,
         roadbed: &roadbed,
         sites: &NoSites,
+        query_index: None,
     };
     let mut gathered = QueryScratch::default();
     surface.gather_near(0.0, 0.0, 2.5, &mut gathered);
@@ -1150,6 +1155,7 @@ fn benchmark_graded_point_queries() {
             terrain: &terrain,
             roadbed: &roadbed,
             sites: &NoSites,
+            query_index: None,
         };
         let mut scratch = QueryScratch::default();
         let points: Vec<(f64, f64)> = (0..2_000)
@@ -1679,6 +1685,7 @@ pub(crate) fn dump_site(
         terrain,
         roadbed,
         sites: &NoSites,
+        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     let mut samples = Vec::new();

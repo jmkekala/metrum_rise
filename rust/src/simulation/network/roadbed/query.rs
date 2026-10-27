@@ -615,6 +615,27 @@ impl RoadbedSystem {
         }
     }
 
+    /// Appends grounded top triangles from an already-local candidate piece list, preserving
+    /// each piece's triangle-grid selection and visitation order for exact terrain coverage.
+    pub(crate) fn grounded_top_triangles_from_pieces(
+        &self,
+        bounds_xz: [f64; 4],
+        pieces: &[PieceId],
+        out: &mut Vec<[RoadVec3; 3]>,
+    ) {
+        out.clear();
+        for id in pieces {
+            let Some(published) = self.pieces.get(id).filter(|piece| piece.grounded()) else {
+                continue;
+            };
+            let mesh = published.mesh();
+            mesh.any_top_triangle_in_bounds(bounds_xz, |triangle| {
+                out.push(mesh.triangle_points(triangle));
+                false
+            });
+        }
+    }
+
     /// Visits the parts of the tunnel spans with a portal row ([`PieceMesh::portal_rows`],
     /// `TERRAIN-07-C`) whose bounds touch the XZ bounds, piece by piece in ascending piece order:
     /// every portal row, the top triangles whose piece grid cells touch the bounds (a triangle

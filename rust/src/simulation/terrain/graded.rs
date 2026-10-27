@@ -18,6 +18,7 @@ mod grade;
 mod portal;
 mod prune;
 mod query;
+mod query_index;
 mod residency;
 mod sample;
 mod seams;
@@ -30,6 +31,7 @@ mod walls;
 pub use grade::{CAP_M, INSIDE_REACH_M, TIE_IN_SLOPE, overlap};
 pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
+pub(crate) use query_index::TerrainQueryIndex;
 pub use residency::{
     PatchTilesScratch, WALL_FACE_BYTES, graded_tiles_in_rect, pack_slot, pack_walls,
     slot_row_texels, slot_side,

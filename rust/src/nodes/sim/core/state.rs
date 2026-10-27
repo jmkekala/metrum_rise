@@ -317,6 +317,10 @@ pub struct SimCore {
     pub(crate) last_graded_stats: crate::simulation::terrain::graded::StageStats,
     /// Buffers of the commit's and undo's graded staging; scratch, not state.
     pub(crate) graded_scratch: crate::simulation::terrain::graded::StageScratch,
+    /// Unsaved 64 m candidate-input lists for exact graded surface point queries.
+    pub(crate) terrain_query_index: crate::simulation::terrain::graded::TerrainQueryIndex,
+    /// Last atomic query-index maintenance cost, for gate diagnostics.
+    pub(crate) terrain_query_index_update_us: u64,
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
@@ -468,6 +472,8 @@ impl SimCore {
             last_graded_tiles: Ok(Default::default()),
             last_graded_stats: Default::default(),
             graded_scratch: Default::default(),
+            terrain_query_index: Default::default(),
+            terrain_query_index_update_us: 0,
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),

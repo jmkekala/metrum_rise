@@ -35,6 +35,7 @@ impl SimCore {
             terrain: &self.heightmap,
             roadbed: &self.transit_network.roadbed,
             sites: &self.allocator,
+            query_index: Some(&self.terrain_query_index),
         }
     }
 

@@ -388,7 +388,9 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
-`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 6 validates exact/graded GPU grass before
+`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 7 implements the user's 2026-10-27
+authorized T37 (a) trial: an exact, deterministic, unsaved sparse 64 m query-input index maintained
+with road, site and base publications; acceptance awaits the trial's fresh measurements. Round 6 validates exact/graded GPU grass before
 and after a Kuopio road edit and fixes disposal of the renderer's detached prewarmed cells; the
 verified render has no shader, script, settle or resource-leak diagnostic. All landing products
 remain equal. T37's fresh 100k profile keeps 1,101 products equal but attributes 74.09% of branch

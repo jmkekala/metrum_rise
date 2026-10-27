@@ -143,6 +143,26 @@ pub(super) fn gather(
     );
 }
 
+/// [`gather`] from a per-tile candidate piece list, retaining the roadbed's exact per-piece
+/// triangle-grid selection while avoiding its world piece lookup.
+pub(super) fn gather_from_pieces(
+    roadbed: &RoadbedSystem,
+    bounds: [f64; 4],
+    pieces: &[PieceId],
+    triangles: &mut Vec<[RoadVec3; 3]>,
+) {
+    roadbed.grounded_top_triangles_from_pieces(
+        [
+            bounds[0] - PAD_M,
+            bounds[1] - PAD_M,
+            bounds[2] + PAD_M,
+            bounds[3] + PAD_M,
+        ],
+        pieces,
+        triangles,
+    );
+}
+
 /// [`covered_height_at`] over triangles gathered once for a window.
 pub(super) fn covered_height_in(triangles: &[[RoadVec3; 3]], x: f64, z: f64) -> Option<f32> {
     let mut best = f32::NEG_INFINITY;

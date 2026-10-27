@@ -43,10 +43,11 @@ pub(crate) fn site_footprint_contains(footprint: &[Vector2], pos: Vector2) -> bo
 // The graded terrain's sites (`TERRAIN-07-C`): the sites whose bounds meet a rectangle, through
 // the 64 m site cells (`TERRAIN-07-F`, `docs/terrain.md` T40), with their footprints, support
 // heights and surfaces in authored order. No answer while the index is being rebuilt: the bake
-// never scans every site.
+// never scans every site. `SiteCells` changes atomically with the derived clients, independently
+// of the allocator's coarser zone index.
 impl SiteSource for BuildingAllocator {
     fn ready(&self) -> bool {
-        self.building_site_query_index_ready()
+        self.building_sites.len() == self.buildings.len()
     }
 
     fn sites_in_bounds(&self, rect: [f64; 4], out: &mut SiteBuffer) {
@@ -55,6 +56,14 @@ impl SiteSource for BuildingAllocator {
 }
 
 impl BuildingAllocator {
+    /// Bounds of every derived site input, for rebuilding the unsaved graded-query index.
+    pub(crate) fn graded_query_input_bounds(&self) -> impl Iterator<Item = [f64; 4]> + '_ {
+        self.building_sites.iter().map(|site| {
+            let (min_x, min_z, max_x, max_z) = site.bounds();
+            [min_x, min_z, max_x, max_z].map(f64::from)
+        })
+    }
+
     // Visits the sites a graded terrain query of `rect` reads, through the 64 m site cells.
     fn visit_graded_sites(&self, rect: [f64; 4], mut visit: impl FnMut(&BuildingSiteClient)) {
         let query = SiteRectQuery::new(rect, self.max_site_radius_m);
