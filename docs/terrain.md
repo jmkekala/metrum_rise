@@ -6470,7 +6470,9 @@ among them `graded_tile_renderer_test.gd`, `graded_cells_shader_test.gd`,
 `surface_patch_debug_test.gd`, `terrain_overlay_shader_test.gd` and both plot lighting suites;
 skipped as before: the headless shader global probe and the Forward+ vegetation tests. On
 `2136452e` (every result under the budget, no Rust change): `graded_tile_renderer_test.gd`
-(headless, the debug library) 0 failures. Clippy `--all-targets`: the 59-warning baseline set
+(headless, the debug library) 0 failures; `./run.sh --test` again on `f531e916` (the round's
+code and docs): exit 0, 0 SCRIPT ERROR, the same counts (1,974 / 0 / 176, integration 4) and
+every Godot suite passing, the same two skipped. Clippy `--all-targets`: the 59-warning baseline set
 exactly. `graded_edits` (debug): 2 passed. Not run: the GPU idle-frame matrix (no
 `matrix-ready`).
 
