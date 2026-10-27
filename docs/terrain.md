@@ -4115,6 +4115,35 @@ km.
     measured at.
   - *A drag reuses almost nothing.* A growing stroke rebuilds its whole span each pose, so the
     tiles a pose selects all hold new seams: [T27](#terrain-07-open-questions).
+- **Corrections (`TERRAIN-07-E` round 4, [T27](#terrain-07-open-questions) (d), decided by the
+  user, 2026-10-27; built in the Rust half).**
+  - *A frame stages a bounded share.* A pose's frame selects the pose's dirty tiles (`W`) and
+    stages the first one of them in the pose's order; a frame without a new pose (a catch-up
+    frame, `advance_road_preview_terrain`) stages the next three. The order is fixed from the
+    inputs: the squared distance from the stroke's moving end (its last point) to the tile's
+    square, then `(level, tile)`. Staging is the one rule above: a tile is gathered, adopted from
+    the shown tiles when its inputs equal the pose's, else baked. The bounds are tile counts,
+    never a clock, measured to fit 3.0 ms on four workers (`GradedPreview`, `POSE_FRAME_TILES`
+    and `CATCH_UP_FRAME_TILES`): a single steep tile at a stroke's end bakes in 2.3-2.5 ms alone
+    (5.3 ms on one worker), so beside the selection a pose frame fits only with one.
+  - *What shows.* After each frame the preview shows, for each tile of `W`, its exact bake of
+    this pose's inputs once staged, else the tile an earlier pose showed, else the published
+    tile; a tile outside `W` shows the published tile. Every shown tile is the exact bake of
+    some pose's inputs (no blend, no fallback, no partial tile), and the shown tiles after each
+    frame depend only on the sequence of poses and frames, never on timing or the worker count.
+    A newer pose (or a pose without pieces, or a publication) supersedes the older pose's
+    unstaged tiles; the shown tiles stay for adoption.
+  - *Convergence.* Once the poses stop, the shown tiles are the last pose's after
+    `ceil((|W| - 1) / 3)` catch-up frames, bitwise its fresh bake and the commit's tiles.
+  - *The commit.* The click offers the tiles the preview shows at that moment (the latest
+    preview's, updated by each catch-up frame); the commit adopts those whose inputs match and
+    bakes the rest in its own frame, so the committed tiles are exact at once. A click right
+    after a fast drag finds most of `W` unstaged and bakes it: that stage can exceed 3.0 ms
+    ([T27](#terrain-07-open-questions) round 4, open for the user); it is never spread over
+    frames.
+  - *What stays exact.* The preview's road surface, markings and junctions every frame; the
+    commit, undo and load bitwise in the frame they happen. Cancel swaps back to the published
+    tiles as before.
 
 ### Queries for consumers
 
@@ -4162,7 +4191,7 @@ No stage scans the city.
 
 | Stage | Budget |
 | --- | --- |
-| Terrain stage per preview pose: selection, bake, pack, four workers | 3.0 ms ([`roads.md` stage budgets](roads.md#stage-budgets)), flat from 0 to 100k |
+| Terrain stage per preview pose: selection, bake, pack, four workers | 3.0 ms ([`roads.md` stage budgets](roads.md#stage-budgets)), flat from 0 to 100k; under [T27](#terrain-07-open-questions) (d) per frame: a pose's selection with its share, or a catch-up frame's share |
 | Terrain stage per commit (the last pose's matching tiles adopted, the rest baked) and per undo (the kept tiles swapped back, no bake), four workers | 3.0 ms, flat from 0 to 100k ([T20](#terrain-07-open-questions) (a): no frame path bakes a whole edit; the pose row is the tiles changed since the last pose) |
 | Godot terrain install per pose, commit or undo | within `ROAD-68`'s 2.0 ms Godot stage and install; proposed share 1.0 ms |
 | Streaming installs | 1.0 ms of the main thread per frame |
@@ -4229,7 +4258,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-B` | done (2026-10-25) | Road skirts in the piece mesh (roadbed; may run beside A); bridge fascias |
 | `TERRAIN-07-C` | done (2026-10-26, branch `terrain07-C`, [record](#terrain-07-c-record): round 1 items 1-3 and 5; round 2 levers 1-2 and item 4's free-end caps and structure-only node pieces; round 3 T22 parts 3 and 4 (terrain half), T21 lever (a); round 4 the abutment face (T22 4 roadbed half); round 5 the portal opening (T22 5 (a), one rule narrowed pending the user's review) and the acceptance re-run whole; T21's populated full-edit budget carried to gate E under T20 (a), for review) | Sites, pads and paving as grading and material clients; structure ends (abutments, portals) |
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
-| `TERRAIN-07-E` | in progress (rounds 1-3, 2026-10-26/27, branch `terrain07-E`, the Rust half, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls. The commit and undo paths fit 3.0 ms on Kuopio and in the populated city; 13-16 of 299 Kuopio drag poses and the populated drags' first poses do not (T27, open for the user: (b) with (c), (d) withdrawn) | Preview, commit, undo and load |
+| `TERRAIN-07-E` | in progress (rounds 1-4, 2026-10-26/27, branch `terrain07-E`, the Rust half, [record](#terrain-07-e-record)): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). The Godot half next | Preview, commit, undo and load |
 | `TERRAIN-07-F` | open | Consumers re-pointed |
 | `TERRAIN-07-G` | open | Acceptance and legacy deletion |
 
@@ -7052,6 +7081,104 @@ for the job. The kept tiles' memory. The Godot half. Not re-run this round:
 `benchmark_graded_tiles_locality` (round 2's stands; the selection is unchanged and every
 product above is bitwise).
 
+Round 4, 2026-10-27, the same branch rebased onto `road` at `d456913e` (gate D landed). The
+user decided T27 (d), terrain only ([T27](#terrain-07-open-questions)); this round builds it in
+the Rust half. Fresh runs only, kept apart from round 3's; the round 3 numbers above are round
+3's build.
+
+**The rebase.** Gate D's records win where they meet this branch's: the docs' gate table and
+questions keep gate D's rows and add gate E's (T27 back between T26 and T34). In the code, the
+bake's inputs keep gate D's abutment bottoms (the wall seams' bridge mouth rows, as seam keys,
+`finish_inputs`) and its mouth continuation; the site snapshot is gate D's with gate E's
+preview site query beside it; gate D's plain payload for road-owned patches stays, and with the
+commit's exact-cut validation gone (round 1) the patch ownership test is the exact cut's tests'
+only (`terrain_patch_requires_engineered_refinement`, test-only). The rebased round 3 tip
+(`c7bb9cf9`, `R0`) is this round's control: round 3's `F1` predates gate D, whose payloads and
+inputs differ (every Kuopio digest differs from `F1`'s, as gate D's product changes predict).
+
+**What landed (T27 (d); every committed product bitwise).**
+
+- `GradedPreview` (`nodes/sim/core/graded_stage.rs`) holds the shown tiles and the latest pose's
+  tiles still to stage with the pose's inputs (`O(1)` copies of the view's terrain, the pose's
+  roadbed and the view's per-patch sites). `stage_pose` selects `W` and stages
+  `POSE_FRAME_TILES` (1) of them in the pose's order (nearest the moving end, then `(level,
+  tile)`); `catch_up` stages the next `CATCH_UP_FRAME_TILES` (3); the shown tiles are
+  `TileStage::overlay` of the frame's staged tiles over the shown ones, restricted to `W`. A pose
+  without pieces and a publication supersede the pending tiles. `GradedPose` reports `pending`
+  and `frame_ms` (the frame's whole terrain work).
+- `RoadPreviewContext::catch_up_graded` runs a catch-up frame and offers its tiles to the latest
+  preview's commit; the node's `advance_road_preview_terrain` calls it (Godot's per-frame call,
+  the Godot half), and `preview_road` reports `graded_pending`.
+- The drag harness the Kuopio and populated drag benchmarks share
+  (`tests/graded_stage.rs`, `drag` and `drag_and_click`): each stroke dragged a frame a pose and
+  clicked at once (`fast_commit`) and undone, then dragged again, converged by catch-up frames,
+  clicked (`commit`) and undone (`undo`); per frame its terrain work and the shown tiles'
+  digest; `pose_frames_equal` compares the two drags' pose frames. The breakdown's preview mode
+  converges before its click. `kuopio_drag_tile_costs` (diagnostic) times each tile of a pose
+  alone.
+- Tests: the reference drags (T, Y, four-way, split trunk, flat and sloped) check every frame's
+  shown tiles (each the pose's fresh bake or the tile shown before, the share within its bound),
+  the convergence in `ceil(pending / 3)` frames to the pose's fresh bake, then the commit
+  adopting every tile; a click right after the drag on the sloped split trunk bakes the unstaged
+  tiles and commits the converged click's tiles bitwise, with the same pose frames in both drags
+  (`a_commit_right_after_a_fast_drag_bakes_what_the_preview_had_not`); `kuopio_10`'s first
+  stroke (14 tiles on a hillside) likewise (`a_kuopio_drag_converges_to_the_tiles_it_commits`).
+
+**Kuopio drags (fresh, stage-only runs, not a session; 10:16-10:37, both locks, `taskset -c
+0,2,4,6,8,10,12,14`, four workers; `$TEST_BINARY` builds of `R0` = `c7bb9cf9` (sha256
+`22f9ecf5...`) and of each bound).** Products: every stroke's commit, undo, fast commit, fast undo
+and converged digest equal `R0`'s commit, undo and last pose digests (39 of 39), and both drags'
+pose frames are equal in every stroke. `R0` (the round 3 rule, every tile each pose): pose max
+4.66 / 4.42 ms, 9 / 8 strokes with a pose over 3.0 ms.
+
+| Bound (pose / catch-up frame tiles) | Frames | Over 3.0 ms | Frame p50 / p99 / max, ms | Catch-up frames a stroke | Fast click median / max, ms (over 3.0) |
+| --- | --- | --- | --- | --- | --- |
+| 4 / 6 (`73c43f49`) | 357 | 2, 1 | 0.92 / - / 3.28, 3.30 | 0-3 | 1.28 / 3.81, 4.21 (2, 1) |
+| 3 / 4 | 390 | 1, 2 | 0.88 / - / 3.18, 3.10 | 1-4 | 1.43 / 4.27, 4.26 (4, 2) |
+| 1 / 3 (`029bdd66`, sha256 `cac15eef...`) | 439 | 0, 0 | 0.77 / 2.14, 2.09 / 2.84, 2.87 | 1-6 (median 3) | 1.68 / 3.95, 4.06 (6, 6) |
+
+With 1 / 3: pose frames median 0.80 / 0.79 ms (max 2.84 / 2.87: `kuopio_08` attempt 22's last
+pose, its end tile alone beside a 0.24 ms selection), catch-up frames median 0.66 / 0.63 ms (max
+2.14 / 2.09); the converged commit at most 1.00 / 0.99 ms, undo 0.98 / 0.82 ms, fast undo 0.82 /
+0.97 ms. Catch-up frames a stroke: 1 (1 stroke), 2 (4), 3 (17), 4 (8), 5 (6), 6 (3). The fast
+clicks over 3.0 ms: `kuopio_04` attempt 10 (3.70 / 3.90 ms, 10 of 11 tiles baked), `kuopio_06`
+17 (3.53 / 3.43, 18 of 19), `kuopio_10` 26 (3.13 / 3.18), `kuopio_11` 31 (3.73 / 3.41) and 33
+(3.95 / 4.06, 16 of 17), and one of `kuopio_12_attempt_36` 36 (3.38) or `kuopio_09` 24 (3.02).
+
+**The worst tile (fresh, diagnostic, `kuopio_drag_tile_costs`, both locks, the same cores).**
+`kuopio_08` attempt 22's full pose, each tile baked alone 7 times: tile `(-14, -14)`, 32 m from
+the stroke's end, 2.50 ms median on four workers (2.31 min), 5.33 on one, 3.27 on two, 2.15 on
+eight (291 window seams, 157 named, 1,012,438 listed candidates); its neighbours 0.07-0.82 ms.
+`kuopio_04` attempt 10's worst, `(6, -5)`, 2.00 ms (807k listed). A one-worker profile (perf,
+300 bakes a tile) puts 69 % of the bake samples in the row bands' sampling, which runs in
+parallel; the pass-1 listing, the bins' counting sort and per-bin sorts, the coverage raster and
+the row packing run on one thread.
+
+**Populated drags (fresh, not a session; 10:44-10:47, both locks, the same cores, four
+workers; cities prepared per binary and loaded, `R0 R5 R5 R0`, `R5` = `029bdd66`).** Products:
+every stroke's commit, undo, fast commit, fast undo and converged digest equal `R0`'s (12 of 12,
+0 to 100k residents), and both drags' pose frames are equal in every stroke. `R0`: pose max 4.53
+/ 4.17 ms, 4 / 3 poses over 3.0 ms (each tier's first sample). `R5`: every frame within 3.0 ms
+(120 frames a run, 84 of them poses; median 1.07 / 1.07 ms, max 2.04 / 1.90 ms; the selection
+up to 1.35 ms of it), the tiers' first poses, 3.9-4.4 ms in round 3, now 1.39-1.88 ms;
+catch-up frames at most 1.59 / 1.66 ms, 2-4 a stroke. The converged commit at most 1.59 / 1.61
+ms and undo 1.61 / 1.54 ms. The fast click over 3.0 ms on each tier's first sample from 10k:
+10k 3.97 / 3.69 ms (10 of 11 tiles baked), 30k 3.02 / 3.06 (7 of 8), 100k 4.25 / 4.29 (12 of
+13); median 1.70 / 1.77 ms.
+
+**Open (not relaxed).** The click right after a fast drag (T27 round 4, for the user): 6 of 39
+Kuopio strokes (worst 4.06 ms) and the populated tiers' first samples (worst 4.29 ms at 100k)
+exceed 3.0 ms; the exact lever is the bake's serial part. The Godot half, now that gate D is on
+`road`: item 1's slot-swap staging of the preview's frames (the shown tiles at the resident
+tiles' levels, not `GL0` only) and of the commit's and undo's staged tiles (gate D's edit
+journal rebakes a commit's dirty resident tiles on the payload workers instead), retiring the
+exact cut's preview patches and `road_terrain_preview.gd`'s patch staging,
+`road_junction_preview_test.gd`, the Godot install share per frame, and the idle-clock preview
+stream calling `advance_road_preview_terrain`. The commit at 16.7 ms (question 33's deferral).
+The kept tiles' job beside a routing rebuild and the kept tiles' memory (round 3). Not run this
+round: the landing session (gate E's acceptance waits for the Godot half),
+`benchmark_road_preview_stages` and the commit breakdown.
+
 #### `TERRAIN-07-F` — consumers re-pointed
 
 1. Vegetation: generated plants on `ground_height_at` and `mask_at`, authored plants on
@@ -7790,6 +7917,147 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       rule of the renderer.
     - **Round 8: (a) built** ([re-levelling by camera travel](#godot-tile-renderer), [cells per
       tile](#godot-tile-renderer)); measured in the [record](#terrain-07-d-record), round 8.
+27. **T27. A drag's poses rebake every tile they select (`TERRAIN-07-E` round 1) — (d), terrain
+    only, decided by the user, 2026-10-27; built in round 4 (the Rust half). Open, not relaxed:
+    the commit right after a fast drag.**
+    - **Evidence** (fresh, [record](#terrain-07-e-record)). A pose adopts a held tile only when the
+      tile's window inputs (every seam within the cap, the covering top triangles, the sites, the
+      base revisions) equal the last pose's. A growing stroke rebuilds its whole span each pose:
+      its stations divide each interval between fixed stations evenly (`roads.md`, span pieces)
+      and its profile is solved again, so the new road's chain segments move (on the flat T
+      fixture 209-211 of a pose's 262-286 seams within 300 m survive into the next pose, about
+      the count the trunk and the junction hold), and every tile the pose selects holds the new
+      road in its window. On the reference fixtures'
+      drags (T, Y, four-way, split trunk, flat and sloped) no pose adopts a tile; on Kuopio's 39
+      strokes replayed as drags of eight poses, 2 of 1,925 pose tiles are adopted. A pose so costs
+      the full bake of the edit as far as it reaches: 31 of 299 poses take more than 3.0 ms on four
+      workers (15 strokes), median 1.40 ms, worst 6.63 ms (`kuopio_08` attempt 22, 10 tiles); the
+      last pose of each drag (the full edit) a median 2.46 ms, 14 of 39 over. The bake is most of
+      a miss (2.1-6.2 ms), the selection 0.2-0.7 ms. T20 (a)'s other paths hold: the commit adopts
+      every tile of the last pose (median 0.55 ms, worst 1.35 ms) and undo every kept tile
+      (median 0.39 ms, worst 0.99 ms).
+    - **Options.** (a) The exact levers of T18 and T21 on the bake: the row split (a tile's rows
+      across the four workers; at best a quarter off the wall time of a pose of 9-19 tiles), the
+      coverage row span, and a cheaper selection. (b) Narrower exact inputs: record the seams a
+      tile's two passes can list (the selection's own bound) instead of the whole window, so a
+      pose adopts the tiles the moving parts cannot reach; a gain only where the road's far
+      segments stay put, which needs (c). (c) Anchor a growing stroke's stations at its fixed
+      start, so a pose moves only its last interval and its end (a roadbed product change,
+      `ROAD-68`'s; on a slope the profile solve still moves heights along the road). (d) T20 (b):
+      define the largest edit one pose covers in a frame and finish a larger pose's terrain over
+      the following frames, the previous pose's tiles shown until then (a product change).
+      (e) Count the stage on more workers: ruled out by the user (T21 (b)).
+    - **Recommendation.** (a) in round 2, measured on the Kuopio and populated drags; if poses
+      still miss, the user decides between (d) and (b) with (c). Taken under the delegation for
+      review: round 2 builds (a); the 3.0 ms budget is unchanged and the miss stays open.
+    - **Round 2 (2026-10-27): (a) built, the poses still miss; the user's choice between (d) and
+      (b) with (c).** The row bands, the coverage row span and the selection's early floor
+      ([record](#terrain-07-e-record), round 2), every product bitwise (the digests of all 299
+      Kuopio poses, 39 commits and 39 undos equal the control's). In the round's session (C F F C, four workers) the Kuopio
+      poses take a median 1.25 / 1.23 ms against the control's 1.39 / 1.41 and at worst 4.62 /
+      4.72 ms against 7.14 / 7.04; 22 / 19 of 299 poses (11 / 10 of 39 strokes) still exceed
+      3.0 ms (control 35 / 36, 16). The bake is still most of every miss (2.1-3.9 ms of 8-19
+      tiles), selection 0.25-0.69 ms and the input gathers 0.15-0.52 ms.
+      - **What is left of (a).** One gather per tile: a pose gathers each wanted tile's inputs
+        to compare them with the held tile's, then the bake gathers them again (0.15-0.52 ms of
+        the poses over 3.0 ms, `inputs_ms`); folding the comparison into the bake's own set-up
+        would bring about a third of the misses within 3.0 ms, not the worst. Wider lanes need a
+        target above Godot's minimum CPU and runtime dispatch (`unsafe`). Every miss is a pose of
+        8-19 steep tiles whose bake's CPU time over four workers alone exceeds the budget.
+      - **Recommendation for the user: (d)** (withdrawn by round 3's ruling, below). (b) with
+        (c) helps only where a growing road's far
+        segments keep their bits, and on a slope the profile solve moves heights along the whole
+        road every pose, so it reaches none of the misses, which are all on Kuopio's hills; (d)
+        bounds every pose's frame cost whatever the edit, at the price of the previous pose's
+        tiles showing for a frame or two on large edits on hills. The 3.0 ms budget is not
+        relaxed: under (d) it is what a frame's share of a larger pose is held to. Open, for the
+        user; this round takes neither.
+    - **Round 3 (2026-10-27 night): the coordinator's ruling; (b) with (c) prepared for the
+      user. Open, for the user; not built.**
+      - **Ruling.** Round 2's recommendation (d) is withdrawn: a pose that finishes its terrain
+        over the following frames shows the previous pose's tiles until then, which is stale
+        geometry, and the hard rules forbid it ("no tolerance repair, fallback or stale
+        geometry"). (d) is not taken and not recommended. The option the rules allow is (b) with
+        (c): anchor a growing stroke's stations at its fixed start, so a pose moves only its
+        last interval and its end, and narrow each tile's inputs to what its two passes can
+        list. (c) changes the roadbed's product (`ROAD-68`'s station rule), so it is the user's
+        decision.
+      - **Evidence: an offline estimate from the strokes** (`$ARTIFACTS/t27_estimate.py` over
+        the manifest and round 2's two F runs of `benchmark_kuopio_graded_drags`; geometry only,
+        nothing built). Each pose is the straight stroke from its start to `k / 8` of its end. A
+        tile's selection reach is calibrated to the measured tile counts (8 m beyond the road's
+        half-width, 3.5 m a lane plus a 2 m sidewalk: 1,948 estimated pose tiles a run against
+        1,925 measured). Under (c) the stations sit every class step (12 m; 8 and 10 m give the
+        same counts within 4 %) from the start, so between two staged poses only the road from
+        the last full station before the previous pose's end to the new end moves. A tile both
+        poses select is reused when that moving part lies beyond its inputs' reach: the whole
+        window (the lattice grown by 65 m) under (c) alone, the selection's reach under (b) with
+        (c). A pose's bake time is scaled by the share of its tiles left to bake, its selection
+        kept.
+
+        | Per run (299 poses) | Now (round 2, measured) | (c) alone | (b) with (c) |
+        | --- | --- | --- | --- |
+        | Pose tiles reused | 2 of 1,925 | 446 of 1,948 (23 %) | 858 (44 %) |
+        | Poses over 3.0 ms | 22, 19 | 7, 7 | 0, 1 (`kuopio_04` attempt 10's last pose, 4.72 ms now, 3.04 ms) |
+
+      - **The estimate's condition.** It holds only if the heights behind the moving part keep
+        their bits from pose to pose. Station anchoring alone does not give that: the stroke
+        solve builds the control profile over the whole span (its per-span relaxation, then the
+        construction within 33 % and the 5 m source band, bounded from both ends), so where the
+        grade limit binds, on Kuopio's hills where every miss lies, moving the end can move
+        heights along the road. (c) would have to anchor the stroke solve too (a point's height
+        fixed once a later station holds it). The first build step under (b) with (c) is to
+        measure, per pose, the road's seams that keep their bits.
+      - **What (b) with (c) cannot reach.** A drag's first valid pose holds no tile, so it
+        bakes in full under every option: most of the populated drags' misses are those first
+        poses (round 3's session: 3.93-4.39 ms at 10k and 100k), on each tier's first sample only
+        (the later samples' first poses fit), so they are a first-drag cost, not a reuse one.
+        The 100k first sample's later poses (3.05-3.34 ms, flat ground) are within its reach.
+      - **What changes on screen.** Today a dragged road's sections are re-spaced evenly along
+        its whole length every pose (each interval between fixed stations divided at its step),
+        and its profile is solved again, so the whole road shifts slightly as it grows. Under
+        (c) the sections stand every class step from the start and only the last interval (0 to
+        12 m long) and the end move; the committed road keeps that spacing, one short interval
+        at its end, and a road drawn from its other end gets the short interval there (the
+        product then depends on the stroke's direction, which even division does not). If the
+        stroke solve is anchored as well, a road's profile while dragging stays put behind its
+        last interval, and a steep road's committed profile can differ from today's where the
+        grade limit binds near its end.
+      - **For the user:** take (b) with (c) (a `ROAD-68` station-rule and stroke-solve change,
+        then the narrower inputs), or keep T27 open with the misses recorded. The 3.0 ms budget
+        is not relaxed either way.
+    - **Decided by the user, 2026-10-27: (d), terrain only.** While a stroke is dragged, the
+      preview's graded terrain may lag: a large pose finishes its tiles over the following
+      frames, the previous pose's tiles shown until then. This replaces round 3's ruling, which
+      withdrew (d) as stale geometry before the user narrowed that rule for the preview's
+      terrain (`roads.md` WYSIWYG item 3 and Targets "Moving" record the exemption). (b) with
+      (c) is not taken: the station rule and the stroke solve are unchanged. The preview's road
+      surface, markings and junctions stay exact every frame; the commit, undo and load stay
+      bitwise in the frame they happen; the exemption never covers the committed state.
+    - **Round 4: (d) built in the Rust half** ([corrections](#preview-commit-undo-and-load),
+      [record](#terrain-07-e-record) round 4). A pose's frame selects and stages one tile, the
+      nearest the stroke's moving end; a catch-up frame stages the next three; a shown tile is
+      always some pose's exact bake. The bounds are tile counts measured on these fixtures: the
+      worst single tile, `kuopio_08` attempt 22's end tile `(-14, -14)` (291 window seams, 157
+      named, about one million listed candidates), bakes alone in 2.3-2.5 ms on four workers
+      and 5.3 ms on one (Amdahl: about 1.2 ms of it serial: the pass-1 listing and the bins'
+      sort, coverage, the row packing), so two tiles beside the selection already took 3.1-3.3 ms
+      (round 4's first builds: four tiles a pose frame, then three: 2 and 1-2 of 357-390 frames
+      over 3.0 ms). With one and three (fresh, two runs): every Kuopio frame within 3.0 ms (max
+      2.84 / 2.87 ms; 439 frames, 299 of them poses) and every populated drag frame from 0 to
+      100k (max 2.04 / 1.90 ms; the tiers' first poses, 3.9-4.4 ms in round 3, now 1.4-1.9 ms);
+      the shown tiles converge in 1-6 catch-up frames after the last pose; every product
+      bitwise.
+      - **Open, for the user: the click right after a fast drag.** Before the preview has caught
+        up, the commit finds most of the last pose's tiles unstaged and bakes them in its frame
+        (it is never spread over frames): median 1.68 ms on Kuopio, 6 of 39 strokes over 3.0 ms
+        in each run (worst 3.95 / 4.06 ms, `kuopio_11` attempt 33, 16 of 17 tiles baked), and
+        in the populated city each tier's first sample from 10k (3.02-4.29 ms, worst at 100k,
+        12 of 13 tiles baked). A click after the drag has converged adopts every tile (worst
+        1.00 ms on Kuopio, 1.61 ms populated). The levers, all
+        exact: parallelise the bake's serial part (above; at best about 0.9 ms off the worst
+        tile's 2.3-2.5 ms on four workers), which also lets a frame take more tiles and so converge sooner;
+        or a larger catch-up share where the measured tiles allow. The budget is not relaxed.
 34. **T34. The cut edge above the road edge (`TERRAIN-07-D` round 8) — (b), decided by the user,
     2026-10-27: the cut arm under every road replaces the user's T4 decision (`TD11`'s fill
     arm).** Built in round 8.
@@ -7962,115 +8230,6 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       primitives). (c) (b) only for patches meeting water.
     - **Recommendation.** (a) for gate D; (c) when the mirror gains roads and bridges, which
       the reflected grading belongs to.
-27. **T27. A drag's poses rebake every tile they select (`TERRAIN-07-E` round 1) — open, not
-    relaxed; the exact levers first, decided by the coordinator under the user's delegation,
-    2026-10-26 night, for review.**
-    - **Evidence** (fresh, [record](#terrain-07-e-record)). A pose adopts a held tile only when the
-      tile's window inputs (every seam within the cap, the covering top triangles, the sites, the
-      base revisions) equal the last pose's. A growing stroke rebuilds its whole span each pose:
-      its stations divide each interval between fixed stations evenly (`roads.md`, span pieces)
-      and its profile is solved again, so the new road's chain segments move (on the flat T
-      fixture 209-211 of a pose's 262-286 seams within 300 m survive into the next pose, about
-      the count the trunk and the junction hold), and every tile the pose selects holds the new
-      road in its window. On the reference fixtures'
-      drags (T, Y, four-way, split trunk, flat and sloped) no pose adopts a tile; on Kuopio's 39
-      strokes replayed as drags of eight poses, 2 of 1,925 pose tiles are adopted. A pose so costs
-      the full bake of the edit as far as it reaches: 31 of 299 poses take more than 3.0 ms on four
-      workers (15 strokes), median 1.40 ms, worst 6.63 ms (`kuopio_08` attempt 22, 10 tiles); the
-      last pose of each drag (the full edit) a median 2.46 ms, 14 of 39 over. The bake is most of
-      a miss (2.1-6.2 ms), the selection 0.2-0.7 ms. T20 (a)'s other paths hold: the commit adopts
-      every tile of the last pose (median 0.55 ms, worst 1.35 ms) and undo every kept tile
-      (median 0.39 ms, worst 0.99 ms).
-    - **Options.** (a) The exact levers of T18 and T21 on the bake: the row split (a tile's rows
-      across the four workers; at best a quarter off the wall time of a pose of 9-19 tiles), the
-      coverage row span, and a cheaper selection. (b) Narrower exact inputs: record the seams a
-      tile's two passes can list (the selection's own bound) instead of the whole window, so a
-      pose adopts the tiles the moving parts cannot reach; a gain only where the road's far
-      segments stay put, which needs (c). (c) Anchor a growing stroke's stations at its fixed
-      start, so a pose moves only its last interval and its end (a roadbed product change,
-      `ROAD-68`'s; on a slope the profile solve still moves heights along the road). (d) T20 (b):
-      define the largest edit one pose covers in a frame and finish a larger pose's terrain over
-      the following frames, the previous pose's tiles shown until then (a product change).
-      (e) Count the stage on more workers: ruled out by the user (T21 (b)).
-    - **Recommendation.** (a) in round 2, measured on the Kuopio and populated drags; if poses
-      still miss, the user decides between (d) and (b) with (c). Taken under the delegation for
-      review: round 2 builds (a); the 3.0 ms budget is unchanged and the miss stays open.
-    - **Round 2 (2026-10-27): (a) built, the poses still miss; the user's choice between (d) and
-      (b) with (c).** The row bands, the coverage row span and the selection's early floor
-      ([record](#terrain-07-e-record), round 2), every product bitwise (the digests of all 299
-      Kuopio poses, 39 commits and 39 undos equal the control's). In the round's session (C F F C, four workers) the Kuopio
-      poses take a median 1.25 / 1.23 ms against the control's 1.39 / 1.41 and at worst 4.62 /
-      4.72 ms against 7.14 / 7.04; 22 / 19 of 299 poses (11 / 10 of 39 strokes) still exceed
-      3.0 ms (control 35 / 36, 16). The bake is still most of every miss (2.1-3.9 ms of 8-19
-      tiles), selection 0.25-0.69 ms and the input gathers 0.15-0.52 ms.
-      - **What is left of (a).** One gather per tile: a pose gathers each wanted tile's inputs
-        to compare them with the held tile's, then the bake gathers them again (0.15-0.52 ms of
-        the poses over 3.0 ms, `inputs_ms`); folding the comparison into the bake's own set-up
-        would bring about a third of the misses within 3.0 ms, not the worst. Wider lanes need a
-        target above Godot's minimum CPU and runtime dispatch (`unsafe`). Every miss is a pose of
-        8-19 steep tiles whose bake's CPU time over four workers alone exceeds the budget.
-      - **Recommendation for the user: (d)** (withdrawn by round 3's ruling, below). (b) with
-        (c) helps only where a growing road's far
-        segments keep their bits, and on a slope the profile solve moves heights along the whole
-        road every pose, so it reaches none of the misses, which are all on Kuopio's hills; (d)
-        bounds every pose's frame cost whatever the edit, at the price of the previous pose's
-        tiles showing for a frame or two on large edits on hills. The 3.0 ms budget is not
-        relaxed: under (d) it is what a frame's share of a larger pose is held to. Open, for the
-        user; this round takes neither.
-    - **Round 3 (2026-10-27 night): the coordinator's ruling; (b) with (c) prepared for the
-      user. Open, for the user; not built.**
-      - **Ruling.** Round 2's recommendation (d) is withdrawn: a pose that finishes its terrain
-        over the following frames shows the previous pose's tiles until then, which is stale
-        geometry, and the hard rules forbid it ("no tolerance repair, fallback or stale
-        geometry"). (d) is not taken and not recommended. The option the rules allow is (b) with
-        (c): anchor a growing stroke's stations at its fixed start, so a pose moves only its
-        last interval and its end, and narrow each tile's inputs to what its two passes can
-        list. (c) changes the roadbed's product (`ROAD-68`'s station rule), so it is the user's
-        decision.
-      - **Evidence: an offline estimate from the strokes** (`$ARTIFACTS/t27_estimate.py` over
-        the manifest and round 2's two F runs of `benchmark_kuopio_graded_drags`; geometry only,
-        nothing built). Each pose is the straight stroke from its start to `k / 8` of its end. A
-        tile's selection reach is calibrated to the measured tile counts (8 m beyond the road's
-        half-width, 3.5 m a lane plus a 2 m sidewalk: 1,948 estimated pose tiles a run against
-        1,925 measured). Under (c) the stations sit every class step (12 m; 8 and 10 m give the
-        same counts within 4 %) from the start, so between two staged poses only the road from
-        the last full station before the previous pose's end to the new end moves. A tile both
-        poses select is reused when that moving part lies beyond its inputs' reach: the whole
-        window (the lattice grown by 65 m) under (c) alone, the selection's reach under (b) with
-        (c). A pose's bake time is scaled by the share of its tiles left to bake, its selection
-        kept.
-
-        | Per run (299 poses) | Now (round 2, measured) | (c) alone | (b) with (c) |
-        | --- | --- | --- | --- |
-        | Pose tiles reused | 2 of 1,925 | 446 of 1,948 (23 %) | 858 (44 %) |
-        | Poses over 3.0 ms | 22, 19 | 7, 7 | 0, 1 (`kuopio_04` attempt 10's last pose, 4.72 ms now, 3.04 ms) |
-
-      - **The estimate's condition.** It holds only if the heights behind the moving part keep
-        their bits from pose to pose. Station anchoring alone does not give that: the stroke
-        solve builds the control profile over the whole span (its per-span relaxation, then the
-        construction within 33 % and the 5 m source band, bounded from both ends), so where the
-        grade limit binds, on Kuopio's hills where every miss lies, moving the end can move
-        heights along the road. (c) would have to anchor the stroke solve too (a point's height
-        fixed once a later station holds it). The first build step under (b) with (c) is to
-        measure, per pose, the road's seams that keep their bits.
-      - **What (b) with (c) cannot reach.** A drag's first valid pose holds no tile, so it
-        bakes in full under every option: most of the populated drags' misses are those first
-        poses (round 3's session: 3.93-4.39 ms at 10k and 100k), on each tier's first sample only
-        (the later samples' first poses fit), so they are a first-drag cost, not a reuse one.
-        The 100k first sample's later poses (3.05-3.34 ms, flat ground) are within its reach.
-      - **What changes on screen.** Today a dragged road's sections are re-spaced evenly along
-        its whole length every pose (each interval between fixed stations divided at its step),
-        and its profile is solved again, so the whole road shifts slightly as it grows. Under
-        (c) the sections stand every class step from the start and only the last interval (0 to
-        12 m long) and the end move; the committed road keeps that spacing, one short interval
-        at its end, and a road drawn from its other end gets the short interval there (the
-        product then depends on the stroke's direction, which even division does not). If the
-        stroke solve is anchored as well, a road's profile while dragging stays put behind its
-        last interval, and a steep road's committed profile can differ from today's where the
-        grade limit binds near its end.
-      - **For the user:** take (b) with (c) (a `ROAD-68` station-rule and stroke-solve change,
-        then the narrower inputs), or keep T27 open with the misses recorded. The 3.0 ms budget
-        is not relaxed either way.
 
 #### Superseded `ROAD-68` questions
 
