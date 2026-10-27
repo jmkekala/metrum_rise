@@ -273,24 +273,27 @@ fn splice_chunks(
     fresh: &mut BTreeMap<SurfaceChunkKey, NetworkMeshData>,
     keep: impl Fn(NetworkMeshOwner) -> bool + Sync,
 ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
-    // Each chunk is spliced from its own published and fresh meshes alone, so the chunks are
-    // spliced on the pool and collected in chunk order (`ROAD-68-G` part 7). O(chunks) setup.
+    // Each chunk is spliced from its own published and fresh meshes alone, so on a pool worker
+    // (the commit's publication) the chunks are spliced in parallel and collected in chunk
+    // order (`ROAD-68-G` part 7). Outside the pools (the road tool's preview, a few chunks)
+    // they are spliced here: entering the pool cost the preview more than it saved. The chunks
+    // are the same either way. O(chunks) setup.
     let chunks: Vec<_> = target_chunks
         .iter()
         .map(|&chunk| (chunk, fresh.remove(&chunk).unwrap_or_default()))
         .collect();
-    let spliced: Option<Vec<_>> = crate::thread_pools::install(|| {
-        chunks
-            .into_par_iter()
-            .map(|(chunk, fresh_chunk)| {
-                let mesh = match published.get(&chunk) {
-                    Some(old) => NetworkMeshData::splice_owners(old, &fresh_chunk, &keep)?,
-                    None => fresh_chunk,
-                };
-                Some((chunk, mesh))
-            })
-            .collect()
-    });
+    let splice = |(chunk, fresh_chunk): (SurfaceChunkKey, NetworkMeshData)| {
+        let mesh = match published.get(&chunk) {
+            Some(old) => NetworkMeshData::splice_owners(old, &fresh_chunk, &keep)?,
+            None => fresh_chunk,
+        };
+        Some((chunk, mesh))
+    };
+    let spliced: Option<Vec<_>> = if rayon::current_thread_index().is_some() {
+        chunks.into_par_iter().map(splice).collect()
+    } else {
+        chunks.into_iter().map(splice).collect()
+    };
     Some(
         spliced?
             .into_iter()
