@@ -103,8 +103,6 @@ var patch_lists_refused: Dictionary = {}
 var patch_cells: Dictionary = {}
 var _cells_pool: Array[Dictionary] = []
 var _cells_per_patch := 81
-# The cell MultiMeshes' initial buffer (identity transforms, zero custom data), shared.
-var _identity_cells := PackedFloat32Array()
 var _meshes: Dictionary = {}
 var _wall_mesh: ArrayMesh = null
 var _wall_material: ShaderMaterial = null
@@ -217,6 +215,15 @@ var _frame_lists := 0
 var _frame_lists_same := 0
 var _frame_relevelled := 0
 var _frame_cell_tiles := 0
+# Sets that started or stopped drawing, and the time it took, since the counter's reader reset it.
+var _frame_flips := 0
+var _frame_flip_us := 0
+# The per-tile updates' instance customs computed, instances written (moved between meshes among
+# them) and the time each part took.
+var _frame_custom_us := 0
+var _frame_write_us := 0
+var _frame_written := 0
+var _frame_moved := 0
 
 ## Reads the slot layout and prewarms the pools and cell meshes. `pool_slots` overrides the
 ## per-level slot counts (tests use small pools).
@@ -242,7 +249,6 @@ func setup(simulation: Node, cell_m: float, world_size: Vector2, span_m: float, 
 	# (every resident patch may hold a graded tile), so neither streaming nor an edit creates one.
 	var tiles_per_side := int(ceil(span_m / TILE_M)) + 1
 	_cells_per_patch = tiles_per_side * tiles_per_side
-	_identity_cells = PackedFloat32Array()
 	var grid := Vector2i(int(ceil(world_size.x / span_m)), int(ceil(world_size.y / span_m)))
 	_cells_pool.clear()
 	var prewarm_us := Time.get_ticks_usec()
@@ -341,6 +347,21 @@ func desired_level(distance_m: float, current_code: int) -> Vector2i:
 			return Vector2i(3, int(entry[0]))
 	return Vector2i(3, 8)
 
+# The cell sets' nodes are not reference counted: they go with the renderer (terrain.gd makes a
+# new one per world load, after clear(), which returns every set to the pool). Before round 6 each
+# load leaked the previous renderer's 1,296 Kuopio sets.
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_PREDELETE:
+		return
+	for cells: Dictionary in _cells_pool + patch_cells.values():
+		for node: Variant in cells["nodes"] + [cells["walls"]]:
+			if not is_instance_valid(node):
+				continue
+			if (node as Node).is_inside_tree():
+				(node as Node).queue_free()
+			else:
+				(node as Node).free()
+
 ## Frees every slot and cell resource, as the renderer resets.
 func clear() -> void:
 	for key in installed.keys():
@@ -397,6 +418,12 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	_frame_lists_same = 0
 	_frame_relevelled = 0
 	_frame_cell_tiles = 0
+	_frame_flips = 0
+	_frame_flip_us = 0
+	_frame_custom_us = 0
+	_frame_write_us = 0
+	_frame_written = 0
+	_frame_moved = 0
 	var uploads_before := int(counters["uploads"])
 	var requests_before := requested.size()
 	# A camera move re-levels the tiles due first, so the tiles this frame adds take the camera's
@@ -449,6 +476,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 			"total_ms": ms.call(start_us, end_us),
 			"cell_patches": cell_patches, "wall_patches": wall_patches,
 			"cell_tiles": _frame_cell_tiles, "relevelled": _frame_relevelled,
+			"flips": _frame_flips, "flip_ms": float(_frame_flip_us) / 1000.0,
 			"lists": _frame_lists, "lists_unchanged": _frame_lists_same,
 			"uploads": int(counters["uploads"]) - uploads_before,
 			"requested": requested.size() - requests_before, "wanted": _wanted.size(),
@@ -514,6 +542,10 @@ func show_preview(changes: Dictionary) -> float:
 		_show_preview_tile(tile)
 	var tiles_us := Time.get_ticks_usec()
 	var cell_patches := _dirty_patches.size()
+	var cell_tiles := _frame_cell_tiles
+	var flips := _frame_flips
+	var flip_us := _frame_flip_us
+	var marks := [_frame_custom_us, _frame_write_us, _frame_written, _frame_moved]
 	_apply_cell_changes(_resident)
 	var cells_us := Time.get_ticks_usec()
 	var wall_patches := _dirty_walls.size()
@@ -528,6 +560,10 @@ func show_preview(changes: Dictionary) -> float:
 	counters["preview_parts"] = {
 		"tiles_ms": float(tiles_us - start_us) / 1000.0, "cells_ms": float(cells_us - tiles_us) / 1000.0,
 		"walls_ms": float(end_us - cells_us) / 1000.0, "cell_patches": cell_patches, "wall_patches": wall_patches,
+		"cell_tiles": _frame_cell_tiles - cell_tiles, "flips": _frame_flips - flips,
+		"flip_ms": float(_frame_flip_us - flip_us) / 1000.0,
+		"custom_ms": float(_frame_custom_us - int(marks[0])) / 1000.0, "write_ms": float(_frame_write_us - int(marks[1])) / 1000.0,
+		"written": _frame_written - int(marks[2]), "moved": _frame_moved - int(marks[3]),
 	}
 	return ms
 
@@ -1290,15 +1326,21 @@ func _update_tile_cell(cells: Dictionary, tile: Vector2i, patch: Dictionary, res
 	if at.x < 0:
 		# Not written yet: its build writes it as it stands then.
 		return false
+	var custom_us := Time.get_ticks_usec()
 	var mesh_index := _cell_mesh(tile)
 	var custom := _cell_custom(tile, first, patch, resident_patches)
 	var records: Array = cells["custom"]
 	var nodes: Array = cells["nodes"]
+	# What the instance writes cost apart from computing them (the RenderingServer's part).
+	var write_us := Time.get_ticks_usec()
+	_frame_custom_us += write_us - custom_us
 	if at.x == mesh_index:
 		if records[at.x][at.y] == custom:
 			return false
 		records[at.x][at.y] = custom
 		(nodes[at.x] as MultiMeshInstance3D).multimesh.set_instance_custom_data(at.y, custom)
+		_frame_write_us += Time.get_ticks_usec() - write_us
+		_frame_written += 1
 		return true
 	var counts: Array[int] = cells["counts"]
 	var tile_at: Array = cells["tile_at"]
@@ -1316,6 +1358,9 @@ func _update_tile_cell(cells: Dictionary, tile: Vector2i, patch: Dictionary, res
 	where[place] = Vector2i(mesh_index, index)
 	(nodes[mesh_index] as MultiMeshInstance3D).multimesh.set_instance_custom_data(index, custom)
 	_set_cell_count(nodes[mesh_index], counts, mesh_index, index + 1)
+	_frame_write_us += Time.get_ticks_usec() - write_us
+	_frame_written += 1
+	_frame_moved += 1
 	return true
 
 static func _set_cell_count(node: MultiMeshInstance3D, counts: Array[int], index: int, count: int) -> void:
@@ -1368,20 +1413,37 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	counts.fill(0)
 	var where: Array[Vector2i] = cells["where"]
 	where.fill(Vector2i(-1, -1))
+	cells["rect_hm"] = rect_hm
+	for node: MultiMeshInstance3D in cells["nodes"]:
+		node.multimesh.visible_instance_count = 0
+		node.visible = false
+		if not bool(cells["local"]):
+			# The shader places the vertices, so every instance keeps the identity transform
+			# (a new instance's is zero). Once per set: the data stays on the CPU (_new_cells).
+			for instance in _cells_per_patch:
+				node.multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
+	cells["local"] = true
+	if bool(cells["shown"]):
+		_set_cell_meshes(cells)
+	return cells
+
+# A drawing set's meshes and instance uniforms for its patch's step and rectangle. Only a set
+# starting to draw (or rewritten while drawing) takes them: a node with instance uniforms set holds
+# Godot instance-uniform slots (16 each, `TERRAIN-07-D` round 7) whatever its material, so a set
+# built off the frame paths that never drew holds none (`TERRAIN-07-E` round 6: setting them on
+# every prebuilt set overflowed the buffer). O(1).
+func _set_cell_meshes(cells: Dictionary) -> void:
+	var step := int(cells["step"])
 	var nodes: Array = cells["nodes"]
 	for index in CELL_MESHES:
 		var node: MultiMeshInstance3D = nodes[index]
-		var multimesh := node.multimesh
 		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
 		# vertices onto its sides.
 		var code := index if index < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
-		multimesh.mesh = _meshes[min(code, 6)]
-		multimesh.visible_instance_count = 0
-		node.visible = false
-		node.set_instance_shader_parameter("cell_patch_rect_hm", rect_hm)
+		node.multimesh.mesh = _meshes[min(code, 6)]
+		node.set_instance_shader_parameter("cell_patch_rect_hm", cells["rect_hm"])
 		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
 	(nodes[CELL_BASE] as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 2.0)
-	return cells
 
 # Writes the set's next tiles, each as it stands (its shown level's cell, else a base cell); with
 # `start_us` >= 0 it stops once the frame's install budget is spent and at least `minimum` tiles
@@ -1473,10 +1535,14 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 		return
 	var patch: Dictionary = resident_patches[key]
 	var patch_node: GeometryInstance3D = patch["node"]
+	var flip_us := Time.get_ticks_usec()
+	_frame_flips += 1
 	if not draw:
 		_hide_cells(cells, patch_node)
+		_frame_flip_us += Time.get_ticks_usec() - flip_us
 		return
 	cells["shown"] = true
+	_set_cell_meshes(cells)
 	_bind_materials(cells, true)
 	(cells["nodes"][CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
 	# The set synced its material as it was built; a drawing set follows its patch's material
@@ -1496,6 +1562,7 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	# It stays visible, since grass and the water reflection read the patch node's visibility.
 	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
 	patch_node.visibility_range_end = HIDDEN_RANGE_M
+	_frame_flip_us += Time.get_ticks_usec() - flip_us
 
 # Whether a preview tile lies in the set's patch. O(preview tiles).
 func _previews_in(cells: Dictionary) -> bool:
@@ -1602,17 +1669,16 @@ func _bind_materials(cells: Dictionary, bound: bool) -> void:
 # levels' materials and the wall MultiMesh.
 func _new_cells() -> Dictionary:
 	var nodes: Array = []
-	# New instances start with a zero transform; the shader places the vertices, so every
-	# instance keeps the identity: per instance the transform's three rows, then custom data.
-	if _identity_cells.is_empty():
-		for instance in _cells_per_patch:
-			_identity_cells.append_array(PackedFloat32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]))
+	# No buffer is written here: the set's first build writes its instances' identity transforms
+	# one by one (_begin_build), so the RenderingServer keeps the MultiMesh's data on the CPU from
+	# the start. A bulk buffer lives on the GPU only, and the first per-instance write after it
+	# reads the whole buffer back, stalling on the GPU (0.5-2.1 ms a MultiMesh on the real
+	# display, `TERRAIN-07-E` round 6), which a pose's first tile moving into a level's mesh paid.
 	for index in CELL_MESHES:
 		var multimesh := MultiMesh.new()
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
 		multimesh.use_custom_data = true
 		multimesh.instance_count = _cells_per_patch
-		multimesh.buffer = _identity_cells
 		multimesh.visible_instance_count = 0
 		counters["multimeshes_created"] += 1
 		var node := MultiMeshInstance3D.new()
@@ -1662,10 +1728,10 @@ func _new_cells() -> Dictionary:
 	return {
 		"nodes": nodes, "walls": walls, "materials": materials, "watched": [], "node_parent": null,
 		"custom": records, "tile_at": tile_at, "where": where, "counts": counts,
-		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1,
+		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1, "rect_hm": Vector4i.ZERO,
 		# The tiles its build has written (-1: not begun), whether it synced its material for
 		# this build and whether it draws its patch.
-		"built": -1, "synced": false, "shown": false, "values": [], "sync_next": 0,
+		"built": -1, "synced": false, "shown": false, "values": [], "sync_next": 0, "local": false,
 	}
 
 # The patch material parameters whose change means the graded material must be synced: the

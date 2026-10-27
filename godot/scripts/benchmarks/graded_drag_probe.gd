@@ -315,8 +315,29 @@ func _summary() -> Dictionary:
 	out["gpu_ms"] = {"p50": gpu[floori(gpu.size() * 0.5)], "max": gpu.max()} if not gpu.is_empty() else {}
 	return out
 
+# Engine errors the probe fails on, counted in its own log (--log-file): a cell drawn with
+# failed instance uniforms renders wrong and its timings are not the share (`TERRAIN-07-D` round 7).
+const LOG_FAILURES := ["Too many instances using shader instance variables"]
+
+func _log_failures() -> Dictionary:
+	var out := {}
+	var args := OS.get_cmdline_args()
+	var at := args.find("--log-file")
+	if at < 0 or at + 1 >= args.size():
+		return {"log": "no --log-file"}
+	var text := FileAccess.get_file_as_string(args[at + 1])
+	for pattern: String in LOG_FAILURES:
+		out[pattern] = text.count(pattern)
+	return out
+
 func _finish(error: String) -> void:
 	_bench._stop_scripted_tool()
+	if error.is_empty():
+		var logged := _log_failures()
+		_report["log_failures"] = logged
+		for pattern: String in LOG_FAILURES:
+			if int(logged.get(pattern, 0)) > 0:
+				error = "the log shows %d x '%s'" % [int(logged[pattern]), pattern]
 	if not error.is_empty():
 		_report["error"] = error
 		push_error("[GRADED_DRAG] " + error)
