@@ -1188,6 +1188,34 @@ impl BuildingAllocator {
         )
     }
 
+    /// The explicit cell sites' lots for a pending cell-lot plan (`ROAD-68-G` part 7), which
+    /// answers [`Self::cell_footprint_overlaps_explicit_site`] as this allocator does now.
+    /// Call it with the site query index prepared. O(explicit sites).
+    pub(crate) fn explicit_site_snapshot(&self) -> ExplicitSiteSnapshot {
+        debug_assert!(self.building_site_query_index_ready());
+        let sites = if self.has_explicit_cell_sites() {
+            self.explicit_cell_sites
+                .iter()
+                .filter_map(|&building_idx| {
+                    let building = self.buildings.get(building_idx)?;
+                    let site = self.building_sites.get(building_idx)?;
+                    let center = Vector3::new(building.center_x, 0.0, building.center_y);
+                    Some(ExplicitSite {
+                        chunk: RegionGraph::get_chunk_coords(center),
+                        lot_bounds: site.lot_bounds(),
+                        lot: site.lot_footprint_world,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        ExplicitSiteSnapshot {
+            sites,
+            max_lot_radius_cells: self.max_lot_radius_cells,
+        }
+    }
+
     fn zoning_footprint_overlaps_explicit_site(
         &self,
         min: Vector2,
@@ -1684,13 +1712,8 @@ impl BuildingAllocator {
                 .collect();
         }
 
-        let (min_x, min_z, max_x, max_z) = bounds;
-        let margin_m = self.max_lot_radius_cells * zone_cell_m + BUILDING_SITE_NEIGHBOR_EPS_M;
-        let chunk_size = RegionGraph::CHUNK_SIZE;
-        let min_chunk_x = ((min_x - margin_m) / chunk_size).floor() as i32;
-        let max_chunk_x = ((max_x + margin_m) / chunk_size).floor() as i32;
-        let min_chunk_z = ((min_z - margin_m) / chunk_size).floor() as i32;
-        let max_chunk_z = ((max_z + margin_m) / chunk_size).floor() as i32;
+        let [min_chunk_x, min_chunk_z, max_chunk_x, max_chunk_z] =
+            lot_candidate_chunks(bounds, self.max_lot_radius_cells, zone_cell_m);
 
         let mut candidates = Vec::new();
         for chunk_x in min_chunk_x..=max_chunk_x {
@@ -2334,6 +2357,75 @@ fn sort_demand_spawn_candidates(
 
 fn spawn_side_order(side: i8) -> u8 {
     if side > 0 { 0 } else { 1 }
+}
+
+// The chunks, `[min x, min z, max x, max z]`, whose buildings' lots can meet `bounds`: lots
+// reach at most `max_lot_radius_cells` cells from their building's chunk-keyed centre.
+fn lot_candidate_chunks(
+    (min_x, min_z, max_x, max_z): (f32, f32, f32, f32),
+    max_lot_radius_cells: f32,
+    zone_cell_m: f32,
+) -> [i32; 4] {
+    let margin_m = max_lot_radius_cells * zone_cell_m + BUILDING_SITE_NEIGHBOR_EPS_M;
+    let chunk_size = RegionGraph::CHUNK_SIZE;
+    [
+        ((min_x - margin_m) / chunk_size).floor() as i32,
+        ((min_z - margin_m) / chunk_size).floor() as i32,
+        ((max_x + margin_m) / chunk_size).floor() as i32,
+        ((max_z + margin_m) / chunk_size).floor() as i32,
+    ]
+}
+
+// One explicit cell site's lot, keyed by its building's index chunk.
+#[derive(Clone, Debug)]
+struct ExplicitSite {
+    chunk: (i32, i32),
+    lot_bounds: (f32, f32, f32, f32),
+    lot: [Vector2; 4],
+}
+
+/// The explicit cell sites' lots as the allocator held them when a commit deferred its cell
+/// lots (`ROAD-68-G` part 7), so the lot plan's job tests footprints without the allocator.
+/// It visits the sites of the chunks the allocator's own candidate query visits, with the same
+/// bounds and overlap tests, so its answers are the allocator's.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ExplicitSiteSnapshot {
+    // Empty when the allocator held no explicit site; in building order.
+    sites: Vec<ExplicitSite>,
+    max_lot_radius_cells: f32,
+}
+
+impl ExplicitSiteSnapshot {
+    /// [`BuildingAllocator::has_explicit_cell_sites`] at the snapshot.
+    pub(crate) fn any(&self) -> bool {
+        !self.sites.is_empty()
+    }
+
+    /// [`BuildingAllocator::cell_footprint_overlaps_explicit_site`] at the snapshot.
+    /// O(explicit sites).
+    pub(crate) fn cell_footprint_overlaps(
+        &self,
+        footprint: &PolygonFootprint,
+        zone_cell_m: f32,
+    ) -> bool {
+        let (min, max) = (footprint.min, footprint.max);
+        let [min_x, min_z, max_x, max_z] = lot_candidate_chunks(
+            (min.x, min.y, max.x, max.y),
+            self.max_lot_radius_cells,
+            zone_cell_m,
+        );
+        self.sites.iter().any(|site| {
+            let (x, z) = site.chunk;
+            let (site_min_x, site_min_z, site_max_x, site_max_z) = site.lot_bounds;
+            (min_x..=max_x).contains(&x)
+                && (min_z..=max_z).contains(&z)
+                && !(site_min_x > max.x
+                    || site_max_x < min.x
+                    || site_min_z > max.y
+                    || site_max_z < min.y)
+                && footprint.overlaps(&PolygonFootprint::new(&site.lot))
+        })
+    }
 }
 
 #[cfg(test)]

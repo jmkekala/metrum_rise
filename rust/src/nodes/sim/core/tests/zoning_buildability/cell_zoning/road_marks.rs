@@ -207,3 +207,71 @@ fn narrow_road_marks_match_marking_the_whole_refreshed_ring() {
         assert_eq!(before, after, "{name}: a refused move changes nothing");
     }
 }
+
+// `ROAD-68-G` part 7: what a commit's lots leave beyond `products`, read before them so that
+// the generation `products` runs comes after: the cell store's whole state and entries, the
+// overlay and building revisions, every entrance and the undo history.
+fn lot_state(core: &SimCore) -> (u64, usize, u64, u64, u64, usize) {
+    (
+        core.zoning.cells.state_digest(),
+        core.zoning.cells.memory_estimate().0,
+        core.zoning.overlay_revision(),
+        core.allocator.building_ref_revision(),
+        crate::debug::work::debug_hash(&core.allocator.entrances),
+        core.undo_stack.len(),
+    )
+}
+
+#[test]
+fn deferred_cell_lots_equal_lots_planned_in_the_commit() {
+    // The first city defers each commit's lots to a job adopted by the next frame or edit
+    // (question 33 (c)); the second plans them in the commit, as before.
+    let mut cores = [false, true].map(|in_commit| {
+        let mut core = zoned_city(CITY_SIDE_M);
+        core.benchmark_mode = false;
+        core.cell_lot_hooks.in_commit = in_commit;
+        core
+    });
+    // Each job sleeps first, so the edit right after a commit finds it running.
+    cores[0].cell_lot_hooks.job_delay = Some(std::time::Duration::from_millis(150));
+    let compare = |cores: &mut [SimCore; 2], name: &str| {
+        assert!(!cores[0].cell_lots_pending(), "{name}: adopted");
+        let [deferred, planned] = cores.each_mut().map(|core| (lot_state(core), products(core)));
+        assert_eq!(deferred, planned, "{name}: deferred lots against lots planned in the commit");
+    };
+    let commit_both = |cores: &mut [SimCore; 2], from: (f32, f32), to: (f32, f32)| {
+        for core in cores.iter_mut() {
+            commit(core, from, to);
+        }
+        assert!(cores[0].cell_lots_pending(), "the commit queued lot regions");
+        assert!(!cores[1].cell_lots_pending());
+    };
+    // A T split of the trunk beside the painted grid, adopted by the frame after it.
+    let x = -H - 100.0;
+    commit_both(&mut cores, (x, 0.0), (x, 120.0));
+    for core in &mut cores {
+        assert!(core.step_frame(crate::nodes::sim::core::frame::FRAME_DT_S).routing_held);
+    }
+    compare(&mut cores, "T split, adopted by the frame");
+    // A T beside the painted rows, undone while its job runs: the undo adopts it first.
+    commit_both(&mut cores, (-H - 36.0, 0.0), (-H - 36.0, -70.0));
+    for core in &mut cores {
+        assert!(core.undo_action_internal());
+    }
+    compare(&mut cores, "undo while the job runs");
+    // The same T again, then a road beside the painted east edge, which adopts it first, and
+    // a T off that road, adopted by a save.
+    commit_both(&mut cores, (-H - 36.0, 0.0), (-H - 36.0, -70.0));
+    commit_both(&mut cores, (H + 55.0, -120.0), (H + 55.0, 120.0));
+    commit_both(&mut cores, (H + 55.0, 0.0), (H + 135.0, 0.0));
+    for (index, core) in cores.iter_mut().enumerate() {
+        let path = std::env::temp_dir().join(format!(
+            "metrum_road68g7_lots_{}_{index}.sqlite",
+            std::process::id()
+        ));
+        core.save_game_settled_at(path.to_str().unwrap(), None, 0)
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+    compare(&mut cores, "two commits, adopted by the next commit and a save");
+}

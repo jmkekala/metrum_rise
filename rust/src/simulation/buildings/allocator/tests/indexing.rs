@@ -21,7 +21,7 @@ fn explicit_cell_site_summary_tracks_append_rebuild_and_clear() {
     allocator.buildings.push(explicit);
     allocator.rebuild_building_site_clients(10.0);
     assert!(allocator.index_appended_building(1));
-    assert_eq!(allocator.explicit_cell_site_count, 1);
+    assert_eq!(allocator.explicit_cell_sites, [1]);
     assert!(allocator.has_explicit_cell_sites());
     allocator.buildings[1].parcel_id = 7;
     allocator.dirty_index = true;
@@ -36,7 +36,7 @@ fn explicit_cell_site_summary_tracks_append_rebuild_and_clear() {
     allocator.rebuild_zone_index();
     assert!(allocator.has_explicit_cell_sites());
     allocator.clear();
-    assert_eq!(allocator.explicit_cell_site_count, 0);
+    assert!(allocator.explicit_cell_sites.is_empty());
     assert!(!allocator.has_explicit_cell_sites());
 }
 

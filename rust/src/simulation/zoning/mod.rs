@@ -18,13 +18,16 @@ pub use constants::{
     DEFAULT_PARCEL_DEPTH_M, DEFAULT_PARCEL_FRONTAGE_M, MAX_PARCEL_DEPTH_M, MAX_PARCEL_FRONTAGE_M,
     MAX_PARCEL_GAP_M, MIN_PARCEL_DEPTH_M, MIN_PARCEL_FRONTAGE_M, MIN_PARCEL_GAP_M,
 };
-pub use parcels::{ParcelGeometry, ParcelId, ParcelPlacementError, ParcelStore, ZoningParcel};
+pub use parcels::{
+    ParcelGeometry, ParcelId, ParcelPlacementError, ParcelStore, SharedParcelStore, ZoningParcel,
+};
 pub use profiles::{
     ZoneDensity, ZoneProfileRuntime, ZoningProfileRegistry, load_builtin_profile_registry,
 };
 pub use system::ZoningSystem;
 pub(crate) use system::{
-    CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, CellZoningEdit, ZoningParcelRemovalUndo,
+    CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, CellZoningEdit, PlannedCellLots,
+    ZoningParcelRemovalUndo,
 };
 pub use zone_type::ZoneType;
 

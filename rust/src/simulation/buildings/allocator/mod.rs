@@ -32,6 +32,7 @@ pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use lifecycle::{BuildingRemovalKind, BuildingRemovalRequest};
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use placement::ExplicitSiteSnapshot;
 pub(crate) use placement::SpawnProfileAssetCandidates;
 pub(crate) use placement::construction_duration_hours;
 #[cfg(test)]
@@ -490,8 +491,10 @@ pub struct BuildingAllocator {
     pub(crate) max_lot_radius_cells: f32,
     /// Indexed buildings whose lot radius equals [`Self::max_lot_radius_cells`] (`SIM-02-K`).
     pub(crate) max_lot_radius_count: usize,
-    /// Explicit non-parcel sites in the existing building index; invalid when `dirty_index`.
-    pub(crate) explicit_cell_site_count: usize,
+    /// Explicit non-parcel sites in the existing building index, ascending building indices;
+    /// invalid when `dirty_index`. A pending cell-lot plan reads their lots through
+    /// [`Self::explicit_site_snapshot`] (`ROAD-68-G` part 7).
+    pub(crate) explicit_cell_sites: Vec<usize>,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
     pub(crate) max_site_radius_m: f32,
     /// Number of site records attaining the exact current maximum radius.
@@ -903,7 +906,7 @@ impl BuildingAllocator {
             level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
             max_lot_radius_count: 0,
-            explicit_cell_site_count: 0,
+            explicit_cell_sites: Vec::new(),
             max_site_radius_m: 0.0,
             max_site_radius_count: 0,
             dirty_index: true,
@@ -1171,7 +1174,7 @@ impl BuildingAllocator {
         self.max_building_support_count = 0;
         self.max_lot_radius_cells = 0.0;
         self.max_lot_radius_count = 0;
-        self.explicit_cell_site_count = 0;
+        self.explicit_cell_sites.clear();
         self.max_site_radius_m = 0.0;
         self.max_site_radius_count = 0;
         self.building_site_dirty_bounds.clear();

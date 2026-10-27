@@ -4,15 +4,13 @@
 //! a full drain for editing paths and the per-slot `cell lots` queue (`SIM-02-H`).
 
 use super::core::SimCore;
-use crate::simulation::agriculture::PolygonFootprint;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::agriculture::{FieldClearanceIndex, PolygonFootprint};
+use crate::simulation::buildings::allocator::{BuildingAllocator, ExplicitSiteSnapshot};
 use crate::simulation::network::roadbed::RoadbedSystem;
 use crate::simulation::zoning::cells::{
-    CellBounds, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
+    CellBounds, CellLotSize, CellSelection, CellSelectionShape, CellStore, road_contact_interior,
 };
-use crate::simulation::zoning::{
-    CellLotGeneration, CellLotPlanner, CellZoningEdit, MAX_PARCEL_FRONTAGE_M,
-};
+use crate::simulation::zoning::{CellLotGeneration, CellLotPlanner, CellZoningEdit};
 use glam::DVec2;
 
 /// One immutable selection plus all authoring dependencies observed by its preview.
@@ -52,6 +50,11 @@ impl SimCore {
     /// published edit already carries its cells; hidden overlays leave them for a later request.
     /// O(edited chunks); no work or allocation without local invalidations.
     pub(crate) fn prepare_stale_cell_chunks_internal(&mut self) {
+        // The chunks a commit made stale wait with its deferred lots, which generate them first
+        // (`ROAD-68-G` part 7).
+        if self.cell_lots_pending() {
+            return;
+        }
         let chunks = self.zoning.cells.take_stale_chunks();
         if self.cell_overlay_visible {
             for chunk in chunks {
@@ -65,6 +68,8 @@ impl SimCore {
         if !self.cell_chunk_in_world(chunk) {
             return false;
         }
+        // A commit's deferred lots first: generation writes the cells they plan.
+        self.adopt_pending_cell_lots();
         // Site-index repair and cell generation are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
             self.prepare_cell_site_queries();
@@ -104,7 +109,7 @@ impl SimCore {
     }
 
     /// Prepares shared local queries without modifying paint, terrain or building ownership.
-    fn prepare_cell_site_queries(&mut self) {
+    pub(super) fn prepare_cell_site_queries(&mut self) {
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
         self.transit_network
@@ -135,6 +140,7 @@ impl SimCore {
         shape: CellSelectionShape,
         path: &[DVec2],
     ) -> CellToolPreview {
+        self.adopt_pending_cell_lots();
         self.prepare_cell_site_queries();
         let allocator = &self.allocator;
         let roads = &self.transit_network.roadbed;
@@ -156,6 +162,7 @@ impl SimCore {
         preview: &CellToolPreview,
         profile: u16,
     ) -> bool {
+        self.adopt_pending_cell_lots();
         self.prepare_cell_site_queries();
         // Index 8 is the rebuildable geometry-cache epoch. Loading another visible chunk
         // cannot invalidate a gesture; authoritative road/paint/site/occupancy epochs still do.
@@ -192,6 +199,7 @@ impl SimCore {
 
     /// Restores paint against present reservations; growth and occupied buildings keep running.
     pub(crate) fn restore_cell_gesture_internal(&mut self, edit: &CellZoningEdit) -> bool {
+        self.adopt_pending_cell_lots();
         self.prepare_cell_site_queries();
         let allocator = &self.allocator;
         let roads = &self.transit_network.roadbed;
@@ -213,6 +221,7 @@ impl SimCore {
     /// demand, for editing paths that must publish their lots before returning. With no
     /// authoring/catalog changes this is an allocation-free constant-time check.
     pub(crate) fn prepare_cell_lots_internal(&mut self) -> CellLotGeneration {
+        self.adopt_pending_cell_lots();
         if self.transit_network.road_edit_is_staged() || !self.zoning.has_dirty_cell_lots() {
             return CellLotGeneration::default();
         }
@@ -264,41 +273,19 @@ impl SimCore {
         let mut planner = self.zoning.cell_lot_planner();
         let mut region = Some(first);
         while let Some(bounds) = region {
-            let phase = crate::debug::Channel::EconomyPhases
-                .enabled()
-                .then(std::time::Instant::now);
-            // Share cell selection's completeness cache, including local dirty envelopes.
-            // Growth can depend on a front row just outside the changed paint's chunk.
-            planner.prepare_generated_cells(
-                &self.region_graph,
-                bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
-                blocked,
-            );
-            let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
-            let phase = phase.map(|_| std::time::Instant::now());
-            let report =
-                planner.derive_cell_lots(&self.region_graph, bounds, &sizes, |corners, _| {
-                    blocked(corners)
-                });
-            crate::debug_log!(
-                "economy_phases",
-                "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
-                generation_ms,
-                phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0),
-                report.candidates,
-                report.created.len(),
-                report.retired.len(),
-                report.reattached.len()
-            );
-            result.candidates += report.candidates;
-            result.created.extend(report.created);
-            result.retired.extend(report.retired);
-            result.reattached.extend(report.reattached);
+            result.absorb(planner.plan_region(&self.region_graph, bounds, &sizes, &blocked));
             region = next(&mut planner);
         }
         let plan = planner.finish();
         self.zoning.install_cell_lot_plan(plan);
         self.zoning.cell_lot_sizes = Some(sizes);
+        self.attach_regenerated_cell_lots(&result);
+        result
+    }
+
+    // Reattaches the occupants of the lots a plan reattached and marks the allocator dirty when
+    // the plan created or retired lots: the end of every installed lot plan.
+    pub(super) fn attach_regenerated_cell_lots(&mut self, result: &CellLotGeneration) {
         self.allocator.sync_cell_lot_attachments(
             &result.reattached,
             &self.region_graph,
@@ -307,7 +294,44 @@ impl SimCore {
         if !result.created.is_empty() || !result.retired.is_empty() {
             self.allocator.dirty = true;
         }
-        result
+    }
+
+    /// The asset sizes a lot plan derives with, cached until the asset registry refreshes them.
+    pub(super) fn cached_cell_lot_sizes(&mut self) -> &[CellLotSize] {
+        if self.zoning.cell_lot_sizes.is_none() {
+            let sizes = self
+                .allocator
+                .cell_lot_sizes(&self.zoning, self.demand.runtime_catalog());
+            self.zoning.cell_lot_sizes = Some(sizes);
+        }
+        self.zoning.cell_lot_sizes.as_deref().unwrap_or_default()
+    }
+}
+
+// The explicit cell sites a footprint test reads: the allocator's own, or the snapshot a
+// deferred lot plan took of them (`ROAD-68-G` part 7).
+pub(super) trait ExplicitCellSites: Sync {
+    fn any(&self) -> bool;
+    fn overlaps(&self, footprint: &PolygonFootprint, cell_m: f32) -> bool;
+}
+
+impl ExplicitCellSites for BuildingAllocator {
+    fn any(&self) -> bool {
+        self.has_explicit_cell_sites()
+    }
+
+    fn overlaps(&self, footprint: &PolygonFootprint, cell_m: f32) -> bool {
+        self.cell_footprint_overlaps_explicit_site(footprint, cell_m)
+    }
+}
+
+impl ExplicitCellSites for ExplicitSiteSnapshot {
+    fn any(&self) -> bool {
+        ExplicitSiteSnapshot::any(self)
+    }
+
+    fn overlaps(&self, footprint: &PolygonFootprint, cell_m: f32) -> bool {
+        self.cell_footprint_overlaps(footprint, cell_m)
     }
 }
 
@@ -317,14 +341,23 @@ fn cell_site_blocked(
     cell_m: f32,
     corners: &[DVec2; 4],
 ) -> bool {
+    footprint_blocked(&allocator.field_clearance, allocator, roads, cell_m, corners)
+}
+
+// Whether a cell footprint meets a field, an explicit cell site or a road.
+pub(super) fn footprint_blocked(
+    fields: &FieldClearanceIndex,
+    sites: &impl ExplicitCellSites,
+    roads: &RoadbedSystem,
+    cell_m: f32,
+    corners: &[DVec2; 4],
+) -> bool {
     // Keep the same canonical corners used by reciprocal placement and save validation.
     // Narrowing to f32 here can hide small intersections at large world coordinates.
-    if !allocator.field_clearance.is_empty() || allocator.has_explicit_cell_sites() {
+    if !fields.is_empty() || sites.any() {
         let points = corners.map(|p| [p.x, p.y]);
         let footprint = PolygonFootprint::from_precise_slice(&points);
-        if allocator.field_clearance.overlaps(&footprint, None)
-            || allocator.cell_footprint_overlaps_explicit_site(&footprint, cell_m)
-        {
+        if fields.overlaps(&footprint, None) || sites.overlaps(&footprint, cell_m) {
             return true;
         }
     }

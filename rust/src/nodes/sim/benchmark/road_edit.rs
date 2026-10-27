@@ -41,6 +41,8 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) agent_invalidate_ms: f64,
     pub(crate) lanes_and_reattach_ms: f64,
     pub(crate) buildings_ms: f64,
+    // Starting the deferred cell-lot plan after the publication (`ROAD-68-G` part 7).
+    pub(crate) lots_spawn_ms: f64,
     pub(crate) routing_ms: f64,
     pub(crate) mesh_ms: f64,
     pub(crate) snapshot_ms: f64,
@@ -78,6 +80,7 @@ impl RoadEditMetrics {
             agent_invalidate_ms,
             lanes_and_reattach_ms,
             buildings_ms,
+            lots_spawn_ms,
             routing_ms,
             mesh_ms,
             snapshot_ms

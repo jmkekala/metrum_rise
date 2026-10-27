@@ -119,6 +119,11 @@ pub(crate) struct FrameStepReport {
     /// Wall-clock milliseconds the adoption frame spent installing the rebuilt hierarchy,
     /// waiting for it when late; zero in every other frame.
     pub(crate) adoption_ms: f64,
+    /// Wall-clock milliseconds the frame waited for a commit's deferred cell-lot plan
+    /// (`ROAD-68-G` part 7); zero in every frame that adopted none.
+    pub(crate) lots_wait_ms: f64,
+    /// The frame's adoption of a deferred cell-lot plan, if any.
+    pub(crate) lots: super::lot_adoption::CellLotAdoption,
 }
 
 impl SimCore {
@@ -220,14 +225,27 @@ impl SimCore {
     ) -> FrameStepReport {
         // D7 (`ROAD-68-G`): a late routing rebuild blocks the adoption frame here, before the
         // frame enters the pool, so no pool worker waits for it (`pure_job`).
+        // `ROAD-68-G` part 7: the frame after a commit adopts its deferred cell lots first, a
+        // late plan waited for here too; the frame is the routing hold's, which advances nothing.
+        let lots_start = Instant::now();
+        if let Some(completion) = self.cell_lot_completion() {
+            completion.wait();
+        }
+        let lots_wait_ms = lots_start.elapsed().as_secs_f64() * 1000.0;
+        let lots = self.adopt_pending_cell_lots();
         let adoption_start = Instant::now();
         if let Some(completion) = self.transit_network.cch_adoption_completion() {
             completion.wait();
         }
         // The sim thread, tests and benchmarks all step in the shared pool (CODE-17).
-        crate::thread_pools::install(|| {
+        let mut report = crate::thread_pools::install(|| {
             self.step_frame_in_pool(frame_dt_s, observer, adoption_start)
-        })
+        });
+        if lots.adopted {
+            report.lots_wait_ms = lots_wait_ms;
+        }
+        report.lots = lots;
+        report
     }
 
     fn step_frame_in_pool(

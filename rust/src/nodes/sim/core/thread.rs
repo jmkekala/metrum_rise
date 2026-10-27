@@ -113,6 +113,8 @@ pub(crate) fn run_sim_thread(
     let mut pending_weather = None;
     let mut pending_weather_automatic = None;
     let mut adoption_completion: Option<crate::simulation::core::pure_job::JobCompletion> = None;
+    // A commit's deferred cell-lot plan, which the next frame adopts (`ROAD-68-G` part 7).
+    let mut lots_completion: Option<crate::simulation::core::pure_job::JobCompletion> = None;
 
     loop {
         let frame_start = Instant::now();
@@ -247,7 +249,7 @@ pub(crate) fn run_sim_thread(
                                 geometry: crash_geometry,
                             },
                         );
-                        c.commit_road(
+                        let outcome = c.commit_road(
                             RoadCommitRequest {
                                 points,
                                 fwd_lanes,
@@ -257,7 +259,9 @@ pub(crate) fn run_sim_thread(
                             },
                             road_total,
                             edit_metrics,
-                        )
+                        );
+                        lots_completion = c.cell_lot_completion();
+                        outcome
                     };
                     if let Some(query_snapshot) = outcome.road_snapshot {
                         road_tool.publish(query_snapshot);
@@ -318,6 +322,10 @@ pub(crate) fn run_sim_thread(
         if tick_due && let Some(completion) = adoption_completion.take() {
             completion.wait();
         }
+        // `ROAD-68-G` part 7: so is a commit's deferred lot plan, which the frame adopts first.
+        if tick_due && let Some(completion) = lots_completion.take() {
+            completion.wait();
+        }
 
         let perf_enabled = crate::debug::Channel::Perf.enabled();
         let lock_wait_ms: f64;
@@ -328,6 +336,7 @@ pub(crate) fn run_sim_thread(
         let agent_count: i32;
         let pathfind_count: u32;
         let crash_frame_summary: Option<CrashSimSnapshot>;
+        let adopted_view;
 
         // Tick and build snapshot inside one lock acquisition.
         let new_snapshot = {
@@ -369,6 +378,7 @@ pub(crate) fn run_sim_thread(
                 step = core.step_frame(FRAME_DT_S);
                 adoption_completion = core.transit_network.cch_adoption_completion();
             }
+            adopted_view = core.take_adopted_road_tool_view();
 
             // Edits and ticks publish with their shown cell chunks already regenerated.
             let cell_prepare_start = Instant::now();
@@ -392,6 +402,12 @@ pub(crate) fn run_sim_thread(
                 .then(|| crash_summary_from_core(&core));
             snapshot
         };
+
+        // The road tool's view of adopted cell lots, published outside the core lock; an edit's
+        // newer view published since supersedes it.
+        if let Some(publication) = adopted_view {
+            road_tool.publish(publication);
+        }
 
         // Write snapshot — outside the sim lock so render reads are non-blocking.
         let snapshot_write_start = Instant::now();
@@ -422,7 +438,7 @@ pub(crate) fn run_sim_thread(
             (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
         if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || step.elapsed_minutes > 0) {
             println!(
-                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} cell_prepare_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
+                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} lots_wait_ms={:.3} lots_install_ms={:.3} lots_publish_ms={:.3} cell_prepare_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
                 active_ms,
                 command_ms,
                 lock_wait_ms,
@@ -433,6 +449,9 @@ pub(crate) fn run_sim_thread(
                 step.pending_spawn_ms,
                 step.hourly_ms,
                 step.daily_ms,
+                step.lots_wait_ms,
+                step.lots.install_ms,
+                step.lots.publish_ms,
                 cell_prepare_ms,
                 snapshot_ms,
                 snapshot_write_ms,

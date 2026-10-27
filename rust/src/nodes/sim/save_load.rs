@@ -38,6 +38,7 @@ impl SimCore {
         camera: Option<SavedCameraState>,
         saved_at_unix: i64,
     ) -> Result<(), String> {
+        self.adopt_pending_cell_lots();
         self.transit_network.settle_cch();
         self.save_game_at(path, camera, saved_at_unix)
     }
@@ -134,6 +135,8 @@ impl SimCore {
         &mut self,
         path: &str,
     ) -> Result<Option<SavedCameraState>, String> {
+        // A commit's deferred lots belong to the city the load replaces.
+        self.pending_cell_lots = None;
         // The load's index, routing and economy rebuilds are parallel; Godot's main thread and
         // tests run them in the shared pool (CODE-17).
         crate::thread_pools::install(|| self.load_game_in_pool(path))

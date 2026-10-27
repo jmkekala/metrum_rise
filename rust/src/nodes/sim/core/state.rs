@@ -355,6 +355,14 @@ pub struct SimCore {
     pub(crate) road_tool_surface_generation: u64,
     /// What the road tool's context last received (`ROAD-68-E`); derived, never saved.
     pub(crate) road_tool_publisher: super::RoadToolPublisher,
+    /// A commit's cell-lot plan waiting for its adoption frame (`ROAD-68-G` part 7); a save
+    /// adopts it first, a load drops it.
+    pub(crate) pending_cell_lots: Option<super::lot_adoption::PendingCellLots>,
+    /// The road tool view an adoption published, until the simulation thread hands it over.
+    pub(crate) adopted_road_tool_view: Option<super::road_tool_context::RoadToolPublication>,
+    /// Test switches of the deferred cell lots.
+    #[cfg(test)]
+    pub(crate) cell_lot_hooks: super::lot_adoption::CellLotTestHooks,
     /// The road tool's terrain inputs and the patches noted since their last rebuild
     /// (`ROAD-68-E`); derived, never saved.
     pub(crate) road_terrain_inputs: super::RoadTerrainInputsLog,
@@ -470,6 +478,10 @@ impl SimCore {
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             road_tool_publisher: Default::default(),
+            pending_cell_lots: None,
+            adopted_road_tool_view: None,
+            #[cfg(test)]
+            cell_lot_hooks: Default::default(),
             road_terrain_inputs: Default::default(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
             render_camera_position: None,

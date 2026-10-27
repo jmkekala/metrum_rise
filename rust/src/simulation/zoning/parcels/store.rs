@@ -18,6 +18,8 @@ use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::zoning::cells::CellLot;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 /// Stable parcel collection with chunk lookup and road-attachment membership.
 #[derive(Clone, Debug)]
@@ -52,6 +54,40 @@ impl Default for ParcelStore {
             layout_revision: 0,
             next_id: 1,
         }
+    }
+}
+
+/// The zoning authority's parcel store, which a pending cell-lot plan reads as it was at the
+/// commit (`ROAD-68-G` part 7, `docs/roads.md` question 33 (c)). Reads go to the store; a write
+/// copies it first only while a plan still shares it, which no write does: every writer adopts
+/// the pending plan first. `O(1)` to share.
+#[derive(Clone, Debug, Default)]
+pub struct SharedParcelStore(Arc<ParcelStore>);
+
+impl SharedParcelStore {
+    /// The store as it is now, for a pure job to read. `O(1)`.
+    pub(crate) fn share(&self) -> Arc<ParcelStore> {
+        Arc::clone(&self.0)
+    }
+
+    /// The store's identity, which a write while it is shared changes (it copies the store).
+    #[cfg(debug_assertions)]
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+}
+
+impl Deref for SharedParcelStore {
+    type Target = ParcelStore;
+
+    fn deref(&self) -> &ParcelStore {
+        &self.0
+    }
+}
+
+impl DerefMut for SharedParcelStore {
+    fn deref_mut(&mut self) -> &mut ParcelStore {
+        Arc::make_mut(&mut self.0)
     }
 }
 

@@ -51,6 +51,8 @@ impl SimCore {
         terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> Result<(), String> {
+        // A commit's deferred lots belong to the world the reset replaces.
+        self.pending_cell_lots = None;
         // The reset's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
             self.create_blank_world_in_pool(
@@ -230,6 +232,8 @@ impl SimCore {
         &mut self,
         expected_kind: WorldWaterFillKind,
     ) -> Result<(), String> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         let Some(preview) = self.world_lake_fill_preview else {
             return Err("no world water fill preview is active".to_owned());
         };
@@ -508,6 +512,8 @@ impl SimCore {
         vegetation: VegetationConfig,
     ) -> Result<(), String> {
         debug_log!("world-editor", "load_world_definition path={}", path);
+        // A commit's deferred lots belong to the world the load replaces.
+        self.pending_cell_lots = None;
         // Decoding and the reset's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
             let loaded = load_world_definition_from_sqlite(&PathBuf::from(path))

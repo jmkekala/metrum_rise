@@ -4,7 +4,7 @@
 
 mod derivation;
 mod dirty;
-pub(crate) use derivation::{CellLotGeneration, CellLotPlanner};
+pub(crate) use derivation::{CellLotGeneration, CellLotPlanner, PlannedCellLots};
 pub(super) use dirty::CellLotQueue;
 
 use super::ZoningSystem;

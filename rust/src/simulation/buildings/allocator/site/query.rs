@@ -422,7 +422,7 @@ impl BuildingAllocator {
     /// Conservative O(1) exclusion check; stale indices retain the ordinary exact query.
     pub(crate) fn has_explicit_cell_sites(&self) -> bool {
         !self.building_sites.is_empty()
-            && (!self.building_site_query_index_ready() || self.explicit_cell_site_count != 0)
+            && (!self.building_site_query_index_ready() || !self.explicit_cell_sites.is_empty())
     }
 
     /// Whether bounded site queries can run without rebuilding or scanning the building store.

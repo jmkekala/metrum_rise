@@ -9,16 +9,18 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::zoning::cells::{
     CELL_DEPTH, CELL_FRONTAGE_UNITS, CellBounds, CellGeneration, CellKey, CellLot, CellLotSize,
-    CellMaps, CellRoadFrontage, CellStore, GridFrame, LiveMaps, overlaps_road_corridors,
+    CellMaps, CellRoadFrontage, CellStore, GridFrame, LiveMaps, SharedMaps,
+    overlaps_road_corridors,
 };
 use crate::simulation::zoning::parcels::{PlannedParcelChange, PlannedParcels};
 use crate::simulation::zoning::{
-    MAX_PARCEL_FRONTAGE_M, ParcelGeometry, ParcelId, ZoningProfileRegistry, parcels,
+    MAX_PARCEL_FRONTAGE_M, ParcelGeometry, ParcelId, ParcelStore, ZoningProfileRegistry, parcels,
 };
 use glam::DVec2;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::cmp::Reverse;
+use std::sync::Arc;
 
 /// Work and stable ids changed by one local derivation transaction.
 #[derive(Debug, Default)]
@@ -55,6 +57,26 @@ pub(crate) struct CellLotPlan {
     overlay_bumps: u64,
 }
 
+/// A commit's cell-lot plan deferred to a pure job (`ROAD-68-G` part 7, `docs/roads.md` question
+/// 33 (c)): the regions the commit took from the lot queue, planned as the commit planned them,
+/// on a copy of the cell store and on the parcel store as the commit left them, with the cached
+/// asset sizes. Taking it costs `O(regions)`; the copies are shared.
+pub(crate) struct DeferredCellLots {
+    config: WorldConfig,
+    profiles: Arc<ZoningProfileRegistry>,
+    cells: CellStore<SharedMaps>,
+    parcels: Arc<ParcelStore>,
+    regions: Vec<CellBounds>,
+    sizes: Vec<CellLotSize>,
+}
+
+/// A deferred plan's products, for [`ZoningSystem::adopt_planned_cell_lots`].
+pub(crate) struct PlannedCellLots {
+    cells: CellStore<SharedMaps>,
+    plan: CellLotPlan,
+    report: CellLotGeneration,
+}
+
 struct Proposal {
     seed: CellKey,
     frame: GridFrame,
@@ -83,6 +105,38 @@ impl ZoningSystem {
     pub(crate) fn install_cell_lot_plan(&mut self, plan: CellLotPlan) {
         self.parcels.apply_planned(plan.changes);
         self.overlay_revision = self.overlay_revision.wrapping_add(plan.overlay_bumps);
+    }
+
+    /// A deferred plan of `regions`, taken from the lot queue, on `cells`, a copy of the live
+    /// cell store as it is now, and the parcel store as it is now, with the cached asset sizes.
+    /// `O(1)`.
+    pub(crate) fn defer_cell_lots(
+        &self,
+        cells: CellStore<SharedMaps>,
+        regions: Vec<CellBounds>,
+        sizes: Vec<CellLotSize>,
+    ) -> DeferredCellLots {
+        DeferredCellLots {
+            config: self.config,
+            profiles: Arc::clone(&self.profiles),
+            cells,
+            parcels: self.parcels.share(),
+            regions,
+            sizes,
+        }
+    }
+
+    /// Installs a deferred plan: the cell entries it wrote, then its parcel calls, as
+    /// [`Self::install_cell_lot_plan`] installs a plan made on the live stores. Neither store
+    /// may have changed since [`Self::defer_cell_lots`]; the zoning then equals what planning
+    /// at the commit would have left (`ROAD-68-G` part 7). O(written entries + changes).
+    pub(crate) fn adopt_planned_cell_lots(
+        &mut self,
+        planned: PlannedCellLots,
+    ) -> CellLotGeneration {
+        self.cells.adopt_plan(planned.cells);
+        self.install_cell_lot_plan(planned.plan);
+        planned.report
     }
 
     /// Plans, as the commit does, generation of `bounds`' invalid cells and then lot derivation
@@ -133,7 +187,85 @@ impl ZoningSystem {
     }
 }
 
+impl DeferredCellLots {
+    /// Plans the regions in order, as the commit would have, with `blocked` answering the
+    /// building-site and road tests from the commit's snapshots. Releases the parcel store
+    /// before it returns, so adopting the plan writes the live store in place.
+    pub(crate) fn plan(
+        mut self,
+        graph: &RegionGraph,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> PlannedCellLots {
+        let mut queue = CellLotQueue::default();
+        let mut planner = CellLotPlanner {
+            config: &self.config,
+            profiles: &self.profiles,
+            cells: &mut self.cells,
+            queue: &mut queue,
+            parcels: PlannedParcels::new(&self.parcels),
+            overlay_bumps: 0,
+        };
+        let mut report = CellLotGeneration::default();
+        for &bounds in &self.regions {
+            report.absorb(planner.plan_region(graph, bounds, &self.sizes, &blocked));
+        }
+        let plan = planner.finish();
+        drop(self.parcels);
+        PlannedCellLots {
+            cells: self.cells,
+            plan,
+            report,
+        }
+    }
+}
+
+impl CellLotGeneration {
+    /// Adds one region's report to a plan's.
+    pub(crate) fn absorb(&mut self, report: CellLotGeneration) {
+        self.candidates += report.candidates;
+        self.created.extend(report.created);
+        self.retired.extend(report.retired);
+        self.reattached.extend(report.reattached);
+    }
+}
+
 impl<M: CellMaps> CellLotPlanner<'_, M> {
+    /// One region of a lot plan: generates the invalid cells of `bounds` and its lot reach,
+    /// then derives its lots, with `blocked` testing footprints against building sites and
+    /// fields. The live plan and a deferred one plan each region through here.
+    pub(crate) fn plan_region(
+        &mut self,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        sizes: &[CellLotSize],
+        blocked: &(impl Fn(&[DVec2; 4]) -> bool + Sync),
+    ) -> CellLotGeneration {
+        let phase = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(std::time::Instant::now);
+        // Share cell selection's completeness cache, including local dirty envelopes.
+        // Growth can depend on a front row just outside the changed paint's chunk.
+        self.prepare_generated_cells(
+            graph,
+            bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
+            blocked,
+        );
+        let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
+        let phase = phase.map(|_| std::time::Instant::now());
+        let report = self.derive_cell_lots(graph, bounds, sizes, |corners, _| blocked(corners));
+        crate::debug_log!(
+            "economy_phases",
+            "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
+            generation_ms,
+            phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0),
+            report.candidates,
+            report.created.len(),
+            report.retired.len(),
+            report.reattached.len()
+        );
+        report
+    }
+
     /// Ends the plan, leaving its parcel changes for the installer.
     pub(crate) fn finish(self) -> CellLotPlan {
         CellLotPlan {

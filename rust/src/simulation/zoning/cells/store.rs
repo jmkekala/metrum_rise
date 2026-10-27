@@ -152,34 +152,21 @@ impl CellStore<SharedMaps> {
             live.journal.clear();
             return;
         }
-        for index in self.frames.len()..live.frames.len() {
-            let frame = live.frames[index];
-            self.frames.push(frame);
-            self.frame_ids.insert(frame, index as u64 + 1);
-        }
-        fn copy_entries<K, V>(
-            log: &mut KeyLog<K>,
-            from: &impl StoreMap<K, V>,
-            to: &mut impl StoreMap<K, V>,
-        ) where
-            K: Copy + Ord,
-            V: Clone,
-        {
-            for key in log.drain_sorted() {
-                match from.get(&key) {
-                    Some(value) => to.insert(key, value.clone()),
-                    None => to.remove(&key),
-                }
-            }
-        }
+        copy_frames(&live.frames, &mut self.frames, &mut self.frame_ids);
         let journal = &mut live.journal;
-        copy_entries(&mut journal.blocks, &live.blocks, &mut self.blocks);
-        copy_entries(&mut journal.chunks, &live.chunks, &mut self.chunks);
-        copy_entries(&mut journal.frontages, &live.frontages, &mut self.frontages);
+        copy_entries(&mut journal.blocks, &live.blocks, &mut self.blocks, None);
+        copy_entries(&mut journal.chunks, &live.chunks, &mut self.chunks, None);
+        copy_entries(
+            &mut journal.frontages,
+            &live.frontages,
+            &mut self.frontages,
+            None,
+        );
         copy_entries(
             &mut journal.sources,
             &live.curve_sources,
             &mut self.curve_sources,
+            None,
         );
         self.follow_scalars(live);
     }
@@ -198,6 +185,85 @@ impl CellStore {
     /// Forgets the journal after the road tool's view took a whole copy of this store.
     pub(crate) fn clear_journal(&mut self) {
         self.journal.clear();
+    }
+
+    /// Adopts a deferred cell-lot plan's copy (`ROAD-68-G` part 7): `planned` started as a copy
+    /// of this store, which nothing wrote since, and the plan wrote only through the store's
+    /// journaling writes. Every entry the plan wrote is copied or removed and journaled here
+    /// for the road tool's view, frames after this store's last are appended, and the
+    /// alignments, counts, revision and stale chunks are the plan's: the store then equals the
+    /// plan's copy, as if the plan had run on it. O(written keys).
+    pub(crate) fn adopt_plan(&mut self, mut planned: CellStore<SharedMaps>) {
+        // A plan generates and claims; it never clears or invalidates the whole world.
+        debug_assert!(!planned.journal.whole);
+        copy_frames(&planned.frames, &mut self.frames, &mut self.frame_ids);
+        let (journal, log) = (&mut planned.journal, &mut self.journal);
+        copy_entries(
+            &mut journal.blocks,
+            &planned.blocks,
+            &mut self.blocks,
+            Some(&mut log.blocks),
+        );
+        copy_entries(
+            &mut journal.chunks,
+            &planned.chunks,
+            &mut self.chunks,
+            Some(&mut log.chunks),
+        );
+        copy_entries(
+            &mut journal.frontages,
+            &planned.frontages,
+            &mut self.frontages,
+            Some(&mut log.frontages),
+        );
+        copy_entries(
+            &mut journal.sources,
+            &planned.curve_sources,
+            &mut self.curve_sources,
+            Some(&mut log.sources),
+        );
+        self.road_alignments = planned.road_alignments;
+        self.painted_count = planned.painted_count;
+        self.claimed_count = planned.claimed_count;
+        self.revision = planned.revision;
+        self.stale_chunks.append(&mut planned.stale_chunks);
+    }
+}
+
+// Appends `from`'s frames after `to`'s last, with their ids (id = index + 1).
+fn copy_frames(
+    from: &impl FrameList,
+    to: &mut impl FrameList,
+    ids: &mut impl StoreMap<GridFrame, u64>,
+) {
+    for index in to.len()..from.len() {
+        let Some(frame) = from.get(index) else {
+            break;
+        };
+        to.push(frame);
+        ids.insert(frame, index as u64 + 1);
+    }
+}
+
+// Copies or removes each key `log` lists from `from` into `to`, draining it in key order, and
+// lists it in `to_log` when the target journals its writes.
+fn copy_entries<K, V>(
+    log: &mut KeyLog<K>,
+    from: &impl StoreMap<K, V>,
+    to: &mut impl StoreMap<K, V>,
+    mut to_log: Option<&mut KeyLog<K>>,
+) where
+    K: Copy + Ord,
+    V: Clone,
+{
+    for key in log.drain_sorted() {
+        match from.get(&key) {
+            Some(value) => to.insert(key, value.clone()),
+            None => to.remove(&key),
+        }
+        if let Some(to_log) = to_log.as_deref_mut() {
+            to_log.push(key);
+        }
     }
 }
 

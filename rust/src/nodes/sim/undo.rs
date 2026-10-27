@@ -175,6 +175,9 @@ impl SimCore {
     }
 
     fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
+        // Every edit adopts a commit's deferred lots before it records its undo (`ROAD-68-G`
+        // part 7), so the record holds them.
+        debug_assert!(!self.cell_lots_pending());
         if self.undo_stack.len() >= 30 && !self.transit_network.road_edit_is_staged() {
             self.undo_stack.pop_front();
         }
@@ -390,6 +393,9 @@ impl SimCore {
     /// Pops the last state snapshot from the undo stack and restores simulation state.
     /// Returns true if an action was undone.
     pub fn undo_action_internal(&mut self) -> bool {
+        // A commit's deferred lots first: the undo restores what they changed (`ROAD-68-G`
+        // part 7).
+        self.adopt_pending_cell_lots();
         // The restore's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| self.undo_action_in_pool())
     }

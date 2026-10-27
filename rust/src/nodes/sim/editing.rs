@@ -215,11 +215,15 @@ impl SimCore {
     }
 
     fn begin_terrain_stroke_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.terrain_stroke_active = true;
         self.terrain_stroke_has_changes = false;
     }
 
     fn prepare_batched_terrain_edit_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if !self.terrain_stroke_active {
             self.begin_terrain_stroke_internal();
         }
@@ -253,6 +257,8 @@ impl SimCore {
     }
 
     fn finish_terrain_authoring_edit_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         // Godot's main thread finishes terrain edits; the rebuilds are parallel (CODE-17).
         crate::thread_pools::install(|| self.finish_terrain_authoring_edit_in_pool());
     }
@@ -338,6 +344,8 @@ impl SimCore {
 
     /// Begins one batched terrain brush stroke.
     pub fn start_terrain_stroke_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if !self.terrain_stroke_active {
             self.begin_terrain_stroke_internal();
         }
@@ -345,6 +353,8 @@ impl SimCore {
 
     /// Finalizes one batched terrain brush stroke and runs deferred rebuild work once.
     pub fn end_terrain_stroke_internal(&mut self) -> bool {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if !self.terrain_stroke_active {
             return false;
         }
@@ -358,6 +368,8 @@ impl SimCore {
     }
 
     pub(crate) fn rebuild_building_entrances_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         // Godot's main thread runs this after its network edits; the lot refresh, attachment
         // repair and entrance rebuild are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
@@ -373,6 +385,8 @@ impl SimCore {
     }
 
     fn run_building_allocator_maintenance_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         // Main-thread edits run maintenance, whose removals reach parallel rebuilds (CODE-17).
         crate::thread_pools::install(|| {
             self.allocator.maintain(
@@ -421,6 +435,8 @@ impl SimCore {
         &mut self,
         target: BulldozeTarget,
     ) -> Option<bool> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         // Index repair and the deletion's rebuilds are parallel: shared pool (CODE-17).
         crate::thread_pools::install(|| {
             self.prepare_bulldoze_target_indices();
@@ -692,6 +708,8 @@ impl SimCore {
     /// Test driver: bulldozes road edge `edge_idx` as the bulldoze tool does.
     #[cfg(test)]
     pub(crate) fn bulldoze_road_edge_for_test(&mut self, edge_idx: usize) -> bool {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.bulldoze_road_edge(edge_idx)
     }
 
@@ -834,6 +852,8 @@ impl SimCore {
 
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
@@ -850,6 +870,8 @@ impl SimCore {
         radius: f32,
         strength: f32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.prepare_batched_terrain_edit_internal();
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
@@ -866,6 +888,8 @@ impl SimCore {
         target_height_m: f32,
         strength: f32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
@@ -882,6 +906,8 @@ impl SimCore {
 
     /// Smooths terrain toward the local neighborhood average in a circular area.
     pub fn smooth_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
@@ -903,6 +929,8 @@ impl SimCore {
         end_height_m: f32,
         strength: f32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let (start_x, start_y) = self
@@ -936,6 +964,8 @@ impl SimCore {
         target_height_m: f32,
         strength: f32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.prepare_batched_terrain_edit_internal();
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
@@ -956,6 +986,8 @@ impl SimCore {
         radius: f32,
         strength: f32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.prepare_batched_terrain_edit_internal();
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
@@ -976,6 +1008,8 @@ impl SimCore {
         end_height_m: f32,
         strength: f32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.prepare_batched_terrain_edit_internal();
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let (start_x, start_y) = self
@@ -1002,6 +1036,8 @@ impl SimCore {
 
     /// Sets or clears the no-building-spawn flag on an edge.
     pub fn set_no_building_spawn_internal(&mut self, edge_idx: i32, enabled: bool) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
@@ -1019,6 +1055,8 @@ impl SimCore {
 
     /// Sets the frontage-access policy of an edge by integer enum code.
     pub fn set_vehicle_frontage_access_internal(&mut self, edge_idx: i32, access_int: u8) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
@@ -1038,6 +1076,8 @@ impl SimCore {
 
     /// Sets the classification of an edge by integer class code.
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
@@ -1142,6 +1182,8 @@ impl SimCore {
         snap_to_existing_roads: bool,
         edit_plan: Option<&RoadEditPlan>,
     ) -> RoadAddOutcome {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         // Non-preview callers must also validate final junction geometry, not only the stroke.
         let fallback_plan = if edit_plan.is_none()
             && (!self.allocator.field_clearance.is_empty() || self.zoning.cells.has_reservations())
@@ -1494,6 +1536,8 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -1550,6 +1594,8 @@ impl SimCore {
         world_x: f32,
         world_z: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -1583,6 +1629,8 @@ impl SimCore {
         building_idx: usize,
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::extraction::ExtractorSiteSummary, String> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         let previous_area = self
             .resource_extraction
             .site_for_building(building_idx)
@@ -1694,6 +1742,8 @@ impl SimCore {
         expected_polygon: &[Vector2],
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         let same_building = self
             .allocator
             .buildings
@@ -1717,6 +1767,8 @@ impl SimCore {
         building_idx: usize,
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.prepare_field_polygon_validation()?;
         let previous_area = self
             .agriculture
@@ -1804,6 +1856,8 @@ impl SimCore {
     /// Repositions a network node. Unchanged moves leave authoritative state and undo history
     /// untouched.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
             let node_id = self.region_graph.get_valid_node(node_id as u32);
             let old_pos = self.region_graph.node(node_id).pos;
@@ -2062,6 +2116,8 @@ impl SimCore {
         to_edge: i32,
         to_lane: i32,
     ) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         traffic_log!(
             "[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}"
         );
@@ -2122,6 +2178,8 @@ impl SimCore {
 
     /// Clears all lane connections at a junction node.
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if (node_id as usize) < self.region_graph.node_count() {
             self.push_network_undo_for_local_topology(HashSet::new(), HashSet::from([node_id]));
             let keys: Vec<_> = self
@@ -2162,6 +2220,8 @@ impl SimCore {
 
     /// Clears lane connections for a specific source edge/lane at a junction.
     pub fn clear_lane_source_internal(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if node_id as usize >= self.region_graph.node_count() {
             return;
         }
@@ -2202,6 +2262,8 @@ impl SimCore {
     /// node's roadbed closure and its lanes. A toggle whose closure would not compile, or whose
     /// pieces would overlap fields or painted cells, is refused.
     pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return;
         }
@@ -2276,6 +2338,8 @@ impl SimCore {
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
     pub fn rebuild_network_surface_terrain_internal(&mut self) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(true);
     }
 
@@ -2421,6 +2485,8 @@ impl SimCore {
     /// Marks the node as [`Border`](crate::simulation::network::types::NodeType::Border),
     /// making a live connected road eligible for demand-driven household arrivals and external trips.
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
+        // A commit's deferred lots first: this edit reads or writes them (`ROAD-68-G` part 7).
+        self.adopt_pending_cell_lots();
         if node_id < 0 || (node_id as usize) >= self.region_graph.node_count() {
             debug_log!(
                 "economy",

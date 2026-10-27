@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use super::frame::record_crash_phase_for_core;
+use super::lot_adoption::CommitCellLotInputs;
 use super::road_edit_plan::RoadEditPlan;
 use super::road_preview::{RoadPreview, RoadPreviewFingerprint, RoadPreviewRequest};
 use super::road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
@@ -16,7 +17,6 @@ use super::road_tool_context::RoadToolPublication;
 use super::state::SimCore;
 use crate::debug_log;
 use crate::nodes::sim::benchmark::road_edit::RoadEditMetrics;
-use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use godot::prelude::Vector3;
 
@@ -80,6 +80,9 @@ impl SimCore {
         road_total: Instant,
         edit_metrics: RoadEditMetrics,
     ) -> RoadCommitOutcome {
+        // The previous commit's lots first, outside the pool (`ROAD-68-G` part 7): this edit
+        // reads and marks them.
+        self.adopt_pending_cell_lots();
         // The commit's rebuilds are parallel: shared pool (CODE-17).
         record_crash_phase_for_core(self, "add road shared pool wait");
         crate::thread_pools::install(|| {
@@ -153,6 +156,8 @@ impl SimCore {
         edit_metrics.zoning_ms = road_add.stage_ms.zoning_ms;
         let finalize_start = Instant::now();
         let mut surface_ms = 0.0;
+        // The lot regions the edit queued and its dirty edges, planned after the publication.
+        let mut deferred_lots = None;
         if road_add.committed {
             self.transit_network.bulk_load = false;
             record_crash_phase_for_core(self, "add road geometry finalize");
@@ -204,7 +209,14 @@ impl SimCore {
                 edit_metrics.lanes_and_reattach_ms = dt_lanes_us as f64 / 1000.0;
                 let buildings_start = Instant::now();
                 record_crash_phase_for_core(self, "add road entrance rebuild");
-                self.rebuild_building_entrances_for_commit(&dirty);
+                // Lots the edit queued are planned off the commit and adopted, with the
+                // entrances that follow them, at the next frame (question 33 (c)).
+                let regions = self.take_commit_cell_lot_regions();
+                if regions.is_empty() {
+                    self.rebuild_building_entrances_for_commit(&dirty);
+                } else {
+                    deferred_lots = Some((regions, dirty));
+                }
                 edit_metrics.buildings_ms = buildings_start.elapsed().as_secs_f64() * 1000.0;
 
                 // The routing hierarchy is rebuilt off the commit once the road-tool snapshot
@@ -252,6 +264,15 @@ impl SimCore {
             (None, self.publish_road_tool_view())
         };
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+        if let (Some((regions, dirty)), Some(graph)) = (deferred_lots, &routing_graph) {
+            record_crash_phase_for_core(self, "add road cell lots deferred");
+            let lots_start = Instant::now();
+            let view = road_snapshot
+                .as_ref()
+                .map(|publication| (&publication.view.roadbed, &publication.view.cells));
+            self.spawn_commit_cell_lots(regions, dirty, CommitCellLotInputs { graph, view });
+            edit_metrics.lots_spawn_ms = lots_start.elapsed().as_secs_f64() * 1000.0;
+        }
         if let Some(graph) = routing_graph {
             record_crash_phase_for_core(self, "add road cch rebuild scheduled");
             let routing_start = Instant::now();
@@ -307,41 +328,14 @@ impl SimCore {
 }
 
 impl SimCore {
-    // `rebuild_building_entrances_internal` for a commit (`ROAD-68-G`): the same lot refresh
-    // and attachment repair, but only the entrances whose inputs the edit may have changed are
-    // derived again: of the buildings the repair visits, the lots the refresh reattached and
-    // the buildings fronting the lane rebuild closure of `dirty`, whose geometry and lanes
-    // changed. The repair's pass also finds the fronting buildings: a building the repair moves
-    // is among its visits, so testing the attachment before the repair finds the same set. A
-    // cache already stale before the commit rebuilds whole. One parallel `O(B / P)` test plus
-    // the local work.
+    // `rebuild_building_entrances_internal` for a commit that queued no lot region
+    // (`ROAD-68-G`): the same lot refresh and attachment repair, but only the entrances whose
+    // inputs the edit may have changed are derived again (`repair_commit_entrances`).
     fn rebuild_building_entrances_for_commit(&mut self, dirty: &HashSet<usize>) {
         crate::thread_pools::install(|| {
-            let allocator = &self.allocator;
-            let cache_current = !allocator.entrances_dirty
-                && allocator.entrances.len() == allocator.buildings.len();
+            let cache_current = self.entrance_cache_current();
             let lots = self.prepare_cell_lots_internal();
-            let closure = LaneSystem::incremental_rebuild_edge_closure(&self.region_graph, dirty);
-            let mut changed = self.allocator.repair_road_attachments_that_may_act(
-                &self.region_graph,
-                &mut self.zoning,
-                |building| closure.contains(&building.edge_idx),
-            );
-            let lanes = &self.transit_network.lane_system;
-            if !cache_current {
-                self.allocator
-                    .rebuild_entrance_cache(&self.region_graph, lanes);
-                return;
-            }
-            let buildings = &self.allocator.buildings;
-            changed.extend(lots.reattached.iter().filter_map(|&parcel| {
-                let index = self.zoning.parcels.get(parcel)?.occupied_building()?;
-                (index < buildings.len()).then_some(index)
-            }));
-            changed.sort_unstable();
-            changed.dedup();
-            self.allocator
-                .rebuild_entrances_of(&changed, &self.region_graph, lanes);
+            self.repair_commit_entrances(dirty, cache_current, &lots);
         });
     }
 }

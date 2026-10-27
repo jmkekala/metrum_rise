@@ -16,6 +16,7 @@ mod frame;
 mod graded_edits;
 mod graded_stage;
 mod household_requests;
+mod lot_adoption;
 mod populated_city;
 mod road_commit;
 mod road_edit_plan;

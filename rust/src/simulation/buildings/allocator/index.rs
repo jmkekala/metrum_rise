@@ -233,7 +233,7 @@ impl BuildingAllocator {
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
-        self.explicit_cell_site_count = 0;
+        self.explicit_cell_sites.clear();
 
         let mut entries = std::mem::take(&mut self.index_scratch.entries);
         let mut grid_lists = std::mem::take(&mut self.index_scratch.grid_lists);
@@ -264,7 +264,9 @@ impl BuildingAllocator {
             }
         }
         for (idx, entry) in entries.iter().enumerate() {
-            self.explicit_cell_site_count += usize::from(entry.explicit_site);
+            if entry.explicit_site {
+                self.explicit_cell_sites.push(idx);
+            }
             include_chunk(&mut self.building_chunk_bounds, entry.chunk);
             self.max_building_support_m = self.max_building_support_m.max(entry.support_height_m);
             self.max_lot_radius_cells = self.max_lot_radius_cells.max(entry.lot_radius_cells);
@@ -401,8 +403,9 @@ impl BuildingAllocator {
 
         self.vacancy_pos.push(usize::MAX);
         let b = &self.buildings[building_idx];
-        self.explicit_cell_site_count +=
-            usize::from(b.parcel_id == 0 && b.zone_type == ZoneType::None);
+        if b.parcel_id == 0 && b.zone_type == ZoneType::None {
+            self.explicit_cell_sites.push(building_idx);
+        }
         let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
         self.building_chunks
             .entry(chunk)
@@ -495,11 +498,13 @@ impl BuildingAllocator {
                 return false;
             }
         }
-        if gone.explicit_site {
-            let Some(count) = self.explicit_cell_site_count.checked_sub(1) else {
-                return false;
-            };
-            self.explicit_cell_site_count = count;
+        if gone.explicit_site && !remove_sorted(&mut self.explicit_cell_sites, removed) {
+            return false;
+        }
+        if moved.is_some_and(|entry| entry.explicit_site)
+            && !rename_last(&mut self.explicit_cell_sites, last, removed)
+        {
+            return false;
         }
         // Both counts follow the removal; f32::max ignores NaN, so a NaN never holds a maximum.
         self.kept_index.maxima |= !exclude_maximum(
@@ -637,7 +642,7 @@ impl BuildingAllocator {
                 allocator.max_lot_radius_cells.to_bits(),
                 allocator.max_building_support_count,
                 allocator.max_lot_radius_count,
-                allocator.explicit_cell_site_count,
+                allocator.explicit_cell_sites.clone(),
             )
         };
         let kept = lists(self);

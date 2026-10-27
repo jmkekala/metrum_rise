@@ -13,7 +13,7 @@ mod restore;
 mod validation;
 
 use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
-use super::{ParcelStore, ZoningParcel};
+use super::{SharedParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
 use glam::DVec2;
 use godot::prelude::Vector3;
@@ -21,7 +21,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 pub(crate) use cell_editing::CellZoningEdit;
-pub(crate) use cell_lots::{CellLotGeneration, CellLotPlanner, CellLotRemovalUndo};
+pub(crate) use cell_lots::{
+    CellLotGeneration, CellLotPlanner, CellLotRemovalUndo, PlannedCellLots,
+};
 
 /// Road-aligned parcel zoning system.
 #[derive(Clone)]
@@ -29,7 +31,7 @@ pub struct ZoningSystem {
     /// Validated built-in zoning-profile registry shared by the parcel tool, allocator, and saves.
     pub profiles: Arc<ZoningProfileRegistry>,
     /// Stable road-aligned parcel store used as zoning authority.
-    pub parcels: ParcelStore,
+    pub parcels: SharedParcelStore,
     /// Road-generated cell paint and derived lot coverage; unpainted cells reserve no land.
     pub(crate) cells: super::cells::CellStore,
     // Pending dirty lot regions, served by the `cell lots` queue (`SIM-02-H`).
@@ -69,7 +71,7 @@ impl ZoningSystem {
             .unwrap_or_else(|err| panic!("could not load built-in zoning profiles: {err}"));
         Self {
             profiles,
-            parcels: ParcelStore::default(),
+            parcels: SharedParcelStore::default(),
             cells: super::cells::CellStore::default(),
             cell_lot_queue: Default::default(),
             cell_external_revision: 0,

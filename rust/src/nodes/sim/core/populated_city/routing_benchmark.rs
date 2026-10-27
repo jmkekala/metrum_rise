@@ -1303,6 +1303,12 @@ fn profile_commits(
         let published_chunks = core.pending_road_mesh_chunks.len();
         assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
         let click_to_ack_ms = road_total.elapsed().as_secs_f64() * 1e3;
+        // The first frame adopts the commit's deferred cell lots (`ROAD-68-G` part 7). It is
+        // the routing hold's, which advances nothing, so the zoning products after it are the
+        // commit's, as a build that plans the lots in the commit leaves them before any frame.
+        let adopt = Instant::now();
+        let first = core.step_frame(FRAME_DT_S);
+        let first_frame_ms = adopt.elapsed().as_secs_f64() * 1e3;
         // The commit's zoning products, to compare builds that must not change them: cell
         // paint and lot claims, parcels in store order and the queued lot regions; and the
         // generated cell cache, which a build may legitimately fill less.
@@ -1328,22 +1334,27 @@ fn profile_commits(
             "terrain_query_index_ms": core.terrain_query_index_update_us as f64 / 1000.0,
             "agent_invalidate_ms": m.agent_invalidate_ms,
             "lanes_and_reattach_ms": m.lanes_and_reattach_ms, "buildings_ms": m.buildings_ms,
+            "lots_spawn_ms": m.lots_spawn_ms,
             "routing_ms": m.routing_ms, "finalize_ms": m.finalize_ms, "mesh_ms": m.mesh_ms,
             "snapshot_ms": m.snapshot_ms,
             "core_work_ms": m.core_work_ms, "dirty_edges": m.dirty_edges,
         });
         // Frames until the rebuilt hierarchy is adopted (D7), then the adoption frame, which
         // refreshes the flow fields on it and serves the routes that waited.
-        let adopt = Instant::now();
-        let mut held_frames = 0;
-        let next = loop {
-            let frame = core.step_frame(FRAME_DT_S);
-            if !frame.routing_held {
-                break frame;
+        let rest = Instant::now();
+        let mut held_frames = usize::from(first.routing_held);
+        let next = if first.routing_held {
+            loop {
+                let frame = core.step_frame(FRAME_DT_S);
+                if !frame.routing_held {
+                    break frame;
+                }
+                held_frames += 1;
             }
-            held_frames += 1;
+        } else {
+            first
         };
-        let adoption_latency_ms = adopt.elapsed().as_secs_f64() * 1e3;
+        let adoption_latency_ms = first_frame_ms + rest.elapsed().as_secs_f64() * 1e3;
         let after = core.step_frame(FRAME_DT_S);
         // `TERRAIN-07-E`: the kept tiles' job (the undo record's replaced tiles, baked off the
         // frame on the shared pool) against the commit's stages and the frames after it, in
@@ -1391,6 +1402,9 @@ fn profile_commits(
             "publish_ms": publish_ms, "click_to_ack_ms": click_to_ack_ms,
             "published_chunks": published_chunks, "stages": stages,
             "held_frames": held_frames, "adoption_wait_ms": next.adoption_ms,
+            "lots_adopted": first.lots.adopted, "lots_frame_ms": first_frame_ms,
+            "lots_wait_ms": first.lots_wait_ms, "lots_install_ms": first.lots.install_ms,
+            "lots_publish_ms": first.lots.publish_ms,
             "adoption_latency_ms": adoption_latency_ms,
             "adoption_frame_pathing_ms": next.pathing_ms,
             "adoption_frame_agent_ms": next.agent_ms,
