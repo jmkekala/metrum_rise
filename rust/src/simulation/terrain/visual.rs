@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Visual-terrain sources and bounded captures of resident visual samples.
+//! Visual-terrain sources and bounded captures of resident source samples.
 
 use super::*;
 
@@ -22,17 +22,18 @@ impl TerrainVisualSource for TerrainSystem {
     }
 }
 
-/// Captured visual samples using the existing terrain storage chunk layout, for dependency
-/// checks; no city-wide map or sample copy occurs.
+/// Captured source samples (the base, `TerrainSystem::sample_height_world`) using the existing
+/// terrain storage chunk layout, for the site feasibility cache's dependency checks: the tie-in
+/// rays read the base (`docs/terrain.md` T12 (a)). No city-wide map or sample copy occurs.
 #[derive(Debug)]
-pub(crate) struct TerrainVisualOverlay {
+pub(crate) struct TerrainSourceCapture {
     data: SparseChunkGrid<f32>,
     // Explicit coverage distinguishes a reset-to-default chunk from an untouched sparse chunk.
     chunks: HashSet<(usize, usize)>,
 }
 
-impl TerrainVisualOverlay {
-    /// Captures existing storage chunks intersecting a local transaction's reset footprint.
+impl TerrainSourceCapture {
+    /// Captures the source storage chunks intersecting the world bounds.
     pub(crate) fn capture_region(
         &mut self,
         terrain: &TerrainSystem,
@@ -53,10 +54,10 @@ impl TerrainVisualOverlay {
         }
     }
 
-    /// Starts an empty local edit against the supplied terrain layout.
+    /// Starts an empty capture against the supplied terrain layout.
     pub(crate) fn new(terrain: &TerrainSystem) -> Self {
         Self {
-            data: terrain.data.empty_like(),
+            data: terrain.source_data.empty_like(),
             chunks: HashSet::new(),
         }
     }
@@ -65,7 +66,7 @@ impl TerrainVisualOverlay {
         if self.chunks.insert((x, z)) {
             let size = self.data.chunk_size();
             self.data.copy_rect_from(
-                &terrain.data,
+                &terrain.source_data,
                 x * size,
                 (x + 1) * size - 1,
                 z * size,
@@ -74,10 +75,10 @@ impl TerrainVisualOverlay {
         }
     }
 
-    /// Exact post-adoption sample check, including structural grading outside patch interiors.
+    /// Whether every captured source sample still holds its value, exactly.
     pub(crate) fn matches_current(&self, terrain: &TerrainSystem) -> bool {
         self.chunks
             .iter()
-            .all(|&(x, z)| self.data.chunk_values_match(&terrain.data, x, z))
+            .all(|&(x, z)| self.data.chunk_values_match(&terrain.source_data, x, z))
     }
 }

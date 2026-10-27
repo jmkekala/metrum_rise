@@ -158,6 +158,10 @@ struct Run {
     framed: HashMap<Kind, usize>,
     culled: Vec<Duration>,
     full: Vec<Duration>,
+    // Off-lane cars grounded, and the 16 m bins they occupy, summed over frames: how many poses
+    // one shared graded-surface gather could serve (`TERRAIN-07-F` round 3).
+    off_lane_cars: usize,
+    off_lane_bins: usize,
 }
 
 fn count_framed(
@@ -352,6 +356,8 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
             "surface_points": points, "surface_points_on_site": on_site,
             "perf07_camera_instances_per_frame":
                 timed.instances as f64 / timed.comparisons.max(1) as f64,
+            "off_lane_cars_per_frame": timed.off_lane_cars as f64 / frames.max(1) as f64,
+            "off_lane_bins_per_frame": timed.off_lane_bins as f64 / frames.max(1) as f64,
             "culled_mean_ms": mean_ms(&timed.culled),
             "culled_p99_ms": percentile_ms(&mut timed.culled, 0.99),
             "full_pose_mean_ms": mean_ms(&timed.full),
@@ -373,6 +379,19 @@ fn compare_frames_timed(core: &mut SimCore, frames: usize, speed: f32, run: &mut
         run.full.push(full_time);
         run.instances += assert_same(&format!("timed frame {frame}"), &culled, &full);
         run.comparisons += 1;
+        let mut bins: Vec<[i32; 2]> = culled
+            .car_ground_flags
+            .iter()
+            .flat_map(|(key, flags)| {
+                let transforms = culled.car_transforms[key].chunks_exact(12);
+                transforms.zip(flags).filter(|(_, flag)| **flag != 0)
+            })
+            .map(|(t, _)| [t[3], t[11]].map(|v| (v / 16.0).floor() as i32))
+            .collect();
+        run.off_lane_cars += bins.len();
+        bins.sort_unstable();
+        bins.dedup();
+        run.off_lane_bins += bins.len();
     }
 }
 

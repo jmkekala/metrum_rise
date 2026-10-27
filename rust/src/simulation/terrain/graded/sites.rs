@@ -56,10 +56,11 @@ impl SiteSource for NoSites {
 }
 
 // One site of a buffer: its footprint corners and surfaces (ranges into the buffer's points and
-// surfaces) and its support height.
+// surfaces), the footprint's XZ bounds and its support height.
 #[derive(Clone, Copy, Debug)]
 struct SiteRecord {
     footprint: (u32, u32),
+    bounds: [f64; 4],
     height: f32,
     surfaces: (u32, u32),
 }
@@ -98,6 +99,7 @@ impl SiteBuffer {
         let surfaces = self.surfaces.len() as u32;
         self.sites.push(SiteRecord {
             footprint: (start, self.points.len() as u32),
+            bounds: bounds_of(footprint),
             height: support_height_m,
             surfaces: (surfaces, surfaces),
         });
@@ -138,8 +140,10 @@ impl SiteBuffer {
     }
 
     /// Gathers the sites meeting `rect` from a ready `source` in the source's order, without the
-    /// canonical order and the material edges: only [`Self::for_each_pad_seam`] may read them,
-    /// whose seams do not depend on the order (the selection's floor). `O(sites)`.
+    /// canonical order and the material edges, for the readers that do not depend on the order:
+    /// [`Self::for_each_pad_seam`] (the selection's floor), and [`Self::pad_at`],
+    /// [`Self::height`] and [`Self::material_at`], which compare only the sites holding their
+    /// point (the point queries, `docs/terrain.md` T19 (a)). `O(sites)`.
     pub(super) fn gather_unordered(&mut self, source: &(impl SiteSource + ?Sized), rect: [f64; 4]) {
         debug_assert!(
             source.ready(),
@@ -209,9 +213,15 @@ impl SiteBuffer {
         &self.points[site.footprint.0 as usize..site.footprint.1 as usize]
     }
 
-    /// The support height of the site at canonical position `rank`, metres.
-    pub(super) fn height(&self, rank: u32) -> f64 {
-        f64::from(self.ranked(rank as usize).height)
+    /// The support height of the site at buffer index `index` ([`Self::pad_at`]), metres.
+    pub(super) fn height(&self, index: u32) -> f64 {
+        f64::from(self.sites[index as usize].height)
+    }
+
+    // Whether the site at buffer index `a` comes before the one at `b` in canonical order. Sites
+    // equal in that order are equal in content, so either answers for both.
+    fn precedes(&self, a: usize, b: usize) -> bool {
+        compare_sites(&self.points, &self.surfaces, &self.sites[a], &self.sites[b]).is_lt()
     }
 
     /// The material edges, sorted by key: `[ax, az, bx, bz]`, interior on the left.
@@ -251,45 +261,50 @@ impl SiteBuffer {
         }
     }
 
-    /// The canonical position of the first site whose support footprint holds the world point
-    /// `(x, z)` by the allocator's predicate, else [`NO_SITE`]. `O(sites x corners)`.
+    /// The buffer index of the first site in canonical order whose support footprint holds the
+    /// world point `(x, z)` by the allocator's predicate, else [`NO_SITE`]. In any gather order:
+    /// only the holders are compared. `O(sites x corners)`.
     pub(super) fn pad_at(&self, x: f64, z: f64) -> u32 {
         let point = Vector2::new(x as f32, z as f32);
-        (0..self.sites.len())
-            .find(|&rank| {
-                let site = self.ranked(rank);
-                let [min_x, min_z, max_x, max_z] = bounds_of(self.footprint(site));
-                x >= min_x - FOOTPRINT_PAD_M
-                    && x <= max_x + FOOTPRINT_PAD_M
-                    && z >= min_z - FOOTPRINT_PAD_M
-                    && z <= max_z + FOOTPRINT_PAD_M
-                    && site_footprint_contains(self.footprint(site), point)
-            })
-            .map_or(NO_SITE, |rank| rank as u32)
+        let mut first = None;
+        for (index, site) in self.sites.iter().enumerate() {
+            if inside_box(site.bounds, x, z, FOOTPRINT_PAD_M)
+                && site_footprint_contains(self.footprint(site), point)
+                && first.is_none_or(|first| self.precedes(index, first))
+            {
+                first = Some(index);
+            }
+        }
+        first.map_or(NO_SITE, |index| index as u32)
     }
 
     /// The material of the first surface holding the world point `(x, z)` (closed), sites in
-    /// canonical order and each site's surfaces in authored order; `None` for none.
+    /// canonical order and each site's surfaces in authored order; `None` for none. In any
+    /// gather order: only the sites with a surface holding the point are compared.
     /// `O(surfaces x corners)`.
     pub(super) fn material_at(&mut self, x: f64, z: f64) -> Option<SiteSurfaceMaterial> {
-        for rank in 0..self.sites.len() {
-            let site = *self.ranked(rank);
+        let mut first: Option<(usize, SiteSurfaceMaterial)> = None;
+        for index in 0..self.sites.len() {
+            let site = self.sites[index];
             for surface in site.surfaces.0..site.surfaces.1 {
                 let record = self.surfaces[surface as usize];
                 if inside_box(record.bounds, x, z, SURFACE_PAD_M) {
                     self.oriented_ring(record.points);
                     if polygon_holds(&self.ring, x, z) {
-                        return Some(record.material);
+                        if first.is_none_or(|(first, _)| self.precedes(index, first)) {
+                            first = Some((index, record.material));
+                        }
+                        break;
                     }
                 }
             }
         }
-        None
+        first.map(|(_, material)| material)
     }
 
-    /// Rasterizes the `Pad` class over the lattice `xs` x `zs` (row-major by `z`): `pads[k]`
-    /// is the canonical position of the first site whose footprint holds point `k`, else
-    /// [`NO_SITE`]. Pruned, each footprint's rows take the even-odd rule away from its sides
+    /// Rasterizes the `Pad` class over the lattice `xs` x `zs` (row-major by `z`) of a canonical
+    /// gather: `pads[k]` is the buffer index ([`Self::height`]) of the first site in canonical
+    /// order whose footprint holds point `k`, else [`NO_SITE`]. Pruned, each footprint's rows take the even-odd rule away from its sides
     /// ([`for_each_span_point`]) and the allocator's predicate within `SPAN_MARGIN_M` of them;
     /// unpruned, the predicate at every point. `O(points in the footprints + points near their
     /// sides x corners)`.
@@ -303,7 +318,7 @@ impl SiteBuffer {
         pads.clear();
         pads.resize(xs.len() * zs.len(), NO_SITE);
         for rank in 0..self.sites.len() {
-            let site = *self.ranked(rank);
+            let (index, site) = (self.order[rank], *self.ranked(rank));
             if site.footprint.1 - site.footprint.0 < 3 {
                 continue;
             }
@@ -314,7 +329,7 @@ impl SiteBuffer {
                     && (sure
                         || site_footprint_contains(footprint, Vector2::new(x as f32, z as f32)))
                 {
-                    pads[k] = rank as u32;
+                    pads[k] = index;
                 }
             });
         }

@@ -357,7 +357,8 @@ impl GradedSurface<'_> {
         listed.sort_unstable_by_key(Seam::key);
         listed.dedup_by_key(|seam| seam.key());
         let roads = listed.len();
-        sites.gather(self.sites, window);
+        // The queries read the sites in any order (`SiteBuffer::gather_unordered`).
+        sites.gather_unordered(self.sites, window);
         // No sample names a pad seam, so it takes no band.
         sites.for_each_pad_seam(|seam| sort(seam, 0.0, listed, rest));
         listed[roads..].sort_unstable_by_key(Seam::key);

@@ -263,14 +263,10 @@ impl SimCore {
 
     // Grounds each car bucket's off-lane instances; buckets are independent.
     fn ground_off_lane_cars(&self, snapshot: &mut RenderSnapshot) {
-        // Borrow buckets directly: HashMap's rayon adapter would allocate a staging Vec.
-        snapshot
-            .car_transforms
-            .iter_mut()
-            .par_bridge()
-            .for_each(|(&key, buffer)| {
-                self.solve_vehicle_transforms(key / 10, buffer, &snapshot.car_ground_flags[&key]);
-            });
+        let flags = &snapshot.car_ground_flags;
+        par_for_each_bucket(&mut snapshot.car_transforms, |key, buffer| {
+            self.solve_vehicle_transforms(key / 10, buffer, &flags[&key]);
+        });
     }
 }
 
@@ -338,13 +334,30 @@ fn fill_buckets<T: Send>(
     cars: bool,
     push: impl Fn(&mut Vec<T>, &PosedAgent) + Sync,
 ) {
-    buckets.iter_mut().par_bridge().for_each(|(&key, bucket)| {
+    par_for_each_bucket(buckets, |key, bucket| {
         for agent in chunks.iter().flatten() {
             if agent.car == cars && agent.key == key {
                 push(bucket, agent);
             }
         }
     });
+}
+
+// Runs `visit` on every bucket on the current pool without allocating: rayon's map adapter
+// stages the entries in a `Vec` and `par_bridge` allocates its thread flags on every call, so
+// the buckets (at most one per `u8` key) are borrowed into a stack array instead.
+fn par_for_each_bucket<T: Send>(
+    buckets: &mut HashMap<u8, Vec<T>>,
+    visit: impl Fn(u8, &mut Vec<T>) + Sync,
+) {
+    let mut entries: [Option<(u8, &mut Vec<T>)>; 256] = std::array::from_fn(|_| None);
+    for (entry, (&key, bucket)) in entries.iter_mut().zip(buckets.iter_mut()) {
+        *entry = Some((key, bucket));
+    }
+    entries
+        .par_iter_mut()
+        .flatten()
+        .for_each(|(key, bucket)| visit(*key, bucket));
 }
 
 #[cfg(test)]

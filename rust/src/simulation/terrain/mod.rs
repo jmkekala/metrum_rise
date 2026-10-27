@@ -16,7 +16,7 @@ pub(crate) mod rect_clip;
 pub mod rect_loops;
 mod visual;
 
-pub(crate) use visual::{TerrainVisualOverlay, TerrainVisualSource};
+pub(crate) use visual::{TerrainSourceCapture, TerrainVisualSource};
 
 pub use chunks::{
     TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,

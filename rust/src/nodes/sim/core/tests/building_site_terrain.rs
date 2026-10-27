@@ -1920,6 +1920,10 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
 // one `VEG_PLANT` line per placed plant (its packed record's bits), and per plant one
 // `VEG_CLASS x z class base ground` line (the bits of its position, its ground class, 0 natural,
 // 1 road, 2 pad, 3 paved, 4 graded, and the base and graded ground heights there in metres).
+// With `METRUM_VEG_WHY` naming a file of `x z canopy` lines (position bits, 1 for the canopy
+// layer), one `VEG_WHY x z canopy graded legacy` line each: the clearance tests that refuse a
+// wild plant there under the graded rule (`clear_site`, T31) and under the legacy one it replaced
+// ([`legacy_and_graded_clearance`]).
 #[test]
 #[ignore = "diagnostic: the hillside vegetation placement digest compared across builds; --ignored --nocapture"]
 fn kuopio_vegetation_placement_digest_dump() {
@@ -1987,4 +1991,74 @@ fn kuopio_vegetation_placement_digest_dump() {
             }
         }
     }
+    let Ok(path) = std::env::var("METRUM_VEG_WHY") else {
+        return;
+    };
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let fields: Vec<u32> = line.split(' ').map(|v| v.parse().unwrap()).collect();
+        let (x, z) = (f32::from_bits(fields[0]), f32::from_bits(fields[1]));
+        let (graded, legacy) =
+            legacy_and_graded_clearance(core, &surface, &mut scratch, x, z, fields[2] == 1);
+        println!("VEG_WHY {} {} {} {graded} {legacy}", fields[0], fields[1], fields[2]);
+    }
+}
+
+// The tests that refuse a wild plant at `(x, z)` under the graded clearance (`clear_site`,
+// `TERRAIN-07-F` round 1, T31) and under the legacy one (the visual base, the visible roads and
+// the site supports), each as a mask over the 3x3 footprint: 1 road class, 2 pad class, 4 paved
+// class, 8 visible road (a deck or a grounded road), 16 water, 32 field, 64 relief past the
+// layer's limit from the centre (the graded ground, or the legacy visual base), 128 a site's
+// support (legacy). The canopy's tree clearance is the same in both and not tested.
+fn legacy_and_graded_clearance(
+    core: &SimCore,
+    surface: &crate::simulation::terrain::graded::GradedSurface<'_>,
+    scratch: &mut crate::simulation::terrain::graded::QueryScratch,
+    x: f32,
+    z: f32,
+    canopy: bool,
+) -> (u32, u32) {
+    use crate::simulation::terrain::graded::GroundClass;
+    let (radius, relief) = if canopy { (6.0f32, 3.0f32) } else { (2.5, 1.6) };
+    let visual = |p: Vector2| {
+        core.heightmap.sample_visual_height_world(p.x, p.y) * crate::config::HEIGHT_SCALE
+    };
+    let (cx, cz) = (f64::from(x), f64::from(z));
+    surface.gather_near(cx, cz, f64::from(radius) + 0.01, scratch);
+    let graded_y = surface.ground_height_near(cx, cz, scratch) as f32;
+    let legacy_y = visual(Vector2::new(x, z));
+    let (mut graded, mut legacy) = (0, 0);
+    for dz in [-radius, 0.0, radius] {
+        for dx in [-radius, 0.0, radius] {
+            let p = Vector2::new(x + dx, z + dz);
+            let (px, pz) = (f64::from(p.x), f64::from(p.y));
+            let mut shared = 0;
+            if core.watermap.visible_depth_world(p.x, p.y) > 0.001 {
+                shared |= 16;
+            }
+            if core.transit_network.roadbed.height_at(p.x, p.y).is_some() {
+                shared |= 8;
+            }
+            if core.allocator.field_clearance.covers_point(p) {
+                shared |= 32;
+            }
+            graded |= shared
+                | match surface.mask_near(px, pz, scratch) {
+                    GroundClass::Road => 1,
+                    GroundClass::Pad => 2,
+                    GroundClass::Paved(_) => 4,
+                    GroundClass::Natural | GroundClass::Graded => 0,
+                };
+            if (surface.ground_height_near(px, pz, scratch) as f32 - graded_y).abs() > relief {
+                graded |= 64;
+            }
+            legacy |= shared;
+            if core.allocator.sample_building_site_height(p).is_some() {
+                legacy |= 128;
+            }
+            if (visual(p) - legacy_y).abs() > relief {
+                legacy |= 64;
+            }
+        }
+    }
+    (graded, legacy)
 }

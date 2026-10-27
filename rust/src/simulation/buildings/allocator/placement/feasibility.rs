@@ -7,7 +7,7 @@ mod zoning;
 use super::*;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::network::roadbed::PieceId;
-use crate::simulation::terrain::TerrainVisualOverlay;
+use crate::simulation::terrain::TerrainSourceCapture;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -22,6 +22,10 @@ pub(crate) struct BuildingSiteEnvironment<'a> {
 
 type Bounds = (f32, f32, f32, f32);
 type Epoch = (u64, u64, u64, u64, u64);
+
+// Growth of the box whose neighbouring sites a solve reads: the neighbour test's 5 cm contact
+// tolerance, with a wide margin for the f32 rounding of the boxes.
+const SITE_DEPENDENCY_SLACK_M: f32 = 1.0;
 type Verdict = Result<f32, DemandSpawnPlacementRejection>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,9 +62,14 @@ impl PoseKey {
     }
 }
 
+// What a solve read, by the generation that moves when it changes (`docs/terrain.md` T12 (a)):
+// the base terrain the tie-in rays sample and the roads they and the nearest-road probes meet,
+// within the reach of the lot (`bounds`), and the neighbouring sites the height test compares,
+// which meet the lot itself (`site_bounds`).
 struct Dependencies {
     bounds: Bounds,
-    terrain: TerrainVisualOverlay,
+    site_bounds: Bounds,
+    terrain: TerrainSourceCapture,
     // Each roadbed piece in bounds with the generation that built it.
     roads: Vec<(PieceId, u64)>,
     sites: BuildingSiteTerrainSnapshot,
@@ -83,39 +92,57 @@ impl Dependencies {
         p: &ResolvedPlacement,
         env: BuildingSiteEnvironment<'_>,
     ) -> Self {
-        let b = allocator.placement_site_bounds(p);
+        let lot = allocator.placement_site_bounds(p);
+        let footprint = polygon_bounds(&allocator.placement_required_flat_support_footprint(p));
+        let b = (
+            lot.0.min(footprint.0),
+            lot.1.min(footprint.1),
+            lot.2.max(footprint.2),
+            lot.3.max(footprint.3),
+        );
         Self::capture_bounds(allocator, b, env)
     }
 
+    // `b` holds the solve's support footprint.
     fn capture_bounds(
         allocator: &BuildingAllocator,
         b: Bounds,
         env: BuildingSiteEnvironment<'_>,
     ) -> Self {
-        let margin = super::super::site::site_feasibility_dependency_margin_m(env.terrain);
-        let bounds = (b.0 - margin, b.1 - margin, b.2 + margin, b.3 + margin);
-        let mut terrain = TerrainVisualOverlay::new(env.terrain);
+        let grow = |m: f32| (b.0 - m, b.1 - m, b.2 + m, b.3 + m);
+        let bounds = grow(super::super::site::site_feasibility_dependency_margin_m(env.terrain));
+        let site_bounds = grow(SITE_DEPENDENCY_SLACK_M);
+        let mut terrain = TerrainSourceCapture::new(env.terrain);
         terrain.capture_region(env.terrain, bounds.0, bounds.1, bounds.2, bounds.3);
         let roads = Self::roads(bounds, env.road_surface);
-        let sites = allocator
-            .terrain_site_snapshot_for_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3);
+        let sites = Self::sites(site_bounds, allocator);
         Self {
             bounds,
+            site_bounds,
             terrain,
             roads,
             sites,
         }
     }
 
-    fn matches(&self, allocator: &BuildingAllocator, env: BuildingSiteEnvironment<'_>) -> bool {
-        if !self.terrain.matches_current(env.terrain) {
-            return false;
-        }
-        if Self::roads(self.bounds, env.road_surface) != self.roads {
-            return false;
-        }
-        let b = self.bounds;
-        self.sites == allocator.terrain_site_snapshot_for_world_bounds(b.0, b.1, b.2, b.3)
+    fn sites(b: Bounds, allocator: &BuildingAllocator) -> BuildingSiteTerrainSnapshot {
+        allocator.terrain_site_snapshot_for_world_bounds(b.0, b.1, b.2, b.3)
+    }
+
+    // Whether the inputs whose generation moved between the epochs `then` (the capture's, or the
+    // last check's) and `now` still hold their captured values: an unmoved generation leaves
+    // its inputs unchanged, so only the moved ones are compared. The solve reads the base, not
+    // the visual buffer.
+    fn matches(
+        &self,
+        then: Epoch,
+        now: Epoch,
+        allocator: &BuildingAllocator,
+        env: BuildingSiteEnvironment<'_>,
+    ) -> bool {
+        (then.0 == now.0 || self.terrain.matches_current(env.terrain))
+            && (then.2 == now.2 || Self::roads(self.bounds, env.road_surface) == self.roads)
+            && (then.3 == now.3 || Self::sites(self.site_bounds, allocator) == self.sites)
     }
 }
 
@@ -134,7 +161,8 @@ impl CachedSite {
         env: BuildingSiteEnvironment<'_>,
     ) -> bool {
         self.epoch.4 == epoch.4
-            && (self.epoch == epoch || self.dependencies.matches(allocator, env))
+            && (self.epoch == epoch
+                || self.dependencies.matches(self.epoch, epoch, allocator, env))
     }
 }
 
@@ -353,18 +381,20 @@ mod tests {
                     ],
                     "render span={span}, origin=({origin_x},{origin_z}), road={local}"
                 );
-                let mut terrain_snapshot = TerrainVisualOverlay::new(&terrain);
+                let mut terrain_snapshot = TerrainSourceCapture::new(&terrain);
                 terrain_snapshot.capture_region(&terrain, bounds.0, bounds.1, bounds.2, bounds.3);
                 let dependencies = Dependencies {
                     bounds,
+                    site_bounds: bounds,
                     terrain: terrain_snapshot,
                     roads,
-                    sites: allocator.terrain_site_snapshot_for_world_bounds(
-                        bounds.0, bounds.1, bounds.2, bounds.3,
-                    ),
+                    sites: Dependencies::sites(bounds, &allocator),
                 };
+                // Every generation moved, so every input is compared.
                 let matches = |road_surface: &RoadbedSystem| {
                     dependencies.matches(
+                        (0, 0, 0, 0, 0),
+                        (1, 1, 1, 1, 0),
                         &allocator,
                         BuildingSiteEnvironment {
                             road_surface,
