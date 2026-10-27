@@ -7128,6 +7128,10 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Measured levers (fresh, probes).** `GL2` to 1 km (`GL3` from there): +0.189 against the
       fix's +0.197, the same primitives (the pose's graded tiles all lie within 1 km): no lever.
       The near levels are: `GL0` to 128 m and `GL1` to 256 m left +0.46, 64 and 128 m +0.19.
+      (a) itself (round 8's last probe, read in round 9; evidence only, the fix's scripts with
+      `GL0` to 32 m and `GL1` to 64 m, the matrix library, two rounds mirrored, unpaced
+      gamescope): exact 2.127 ms, the fix +0.208, (a) +0.142 (1.78 M primitives against the
+      fix's 1.81 M): it takes 0.07 ms and does not close the pose alone.
     - **Options.** (a) Nearer levels still (`GL0` to 32 m, `GL1` to 64 m, `GL2` beyond; `T5`'s
       tuning): 2 m cells from 64 m, about 30 pixels a cell there, so the graded slopes near a road
       show their facets in close views. (b) A graded variant without the mask for tiles whose

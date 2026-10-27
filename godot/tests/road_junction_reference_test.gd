@@ -143,11 +143,12 @@ func _fixtures() -> Array[Dictionary]:
 			_road(Vector2(-150, -96), Vector2(150, -96)), _road(Vector2(-96, -150), Vector2(-96, 150)),
 			_road(Vector2(96, -150), Vector2(96, 150)), _road(Vector2(0, 0), Vector2(0, 96))]})
 		# The T on flat ground, then the terrain sloped under it (roads stay): cut beside the east
-		# arm, fill beside the west arm, cross-fall across the side arm. fill_edge looks up at the
-		# west arm's south edge from the foot of its fill, 2.4 m below the road, where the graded
-		# cut edge may sag onto the skirt by up to k s / 2 (T34 (b), 12.5 cm at GL0).
+		# arm, fill beside the west arm, cross-fall across the side arm. fill_edge looks along the
+		# side arm's west edge from 5 m beside it, where the level road stands on a fill of about
+		# 0.4 m and the graded cut edge may sag onto the skirt by up to k s / 2 (T34 (b), 12.5 cm
+		# at GL0).
 		result.append({"name": "t_cutfill", "terrain_after": true, "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))],
-			"edge_views": [{"view": "fill_edge", "from": Vector2(-24.0, 13.0), "eye_m": 0.6, "at": Vector2(-32.0, 5.5), "at_m": 0.0}]})
+			"edge_views": [{"view": "fill_edge", "from": Vector2(-10.0, 30.0), "eye_m": 0.4, "at": Vector2(-4.8, 25.0), "at_m": -0.1}]})
 		# A 3 m mound across the side arm and a 2 m hollow under the west arm, sculpted before the
 		# roads, so the roads' profiles cut and fill and the mound's flanks fall across them.
 		result.append({"name": "t_mound", "sculpt": [[Vector2(0, 40), 30.0, 0.15], [Vector2(-45, 0), 25.0, -0.10]],
