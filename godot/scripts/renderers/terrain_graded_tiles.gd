@@ -103,11 +103,12 @@ var patch_lists_requested: Dictionary = {}
 var refused: Dictionary = {}
 var patch_lists_refused: Dictionary = {}
 # Tiles whose level's pool had no free slot (an exhausted pool, the typed error the pool sizes are
-# meant to rule out, T23): tile key -> [level code, request key, token]. Not asked again at that
-# level and token until a slot of the level frees (_free_slot); counted and logged once, drawn as
-# a refused tile is (its base cell) instead of baked again every frame (`TERRAIN-07-G` round 7:
-# the 100k city's saved pose wants more `GL2` tiles than the pool's 2,048 slots, and the re-asked
-# bakes starved every farther tile).
+# meant to rule out, T23): tile key -> [level code, request key, token, asked again]. Counted and
+# logged once, drawn as a refused tile is (its base cell) instead of baked again every frame
+# (`TERRAIN-07-G` round 7: the 100k city's saved pose wants more `GL2` and `GL3` tiles than the
+# pools' 2,048 slots each, and the re-asked bakes starved every farther tile, T54). A freed slot
+# asks the closest one of its level again (_free_slot), which stays recorded, so its patches draw
+# as they did, until it installs or finds the pool exhausted again.
 var _exhausted: Dictionary = {}
 # Patch key -> {root: Node3D (the set's nodes), nodes: Array[MultiMeshInstance3D],
 # materials: Array[ShaderMaterial] (GL0-GL3), watched: Array}.
@@ -889,6 +890,7 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 			return
 		slot = free.pop_back()
 	_write_slot(code, slot, tile)
+	_exhausted.erase(key)
 	var cell_code := code if code < 3 else base_code(step)
 	# A tile moving between levels frees its slot in the old level's pool (slot numbers repeat
 	# across pools: round 7 compared the numbers and kept a GL0 slot 0 moving to GL1 slot 0).
@@ -1031,22 +1033,29 @@ func _free_slot(entry: Dictionary) -> void:
 	var pool: Dictionary = pools[code]
 	var free: Array[int] = pool["free"]
 	free.append(int(entry["slot"]))
-	# A freed slot: the tiles that found the level's pool exhausted are asked again, closest first
-	# (_request_tiles); those that still find none are recorded again. O(exhausted tiles), none
-	# while the pools suffice.
-	if _exhausted.is_empty():
-		return
+	# A freed slot asks the closest tile that found the level's pool exhausted again (it stays
+	# recorded until it installs or finds no slot again). O(exhausted tiles), none while the pools
+	# suffice.
+	var closest := Vector2i.ZERO
+	var best := INF
 	for tile: Vector2i in _exhausted.keys():
-		if int(_exhausted[tile][0]) == code:
-			_exhausted.erase(tile)
-			_wanted[tile] = true
+		var record: Array = _exhausted[tile]
+		if int(record[0]) != code or bool(record[3]):
+			continue
+		var distance := _tile_distance(tile)
+		if distance < best:
+			best = distance
+			closest = tile
+	if best < INF:
+		_exhausted[closest][3] = true
+		_wanted[closest] = true
 
 # Records that `tile` found level `code`'s pool exhausted at `request_key` and `token`: counted,
 # logged, not asked again until a slot of the level frees, and its patches' sets draw without it
 # (_draw_state). O(1).
 func _exhaust(tile: Vector2i, code: int, request_key: String, token: int) -> void:
 	_wanted.erase(tile)
-	_exhausted[tile] = [code, request_key, token]
+	_exhausted[tile] = [code, request_key, token, false]
 	counters["pool_exhausted"] += 1
 	MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(tile)])
 	for patch_key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
@@ -1341,9 +1350,11 @@ func _request_tiles() -> void:
 			continue
 		var exhausted: Array = _exhausted.get(tile, [])
 		if not exhausted.is_empty() and String(exhausted[1]) == request_key and int(exhausted[2]) == token:
-			_wanted.erase(tile)
-			continue
-		_exhausted.erase(tile)
+			if not bool(exhausted[3]):
+				_wanted.erase(tile)
+				continue
+		else:
+			_exhausted.erase(tile)
 		# A new level needs a free slot (a rebake at the installed level rewrites its own).
 		var same_level := not current.is_empty() and int(current["level"]) == level.x
 		if not same_level and (pools[level.x]["free"] as Array).is_empty():

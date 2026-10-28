@@ -305,8 +305,9 @@ func _check_refusals_are_asked_once(host: Node3D, simulation: SimulationNode, la
 
 # An exhausted pool (T23): with one slot a level, the tiles that find no slot are recorded once,
 # not baked again every frame, and the render settles with every patch drawing (a tile without a
-# slot draws its base cell, a counted error); a freed slot asks them again (`TERRAIN-07-G` round
-# 7: the 100k city's re-asked bakes never settled and starved every farther tile).
+# slot draws its base cell, a counted error); a freed slot asks the closest of them again
+# (`TERRAIN-07-G` round 7: the 100k city's re-asked bakes never settled and starved every farther
+# tile).
 func _check_exhausted_pools(simulation: SimulationNode, host: Node3D, layout: Dictionary, world_size: Vector2) -> void:
 	var graded := GradedTiles.new()
 	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [1, 1, 1, 1])
@@ -337,10 +338,12 @@ func _check_exhausted_pools(simulation: SimulationNode, host: Node3D, layout: Di
 	_expect(code >= 0, "a level holds an installed tile and waiting ones")
 	if code >= 0:
 		graded._undesire(freed)
-		var asked := true
+		var asked := 0
 		for tile: Vector2i in graded._exhausted.keys():
-			asked = asked and int(graded._exhausted[tile][0]) != code
-		_expect(asked, "a freed slot asks its level's waiting tiles again")
+			if int(graded._exhausted[tile][0]) == code and bool(graded._exhausted[tile][3]):
+				asked += 1
+				_expect(graded._wanted.has(tile), "the tile asked again is wanted")
+		_expect(asked == 1, "a freed slot asks its level's closest waiting tile again: %d" % asked)
 	graded.clear()
 	for key: Vector2i in resident.keys():
 		(resident[key]["node"] as Node).queue_free()
