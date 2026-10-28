@@ -7,7 +7,9 @@
 //! A bake reads only its tile's window (the lattice grown by the cap or the band), so a tile's
 //! bytes never depend on the batch, tile order or worker count.
 
+use super::behind::rises_above_a_seam;
 use super::coverage::{covering_triangles, rasterize};
+use super::extras::{ExtraScratch, Named, square_extras};
 use super::grade::{CAP_M, continues_ground};
 use super::portal::{Finished, PortalWindow, open};
 use super::prune::{
@@ -102,7 +104,7 @@ impl Level {
     pub fn seam_capacity(self) -> usize {
         match self {
             Self::Gl0 | Self::Gl1 | Self::Gl2 => 512,
-            Self::Gl3 { .. } => 128,
+            Self::Gl3 { .. } => 512,
         }
     }
 
@@ -114,6 +116,16 @@ impl Level {
         match self {
             Self::Gl0 | Self::Gl1 | Self::Gl2 => 256,
             Self::Gl3 { .. } => 128,
+        }
+    }
+
+    /// Row texels of one slot for the exact mask's per-square extra candidates (T48 (a),
+    /// `TERRAIN-07-G`). A texel's seam channel points at its square's list by one more than the
+    /// list's first texel times 2048, so the capacity stays below 8192.
+    pub fn extra_capacity(self) -> usize {
+        match self {
+            Self::Gl0 | Self::Gl1 | Self::Gl2 => 2048,
+            Self::Gl3 { .. } => 2048,
         }
     }
 }
@@ -198,6 +210,14 @@ pub struct TilePayload {
     /// The material edges the texels name, tile-local `[ax, az, bx, bz]`, the surface on the
     /// left, in key order.
     pub edges: Vec<[f32; 4]>,
+    /// The exact mask's extra candidates per lattice square (T48 (a)): rows of [`Self::seams`]
+    /// that no corner of the square names and that may be nearest at one of its points. Lists
+    /// back to back as row texels, each from a texel of its own: `(count, row, row, row)`, then
+    /// four rows a texel, zero padded.
+    pub extras: Vec<[f32; 4]>,
+    /// Per square with extra candidates, in lattice point order: the index of its lower corner
+    /// in [`Self::texels`] and its list's first texel in [`Self::extras`].
+    pub square_extras: Vec<(u32, u32)>,
     /// The conflict walls along the road seams in the tile (`T2` (c)), seam by seam in key
     /// order, each seam's faces along it; then the structure walls along its wall seams
     /// (`TERRAIN-07-C`, T22 4 (a)), likewise, then the portal openings' side walls along the
@@ -206,6 +226,9 @@ pub struct TilePayload {
     /// Whether any sample is graded, covered, in a pad, paved or within the band of a seam or
     /// a material edge.
     pub graded: bool,
+    /// Whether the drawn terrain rises above the road top along a seam the mask may take
+    /// somewhere in the tile (T49 (c)): its cells draw the behind-the-road variant.
+    pub behind: bool,
     /// What the tile was baked from.
     pub inputs: TileInputs,
     /// Bake measurements.
@@ -249,6 +272,17 @@ pub enum BakeError {
         /// The level's capacity.
         capacity: usize,
     },
+    /// The squares' extra candidate lists take more row texels than the level's slot holds.
+    ExtraCapacity {
+        /// The tile.
+        tile: TileKey,
+        /// The level.
+        level: Level,
+        /// Row texels the lists take.
+        count: usize,
+        /// The level's capacity.
+        capacity: usize,
+    },
     /// The site source cannot answer rectangle queries without a scan (its index is being
     /// rebuilt): the caller prepares it and bakes again. Nothing is baked.
     SitesUnavailable,
@@ -258,9 +292,9 @@ impl BakeError {
     // The failing tile at its level, for the lowest-tile rule; none before any tile is baked.
     fn key(&self) -> Option<(Level, TileKey)> {
         match *self {
-            Self::SeamCapacity { tile, level, .. } | Self::EdgeCapacity { tile, level, .. } => {
-                Some((level, tile))
-            }
+            Self::SeamCapacity { tile, level, .. }
+            | Self::EdgeCapacity { tile, level, .. }
+            | Self::ExtraCapacity { tile, level, .. } => Some((level, tile)),
             Self::SitesUnavailable => None,
         }
     }
@@ -314,6 +348,7 @@ pub(super) struct BakeScratch {
     portals: PortalWindow,
     decks: Vec<f32>,
     bores_near: Vec<(u32, f64)>,
+    extras: ExtraScratch,
 }
 
 // One row band's sampling products (`TERRAIN-07-E`): its ground samples left below their base
@@ -706,6 +741,7 @@ fn bake_tile(
         portals,
         decks,
         bores_near,
+        extras,
         inputs: gathered,
         ..
     } = scratch;
@@ -881,9 +917,19 @@ fn bake_tile(
         graded |= named > 0;
     }
 
-    // The seam row: the named road seams in key order, then the named bore seams, then the
-    // named bridge mouth rows.
+    // The squares' extra candidates of the exact mask (T48 (a)), on the final names.
     let bores = portals.bores();
+    let named = Named {
+        seams: &seams[..],
+        road_count,
+        bores,
+        walls: &wall_seams[..],
+        mouth: &wall_bottoms[..],
+    };
+    square_extras(&named, (xs, zs), nearest, (&*bins, &*first), band, extras);
+
+    // The seam row: the named road seams in key order, then the named bore seams, then the
+    // named bridge mouth rows; the squares' extra candidates are named rows too.
     let seam_at = |index: usize| named_seam((&seams[..], bores, &wall_seams[..]), index);
     row_of.clear();
     row_of.resize(seams.len() + bores.len() + wall_seams.len(), NO_SEAM);
@@ -892,6 +938,7 @@ fn bake_tile(
             row_of[named as usize] = 0;
         }
     }
+    extras.mark_rows(row_of);
     out.seams.clear();
     out.seam_heights.clear();
     for (index, row) in row_of.iter_mut().enumerate() {
@@ -912,6 +959,7 @@ fn bake_tile(
             texel[2] = row_of[named as usize] as f32;
         }
     }
+    extras.pack(row_of, &mut out.extras, &mut out.square_extras);
 
     // The edge row: the named material edges in key order, and each texel's material word.
     let edges = sites.edges();
@@ -972,9 +1020,16 @@ fn bake_tile(
         &mut out.walls,
     );
 
+    // The behind-the-road flag (T49 (c)), on the drawn terrain: the base plus the texel's
+    // `f32` delta, as the cells draw it.
+    let drawn = |i: usize, j: usize| {
+        let delta = out.texels[j * xs.len() + i][0];
+        base.at_stops(&columns[i].1, &base.stop(1, zs[j])) + f64::from(delta)
+    };
+    out.samples = [xs.len(), zs.len()];
+    out.behind = rises_above_a_seam(out, (xs, zs), origin, drawn);
     out.tile = tile;
     out.level = level;
-    out.samples = [xs.len(), zs.len()];
     out.graded = graded;
     out.stats = stats;
     std::mem::swap(&mut out.inputs, gathered);
@@ -993,6 +1048,15 @@ fn bake_tile(
             tile,
             level,
             count: out.edges.len(),
+            capacity,
+        });
+    }
+    let capacity = level.extra_capacity();
+    if out.extras.len() > capacity {
+        return Err(BakeError::ExtraCapacity {
+            tile,
+            level,
+            count: out.extras.len(),
             capacity,
         });
     }

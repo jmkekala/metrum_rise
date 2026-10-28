@@ -64,6 +64,8 @@ struct TileResult {
     request: GradedTileRequest,
     samples: [usize; 2],
     graded: bool,
+    // Its cells draw the behind-the-road variant (T49 (c)).
+    behind: bool,
     seams: usize,
     edges: usize,
     texels: Vec<u8>,
@@ -95,6 +97,7 @@ impl TileResult {
             request,
             samples: payload.samples,
             graded: payload.graded,
+            behind: payload.behind,
             seams: payload.seams.len(),
             edges: payload.edges.len(),
             texels,
@@ -115,6 +118,7 @@ impl TileResult {
         dict.set("samples_x", self.samples[0] as i64);
         dict.set("samples_z", self.samples[1] as i64);
         dict.set("graded", self.graded);
+        dict.set("behind", self.behind);
         dict.set("seam_count", self.seams as i64);
         dict.set("edge_count", self.edges as i64);
         dict.set("wall_count", (self.walls.len() / WALL_FACE_BYTES) as i64);
@@ -226,6 +230,7 @@ fn failure_label(failure: Failure) -> &'static str {
         Failure::Bake(BakeError::SitesUnavailable) => "sites_unavailable",
         Failure::Bake(BakeError::SeamCapacity { .. }) => "seam_capacity",
         Failure::Bake(BakeError::EdgeCapacity { .. }) => "edge_capacity",
+        Failure::Bake(BakeError::ExtraCapacity { .. }) => "extra_capacity",
     }
 }
 
@@ -350,6 +355,7 @@ fn bake_level(
                 request: *request,
                 samples: payload.samples,
                 graded: payload.graded,
+                behind: payload.behind,
                 seams: payload.seams.len(),
                 edges: payload.edges.len(),
                 texels,

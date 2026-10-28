@@ -315,6 +315,123 @@ fn kuopio_yard_core() -> SimCore {
     core
 }
 
+// A `GL0` lattice cell's diagonal: the graded surface's triangle under a point lies within it.
+const GL0_DIAGONAL_M: f32 = 0.5 * std::f32::consts::SQRT_2 + 0.01;
+
+// Distance from `point` to the footprint polygon's sides.
+fn pad_depth(footprint: &[Vector2], point: Vector2) -> f32 {
+    (0..footprint.len())
+        .map(|i| {
+            let (a, b) = (footprint[i], footprint[(i + 1) % footprint.len()]);
+            let t = ((point - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+            point.distance_to(a + (b - a) * t)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+// The graded checks of the yard tests `TERRAIN-07-G` round 1 deleted with their exact-cut paving
+// (`settle_and_check_yards`), against the graded surface: a large yard's surface query is its
+// pad's support height wherever the `GL0` triangle under the point lies inside the footprint,
+// picking from above meets the surface query, and a relief the pad cannot tie into within the
+// tie-in reach (the graded terrain's 64 m cap at 1:2, `docs/terrain.md` T12 (a)) refuses it.
+#[test]
+fn large_paved_yards_remain_flat_over_hills_and_depressions() {
+    for (grade, max_relief, accepted) in [
+        (-0.35_f32, 3.0, true),
+        (0.35, 3.0, true),
+        (-0.35, 40.0, false),
+        (0.35, 40.0, false),
+    ] {
+        let mut core = test_core();
+        core.heightmap = TerrainSystem::with_chunking(257, 257, 1.0, 64, 0.0);
+        core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
+        for z in 0..257 {
+            for x in 0..257 {
+                let hill = (((z as f32 - 128.0).abs() - 10.0).max(0.0) * grade.abs())
+                    .min(max_relief)
+                    * grade.signum();
+                core.heightmap
+                    .set_height(x, z, (20.0 + hill) / crate::config::HEIGHT_SCALE);
+            }
+        }
+        road_terrain_plan::commit_ready(
+            &mut core,
+            vec![
+                Vector3::new(-96.0, 20.0, 0.0),
+                Vector3::new(96.0, 20.0, 0.0),
+            ],
+        );
+        let asset = register_yard(&mut core);
+        let mut manifest = core
+            .allocator
+            .registry
+            .get(&asset)
+            .unwrap()
+            .manifest
+            .clone();
+        let building = manifest.building.as_mut().unwrap();
+        building.lot_width_cells = 4;
+        building.lot_depth_cells = 4;
+        manifest.mesh_parts[0].position = [-10.0, 0.0, -10.0];
+        manifest.anchors[0].position = [-10.0, 0.0, -15.0];
+        manifest.anchors[1].position[2] = -20.0;
+        manifest.site_surfaces[0].vertices =
+            vec![[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]];
+        core.allocator
+            .registry
+            .register("test", manifest, String::new());
+        for side in [-1.0, 1.0] {
+            let result = place_yard(&mut core, 0, side, &asset);
+            if accepted {
+                result.unwrap();
+            } else {
+                assert_eq!(result, Err(crate::simulation::buildings::allocator::DemandSpawnPlacementRejection::SiteSupportTieInInvalid));
+            }
+        }
+        if !accepted {
+            assert!(core.allocator.buildings.is_empty());
+            continue;
+        }
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let mut checked = 0;
+        for site in &core.allocator.building_sites {
+            let [a, b, c, d] =
+                <[Vector2; 4]>::try_from(site.surfaces[0].vertices_world.as_slice()).unwrap();
+            for x in 0..11 {
+                for z in 0..11 {
+                    let u = (3.0 + x as f32 * 3.4) / 40.0;
+                    let v = (3.0 + z as f32 * 3.4) / 40.0;
+                    let p = a.lerp(b, u).lerp(d.lerp(c, u), v);
+                    if !site.contains_point(p)
+                        || pad_depth(&site.footprint_world, p) <= GL0_DIAGONAL_M
+                    {
+                        continue;
+                    }
+                    let queried = core.get_world_surface_height_internal(p);
+                    assert!(
+                        (queried - site.support_height_m).abs() < 1e-5,
+                        "yard query {queried} != pad {} at {p:?}",
+                        site.support_height_m
+                    );
+                    let hit = core
+                        .intersect_world_surface_internal(
+                            Vector3::new(p.x, queried + 10.0, p.y),
+                            Vector3::DOWN,
+                        )
+                        .unwrap();
+                    assert!(
+                        (hit.y - queried).abs() < 1e-5,
+                        "yard picking {hit:?} != surface query {queried}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "{checked} yard points checked");
+    }
+}
+
 // `TERRAIN-07-C`: the Kuopio yards as graded terrain clients. Their tiles bake without errors at
 // every level, each pad's samples hold its support height bitwise, and every lattice point
 // near the yards takes the material class the legacy paving partition gives it.

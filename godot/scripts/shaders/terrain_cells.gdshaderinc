@@ -144,6 +144,17 @@ vec4 cell_texel(ivec2 index, int slot) {
 vec4 cell_row(int index, int slot) {
 	return texelFetch(graded_rows, ivec3(index, 0, slot), 0);
 }
+
+// The seam channel (residency.rs `seam_channel`): the texel's named row (-1 none) plus 2048 times
+// one more than the first row texel of the extra candidate list of the square whose lower corner
+// it is (0 none), an integer below 2^24.
+int cell_seam_list(float channel) {
+	return (int(channel) + 1) >> 11;
+}
+
+int cell_seam_row(float channel) {
+	return int(channel) - (cell_seam_list(channel) << 11);
+}
 #endif
 
 // The base b(p) at a world point in hm, bilinear over the patch heightmap's texels in f32: the
@@ -336,8 +347,9 @@ struct CellMask {
 
 // The exact seam mask and the material class at a fragment of a graded cell (docs/terrain.md
 // "The exact seam mask"): bilinear sdf of the four samples around it; within two texels of zero
-// the exact signed distance to the nearest of their seams. The class: the nearest sample's away
-// from a material edge; near one, the nearest sample on the fragment's side of the nearest edge.
+// the exact signed distance to the nearest of their seams and their square's extra candidates.
+// The class: the nearest sample's away from a material edge; near one, the nearest sample on the
+// fragment's side of the nearest edge.
 CellMask cell_mask(CellFrame frame, vec2 p) {
 	vec2 sx = cell_axis_stop(frame, p.x, 0);
 	vec2 sz = cell_axis_stop(frame, p.y, 1);
@@ -353,13 +365,29 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 	if (abs(mask.sdf) < 2.0 * spacing_m) {
 		CellSeamHit best = CellSeamHit(1e30, 0.0, 1e30, 1 << 30, 0.0);
 		for (int c = 0; c < 4; c++) {
-			int index = int(t[c].b);
+			int index = cell_seam_row(t[c].b);
 			if (index < 0) {
 				continue;
 			}
 			CellSeamHit hit = cell_segment_at(cell_row(index, frame.slot), p, index);
 			if (cell_nearer(hit, best)) {
 				best = hit;
+			}
+		}
+		// The square's extra candidates (T48 (a)): the seams no corner names that may be nearest
+		// in it, after the slot's seam heights: (count, row, row, row), then four rows a texel.
+		int list = cell_seam_list(t[0].b);
+		if (list > 0) {
+			int at = 2 * graded_seam_capacity + graded_edge_capacity + list - 1;
+			int count = int(cell_row(at, frame.slot).x);
+			for (int k = 1; k <= count; k++) {
+				vec4 rows = cell_row(at + k / 4, frame.slot);
+				int c = k % 4;
+				int index = int(c == 0 ? rows.x : (c == 1 ? rows.y : (c == 2 ? rows.z : rows.w)));
+				CellSeamHit hit = cell_segment_at(cell_row(index, frame.slot), p, index);
+				if (cell_nearer(hit, best)) {
+					best = hit;
+				}
 			}
 		}
 		if (best.index < (1 << 30)) {

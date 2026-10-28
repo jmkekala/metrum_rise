@@ -695,6 +695,10 @@ fn graded_slot_rows_census() {
     let mut out = Vec::new();
     for level in levels {
         let (mut seams_max, mut edges_max, mut failures) = (0usize, 0usize, Vec::new());
+        // The extra candidate lists (T48 (a)): row texels, squares and longest list per tile.
+        let (mut extras_max, mut squares_max, mut list_max) = (0usize, 0usize, 0usize);
+        // Tiles flagged for the behind-the-road variant (T49 (c)).
+        let mut behind = Vec::new();
         // Wall faces per tile, then per patch over the tiles it lists (an upper bound of the
         // faces the patch draws: each face draws in the patch holding its midpoint).
         let mut faces = std::collections::HashMap::new();
@@ -703,7 +707,15 @@ fn graded_slot_rows_census() {
                 Ok(()) => {
                     seams_max = seams_max.max(out[0].seams.len());
                     edges_max = edges_max.max(out[0].edges.len());
+                    extras_max = extras_max.max(out[0].extras.len());
+                    squares_max = squares_max.max(out[0].square_extras.len());
+                    let lists = out[0].square_extras.iter();
+                    let longest = lists.map(|&(_, first)| out[0].extras[first as usize][0] as usize);
+                    list_max = list_max.max(longest.max().unwrap_or(0));
                     faces.insert(tile, out[0].walls.len());
+                    if out[0].behind {
+                        behind.push((tile.x, tile.z));
+                    }
                 }
                 Err(BakeError::SeamCapacity { count, .. }) => {
                     seams_max = seams_max.max(count);
@@ -712,6 +724,10 @@ fn graded_slot_rows_census() {
                 Err(BakeError::EdgeCapacity { count, .. }) => {
                     edges_max = edges_max.max(count);
                     failures.push((tile.x, tile.z, "edges", count));
+                }
+                Err(BakeError::ExtraCapacity { count, .. }) => {
+                    extras_max = extras_max.max(count);
+                    failures.push((tile.x, tile.z, "extras", count));
                 }
                 Err(error) => panic!("{error:?}"),
             }
@@ -722,6 +738,9 @@ fn graded_slot_rows_census() {
                 "level": format!("{level:?}"), "tiles": tiles.len(),
                 "seam_capacity": level.seam_capacity(), "edge_capacity": level.edge_capacity(),
                 "row_seams_max": seams_max, "row_edges_max": edges_max,
+                "extra_capacity": level.extra_capacity(), "row_extras_max": extras_max,
+                "extra_squares_max": squares_max, "extra_list_max": list_max,
+                "behind_tiles": behind.len(), "first_behind": &behind[..behind.len().min(12)],
                 "patches": patch_lists.len(),
                 "patches_listed": patch_lists.iter().filter(|list| !list.is_empty()).count(),
                 "patch_wall_faces_max": patch_lists.iter().map(|list| list.iter().map(|tile| faces.get(tile).copied().unwrap_or(0)).sum::<usize>()).max(),

@@ -120,7 +120,7 @@ impl BinGrid {
 
     // The bins `[x0, x1, z0, z1]` meeting `area`, empty as `[1, 0, 1, 0]` when it misses the
     // rectangle.
-    fn range(&self, area: [f64; 4]) -> [u32; 4] {
+    pub(super) fn range(&self, area: [f64; 4]) -> [u32; 4] {
         if !meets(area, self.rect) {
             return [1, 0, 1, 0];
         }

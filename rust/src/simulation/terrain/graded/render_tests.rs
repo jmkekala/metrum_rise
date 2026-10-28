@@ -11,6 +11,7 @@ use super::coverage::covered_height_at;
 use super::tests::{LEVELS, compiled, fixtures, window_tiles};
 use super::tile::{Evaluation, bake_tiles_with, lattice};
 use super::*;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem};
 use crate::simulation::terrain::TerrainSystem;
 
@@ -283,6 +284,19 @@ fn mask_sdf(frame: Frame, payload: &TilePayload, p: [f32; 2]) -> f32 {
                 best = hit;
             }
         }
+        // The square's extra candidates (T48 (a)), by the same order.
+        let point = (iz as usize * width + ix as usize) as u32;
+        if let Ok(k) = payload.square_extras.binary_search_by_key(&point, |&(at, _)| at) {
+            let first = payload.square_extras[k].1 as usize;
+            let count = payload.extras[first][0] as usize;
+            for k in 1..=count {
+                let index = payload.extras[first + k / 4][k % 4] as i32;
+                let hit = segment_at(payload.seams[index as usize], p, index);
+                if nearer(&hit, &best) {
+                    best = hit;
+                }
+            }
+        }
         if best.index < NO_HIT.index {
             sdf = best.signed_distance;
         }
@@ -478,40 +492,58 @@ fn the_exact_mask_equals_coverage() {
     }
 }
 
-// The reference bend's outer tangent (`road_junction_reference_test.gd`'s `bend_45`): the first
-// chord of the outer arc is 0.49 m long. Checked densely (5 mm) against the roadbed's closed
-// coverage predicate around the five plan pixels of `TERRAIN-07-G` (world (0.54-0.84, -4.97)).
-fn bend_outer_tangent_mask_equals_coverage(level: Level) {
+// The exact mask against the roadbed's closed coverage predicate on a dense `step` grid over
+// the world rectangle `area` (`[x0, z0, x1, z1]`), at `level`, flat ground: every point's tile
+// baked once. A grid through a straight edge's line samples its boundary, where the closed
+// coverage holds and the mask's `sdf` is 0 (kept, drawn under the road), so callers offset it.
+fn dense_mask_equals_coverage(graph: &RegionGraph, level: Level, area: [f64; 4], step: f64) {
     let terrain = super::tests::terrain(|_, _| 0.0);
-    let roadbed = compiled(&super::tests::hub(&[180.0, 45.0], false));
-    let tile = TileKey { x: 0, z: -1 };
-    let payload = bake_level(&terrain, &roadbed, &[tile], level)
-        .pop()
-        .expect("bend tile");
-    let frame = frame(
-        level_code(level),
-        tile,
-        anchor_hm(&terrain),
-        cell_hm(&terrain),
-    );
+    let roadbed = compiled(graph);
+    let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+    let mut tiles: Vec<TileKey> = Vec::new();
+    let [nx, nz] = [0, 1].map(|axis| ((area[axis + 2] - area[axis]) / step).round() as usize);
+    let point = |ix: usize, iz: usize| [area[0] + ix as f64 * step, area[1] + iz as f64 * step];
+    for iz in 0..=nz {
+        for ix in 0..=nx {
+            let [x, z] = point(ix, iz);
+            tiles.push(TileKey::at(x, z));
+        }
+    }
+    tiles.sort();
+    tiles.dedup();
+    let payloads = bake_level(&terrain, &roadbed, &tiles, level);
     let mut pieces = Vec::new();
-    let (mut wrong, mut first) = (0, None);
-    for iz in 0..=120 {
-        for ix in 0..=160 {
-            let world = [0.3 + ix as f64 * 0.005, -5.3 + iz as f64 * 0.005];
-            let local = [world[0] as f32, (world[1] + 64.0) as f32];
-            let covered = covered_height_at(&roadbed, world[0], world[1], &mut pieces).is_some();
-            let sdf = mask_sdf(frame, &payload, local);
+    let (mut wrong, mut tested, mut first) = (0, 0, None);
+    for iz in 0..=nz {
+        for ix in 0..=nx {
+            let [x, z] = point(ix, iz);
+            let tile = TileKey::at(x, z);
+            let payload = &payloads[tiles.binary_search(&tile).expect("baked tile")];
+            let [ox, oz] = tile.origin();
+            let local = [(x - ox) as f32, (z - oz) as f32];
+            let frame = frame(level_code(level), tile, anchor, cell);
+            let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
+            let sdf = mask_sdf(frame, payload, local);
+            tested += 1;
             if (sdf < 0.0) != covered {
                 wrong += 1;
-                first.get_or_insert((world, sdf));
+                first.get_or_insert(([x, z], sdf));
             }
         }
     }
+    assert!(tested > 0);
     assert_eq!(
         wrong, 0,
-        "{level:?}: {wrong} points differ; first {first:?}"
+        "{level:?}: {wrong} of {tested} points differ; first {first:?}"
     );
+}
+
+// The reference bend's outer tangent (`road_junction_reference_test.gd`'s `bend_45`): the first
+// chord of the outer arc is 0.49 m long. Checked densely (5 mm) around the five plan pixels of
+// `TERRAIN-07-G` (world (0.54-0.84, -4.97)).
+fn bend_outer_tangent_mask_equals_coverage(level: Level) {
+    let graph = super::tests::hub(&[180.0, 45.0], false);
+    dense_mask_equals_coverage(&graph, level, [0.3, -5.3, 1.1, -4.7], 0.005);
 }
 
 // At `GL0` (0.5 m) the lattice square's corners at x = 0.5 m lie in the short chord's Voronoi
@@ -521,13 +553,31 @@ fn bend_outer_tangent_mask_equals_coverage_at_gl0() {
     bend_outer_tangent_mask_equals_coverage(Level::Gl0);
 }
 
-// At `GL1` (1 m, the plan view's level) no corner of the square names the short chord: the
-// mask takes the nearer of its neighbours' clamped ends, whose half-planes put ground just
-// outside the road inside it (`TERRAIN-07-G` round 3's GPU read-back, `docs/terrain.md` T48).
+// At `GL1` (1 m, the plan view's level) no corner of the square names the short chord: without
+// the square's extra candidates the mask took the nearer of its neighbours' clamped ends, whose
+// half-planes put ground just outside the road inside it (`TERRAIN-07-G` round 3's GPU
+// read-back, `docs/terrain.md` T48); the square lists the chord (T48 (a)).
 #[test]
-#[ignore = "TERRAIN-07-G open (T48): the exact mask's candidate seams miss a seam no corner names"]
 fn bend_outer_tangent_mask_equals_coverage_at_gl1() {
     bend_outer_tangent_mask_equals_coverage(Level::Gl1);
+}
+
+// `terminal`'s end cap (`road_junction_reference_test.gd`, 25 plan pixels at `GL1` per slope in
+// `TERRAIN-07-G` round 3, the bend's signature, T48): the cap's arcs are chords shorter than
+// `GL1`'s and `GL2`'s spacing. Every point of a 1 cm grid over the cap and its band.
+fn terminal_cap_mask_equals_coverage(level: Level) {
+    let graph = super::tests::hub(&[180.0], false);
+    dense_mask_equals_coverage(&graph, level, [-2.0013, -9.0017, 9.0, 9.0], 0.01);
+}
+
+#[test]
+fn terminal_cap_mask_equals_coverage_at_gl1() {
+    terminal_cap_mask_equals_coverage(Level::Gl1);
+}
+
+#[test]
+fn terminal_cap_mask_equals_coverage_at_gl2() {
+    terminal_cap_mask_equals_coverage(Level::Gl2);
 }
 
 // The exact mask equals coverage across a bridge's mouth (`TERRAIN-07-D` round 9, the `bridge_t`
@@ -676,11 +726,26 @@ fn packed_slots_hold_the_payload_bitwise() {
             let [width, depth] = payload.samples;
             for j in 0..depth {
                 for i in 0..width {
-                    assert_eq!(
-                        read(&texels, j * side + i),
-                        payload.texels[j * width + i].map(f32::to_bits)
-                    );
+                    let point = (j * width + i) as u32;
+                    let mut texel = payload.texels[point as usize];
+                    let list = payload.square_extras.iter().find(|&&(at, _)| at == point);
+                    if let Some(&(_, first)) = list {
+                        texel[2] = seam_channel(texel[2], first);
+                    }
+                    let packed = read(&texels, j * side + i);
+                    assert_eq!(packed, texel.map(f32::to_bits));
+                    // The shader's decoding gives the row and the list back.
+                    let channel = f32::from_bits(packed[2]) as i32;
+                    let decoded = (channel + 1) >> 11;
+                    assert_eq!(channel - (decoded << 11), payload.texels[point as usize][2] as i32);
+                    assert_eq!(decoded, list.map_or(0, |&(_, first)| first as i32 + 1));
                 }
+            }
+            for (index, texel) in payload.extras.iter().enumerate() {
+                assert_eq!(
+                    read(&rows, slot_extras_at(level) + index),
+                    texel.map(f32::to_bits)
+                );
             }
             for (index, seam) in payload.seams.iter().enumerate() {
                 assert_eq!(read(&rows, index), seam.map(f32::to_bits));

@@ -13,7 +13,9 @@
 //! keep (`stage`: the road tool's poses, the commit and undo, `TERRAIN-07-E`). `TERRAIN-07-A`
 //! runs beside the legacy exact cut.
 
+mod behind;
 mod coverage;
+mod extras;
 mod grade;
 mod portal;
 mod prune;
@@ -34,7 +36,7 @@ pub use query::{GradedSurface, GroundClass, QueryScratch};
 pub(crate) use query_index::TerrainQueryIndex;
 pub use residency::{
     PatchTilesScratch, WALL_FACE_BYTES, graded_tiles_in_rect, pack_slot, pack_walls,
-    slot_row_texels, slot_side,
+    seam_channel, slot_extras_at, slot_row_texels, slot_side,
 };
 pub use seams::{Seam, SeamKind};
 pub use select::{
