@@ -123,6 +123,12 @@ func run(bench: Node) -> void:
 	if weather >= 0:
 		bench.get_parent().menu_set_weather(weather)
 	var load_call_ms: float = bench._elapsed_ms(load_start_us)
+	# The load to the world's ready (T53 (a)): the first of three settled frames in a row, when the
+	# load flow hands the game over.
+	var ready := await _wait_for_settled(bench, load_start_us)
+	_report.phases.append(ready.merged({"phase": "load_to_settled"}))
+	print("[IDLE_BENCH] SETTLED t_us=%d load_to_settled_ms=%.1f frames=%d handed_over=%s" % [
+		Time.get_ticks_usec(), float(ready.ms), int(ready.frames), str(ready.handed_over)])
 	var load_wait: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 	_report.phases.append({"phase": "world_load", "load_call_ms": load_call_ms,
 		"settle_ms": load_wait.get("elapsed_ms", 0.0), "total_ms": bench._elapsed_ms(load_start_us)})
@@ -198,8 +204,22 @@ func run(bench: Node) -> void:
 			return
 		for i in range(warmup_frames):
 			await bench.get_tree().process_frame
+		# The residency margin's check over the path (T53 (a)): patches drawing nothing within the
+		# view's reach, and the longest a patch drew nothing.
+		var graded: Variant = _terrain.get("graded_tiles")
+		var unready_before := 0
+		if graded != null and graded.counters.has("unready_in_view"):
+			unready_before = int(graded.counters["unready_in_view"])
+			for name in ["unready_in_view_max", "ready_ms_max", "ready_frames_max"]:
+				graded.counters[name] = 0
 		var sample := await _capture(bench, viewport_rid, path_frames,
 			func(frame: int): _focus_path(bench, centre, definition, float(frame + 1) / path_frames))
+		if graded != null and graded.counters.has("unready_in_view"):
+			sample["unready_in_view"] = int(graded.counters["unready_in_view"]) - unready_before
+			for name in ["unready_in_view_max", "ready_ms_max", "ready_frames_max"]:
+				sample[name] = int(graded.counters[name])
+			print("[IDLE_BENCH] %s ready: unready_in_view=%d (max %d a frame) ready_ms_max=%d ready_frames_max=%d" % [
+				path, sample.unready_in_view, sample.unready_in_view_max, sample.ready_ms_max, sample.ready_frames_max])
 		var settle_after: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 		sample.merge({"path": path, "variant": "full", "settle_after_ms": settle_after.get("elapsed_ms", 0.0)})
 		_report.samples.append(sample)
@@ -332,6 +352,29 @@ func _selected(text: String, all: Array) -> Array:
 func _selected_poses(text: String) -> Array:
 	var wanted := text.split(",", false)
 	return POSES.filter(func(pose): return wanted.is_empty() or pose.name in wanted)
+
+# From `start_us` (the load call) to the first of three frames in a row on which the terrain
+# renderer has settled, and whether the load flow had handed the game over then (input_manager's
+# is_world_ready, where it has one). Returns {ok, ms, frames, handed_over}.
+func _wait_for_settled(bench: Node, start_us: int) -> Dictionary:
+	var frames := 0
+	var stable := 0
+	var first_ms := 0.0
+	var first_frames := 0
+	while bench._elapsed_ms(start_us) < bench.settle_timeout_sec * 1000.0:
+		await bench.get_tree().process_frame
+		frames += 1
+		if bench.simulation_node.is_network_dirty() or not _terrain.is_render_settled():
+			stable = 0
+			continue
+		if stable == 0:
+			first_ms = bench._elapsed_ms(start_us)
+			first_frames = frames
+		stable += 1
+		if stable >= 3:
+			var handed: Variant = bench.input_manager.is_world_ready() if bench.input_manager.has_method("is_world_ready") else null
+			return {"ok": true, "ms": first_ms, "frames": first_frames, "handed_over": handed}
+	return {"ok": false, "ms": bench._elapsed_ms(start_us), "frames": frames, "handed_over": null}
 
 # The idle frame is measured in the steady state: the graded renderer builds its cell sets off
 # the frame paths (a world's sets after its load, hidden sets whose patch took a new step after a

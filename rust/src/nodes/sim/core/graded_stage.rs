@@ -94,11 +94,14 @@ impl SiteSource for PreviewSites<'_> {
 /// 2026-10-27): each is gathered, then adopted from the shown tiles or baked. A bound on the
 /// work, never on time, measured to fit the 3.0 ms terrain stage on four workers with the
 /// selection (`docs/terrain.md` "Preview, commit, undo and load"); a pose with more tiles
-/// finishes them in the frames after it.
+/// finishes them in the frames after it. One is the least a pose can stage.
 pub(crate) const POSE_FRAME_TILES: usize = 1;
 
 /// Tiles a catch-up frame stages at most: a frame without a new pose has no selection.
-pub(crate) const CATCH_UP_FRAME_TILES: usize = 3;
+/// Re-measured with T48 (a)'s extra candidates and T49 (c)'s flag in the bake
+/// (`TERRAIN-07-G` round 7): three tiles took 2.99-3.01 ms in round 6's populated drags, so
+/// two, the largest count that fits 3.0 ms on four workers.
+pub(crate) const CATCH_UP_FRAME_TILES: usize = 2;
 
 /// One frame's graded tiles of the road tool's preview: the tiles shown after it, or why the
 /// frame could not stage them, with what the frame staged.
