@@ -6,6 +6,9 @@ extends SceneTree
 
 const Materials := preload("res://scripts/renderers/world_materials.gd")
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
+const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
+# A GL0 slot: 131 x 131 texels with the apron; rows at the level's width.
+const SLOT_SIDE := 131
 # The vertex colour of a roadside sidewalk in the road chunks (`sidewalk_color`):
 # road_path.gdshader draws a vertex whose green channel is full as a footpath (ROAD-56).
 const SIDEWALK_TAG := Color(0, 0, 0, 1)
@@ -15,6 +18,7 @@ var surface: MeshInstance3D
 var sun: DirectionalLight3D
 var terrain: ShaderMaterial
 var camera: Camera3D
+var cell_meshes: Dictionary = {}
 
 func _initialize() -> void:
 	call_deferred("run")
@@ -65,14 +69,10 @@ func difference(a: Image, b: Image) -> float:
 			count += 1
 	return total / count
 
-func native_terrain_face() -> ArrayMesh:
-	# The terrain triangles the game draws, which a PlaneMesh cannot cover: since TERRAIN-07-D
-	# the graded renderer's cell meshes (no CDT export). A cell mesh's vertex holds its lattice
-	# index in XZ, which terrain_cells.gdshaderinc scales into place without mirroring, so its
-	# winding is the drawn one. A face of the 2 m GL2 lattice, in metres, is the flat face.
-	var tiles := GradedTiles.new()
-	tiles._build_meshes()
-	var selected := PackedVector3Array()
+# The graded renderer's cell meshes must face upward: a cell mesh's vertex holds its lattice
+# index in XZ, which terrain_cells.gdshaderinc scales into place without mirroring, so its
+# winding is the drawn one.
+func check_cell_winding(tiles: GradedTiles) -> void:
 	var faces := 0
 	var backwards := 0
 	for code: int in tiles._meshes.keys():
@@ -81,28 +81,65 @@ func native_terrain_face() -> ArrayMesh:
 		var indices: PackedInt32Array = cell_arrays[Mesh.ARRAY_INDEX]
 		for i in range(0, indices.size(), 3):
 			var a := vertices[indices[i]]
-			var b := vertices[indices[i + 1]]
-			var c := vertices[indices[i + 2]]
-			var normal := (b - a).cross(c - a)
+			var normal := (vertices[indices[i + 1]] - a).cross(vertices[indices[i + 2]] - a)
 			faces += 1
 			if normal.y > 0:
 				backwards += 1
-			if selected.is_empty() and code == 2:
-				var centre := (a + b + c) / 3.0
-				selected = PackedVector3Array([(a - centre) * 2.0, (b - centre) * 2.0, (c - centre) * 2.0])
 	print("NATIVE_TERRAIN_WINDING faces=", faces, " backwards=", backwards)
 	expect(faces > 0 and backwards == 0, "graded terrain cells must face upward under Godot's clockwise convention")
-	expect(not selected.is_empty(), "the graded cells must supply a flat terrain face")
-	if selected.is_empty():
-		return null
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = selected
-	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP])
-	arrays[Mesh.ARRAY_COLOR] = PackedColorArray([Color.RED, Color.RED, Color.RED])
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
+
+# Frontage paving as the game draws it (TERRAIN-07-G round 4): a GL0 graded cell of one 64 m tile,
+# centred on the origin, whose every sample holds material class `class_id` (1 asphalt, 2
+# concrete), no road and no grading, through the graded variant with the flat terrain's
+# parameters copied as terrain_graded_tiles.gd copies a patch's. The CDT's vertex tags this test
+# rendered before are deleted.
+func graded_paving(class_id: int) -> MultiMeshInstance3D:
+	var texels := Image.create_empty(SLOT_SIDE, SLOT_SIDE, false, Image.FORMAT_RGBAF)
+	texels.fill(Color(0.0, 2.0, -1.0, float(class_id)))
+	# No sample names a seam or edge: the rows are never read.
+	var rows := Image.create_empty(16, 1, false, Image.FORMAT_RGBAF)
+	var texel_array := Texture2DArray.new()
+	texel_array.create_from_images([texels])
+	var row_array := Texture2DArray.new()
+	row_array.create_from_images([rows])
+	var material := ShaderMaterial.new()
+	material.shader = GRADED_SHADER
+	for uniform: Dictionary in GRADED_SHADER.get_shader_uniform_list():
+		var name := String(uniform["name"])
+		if not name.begins_with("graded_") and not name.begins_with("cell_"):
+			material.set_shader_parameter(name, terrain.get_shader_parameter(name))
+	material.set_shader_parameter("graded_texels", texel_array)
+	material.set_shader_parameter("graded_rows", row_array)
+	material.set_shader_parameter("terrain_cell_m", 10.0)
+	material.set_shader_parameter("world_size", Vector2(64.0, 64.0))
+	material.set_shader_parameter("patch_world_size_m", Vector2(64.0, 64.0))
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.use_custom_data = true
+	multimesh.instance_count = 1
+	multimesh.mesh = cell_meshes[0]
+	multimesh.set_instance_transform(0, Transform3D.IDENTITY)
+	# Place 0 in the patch, slot 0, every side GL0.
+	multimesh.set_instance_custom_data(0, Color(0.0, 0.0, 0.0, 0.0))
+	multimesh.custom_aabb = AABB(Vector3(-40.0, -10.0, -40.0), Vector3(80.0, 20.0, 80.0))
+	var node := MultiMeshInstance3D.new()
+	node.multimesh = multimesh
+	node.material_override = material
+	node.set_instance_shader_parameter("cell_mode", 0.0)
+	# The patch is the tile (0, 0): 0..128 hm on both axes, drawn about the node at its centre.
+	node.set_instance_shader_parameter("cell_patch_rect_hm", Vector4i(0, 0, 128, 128))
+	node.set_instance_shader_parameter("cell_lattice_anchor_hm", Vector2i.ZERO)
+	return node
+
+# Renders a graded cell node in place of the test surface.
+func capture_node(node: Node3D) -> Image:
+	surface.visible = false
+	viewport.add_child(node)
+	await settle()
+	var image := viewport.get_texture().get_image()
+	viewport.remove_child(node)
+	surface.visible = true
+	return image
 
 func run() -> void:
 	if DisplayServer.get_name() == "headless":
@@ -134,6 +171,12 @@ func run() -> void:
 	viewport.add_child(surface)
 	terrain = Materials.flat_terrain_material().duplicate()
 	Materials.apply_terrain_paving_parameters(terrain)
+	var tiles := GradedTiles.new()
+	tiles.terrain_cell_m = 10.0
+	tiles._build_meshes()
+	cell_meshes = tiles._meshes
+	check_cell_winding(tiles)
+	var frontages := {"asphalt": graded_paving(1), "concrete": graded_paving(2)}
 	for energy: float in [1.0, 0.02, 0.0]:
 		sun.light_energy = energy
 		world.environment.ambient_light_energy = energy * 0.2
@@ -145,8 +188,7 @@ func run() -> void:
 		print("PLOT_GRASS energy=", energy, " delta=", grass_delta)
 		expect(grass_delta < 0.012, "plot grass must match flat open terrain")
 		for kind: String in ["asphalt", "concrete"]:
-			var tag := Color.RED if kind == "asphalt" else Color.GREEN
-			var frontage := await capture(terrain, tag)
+			var frontage := await capture_node(frontages[kind])
 			var yard := await capture(Materials.site_surface_material(kind))
 			var delta := difference(frontage, yard)
 			print("PLOT_PAVING kind=", kind, " energy=", energy, " delta=", delta)
@@ -159,21 +201,6 @@ func run() -> void:
 				print("PLOT_SIDEWALK delta=", difference(yard, sidewalk), " rotated=", difference(sidewalk, rotated))
 				expect(difference(yard, sidewalk) < 0.012, "yard and sidewalk asphalt must match")
 				expect(difference(sidewalk, rotated) < 0.012, "world mapped normals must not depend on mesh orientation")
-	var native_mesh := native_terrain_face()
-	if native_mesh != null:
-		for energy: float in [1.0, 0.02]:
-			sun.light_energy = energy
-			world.environment.ambient_light_energy = energy * 0.2
-			var reference := await capture(Materials.site_asphalt_material())
-			surface.mesh = native_mesh
-			surface.material_override = terrain
-			await settle()
-			var rendered := viewport.get_texture().get_image()
-			var a := rendered.get_pixel(160, 120)
-			var b := reference.get_pixel(160, 120)
-			var delta := Vector3(a.r - b.r, a.g - b.g, a.b - b.b).length()
-			print("NATIVE_PAVING energy=", energy, " delta=", delta)
-			expect(delta < 0.012, "a drawn terrain face must match the yard under day/night lighting")
 	world.environment.ambient_light_energy = 0
 	# Directional shadows and local lamps must agree across the paving boundary too.
 	var blocker := MeshInstance3D.new()
@@ -192,7 +219,7 @@ func run() -> void:
 	for local: bool in [false, true]:
 		sun.light_energy = 0.0 if local else 1.0
 		lamp.visible = local
-		var frontage := await capture(terrain, Color.RED)
+		var frontage := await capture_node(frontages["asphalt"])
 		var yard := await capture(Materials.site_asphalt_material())
 		print("PLOT_SHADOW local=", local, " delta=", difference(frontage, yard))
 		expect(difference(frontage, yard) < 0.012, "paving must agree under shadows and local lights")
@@ -200,6 +227,8 @@ func run() -> void:
 			expect(frontage.get_pixel(185, 145).get_luminance() > 0.02, "frontage must receive local lights")
 	blocker.free()
 	lamp.free()
+	for node: Node in frontages.values():
+		node.free()
 	# A production-strength headlight must illuminate only its cone, with terrain/road falloff.
 	sun.light_energy = 0.0
 	RenderingServer.global_shader_parameter_set("scene_ambient_light", Color.BLACK)

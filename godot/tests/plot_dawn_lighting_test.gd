@@ -37,6 +37,12 @@ func run() -> void:
 	viewport.add_child(surface)
 	terrain = Materials.flat_terrain_material().duplicate()
 	Materials.apply_terrain_paving_parameters(terrain)
+	# Frontage paving is drawn by graded cells (the base test's graded_paving).
+	var tiles := GradedTiles.new()
+	tiles.terrain_cell_m = 10.0
+	tiles._build_meshes()
+	cell_meshes = tiles._meshes
+	var frontages := {"asphalt": graded_paving(1), "concrete": graded_paving(2)}
 	var blocker := MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = Vector3(6, 8, 6)
@@ -48,7 +54,7 @@ func run() -> void:
 		# The live sky uses incremental radiance updates. Wait for its cubemap and SSIL.
 		await settle(64)
 		for kind: String in ["asphalt", "concrete"]:
-			var frontage := await capture(terrain, Color.RED if kind == "asphalt" else Color.GREEN)
+			var frontage := await capture_node(frontages[kind])
 			var yard := await capture(Materials.site_surface_material(kind))
 			var delta := difference(frontage, yard)
 			print("DAWN_PAVING hour=", hour, " kind=", kind, " delta=", delta)
@@ -59,12 +65,14 @@ func run() -> void:
 		# Put the comparison area fully in shadow: ambient/reflections must also agree alone.
 		blocker.visible = false
 		sun.light_energy = 0
-		var shadow_frontage := await capture(terrain, Color.RED)
+		var shadow_frontage := await capture_node(frontages["asphalt"])
 		var shadow_yard := await capture(Materials.site_asphalt_material())
 		var shadow_delta := difference(shadow_frontage, shadow_yard)
 		print("DAWN_INDIRECT hour=", hour, " delta=", shadow_delta)
 		expect(shadow_delta < 0.002, "shadowed paving must agree under sky and ambient light")
 		blocker.visible = true
+	for node: Node in frontages.values():
+		node.free()
 	if "--benchmark-dawn" in OS.get_cmdline_user_args():
 		var baseline_path := ""
 		for argument in OS.get_cmdline_user_args():
