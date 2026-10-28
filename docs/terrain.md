@@ -8283,7 +8283,12 @@ compared exact with graded, and the matrices cited as gate D's) with the results
   177 ignored (176 manual benchmarks and diagnostics, and
   `bend_outer_tangent_mask_equals_coverage_at_gl1`, T48's). `cargo clippy --all-targets`: 59
   warnings, the baseline's set exactly (it did not compile on `154ac169`: the road chunk
-  benchmark). Missing docs: 0. `./run.sh --test`: RUNSH.
+  benchmark). Missing docs: 0. `./run.sh --test` (DISPLAY and WAYLAND_DISPLAY unset): the Rust half passes
+  (lib 1,830/0/177, `growth_scenario` 4/0), then the Godot half stops at its third script,
+  `surface_patch_debug_test.gd`: the payload it requests at a 10 m render step never arrives
+  (round 1 removed the non-zero render-step payload path with the refined jobs; the test still
+  asks for it). A miss, open; the Godot scripts after it did not run. Round 3 fixed the two scripts
+  round 2 had left unparseable and the debug lines' payload requests.
 - **Line counts** (production `.rs`, files named `tests.rs`, `*_tests.rs`, `fixtures.rs` and
   `tests/` directories excluded): terrain 15,427 at road -> 10,192 (graded 7,380 -> 7,383),
   roadbed 9,792 -> 9,624, `nodes/` 62,288 -> 55,318. The deletion removed the CDT cut, its payload
