@@ -506,8 +506,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   extra mask candidates run to hundreds per lattice square and the slot pools would grow from
   133 to 366 MB of GPU memory, and on hills the depth-writing variant covers about half of the
   near tiles. The new bake work first tripled the preview's terrain stage (a miss); made parallel
-  it is back under 3.0 ms on the reference fixtures, with the populated tiers to re-measure.
-  No target is relaxed; details are in the [Gate G record](terrain.md#terrain-07-g-record).
+  it is back under 3.0 ms on the reference fixtures. Round 5 measured the tip: the reference
+  preview, the converged commits and undos, locality and bitwise pass, but a populated drag's
+  frame, which now bakes a tile in 2-3.5 ms, exceeds 3.0 ms in 2-7 of 150 frames, one undo took
+  7 ms, and the game holds 1.3 GB more memory at 100k (0.28 GB on Kuopio; 0.14 GB more on the
+  GPU). On the user's display the depth-writing variant costs nothing measurable; the extra
+  candidates cost 0.2-0.35 ms on the saved city's high camera paths. These are open for the user
+  (`terrain.md` T50-T52); the archive moves are done. No target is relaxed; details are in the
+  [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.

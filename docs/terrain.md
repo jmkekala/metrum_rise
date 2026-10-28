@@ -4443,7 +4443,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | done 2026-10-27 (rounds 1-7, branch `terrain07-E`, [record](#terrain-07-e-record); T27 (f) and T43 (a) the user's exceptions beside the commit row; the background cell-set builds' window accepted by the user, 2026-10-27; four items carried to `ROAD-68-H` by the user, 2026-10-27): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Round 7: T43 (a) decided by the user; a hole check able to fail and the holes fixed (gate D's on `road` too, shown in renders; the grass on the asphalt and the zoning cells gate D's as well, for `TERRAIN-07-F`); a built set waits hidden under its patch node; the idle-frame matrix judges the steady state, after the background cell-set builds, whose window's cost the user accepted. Final runs on the real display: the drag probe 39 strokes, 0 failures, 0 holes in 13 loads, pose 1.55 ms, catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85; the idle-frame matrix on the steady state (`5972bef8`): Kuopio's poses at the exact cut (`close` +0.01, `overview` -0.00, `ground` -0.02 ms GPU p50), `saved` +0.21 (T35's), `city` -0.41, `city_low` -0.13, 0 overflows. Carried to `ROAD-68-H` by the user, 2026-10-27 ([list](roads.md#road-68-h--acceptance-and-cleanup)): the pose install's 2 of 594 frames over the 1.0 ms share, the probe's 14-20 ms whole frames, the streaming installs' 1.04-1.05 ms (`TERRAIN-07-G`'s), T42 (a) | Preview, commit, undo and load |
 | `TERRAIN-07-F` | done 2026-10-28 (rounds 1-14, branch `terrain07-F`, [record](#terrain-07-f-record); the real-display idle-frame matrix passes every pose): every consumer is re-pointed; the shared-owner query index is restored, and every canonical roadbed publisher now atomically advances its derived index and edit journal. The fresh matched 100k pose/snapshot gaps are +0.322/+0.264 ms, inside the unchanged +0.42/+0.40 ms bars; all 1,101 products match. Round 14 attributes the `city_low` matrix miss to unchanged grass-mask mirrors being rebound every frame, makes the sync revision-driven and proves a settled 120-frame view uploads and renders no mask | Consumers re-pointed |
-| `TERRAIN-07-G` | implementation complete, acceptance open (2026-10-28, branch `terrain07-G`, [record](#terrain-07-g-record)): the exact/CDT surface and its Rust and Godot consumers are deleted and the game is graded-only. Round 1's stage, locality and bitwise rows passed before deletion; round 3 restored the world-scale road change reset round 1 had deleted (the first commit after a load or bulk build staged the whole city) and found no retained-memory increase. Round 4 built T48 (a) and T49 (c) ([T48, T49](#terrain-07-open-questions)): 0 plan pinholes on every fixture. Open, none relaxed: the terrain stage (the new bake work serial tripled it; parallel, the reference preview is under 3.0 ms, the populated tiers to re-run), and for the user T48's coarse-level cost and memory ([T50](#terrain-07-open-questions)) and T49's scope ([T51](#terrain-07-open-questions)). | Acceptance and legacy deletion |
+| `TERRAIN-07-G` | implementation complete, acceptance open (2026-10-28, branch `terrain07-G`, [record](#terrain-07-g-record)): the exact/CDT surface and its Rust and Godot consumers are deleted and the game is graded-only. Round 1's stage, locality and bitwise rows passed before deletion; round 3 restored the world-scale road change reset round 1 had deleted (the first commit after a load or bulk build staged the whole city) and found no retained-memory increase. Round 4 built T48 (a) and T49 (c) ([T48, T49](#terrain-07-open-questions)): 0 plan pinholes on every fixture. Round 5 measured the tip: the reference preview, converged commits, locality and bitwise rows pass; the populated drags' pose frames (2-7 of 150 over 3.0 ms, a one-tile bake now 2-3.5 ms) and one undo sample miss, and the release game's settled memory rose (+1.3 GB at 100k, +0.28 GB on Kuopio; GPU +0.14 GB); the behind variant's depth guard became the exact far-plane condition; the GPU matrix shows no cost of T49's variant and +0.2-0.35 ms on the saved city's high paths (T48). Open, none relaxed, for the user: [T50, T51, T52](#terrain-07-open-questions). | Acceptance and legacy deletion |
 
 #### `TERRAIN-07-A` — grading core and queries, roads only
 
@@ -8301,10 +8301,12 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-Acceptance open after round 4: T48 (a) and T49 (c) are built and the rendered row passes, but
-the terrain stage missed in round 4's session until the new bake work was made parallel (re-run
-pending), and T48's coarse-level cost and T49's scope are open for the user ([T50, T51](#terrain-07-open-questions)).
-None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
+Acceptance open after round 5: T48 (a) and T49 (c) are built and the rendered row passes; round
+5's session on the tip passes the reference preview, the converged commits, locality and the
+bitwise rows, and misses the populated drags' pose frames (2-7 of 150 over 3.0 ms) and one undo
+sample, and the release game's memory rose (+23% settled at 100k): [T52](#terrain-07-open-questions),
+with T48's coarse-level cost and T49's scope ([T50, T51](#terrain-07-open-questions)), open for
+the user. None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
 The game, reference test and idle-frame benchmark have one terrain mode: graded. Round 3 audited
@@ -8313,6 +8315,105 @@ is listed in `$ARTIFACTS/road68/t07g3/audit.md`) and replaced round 2's unverifi
 fix "without a tolerance", a "known" Kuopio pinhole, a memory comparison that loaded no save and
 compared exact with graded, and the matrices cited as gate D's) with the results below.
 
+- **Round 5 (`TERRAIN-07-G` round 5, measurements on the tip; branch tip in the handoff).** Fresh
+  unless marked. The Rust tree is that of round 4's tip `78f6ce76` (no Rust change in round 5);
+  round 5 changed the behind variant's shader and the docs.
+  - **The behind variant's depth range** ([behind the road](#the-exact-seam-mask)): the
+    `ray_fall < 1e-3` guard replaced by the exact far-plane condition. Renders
+    (`screenshots-C.sh`, release library `bfee86ce` of `78f6ce76`, `kuopio_t2_wall`, `t` and
+    `city_grid_t` at every slope with their 200-3,000 m distance views, before and after): 0
+    pinholes, 0 failures on both sides; `kuopio_t2_wall` equal but 2 pixels (at most 3 levels).
+    The other differences are run-to-run: the flat fixtures' 50-170 pixels (at most 20 levels)
+    differ as much between two runs of the same build, and three sloped obliques
+    (`t_steep`, `city_grid_t` slope and steep) switch between two states from run to run on
+    either shader (a second run of the new shader equals the old one's `t_steep` image bit for
+    bit): in one, a screen quadrant shows the ground over the road. Round 4's references show
+    the good state. Not caused by this change and not diagnosed here: **open**, a capture or
+    install race in the reference test, for the coordinator (`$ARTIFACTS/road68/t07g5/pair-*.png`).
+    No test fails without the change: the written depth cannot be read back by the headless or
+    gamescope suites, so the condition is argued, not tested (an open gap of the round 4 rule).
+  - **Timing session (C F F C, four workers, P-cores, 18:31-18:37; C road's `503a2424` binary
+    `f91126e2`, cities `eedc8f7b`; F the release test build of `78f6ce76`, `9e847940`, cities
+    `94b765dd` prepared before the session; every populated city loaded).** Reference preview,
+    graded p50/p95 and commit: `sloped_t` C 1.332/2.490, 1.532 and 1.185/1.665, 0.971 ms; F
+    1.818/2.205, 1.440 and 1.854/2.362, 1.711 ms. `sloped_branch` C 1.248/2.149, 0.916 and
+    1.098/1.793, 0.972; F 1.476/2.028, 1.810 and 1.680/2.767, 1.446 ms. **Pass** (3.0 ms), F
+    about +0.5 ms over C.
+  - **Populated drags (`benchmark_populated_graded_drags`, round 1's metric) at 0/2k/10k/30k/100k.**
+    Converged commits, maximum per tier: C 1.09/1.26/1.18/1.31/1.33 and
+    1.19/2.14/1.14/1.27/1.60; F 1.18/1.48/1.22/1.20/1.63 and 1.25/1.12/1.46/1.14/1.74 ms:
+    **pass**. Undo: C at most 1.50 ms; F 1.06/1.02/1.21/1.12/1.65 and
+    2.04/1.18/1.12/**6.99**/1.73 ms: **a miss** in one sample (30k, sample 0, run 3: 8 tiles
+    adopted, none baked, so no graded bake ran; a stall outside the bake, not attributed
+    further). Pose frames (150 per F run): p50 1.48/1.53, p95 2.26/2.78 ms against C's
+    1.01/0.98 and 1.66/1.97; maxima C 1.78/4.09, F 3.53/5.60 ms; frames over 3.0 ms C 0 and 2, F
+    2 and 7: **a miss**. Attribution: every over-budget F frame bakes one to three tiles at
+    2.0-5.0 ms (C's single-tile frames bake about 1 ms): T27 (d)'s first frame stages one tile,
+    and with T48 (a)'s extra candidates and T49 (c)'s flag a single `GL0` tile bakes in 2-3.5 ms
+    on four workers (round 4's census: 2.78 ms mean at 100k), so one tile plus the selection no
+    longer fits 3.0 ms. One 2k frame's selection took 3.01 ms (C's at most about 1 ms), not
+    attributed. The fast click (the accepted T27 (f)/T43 (a) exception, reported, not a target):
+    C up to 2.41-4.37 ms, F 5.02-8.00 ms. Every converged pose's digest equals its commit's.
+  - **Commit breakdown (first-build staging, no preview; not the converged metric).** Graded
+    staging (select plus bake), maximum per tier at 0/2k/10k/30k/100k: C 2.13/3.76/3.28/2.70/4.20
+    and 2.55/3.38/3.67/2.96/3.99 ms; F 4.39/6.19/7.11/5.12/7.75 and 4.64/6.55/7.34/5.14/7.85 ms.
+    Products: F's two runs equal, C's two runs equal. **Tiles rebaked per level (T50's evidence):**
+    the benchmark has no renderer, so its level rule stages every tile at `GL0`
+    (`LevelRule::view` is `None`): per commit at 2k 11, 7 and 9 `GL0` tiles baked in 5.48-5.50,
+    1.83-1.88 and 2.56-2.71 ms (C 2.40-2.53, 0.89-0.91, 1.17-1.19); at 100k 13, 10 and 7 `GL0`
+    tiles in 7.17-7.22, 2.63-2.76 and 1.94-2.01 ms (C 3.37-3.42, 1.14-1.34, 0.87-0.91). `GL1`-`GL3`:
+    none. `GL3` rebakes in the game only for an edit beyond the camera's `GL2` distance, at the
+    census's per-tile `GL3` bake (round 4, historical: 0.63/1.06/2.64 ms mean at steps 2/4/8 on
+    the 100k city), so `GL3`'s share of a near commit's staging is 0. **Graded staging's share of
+    the commit at 100k:** at most 7.86/7.98 ms of a 30.5/31.5 ms commit (26-27%; C 12-13%,
+    4.2/4.0 of 33.4/34.4 ms); click to acknowledgement at 100k: F mean 19.3/21.7, maximum 30.7/31.6
+    ms; C mean 21.4/22.9, maximum 33.6/34.5 ms. Against `ROAD-68-H`'s 16.7 ms
+    click-to-committed target at 100k: missed by both (the breakdown's first commits without a
+    preview, T43 (a)'s case); graded staging is a quarter of F's.
+  - **Locality (F, `benchmark_graded_tiles_locality`).** Passes: local products equal while remote
+    edges grow 3/147/1,203/4,707; stage p50 1.289/1.742/1.727/1.596 ms, maxima
+    2.79/2.25/1.78/1.86 ms: flat in the city's size, under 3.0 ms (round 4's serial search:
+    2.18-2.49 ms; round 1: 0.52-0.95).
+  - **Bitwise (F, release).** `pruned_bake_equals_every_seam_in_any_batch_order_and_worker_count`,
+    `graded_tiles_of_drags_commits_undo_and_loads_equal_fresh_bakes` (preview, commit, undo,
+    load) and `gathered_inputs_are_the_bakes_and_a_stage_adopts_by_inputs`: pass.
+  - **GPU matrix (the coordinator's, fresh, `run-20261028T1808-g`, tip `78f6ce76` library
+    `fcf28fe5` against road `aa20f247` `155fd81a`, the user's display, two rounds).** Per input
+    in [T50](#terrain-07-open-questions): Kuopio -0.02 to -0.05 ms on every pose and path (T49's
+    variant shows no cost); saved +0.34/+0.35/+0.20 ms on `orbit_high`/`zoom_in`/`pan_high`,
+    +0.10 on the saved pose; town `city` +0.08, `city_low` +0.12; load: town 4,558/4,048 against
+    3,872/3,748 ms, Kuopio and saved equal. Not a decision: T50 and T51 stay the user's.
+  - **The release game's retained memory and GPU memory (round 3's method plus GPU memory from
+    amdgpu's DRM fdinfo, `drm-total-vram`, sampled with RSS every 0.2 s; one run per side and
+    input; `$ARTIFACTS/road68/t07g5/memory-run.sh`).** Before: `road68T07D-wt` (`aa20f247`,
+    library `155fd81a`); after: the tip `b7ea4ada`, library `bfee86ce` (the release build of
+    `78f6ce76`'s Rust). Both graded; every run loaded its save ("Loaded game from", 76,088
+    buildings and 54,405 households at 100k; Kuopio no buildings) and finished its cell-set
+    builds. RSS in KiB, setup peak / load peak / settled maximum, and GPU memory (VRAM) at the
+    settled maximum:
+
+    | Input | Before (road) | After (tip) | Change |
+    | --- | --- | --- | --- |
+    | 100k (`populated_city_100000`) | 1,335,164 / 5,301,496 / 5,679,140; VRAM 1,901,896 | 1,544,288 / 5,519,960 / 6,978,324; VRAM 2,043,144 | setup +209,124, settled +1,299,184 (+23%), VRAM +141,248 |
+    | Kuopio (reference save) | 1,357,156 / 1,602,412 / 1,942,056; VRAM 1,677,216 | 1,546,272 / 1,717,044 / 2,218,512; VRAM 1,823,132 | setup +189,116, settled +276,456 (+14%), VRAM +145,916 |
+
+    **A miss** (no increase is the target). Round 3's tip (`d7a3c338`, before T48 and T49) lay
+    inside the before range, so the increase came with round 4. By phase (the RSS timeline, not a
+    profile): about +210 MB is there from setup on both inputs, the size of T48's larger slot
+    pools (+232 MB by T50's arithmetic), and at 100k the rest accrues during the cell-set builds
+    (before +371 MB over that phase, after +1,232 MB), where the resident tiles are baked with
+    T48's lists and installed. Not attributed further: a heap profile of the after run is the
+    next step ([T52](#terrain-07-open-questions)). GPU memory grows +141-146 MB, under T50's
+    232 MB estimate.
+  - **Gate checks (round 5, the Rust tree of `78f6ce76`, unchanged on the tip).** Clippy
+    `--all-targets`: 59 warnings, the baseline's set exactly. Missing docs: 0. RUNSH_PLACEHOLDER
+  - **Line counts** (production `.rs`, as in round 3): unchanged from round 4 (no Rust change):
+    graded 7,947, terrain 10,824, `nodes/` 55,353.
+  - **Archive moves done:** `earthworks.md`'s legacy seam contract and `roads.md` "Footprint and
+    terrain"'s road side of the exact cut are in
+    [`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#moved-at-terrain-07-g-2026-10-28),
+    the links to them point there, and the stale visual-terrain text (DEM import, the short
+    version) is updated.
 - **Round 4 (`TERRAIN-07-G` round 4, branch tip in the handoff).** Fresh unless marked.
   - **T48 (a) built** ([the exact seam mask](#the-exact-seam-mask)): the rule before and after,
     the per-square extra candidates, their capacities and census ([Data](#data)). Tests:
@@ -9883,6 +9984,25 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       `GL0`-`GL2` only (a second rule at distance). (c) T49 (a) (the variant everywhere).
     - **Recommendation.** Measure (a) on the matrix (coordinator); decide with the `GL3` part
       of T50.
+
+52. **T52. The tip's terrain stage and memory after T48 (a) and T49 (c) (`TERRAIN-07-G` round 5) —
+    open, for the user.** Fresh evidence in the gate G record (round 5).
+    - **Evidence.** (1) The populated drags' pose frames: F p95 2.26/2.78 ms (C 1.66/1.97), maxima
+      3.53/5.60 ms, 2 and 7 of 150 frames over 3.0 ms (C 0 and 2 of 140, maximum 4.09): T27 (d)'s
+      one-tile frame now bakes a `GL0` tile in 2-3.5 ms. One undo sample took 6.99 ms with no
+      bake (a stall, not attributed). The converged commits (at most 1.74 ms), the reference
+      preview (at most 1.85/2.77 ms p50/p95) and locality (p50 1.29-1.74 ms) pass. (2) The
+      release game's settled memory: +1.30 GB (+23%) at 100k, +0.28 GB (+14%) on Kuopio, about
+      +0.2 GB from setup, the rest during the cell-set builds; GPU +0.14 GB. Neither is
+      attributed to a line of code yet.
+    - **Options.** (a) Attribute first: a heap profile of the release game's 100k run (Heaptrack
+      on the after side only, since round 3 found the before frontend's cell-set builds do not
+      finish under it) and a profile of the one-tile frame's bake (`square_extras`,
+      `rises_above_a_seam`); then decide. (b) Decide with T50 and T51: options there that
+      shorten `GL2`-`GL3` lists or scope the flag change both costs. (c) Accept the misses as
+      the price of 0 pinholes (relaxes the 3.0 ms and memory targets: not recommended, and not
+      the agents' to take).
+    - **Recommendation.** (a), next round; T50 and T51 are decided by the user with it.
 
 #### Superseded `ROAD-68` questions
 
