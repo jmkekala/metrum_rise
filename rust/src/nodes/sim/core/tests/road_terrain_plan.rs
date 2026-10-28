@@ -1296,8 +1296,6 @@ fn kuopio_conflict_wall_closes_the_step() {
     );
 }
 
-// The regenerated reference's refined terrain builds clean. The refined patches the roads reach:
-// 27 on the legacy save as recorded before `ROAD-68-C`, 28 on the regenerated one.
 fn kuopio_manifest() -> serde_json::Value {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

@@ -478,36 +478,56 @@ fn the_exact_mask_equals_coverage() {
     }
 }
 
-// The reference bend's outer tangent sits inside one GL0 lattice square. Check the rendered
-// pinhole neighbourhood densely against the roadbed's own closed coverage predicate.
-#[test]
-fn bend_outer_tangent_mask_equals_coverage() {
+// The reference bend's outer tangent (`road_junction_reference_test.gd`'s `bend_45`): the first
+// chord of the outer arc is 0.49 m long. Checked densely (5 mm) against the roadbed's closed
+// coverage predicate around the five plan pixels of `TERRAIN-07-G` (world (0.54-0.84, -4.97)).
+fn bend_outer_tangent_mask_equals_coverage(level: Level) {
     let terrain = super::tests::terrain(|_, _| 0.0);
     let roadbed = compiled(&super::tests::hub(&[180.0, 45.0], false));
     let tile = TileKey { x: 0, z: -1 };
-    let payload = bake_level(&terrain, &roadbed, &[tile], Level::Gl0)
+    let payload = bake_level(&terrain, &roadbed, &[tile], level)
         .pop()
         .expect("bend tile");
     let frame = frame(
-        level_code(Level::Gl0),
+        level_code(level),
         tile,
         anchor_hm(&terrain),
         cell_hm(&terrain),
     );
     let mut pieces = Vec::new();
+    let (mut wrong, mut first) = (0, None);
     for iz in 0..=120 {
         for ix in 0..=160 {
             let world = [0.3 + ix as f64 * 0.005, -5.3 + iz as f64 * 0.005];
             let local = [world[0] as f32, (world[1] + 64.0) as f32];
             let covered = covered_height_at(&roadbed, world[0], world[1], &mut pieces).is_some();
-            let discarded = mask_sdf(frame, &payload, local) < 0.0;
-            assert_eq!(
-                discarded, covered,
-                "world {world:?} local {local:?} sdf {}",
-                mask_sdf(frame, &payload, local)
-            );
+            let sdf = mask_sdf(frame, &payload, local);
+            if (sdf < 0.0) != covered {
+                wrong += 1;
+                first.get_or_insert((world, sdf));
+            }
         }
     }
+    assert_eq!(
+        wrong, 0,
+        "{level:?}: {wrong} points differ; first {first:?}"
+    );
+}
+
+// At `GL0` (0.5 m) the lattice square's corners at x = 0.5 m lie in the short chord's Voronoi
+// region, so a corner names it.
+#[test]
+fn bend_outer_tangent_mask_equals_coverage_at_gl0() {
+    bend_outer_tangent_mask_equals_coverage(Level::Gl0);
+}
+
+// At `GL1` (1 m, the plan view's level) no corner of the square names the short chord: the
+// mask takes the nearer of its neighbours' clamped ends, whose half-planes put ground just
+// outside the road inside it (`TERRAIN-07-G` round 3's GPU read-back, `docs/terrain.md` T48).
+#[test]
+#[ignore = "TERRAIN-07-G open (T48): the exact mask's candidate seams miss a seam no corner names"]
+fn bend_outer_tangent_mask_equals_coverage_at_gl1() {
+    bend_outer_tangent_mask_equals_coverage(Level::Gl1);
 }
 
 // The exact mask equals coverage across a bridge's mouth (`TERRAIN-07-D` round 9, the `bridge_t`

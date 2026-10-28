@@ -491,10 +491,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 - **`TERRAIN-07-G` acceptance remains open (2026-10-28).** The exact/CDT terrain surface and its
   frontend selector, refined jobs, baked meshes and water clip are deleted; gameplay, references
-  and benchmarks are graded-only. G1's stage, locality and bitwise rows pass. G2 fixes the bend's
-  five-pixel closed-coverage defect, but the full 33-fixture render suite still has the known T24
-  Kuopio T2 residual pixel, and matched retained memory rises 26.9% at 100k and 18.2% on Kuopio.
-  Neither acceptance target is relaxed; details and artifacts are in the
+  and benchmarks are graded-only. The stage, locality and bitwise rows passed before deletion.
+  Round 3 found that the earlier bend fix hid its cause: at the plan view's 1 m lattice the edge
+  mask can miss a road-edge segment shorter than the lattice spacing, which leaves single sky
+  pixels at the bend and the road end (`terrain.md` T48, for the user); the Kuopio pixel dates
+  from gate D's withdrawal of the depth push behind roads (T49, for the user); and the release
+  game's settled memory, measured with the saves actually loaded, rises 12.8% at 100k and 18.3%
+  on Kuopio, not yet attributed. No target is relaxed; details are in the
   [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from

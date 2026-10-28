@@ -15,9 +15,8 @@ pub struct TerrainChanges {
     /// the roads (surface heights and the graph edges they belong to) changed only inside them.
     pub pieces: Vec<[f64; 4]>,
     /// XZ bounds of every outer-chain segment the old pieces had and the new ones lack, or the
-    /// reverse, in segment order: the loops of a rectangle that meets none of them are equal
-    /// before and after, bit for bit, labels included (the CDT input numbers its chain runs by
-    /// geometry, `road_terrain_loops`). A split trunk's far half keeps its segments, so only the
+    /// reverse, in segment order: the chains a rectangle that meets none of them sees are equal
+    /// before and after, bit for bit. A split trunk's far half keeps its segments, so only the
     /// junction's surroundings appear here.
     pub chains: Vec<[f64; 4]>,
     /// The changed segments of [`Self::chains`] themselves, endpoints with heights, in the same
@@ -94,3 +93,6 @@ fn segment_bits(mesh: &PieceMesh, start: u32, end: u32) -> [u64; 6] {
     let [a, b] = [start, end].map(|vertex| mesh.positions()[vertex as usize]);
     [a.x, a.y, a.z, b.x, b.y, b.z].map(f64::to_bits)
 }
+
+#[cfg(test)]
+mod tests;

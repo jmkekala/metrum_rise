@@ -7607,11 +7607,13 @@ measures and judges each against its target. A gate landing later adds its own h
    108 MB/1.10 GB against shared as the user requested, and retain the corrected local mutation
    cost: the fresh 100k commit breakdown is 1.989/0.567/0.483 ms (mean 1.013, max 1.989); its
    existing path does not execute a user undo, while the small mutation fixture's undo is 0.074 ms.
-8. `TERRAIN-07-G2` measured release-game retained memory with load/setup separated from the
-   settled world. At 100k, settled RSS rises from 1,643,560 to 2,085,332 KiB (+26.9%; HWM +24.7%);
-   on Kuopio it rises from 1,636,248 to 1,934,196 KiB (+18.2%; HWM +16.1%). Heaptrack peak rises
-   from about 952 MiB to 1.17 GiB in both. This is an open Gate G miss, not setup-only churn;
-   method and hashes are in `terrain.md`'s Gate G record.
+8. Measure the release game's peak retained memory before and after `TERRAIN-07-G`, separating
+   load/setup peak from the settled world. `TERRAIN-07-G` round 3 (fresh, RSS by phase, both
+   graded, the saves loaded and proved; round 2's comparison loaded no save and is withdrawn):
+   100k city settled maximum 5,783,156 -> 6,521,672 KiB (+12.8%), load peak 5,392,628 ->
+   6,177,764 KiB, setup 1,326,932 -> 1,329,924 KiB; Kuopio settled maximum 1,911,036 ->
+   2,261,608 KiB (+18.3%), load 1,542,408 -> 1,503,112, setup 1,343,832 -> 1,317,344 KiB. A miss
+   for the user, not yet attributed; method in `terrain.md`'s Gate G record.
 9. Attribute `PERF-09` separately from terrain query work: the road control already misses the
    frame guards. H records matched control/terrain snapshot and frame shares and does not charge
    that inherited regression to Gate F or relax it.

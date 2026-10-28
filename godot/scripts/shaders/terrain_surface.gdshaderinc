@@ -601,9 +601,7 @@ void fragment() {
 	float cell_pixel_m = max(fwidth(var_cell_local_m.x), fwidth(var_cell_local_m.y));
 	CellMask cell_mask_here = cell_mask(
 		cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m);
-	if (cell_mask_here.sdf < 0.0 && cell_mask_here.sampled_sdf < 0.0) {
-		// A row's half-plane is not a closed-footprint side at a polyline vertex. Deep
-		// discard therefore also requires the baked top-triangle coverage field to be inside.
+	if (cell_mask_here.sdf < 0.0) {
 		if (cell_mask_here.sdf <= -cell_pixel_m || var_world_pos.y > cell_mask_here.road_top) {
 			discard;
 		}
@@ -643,14 +641,12 @@ void fragment() {
 		SPECULAR = 0.0;
 	} else {
 	var_cloud_sun = weather_cloud_sun(var_world_pos);
-	bool paved_cdt = false;
-	bool asphalt = COLOR.r > 0.5;
 #ifdef TERRAIN_GRADED
-	// The material class paints the site paving, with the yards' texture and lighting.
-	paved_cdt = cell_mask_here.class_id > 0;
-	asphalt = cell_mask_here.class_id == 1;
-#endif
-	paved_surface = float(paved_cdt && terrain_visual_debug_mode == 0 && terrain_grass_visual_debug_mode == 0);
+	// The material class paints the site paving, with the yards' texture and lighting. The base
+	// variant (PlaneMesh patches and base cells) has no material class and draws no paving.
+	bool asphalt = cell_mask_here.class_id == 1;
+	paved_surface = float(cell_mask_here.class_id > 0 && terrain_visual_debug_mode == 0
+		&& terrain_grass_visual_debug_mode == 0);
 	if (paved_surface > 0.5) {
 		// Graded frontage is paving: use the same texture, normal basis and lighting as yards.
 		IRRADIANCE = vec4(0.0);
@@ -681,7 +677,11 @@ void fragment() {
 		ROUGHNESS = paving.roughness;
 		METALLIC = 0.0;
 		SPECULAR = PAVING_SPECULAR;
-	} else {
+	} else
+#else
+	paved_surface = 0.0;
+#endif
+	{
 		// Preserve the authored sky floor without disabling window light spill (SSIL).
 		IRRADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
 		RADIANCE = vec4(0.0, 0.0, 0.0, 1.0);

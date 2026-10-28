@@ -124,6 +124,18 @@ fn steep_t_near_query_matches_the_canonical_grade_at_the_south_reach() {
     };
     let mut scratch = QueryScratch::default();
     let (x, z) = (29.180_641_174_316_406, -96.002_975_463_867_19);
+    // A window gathered around another point may hold no seam: that says nothing about this
+    // point's own tile, which the steep T's south reach grades (round 1's stale `quiet()`).
     surface.gather_near(x + 6.0, z + 6.0, 6.01, &mut scratch);
-    let _ = surface.ground_height_near(x, z, &mut scratch);
+    let near = surface.ground_height_near(x, z, &mut scratch);
+    let reference = GradedSurface {
+        query_index: None,
+        ..surface
+    }
+    .ground_height_at(x, z, &mut QueryScratch::default());
+    assert_eq!(
+        near.to_bits(),
+        reference.to_bits(),
+        "near {near}, at {reference}"
+    );
 }

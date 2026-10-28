@@ -13,6 +13,7 @@ use metrum_rise::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use metrum_rise::simulation::terrain::TerrainSystem;
+use metrum_rise::simulation::terrain::graded::NoSites;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -80,6 +81,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                         .try_generate_mesh_chunks(
                             black_box(&fixture.graph),
                             black_box(&fixture.terrain),
+                            &NoSites,
                             black_box(&fixture.target_chunks),
                             None,
                             &BTreeMap::new(),
@@ -112,6 +114,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
             .try_generate_mesh_chunks(
                 &fixture.graph,
                 &fixture.terrain,
+                &NoSites,
                 &fixture.target_chunks,
                 None,
                 &BTreeMap::new(),
@@ -136,6 +139,7 @@ fn bench_road_chunk_renderer(c: &mut Criterion) {
                         .try_generate_mesh_chunks(
                             black_box(&fixture.graph),
                             black_box(&fixture.terrain),
+                            &NoSites,
                             black_box(&fixture.target_chunks),
                             None,
                             &BTreeMap::new(),
@@ -229,7 +233,14 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
     let target_node_count = target_pieces.len() - target_edge_count;
 
     let expected_chunks = network
-        .try_generate_mesh_chunks(&graph, &terrain, &target_chunks, None, &BTreeMap::new())
+        .try_generate_mesh_chunks(
+            &graph,
+            &terrain,
+            &NoSites,
+            &target_chunks,
+            None,
+            &BTreeMap::new(),
+        )
         .expect("the initial benchmark surface must publish");
     let expected_signature = mesh_map_signature(&expected_chunks);
     assert!(

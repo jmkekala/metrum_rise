@@ -161,6 +161,7 @@ impl RoadRenderer {
     /// `ROAD-68-F`), so the chunks are the ones the commit publishes from the same pieces. `None`
     /// if a published chunk holds a run without an owner.
     /// `O(rebuilt pieces + target chunks' vertices)`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn generate_preview_chunks(
         &self,
         graph: &RegionGraph,
