@@ -70,7 +70,6 @@ fn a_tunnel_portal_opens_the_graded_ground() {
         terrain: &terrain,
         roadbed: &roadbed,
         sites: &NoSites,
-        query_index: None,
     };
     let mut scratch = QueryScratch::default();
     for payload in &payloads {

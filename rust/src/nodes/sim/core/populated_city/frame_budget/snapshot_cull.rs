@@ -4,7 +4,7 @@
 //! (`SIM-02-K` part 2), on populated cities, frame after frame.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::super::super::frame::FRAME_DT_S;
 use super::super::super::snapshot::RenderSnapshot;
@@ -17,7 +17,6 @@ use crate::simulation::economy::agents::{
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
     transit_is_visible,
 };
-use crate::simulation::terrain::graded::TerrainQueryIndex;
 
 type Camera = (f32, f32, f32, f32);
 
@@ -336,8 +335,7 @@ fn mean_ms(samples: &[Duration]) -> f64 {
 /// `METRUM_PERF_CACHE`): `METRUM_K2_FRAMES` frames at `METRUM_PERF07_SPEED`, every frame
 /// compared under the `PERF-07` camera and the straddling cameras, plus the agent-instance
 /// time of both paths under the `PERF-07` camera in a second pass. The full-pose path runs
-/// second on warm caches, so its time is a lower bound. `METRUM_TERRAIN_QUERY_INDEX=0` uses
-/// the whole-tile gather reference for the index-off comparator.
+/// second on warm buffers, so its time is a lower bound.
 #[test]
 #[ignore = "SIM-02-K render snapshot equivalence and agent-instance timing on a prepared snapshot"]
 fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
@@ -357,17 +355,6 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
                 .expect("METRUM_VEHICLE_GROUND_FULL_DETAIL_M must be a number")
         })
         .unwrap_or(crate::nodes::sim::render::vehicle_ground::VEHICLE_GROUND_FULL_DETAIL_M);
-    let rebuild_started = Instant::now();
-    let mut rebuilt_index = TerrainQueryIndex::default();
-    rebuilt_index.rebuild_all(&core.transit_network.roadbed, &core.allocator);
-    let query_index_rebuild_ms = rebuild_started.elapsed().as_secs_f64() * 1000.0;
-    assert!(core.terrain_query_index.same_inputs(&rebuilt_index));
-    let (query_index_tiles, query_index_bytes) = core.terrain_query_index.memory();
-    let query_index_enabled =
-        !std::env::var("METRUM_TERRAIN_QUERY_INDEX").is_ok_and(|value| value == "0");
-    if !query_index_enabled {
-        core.terrain_query_index = TerrainQueryIndex::default();
-    }
     let mut run = Run::default();
     compare_frames(core, frames, speed, &mut run);
     let (points, on_site) = assert_surface_queries_match(core, 97);
@@ -395,10 +382,6 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
             "culled_p99_ms": percentile_ms(&mut timed.culled, 0.99),
             "full_pose_mean_ms": mean_ms(&timed.full),
             "full_pose_p99_ms": percentile_ms(&mut timed.full, 0.99),
-            "query_index_tiles": query_index_tiles,
-            "query_index_bytes": query_index_bytes,
-            "query_index_rebuild_ms": query_index_rebuild_ms,
-            "query_index_enabled": query_index_enabled,
         })
     );
 }
@@ -537,7 +520,6 @@ fn vegetation_placement_digest_dump() {
         terrain: &core.heightmap,
         roadbed: &core.transit_network.roadbed,
         sites: &core.allocator,
-        query_index: Some(&core.terrain_query_index),
     };
     let mut scratch = QueryScratch::default();
     for line in std::fs::read_to_string(path).unwrap().lines() {

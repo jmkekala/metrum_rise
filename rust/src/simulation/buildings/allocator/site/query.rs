@@ -56,28 +56,6 @@ impl SiteSource for BuildingAllocator {
 }
 
 impl BuildingAllocator {
-    /// Bounds of every derived site input, for rebuilding the unsaved graded-query index.
-    pub(crate) fn graded_query_input_bounds(&self) -> impl Iterator<Item = [f64; 4]> + '_ {
-        self.building_sites.iter().map(|site| {
-            let (min_x, min_z, max_x, max_z) = site.bounds();
-            [min_x, min_z, max_x, max_z].map(f64::from)
-        })
-    }
-
-    /// Whether a graded terrain query of `rect` reads at least one site. This walks the same
-    /// bounded `SiteCells` candidates as [`SiteSource::sites_in_bounds`] without copying a site.
-    pub(crate) fn any_graded_site_in_bounds(&self, rect: [f64; 4]) -> bool {
-        let query = SiteRectQuery::new(rect, self.max_site_radius_m);
-        let mut found = false;
-        self.site_cells.visit(query.rect, |idx| {
-            found |= self
-                .building_sites
-                .get(idx)
-                .is_some_and(|site| query.holds(site));
-        });
-        found
-    }
-
     // Visits the sites a graded terrain query of `rect` reads, through the 64 m site cells.
     fn visit_graded_sites(&self, rect: [f64; 4], mut visit: impl FnMut(&BuildingSiteClient)) {
         let query = SiteRectQuery::new(rect, self.max_site_radius_m);

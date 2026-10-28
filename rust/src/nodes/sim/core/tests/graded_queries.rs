@@ -16,7 +16,6 @@ fn graded_height(core: &SimCore, x: f32, z: f32) -> f32 {
         terrain: &core.heightmap,
         roadbed: &core.transit_network.roadbed,
         sites: &core.allocator,
-        query_index: Some(&core.terrain_query_index),
     };
     surface.surface_height_at(f64::from(x), f64::from(z), &mut QueryScratch::default()) as f32
 }

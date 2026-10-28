@@ -768,7 +768,6 @@ fn kuopio_plan_pinhole_sides() {
         terrain: &core.heightmap,
         roadbed,
         sites: &core.allocator,
-        query_index: Some(&core.terrain_query_index),
     };
     let mut scratch = QueryScratch::default();
     let mut segments = Vec::new();
@@ -840,7 +839,6 @@ fn kuopio_t2_edge_steps() {
         terrain: &core.heightmap,
         roadbed,
         sites: &core.allocator,
-        query_index: Some(&core.terrain_query_index),
     };
     let mut scratch = QueryScratch::default();
     let focus = [-16.3f64, 1182.8f64];

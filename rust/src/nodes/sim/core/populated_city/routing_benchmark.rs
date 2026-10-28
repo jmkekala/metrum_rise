@@ -1339,7 +1339,6 @@ fn profile_commits(
             "graded_bake_ms": m.graded_bake_ms,
             "graded_adopted": m.graded_adopted, "graded_baked": m.graded_baked,
             "preview_reused": m.preview_plan_reused,
-            "terrain_query_index_ms": core.terrain_query_index_update_us as f64 / 1000.0,
             "agent_invalidate_ms": m.agent_invalidate_ms,
             "lanes_and_reattach_ms": m.lanes_and_reattach_ms, "buildings_ms": m.buildings_ms,
             "routing_ms": m.routing_ms, "finalize_ms": m.finalize_ms, "mesh_ms": m.mesh_ms,

@@ -3,9 +3,11 @@
 //! Deterministic edit, persistence, patch ownership and bounded-cost regressions.
 
 use super::*;
+use crate::nodes::sim::core::RoadCommitRequest;
 use crate::simulation::buildings::allocator::yard::YardEvent;
 use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use std::collections::HashSet;
+use std::time::Instant;
 
 fn core() -> SimCore {
     super::super::tests::vegetation_test_core(VegetationConfig::default())
@@ -43,6 +45,47 @@ fn vegetation_test_path(core: &mut SimCore, from: Vector2, to: Vector2, lanes: u
     });
     core.region_graph.rebuild_all_indices();
     core.transit_network.roadbed.mark_edge_dirty(edge);
+}
+
+fn commit_vegetation_test_road(core: &mut SimCore, points: [Vector3; 2]) {
+    core.precompute_road_mesh_data();
+    let outcome = core.commit_road(
+        RoadCommitRequest {
+            points: points.to_vec(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            preview: None,
+        },
+        Instant::now(),
+        Default::default(),
+    );
+    assert!(outcome.committed, "{}", outcome.rejection);
+}
+
+#[test]
+fn vegetation_gather_after_a_road_edit_and_undo_reads_only_live_pieces() {
+    let mut core = core();
+    let y = 20.0;
+    commit_vegetation_test_road(
+        &mut core,
+        [Vector3::new(-120.0, y, 10.0), Vector3::new(120.0, y, 10.0)],
+    );
+    commit_vegetation_test_road(
+        &mut core,
+        [Vector3::new(0.0, y, 10.0), Vector3::new(0.0, y, 130.0)],
+    );
+    commit_vegetation_test_road(
+        &mut core,
+        [Vector3::new(-120.0, y, 70.0), Vector3::new(-10.0, y, 70.0)],
+    );
+    assert!(core.undo_action_internal());
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+
+    // This is the vegetation path that used to pass an index-retained, removed PieceId to
+    // `RoadbedSystem::wall_seams_in_bounds` after the undo.
+    let _ = clear_site(&core, -10.0, 70.0, CANOPY_CLEAR_RADIUS_M, 3.0, false);
 }
 
 #[test]
@@ -1699,8 +1742,6 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     core.allocator.recompute_max_site_radius_m();
     let cell_m = core.config.zone_cell_m;
     core.allocator.prepare_building_site_query_index(cell_m);
-    core.terrain_query_index
-        .rebuild_all(&core.transit_network.roadbed, &core.allocator);
     let shrub = |x: f32, z: f32| Plant {
         x,
         z,
