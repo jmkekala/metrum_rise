@@ -8548,9 +8548,8 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     The GPU: Kuopio 190 MB below road (60 MB of pages for 301 tiles against road's fixed 133 MB
     pools); the 100k city 706 MB above road while holding all 10,500 wanted tiles (road holds
     at most 4,096 and never installs its far `GL3` tiles): pages 380 MB against road's 133 MB of
-    pools, and the remaining ~460 MB not in the pages' own bytes. The driver reports video memory
-    in its allocator's blocks, and a run that creates and frees pages (124 created, 57 moves)
-    fragments them; a per-layer measurement read nothing finer than those blocks
+    pools, and the rest not in the pages' own bytes: the same 2,624 MB with no move at all (below),
+    so not the moves' churn; a per-layer probe read nothing finer than the driver's blocks
     (`t07g8/vram/`). On `3af3e609`: 100k setup 1,542,580, settled maximum 5,466,020 (288 MB
     below road's), GPU 2,624,272; Kuopio 1,552,932, 2,228,328, GPU 1,478,156 at the end of the
     run (its peak 1,484,864-1,742,760 between runs: fdinfo's blocks). The 100k city's GPU figure
