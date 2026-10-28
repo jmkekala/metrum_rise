@@ -109,6 +109,8 @@ var _growth_waits: Dictionary = {}
 # Free pages for reuse: "code,slots,layers" -> Array of page ids.
 var _free_pages: Dictionary = {}
 const NO_COPY := Vector3i(-1, 0, 0)
+# A block page not made yet because a resident patch of the block waits for its list.
+const PAGE_PENDING := -2
 # Tile key -> {code, level, step, token, walls, behind, copies}: what each installed tile shows;
 # `copies` maps a page id to its copy there, Vector3i(slot, first atlas layer, layers).
 var installed: Dictionary = {}
@@ -590,10 +592,12 @@ static func _place(page: Dictionary, held: Vector3i, layers: int) -> Vector3i:
 	return copy
 
 # The pages a copy of `tile` at level `code` goes into, as [page id, block]: per block of the
-# resident patches drawing it, its page (made as the block first needs one; -1 where the budget
-# refuses it), or the larger page a growing block moves to, and the growing block's own page
-# where `held` has a copy there (kept current until the move). O(patches drawing it, at most 4).
-func _copy_pages(tile: Vector2i, code: int, held: Dictionary) -> Array[Array]:
+# resident patches drawing it, its page (made as the block first needs one, once every resident
+# patch of the block has its list, so the page is sized for them: PAGE_PENDING until then; -1
+# where the budget refuses it), and the larger page a growing block moves to (its own page keeps
+# taking every copy until the move, so its sets show every installed tile meanwhile). O(patches
+# drawing it, at most 4).
+func _copy_pages(tile: Vector2i, code: int) -> Array[Array]:
 	var pages: Array[Array] = []
 	var origin := Vector2(tile) * TILE_M - world_min
 	var first := Vector2i((origin / patch_span_m).floor())
@@ -607,15 +611,38 @@ func _copy_pages(tile: Vector2i, code: int, held: Dictionary) -> Array[Array]:
 			var target := int(_block_target[code].get(block, -1))
 			var bound := int(_block_page[code].get(block, -1))
 			if bound < 0 and target < 0:
+				if _block_lists_pending(code, block):
+					pages.append([PAGE_PENDING, block])
+					continue
 				bound = _first_page(code, block)
 				if bound < 0:
 					pages.append([-1, block])
 					continue
 			if target >= 0 and not _has_page(pages, target):
 				pages.append([target, block])
-			if bound >= 0 and (target < 0 or held.has(bound)) and not _has_page(pages, bound):
+			if bound >= 0 and not _has_page(pages, bound):
 				pages.append([bound, block])
 	return pages
+
+# Whether a resident patch of block `block` (GL2 and GL3) still waits for its list.
+func _block_lists_pending(code: int, block: Vector2i) -> bool:
+	if code < 2:
+		return false
+	for z in block_patches:
+		for x in block_patches:
+			var key := block * block_patches + Vector2i(x, z)
+			if _resident.has(key) and not patch_lists.has(key) and not patch_lists_refused.has(key):
+				return true
+	return false
+
+# Whether the placement that found page `page_id` of `block` unable to take a copy waits for
+# the block's move (the page is the one the block's sets bind while it moves to a larger one) or
+# else starts or restarts a move (_grow). Returns whether the tile waits.
+func _wait_or_grow(code: int, block: Vector2i, page_id: int, layers: int) -> bool:
+	var target := int(_block_target[code].get(block, -1))
+	if target >= 0 and page_id != target:
+		return true
+	return _grow(code, block, layers)
 
 static func _has_page(pages: Array[Array], page_id: int) -> bool:
 	for entry: Array in pages:
@@ -626,7 +653,7 @@ static func _has_page(pages: Array[Array], page_id: int) -> bool:
 # Whether installed `entry` of `tile` has a copy in every page _copy_pages places it in.
 func _tile_complete(tile: Vector2i, entry: Dictionary) -> bool:
 	var copies: Dictionary = entry["copies"]
-	for pair: Array in _copy_pages(tile, int(entry["level"]), copies):
+	for pair: Array in _copy_pages(tile, int(entry["level"])):
 		if not copies.has(int(pair[0])):
 			return false
 	return true
@@ -643,13 +670,19 @@ func _place_copies(key: Vector2i, code: int, tile: Dictionary, held: Dictionary,
 	_place_failed = false
 	_place_waits = false
 	var layers := (tile["rows"] as PackedByteArray).size() / ATLAS_LAYER_BYTES
-	var wanted := _copy_pages(key, code, held)
+	var wanted := _copy_pages(key, code)
 	for pair: Array in wanted:
-		var page: Dictionary = _pages.get(int(pair[0]), {})
-		if not page.is_empty() and _can_place(page, held.get(int(pair[0]), NO_COPY), layers):
+		var page_id := int(pair[0])
+		var page: Dictionary = _pages.get(page_id, {})
+		if not page.is_empty() and _can_place(page, held.get(page_id, NO_COPY), layers):
 			continue
 		_place_failed = true
-		_place_waits = not page.is_empty() and _grow(code, pair[1], layers)
+		if page_id == PAGE_PENDING:
+			# Asked again once the block's lists are in.
+			_place_waits = true
+			_wanted[key] = true
+			return {}
+		_place_waits = not page.is_empty() and _wait_or_grow(code, pair[1], page_id, layers)
 		if _place_waits and not is_preview:
 			_wait_for_growth(key, code, pair[1])
 		return {}
@@ -1949,12 +1982,16 @@ func _request_tiles() -> void:
 		var same_level := not current.is_empty() and int(current["level"]) == level.x
 		var held: Dictionary = current["copies"] if same_level else {}
 		var blocked := false
-		for pair: Array in _copy_pages(tile, level.x, held):
-			var page: Dictionary = _pages.get(int(pair[0]), {})
-			if not page.is_empty() and (held.has(int(pair[0])) or not (page["free"] as Array).is_empty()):
+		for pair: Array in _copy_pages(tile, level.x):
+			var page_id := int(pair[0])
+			var page: Dictionary = _pages.get(page_id, {})
+			if not page.is_empty() and (held.has(page_id) or not (page["free"] as Array).is_empty()):
 				continue
 			blocked = true
-			if not page.is_empty() and _grow(level.x, pair[1], 0):
+			if page_id == PAGE_PENDING:
+				# Its block's lists are not all in: it stays wanted for a later frame.
+				pass
+			elif not page.is_empty() and _wait_or_grow(level.x, pair[1], page_id, 0):
 				_wait_for_growth(tile, level.x, pair[1])
 			else:
 				_exhaust(tile, level.x, request_key, token)

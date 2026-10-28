@@ -142,6 +142,7 @@ func _run() -> void:
 	await _check_moving_camera(graded, resident)
 	await _check_streaming(graded, camera, resident)
 	await _check_page_growth(graded, camera, resident)
+	await _check_gl3_step_change(graded, camera, resident)
 	_expect(_violations == 0, "no frame draws a PlaneMesh where its patch's list names a graded tile: up to %d" % _violations)
 
 	# Far away every tile is evicted and every slot freed.
@@ -255,6 +256,27 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 	for page_id: int in moving.values():
 		if graded._pages.has(page_id):
 			(graded._pages[page_id]["free"] as Array).append(0)
+
+# A tile changing `GL3` step with the camera (2 to 5 km, then 4) keeps its token and level code but
+# not its lattice: every one is rebaked and rewritten into its copies (round 8: a rebake of the
+# same level and token skips the copies it holds, which must not include a step change).
+func _check_gl3_step_change(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
+	_expect(await _settle(graded, Vector3(0.0, 3000.0, 10.0), resident), "the tiles settle at step 2")
+	var stepped := {}
+	for tile: Vector2i in graded.installed.keys():
+		var entry: Dictionary = graded.installed[tile]
+		if int(entry["level"]) == 3 and int(entry["step"]) == 2:
+			stepped[tile] = int(entry["token"])
+	_expect(not stepped.is_empty(), "some tile is at GL3 step 2")
+	var uploads := int(graded.counters["uploads"])
+	_expect(await _settle(graded, Vector3(0.0, 6000.0, 10.0), resident), "the tiles settle at step 4")
+	var copies := 0
+	for tile: Vector2i in stepped.keys():
+		var entry: Dictionary = graded.installed.get(tile, {})
+		_expect(not entry.is_empty() and int(entry["step"]) == 4 and int(entry["token"]) == int(stepped[tile]), "tile %s moves to step 4 with its token" % tile)
+		copies += (entry.get("copies", {}) as Dictionary).size()
+	_expect(int(graded.counters["uploads"]) - uploads >= copies, "every copy of a stepped tile is rewritten: %d uploads for %d copies" % [int(graded.counters["uploads"]) - uploads, copies])
+	_expect(await _settle(graded, camera, resident), "the tiles settle back")
 
 # A run from no residency to settled exercised T53 (a)'s window and kept its rule in every frame.
 func _expect_streamed(label: String) -> void:
