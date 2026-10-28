@@ -448,24 +448,29 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   click after a fast drag (`terrain.md` T43, the user); the idle-frame matrix measures the
   steady state after the background builds, whose seconds after a load the user accepted;
   four close results go to `ROAD-68-H`'s final verification (`roads.md`).
-  status for gate `TERRAIN-07-F`, round 11: all Rust and Godot consumers use the graded surface;
+  status for gate `TERRAIN-07-F`, round 12: all Rust and Godot consumers use the graded surface;
   water suppression is an exact cell-area query, site feasibility reads the base and 64 m cap,
   inspection uses the visible-surface ray, and grass exclusion reads the graded cells' `sdf` and
   class. T37's render-only vehicle rule keeps exact rigid support through 250 m, then uses one
-  prepared query for the centre normal and contacts, lifting to 0.020 m clearance. Fresh matched
-  100k culled/full means are 0.811/5.164 ms control, 1.090/5.581 shared, 2.133/7.092 exact at every
-  distance and 0.682/4.933 index-off. The shared-control culled gap is +0.279 ms, within the
-  corrected +0.42 ms bar, and the exact comparator supports keeping the LOD; every one of 1,101
-  products matches. But shared is 0.408 ms slower than index-off at 100k, so it fails the user's
-  T44 rule that marginal retained memory must buy any speed. Removing that index while keeping the
-  faster lazy-contact path is now Gate F's blocker. Round 11 also fixes the T-junction stem's grass
+  prepared query for the centre normal and contacts, lifting to 0.020 m clearance. Round 12 removes
+  the shared query index and its stale removed-piece result after edit/undo, but also proves round
+  11's index-off comparison invalid: the switch installed an empty ready index and gathered no
+  terrain geometry. Fresh matched 100k culled/full means are 0.836/5.126 ms control,
+  1.471/6.122 canonical gather and 2.856/8.125 exact at every distance. Every one of 1,101
+  products matches, but the gather-control culled gap is +0.635 ms, outside the unchanged
+  +0.42 ms bar. Fresh full-day snapshot/frame means are 0.995/6.213 ms control, 1.602/6.876
+  canonical gather and 3.331/8.619 exact; the +0.607 ms snapshot gap also misses its +0.40 ms
+  bar. The exact comparator still supports keeping the LOD. Round 11's shared result
+  remains historical evidence at 1.090 ms (+0.279 ms, 4.462 MB retained), but its mutation
+  publication was incorrect. T47 recommends restoring that shared-owner representation and
+  fixing its atomic local update before a new matched session; no target is relaxed. Round 11
+  also fixes the T-junction stem's grass
   at the cause: an in-place tile upload rewrote the grading payload without invalidating grass's
   private mask. The fresh 2x crop has clear asphalt, crosswalk and both sidewalks; the final
   opposite-way T is also clear, and its dumped mask contains the complete differently oriented
-  stem across the tile/patch split. The debug library, four growth tests and Godot bridge scripts
-  through the graded renderer pass, but that renderer test then finds the shared index returning
-  a removed road-piece ID after an edit/undo and poisons the core; later Godot suites do not run.
-  This is the same T44 removal blocker, so no gate commit is made. The control regression stays
+  stem across the tile/patch split. Round 12's focused vegetation and mutation regressions pass
+  without an index; the final full gates are recorded in the owning gate record. The performance
+  miss means no gate commit is made. The control regression stays
   `PERF-09`; no target is relaxed. T25 (a), T38 (a), T40, T42, T46 and `WATER-05`'s buffer setting
   remain pending the user's review. See the
   [specification](terrain.md#graded-terrain-surface-terrain-07) and the gate records

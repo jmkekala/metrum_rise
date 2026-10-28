@@ -7593,6 +7593,20 @@ measures and judges each against its target. A gate landing later adds its own h
 4. [`terrain.md`](terrain.md#terrain-07-open-questions) T42 (a), the preview's tiles at the
    renderer's distance rule without its hysteresis, pending the user's review: H checks it
    visually on the display.
+5. T37's valid round-12 no-index 100k culled gap: 1.471 ms against 0.836 ms control, +0.635 ms
+   against the unchanged +0.42 ms bar. Round 11's 0.682 ms index-off value gathered no terrain
+   geometry and is not evidence; H must not reuse it.
+6. T45's far contacts keep at least the intended 0.020 m clearance within floating-point
+   representation: fresh minima 0.019999988 m at 10k and 0.0199999996 m at 100k.
+7. T44's round-12 candidate is no terrain query index, recorded pending the user's review, but its
+   prescribed speed premise was invalidated by the real canonical-gather run and T47 is open.
+   At H compare the copied index's 108 MB/1.10 GB and matched speed against a valid no-index run,
+   as requested by the user; also retain the shared-owner result and its corrected mutation cost.
+8. Measure the release game's peak retained memory before and after `TERRAIN-07-G`, separating
+   load/setup peak from the settled world, so legacy deletion has a game-level memory result.
+9. Attribute `PERF-09` separately from terrain query work: the road control already misses the
+   frame guards. H records matched control/terrain snapshot and frame shares and does not charge
+   that inherited regression to Gate F or relax it.
 
 ## Measurement and acceptance
 

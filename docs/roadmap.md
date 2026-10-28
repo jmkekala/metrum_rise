@@ -388,21 +388,21 @@ updated extension deployed. The owning zoning document records reproduction and 
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 
-`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 11 fixes the T-junction stem's grass:
-a same-level graded-tile upload rewrote its slot without invalidating grass's private mask. The
-fresh 2x crop has clear asphalt, crosswalk and both sidewalks; the opposite-way junction and mask
-dumps also show a clean true T and its complete differently oriented stem. The matched pose
-bracket at 100k measures culled/full side means of
-0.811/5.164 ms control, 1.090/5.581 shared, 2.133/7.092 exact at every distance and 0.682/4.933
-index-off, with all 1,101 products equal. The shared-control culled gap is +0.279 ms, within the
-corrected +0.42 ms bar, and exact-everywhere confirms the 250 m LOD still saves work. T45's far
-clearance is 0.0199999996 m. But shared is 0.408 ms slower than index-off, so it fails the user's
-T44 criterion that the marginal-memory index must give any speed. Remove the shared index while
-preserving round 10's lazy all-road/contact path, then rerun the final gate checks. The debug
-library and four growth tests pass, but `graded_tile_renderer_test.gd` also finds the shared index
-returning a removed road-piece ID after edit/undo and poisons the core; later Godot suites do not
-run. `PERF-09` owns the control regression; no target is relaxed. T40 and T46 remain pending the
-user's review.
+`TERRAIN-07-F` — `refactor`, `in_progress`, `P1`. Round 12 removes the shared terrain-query index,
+its copied candidate branches and the stale removed-piece failure after a road edit/undo. Exact
+regressions cover that vegetation gather and road, save/load, site swap-remove and base mutations.
+The first valid no-index bracket corrects round 11's comparator: the old switch installed an empty
+index marked ready and gathered no geometry. Fresh 100k culled/full side means are 0.836/5.126 ms
+control, 1.471/6.122 canonical gather and 2.856/8.125 exact at every distance, with all 1,101
+products equal. Canonical gather therefore misses the unchanged +0.42 ms bar by measuring a
++0.635 ms gap; exact-everywhere confirms the 250 m LOD still saves 1.385 ms. T45's minimum far
+clearance is 0.0199999996 m. Fresh 100k full-day snapshot/frame means are 0.995/6.213 ms control,
+1.602/6.876 canonical gather and 3.331/8.619 exact; the +0.607 ms snapshot gap also misses its
++0.40 ms bar. Round 11's shared result (1.090 ms, +0.279 ms, 4.462 MB retained) is
+historical and passed the bar, but its mutation maintenance was incorrect. T47 asks whether to
+restore that representation and fix its atomic local publication (recommended) or pursue another
+exact local preparation; no target is relaxed and no gate commit is made. `PERF-09` owns the
+control regression. T40 and T46 remain pending the user's review.
 Evidence and acceptance:
 [`terrain.md`](terrain.md#terrain-07-f-record).
 
