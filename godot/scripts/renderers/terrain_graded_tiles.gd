@@ -816,6 +816,10 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 		_free_slot(current)
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
 	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls}
+	# A same-level upload keeps its cell instance and slot, but the grass mask reads the slot's
+	# texels. Invalidate the private mask even when no cell geometry changed.
+	if not current.is_empty() and int(current["level"]) == code and not preview.has(key):
+		_mask_changed(key, resident_patches)
 	# The installed level moves the hysteresis: the tile is levelled again at once. A bake of an
 	# older level or token (the camera moved, an edit dirtied it) still wants one.
 	var want: Dictionary = _desired.get(key, {})
@@ -1318,16 +1322,23 @@ static func _cell_place(cells: Dictionary, tile: Vector2i) -> int:
 func _update_cell_tiles(resident_patches: Dictionary) -> void:
 	var touched := {}
 	for tile: Vector2i in _dirty_cell_tiles.keys():
+		_mask_changed(tile, resident_patches)
 		for key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
 			if _dirty_patches.has(key) or not patch_cells.has(key) or not resident_patches.has(key):
 				continue
-			_cell_mask_revision += 1
-			patch_cells[key]["mask_revision"] = _cell_mask_revision
 			if _update_tile_cell(patch_cells[key], tile, resident_patches[key], resident_patches):
 				touched[key] = true
 	_dirty_cell_tiles.clear()
 	for key: Vector2i in touched.keys():
 		_dirty_shown[key] = true
+
+# The grading payload shown by `tile` changed. Grass mirrors the cell buffers, so each resident
+# patch drawing that tile must render its private mask again even when the cell stayed in place.
+func _mask_changed(tile: Vector2i, resident_patches: Dictionary) -> void:
+	for key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
+		if patch_cells.has(key) and resident_patches.has(key):
+			_cell_mask_revision += 1
+			patch_cells[key]["mask_revision"] = _cell_mask_revision
 
 # One tile's instance in a patch's cells (T26): its custom data rewritten in place while its
 # mesh is unchanged; otherwise it leaves the old mesh's MultiMesh by a swap-remove (the last

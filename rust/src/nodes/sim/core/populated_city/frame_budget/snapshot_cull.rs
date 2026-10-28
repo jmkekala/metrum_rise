@@ -336,7 +336,8 @@ fn mean_ms(samples: &[Duration]) -> f64 {
 /// `METRUM_PERF_CACHE`): `METRUM_K2_FRAMES` frames at `METRUM_PERF07_SPEED`, every frame
 /// compared under the `PERF-07` camera and the straddling cameras, plus the agent-instance
 /// time of both paths under the `PERF-07` camera in a second pass. The full-pose path runs
-/// second on warm caches, so its time is a lower bound.
+/// second on warm caches, so its time is a lower bound. `METRUM_TERRAIN_QUERY_INDEX=0` uses
+/// the whole-tile gather reference for the index-off comparator.
 #[test]
 #[ignore = "SIM-02-K render snapshot equivalence and agent-instance timing on a prepared snapshot"]
 fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
@@ -362,6 +363,11 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
     let query_index_rebuild_ms = rebuild_started.elapsed().as_secs_f64() * 1000.0;
     assert!(core.terrain_query_index.same_inputs(&rebuilt_index));
     let (query_index_tiles, query_index_bytes) = core.terrain_query_index.memory();
+    let query_index_enabled =
+        !std::env::var("METRUM_TERRAIN_QUERY_INDEX").is_ok_and(|value| value == "0");
+    if !query_index_enabled {
+        core.terrain_query_index = TerrainQueryIndex::default();
+    }
     let mut run = Run::default();
     compare_frames(core, frames, speed, &mut run);
     let (points, on_site) = assert_surface_queries_match(core, 97);
@@ -392,6 +398,7 @@ fn culled_snapshot_matches_full_pose_on_a_prepared_city() {
             "query_index_tiles": query_index_tiles,
             "query_index_bytes": query_index_bytes,
             "query_index_rebuild_ms": query_index_rebuild_ms,
+            "query_index_enabled": query_index_enabled,
         })
     );
 }

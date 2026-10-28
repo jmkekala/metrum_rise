@@ -72,6 +72,7 @@ func _run() -> void:
 	# slot, while the patch lists refresh with the patches' new generations.
 	var before_edit: Dictionary = graded.installed.duplicate(true)
 	var uploads_before := int(graded.get_pool_counters()["uploads"])
+	var mask_revision_before := graded._cell_mask_revision
 	await _add_road(simulation, [Vector3(-120.0, 0.0, 70.0), Vector3(-10.0, 0.0, 70.0)])
 	for key: Vector2i in resident.keys():
 		resident[key]["generation"] = int(resident[key]["generation"]) + 1
@@ -100,6 +101,8 @@ func _run() -> void:
 		if int(now["level"]) == int(was["level"]):
 			_expect(int(now["slot"]) == int(was["slot"]), "tile %s rebakes into its own slot" % tile)
 	_expect(rebaked > 0, "the edit rebakes installed tiles")
+	_expect(graded._cell_mask_revision > mask_revision_before,
+		"an in-place tile upload must invalidate the grass mask")
 	_expect(batch.size() < graded.installed.size(), "the edit rebakes only its dirty tiles (%d of %d installed)" % [batch.size(), graded.installed.size()])
 	# Nothing is created after setup, neither while streaming nor by the edit: the cell sets are
 	# prewarmed, one per patch of the grid (round 5's populated edit created 16 materials and 24
