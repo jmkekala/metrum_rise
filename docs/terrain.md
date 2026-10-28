@@ -3579,11 +3579,14 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
   block), each copy its slot layer and run. A page that starts wanting a tile another page holds
   (a patch of its block became resident, its block took a new page) asks for the tile again: a
   rebake at the held level and token, since nothing is kept.
-- **Page size.** A block's page is created when the block first needs a slot at the level, sized
-  for the block's listed tiles (the tiles meeting its resident patches that a resident list
-  names: what the block can need at that level at any camera while the lists stand) plus an
-  eighth and 8, rounded up to 32 and at most `T(B)`; its atlas has three layers a slot, at most
-  `L`. `GL0` and `GL1` take their bands' bound, 64 and 192 slots (the memory table), and the most
+- **Page size.** A block's page is created when the block first needs a slot at the level and
+  every resident patch of the block has its list (a tile waits for that, as its patches draw
+  nothing before their lists anyway), sized for the block's listed tiles (the tiles meeting its
+  resident patches that a resident list names: what the block can need at that level at any
+  camera while the lists stand) plus an eighth and 8, rounded up to 32 and at most `T(B)`; its
+  atlas has three layers a slot, at most `L`. (Round 8's first measurement sized a page at the
+  block's first install, before its lists were in: the 100k load moved 57 blocks to larger pages,
+  each a rebake of its tiles.) `GL0` and `GL1` take their bands' bound, 64 and 192 slots (the memory table), and the most
   rows a tile can hold, 12 and 9 layers a slot, so they never fill; they are created at setup, the
   block pages as needed. A page of a block straddling two levels' distances holds the block's
   listed tiles at both: memory follows the lists, not the camera (the alternative, sizing by the
@@ -3599,9 +3602,13 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
   sized for the block's listed tiles now, and at least twice the dimension that ran out, becomes
   the block's target; every tile the block holds at that level is asked again (a rebake: nothing
   is kept on the CPU) and installs into the target too; the block's sets keep binding the old
-  page, whose copies stay current, until the target holds a copy of every tile the block holds
-  there; then the sets bind the target in that frame (their instances rewritten with the target's
-  slots) and the old page is freed. The tile that found the page full stays as it was until then.
+  page, which keeps taking every copy (a tile it cannot take waits for the move), so the sets
+  show every installed tile meanwhile, until the target holds a copy of every tile the block
+  holds there; then the sets bind the target in that frame (their instances rewritten with the
+  target's slots) and the old page is freed. The tile that found the page full stays as it was
+  until then. (Round 8's first build put a moving block's new copies in the target only, and its
+  sets drew those tiles as base cells until the move: the 100k pans showed up to 5 patches a
+  frame unready in view.)
 - **When memory runs out.** Pages are created and grown within a budget of graded page bytes
   (texel and atlas layers of every page, `GRADED_PAGE_BUDGET_MB`), not a page count. A page the
   budget refuses, or a full page already at `T(B)` slots or `L` layers (the device's limit), leaves
@@ -10585,9 +10592,14 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       off the far product (the page budget is for near and mid tiles); the lattice codes' spare
       code 7 (a base step of 16); and the cell sets' prewarm per grid patch (`T25`), which a whole
       world resident at once would otherwise multiply.
-    - **Road chunks at that zoom** (road surfaces have no level of detail): see the round 8
-      record for the 100k city's road chunk triangles and draws, the starting number for road
-      level-of-detail work.
+    - **Road chunks at that zoom** (road surfaces have no level of detail; counted by the idle
+      benchmark's `ROADS` line at the world's ready, every chunk as built, fresh in round 8): the
+      100k city has 197 road chunks with 985 surfaces (a draw each where in view) and 5,557,996
+      triangles; the Kuopio reference save 26 chunks, 139 surfaces, 102,331 triangles. A
+      whole-map view draws every chunk: at the 100k city's density over the 20 km world (its 52
+      km^2 of listed patches scaled to 400 km^2) about 43 million road triangles in about 7,600
+      draws, most of them sub-pixel (a 3.5 m lane is about a fifth of a pixel at 13 km). That is
+      the starting number for road level-of-detail work.
 
 #### Superseded `ROAD-68` questions
 

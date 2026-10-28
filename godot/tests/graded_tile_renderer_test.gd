@@ -241,6 +241,12 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 			# The new page hands out other slot numbers than the old (its slot 0 held back), so an
 			# instance left naming its old slot shows.
 			(graded._pages[graded._block_target[code][block]]["free"] as Array).pop_back()
+			# Until the move, a copy of the block's tiles goes into both pages: its sets keep
+			# showing every installed tile from the page they bind.
+			for tile: Vector2i in (page["tiles"] as Dictionary).keys():
+				var pages: Array = graded._copy_pages(tile, code).map(func(pair: Array) -> int: return int(pair[0]))
+				_expect(pages.has(int(page["id"])) and pages.has(int(graded._block_target[code][block])),
+					"tile %s of moving block %s goes into both pages: %s" % [tile, block, pages])
 	_expect(not moving.is_empty(), "some block holds tiles to move")
 	# The camera climbs while the blocks move: tiles change level and install meanwhile, into the
 	# pages the sets bind as well as the new ones, so no drawing set misses one (_partial).

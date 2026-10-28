@@ -400,9 +400,8 @@ func _reset_pages() -> void:
 	_growth_waits.clear()
 	_growth_dirty.clear()
 	for code in mini(2, pools.size()):
-		var slots := int(pools[code]["cap"])
-		var layers := mini(layer_limit, slots * int(pools[code]["max_layers"]))
-		_block_page[code][Vector2i.ZERO] = _new_page(code, Vector2i.ZERO, slots, layers)
+		var size := _page_size(code, Vector2i.ZERO, Vector2i.ZERO)
+		_block_page[code][Vector2i.ZERO] = _new_page(code, Vector2i.ZERO, size.x, size.y)
 
 # --- Pages (docs/terrain.md "Pages and the row atlas"). ---
 
@@ -514,11 +513,12 @@ func _release_page(page_id: int) -> void:
 # The size of block `block`'s page at level `code`: its listed tiles plus an eighth and 8,
 # rounded up to 32 slots, at most the level's cap, and three atlas layers a slot, at most the
 # layer limit (docs/terrain.md "Page size"); at least `least` (slots, layers). The world pages of
-# GL0 and GL1 take `least` within their cap. O(the block's tiles).
+# GL0 and GL1 keep their band's slots and the most rows a tile can hold, and grow only their
+# layers. O(the block's tiles).
 func _page_size(code: int, block: Vector2i, least: Vector2i) -> Vector2i:
 	var cap := int(pools[code]["cap"])
 	if code < 2:
-		return Vector2i(mini(cap, least.x), mini(layer_limit, least.y))
+		return Vector2i(cap, mini(layer_limit, maxi(least.y, cap * int(pools[code]["max_layers"]))))
 	var listed := _block_listed(block)
 	var slots := mini(cap, maxi(least.x, ((listed + listed / 8 + 8 + 31) / 32) * 32))
 	return Vector2i(slots, mini(layer_limit, maxi(least.y, slots * PAGE_LAYERS_PER_SLOT)))
@@ -874,7 +874,7 @@ func _switch_block(code: int, block: Vector2i) -> void:
 	var old_id := int(_block_page[code].get(block, -1))
 	_block_target[code].erase(block)
 	var moved: Dictionary = _pages[target]
-	if (moved["tiles"] as Dictionary).is_empty() and (moved["previews"] as Dictionary).is_empty():
+	if code >= 2 and (moved["tiles"] as Dictionary).is_empty() and (moved["previews"] as Dictionary).is_empty():
 		# Every tile left the block meanwhile: neither page holds a copy it draws.
 		_release_page(target)
 		target = -1
