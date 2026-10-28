@@ -380,6 +380,10 @@ fn street_grid_with_crosses(side_m: f32, crosses: usize) -> (SimCore, Vec<f32>, 
     // routing rebuild (D7) now instead of holding its first frames.
     core.transit_network.settle_cch();
     core.fit_lanes_to_road_surface();
+    // A bulk road build is a world-scale change: the graded terrain resets once here, as a load
+    // does, not left to the player's first commit (`ROAD-68-D` part 6).
+    core.subsume_world_scale_road_changes();
+    core.bump_global_terrain_payload_generation();
     (core, row_z, half_x)
 }
 

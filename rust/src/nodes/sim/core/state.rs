@@ -496,6 +496,19 @@ impl SimCore {
         self.terrain_payload_generation_counter
     }
 
+    /// Subsumes a world-scale road change (a load or a bulk road build) into a graded reset: the
+    /// roadbed compiles and its recorded terrain changes are dropped, so the next road edit
+    /// stages only its own tiles, not every road the change built (`ROAD-68-D` part 6). The
+    /// caller then resets the graded terrain whole
+    /// ([`Self::bump_global_terrain_payload_generation`], which
+    /// [`Self::mark_network_render_dirty`] includes). `O(dirty pieces)`.
+    pub(crate) fn subsume_world_scale_road_changes(&mut self) {
+        self.transit_network
+            .roadbed
+            .compile_dirty(&self.region_graph);
+        drop(self.transit_network.roadbed.take_terrain_changes());
+    }
+
     pub(crate) fn bump_global_terrain_payload_generation(&mut self) {
         self.terrain_payload_global_generation = self.next_terrain_payload_generation();
         self.road_terrain_inputs.note_all();

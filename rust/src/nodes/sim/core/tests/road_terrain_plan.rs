@@ -1801,6 +1801,8 @@ fn bulk_trunk_world(background: usize) -> SimCore {
         .transit_network
         .finalize_bulk_load(&mut core_ref.region_graph, &mut core_ref.allocator);
     core.fit_lanes_to_road_surface();
+    core.subsume_world_scale_road_changes();
+    core.bump_global_terrain_payload_generation();
     core
 }
 

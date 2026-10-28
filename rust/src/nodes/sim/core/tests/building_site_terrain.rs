@@ -3,7 +3,9 @@
 //! Zoned yard coverage on sloping roads, using production placement and terrain compilation.
 
 use super::*;
-use crate::simulation::terrain::graded::{GradedSurface, QueryScratch, TerrainQueryIndex};
+use crate::simulation::terrain::graded::{
+    GradedSurface, GroundClass, QueryScratch, TerrainQueryIndex,
+};
 use godot::prelude::Vector2;
 
 fn register_yard(core: &mut SimCore) -> String {
@@ -454,9 +456,14 @@ fn cars_and_walkers_enter_and_exit_on_compiled_yards() {
         for u in [0.1, 0.3, 0.5, 0.7, 0.9] {
             for v in [0.05, 0.25, 0.5, 0.9] {
                 let point = p[0].lerp(p[1], u).lerp(p[3].lerp(p[2], u), v);
+                // The yard surface is paved where the graded terrain draws it: the pad inside
+                // the support footprint, the paved frontage over the apron beyond it.
+                let class = core.with_graded_surface(|surface, scratch| {
+                    surface.mask_at(f64::from(point.x), f64::from(point.y), scratch)
+                });
                 assert!(
-                    site.contains_point(point),
-                    "building {building} yard ({u}, {v}) escaped its pad at {point:?}"
+                    matches!(class, GroundClass::Pad | GroundClass::Paved(_)),
+                    "building {building} yard ({u}, {v}) at {point:?} is not paved: {class:?}"
                 );
                 // Agents stand on the visible graded surface (`TERRAIN-07-F`).
                 let height = core.get_world_surface_height_internal(point);
@@ -506,7 +513,12 @@ fn cars_pitch_and_roll_on_compiled_yards_in_both_access_directions() {
         }
     }
     assert!(points.iter().any(|(_, _, (_, n))| n.y < 0.99));
-    assert!(points.iter().any(|(_, _, (_, n))| *n == Vector3::UP));
+    // Some contacts stand on a pad, which the graded terrain holds at its support height
+    // bitwise (its rendered normal sums the base and grading gradients, so it is level only to
+    // rounding; the exact cut's flat pad face was exactly up).
+    assert!(points.iter().any(|&(building, _, (h, _))| {
+        h.to_bits() == core.allocator.building_sites[building].support_height_m.to_bits()
+    }));
     for phase in [TRANSIT_ACCESS_INGRESS, TRANSIT_ACCESS_EGRESS] {
         core.agents = AgentSystem::new();
         for &(building, point, _) in &points {
@@ -1212,3 +1224,4 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
         }
     }
 }
+

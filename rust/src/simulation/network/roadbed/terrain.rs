@@ -7,7 +7,8 @@ use super::{PieceMesh, RoadVec3};
 use std::collections::BTreeMap;
 
 /// Where compiles changed the graded terrain inputs, from
-/// [`RoadbedSystem::take_terrain_changes`]: the terrain an edit must rebuild.
+/// [`RoadbedSystem::take_terrain_changes`](super::RoadbedSystem::take_terrain_changes): the terrain
+/// an edit must rebuild.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerrainChanges {
     /// XZ bounds `[min_x, min_z, max_x, max_z]` of every old and new piece the compiles

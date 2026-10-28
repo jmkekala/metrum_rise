@@ -230,6 +230,9 @@ impl SimCore {
         self.transit_network.flow_fields.mark_all_dirty();
         self.clear_world_transient_state();
         self.heightmap.mark_all_render_patches_dirty();
+        // A load is a world-scale road change: the reset below takes every road, not the
+        // first road edit after it.
+        self.subsume_world_scale_road_changes();
         self.terrain_dirty = true;
         self.water_dirty = true;
         self.mark_network_render_dirty();
