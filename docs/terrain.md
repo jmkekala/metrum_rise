@@ -8473,7 +8473,7 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     Godot tests on `e7a5cb5b`'s scripts, which bound the exhausted tiles' order list): exit 0, lib
     1,836/0/176, `growth_scenario` 4/0, the same success lines, no SCRIPT ERROR.
   - **Line counts.** Production Rust: graded unchanged, `nodes/` 55,428 -> 55,432 (the catch-up
-    bound's comment). GDScript: `terrain_graded_tiles.gd` 1,960 -> 2,184 (the draw state, the
+    bound's comment). GDScript: `terrain_graded_tiles.gd` 1,960 -> 2,198 (the draw state, the
     exhausted pools' records, the readiness counters and the two test probes), `input_manager.gd`
     725 -> 767 (the hand-over), `terrain.gd` 3,300 -> 3,308.
 - **Round 6 (`TERRAIN-07-G` round 6, a debugging round; branch tip in the handoff).** Fresh
