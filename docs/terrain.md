@@ -8480,8 +8480,8 @@ Acceptance open after round 8: T54 (a) and T50 (b) are built together (pages by 
 patches with the row atlas): the 100k city installs all 10,500 wanted tiles, none exhausted,
 settled, with no patch unready in view on any camera path; the mask's rule is unchanged (its
 Rust port now reads the packed bytes) and every reference render equals round 7's. For the user:
-the 100k city's video memory is 722 MB above road's, about 560 MB of it not the pages' bytes and
-not attributed yet ([T56](#terrain-07-open-questions)); one 30k undo sample stalls (8.97 ms, the
+the 100k city's video memory is 722 MB above road's, 276 MB of it the pages' bytes and about
+450 MB below Godot's own accounting, not attributed further ([T56](#terrain-07-open-questions)); one 30k undo sample stalls (8.97 ms, the
 control too); on Kuopio's steepest strokes a single tile's bake alone exceeds 3.0 ms
 ([T27](#terrain-07-open-questions)); Kuopio's load to ready is about 0.5 s longer than round 6's
 (its sets built during the load). T55 (the whole-map view) is informational.
@@ -8555,12 +8555,24 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     below road's), GPU 2,624,272; Kuopio 1,552,932, 2,228,328, GPU 1,478,156 at the end of the
     run (its peak 1,484,864-1,742,760 between runs: fdinfo's blocks). The 100k city's GPU figure
     is the same within 0.1 MB in all three runs whatever their moves: [T56](#terrain-07-open-questions).
-    [FINAL4-MEM]
+    On `c95ebda2` (`memory-final4`, no moves): 100k setup 1,540,892, settled maximum 5,443,912
+    (310 MB below road's), GPU 2,624,788, 409 MB of pages (73 created; blocks straddling `GL2` and
+    `GL3` hold their listed tiles at both, so `GL2` has 3,238 of 6,647 slots free); Kuopio
+    1,553,896, 2,229,176, GPU 1,482,748 (194 MB below road's), 62 MB of pages. Godot's own
+    accounting at the world's ready (`f330bf84`, the idle benchmark's `VIDEO_MEMORY` line,
+    `memory-attrib`): 100k textures 1,114 MB (the pages 409 MB of them), buffers 656 MB, total
+    1,925 MB, against fdinfo's 2,624 MB; Kuopio 746, 177, 1,076 against 1,742. The pages are
+    what Godot's texture count adds between the two inputs (100k minus Kuopio: textures +368 MB,
+    pages +347 MB): of the 100k city's +722 MB over road, the pages' bytes are +276 MB over road's
+    pools, and about 450 MB lies below Godot's accounting, in the driver's allocations
+    ([T56](#terrain-07-open-questions)).
   - **Load to ready**: 100k 53.9 s (round 7's final tree 32.9 s), Kuopio 5.1 s (6.2 s): the 100k
     city now bakes and installs its 6,404 far tiles round 7 left exhausted, and its load moved 57
     blocks. With pages sized from the lists (`3af3e609`) still 59.6 s and 44 moves: the blocks'
     patches became resident over the load's frames, after their pages were sized; `c95ebda2`
-    holds a load's block pages until the patch residency stops growing. [FINAL4-LOAD]
+    holds a load's block pages until the patch residency stops growing: 46.9 s, 0 moves (Kuopio
+    6.1 s, 0 moves, round 7's final tree 6.2 s). The 100k city's +14 s over round 7 is its 6,404
+    far tiles installed now (round 7 baked them and found no slot), not measured apart.
   - **Residency margin** (idle benchmark camera paths): Kuopio 0 unready patches in view on every
     path; the 100k city on `29f85d11`'s scripts up to 5 a frame on `pan_high` (1,127 frames'
     worth, 22.6 s at worst) and 3 on `pan_low`: the moves' defect above. On the final tree:
@@ -8595,7 +8607,7 @@ compared exact with graded, and the matrices cited as gate D's) with the results
   - **Line counts.** Production Rust: `residency.rs` 304 -> 295, `graded_tiles_api.rs` 814 -> 817.
     GDScript: `terrain_graded_tiles.gd` 2,198 -> 2,878 (the pages: allocation, copies, growth
     and binding; a split of the page allocator into its own script is named for the next round),
-    `terrain.gd` 3,308 -> 3,309, `idle_frame_benchmark.gd` 395 -> 423 (the `GRADED` and `ROADS`
+    `terrain.gd` 3,308 -> 3,309, `idle_frame_benchmark.gd` 395 -> 428 (the `GRADED`, `ROADS` and `VIDEO_MEMORY`
     lines), `graded_tile_renderer_test.gd` 681 -> 764.
 - **Round 7 (`TERRAIN-07-G` round 7; branch tip in the handoff).** Fresh unless marked. The
   user decided T53 (a), the catch-up bound and T50 (b) on 2026-10-28 (evening) and amended T53's
@@ -10707,23 +10719,27 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       the starting number for road level-of-detail work.
 
 56. **T56. The 100k city's video memory with every wanted tile held (`TERRAIN-07-G` round 8) —
-    open, for the user; not attributed yet.**
-    - **Evidence** (fresh, the round 8 record's memory runs, release game, round 6's method, video
-      memory from amdgpu's DRM fdinfo): with pages the 100k city holds all 10,500 wanted tiles
-      (round 7: 4,096, the rest drawn as base ground) and its video memory is 2,624 MB against
-      road's 1,902 MB (+722 MB; round 7 +138 MB), the same within 0.1 MB in three runs with 116-124
-      pages created and 44-57 blocks moved. The pages' own bytes are 387-391 MB (round 7's pools:
-      366 MB). Kuopio follows the pages: 1,485 MB against road's 1,677 MB (60 MB of pages for 301
-      tiles against road's 133 MB of pools; round 7 1,823 MB). So about 560 MB at 100k is neither
-      the pages' bytes nor in proportion to them. A probe creating arrays of the round's layer
-      shapes read no change in fdinfo at all (the driver's allocator hands them out of blocks it
-      already holds), so fdinfo cannot see per-array costs below its blocks.
-    - **Options.** (a) Attribute first: `RenderingDevice.get_memory_usage` (textures, buffers,
-      total) and Godot's texture memory counter on both sides at the same pose, then by level and
-      kind (slot layers, atlas layers, cell buffers), before any change. (b) Accept the 100k
-      city's video memory as the price of holding every wanted tile (not recommended before (a):
-      the rise is not the pages' bytes). (c) Shrink what is attributed (for example demand-sized
-      pages, or wider atlas layers if per-layer overhead shows).
+    open, for the user; partly attributed.**
+    - **Evidence** (fresh, the round 8 record's memory runs, release game, round 6's method):
+      with pages the 100k city holds all 10,500 wanted tiles (round 7: 4,096, the rest drawn as
+      base ground). Video memory by amdgpu's DRM fdinfo: 2,624 MB against road's 1,902 MB
+      (+722 MB; round 7 +138 MB), the same within 0.5 MB in four runs with 73-124 pages created
+      and 0-57 blocks moved. The pages' own bytes are 387-409 MB against road's 133 MB of pools
+      (+276 MB). Godot's own accounting at the world's ready: textures 1,114 MB (the pages 409 of
+      them), buffers 656 MB, total 1,925 MB, so the driver holds about 700 MB beyond what Godot
+      tracks; on Kuopio 1,076 MB tracked against 1,482-1,742 MB in fdinfo. Kuopio is 194 MB below
+      road (62 MB of pages for 301 tiles). About 450 MB of the 100k city's rise is therefore not the
+      pages' bytes but allocations below Godot's accounting; a probe creating arrays of the round's
+      layer shapes read no fdinfo change at all (the driver hands them out of blocks it holds), so
+      fdinfo cannot split it further. Road's side was not measured with Godot's accounting (its
+      idle benchmark lacks the line, and its worktree is not to be changed).
+    - **Options.** (a) Attribute the rest: the same accounting on road's tree (a copy of its
+      scripts with the line), and the Vulkan allocator's view (`VK_EXT_memory_budget`, or
+      `RenderingDevice.get_driver_and_device_memory_report`) on both sides. (b) Accept: +276 MB of
+      pages for 6,404 more tiles held (about 43 KB a tile with its copies and headroom) and the
+      allocator's share as the price of holding every wanted tile (not recommended before (a)).
+      (c) Shrink the pages' share: demand-sized pages (memory follows the camera's levels, at the
+      cost of moves while the camera moves) or no double sizing for blocks straddling two levels.
     - **Recommendation.** (a), next round; nothing relaxed meanwhile.
 
 #### Superseded `ROAD-68` questions
