@@ -1665,6 +1665,33 @@ func _park(cells: Dictionary, patch_node: Node) -> void:
 func cell_builds_pending() -> int:
 	return _builds.size() + _builds_urgent.size()
 
+## Whether queued work will change what the graded cells draw without a new input: tile or list
+## requests in flight or waiting for Rust's in-flight bound, counts, results deferred past a
+## frame's budget, an edit batch waiting for its tiles and cell set builds. terrain.gd's
+## is_render_settled includes it: a capture of the settled terrain waits on that one signal
+## (`TERRAIN-07-G` round 6: the reference test's own copy of it left out the set builds and
+## captured patches that showed graded tiles through their PlaneMesh). O(1).
+func has_pending_work() -> bool:
+	return not (
+		requested.is_empty() and patch_lists_requested.is_empty() and _lists_wanted.is_empty()
+		and _counts.is_empty() and _wanted.is_empty() and _deferred.is_empty()
+		and _edit_batch.is_empty() and _builds.is_empty() and _builds_urgent.is_empty()
+	)
+
+## Resident patches with an installed or previewed tile meeting their interior that do not draw
+## their set (it is not built yet), so their PlaneMesh shows the base ground there instead of the
+## graded tile. For tests: 0 whenever has_pending_work() is false. O(resident patches' tiles).
+func patches_awaiting_cells() -> int:
+	var waiting := 0
+	for key: Vector2i in _resident.keys():
+		if bool(patch_cells.get(key, {}).get("shown", false)):
+			continue
+		for tile in _patch_tiles(_resident[key]["rect"]):
+			if installed.has(tile) or preview.has(tile):
+				waiting += 1
+				break
+	return waiting
+
 ## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
 ## it (a hole showing the sky). For tests and the probe; O(resident patches).
 func hole_patches() -> int:

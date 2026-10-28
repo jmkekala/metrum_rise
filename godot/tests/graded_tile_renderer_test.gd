@@ -347,24 +347,18 @@ func _acknowledge_network(simulation: SimulationNode) -> void:
 		simulation.acknowledge_network_render(simulation.get_network_render_generation())
 		await process_frame
 
-# No pending patch work and no tile list or bake in flight for three frames in a row.
+# The terrain renderer settled (its patches and graded tiles) and the simulation clean, for three
+# frames in a row.
 func _settle_production(terrain, simulation: SimulationNode) -> bool:
-	var graded: GradedTiles = terrain.graded_tiles
 	var stable := 0
 	for frame in TIMEOUT_FRAMES:
 		await process_frame
 		if simulation.is_network_dirty():
 			simulation.acknowledge_network_render(simulation.get_network_render_generation())
 		var idle: bool = (
-			not terrain.has_pending_render_work(false)
+			terrain.is_render_settled()
 			and not simulation.is_network_dirty()
 			and not simulation.is_terrain_dirty()
-			and graded.requested.is_empty()
-			and graded.patch_lists_requested.is_empty()
-			and graded._counts.is_empty()
-			and graded._edit_batch.is_empty()
-			and graded._builds.is_empty()
-			and graded._builds_urgent.is_empty()
 		)
 		stable = stable + 1 if idle else 0
 		if stable >= 3:
@@ -417,8 +411,7 @@ func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool
 	for frame in TIMEOUT_FRAMES:
 		_frame(graded, camera, resident)
 		await process_frame
-		var idle: bool = (graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
-			and graded._builds.is_empty() and graded._builds_urgent.is_empty())
+		var idle: bool = not graded.has_pending_work()
 		stable = stable + 1 if idle and graded.installed.size() > 0 else 0
 		if stable >= 3:
 			return true

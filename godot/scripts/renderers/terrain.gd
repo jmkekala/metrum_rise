@@ -587,6 +587,15 @@ func has_pending_render_work(include_background_cache: bool = true) -> bool:
 		)
 	)
 
+## Whether the renderer has settled: no pending patch work (has_pending_render_work without the
+## background cache) and no graded tile work (requests, lists, counts, deferred results, an edit
+## batch, cell set builds). A capture of what the player sees waits for it: until then a patch
+## may still draw its PlaneMesh where its graded tiles are installed (`TERRAIN-07-G` round 6).
+## The benchmarks keep their own waits (their load phases are measured without the graded
+## work). O(1).
+func is_render_settled() -> bool:
+	return not has_pending_render_work(false) and (graded_tiles == null or not graded_tiles.has_pending_work())
+
 func get_visibility_cull_far_m(camera: Camera3D) -> float:
 	if camera == null:
 		return 0.0

@@ -110,18 +110,14 @@ func _run() -> void:
 	print("graded_edit_probe: %d failures" % _failures)
 	quit(0 if _failures == 0 else 1)
 
-# Until the terrain has no pending patch work, tile list or bake in flight and no
-# count queued, for three frames in a row.
+# Until the terrain renderer has settled (its patches and graded tiles), for three frames in a
+# row.
 func _settle(terrain) -> bool:
 	var stable := 0
 	var deadline := Time.get_ticks_msec() + SETTLE_TIMEOUT_MS
 	while stable < 3 and Time.get_ticks_msec() < deadline:
 		await process_frame
-		var graded = terrain.graded_tiles
-		var idle: bool = not terrain.has_pending_render_work(false)
-		if graded != null:
-			idle = idle and graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
-		stable = stable + 1 if idle else 0
+		stable = stable + 1 if terrain.is_render_settled() else 0
 	_expect(stable >= 3, "the terrain must settle")
 	return stable >= 3
 

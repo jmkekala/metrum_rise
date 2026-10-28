@@ -318,19 +318,20 @@ func _production_terrain(scene: Node3D) -> Node3D:
 	scene.add_child(terrain)
 	return terrain
 
-# Waits until the terrain has no pending patch work, tile list or bake in flight and
-# no count queued, for three frames in a row at the current camera.
+# Waits until the terrain renderer has settled (no pending patch work, graded tile, list, count,
+# edit batch or cell set build), for three frames in a row at the current camera. Then every
+# patch showing a graded tile draws its cells: a patch whose set is still building draws its
+# PlaneMesh, the base ground over the graded road (`TERRAIN-07-G` round 6: this wait's own copy
+# of the signal left out the set builds, and the sloped obliques caught such patches).
 func _settle_terrain(terrain, label: String) -> void:
 	var stable := 0
 	var deadline := Time.get_ticks_msec() + 60000
 	while stable < 3 and Time.get_ticks_msec() < deadline:
 		await process_frame
-		var graded = terrain.graded_tiles
-		var idle: bool = not terrain.has_pending_render_work(false)
-		if graded != null:
-			idle = idle and graded.requested.is_empty() and graded.patch_lists_requested.is_empty() and graded._counts.is_empty()
-		stable = stable + 1 if idle else 0
+		stable = stable + 1 if terrain.is_render_settled() else 0
 	_expect(stable >= 3, "%s: the terrain must settle" % label)
+	var waiting: int = terrain.graded_tiles.patches_awaiting_cells()
+	_expect(waiting == 0, "%s: %d patches show graded tiles through their PlaneMesh" % [label, waiting])
 
 # The spike's views of one terrain mode, then the distance renders where the fixture asks:
 # oblique, the side arm's two sidewalk edges and a corner from 2.5 m, plan_terrain (counting
