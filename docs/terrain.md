@@ -8492,6 +8492,95 @@ is listed in `$ARTIFACTS/road68/t07g3/audit.md`) and replaced round 2's unverifi
 fix "without a tolerance", a "known" Kuopio pinhole, a memory comparison that loaded no save and
 compared exact with graded, and the matrices cited as gate D's) with the results below.
 
+- **Round 8 (`TERRAIN-07-G` round 8, a design round; branch tip in the handoff).** Fresh unless
+  marked. The user decided T54 (a) and T50 (b) on 2026-10-28 (late evening), designed together
+  ([pages and the row atlas](#data), written before the code), and asked for the whole-map
+  analysis (T55, `RENDER-29`).
+  - **Built.** Rust packs a tile's slot layer with a header line and its rows compactly, padded to
+    whole 256-texel atlas layers (`pack_slot`); the cell shader reads the rows from the page's
+    atlas through the header (`terrain_cells.gdshaderinc`); the renderer keeps pages per level
+    (`GL0`/`GL1` one world page each, `GL2`/`GL3` one per block of 2 x 2 patches at `L = 2,048`),
+    places one bake's copies in every page its patches' blocks use (all or none), sizes a
+    block's page for its listed tiles once the block's lists are in, and grows a full page by
+    moving the block to a larger one (rebakes into the target while the old page keeps taking
+    every copy). The fixed slot pools, their row arrays and the capacity uniforms are gone.
+  - **The mask's inputs moved, not its rule.** `render_tests.rs` now ports the shader over the
+    packed bytes (the slot layer, the header with the run's first layer set to 3, the run placed
+    there in an atlas): `the_exact_mask_equals_coverage`, the bend's outer tangent at `GL0` and
+    `GL1`, the terminal cap at `GL1` and `GL2` and the bridge mouth pass on it, and
+    `packed_slots_hold_the_payload_bitwise` checks the header, the offsets and every row (debug,
+    `$ARTIFACTS/road68/t07g8/graded-tests-1.log`, 44 passed). Every fixture's render on the
+    release library (`lib-rel1`, the round's Rust) equals round 7's references
+    (`$ARTIFACTS/road68/t07g7/final-1`): 197 images, 0 differing by more than 40 levels; 0
+    pinholes in the 33 plan views; PASS (`t07g8/r8-1`, scripts at `29f85d11`; again on the final
+    tree, `295f59ec`, `final-1`: the same 197 images equal, 0 pinholes, PASS).
+  - **Tests that fail without each change** (headless renderer test, `$ARTIFACTS/road68/t07g8/renderer-*.log`):
+    a block's move rebinds its sets' materials to the new page (reverted: 20 failures,
+    `renderer-reverted-move.log`); a moving block's page keeps taking every copy, so its sets show
+    every installed tile (reverted: 11 failures, a partial set in a frame of the move among them,
+    `renderer-reverted-bound-7.log`); a `GL3` step change rewrites a tile's copies though its
+    token and level code stay (reverted: 1 upload for 10 copies, `renderer-reverted-step-7.log`).
+    The tip: 0 failures (`renderer-7.log`). The move's instance rewrite alone is not caught
+    headless (every rebake arrives in the switch's frame there); its binding is.
+  - **Found and fixed inside the round** (one rule in the final code): a page sized at the
+    block's first install, before its lists were in (the 100k load moved 57 blocks, each a rebake);
+    a moving block's new copies put in the target only (its sets drew them as base cells until
+    the move; the 100k pans showed up to 5 patches a frame unready in view, 22.6 s at worst); a
+    rebake at the same level and token skipping its copies even when its `GL3` step changed;
+    the world pages dropped when a move's target emptied.
+  - **The 100k city at its saved pose** (release game, gamescope headless, round 6's method,
+    library `lib-rel1`; first on `29f85d11`'s scripts, `memory-after`): 10,500 tiles installed,
+    `GL2` 3,011 and `GL3` 7,489 desired, **0 exhausted**, settled (handed over); pages 1/1/23/48,
+    slots 64/192/4,848/10,734 (free 64/192/1,439/2,368), atlas layers 1,536/2,048/14,544/32,202,
+    380 MB of pages (the pooled free ones included). Kuopio: 301 tiles, 0 exhausted, pages
+    1/1/5/11, 60 MB. On the final tree: [FINAL-100K].
+  - **Memory against road** (the same runs; road `aa20f247`'s deployed library in
+    `road68T07D-wt`, fresh, KiB): 100k setup 1,547,780 against 1,350,188, settled maximum
+    5,790,460 against 5,754,484, GPU 2,624,388 against 1,901,896; Kuopio 1,546,564 against
+    1,347,908, 2,233,808 against 1,930,864, GPU 1,482,724 against 1,677,164. Attribution: the
+    setup's +193 MB is the same 1.55 GB on both saves, measured before any world loads (the world
+    pages are 46 MB, created at the world load): it is not the slot pools' (round 6's attribution
+    to the arrays' creation does not hold); not attributed further this round. Kuopio's settled
+    +296 MB is round 7's every cell set built during the load (round 7's final tree: 2,237,220).
+    The GPU: Kuopio 190 MB below road (60 MB of pages for 301 tiles against road's fixed 133 MB
+    pools); the 100k city 706 MB above road while holding all 10,500 wanted tiles (road holds
+    at most 4,096 and never installs its far `GL3` tiles): pages 380 MB against road's 133 MB of
+    pools, and the remaining ~460 MB not in the pages' own bytes. The driver reports video memory
+    in its allocator's blocks, and a run that creates and frees pages (124 created, 57 moves)
+    fragments them; a per-layer measurement read nothing finer than those blocks
+    (`t07g8/vram/`). On the final tree (no load moves): [FINAL-MEM].
+  - **Load to ready**: 100k 53.9 s (round 7's final tree 32.9 s), Kuopio 5.1 s (6.2 s): the 100k
+    city now bakes and installs its 6,404 far tiles round 7 left exhausted, and its load moved 57
+    blocks (fixed). On the final tree: [FINAL-LOAD].
+  - **Residency margin** (idle benchmark camera paths): Kuopio 0 unready patches in view on every
+    path; the 100k city on `29f85d11`'s scripts up to 5 a frame on `pan_high` (1,127 frames'
+    worth, 22.6 s at worst) and 3 on `pan_low`: the moves' defect above. On the final tree:
+    [FINAL-READY].
+  - **Timing session** (C F F C, four workers, P-cores, 00:33-00:39; C road's `t07f13/bin-tip`, F
+    `t07g8/bin-F`, the release test build of `ed42f3c8`, whose Rust is the tip's; cities
+    prepared, 2k generated in F's first run). Reference preview, graded p50/p95 and commit:
+    `sloped_t` F 1.834/2.418, 1.721 and 1.845/2.663, 1.609 (C 1.290/1.922, 1.244 and
+    1.492/2.248, 1.403); `sloped_branch` F 1.665/2.642, 1.530 and 1.541/2.198, 1.933 (C
+    1.171/1.810, 1.128 and 1.281/2.199, 1.876): **pass**. Populated drags: pose frames p95
+    2.16/2.27, maxima 2.44/2.83 ms, catch-up maxima 2.85/2.72, 0 of 167 frames over 3.0 ms in
+    either run, converged commits at most 1.50 ms: **pass**; one undo sample, 30k (8 tiles
+    adopted, none baked), took 8.97 ms in F's second run (its adoption 8.55 ms; 1.31 ms in F's
+    first), the same sample 3.81 and 2.68 ms in C's runs and 6.99 ms in round 5: **a miss for the
+    user**, in the control too and untouched by this round (no Rust bake or stage changed), not
+    attributed to a line yet. Kuopio drags: pose maxima 3.81/3.86 ms (4 and 2 of 299 over; C
+    4.58/3.50), catch-up 2.90/3.15 (0 and 2 of 199 over): **the miss T27 names** (a single
+    tile's bake, the user's). Fast click (accepted exception) F at most 7.97 ms (C 4.35).
+    Breakdown staging at 100k F 7.65/7.90 ms (C 3.98/4.05); products equal per side. Locality (F):
+    p50 1.28/1.51/1.76/1.68 ms, maxima at most 2.05 ms: **pass**. Bitwise: the three tests pass.
+    Logs `$ARTIFACTS/road68/t07g8/{stages,breakdown,drags,kuopio}-N-{C,F}.log`.
+  - **Road chunks** (T55): the 100k city 197 chunks, 985 surfaces, 5,557,996 triangles; Kuopio
+    26, 139, 102,331 (the idle benchmark's `ROADS` line).
+  - **Gate checks.** Clippy `--all-targets` on `ed42f3c8`: 59 warnings, the baseline's set exactly.
+    Missing docs: 0. `./run.sh --test`: [FINAL-RUNSH].
+  - **Line counts.** Production Rust: `residency.rs` 304 -> 295, `graded_tiles_api.rs` 814 -> 817.
+    GDScript: `terrain_graded_tiles.gd` 2,198 -> [FINAL-LINES] (the pages: allocation, copies,
+    growth and binding, about 600 lines; a split of the page allocator into its own script is
+    named for the next round), `idle_frame_benchmark.gd` + the `GRADED` and `ROADS` lines.
 - **Round 7 (`TERRAIN-07-G` round 7; branch tip in the handoff).** Fresh unless marked. The
   user decided T53 (a), the catch-up bound and T50 (b) on 2026-10-28 (evening) and amended T53's
   load part (no loading screen; [`UI-08`](roadmap.md) added).

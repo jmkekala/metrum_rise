@@ -426,8 +426,11 @@ func _block_sets(code: int, block: Vector2i) -> Array[Vector2i]:
 				keys.append(key)
 	return keys
 
-# The tiles meeting block `block`'s resident patches that a resident list names: what the block
-# can need at a level while the lists stand. O(the block's tiles).
+# The tiles block `block`'s resident patches' lists name: what the block can need at a level
+# while the lists stand, but for the border tiles only a neighbour's list names (the page's
+# headroom). Read from the lists themselves, not from the desired set's counts, which a list's
+# arrival queues over frames (round 8: sized from the counts, the 100k load moved 44 blocks).
+# O(the block's listed tiles).
 func _block_listed(block: Vector2i) -> int:
 	var seen := {}
 	for z in block_patches:
@@ -435,9 +438,8 @@ func _block_listed(block: Vector2i) -> int:
 			var key := block * block_patches + Vector2i(x, z)
 			if not _resident.has(key):
 				continue
-			for tile in _patch_tiles(_resident[key]["rect"]):
-				if _tile_lists.has(tile):
-					seen[tile] = true
+			for tile: Vector2i in patch_lists.get(key, {}).get("tiles", []):
+				seen[tile] = true
 	return seen.size()
 
 # A page of `slots` slot layers and `layers` atlas layers for `block` at level `code`: a pooled

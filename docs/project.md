@@ -531,8 +531,15 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   up to 3.6 ms (for the user, T27). The round found that the 100k city wants three times more
   level-2 and level-3 terrain slots than the pools hold, so its far graded terrain never
   installed (T54, for the user; now counted instead of re-requested every frame). T50's list
-  atlas is decided and not built yet. No target is relaxed; details are in the [Gate G
-  record](terrain.md#terrain-07-g-record).
+  atlas is decided and not built yet. Round 8 built the user's two decisions together: each level's
+  graded tiles now live in pages, one per block of patches (a tile on a block border is held in
+  both), and a tile's seam, edge and candidate rows live in its page's atlas sized by use instead
+  of fixed rows per slot; a page that fills moves its block to a larger one without a visible gap.
+  The 100k city now installs every one of its 10,500 wanted tiles (none left as ungraded ground),
+  every reference render is unchanged, and Kuopio holds 190 MB less video memory than road; the
+  100k city's video memory and load time grew with the tiles it now holds (details and the
+  user's rows in the record). A whole-map view is analysed for later (`RENDER-29`). No target is
+  relaxed; details are in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
