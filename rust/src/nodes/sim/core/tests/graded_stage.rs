@@ -314,9 +314,9 @@ fn undo(core: &mut SimCore) -> serde_json::Value {
     let span = serde_json::json!([ms(called), ms(std::time::Instant::now())]);
     let stats = core.last_graded_stats;
     serde_json::json!({
-        "ms": stats.total_ms(), "tiles": stats.wanted, "adopted": stats.adopted,
-        "baked": stats.baked, "digest": core.last_graded_tiles.as_deref().ok().map(stage_digest),
-        "span_ms": span,
+        "ms": stats.total_ms(), "select_ms": stats.select_ms, "bake_ms": stats.bake_ms,
+        "tiles": stats.wanted, "adopted": stats.adopted, "baked": stats.baked,
+        "digest": core.last_graded_tiles.as_deref().ok().map(stage_digest), "span_ms": span,
     })
 }
 

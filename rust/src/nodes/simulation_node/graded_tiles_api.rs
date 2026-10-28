@@ -25,7 +25,11 @@ use crate::simulation::terrain::graded::{
 use std::cell::RefCell;
 use std::thread::LocalKey;
 
-/// Most tile bakes in flight at once: the request budget that bounds the payloads Rust holds.
+/// Most tiles in flight at once, from the request until Godot polls the result (baking or
+/// finished): the request budget that bounds the payloads Rust holds and the packing buffers its
+/// pool keeps (`TERRAIN-07-G` round 6: a finished result left the count before its poll, so the
+/// results queued behind Godot's install budget after a load grew without bound, and the pool
+/// kept their buffers).
 const MAX_IN_FLIGHT_TILES: usize = 96;
 /// Most patch tile lists in flight at once.
 const MAX_IN_FLIGHT_PATCHES: usize = 32;
@@ -283,6 +287,52 @@ impl GradedResidencyJobs {
     fn buffer(&mut self) -> Vec<u8> {
         self.buffers.pop().unwrap_or_default()
     }
+
+    // Admits a tile request within the in-flight bound, unless the same tile and level is in
+    // flight already.
+    fn admit(&mut self, tile: TileKey, level: Level) -> bool {
+        self.tiles_in_flight.len() < MAX_IN_FLIGHT_TILES
+            && self.tiles_in_flight.insert((tile, level))
+    }
+
+    // Publishes one baked request: a finished tile packed into `buffers` stays in flight until
+    // its poll (take_tiles); a failure leaves the count at once and returns the buffers.
+    fn publish(
+        &mut self,
+        request: &GradedTileRequest,
+        outcome: Result<(), BakeError>,
+        payload: &TilePayload,
+        [texels, rows, walls]: [Vec<u8>; 3],
+    ) {
+        if let Err(error) = outcome {
+            self.tiles_in_flight.remove(&(request.tile, request.level));
+            self.failed_tiles.push((*request, Failure::Bake(error)));
+            self.buffers.extend([texels, rows, walls]);
+            return;
+        }
+        self.tiles.push(TileResult {
+            request: *request,
+            samples: payload.samples,
+            graded: payload.graded,
+            behind: payload.behind,
+            seams: payload.seams.len(),
+            edges: payload.edges.len(),
+            texels,
+            rows,
+            walls,
+        });
+    }
+
+    // Takes at most `max` finished tiles for Godot's poll, oldest first; they leave the
+    // in-flight count here.
+    fn take_tiles(&mut self, max: usize) -> Vec<TileResult> {
+        let take = max.min(self.tiles.len());
+        let ready: Vec<TileResult> = self.tiles.drain(..take).collect();
+        for result in &ready {
+            self.tiles_in_flight.remove(&(result.request.tile, result.request.level));
+        }
+        ready
+    }
 }
 
 // Bakes one level's requests, a failing batch tile by tile so each failure is its own.
@@ -342,26 +392,10 @@ fn bake_level(
             }
         }
         let mut state = jobs.lock().unwrap();
-        for (((request, outcome), payload), [texels, rows, walls]) in
+        for (((request, outcome), payload), buffers) in
             requests.iter().zip(outcomes).zip(baked.iter()).zip(buffers)
         {
-            state.tiles_in_flight.remove(&(request.tile, request.level));
-            if let Err(error) = outcome {
-                state.failed_tiles.push((*request, Failure::Bake(error)));
-                state.buffers.extend([texels, rows, walls]);
-                continue;
-            }
-            state.tiles.push(TileResult {
-                request: *request,
-                samples: payload.samples,
-                graded: payload.graded,
-                behind: payload.behind,
-                seams: payload.seams.len(),
-                edges: payload.edges.len(),
-                texels,
-                rows,
-                walls,
-            });
+            state.publish(request, outcome, payload, buffers);
         }
     });
 }
@@ -500,9 +534,7 @@ impl SimulationNode {
                     continue;
                 };
                 let tile = TileKey { x, z };
-                if jobs.tiles_in_flight.len() >= MAX_IN_FLIGHT_TILES
-                    || !jobs.tiles_in_flight.insert((tile, level))
-                {
+                if !jobs.admit(tile, level) {
                     accepted.push(0);
                     continue;
                 }
@@ -602,12 +634,8 @@ impl SimulationNode {
             dict.set("tiles", PackedInt32Array::from(flat.as_slice()));
             patches.push(&dict.to_variant());
         }
-        let take = usize::try_from(max_tiles)
-            .unwrap_or(0)
-            .min(jobs.tiles.len());
         let mut tiles = VarArray::new();
-        let ready: Vec<TileResult> = jobs.tiles.drain(..take).collect();
-        for result in ready {
+        for result in jobs.take_tiles(usize::try_from(max_tiles).unwrap_or(0)) {
             tiles.push(&result.to_dict().to_variant());
             jobs.buffers
                 .extend([result.texels, result.rows, result.walls]);
@@ -736,4 +764,51 @@ fn pack_install_tiles(
             TileResult::packed(request, &staged.payload, side, Default::default())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(x: i32) -> GradedTileRequest {
+        GradedTileRequest {
+            tile: TileKey { x, z: 0 },
+            level: Level::Gl0,
+            token: 1,
+        }
+    }
+
+    // `TERRAIN-07-G` round 6: a finished result counts in flight until it is polled, so the
+    // results waiting for Godot's install budget (and the buffers the pool keeps for them) stay
+    // within MAX_IN_FLIGHT_TILES however far the bakes run ahead of the installs.
+    #[test]
+    fn finished_tiles_count_in_flight_until_polled() {
+        let mut jobs = GradedResidencyJobs::default();
+        let payload = TilePayload::default();
+        for x in 0..MAX_IN_FLIGHT_TILES as i32 {
+            assert!(jobs.admit(TileKey { x, z: 0 }, Level::Gl0));
+        }
+        let next = MAX_IN_FLIGHT_TILES as i32;
+        assert!(!jobs.admit(TileKey { x: next, z: 0 }, Level::Gl0));
+        for x in 0..MAX_IN_FLIGHT_TILES as i32 {
+            jobs.publish(&request(x), Ok(()), &payload, Default::default());
+        }
+        assert!(
+            !jobs.admit(TileKey { x: next, z: 0 }, Level::Gl0),
+            "a finished, unpolled result still holds its place"
+        );
+        assert_eq!(jobs.take_tiles(4).len(), 4);
+        for x in next..next + 4 {
+            assert!(jobs.admit(TileKey { x, z: 0 }, Level::Gl0));
+        }
+        assert!(!jobs.admit(TileKey { x: next + 4, z: 0 }, Level::Gl0));
+        // A failure returns its place at once.
+        jobs.publish(
+            &request(next),
+            Err(BakeError::SitesUnavailable),
+            &payload,
+            Default::default(),
+        );
+        assert!(jobs.admit(TileKey { x: next + 4, z: 0 }, Level::Gl0));
+    }
 }
