@@ -97,14 +97,14 @@ impl Level {
         (3.0 * self.spacing_m(cell_m)).max(2.0)
     }
 
-    /// Seam row capacity of one slot (`T7`): at least twice the measured maximum (`GL0` 245 in
-    /// the 100k city, `GL1` 244 and `GL2` 212 in the 14,000-resident populated save). `GL3`'s
-    /// 128 is its largest lattice (at most 11 x 11 points on a base of 8 m cells, each naming one
-    /// seam) rounded up.
+    /// Seam row capacity of one slot (`T7`): at least twice the measured maximum, the squares'
+    /// extra candidates included (`TERRAIN-07-G` round 4 census of the Kuopio reference save,
+    /// the 14,000-resident populated save and the 100k city: `GL0` 248, `GL1` 254, `GL2` 262,
+    /// `GL3` 819 at step 8 on Kuopio). Below 2048, the texel's row field.
     pub fn seam_capacity(self) -> usize {
         match self {
             Self::Gl0 | Self::Gl1 | Self::Gl2 => 512,
-            Self::Gl3 { .. } => 512,
+            Self::Gl3 { .. } => 1664,
         }
     }
 
@@ -120,12 +120,16 @@ impl Level {
     }
 
     /// Row texels of one slot for the exact mask's per-square extra candidates (T48 (a),
-    /// `TERRAIN-07-G`). A texel's seam channel points at its square's list by one more than the
-    /// list's first texel times 2048, so the capacity stays below 8192.
+    /// `TERRAIN-07-G`): at least twice the measured maximum (round 4 census as for the seams:
+    /// `GL0` 2,343 and `GL1` 1,546 on Kuopio, `GL2` 1,286 on the populated save, `GL3` 447). A
+    /// texel's seam channel points at its square's list by one more than the list's first texel
+    /// times 2048, so the capacity stays below 8192.
     pub fn extra_capacity(self) -> usize {
         match self {
-            Self::Gl0 | Self::Gl1 | Self::Gl2 => 2048,
-            Self::Gl3 { .. } => 2048,
+            Self::Gl0 => 4800,
+            Self::Gl1 => 3200,
+            Self::Gl2 => 2600,
+            Self::Gl3 { .. } => 960,
         }
     }
 }

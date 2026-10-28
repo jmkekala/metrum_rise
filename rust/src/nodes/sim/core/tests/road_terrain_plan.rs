@@ -699,12 +699,21 @@ fn graded_slot_rows_census() {
         let (mut extras_max, mut squares_max, mut list_max) = (0usize, 0usize, 0usize);
         // Tiles flagged for the behind-the-road variant (T49 (c)).
         let mut behind = Vec::new();
+        // Payload row bytes as packed (seams, edges, heights and the extra lists used), and the
+        // single-tile bake time summed over the tiles (this census's own runs only).
+        let (mut row_bytes, mut bake_s) = (0usize, 0.0f64);
         // Wall faces per tile, then per patch over the tiles it lists (an upper bound of the
         // faces the patch draws: each face draws in the patch holding its midpoint).
         let mut faces = std::collections::HashMap::new();
         for &tile in &tiles {
-            match bake_tiles(terrain, roadbed, sites, &[tile], level, &mut out) {
+            let started = std::time::Instant::now();
+            let baked = bake_tiles(terrain, roadbed, sites, &[tile], level, &mut out);
+            bake_s += started.elapsed().as_secs_f64();
+            match baked {
                 Ok(()) => {
+                    let payload = &out[0];
+                    row_bytes += 16
+                        * (2 * payload.seams.len() + payload.edges.len() + payload.extras.len());
                     seams_max = seams_max.max(out[0].seams.len());
                     edges_max = edges_max.max(out[0].edges.len());
                     extras_max = extras_max.max(out[0].extras.len());
@@ -741,6 +750,7 @@ fn graded_slot_rows_census() {
                 "extra_capacity": level.extra_capacity(), "row_extras_max": extras_max,
                 "extra_squares_max": squares_max, "extra_list_max": list_max,
                 "behind_tiles": behind.len(), "first_behind": &behind[..behind.len().min(12)],
+                "row_bytes_mean": row_bytes / tiles.len().max(1), "bake_ms_mean": 1000.0 * bake_s / tiles.len().max(1) as f64,
                 "patches": patch_lists.len(),
                 "patches_listed": patch_lists.iter().filter(|list| !list.is_empty()).count(),
                 "patch_wall_faces_max": patch_lists.iter().map(|list| list.iter().map(|tile| faces.get(tile).copied().unwrap_or(0)).sum::<usize>()).max(),

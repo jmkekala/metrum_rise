@@ -580,6 +580,29 @@ fn terminal_cap_mask_equals_coverage_at_gl2() {
     terminal_cap_mask_equals_coverage(Level::Gl2);
 }
 
+// T49 (c): the conflict pair's tiles hold terrain above the road top along a seam (its conflict
+// walls), so some are flagged for the behind-the-road variant; the flat T's terrain meets its
+// seams at the road top, and none is. (On a slope a cut's lattice interpolation rises above the
+// road top at convex vertices, so the sloped T's tiles there are flagged too.) `GL1`, the plan
+// view's level.
+#[test]
+fn the_behind_flag_marks_the_tiles_whose_terrain_rises_above_a_seam() {
+    for (name, graph, terrain) in fixtures() {
+        if !["conflict_8", "t_flat"].contains(&name) {
+            continue;
+        }
+        let roadbed = compiled(&graph);
+        let payloads = bake_level(&terrain, &roadbed, &window_tiles(), Level::Gl1);
+        let flagged = payloads.iter().filter(|payload| payload.behind).count();
+        assert_eq!(
+            flagged > 0,
+            name == "conflict_8",
+            "{name}: {flagged} of {} tiles flagged",
+            payloads.len()
+        );
+    }
+}
+
 // The exact mask equals coverage across a bridge's mouth (`TERRAIN-07-D` round 9, the `bridge_t`
 // `under_bridge` dashed line): on a 2 cm grid over the 4 m either side of the mouth row (along
 // `z` at `x = 0`), `GL0` and `GL1`. Before the rows were named, 9,938 of 640,000 `GL0` points

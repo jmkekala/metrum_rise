@@ -70,10 +70,6 @@ func _run() -> void:
 	for fixture in _fixtures():
 		if not only.is_empty() and not only.has(fixture.name):
 			continue
-		# These legacy road-only structure fixtures deliberately have no terrain contract. The
-		# graded bridge/tunnel fixtures below name b_only and exercise their mouths and walls.
-		if not fixture.get("terrain", true) and not fixture.has("b_only"):
-			continue
 		for slope: Array in _slopes(fixture):
 			await _reference(fixture, slope[0], slope[1])
 	var manifest := {"engine": Engine.get_version_info(), "adapter": RenderingServer.get_video_adapter_name(),
@@ -116,13 +112,12 @@ func _fixtures() -> Array[Dictionary]:
 	# A footpath (no lanes) 30 degrees off the T's side road: it meets that arm's sidewalk, so the arm's mouth moves out and its zebra stays at the corner (D5, ROAD-68 open question 17).
 	result.append({"name": "t_footpath_beside_arm", "roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm)), _road(Vector2.ZERO, Vector2.from_angle(deg_to_rad(120.0)) * 60.0, 0)]})
 	# ROAD-68-F part 2: a bridge deck and a tunnel road piece as a T's side road (node piece) and as
-	# the continuation of a road end (pass-through span mouth), made structures with set_edge_class.
-	# Their terrain patches fail at the open chain end the abutment or portal will close
-	# (TERRAIN-07), so they render without terrain.
+	# the continuation of a road end (pass-through span mouth), made structures with set_edge_class
+	# (each asserts its edge class), rendered over graded ground sculpted after the commits below.
 	for structure in [["bridge", 1], ["tunnel", 2]]:
-		var t := {"name": "%s_t" % structure[0], "class_at": Vector2(0, arm * 0.5), "class": structure[1], "terrain": false,
+		var t := {"name": "%s_t" % structure[0], "class_at": Vector2(0, arm * 0.5), "class": structure[1], "structure": true,
 			"roads": [_road(Vector2(-arm, 0), Vector2(arm, 0)), _road(Vector2(0, 0), Vector2(0, arm))]}
-		var continuation := {"name": "%s_continuation" % structure[0], "class_at": Vector2(arm * 0.5, 0), "class": structure[1], "terrain": false,
+		var continuation := {"name": "%s_continuation" % structure[0], "class_at": Vector2(arm * 0.5, 0), "class": structure[1], "structure": true,
 			"roads": [_road(Vector2(-arm, 0), Vector2.ZERO), _road(Vector2.ZERO, Vector2(arm, 0))]}
 		if structure[0] == "bridge":
 			# The side view's eye and the deck point it looks at.
@@ -154,16 +149,21 @@ func _fixtures() -> Array[Dictionary]:
 	# mound, each seen at its mouth.
 	for fixture in result:
 		if fixture.name == "bridge_t":
-			fixture["b_only"] = true
 			fixture["sculpt_after"] = [[Vector2(0, 32), 26.0, -0.25]]
 			fixture["mouth_views"] = [
 				{"view": "under_bridge", "from": Vector2(7.0, 24.0), "eye_m": 1.0, "at": Vector2(0.0, 7.0), "at_m": -0.6},
 				{"view": "mouth_side", "from": Vector2(18.0, 14.0), "eye_m": 2.0, "at": Vector2(0.0, 9.0), "at_m": -1.0}]
 		elif fixture.name == "tunnel_t":
-			fixture["b_only"] = true
 			fixture["sculpt_after"] = [[Vector2(0, 46), 30.0, 0.3]]
 			fixture["mouth_views"] = [
 				{"view": "portal", "from": Vector2(6.0, -12.0), "eye_m": 2.5, "at": Vector2(0.0, 14.0), "at_m": 2.0}]
+		# The continuations (TERRAIN-07-G round 4 restored them on the graded path, with the
+		# bridge's side view of TERRAIN-07-B's fascias): the same hollow and mound across the
+		# east arm. Tunnels are not a focus (the user, 2026-10-26): theirs is a no-crash run.
+		elif fixture.name == "bridge_continuation":
+			fixture["sculpt_after"] = [[Vector2(32, 0), 26.0, -0.25]]
+		elif fixture.name == "tunnel_continuation":
+			fixture["sculpt_after"] = [[Vector2(46, 0), 30.0, 0.3]]
 	# The Kuopio reference save's conflict wall site (TERRAIN-07-C round 4, T2 (c)).
 	result.append({"name": "kuopio_t2_wall", "save": "res://../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
 		"focus": Vector2(-16.3, 1182.8), "roads": []})
@@ -178,7 +178,7 @@ func _fixtures() -> Array[Dictionary]:
 
 # [label, rise over 256 m]: flat and 2.5%, with the spike's 8% on the T, four-way, bend and grid.
 func _slopes(fixture: Dictionary) -> Array:
-	if fixture.has("save") or fixture.has("b_only"):
+	if fixture.has("save") or fixture.has("structure"):
 		return [["flat", 0.0]]
 	if fixture.get("terrain_after", false):
 		return [["steep", STEEP_RISE_M]]
@@ -357,6 +357,10 @@ func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: C
 	]
 	views.append_array(fixture.get("mouth_views", []))
 	views.append_array(fixture.get("edge_views", []))
+	# A bridge deck's side from 12 m (TERRAIN-07-B's fascias), at 40 degrees.
+	var side: Array = fixture.get("side", [])
+	if not side.is_empty():
+		views.append({"view": "side", "from": side[0], "eye_m": 1.0, "at": side[1], "at_m": -0.3, "fov_deg": 40.0})
 	# Close and mouth views are placed relative to the focus (the origin but on a save).
 	var focus_xz := Vector2(focus.x, focus.z)
 	if fixture.get("distance", false):
@@ -365,7 +369,7 @@ func _compare_views(fixture: Dictionary, label: String, scene: Node3D, camera: C
 	for view: Dictionary in views:
 		var ortho: bool = view.get("ortho", false)
 		camera.projection = Camera3D.PROJECTION_ORTHOGONAL if ortho else Camera3D.PROJECTION_PERSPECTIVE
-		camera.fov = 70.0
+		camera.fov = float(view.get("fov_deg", 70.0))
 		camera.position = focus + Vector3(0.0, CAMERA_HEIGHT_M, offset)
 		camera.rotation_degrees = Vector3(-CAMERA_PITCH_DEG, 0.0, 0.0)
 		var target := focus

@@ -24,6 +24,7 @@ extends RefCounted
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const GRADED_SHADER := preload("res://assets/materials/terrain_graded.gdshader")
+const GRADED_BEHIND_SHADER := preload("res://assets/materials/terrain_graded_behind.gdshader")
 const WALL_SHADER := preload("res://assets/materials/terrain_graded_walls.gdshader")
 const TILE_M := 64.0
 # Level distances with their hysteresis (T5, TD10): GL0 to 64 m, GL1 to 128 m, GL2 to 2 km,
@@ -42,9 +43,12 @@ const PATCH_TILE_ROW := 32
 const REQUESTS_PER_FRAME := 24
 const INSTALL_BUDGET_MS := 1.0
 const POLL_BATCH := 4
-# The cell meshes of a patch: GL0-GL3 (0-3) and the base cells (CELL_BASE).
-const CELL_MESHES := 5
+# The cell meshes of a patch: GL0-GL3 (0-3), the base cells (CELL_BASE) and GL0-GL3 of the tiles
+# whose bake flags them behind the road (CELL_BEHIND + level, T49 (c)): their cells draw the
+# behind-the-road variant, which writes depth, so every other cell keeps the early depth test.
+const CELL_MESHES := 9
 const CELL_BASE := 4
+const CELL_BEHIND := 5
 # Wall face instances per patch, prewarmed with its cells: at most 42 faces per patch on the
 # Kuopio reference save and none on the populated save (TERRAIN-07-D round 6 census, GL0). A
 # patch with more draws the first ones and counts and logs the rest.
@@ -614,7 +618,7 @@ func _show_preview_tile(tile: Dictionary) -> void:
 	_write_slot(code, slot, tile)
 	var step := int(tile["step"])
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
-	preview[key] = {"code": code if code < 3 else base_code(step), "level": code, "step": step, "slot": slot, "token": int(tile["token"]), "walls": walls}
+	preview[key] = {"code": code if code < 3 else base_code(step), "level": code, "step": step, "slot": slot, "token": int(tile["token"]), "walls": walls, "behind": bool(tile["behind"])}
 	_shown_changed(key, before)
 
 func _drop_preview(key: Vector2i) -> void:
@@ -821,7 +825,8 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	if not current.is_empty() and int(current["level"]) != code:
 		_free_slot(current)
 	var walls: PackedFloat32Array = (tile["walls"] as PackedByteArray).to_float32_array()
-	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls}
+	var behind := bool(tile["behind"])
+	installed[key] = {"code": cell_code, "level": code, "step": step, "slot": slot, "token": token, "walls": walls, "behind": behind}
 	# A same-level upload keeps its cell instance and slot, but the grass mask reads the slot's
 	# texels. Invalidate the private mask even when no cell geometry changed.
 	if not current.is_empty() and int(current["level"]) == code and not preview.has(key):
@@ -835,7 +840,8 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 			_wanted[key] = true
 	# Rewritten in place, the tile keeps its instances; a new slot or lattice rewrites its own
 	# instances and its neighbours' sides, and changed faces the walls of the patches that draw them.
-	if current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code:
+	if (current.is_empty() or int(current["level"]) != code or int(current["code"]) != cell_code
+			or bool(current["behind"]) != behind):
 		# Under a preview tile nothing drawn changes until the preview drops it (_drop_preview).
 		if not preview.has(key):
 			_cell_changed(key, current.is_empty() or int(current["code"]) != cell_code)
@@ -881,7 +887,7 @@ func _adopt_preview(key: Vector2i, tile: Dictionary) -> bool:
 	if not current.is_empty():
 		_free_slot(current)
 	var token := int(tile["token"])
-	installed[key] = {"code": shown["code"], "level": shown["level"], "step": shown["step"], "slot": shown["slot"], "token": token, "walls": shown["walls"]}
+	installed[key] = {"code": shown["code"], "level": shown["level"], "step": shown["step"], "slot": shown["slot"], "token": token, "walls": shown["walls"], "behind": shown["behind"]}
 	preview.erase(key)
 	counters["edit_adopted"] += 1
 	# As _upload: the installed level moves the hysteresis, and a bake of another level or token
@@ -1293,10 +1299,21 @@ func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, p
 			return max(own, _cell_code(neighbour, int(resident_patches[key]["step"])))
 	return own
 
-# The cell MultiMesh a tile draws in: its installed level's, else the base cells'.
+# The cell MultiMesh a tile draws in: its installed level's (the behind-the-road variant's where
+# its bake flags it), else the base cells'.
 func _cell_mesh(tile: Vector2i) -> int:
 	var entry := _shown(tile)
-	return int(entry["level"]) if not entry.is_empty() else CELL_BASE
+	if entry.is_empty():
+		return CELL_BASE
+	return int(entry["level"]) + (CELL_BEHIND if bool(entry["behind"]) else 0)
+
+# Instances in a set's graded cell meshes (every one but the base cells').
+static func _graded_cells(counts: Array[int]) -> int:
+	var total := 0
+	for index in CELL_MESHES:
+		if index != CELL_BASE:
+			total += counts[index]
+	return total
 
 # A tile's instance custom data in a patch's cells, for the patch's rewrite and the per-tile
 # updates alike: its place in the patch (column + PATCH_TILE_ROW * row from `first`, the tile
@@ -1480,7 +1497,8 @@ func _set_cell_meshes(cells: Dictionary) -> void:
 		var node: MultiMeshInstance3D = nodes[index]
 		# GL3 cells take the finest GL3 mesh (step 2): a coarser instance clamps the extra
 		# vertices onto its sides.
-		var code := index if index < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
+		var level := index - CELL_BEHIND if index >= CELL_BEHIND else index
+		var code := level if level < 3 else (base_code(step) if index == CELL_BASE else base_code(2))
 		node.multimesh.mesh = _meshes[min(code, 6)]
 		node.set_instance_shader_parameter("cell_patch_rect_hm", cells["rect_hm"])
 		node.set_instance_shader_parameter("cell_lattice_anchor_hm", lattice_anchor_hm)
@@ -1572,7 +1590,7 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 		return
 	var counts: Array[int] = cells["counts"]
 	var listed: bool = not (patch_lists.get(key, {}).get("tiles", []) as Array).is_empty()
-	var draw := _built(cells) and counts[0] + counts[1] + counts[2] + counts[3] > 0 and (listed or _previews_in(cells))
+	var draw := _built(cells) and _graded_cells(counts) > 0 and (listed or _previews_in(cells))
 	if draw == bool(cells["shown"]):
 		return
 	var patch: Dictionary = resident_patches[key]
@@ -1738,13 +1756,15 @@ func _acquire_cells(patch: Dictionary) -> Dictionary:
 func _bind_materials(cells: Dictionary, bound: bool) -> void:
 	var nodes: Array = cells["nodes"]
 	var materials: Array[ShaderMaterial] = cells["materials"]
-	for code in materials.size():
-		(nodes[code] as GeometryInstance3D).material_override = materials[code] if bound else null
+	for index in materials.size():
+		if index != CELL_BASE:
+			(nodes[index] as GeometryInstance3D).material_override = materials[index] if bound else null
 	if not bound:
 		(nodes[CELL_BASE] as GeometryInstance3D).material_override = null
 
-# One patch's cell resources: five cell MultiMeshes (GL0-GL3 and the base cells), the four graded
-# levels' materials and the wall MultiMesh.
+# One patch's cell resources: nine cell MultiMeshes (GL0-GL3, the base cells, GL0-GL3 behind the
+# road), the graded levels' materials by cell mesh (none at CELL_BASE, which takes the patch's)
+# and the wall MultiMesh.
 func _new_cells() -> Dictionary:
 	var nodes: Array = []
 	# No buffer is written here: the set's first build writes its instances' identity transforms
@@ -1765,17 +1785,21 @@ func _new_cells() -> Dictionary:
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		node.visible = false
 		nodes.append(node)
-	# One material per graded level, so a draw binds only its level's two pool samplers.
+	# One material per graded level and variant, so a draw binds only its level's two pool samplers.
 	var materials: Array[ShaderMaterial] = []
-	for code in pools.size():
+	materials.resize(CELL_MESHES)
+	for index in CELL_MESHES:
+		if index == CELL_BASE:
+			continue
+		var code := index - CELL_BEHIND if index >= CELL_BEHIND else index
 		var material := ShaderMaterial.new()
-		material.shader = GRADED_SHADER
+		material.shader = GRADED_BEHIND_SHADER if index >= CELL_BEHIND else GRADED_SHADER
 		counters["materials_created"] += 1
 		material.set_shader_parameter("graded_texels", pools[code]["texels"])
 		material.set_shader_parameter("graded_rows", pools[code]["rows"])
 		material.set_shader_parameter("graded_seam_capacity", int(levels[code]["seam_capacity"]))
 		material.set_shader_parameter("graded_edge_capacity", int(levels[code]["edge_capacity"]))
-		materials.append(material)
+		materials[index] = material
 	var wall_multimesh := MultiMesh.new()
 	wall_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	wall_multimesh.mesh = _wall_mesh
@@ -1834,7 +1858,7 @@ func _watched_parameters(material: ShaderMaterial) -> Array:
 		material.get_shader_parameter("terrain_debug_lod_step"),
 	]
 
-# Copies the patch material's parameters into the set's four materials. With `start_us` >= 0 (a
+# Copies the patch material's parameters into the set's graded materials. With `start_us` >= 0 (a
 # build off the frame paths) it goes on from where the last call stopped and stops once the frame's
 # install budget is spent, after one parameter at least; returns whether it finished. Without, it
 # goes over every parameter.
@@ -1845,7 +1869,7 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -
 			if not name.begins_with("graded_") and not name.begins_with("cell_"):
 				_uniform_names.append(name)
 	# The values the cell set's materials hold, by uniform: only the parameters that differ are
-	# copied into the four materials (a payload commit changes a few of about a hundred). A set
+	# copied into the graded materials (a payload commit changes a few of about a hundred). A set
 	# keeps its values through the pool, so a reused set copies what differs from its last patch;
 	# a new set holds none (null, an unset parameter's value, which needs no copy).
 	var values: Array = cells["values"]
@@ -1868,7 +1892,8 @@ func _sync_material(cells: Dictionary, source: ShaderMaterial, start_us := -1) -
 			continue
 		values[index - 1] = value
 		for material: ShaderMaterial in cells["materials"]:
-			material.set_shader_parameter(name, value)
+			if material != null:
+				material.set_shader_parameter(name, value)
 	cells["sync_next"] = 0
 	return true
 

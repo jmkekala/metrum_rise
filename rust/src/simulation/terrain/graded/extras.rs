@@ -9,17 +9,20 @@
 //!
 //! Why the list is complete. At a point `p` of a square the nearest seam `s*` is no farther than
 //! any corner's named seam `n_c`, and the distance to a segment is convex, so its largest value
-//! over the square is at a vertex: `|p - s*| <= d = min over named corners c of (max over the
-//! square's vertices v of |v - n_c|)`. The mask's exact path runs only where the bilinear `sdf`
-//! lies within two spacings of zero, and there `s*` lies within the band `B` of `p`: were it
+//! over the square is at a vertex:
+//! `|p - s*| <= d = min over named corners c of (max over the square's vertices v of |v - n_c|)`;
+//! with every corner named also no farther than the largest `|c - n_c|` plus half the diagonal,
+//! since every point lies that near some corner. The mask's exact path runs only where the bilinear
+//! `sdf` lies within two spacings of zero, and there `s*` lies within the band `B` of `p`: were it
 //! farther, every corner's `sdf` would be at least `B - |p - c|`, and the bilinear weights' mean
 //! corner distance is at most half the diagonal, so the bilinear `sdf` would be at least
-//! `B - spacing / sqrt 2 > 2 x spacing` (the band is at least three spacings). So every seam
-//! within `min(d, B)` of the square is a superset of the nearest seams of the points where the
-//! mask reads them. A road seam within `B` of a point `q` of the square is listed by pass 1 in
-//! `q`'s bin, at a bin distance at most `|q - s|`, so the bins meeting the square, read up to bin
-//! distance `min(d, B)`, hold every such seam whether or not pass 1 pruned: the list does not
-//! depend on the pruning. Bore seams and bridge mouth rows are not binned and are few: each is
+//! `B - spacing / sqrt 2 > 2 x spacing` (the band is at least three spacings). So every seam within
+//! `min(d, B)` of the square is a superset of the nearest seams of the points where the mask reads
+//! them, and of those a seam that a quartering of the square proves farther than some named seam
+//! everywhere in it is left out. A road seam within `B` of a point `q` of the square is listed by
+//! pass 1 in `q`'s bin, at a bin distance at most `|q - s|`, so the bins meeting the square, read
+//! up to bin distance `min(d, B)`, hold every such seam whether or not pass 1 pruned: the list does
+//! not depend on the pruning. Bore seams and bridge mouth rows are not binned and are few: each is
 //! tested directly.
 
 use super::prune::{BinGrid, BinLists};
@@ -135,6 +138,23 @@ pub(super) fn square_extras(
                             .fold(0.0, f64::max)
                     })
                     .fold(band, f64::min);
+                // Every point lies within half the diagonal of some corner, so with all four
+                // corners named their largest named distance plus half the diagonal bounds it
+                // too.
+                let reach = if names.iter().all(|&code| code != NO_SEAM) {
+                    let half = 0.5 * (area[2] - area[0]).hypot(area[3] - area[1]);
+                    let farthest = (0..4)
+                        .map(|k| {
+                            named
+                                .seam(names[k])
+                                .at(vertices[k][0], vertices[k][1])
+                                .distance
+                        })
+                        .fold(0.0, f64::max);
+                    reach.min(farthest + half)
+                } else {
+                    reach
+                };
                 candidates.clear();
                 let range = bins.range(area);
                 for bz in range[2]..=range[3] {
@@ -152,8 +172,12 @@ pub(super) fn square_extras(
                 candidates.extend(unbinned.clone());
                 candidates.sort_unstable();
                 candidates.dedup();
+                let corner_seams = names.map(|code| (code != NO_SEAM).then(|| named.seam(code)));
                 candidates.retain(|&code| {
-                    !names.contains(&code) && box_distance(area, named.seam(code)) <= reach
+                    let seam = named.seam(code);
+                    !names.contains(&code)
+                        && box_distance(area, seam) <= reach
+                        && may_be_nearer(seam, &corner_seams, area, SPLITS)
                 });
                 if !candidates.is_empty() {
                     let same = |at: u32| {
@@ -180,6 +204,36 @@ pub(super) fn square_extras(
             below[i] = start;
         }
     }
+}
+
+// Quarterings of a square `may_be_nearer` tries before it keeps a seam.
+const SPLITS: u32 = 1;
+
+// Whether `seam` may be at least as near as every corner's named seam at some point of `area`:
+// `g = |p - seam| - |p - n|` changes by at most twice the distance moved, so where `g` exceeds
+// the area's diagonal at its centre for some named `n`, `seam` is farther than `n` everywhere in
+// it; otherwise each quarter is tried, `splits` times. Exact: it keeps every seam that is the
+// nearest somewhere, and some that are not. `O(4^splits x named seams)`.
+fn may_be_nearer(seam: &Seam, named: &[Option<&Seam>; 4], area: [f64; 4], splits: u32) -> bool {
+    let (x, z) = (0.5 * (area[0] + area[2]), 0.5 * (area[1] + area[3]));
+    let diagonal = (area[2] - area[0]).hypot(area[3] - area[1]);
+    let own = seam.at(x, z).distance;
+    if named
+        .iter()
+        .flatten()
+        .any(|other| own - other.at(x, z).distance > diagonal)
+    {
+        return false;
+    }
+    splits == 0
+        || [
+            [area[0], area[1], x, z],
+            [x, area[1], area[2], z],
+            [area[0], z, x, area[3]],
+            [x, z, area[2], area[3]],
+        ]
+        .into_iter()
+        .any(|quarter| may_be_nearer(seam, named, quarter, splits - 1))
 }
 
 // Distance in XZ from the rectangle `[x0, z0, x1, z1]` to the seam: 0 where it meets the

@@ -597,15 +597,46 @@ void fragment() {
 	// showed the sky through single pixels. Under the cut arm (T34 (b)) that ground lies below the
 	// road top but at a conflict; ground above it stays discarded. The shader writes no DEPTH, so
 	// the graded cells keep the early depth test (T24 (a2)'s pushed depth cost 0.4-0.7 ms of GPU
-	// on the populated town, TERRAIN-07-D round 8).
+	// on the populated town, TERRAIN-07-D round 8), except in the behind-the-road variant below.
 	float cell_pixel_m = max(fwidth(var_cell_local_m.x), fwidth(var_cell_local_m.y));
 	CellMask cell_mask_here = cell_mask(
 		cell_frame_from(var_cell, int(round(terrain_cell_m * 2.0))), var_cell_local_m);
+#ifdef TERRAIN_GRADED_BEHIND
+	// The behind-the-road variant (T49 (c)), drawn only by the cells of tiles whose bake finds the
+	// drawn terrain above the road top along a seam: there ground above the road top within one
+	// pixel inside the seam is kept too, taking the depth of its view ray where the ray has
+	// fallen below the road top by more than the ground's rise plus the pixel, so any road
+	// fragment of the pixel hides it and it shows only where none is drawn (T24 (a2), a drawing
+	// rule only; the geometry and queries stay exact). Pushed along the pass's own ray, the
+	// shadow and depth passes keep it behind the road too. A ray that does not fall cannot pass
+	// behind the road top, and that ground stays discarded.
+	DEPTH = FRAGCOORD.z;
+	if (cell_mask_here.sdf < 0.0) {
+		if (cell_mask_here.sdf <= -cell_pixel_m || cell_mask_here.road_top < -1e29) {
+			discard;
+		}
+		float rise = var_world_pos.y - cell_mask_here.road_top;
+		if (rise > 0.0) {
+			float ray_fall = -(INV_VIEW_MATRIX * vec4(-VIEW, 0.0)).y;
+			if (ray_fall < 1e-3) {
+				discard;
+			}
+			vec3 behind = VERTEX - VIEW * ((2.0 * rise + cell_pixel_m) / ray_fall);
+			vec4 behind_clip = PROJECTION_MATRIX * vec4(behind, 1.0);
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+			DEPTH = behind_clip.z / behind_clip.w * 0.5 + 0.5;
+#else
+			DEPTH = behind_clip.z / behind_clip.w;
+#endif
+		}
+	}
+#else
 	if (cell_mask_here.sdf < 0.0) {
 		if (cell_mask_here.sdf <= -cell_pixel_m || var_world_pos.y > cell_mask_here.road_top) {
 			discard;
 		}
 	}
+#endif
 	vec4 graded_debug = vec4(var_cell_delta, cell_mask_here.sdf, float(var_cell.y), float(var_cell.x));
 #else
 	// Base cells name their lattice code (PlaneMesh patches -1) and no slot.

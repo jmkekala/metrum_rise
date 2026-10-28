@@ -54,14 +54,19 @@ fn every_listed_tile_of_a_grown_town_bakes_at_every_level() {
         assert_eq!(baked, Ok(()), "{level:?} over {} listed tiles", tiles.len());
         let seams = payloads.iter().map(|payload| payload.seams.len()).max();
         let edges = payloads.iter().map(|payload| payload.edges.len()).max();
-        let (seams, edges) = (seams.unwrap(), edges.unwrap());
+        let extras = payloads.iter().map(|payload| payload.extras.len()).max();
+        let (seams, edges, extras) = (seams.unwrap(), edges.unwrap(), extras.unwrap());
         // The town is populated: its yards name material edges at every level.
         assert!(edges > 0, "{level:?}: no material edge over {} tiles", tiles.len());
         assert!(
-            2 * seams <= level.seam_capacity() && 2 * edges <= level.edge_capacity(),
-            "{level:?}: rows of {seams} seams and {edges} edges against capacities {} and {}",
+            2 * seams <= level.seam_capacity()
+                && 2 * edges <= level.edge_capacity()
+                && 2 * extras <= level.extra_capacity(),
+            "{level:?}: rows of {seams} seams, {edges} edges and {extras} extra texels against \
+             capacities {}, {} and {}",
             level.seam_capacity(),
-            level.edge_capacity()
+            level.edge_capacity(),
+            level.extra_capacity()
         );
     }
 }

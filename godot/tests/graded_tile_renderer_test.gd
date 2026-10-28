@@ -111,9 +111,10 @@ func _run() -> void:
 	var after := _creation_counters(graded)
 	for name: String in created.keys():
 		_expect(after[name] == created[name], "nothing may be created after setup (%s): %s -> %s" % [name, created[name], after[name]])
-	# Each pooled cell set holds five cell MultiMeshes, the wall MultiMesh and the four graded
-	# levels' materials; the wall material is one, made at setup.
-	_expect((int(after["materials_created"]) - 1) * (GradedTiles.CELL_MESHES + 1) == int(after["multimeshes_created"]) * 4, "cell materials are pooled with their cells: %s" % after)
+	# Each pooled cell set holds nine cell MultiMeshes, the wall MultiMesh and the graded levels'
+	# materials, two variants each (every cell mesh but the base cells'); the wall material is
+	# one, made at setup.
+	_expect((int(after["materials_created"]) - 1) * (GradedTiles.CELL_MESHES + 1) == int(after["multimeshes_created"]) * (GradedTiles.CELL_MESHES - 1), "cell materials are pooled with their cells: %s" % after)
 	print("graded tile install ms max %.3f (poll %.3f, upload %.3f), uploads %d, installed %d, pool bytes %d, edit %d tiles in %.3f ms" % [
 		float(counters["install_ms_max"]), float(counters["poll_ms_max"]), float(counters["upload_ms_max"]),
 		int(counters["uploads"]), int(counters["installed"]), int(counters["pool_bytes"]),
@@ -444,7 +445,7 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	# wrote stands for it.
 	var counts: Array[int] = cells["counts"]
 	var shown := bool(cells["shown"])
-	_expect(shown == (counts[0] + counts[1] + counts[2] + counts[3] > 0), "patch %s: a set draws while a tile of it shows graded" % key)
+	_expect(shown == (GradedTiles._graded_cells(counts) > 0), "patch %s: a set draws while a tile of it shows graded" % key)
 	for index in nodes.size():
 		_expect((nodes[index] as GeometryInstance3D).material_override != null if shown else (nodes[index] as GeometryInstance3D).material_override == null,
 			"a set binds its materials while it draws its patch, and only then")

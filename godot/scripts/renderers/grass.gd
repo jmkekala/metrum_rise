@@ -9,6 +9,7 @@ const GameSettings := preload("res://scripts/core/game_settings.gd")
 const GRASS_SHADER := preload("res://scripts/shaders/grass.gdshader")
 const MASK_SHADER := preload("res://scripts/shaders/grass_surface_mask.gdshader")
 const GRADED_MASK_SHADER := preload("res://scripts/shaders/grass_graded_mask.gdshader")
+const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const CELL_M := 0.8
 # Farthest a clump draws (grain; meadow fades out by 60 m, see grass.gdshader). The vertex shader
 # runs for every cell of the window whether its clump draws or not, so the window is no larger
@@ -238,7 +239,7 @@ func _create_mask() -> void:
 	_masks.append(viewport)
 	_mask_meshes.append(mesh)
 	var cells: Array = []
-	for index in 5:
+	for index in GradedTiles.CELL_MESHES:
 		var cell := MultiMeshInstance3D.new()
 		cell.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		cell.visible = false
@@ -289,7 +290,7 @@ func _sync_graded_mask(
 		)
 		var material := mirror.material_override as ShaderMaterial
 		material.set_shader_parameter("terrain_cell_m", _terrain.terrain_cell_m)
-		if index < materials.size():
+		if materials[index] != null:
 			var source_material := materials[index] as ShaderMaterial
 			for parameter in [
 				&"graded_texels", &"graded_rows", &"graded_seam_capacity", &"graded_edge_capacity"
