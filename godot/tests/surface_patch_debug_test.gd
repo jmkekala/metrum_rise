@@ -74,23 +74,23 @@ func _run() -> void:
 
 func _check_terrain_payload(simulation: SimulationNode) -> void:
 	_expect(simulation.create_blank_world(80.0, 80.0, 10.0, 40.0, -2.5), "terrain fixture must create a nonzero world")
-	for render_step_mm in [0, 10000]:
-		var request := PackedInt32Array([0, 0, render_step_mm])
-		simulation.request_terrain_patch_payloads(request)
-		var payload: Dictionary = {}
-		var deadline := Time.get_ticks_msec() + 5000
-		while payload.is_empty() and Time.get_ticks_msec() < deadline:
-			var result: Dictionary = simulation.poll_ready_terrain_patch_payloads(1)
-			var ready: Array = result.get("patches", [])
-			if not ready.is_empty():
-				payload = ready[0]
-			else:
-				if not (result.get("retry_requests", PackedInt64Array()) as PackedInt64Array).is_empty():
-					simulation.request_terrain_patch_payloads(request)
-				await process_frame
-		_expect(not payload.is_empty(), "native terrain payload must arrive")
-		if payload.is_empty():
-			continue
+	# Production requests only step 0 (`_terrain_patch_payload_render_step_mm`): the graded
+	# tiles carry the detail, and Rust refuses any other step by contract.
+	var payload: Dictionary = {}
+	var request := PackedInt32Array([0, 0, 0])
+	simulation.request_terrain_patch_payloads(request)
+	var deadline := Time.get_ticks_msec() + 5000
+	while payload.is_empty() and Time.get_ticks_msec() < deadline:
+		var result: Dictionary = simulation.poll_ready_terrain_patch_payloads(1)
+		var ready: Array = result.get("patches", [])
+		if not ready.is_empty():
+			payload = ready[0]
+		else:
+			if not (result.get("retry_requests", PackedInt64Array()) as PackedInt64Array).is_empty():
+				simulation.request_terrain_patch_payloads(request)
+			await process_frame
+	_expect(not payload.is_empty(), "native terrain payload must arrive")
+	if not payload.is_empty():
 		var renderer := TerrainRenderer.new()
 		var count := int(payload["texture_width"]) * int(payload["texture_height"])
 		var stats: Dictionary = renderer._terrain_patch_height_stats(payload)
@@ -102,6 +102,30 @@ func _check_terrain_payload(simulation: SimulationNode) -> void:
 		var lines: Array[String] = renderer.road_geometry_debug_patch_lines(PackedInt32Array([0, 0]))
 		_expect("\n".join(lines).contains("height_min=-2.500"), "formatted terrain diagnostics must report native heights")
 		renderer.free()
+	await _check_nonzero_step_refused(simulation)
+
+# A nonzero render step (the refined payload path, deleted in TERRAIN-07-G) comes back
+# refused with its contract reason, never as a payload and never as a retry.
+func _check_nonzero_step_refused(simulation: SimulationNode) -> void:
+	var request := PackedInt32Array([0, 0, 10000])
+	simulation.request_terrain_patch_payloads(request)
+	var reason := ""
+	var delivered := false
+	var deadline := Time.get_ticks_msec() + 5000
+	while reason.is_empty() and not delivered and Time.get_ticks_msec() < deadline:
+		var result: Dictionary = simulation.poll_ready_terrain_patch_payloads(1)
+		delivered = not (result.get("patches", []) as Array).is_empty()
+		var refused: PackedInt64Array = result.get("refused_requests", PackedInt64Array()) as PackedInt64Array
+		var reasons: PackedStringArray = result.get("refused_reasons", PackedStringArray()) as PackedStringArray
+		for index in range(refused.size() / 4):
+			if int(refused[index * 4 + 2]) == 10000 and index < reasons.size():
+				reason = reasons[index]
+		if reason.is_empty() and not delivered:
+			if not (result.get("retry_requests", PackedInt64Array()) as PackedInt64Array).is_empty():
+				simulation.request_terrain_patch_payloads(request)
+			await process_frame
+	_expect(not delivered, "a nonzero terrain render step must not deliver a payload")
+	_expect(reason == "unsupported_terrain_payload_step", "a nonzero terrain render step must be refused by contract, got '%s'" % reason)
 
 func _check_geometry_debug() -> void:
 	var mesh := ArrayMesh.new()
