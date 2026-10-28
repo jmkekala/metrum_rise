@@ -11480,8 +11480,8 @@ The 2026-09-11 CDT verifications (road/site corner noding, shared-side yard seam
 Authoritative rule:
 
 - imported terrain writes authoritative source terrain only
-- visual terrain is always derived from source terrain plus later structural road or water
-  derivations; ordinary grounded road seams are generated as CDT patch meshes
+- the drawn terrain is source terrain plus the graded tiles near roads and sites
+  ([`TERRAIN-07`](#graded-terrain-surface-terrain-07)); there is no separate visual terrain buffer
 
 Current implemented slice:
 
@@ -11869,11 +11869,9 @@ What is implemented now:
   are prewarmed by active layout, terrain/water patch resources are pooled/prewarmed before first
   visible residency activation, water prewarms shared full-grid `ArrayMesh` variants, and perf
   summaries include render stats for viewport, draw calls, primitives, memory buckets, vsync,
-  FPS cap, and resource-pool counters; refined terrain preparation snapshots only bounded local
-  inputs under the simulation lock, performs road/site grading and CDT work off-lock, and uses
-  patch-local revisions with one physical in-flight build per patch/render-step. Road-loop source
-  attribution uses a sorted exact-edge index before its metric-overlap fallback, and canonical CDT
-  skips source-vertex recovery only after proving every source endpoint is already represented
+  FPS cap, and resource-pool counters; graded tiles near roads and sites are baked off the frame
+  from bounded local inputs ([`TERRAIN-07`](#graded-terrain-surface-terrain-07); the refined CDT
+  patches were deleted by `TERRAIN-07-G`)
 - gameplay world-load refresh leaves terrain/water/network revisions dirty until the renderers
   acknowledge the exact payloads and road mesh they actually uploaded; resident terrain batches
   are prevalidated and staged as detached/inactive resources before an atomic scene swap
@@ -11919,17 +11917,15 @@ What is implemented now:
 - ready terrain and water residency can each activate at most `12` patches per frame and stop after
   `4 ms`; this is still `O(k)` with `k <= 12`, while cached/cheap rotation handoffs are no longer
   forced through the old two-patch-per-frame bottleneck
-- ordinary terrain payload requests may enqueue `32` camera-prioritized patches per frame; refined
-  road/site terrain retains its separate two-request cap so faster raw streaming does not flood the
-  expensive CDT path
+- ordinary terrain payload requests may enqueue `32` camera-prioritized patches per frame
 - ready water mesh uploads apply at most `4` patches normally or `6` only under the existing
   measured-headroom boost, with `2.5/3.5 ms` and `1.4/2.2 MB` time/byte limits respectively
 - terrain/water LOD refreshes are movement-gated and cap checked/changed patches per frame so
   periodic LOD validation does not rescan or rebuild the whole resident set in one frame; new
   movement-triggered resident sweeps replace stale pending sweep entries and expose replaced-count
   counters so queue buildup is measurable, and resident sweeps only enqueue patches whose target
-  LOD/subdivision differs from current state while reporting skipped-count counters; baked/CDT
-  terrain patches skip no-op LOD mesh rebuilds, and speculative terrain/water prewarm now covers
+  LOD/subdivision differs from current state while reporting skipped-count counters, and
+  speculative terrain/water prewarm now covers
   only a bounded halo around the resident/activation region
 - terrain rendering now derives hillshade procedurally from the live heightmap in both gameplay
   and WorldEditor; it is not stored as separate world data

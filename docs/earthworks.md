@@ -6,7 +6,7 @@ This document owns the shared engineered-ground contract for local terrain overr
 cuts, embankments, flat building pads, and future retaining structures.
 
 The first live road client was closed under [`ROAD-01`](roadmap.md). Building-site support tie-ins
-now share the road-touched terrain CDT carrier; future terrain closure, plot-foundation, or
+now share the graded terrain surface (`TERRAIN-07`); future terrain closure, plot-foundation, or
 retaining work should extend this document under its own tracked ID instead of duplicating the same
 terrain-override rules elsewhere.
 
@@ -140,142 +140,22 @@ Required rule:
 - outside the footprint but inside the earthwork margin, the visible world surface transitions back
   toward source terrain using deterministic cut / fill rules
 - the seam between the road-owned top surface and surrounding terrain must be covered by a
-  deterministic tie-in carrier:
-  - Rust generates the road-touched terrain patch topology as an explicit local mesh
-  - that mesh omits terrain below the road-owned footprint and inserts road-boundary vertices at
-    the exact road / sidewalk outer edge
-  - vertices created on that boundary reuse the road-owned edge heights, not resampled terrain
-    heights, so the terrain and road share the same seam coordinates
+  deterministic carrier: since [`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) the
+  graded terrain is discarded exactly inside the footprint ([the exact seam
+  mask](terrain.md#the-exact-seam-mask)) and the road's skirts close the seam below its outer
+  chains ([skirts](terrain.md#skirts))
 - terrain suppression alone is not a seam solution; it may only hide terrain under geometry that
   actually exists
 - for grounded clients, the runtime must not render a second visible support mesh under an ordinary
   grounded footprint just to hide terrain overlap
 - ordinary grounded roads must not render a visible closure strip, carpet, or second support mesh;
-  the terrain patch mesh itself is the only ordinary seam carrier outside the road-owned footprint
+  the mask and the skirts are the only ordinary seam carriers outside the road-owned footprint
 
-The seam contract below is the legacy exact cut's: it describes the code on `road` until
-[`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07) replaces the stitched CDT carrier with the graded terrain's exact mask and
-road skirts and its last gate moves this text to the archive. New work follows `TERRAIN-07`.
-
-Deterministic seam contract:
-
-- the seam is the shared boundary between the client-owned footprint and the far-field terrain
-- for roads, the footprint includes asphalt, shoulder / curb, and sidewalk bands; the seam starts at
-  the exact outer sidewalk edge, or at the exact outer shoulder edge when a profile has no sidewalk
-- no-sidewalk `Standard` road profiles still expose an explicit curb / shoulder band, so terrain
-  clipping receives a real road-owned outer seam instead of a zero-width or asphalt-only fallback
-- every seam segment must be backed on both sides by visible carriers before terrain below the
-  footprint is suppressed:
-  1. the client-owned top surface covers the footprint side of the seam
-  2. terrain topology is clipped / triangulated so its inner edge exactly matches the client-owned
-     seam vertices
-- terrain masking, terrain alpha, terrain discard, or footprint suppression is not a seam carrier;
-  those tools are valid only after one of the visible carriers above already covers the boundary
-- grounded `Standard` roads use one seam carrier: Rust-generated terrain patch topology clipped to
-  the road-owned footprint
-- the clipped terrain inner edge must reuse the same coordinates and heights as the road-owned
-  outer sidewalk / shoulder boundary; it must not resample, offset, snap, simplify, or widen that
-  edge into a visible strip
-- clipped terrain patches must receive exact road footprint loops from the same `Span`,
-  `Terminal`, `Bend`, and `JunctionN` pieces that render asphalt, shoulder / curb, and sidewalk
-- Rust must triangulate from those footprint loops and must insert deterministic seam triangles
-  that use the loop as a hard inner constraint; terrain clipping must not reuse asphalt / sidewalk
-  render triangles, because those triangles are not the ownership contract and can over-cut concave
-  road footprints
-- the road-touched patch mesh must emit terrain-owned seam faces from each road-owned outer-loop
-  segment to source terrain outside the footprint before any terrain below the footprint is omitted
-- the seam faces are part of the terrain patch mesh, use terrain material, and are not a second
-  road support mesh, visual carpet, or closure strip owned by the road renderer
-- grounded `Standard` seam faces use explicit Rust-generated grade-limited guide samples outside
-  the final road-owned footprint, keyed before ordinary source terrain samples, so the CDT tie-in
-  is an authored topology input rather than a render-side repair
-- those guide samples are generated by `RoadSurfaceSystem` from the final unioned roadbed loops,
-  not by Godot, terrain rendering, or a per-piece post-process
-- guide rail constraints may be emitted only when the final footprint set is a single clean non-hole
-  convex loop; concave junction mouths and multi-loop footprints remain sample-only to prevent
-  grading rails from crossing the final road-owned footprint
-- building-site loops may share the terrain-CDT patch carrier, but they are not roadbed loops and
-  must not emit `RoadSurfaceSystem` roadbed grading-envelope samples or constraints; site grading is
-  owned by the site / engineered-ground path and must remain sample-only around the hard support
-  footprint
-- ordinary `Standard` span and node footprint seam sources must not be promoted into retaining-wall
-  topology; wall output is reserved for explicit structural bridge / tunnel / future retaining
-  sources with preserved provenance
-- terrain cell triangles may still provide far-field terrain outside the road footprint, but they
-  are not allowed to be the only seam carrier because their grid edges rarely coincide with the
-  road-owned outer sidewalk / shoulder edge
-- target CDT contract:
-  - road-piece polygon ownership is resolved with `i_overlay` before triangulation; Spade receives
-    already-owned asphalt, sidewalk, and terrain regions rather than overlapping material hints
-  - road-touched terrain patches are generated with Spade's Rust-side
-    `ConstrainedDelaunayTriangulation`
-  - `i_overlay` is the chosen Rust-side polygon boolean backend for road / terrain ownership
-    cleanup; it owns union, intersection, difference, hole handling, and overlap removal before
-    CDT input is built
-  - Spade is the chosen CDT backend; `ghx_constrained_delaunay` is not part of this spec, is not a
-    fallback, and may only be reconsidered through a new explicit benchmarked spec change
-  - road node contour construction, grade evaluation, spatial lookup, and validation follow the
-    accepted geometry-backend responsibilities in [`roads.md`](roads.md);
-    earthworks must not depend on hand-rolled road offset, boundary recovery, or sampled-height
-    repair paths to produce a valid seam
-  - road / earthwork seam math should use the same internal `glam` vector representation and
-    explicit quantized keys as the road arrangement builder; Godot vectors are render / bridge
-    payloads, not the authoritative seam identity
-  - `robust` is not part of the accepted implementation path for now; exact-predicate needs should
-    first be handled by `i_overlay` and Spade, and any standalone predicate dependency requires a
-    narrow future spec change
-  - the production path uses deterministic `try_bulk_load_cdt` inputs; conflicting constraints are
-    counted and skipped rather than allowed to panic the simulation thread, and Spade refinement
-    helpers are not used until they have a pinned deterministic contract for this project
-  - the terrain patch rectangle is the outer constrained contour
-  - every grounded road-owned outer footprint loop inside or crossing the patch is inserted as a
-    hard constrained contour
-  - road footprint constraints that cross patch edges are pre-split before CDT input; constraint
-    segments must only meet at shared endpoints and must not cross through each other
-  - road-piece seam vertices and constraint edges must appear exactly in the generated terrain
-    mesh; no post-process snapping, widening, shader discard, or Godot-side clipping may create
-    the seam
-  - source-terrain sample points may be inserted as Steiner / interior points only outside road
-    footprints, and their insertion order must be canonical and deterministic
-  - roadbed grading-envelope guide samples are inserted before ordinary source-terrain samples and
-    share the same deterministic point keying, so near-road tie-ins are bounded without moving the
-    road seam
-  - guide constraints are a local convex-footprint aid, not a footprint repair path; if the final
-    loop set is concave, contains holes, or contains multiple non-hole loops, the grading envelope
-    must rely on guide samples without adding rail constraints
-  - building-site apron guides are always soft guide samples; the site support footprint is the hard
-    CDT boundary, and apron guides must not add rail constraints across roads or neighboring sites
-  - Spade CDT faces are classified after triangulation against the final road-owned footprint;
-    ordinary non-seam faces may use centroid ownership, but faces carrying a road constraint edge
-    classify the exact seam side so narrow concave tie-ins are not lost to centroid-only ownership
-  - emitted terrain triangles must preserve the CDT constraint edges at the road seam and must not
-    cross a road-owned footprint loop
-  - CDT triangulation failures are hard errors in debug output and must not fall back to cell
-    subtraction, seam carpets, closure strips, water, or shader masks
-  - all local CDT windows in one refined render-patch generation are one atomic replacement; if any
-    window fails, the entire generation is non-renderable and the renderer keeps the last valid
-    clipped patch rather than filling the failed window from raw terrain
-  - a building-site loop cannot satisfy road clipping: a patch already owned by grounded roads must
-    retain nonempty authoritative road sources and road loops on every refined generation
-  - the exporter may omit individual pathological ordinary terrain faces before final validation,
-    record the omitted count, and keep the remaining clipped baked patch active only when its final
-    status is `ok`. This containment is not a seam-closure fallback and remains visible in logs. If
-    the final output is still `pathological`, the complete engineered generation is non-renderable
-    and the renderer retains the previous terrain/road pair; raw terrain never replaces it
-  - `Terminal`, `Bend`, and `JunctionN` visual node pieces resolve asphalt / sidewalk /
-    outer-footprint ownership through `i_overlay` before Spade triangulation, so sharp-angle
-    sidewalks shrink or split instead of overlapping asphalt
-- clipped terrain topology must insert road-boundary vertices into the terrain mesh in Rust rather
-  than approximating the seam from terrain-cell centers, a texture mask, or a Godot-side polygon
-  clipping fallback
-- no `Bend` or `JunctionN` clip boundary may be synthesized from one anonymous annulus, one global
-  outer loop, or a terrain-cell mask after the fact
-- a valid seam is closed independent of triangle winding or backface-culling behavior; clipped
-  terrain may render double-sided, but the renderer must not reveal world background, holes, or
-  source terrain through the road / sidewalk / tie-in boundary
-- water is not a valid fallback carrier under the road footprint; water render patches that overlap
-  grounded road-owned asphalt, shoulder / curb, or sidewalk must receive the same footprint clip
-  polygons and omit any touched water cells instead of triangulating partial transparent fragments
+The legacy exact cut's seam contract (terrain patch topology clipped to the footprint loops by a
+constrained Delaunay triangulation, seam vertices at road heights, grading guide samples, the
+Spade and `i_overlay` contract, atomic CDT windows and water's road clip) was deleted with its code
+by `TERRAIN-07-G` and is archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#from-earthworksmd-section-5-the-legacy-seam-contract).
 
 For roads, that means:
 
@@ -294,12 +174,8 @@ For roads, that means:
 - tunnels limit that support to visible portal-owned grounded regions
 - grounded `Standard` roads replace the near-road visible terrain locally:
   - asphalt and sidewalk render as the visible terrain replacement inside the road-owned footprint
-  - the Rust terrain patch mesh emits no terrain under the road-owned footprint
-  - the seam to far-field terrain is formed by terrain triangles whose inner boundary is the
-    road-owned outer sidewalk / shoulder edge
-  - grade-limited guide samples around the footprint keep ordinary tie-in triangles local and
-    deterministic without wall teeth beside the road
-  - terrain suppression is allowed only as a consequence of the clipped terrain topology
+  - the graded terrain is discarded inside the footprint by the exact seam mask and meets the
+    road at its skirts ([`TERRAIN-07`](terrain.md#graded-terrain-surface-terrain-07))
   - the runtime must not render a separate visible cut / fill support mesh or ordinary closure strip
     below or beside grounded asphalt or sidewalk
 - structural or intentionally exposed cases such as bridge abutments, tunnel portals, or future

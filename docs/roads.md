@@ -584,155 +584,21 @@ roadbed side stays as the contract terrain consumes:
 - road skirts, one strip per grounded outer chain in the piece mesh (`TERRAIN-07-B`, built; see
   [pieces and meshes](#pieces-and-meshes))
 
-Everything else in this section (patch loops, holes, open ends, source tags, the grading envelope,
+- wall runs: where a grounded piece meets a bridge or tunnel it publishes a wall run across the
+  mouth row (`PieceMesh::wall_runs`, `TERRAIN-07-C` round 3, [T22](terrain.md#terrain-07-open-questions)
+  3 (a)), and a run across a bridge's mouth is marked (`PieceMesh::abutment_runs`);
+  `RoadbedSystem::wall_seams_in_bounds` gives its segments the abutment face's bottom edge below
+  their ends (`WallSegment::abutment_bottom`), where the graded terrain's abutment wall starts
+  (`TERRAIN-07-D` round 7)
+
+The road side of the exact cut (patch loops, holes, open ends, source tags, the grading envelope,
 seams on tile sides, watertight patches, pads in the patch frame, patch selection, tile clip,
-ownership refresh) is the road side of the exact cut. It describes the code on `road` until
-`TERRAIN-07-G` deletes it; new terrain work follows `TERRAIN-07`.
+ownership refresh, the structures' patches) was deleted with the terrain CDT core by
+`TERRAIN-07-G` and is archived in
+[`archive/terrain_legacy_surface_2026-10-25.md`](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut).
+Bridges and tunnels clip no terrain mid-span; their abutments and portals are `TERRAIN-07`'s
+([T14](terrain.md#terrain-07-open-questions)).
 
-The terrain CDT core in `rust/src/simulation/terrain/cdt/` stays. It is generic: patch-clipped
-loops, source samples and tie-in guides in; stitched patch mesh out. Its contract in
-[`terrain.md`](terrain.md) and [`earthworks.md`](earthworks.md) is unchanged:
-
-- loops are hard constraints
-- faces inside road footprints are omitted
-- seam vertices take road heights
-- source samples are inserted only outside footprints
-- building-site boundaries share the CDT, and the road height wins at shared vertices
-
-The road side is rewritten:
-
-- **Patch loops.** The CDT unit is the fixed world-aligned 64 m tile inside a heightmap render
-  patch, which stays the dirty and ownership unit. Each tile takes its road loops from the
-  rectangle of the tile plus its 64 m halo (`roadbed/terrain.rs`, `terrain_loops`): the pieces
-  that rectangle touches come from `pieces_in_bounds` on the 32 m query grid (there is no
-  chunk-to-pieces list), their chains join end to start at bit-identical mouth corners, and the
-  generic rectangle clip in `terrain/rect_loops.rs` cuts the joined paths to the rectangle and
-  joins each run's exit to the next entry counter-clockwise along its boundary, so the road stays
-  on the left. Cost is `O(S log S)` for `S` chain segments of the touched pieces. The rectangle
-  depends only on the tile, so every build, scope and ownership refresh sees the same loops. The
-  legacy `terrain_clip/` union and `query/terrain_cdt/` adapters are deleted.
-- **Holes.** Orientation is known: an outer boundary runs counter-clockwise in XZ, a hole (a
-  closed block) clockwise, so `is_hole` comes from the loop's signed area. The CDT still needs a
-  footprint group per loop, and a hole may hold an island (a separate road inside the block): all
-  road loops of one rectangle share one group, and the CDT classifies a point by containment
-  parity within a group (inside when an odd number of the group's loops contain it), which equals
-  the innermost-containing-loop rule (`ROAD-68-D` correction; the old rule paired each hole with
-  one outer loop).
-- **Open ends.** A chain end inside the rectangle with no published grounded chain to continue it
-  fails the rectangle with `TerrainLoopError::OpenEnd` (`roadbed_chain_open_end`): a failed
-  node's gap (which also rejects the edit). There is no repair. Where a grounded piece meets a
-  bridge or tunnel (a node piece's mouth, or a pass-through's shared mouth row) it publishes a
-  wall run across the mouth row (`PieceMesh::wall_runs`, `TERRAIN-07-C` round 3,
-  [T22](terrain.md#terrain-07-open-questions) 3 (a)): the row's vertices from the end corner of
-  one chain to the start corner of the next, a curb pair once at its lower vertex. The loops join
-  through it like a chain, and its segments are structure sources with the retaining-wall policy
-  (`ChainSegment::wall`), so a structure built from a road commits (open question 19). A run
-  across a bridge's mouth is marked (`PieceMesh::abutment_runs`), and
-  `RoadbedSystem::wall_seams_in_bounds` gives its segments the bridge's abutment face's bottom
-  edge below their ends (`WallSegment::abutment_bottom`), where the graded terrain's abutment
-  wall starts (`TERRAIN-07-D` round 7, the abutment band).
-- **Source tags.** `TerrainCdtRoadBoundarySource` keeps `BuildingSiteBoundary`. Its span, node and
-  handoff variants are replaced by one `RoadBoundary { piece, chain, segment, support }`, where
-  `support` is grounded or structure (from the edge class) and carries the retaining-wall policy:
-  only structures may tie in with walls. Sources order by their derived field order, adjacent
-  segments of one chain merge into the lower segment, and tile fingerprints hash the sources. The
-  CDT model stays free of network types (`TerrainCdtRoadPiece`). Correction (`ROAD-68-E` round
-  4): the sources no longer name graph pieces. A split renumbers what a tile far from the edit
-  sees although its vertices stay bit-identical (the far half of a split trunk becomes another
-  edge's span, and its chain segments shift), so every tile along the trunk changed its
-  fingerprint and re-triangulated. `road_terrain_loops` now makes a rectangle's loops canonical
-  in its footprint alone: each loop starts at its least vertex by coordinate bits, loops are
-  ordered by that vertex, and a source names the run of consecutive segments of one piece chain
-  it lies on (`piece` is the run's number, ordered by the bits of its first two vertices, with
-  the piece's kind; `chain` is 0; `segment` is the place in the run). Equality, order and merges
-  between a tile's sources are as before; debug face sources show run numbers
-  ([open question 28](#road-68-open-questions)).
-- **Grading envelope.** One envelope for roads and sites (`terrain/grading.rs`, open question 3):
-  rays leave every sourced boundary edge at the render step (2 m or finer) and every boundary
-  vertex on its outward bisector; a ray reaches as far as the 1:2 tie-in from the seam height
-  needs to meet the probed terrain, at least the base local sample margin and at most
-  `GRADING_ENVELOPE_MAX_MARGIN_M`, the 64 m tile halo (open question 18). A loop's margin, the
-  largest of its rays, bounds its influence; sites use their vertex heights, as non-road loops
-  always did. Road guides are grade-limited samples on rings at one, two, four and eight steps
-  and the ray's own reach, so a guide depends only on the boundary near it; rails join
-  consecutive rings only for a single clean convex outer loop. One pass over a loop's rays
-  (`grading::road_loop_grading`) probes each reach once for both the margin and the ring, and a
-  tile emits only the rings of rays whose reach meets it (all of them when rails join them).
-  Sites keep their sample-only apron guides.
-- **Seams along a tile side.** A street on a 64 m tile line puts a road seam exactly on a tile
-  side, with the road inside one tile and beside the other. Exact comparisons, no tolerance: in
-  both tiles the seam's vertices on the side and the tile corners it passes are boundary
-  vertices at the seam's heights (the clip's own interpolation), and a side sample on the seam
-  lies on the footprint and is dropped, so both tiles emit the same side and no sliver. Arm knot
-  laterals divide by the length rather than multiply by its reciprocal, so an axis-aligned arm's
-  runs, terminal cap ends included, lie exactly on the span's grid line.
-- **Watertight patches.** A render patch's terrain is its CDT tiles plus regular filler over its
-  contributor-free tiles, and every terrain edge borders two faces with bitwise equal vertices
-  unless it lies on a road seam, a site loop or a refined patch's outer side (`ROAD-68-D` part 4,
-  test `reference_junction_terrain_is_watertight` over all 20 reference junctions). The filler is
-  conforming: filler cells are bounded by patch and tile lines only; a cell side shared with a
-  tile takes that tile's exported side vertices bitwise, every other cell side the render-step
-  boundary lattice the tiles also put on their sides, and one strip per side joins it to the
-  cell's regular grid, so no vertex of one side runs on as a grid line into other cells. Every
-  face the CDT emits is exported unless it is exactly degenerate, and a face's slope is its own
-  (no absolute cut-offs): thin and small faces are part of the triangulation. Open: the filler's
-  lattice heights come from the patch snapshot and the tiles' from the terrain system, two
-  bilinear evaluations that agree on sample points but may differ in the last bit between them,
-  so a filler cell side whose neighbour is a tile of another patch, or a filler corner shared
-  only through a tile corner, can differ by an ulp of height in worlds whose lattice misses the
-  sample points (open question 23). A refined patch's outer side carries the boundary lattice,
-  and an unrefined neighbour renders its regular heightmap grid there (a T-junction on a
-  straight edge, as tiles on patch sides always had).
-- **Pads and road seams share the patch frame** (`ROAD-68-D` part 5, open question 23). Every
-  site's pad is part of the patch buffers: its footprint triangulated in f64, clipped to the
-  patch canonically, converted once by `render_frame_local` and partitioned with the terrain
-  faces by `SitePavingPartition`; there is no world-space foundation mesh. The road chunk over a
-  patch has the patch's frame (its centre), so a seam vertex both meshes hold has the same bits
-  in both (`reference_junction_road_and_terrain_share_seam_vertices`). Open: seam edges split
-  by the CDT at a tile line inside a patch, and one straight `y_60` seam edge that passes a road
-  vertex, are T-vertices on straight edges (open question 23).
-- **Patch selection.** Every compile records the XZ bounds of the old and new pieces it replaced
-  and the net multiset of their grounded outer-chain segments, keyed by endpoint bits, piece kind
-  and chain start and end (`RoadbedSystem::take_terrain_changes`, `ROAD-68-E` round 4): a piece
-  rebuilt unchanged, or a split trunk's far half, cancels out. A tile's loops come from the
-  chains inside its halo, so they change only within the envelope cap (the halo) of a changed
-  segment; its building sites grade against road surfaces and edges up to
-  `site_feasibility_dependency_margin_m` beyond them, less than the cap, and a split
-  re-parametrises a whole edge. So the edit marks the render patches and CDT tiles within the cap
-  of a changed segment, and those within the cap of a changed piece that have a site within the
-  local sample margin of their window (`road_terrain_tiles`), and stamps the tiles in the
-  assembly ledger (`road_tile_dirty_at`, keyed by tile), so a later request rebuilds only those
-  tiles and their neighbours. A patch is road-locked when any of its tiles has a road loop whose envelope reaches
-  it, from the same per-tile loops; while the roadbed is dirty it keeps its last road ownership.
-  Undo and rollback go through the same compile, so they follow. A world-scale road change (a
-  load, or a bulk road build such as the populated-city fixture's or the in-game benchmark
-  city's) refreshes every patch once with a new global payload generation
-  (`refresh_all_engineered_terrain_patch_state`), which takes and drops the terrain changes its
-  compiles recorded, so the next edit stamps and builds only its own terrain (`ROAD-68-D`
-  part 6; before, those changes waited for the first road commit, which then graded and built
-  every road patch of the city).
-- **Tile clip.** The CDT core clips each loop to its tile with its own clip (an integer overlay
-  for the components, the axis-aligned clip for exact intersection heights). Where a loop leaves
-  the tile and comes back elsewhere (a row street beside a cross street outside the tile), the
-  axis-aligned clip joins the two points with a run along the tile side, and the later side
-  clips cut such runs into zero-width rails out to the tile corners, at heights no road has.
-  Rail tips (a side vertex whose neighbours lie on the same side, with the boundary turning back
-  there) are removed exactly, so a clipped loop holds only footprint vertices and its
-  intersections with the tile sides; a loop without rails is unchanged (`ROAD-68-D` part 6,
-  `a_loop_reaching_past_a_tile_side_adds_no_vertex_off_its_footprint`).
-- **Ownership refresh.** A patch's road ownership is recomputed only while it is pending: a
-  compile stamped it, or a terrain stroke changed heights within twice the envelope cap of it
-  (its loops reach the cap beyond the tile, their rays the cap beyond the loops), or an undo that
-  restores the terrain cleared it (every formerly engineered patch). An edit's
-  validation refreshes its patches once, and the commit's later refresh finds them done. A
-  building-site change refreshes only site ownership: it moves no road and no height. Patch
-  margins grade in parallel; the largest margin is order-free, so it is the same on any worker
-  count.
-- **Bridges and tunnels.** They do not clip terrain mid-span. Abutment and portal cutouts belong to
-  the terrain surface rewrite `TERRAIN-07` (user, 2026-10-25; its wall seams,
-  [T14](terrain.md#terrain-07-open-questions)). The grounded chains that end at a structure close
-  across its mouth with a wall run (open ends above), so the legacy terrain builds those patches
-  and the edit commits (`TERRAIN-07-C` round 3, open question 19).
 - **Source terrain.** The derived mesh never rewrites it. Placed roads stay fixed under later
   terrain edits.
 
@@ -852,7 +718,7 @@ Stage 3 and the terrain half of 4 (round 3): the patches and tiles whose terrain
 pieces change are the commit's (`road_terrain_tiles` over the preview roadbed's
 `take_terrain_changes`, the function the commit's stamps use; round 4: tiles near changed chain
 segments, or near changed pieces where a site grades, so a split trunk's far half is not
-rebuilt, [patch selection](#footprint-and-terrain)); the preview's site test reads the published
+rebuilt, [patch selection](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)); the preview's site test reads the published
 sites of the tile's patch. Each patch's ownership (`road_terrain_patch_margin_m` on the edited
 replica and the preview's roadbed, the patches in parallel), assembly scope, margins and site
 query come from the one source function the core's requests and the commit's staged validation
@@ -1242,7 +1108,7 @@ These need a user decision; work that does not depend on them continues.
    terrain until `ROAD-68-D` defines the grading envelope for both roads and sites.
    **Done in `ROAD-68-D`:** site loops take their influence margin from the shared envelope
    function (`grading_envelope_margin_m`, vertex heights against the terrain below), as road
-   loops take theirs from their rays ([footprint and terrain](#footprint-and-terrain)).
+   loops take theirs from their rays ([footprint and terrain](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)).
 4. **Pinned Kuopio fixture hash (`ROAD-69`) — resolved 2026-10-23, re-pinned.**
    - **The fault.** `./run.sh --test` stopped at its first step: `tools/test_road_terrain_replay.py`
      (`test_pinned_fixture_integrity`) failed, on `road-legacy` too.
@@ -1992,7 +1858,7 @@ These need a user decision; work that does not depend on them continues.
       frame on its own middle, the road chunk over it on the full cell. (3) Filler and tile side
       heights come from two bilinear evaluations (patch snapshot and terrain system) that agree
       on sample points but can differ in the last bit between them ([watertight
-      patches](#footprint-and-terrain)); the reference fixtures do not need the shared height
+      patches](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)); the reference fixtures do not need the shared height
       function, so it is not built.
 24. **Road surface pinholes on slopes (`ROAD-68-D` part 4) — decided by the coordinator under
     the user's delegation, 2026-10-24, confirmed by the user 2026-10-25: (a), in `ROAD-68-D`; done in part 5.** With the terrain watertight,
@@ -2157,7 +2023,7 @@ These need a user decision; work that does not depend on them continues.
       fingerprint and re-triangulated, 11 of them with no geometric change within 40 m. The
       terrain stage measured 7.0-8.3 ms p50 against its 3.0 ms budget.
     - **Options.** (a) Name each source by its tile-local chain run and place in the run, ordered
-      by vertex bits ([source tags](#footprint-and-terrain)): products depend on the footprint
+      by vertex bits ([source tags](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)): products depend on the footprint
       only, and the debug display's face sources (`*_face_sources`, the terrain inspector's
       summary) show run numbers instead of edge and node ids. (b) As (a), and map runs back to
       pieces in the debug export only, by looking up the current roadbed's chains at the run's
@@ -4821,7 +4687,7 @@ Acceptance:
 
 #### Progress (2026-10-24, branch `road68-D`, work in progress)
 
-Landed (see [footprint and terrain](#footprint-and-terrain) for the contract):
+Landed (see [footprint and terrain](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut) for the contract):
 
 - `roadbed/terrain.rs`: `terrain_loops(roadbed, graph, rect)` builds a rectangle's loops from the
   outer chains, with `ChainSegment` provenance per edge, orientation-derived holes and the typed
@@ -4850,7 +4716,7 @@ Part 2 (2026-10-24, same branch):
   the segment length instead of multiplying by its reciprocal (`249 * (1 / 249)` rounds below one),
   so an axis-aligned arm's runs and cap ends lie exactly on the span's line; and the CDT treats a
   seam lying exactly on a tile side as that side in both tiles
-  ([footprint and terrain](#footprint-and-terrain)), with the test
+  ([footprint and terrain](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)), with the test
   `a_seam_along_a_tile_side_is_that_side_in_both_tiles`.
 - **Recorded fixtures.** `kuopio_recorded_profiles_and_terrain_preserve_quality_limits` fails
   node 5 (`node_piece_failed`) at `79e7a476` too, and the hillside fixture's node 2 fails
@@ -4925,7 +4791,7 @@ Part 3 (2026-10-24, same branch, rebased on `road` at `27797b92`):
   - patch road margins graded one patch and one tile at a time; they grade in parallel, with an
     indexed collect and the order-free largest margin.
   Road ownership then follows the changes that move it ([ownership
-  refresh](#footprint-and-terrain)): a commit's validation grades the edit's patches once, and the
+  refresh](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)): a commit's validation grades the edit's patches once, and the
   commit's later `refresh_road_locked_terrain_patch_state` refreshes only patches still pending,
   instead of every unacknowledged dirty patch (the 2.6 ms `ROAD-68-G` part 2 measured at 100k,
   open question 21, was that walk: real duplicate work, not only the harness). A terrain stroke
@@ -5021,7 +4887,7 @@ Part 4 (2026-10-24, same branch): watertight terrain.
   (the main road's 1 m span rows on the `z = 0` tile line reached `z = −64`) and between filler
   cells, and on slopes the filler's side heights came from the patch snapshot while the tile's
   came from the terrain system. The filler is conforming now ([watertight
-  patches](#footprint-and-terrain)): window side vertices are read from the window's exported
+  patches](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)): window side vertices are read from the window's exported
   vertices, and a filler cell takes them bitwise on a shared side.
 - **Result.** The test passes on all 20 fixtures. The screenshots (`$ARTIFACTS/screenshots-D4`)
   go from 33 pinholes to 9 (`pinholes.py`), none on the flat fixtures; the 9 lie in the road
@@ -5130,7 +4996,7 @@ scale. `ROAD-68-G` part 5 found the populated-city breakdown's first commit (a T
 border trunk) rejected at 100k residents with `render_geometry_invalid`, and the commit's
 `surface` stage at 15-69 ms median with a first sample of 34 ms to 1.7 s growing with the city.
 Two causes, both fixed constructively; the patch-selection rule stays `ROAD-68-E`'s chain rule
-(round 4, [patch selection](#footprint-and-terrain)).
+(round 4, [patch selection](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)).
 
 - **The first commit inherited the city's terrain.** The roadbed records the bounds (and, since
   `ROAD-68-E` round 4, the chain segments) of every piece a compile replaces until a road edit
@@ -5154,7 +5020,7 @@ Two causes, both fixed constructively; the patch-selection rule stays `ROAD-68-E
   seams lie on 64 m tile lines (rows at `-3225 + 50 i`, seam `+7`; never at the lower tiers), so
   pads touch tile corners there; elsewhere the rails stayed as degenerate constraints along tile
   sides. Fix: rail tips are removed exactly after the axis-aligned clip ([tile
-  clip](#footprint-and-terrain)); loops without rails are unchanged, bit for bit. Test first:
+  clip](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)); loops without rails are unchanged, bit for bit. Test first:
   `a_loop_reaching_past_a_tile_side_adds_no_vertex_off_its_footprint` (the comb and the pad in
   tile `(0..64)²`): the clip returned the strip plus `(0, 0)` and `(0, 64)` at height 0, and
   canonicalisation failed with the 100k error.
@@ -5436,12 +5302,12 @@ Round 4 (part 1, 2026-10-25, work in progress; rebased on `road` `e9fee678`, gat
   sloped T at x = 25), and the stamps, from the old and new pieces' whole bounds, covered the
   whole trunk (11 patches per pose).
 - **Fix (exact, constructive).** (1) `road_terrain_loops` makes a tile's loops canonical in the
-  footprint inside its rectangle ([source tags](#footprint-and-terrain), open question 28): the
+  footprint inside its rectangle ([source tags](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut), open question 28): the
   far windows then keep their fingerprints and are reused (11 of 15 change on the same T, all
   within the junction's halo). (2) The roadbed keeps the net multiset of changed grounded chain
   segments (`TerrainChanges`, `take_terrain_changes`), and `road_terrain_tiles` stamps only tiles
   within the cap of a changed segment, or of a changed piece when a building site lies within
-  the local sample margin of the tile's window ([patch selection](#footprint-and-terrain)); the
+  the local sample margin of the tile's window ([patch selection](archive/terrain_legacy_surface_2026-10-25.md#from-roadsmd-footprint-and-terrain-the-road-side-of-the-exact-cut)); the
   commit asks the allocator's site index, the preview the published patch sites. (3) The preview
   grades its patches' road margins in parallel inside one pool entry. Gate D part 6 now owns the
   patch-selection rule for commit and preview (coordinator, 2026-10-25); this round's rule stays
