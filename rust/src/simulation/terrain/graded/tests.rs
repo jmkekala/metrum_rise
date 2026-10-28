@@ -503,6 +503,35 @@ fn the_coverage_raster_equals_the_predicate_at_every_lattice_point() {
     }
 }
 
+// Query scratch is thread-local in production and therefore outlives a simulation core. Equal
+// local generations from two worlds must not reuse the first world's prepared base or inputs.
+#[test]
+fn query_scratch_distinguishes_indices_with_equal_generations() {
+    let flat = terrain(|_, _| 0.0);
+    let raised = terrain(|_, _| 400.0);
+    let roadbed = RoadbedSystem::new(64.0);
+    let (first_index, second_index) = (TerrainQueryIndex::default(), TerrainQueryIndex::default());
+    let first = GradedSurface {
+        terrain: &flat,
+        roadbed: &roadbed,
+        sites: &NoSites,
+        query_index: Some(&first_index),
+    };
+    let second = GradedSurface {
+        terrain: &raised,
+        roadbed: &roadbed,
+        sites: &NoSites,
+        query_index: Some(&second_index),
+    };
+    let mut scratch = QueryScratch::default();
+    let query = |surface: &GradedSurface<'_>, scratch: &mut QueryScratch| {
+        surface.gather_near(1.0, 1.0, 1.01, scratch);
+        surface.ground_height_near(1.005, 1.0, scratch)
+    };
+    assert_eq!(query(&first, &mut scratch).to_bits(), 0.0f64.to_bits());
+    assert_eq!(query(&second, &mut scratch).to_bits(), 400.0f64.to_bits());
+}
+
 #[test]
 fn a_missing_node_piece_uncovers_its_gap_and_flips_no_other_region() {
     let graph = t_junction(true);

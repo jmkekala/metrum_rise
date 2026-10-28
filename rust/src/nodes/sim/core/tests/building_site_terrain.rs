@@ -130,6 +130,14 @@ fn assert_query_index_fresh(core: &SimCore, stage: &str, strict_inputs: bool) {
         gathered.ground_height_at(x, z, &mut b_scratch).to_bits(),
         "a diagonal seam outside the cap must not disable a gathered tile's base shortcut"
     );
+    for (dx, dz) in [(2.5, -2.5), (-2.4, 1.3), (0.7, 2.5)] {
+        let (cx, cz) = (x + dx, z + dz);
+        assert_eq!(
+            indexed.surface_height_near(cx, cz, &mut a_scratch).to_bits(),
+            gathered.surface_height_at(cx, cz, &mut b_scratch).to_bits(),
+            "indexed gathered contact at ({cx}, {cz})"
+        );
+    }
     for z in (-220..=220).step_by(11) {
         for x in (-220..=220).step_by(13) {
             let (x, z) = (f64::from(x) + 0.37, f64::from(z) + 0.19);

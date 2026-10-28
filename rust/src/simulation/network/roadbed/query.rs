@@ -67,6 +67,46 @@ pub(crate) struct GroundedPieceScratch {
     fallback: bool,
 }
 
+/// Reused direct references to every road piece meeting one small surface-support window.
+#[derive(Default)]
+pub(crate) struct LocalSurfaceQuery {
+    indexed: Vec<IndexedPiece>,
+}
+
+impl LocalSurfaceQuery {
+    /// Height of the highest visible road triangle at a point inside the prepared window.
+    pub(crate) fn height_at(&self, x: f32, z: f32) -> Option<f32> {
+        self.surface_at(x, z).map(|(height, _)| height)
+    }
+
+    /// Height and upward face normal of the highest visible road triangle at a prepared point.
+    pub(crate) fn height_and_normal_at(&self, x: f32, z: f32) -> Option<(f32, Vector3)> {
+        self.surface_at(x, z).map(|(height, [a, b, c])| {
+            let mut normal = (b - a).cross(c - a).normalize();
+            if normal.y < 0.0 {
+                normal = -normal;
+            }
+            (
+                height,
+                Vector3::new(normal.x as f32, normal.y as f32, normal.z as f32),
+            )
+        })
+    }
+
+    fn surface_at(&self, x: f32, z: f32) -> Option<(f32, [RoadVec3; 3])> {
+        let point = RoadVec2::new(f64::from(x), f64::from(z));
+        let mut best = None;
+        for indexed in &self.indexed {
+            if let Some((height, _, triangle)) = surface_at(&indexed.mesh, point, |_| true)
+                && best.is_none_or(|(best_height, _)| height > best_height)
+            {
+                best = Some((height, triangle));
+            }
+        }
+        best
+    }
+}
+
 impl LaneSurfaceQuery<'_> {
     /// Visible height of the lane owner's surface at a world XZ point; carriageway-only for
     /// vehicle lanes. `None` off the owner's pieces.
@@ -151,6 +191,34 @@ fn triangle_near_disc(triangle: [RoadVec3; 3], point: RoadVec2, radius: f64) -> 
 }
 
 impl RoadbedSystem {
+    /// Prepares all road pieces meeting a bounded support window in canonical piece order.
+    /// Storage is reused, so a warm query allocates nothing.
+    pub(crate) fn prepare_local_surface_query(
+        &self,
+        bounds: [f64; 4],
+        query: &mut LocalSurfaceQuery,
+    ) {
+        query.indexed.clear();
+        let first = query_cell_at(bounds[0], bounds[1]);
+        let last = query_cell_at(bounds[2], bounds[3]);
+        for x in first.0..=last.0 {
+            for z in first.1..=last.1 {
+                for indexed in self.index.cell((x, z)) {
+                    if !bounds_intersect(indexed.mesh.bounds_xz(), bounds) {
+                        continue;
+                    }
+                    match query
+                        .indexed
+                        .binary_search_by_key(&indexed.id, |piece| piece.id)
+                    {
+                        Ok(_) => {}
+                        Err(at) => query.indexed.insert(at, indexed.clone()),
+                    }
+                }
+            }
+        }
+    }
+
     // Lists grounded indexed pieces in ascending piece order without reading the owner map.
     // Large region queries fall back to the owner map rather than walking more cells than pieces.
     fn gather_grounded_indexed(&self, bounds: [f64; 4], scratch: &mut GroundedPieceScratch) {
@@ -443,8 +511,8 @@ impl RoadbedSystem {
         out.dedup_by_key(|segment| key(segment));
     }
 
-    /// Appends the grounded outer-chain segments from an already-local candidate piece list,
-    /// preserving [`Self::grounded_seams_in_bounds`]'s canonical segment order and deduplication.
+    /// Appends grounded outer-chain segments from an already-local candidate piece list in
+    /// canonical segment order, without repeating the spatial piece lookup.
     pub(crate) fn grounded_seams_from_pieces(
         &self,
         bounds_xz: [f64; 4],

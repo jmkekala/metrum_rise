@@ -13,6 +13,11 @@ use super::tile::{TILE_M, TileKey, grown};
 use crate::simulation::buildings::allocator::{BuildingAllocator, SiteChange};
 use crate::simulation::network::roadbed::{PieceId, RoadbedSystem, TerrainChanges};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Scratch is thread-local and outlives individual simulation cores. Generations are local to an
+// index, so a construction identity must also distinguish equal generations from different worlds.
+static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 // The rendered `GL0` tile's one-lattice-point apron also covers a point normal's central
 // differences. The list then takes the same cap and one-metre window pad as `query::prepare`.
@@ -29,6 +34,9 @@ const CHANGE_PAD_M: f64 = QUERY_APRON_M + WINDOW_PAD_M + 2.0;
 pub(super) struct QueryTileInputs {
     pub(super) road_pieces: Vec<PieceId>,
     pub(super) coverage_pieces: Vec<PieceId>,
+    // Exact tile-level interpolation choice: false only when no road or pad seam can reach the
+    // rendered tile. Point and vehicle queries read this instead of walking the tile's inputs.
+    has_seams: bool,
 }
 
 impl QueryTileInputs {
@@ -52,6 +60,7 @@ impl QueryTileInputs {
 pub(crate) struct TerrainQueryIndex {
     tiles: BTreeMap<TileKey, QueryTileInputs>,
     ready: bool,
+    identity: u64,
     generation: u64,
 }
 
@@ -60,6 +69,7 @@ impl Default for TerrainQueryIndex {
         Self {
             tiles: BTreeMap::new(),
             ready: true,
+            identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
             generation: 1,
         }
     }
@@ -106,6 +116,19 @@ impl TerrainQueryIndex {
 
     pub(super) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub(super) fn identity(&self) -> u64 {
+        self.identity
+    }
+
+    pub(super) fn tile_is_quiet(&self, x: f64, z: f64) -> Option<bool> {
+        self.ready.then(|| {
+            !self
+                .tiles
+                .get(&TileKey::at(x, z))
+                .is_some_and(|tile| tile.has_seams)
+        })
     }
 
     /// Rebuilds the complete sparse index after load or a world replacement.
@@ -211,6 +234,9 @@ impl TerrainQueryIndex {
         roadbed.grounded_pieces_in_bounds(window, &mut inputs.road_pieces);
         roadbed.grounded_pieces_in_bounds(grown(rect, 0.02), &mut inputs.coverage_pieces);
         let has_sites = sites.any_graded_site_in_bounds(window);
+        let mut road_segments = Vec::new();
+        roadbed.grounded_seams_from_pieces(window, &inputs.road_pieces, &mut road_segments);
+        inputs.has_seams = has_sites || !road_segments.is_empty();
         if inputs.is_empty() && !has_sites {
             self.tiles.remove(&key);
         } else {
@@ -246,7 +272,9 @@ impl TerrainQueryIndex {
             let Some(b) = other.tiles.get(key) else {
                 return false;
             };
-            a.road_pieces == b.road_pieces && a.coverage_pieces == b.coverage_pieces
+            a.road_pieces == b.road_pieces
+                && a.coverage_pieces == b.coverage_pieces
+                && a.has_seams == b.has_seams
         })
     }
 
@@ -268,6 +296,7 @@ impl TerrainQueryIndex {
             let equal = [
                 a.road_pieces == b.road_pieces,
                 a.coverage_pieces == b.coverage_pieces,
+                a.has_seams == b.has_seams,
             ];
             if !equal.into_iter().all(|value| value) {
                 return format!(

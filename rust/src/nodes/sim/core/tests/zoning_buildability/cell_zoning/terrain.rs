@@ -6,7 +6,6 @@ use super::*;
 use godot::prelude::Vector2;
 
 #[test]
-#[ignore = "TERRAIN-07-F: waits for TERRAIN-07-E's terrain undo (under T12 (a) a 120 m, 40-raw stroke blocks the lot and, with E's source undo, undoes; docs/terrain.md T36)"]
 fn terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility() {
     for angle in [0.0, 0.35] {
         let mut core = painted_fixture(angle);
@@ -34,13 +33,12 @@ fn terrain_stroke_revalidates_cell_growth_and_undo_restores_feasibility() {
         let undo_count = core.undo_stack.len();
         let revision = core.zoning.cell_external_revision();
         let terrain_generation = core.heightmap.source_generation();
-        // A mound centred 10 m beyond the lot, away from the road: it blocks the lot, and the
-        // road can follow it. One over the road as well would leave the road steeper than 1:3,
-        // which the edit refuses (`roads.md` question 37, `TERRAIN-07-E`).
-        let away = DVec2::new(angle.cos(), angle.sin()).perp() * 20.0;
+        // The 64 m tie-in can pass a narrow mound. Put the broad mound beyond the lot so its
+        // fringe blocks the tie-in while the brush remains clear of the frontage road.
+        let away = DVec2::new(angle.cos(), angle.sin()).perp() * 110.0;
         let center = lot.center() + Vector2::new(away.x as f32, away.y as f32);
         core.start_terrain_stroke_internal();
-        core.sculpt_terrain_stroke_step_internal(Vector2::new(center.x, center.y), 20.0, 10.0);
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(center.x, center.y), 120.0, 40.0);
         assert!(core.end_terrain_stroke_internal());
         assert_eq!(core.undo_stack.len(), undo_count + 1);
         assert!(core.heightmap.source_generation() > terrain_generation);
