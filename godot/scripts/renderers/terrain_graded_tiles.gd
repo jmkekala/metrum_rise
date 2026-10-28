@@ -1720,18 +1720,23 @@ func _draw_state(key: Vector2i, patch: Dictionary, cells: Dictionary) -> int:
 	var built := not cells.is_empty() and _built(cells)
 	var graded := built and _graded_cells(cells["counts"]) > 0
 	var refreshing := not list.is_empty() and int(list["token"]) != int(patch["generation"])
-	if tiles.is_empty() and not (refreshing and graded) and not _previews_in(patch["rect"]):
+	var previews := _previews_in(patch["rect"])
+	if tiles.is_empty() and not (refreshing and graded) and not previews:
 		return DRAW_PLANE
-	if not built:
-		return DRAW_NONE
 	if graded and bool(cells["complete"]):
 		return DRAW_SET
+	# What the set would show: previews, a refreshing list's installed tiles, the listed tiles.
+	var showing := previews or (refreshing and graded)
 	for tile: Vector2i in tiles:
-		if _shown(tile).is_empty() and not _refused_at_level(tile):
+		if not _shown(tile).is_empty():
+			showing = true
+		elif not _refused_at_level(tile):
 			return DRAW_NONE
-	# Every listed tile shows, or none can (refused, or its pool exhausted: errors, drawn as the
-	# base their cells would draw).
-	return DRAW_SET if graded else DRAW_PLANE
+	# Every listed tile shows (its set draws once built), or none can (refused, or its pool
+	# exhausted: errors, drawn as the base their cells would draw, with or without the set).
+	if not showing:
+		return DRAW_PLANE
+	return DRAW_SET if graded and built else DRAW_NONE
 
 # Whether `tile` cannot show at its desired level and token: Rust refused it by contract (T7) or
 # its level's pool is exhausted (T23). Its patch's set draws without it (a base cell; both are
