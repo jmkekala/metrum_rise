@@ -1381,12 +1381,15 @@ pub(crate) fn graded_stage(
     let (stage_ms, select_ms) = runs[3];
     let changed_tiles = assert_selection_covers(terrain, before, after, sites, changes, &tiles);
     // T20 (a): an undo record keeps the tiles the edit replaces, one `GL0` slot (the texels with
-    // apron and the rows at capacity, terrain.md "Data") per selected tile graded before it.
+    // apron and the tile's rows, terrain.md "Data") per selected tile graded before it.
     let replaced = bake_with(terrain, before, sites, &tiles, Level::Gl0, Evaluation::Lanes);
     let replaced = replaced.iter().filter(|payload| payload.graded);
     let undo_bytes: usize = replaced
         .clone()
-        .map(|payload| 16 * (payload.texels.len() + super::slot_row_texels(Level::Gl0)))
+        .map(|payload| {
+            let rows = 2 * payload.seams.len() + payload.edges.len() + payload.extras.len();
+            16 * (payload.texels.len() + rows)
+        })
         .sum();
     let bits: Vec<Vec<[u32; 4]>> = payloads.iter().map(texel_bits).collect();
     let stats = payloads.iter().map(|p| p.stats);

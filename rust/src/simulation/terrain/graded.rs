@@ -35,8 +35,8 @@ pub use portal::{PORTAL_CLEARANCE_M, PORTAL_REACH_M};
 pub use query::{GradedSurface, GroundClass, QueryScratch};
 pub(crate) use query_index::TerrainQueryIndex;
 pub use residency::{
-    PatchTilesScratch, WALL_FACE_BYTES, graded_tiles_in_rect, pack_slot, pack_walls,
-    seam_channel, slot_extras_at, slot_row_texels, slot_side,
+    ATLAS_WIDTH, PatchTilesScratch, WALL_FACE_BYTES, graded_tiles_in_rect, pack_slot, pack_walls,
+    seam_channel, slot_side,
 };
 pub use seams::{Seam, SeamKind};
 pub use select::{

@@ -261,37 +261,101 @@ fn axis_stop(frame: Frame, x: f32, axis: usize) -> (i32, f32) {
     (index, ((x - p0) / (p1 - p0).max(1e-6)).clamp(0.0, 1.0))
 }
 
-// The signed distance the shader's `cell_mask` tests against zero.
-fn mask_sdf(frame: Frame, payload: &TilePayload, p: [f32; 2]) -> f32 {
+// The first atlas layer of a tested tile's row run, as Godot writes it into the header: not 0,
+// so the port exercises the run's offset.
+const ATLAS_FIRST: usize = 3;
+
+fn decode(bytes: &[u8]) -> Vec<[f32; 4]> {
+    bytes
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|texel| {
+            std::array::from_fn(|c| f32::from_le_bytes(texel[c * 4..c * 4 + 4].try_into().unwrap()))
+        })
+        .collect()
+}
+
+// A baked tile as a page holds it (docs/terrain.md "Pages and the row atlas"), read back from the
+// bytes `pack_slot` packs: its slot layer, the header's first atlas layer written as Godot writes
+// it, and its row run placed at that layer of an atlas.
+struct Slot {
+    side: usize,
+    texels: Vec<[f32; 4]>,
+    atlas: Vec<[f32; 4]>,
+}
+
+impl Slot {
+    fn packed(payload: &TilePayload, cell_m: f64) -> Self {
+        let side = slot_side(payload.level, cell_m);
+        let (mut texels, mut rows) = (Vec::new(), Vec::new());
+        pack_slot(payload, side, &mut texels, &mut rows);
+        let mut texels = decode(&texels);
+        texels[side * side][0] = ATLAS_FIRST as f32;
+        let mut atlas = vec![[0.0; 4]; ATLAS_FIRST * ATLAS_WIDTH];
+        atlas.extend(decode(&rows));
+        Self {
+            side,
+            texels,
+            atlas,
+        }
+    }
+
+    // The shader's `cell_texel`.
+    fn texel(&self, i: i32, j: i32) -> [f32; 4] {
+        self.texels[j as usize * self.side + i as usize]
+    }
+
+    // The header texel: (first atlas layer, edges, heights, lists).
+    fn header(&self) -> [f32; 4] {
+        self.texels[self.side * self.side]
+    }
+
+    // The shader's `cell_row`: row `i` of the tile's run, from the header's first layer.
+    fn row(&self, i: i32) -> [f32; 4] {
+        let layer = self.header()[0] as i32 + (i >> 8);
+        self.atlas[layer as usize * ATLAS_WIDTH + (i & 255) as usize]
+    }
+}
+
+// The shader's `cell_seam_list` and `cell_seam_row`.
+fn seam_list(channel: f32) -> i32 {
+    (channel as i32 + 1) >> 11
+}
+
+fn seam_row(channel: f32) -> i32 {
+    channel as i32 - (seam_list(channel) << 11)
+}
+
+// The signed distance the shader's `cell_mask` tests against zero, from the packed slot.
+fn mask_sdf(frame: Frame, slot: &Slot, p: [f32; 2]) -> f32 {
     let (ix, fx) = axis_stop(frame, p[0], 0);
     let (iz, fz) = axis_stop(frame, p[1], 1);
-    let width = payload.samples[0];
-    let t: [[f32; 4]; 4] = std::array::from_fn(|c| {
-        let (i, j) = (ix as usize + (c & 1), iz as usize + (c >> 1));
-        payload.texels[j * width + i]
-    });
+    let t: [[f32; 4]; 4] =
+        std::array::from_fn(|c| slot.texel(ix + (c & 1) as i32, iz + (c >> 1) as i32));
     let mut sdf = mix(mix(t[0][1], t[1][1], fx), mix(t[2][1], t[3][1], fx), fz);
     let spacing_m = frame.spacing as f32 * 0.5;
     if sdf.abs() < 2.0 * spacing_m {
         let mut best = NO_HIT;
         for texel in &t {
-            let index = texel[2] as i32;
+            let index = seam_row(texel[2]);
             if index < 0 {
                 continue;
             }
-            let hit = segment_at(payload.seams[index as usize], p, index);
+            let hit = segment_at(slot.row(index), p, index);
             if nearer(&hit, &best) {
                 best = hit;
             }
         }
-        // The square's extra candidates (T48 (a)), by the same order.
-        let point = (iz as usize * width + ix as usize) as u32;
-        if let Ok(k) = payload.square_extras.binary_search_by_key(&point, |&(at, _)| at) {
-            let first = payload.square_extras[k].1 as usize;
-            let count = payload.extras[first][0] as usize;
+        // The square's extra candidates (T48 (a)), by the same order: (count, row, row, row),
+        // then four rows a texel, from the header's lists offset.
+        let list = seam_list(t[0][2]);
+        if list > 0 {
+            let at = slot.header()[3] as i32 + list - 1;
+            let count = slot.row(at)[0] as i32;
             for k in 1..=count {
-                let index = payload.extras[first + k / 4][k % 4] as i32;
-                let hit = segment_at(payload.seams[index as usize], p, index);
+                let index = slot.row(at + k / 4)[(k % 4) as usize] as i32;
+                let hit = segment_at(slot.row(index), p, index);
                 if nearer(&hit, &best) {
                     best = hit;
                 }
@@ -443,11 +507,13 @@ fn the_exact_mask_equals_coverage() {
     for (name, graph, terrain) in fixtures() {
         let roadbed = compiled(&graph);
         let (anchor, cell) = (anchor_hm(&terrain), cell_hm(&terrain));
+        let cell_m = f64::from(terrain.cell_size_m());
         for level in [Level::Gl0, Level::Gl1] {
             let payloads = bake_level(&terrain, &roadbed, &window_tiles(), level);
             let (mut tested, mut wrong) = (0, 0);
             let mut first = String::new();
             for payload in &payloads {
+                let slot = Slot::packed(payload, cell_m);
                 let frame = frame(level_code(level), payload.tile, anchor, cell);
                 let [ox, oz] = payload.tile.origin();
                 // A 0.37 m grid: off the lattice, through every kind of cell.
@@ -456,7 +522,7 @@ fn the_exact_mask_equals_coverage() {
                         let p = [i as f32 * 0.37 + 0.011, j as f32 * 0.37 + 0.017];
                         let (x, z) = (ox + f64::from(p[0]), oz + f64::from(p[1]));
                         let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
-                        let sdf = mask_sdf(frame, payload, p);
+                        let sdf = mask_sdf(frame, &slot, p);
                         let discarded = sdf < 0.0;
                         tested += 1;
                         if covered != discarded && first.is_empty() {
@@ -512,18 +578,20 @@ fn dense_mask_equals_coverage(graph: &RegionGraph, level: Level, area: [f64; 4],
     tiles.sort();
     tiles.dedup();
     let payloads = bake_level(&terrain, &roadbed, &tiles, level);
+    let cell_m = f64::from(terrain.cell_size_m());
+    let slots: Vec<Slot> = payloads.iter().map(|payload| Slot::packed(payload, cell_m)).collect();
     let mut pieces = Vec::new();
     let (mut wrong, mut tested, mut first) = (0, 0, None);
     for iz in 0..=nz {
         for ix in 0..=nx {
             let [x, z] = point(ix, iz);
             let tile = TileKey::at(x, z);
-            let payload = &payloads[tiles.binary_search(&tile).expect("baked tile")];
+            let slot = &slots[tiles.binary_search(&tile).expect("baked tile")];
             let [ox, oz] = tile.origin();
             let local = [(x - ox) as f32, (z - oz) as f32];
             let frame = frame(level_code(level), tile, anchor, cell);
             let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
-            let sdf = mask_sdf(frame, payload, local);
+            let sdf = mask_sdf(frame, slot, local);
             tested += 1;
             if (sdf < 0.0) != covered {
                 wrong += 1;
@@ -621,6 +689,7 @@ fn the_exact_mask_equals_coverage_across_a_bridge_mouth() {
         let (mut tested, mut wrong) = (0, 0);
         let mut first = String::new();
         for payload in &payloads {
+            let slot = Slot::packed(payload, f64::from(terrain.cell_size_m()));
             let frame = frame(level_code(level), payload.tile, anchor, cell);
             let [ox, oz] = payload.tile.origin();
             for j in 0..1600 {
@@ -634,7 +703,7 @@ fn the_exact_mask_equals_coverage_across_a_bridge_mouth() {
                         continue;
                     }
                     let covered = covered_height_at(&roadbed, x, z, &mut pieces).is_some();
-                    let discarded = mask_sdf(frame, payload, p) < 0.0;
+                    let discarded = mask_sdf(frame, &slot, p) < 0.0;
                     tested += 1;
                     if covered != discarded && first.is_empty() {
                         first = format!("({x:.3}, {z:.3}) covered {covered}");
@@ -733,19 +802,16 @@ fn packed_slots_hold_the_payload_bitwise() {
     let (_, graph, terrain) = fixtures().swap_remove(0);
     let roadbed = compiled(&graph);
     let cell_m = f64::from(terrain.cell_size_m());
+    let bits = |texel: [f32; 4]| texel.map(f32::to_bits);
     for level in LEVELS {
         let side = slot_side(level, cell_m);
         for payload in bake_level(&terrain, &roadbed, &window_tiles(), level) {
             let (mut texels, mut rows) = (Vec::new(), Vec::new());
             pack_slot(&payload, side, &mut texels, &mut rows);
-            assert_eq!(texels.len(), side * side * 16);
-            assert_eq!(rows.len(), slot_row_texels(level) * 16);
-            let read = |bytes: &[u8], texel: usize| -> [u32; 4] {
-                std::array::from_fn(|c| {
-                    let at = texel * 16 + c * 4;
-                    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
-                })
-            };
+            assert_eq!(texels.len(), side * (side + 1) * 16);
+            let rows_needed = 2 * payload.seams.len() + payload.edges.len() + payload.extras.len();
+            assert_eq!(rows.len(), rows_needed.div_ceil(ATLAS_WIDTH) * ATLAS_WIDTH * 16);
+            let (texels, rows) = (decode(&texels), decode(&rows));
             let [width, depth] = payload.samples;
             for j in 0..depth {
                 for i in 0..width {
@@ -755,37 +821,36 @@ fn packed_slots_hold_the_payload_bitwise() {
                     if let Some(&(_, first)) = list {
                         texel[2] = seam_channel(texel[2], first);
                     }
-                    let packed = read(&texels, j * side + i);
-                    assert_eq!(packed, texel.map(f32::to_bits));
+                    let packed = texels[j * side + i];
+                    assert_eq!(bits(packed), bits(texel));
                     // The shader's decoding gives the row and the list back.
-                    let channel = f32::from_bits(packed[2]) as i32;
-                    let decoded = (channel + 1) >> 11;
-                    assert_eq!(channel - (decoded << 11), payload.texels[point as usize][2] as i32);
-                    assert_eq!(decoded, list.map_or(0, |&(_, first)| first as i32 + 1));
+                    assert_eq!(seam_row(packed[2]), payload.texels[point as usize][2] as i32);
+                    assert_eq!(
+                        seam_list(packed[2]),
+                        list.map_or(0, |&(_, first)| first as i32 + 1)
+                    );
                 }
             }
-            for (index, texel) in payload.extras.iter().enumerate() {
-                assert_eq!(
-                    read(&rows, slot_extras_at(level) + index),
-                    texel.map(f32::to_bits)
-                );
+            // The header: no run layer yet (Godot writes it), then the offsets of the edges,
+            // the heights and the lists in the run.
+            let header = texels[side * side];
+            let (seams, edges) = (payload.seams.len(), payload.edges.len());
+            let at = [seams, seams + edges, 2 * seams + edges];
+            assert_eq!(bits(header), bits([0.0, at[0] as f32, at[1] as f32, at[2] as f32]));
+            for (index, &seam) in payload.seams.iter().enumerate() {
+                assert_eq!(bits(rows[index]), bits(seam));
             }
-            for (index, seam) in payload.seams.iter().enumerate() {
-                assert_eq!(read(&rows, index), seam.map(f32::to_bits));
+            for (index, &edge) in payload.edges.iter().enumerate() {
+                assert_eq!(bits(rows[at[0] + index]), bits(edge));
             }
-            for (index, edge) in payload.edges.iter().enumerate() {
-                assert_eq!(
-                    read(&rows, level.seam_capacity() + index),
-                    edge.map(f32::to_bits)
-                );
-            }
-            assert_eq!(payload.seam_heights.len(), payload.seams.len());
+            assert_eq!(payload.seam_heights.len(), seams);
             for (index, &[a, b]) in payload.seam_heights.iter().enumerate() {
-                assert_eq!(
-                    read(&rows, level.seam_capacity() + level.edge_capacity() + index),
-                    [a, b, 0.0, 0.0].map(f32::to_bits)
-                );
+                assert_eq!(bits(rows[at[1] + index]), bits([a, b, 0.0, 0.0]));
             }
+            for (index, &texel) in payload.extras.iter().enumerate() {
+                assert_eq!(bits(rows[at[2] + index]), bits(texel));
+            }
+            assert!(rows[at[2] + payload.extras.len()..].iter().all(|&t| t == [0.0; 4]));
         }
     }
 }

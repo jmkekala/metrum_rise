@@ -18,8 +18,8 @@ use super::*;
 use crate::nodes::sim::core::{GradedEditSelection, GradedInstallTiles};
 use crate::simulation::buildings::allocator::SiteSnapshot;
 use crate::simulation::terrain::graded::{
-    BakeError, CAP_M, Level, PatchTilesScratch, SelectScratch, TILE_M, TileKey, TilePayload,
-    WALL_FACE_BYTES, bake_tiles, graded_tiles_in_rect, pack_slot, pack_walls, slot_row_texels,
+    ATLAS_WIDTH, BakeError, CAP_M, Level, PatchTilesScratch, SelectScratch, TILE_M, TileKey,
+    TilePayload, WALL_FACE_BYTES, bake_tiles, graded_tiles_in_rect, pack_slot, pack_walls,
     slot_side,
 };
 use std::cell::RefCell;
@@ -404,8 +404,10 @@ fn bake_level(
 impl SimulationNode {
     /// The graded tile slot layout Godot sizes its pools by: `tile_m`, and per level code
     /// (0-2 `GL0`-`GL2`, 3 `GL3`) a dictionary with `spacing_m` (`GL3`: at its finest step),
-    /// `side` (texel layer side, apron included), `row_texels` (seam row, edge row, then the
-    /// seams' heights), `seam_capacity`, `edge_capacity` and `band_m`; plus `gl3_steps`.
+    /// `side` (texel layer side, apron included; a slot layer is `side` by `side + 1`, its last
+    /// line the header), `max_row_texels` (the most rows a tile of the level can hold: its seam,
+    /// edge and list capacities) and `band_m`; plus `gl3_steps` and `atlas_width` (the texels of
+    /// a row atlas layer, docs/terrain.md "Pages and the row atlas").
     #[func]
     pub fn get_graded_tile_layout(&self) -> VarDictionary {
         let cell_m = f64::from(self.snapshot.read().unwrap().terrain_cell_m);
@@ -418,15 +420,15 @@ impl SimulationNode {
             dict.set("code", code);
             dict.set("spacing_m", level.spacing_m(cell_m));
             dict.set("side", slot_side(level, cell_m) as i64);
-            dict.set("row_texels", slot_row_texels(level) as i64);
-            dict.set("seam_capacity", level.seam_capacity() as i64);
-            dict.set("edge_capacity", level.edge_capacity() as i64);
+            let max_rows = 2 * level.seam_capacity() + level.edge_capacity() + level.extra_capacity();
+            dict.set("max_row_texels", max_rows as i64);
             dict.set("band_m", level.band_m(cell_m));
             levels.push(&dict.to_variant());
         }
         let mut layout = VarDictionary::new();
         layout.set("tile_m", TILE_M);
         layout.set("levels", levels);
+        layout.set("atlas_width", ATLAS_WIDTH as i64);
         layout.set(
             "gl3_steps",
             PackedInt32Array::from(GL3_STEPS.map(i32::from).as_slice()),
@@ -584,8 +586,9 @@ impl SimulationNode {
     /// road preview showed, and the `preview_epoch` it releases), `patches` (per list `patch_x`, `patch_z`,
     /// `token` and `tiles`, flat `(x, z)` pairs in key order), at most `max_tiles` baked tiles in
     /// `tiles` (per tile `tile_x`, `tile_z`, `level`, `step`, `token`, `samples_x`, `samples_z`,
-    /// `graded`, `seam_count`, `edge_count`, `wall_count`, the slot layers' little-endian
-    /// RGBAF bytes `texels` and `rows`, packed as `pack_slot` documents, and the wall faces'
+    /// `graded`, `seam_count`, `edge_count`, `wall_count`, the little-endian RGBAF bytes of the
+    /// slot layer `texels` and of the row atlas run `rows` (whole layers), packed as `pack_slot`
+    /// documents, and the wall faces'
     /// bytes `walls`, packed as `pack_walls` documents), and `failed` (per
     /// failure its kind, keys, `token`, `reason` and `retry`). The rest stays queued.
     #[func]

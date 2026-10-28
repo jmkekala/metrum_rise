@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Residency inputs of the graded terrain (`TERRAIN-07-D`): which tiles of a render patch render
-//! graded, from the same inputs as the bake, and a baked tile packed into its level's slot
-//! layers for the Godot upload. Godot owns residency; nothing here is kept between calls.
+//! graded, from the same inputs as the bake, and a baked tile packed into a page's slot layer and
+//! row atlas run for the Godot upload. Godot owns residency; nothing here is kept between calls.
 
 use super::grade::{CAP_M, TIE_IN_SLOPE};
 use super::sample::BaseWindow;
@@ -187,39 +187,39 @@ pub fn slot_side(level: Level, cell_m: f64) -> usize {
     }
 }
 
-/// Row texels of a level's slot: the seam row, then the material edge row from
-/// [`Level::seam_capacity`], then the seams' heights from the seam and edge capacities, then
-/// the squares' extra candidate lists ([`slot_extras_at`], [`Level::extra_capacity`]).
-pub fn slot_row_texels(level: Level) -> usize {
-    slot_extras_at(level) + level.extra_capacity()
-}
-
-/// The first row texel of a slot's extra candidate lists: after the seams' heights.
-pub fn slot_extras_at(level: Level) -> usize {
-    2 * level.seam_capacity() + level.edge_capacity()
-}
+/// Texels of one row atlas layer (`TERRAIN-07-G` round 8, docs/terrain.md "Pages and the row
+/// atlas"): a tile's rows take a run of whole layers of this many RGBAF texels by one, row `i`
+/// at texel `i % ATLAS_WIDTH` of the run's layer `i / ATLAS_WIDTH`. A power of two, so the shader
+/// addresses a row with a mask and a shift.
+pub const ATLAS_WIDTH: usize = 256;
 
 /// The packed seam channel of a texel that is the lower corner of a square with extra
 /// candidates (T48 (a)): its named row (`-1` for none) plus 2048 times one more than its
-/// square's list's first texel. Rows stay below 2048 and lists below 8191 texels, so the value
-/// is an integer below 2^24, exact in `f32`; the shader takes `list = (v + 1) >> 11` and
-/// `row = v - 2048 list`.
+/// square's list's first texel (relative to the lists). Rows stay below 2048 and lists below
+/// 8191 texels, so the value is an integer below 2^24, exact in `f32`; the shader takes
+/// `list = (v + 1) >> 11` and `row = v - 2048 list`.
 pub fn seam_channel(row: f32, first_texel: u32) -> f32 {
     row + 2048.0 * (first_texel + 1) as f32
 }
 
-/// Packs a baked tile into its level's slot layers for upload, as little-endian `f32` RGBA:
-/// `texels` is `side x side` texels (`side` from [`slot_side`]), rows along +z, the tile's
-/// lattice in the lower corner and the rest zero; a square's lower corner texel with extra
-/// candidates carries its list in the seam channel ([`seam_channel`]). `rows` is
-/// [`slot_row_texels`] texels: the seams from 0, the material edges from the level's seam
-/// capacity, each seam's end heights `(a, b, 0, 0)` from the seam and edge capacities, and the
-/// squares' extra candidate lists from [`slot_extras_at`], unused texels zero.
-/// The buffers are resized and overwritten. `O(side^2 + row texels)`.
+/// Packs a baked tile for upload into a page (docs/terrain.md "Pages and the row atlas"), as
+/// little-endian `f32` RGBA.
+///
+/// `texels` is one slot layer of `side x (side + 1)` texels (`side` from [`slot_side`]), rows
+/// along +z: the tile's lattice in the lower corner (the rest zero; a square's lower corner texel
+/// with extra candidates carries its list in the seam channel, [`seam_channel`]), then the header
+/// line, whose first texel is `(0, edges, heights, lists)`: the first row of the material edges,
+/// of the seams' heights and of the extra candidate lists. Godot writes the first atlas layer of
+/// the tile's run into the header's first channel before the upload.
+///
+/// `rows` is the tile's run: the seams from row 0, then the edges, the heights `(a, b, 0, 0)` and
+/// the squares' extra candidate lists, each right after the last, zero-padded to whole layers of
+/// [`ATLAS_WIDTH`] texels (empty when the tile has no rows). The buffers are resized and
+/// overwritten. `O(side^2 + rows)`.
 pub fn pack_slot(payload: &TilePayload, side: usize, texels: &mut Vec<u8>, rows: &mut Vec<u8>) {
     const TEXEL_BYTES: usize = 16;
     texels.clear();
-    texels.resize(side * side * TEXEL_BYTES, 0);
+    texels.resize(side * (side + 1) * TEXEL_BYTES, 0);
     let [width, depth] = payload.samples;
     for j in 0..depth.min(side) {
         for i in 0..width.min(side) {
@@ -236,35 +236,26 @@ pub fn pack_slot(payload: &TilePayload, side: usize, texels: &mut Vec<u8>, rows:
         let channel = seam_channel(payload.texels[point as usize][2], first);
         texels[at..at + 4].copy_from_slice(&channel.to_le_bytes());
     }
-    let seam_capacity = payload.level.seam_capacity();
-    let heights_at = seam_capacity + payload.level.edge_capacity();
-    let extras_at = slot_extras_at(payload.level);
+    let edges_at = payload.seams.len();
+    let heights_at = edges_at + payload.edges.len();
+    let extras_at = heights_at + payload.seam_heights.len();
+    let count = extras_at + payload.extras.len();
+    let header = side * side * TEXEL_BYTES;
+    put_texel(
+        &mut texels[header..header + TEXEL_BYTES],
+        [0.0, edges_at as f32, heights_at as f32, extras_at as f32],
+    );
     rows.clear();
-    rows.resize(slot_row_texels(payload.level) * TEXEL_BYTES, 0);
+    rows.resize(count.div_ceil(ATLAS_WIDTH) * ATLAS_WIDTH * TEXEL_BYTES, 0);
     let heights = payload.seam_heights.iter().map(|&[a, b]| [a, b, 0.0, 0.0]);
     let row_texels = payload
         .seams
         .iter()
         .copied()
-        .enumerate()
-        .chain(
-            payload
-                .edges
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, edge)| (seam_capacity + index, edge)),
-        )
-        .chain(heights.enumerate().map(|(index, texel)| (heights_at + index, texel)))
-        .chain(
-            payload
-                .extras
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, texel)| (extras_at + index, texel)),
-        );
-    for (index, texel) in row_texels {
+        .chain(payload.edges.iter().copied())
+        .chain(heights)
+        .chain(payload.extras.iter().copied());
+    for (index, texel) in row_texels.enumerate() {
         let at = index * TEXEL_BYTES;
         put_texel(&mut rows[at..at + TEXEL_BYTES], texel);
     }

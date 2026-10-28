@@ -22,14 +22,14 @@ instance uniform float cell_mode = 0.0;
 instance uniform ivec4 cell_patch_rect_hm = ivec4(0);
 instance uniform ivec2 cell_lattice_anchor_hm = ivec2(0);
 #ifdef TERRAIN_GRADED
-// The slot pool of the material's level (one graded material per level and patch, so a draw
-// binds two samplers: the GLES3 link of the base set plus eight failed, TERRAIN-07-D round 2):
-// texels with apron, and the rows (seams from 0, material edges from the level's seam capacity,
-// the seams' end heights after the edges), one layer per slot.
+// The page of the material's level that the patch's block uses (docs/terrain.md "Pages and the
+// row atlas"; one graded material per level and patch, so a draw binds two samplers: the GLES3
+// link of the base set plus eight failed, TERRAIN-07-D round 2): the slot layers, one per tile
+// (the texels with apron, then a header line), and the row atlas, whose layers of 256 texels
+// hold each tile's rows in a run of whole layers (the seams from 0, then the material edges, the
+// seams' end heights and the squares' extra candidate lists, at the header's offsets).
 uniform sampler2DArray graded_texels : filter_nearest, repeat_disable;
-uniform sampler2DArray graded_rows : filter_nearest, repeat_disable;
-uniform int graded_seam_capacity = 512;
-uniform int graded_edge_capacity = 256;
+uniform sampler2DArray graded_atlas : filter_nearest, repeat_disable;
 #endif
 
 const int CELL_SIDE_HM = 128;
@@ -141,8 +141,16 @@ vec4 cell_texel(ivec2 index, int slot) {
 	return texelFetch(graded_texels, ivec3(index, slot), 0);
 }
 
-vec4 cell_row(int index, int slot) {
-	return texelFetch(graded_rows, ivec3(index, 0, slot), 0);
+// The slot's header texel (residency.rs `pack_slot`), first on its last line: the first atlas
+// layer of the tile's row run (Godot writes it at the upload), then the first rows of its
+// material edges, its seams' heights and its extra candidate lists.
+ivec4 cell_header(int slot) {
+	return ivec4(texelFetch(graded_texels, ivec3(0, textureSize(graded_texels, 0).y - 1, slot), 0));
+}
+
+// Row `index` of the tile's run: 256 texels a layer (residency.rs `ATLAS_WIDTH`).
+vec4 cell_row(int index, ivec4 header) {
+	return texelFetch(graded_atlas, ivec3(index & 255, 0, header.x + (index >> 8)), 0);
 }
 
 // The seam channel (residency.rs `seam_channel`): the texel's named row (-1 none) plus 2048 times
@@ -362,29 +370,34 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 	mask.sdf = mix(mix(t[0].g, t[1].g, sx.y), mix(t[2].g, t[3].g, sx.y), sz.y);
 	mask.road_top = -1e30;
 	float spacing_m = float(min(frame.spacing.x, frame.spacing.y)) * 0.5;
+	// The rows are read through the slot's header, fetched once, where a fragment needs them.
+	ivec4 header = ivec4(0);
+	bool headed = false;
 	if (abs(mask.sdf) < 2.0 * spacing_m) {
+		header = cell_header(frame.slot);
+		headed = true;
 		CellSeamHit best = CellSeamHit(1e30, 0.0, 1e30, 1 << 30, 0.0);
 		for (int c = 0; c < 4; c++) {
 			int index = cell_seam_row(t[c].b);
 			if (index < 0) {
 				continue;
 			}
-			CellSeamHit hit = cell_segment_at(cell_row(index, frame.slot), p, index);
+			CellSeamHit hit = cell_segment_at(cell_row(index, header), p, index);
 			if (cell_nearer(hit, best)) {
 				best = hit;
 			}
 		}
 		// The square's extra candidates (T48 (a)): the seams no corner names that may be nearest
-		// in it, after the slot's seam heights: (count, row, row, row), then four rows a texel.
+		// in it, from the header's lists: (count, row, row, row), then four rows a texel.
 		int list = cell_seam_list(t[0].b);
 		if (list > 0) {
-			int at = 2 * graded_seam_capacity + graded_edge_capacity + list - 1;
-			int count = int(cell_row(at, frame.slot).x);
+			int at = header.w + list - 1;
+			int count = int(cell_row(at, header).x);
 			for (int k = 1; k <= count; k++) {
-				vec4 rows = cell_row(at + k / 4, frame.slot);
+				vec4 rows = cell_row(at + k / 4, header);
 				int c = k % 4;
 				int index = int(c == 0 ? rows.x : (c == 1 ? rows.y : (c == 2 ? rows.z : rows.w)));
-				CellSeamHit hit = cell_segment_at(cell_row(index, frame.slot), p, index);
+				CellSeamHit hit = cell_segment_at(cell_row(index, header), p, index);
 				if (cell_nearer(hit, best)) {
 					best = hit;
 				}
@@ -392,7 +405,7 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 		}
 		if (best.index < (1 << 30)) {
 			mask.sdf = best.signed_distance;
-			vec4 heights = cell_row(graded_seam_capacity + graded_edge_capacity + best.index, frame.slot);
+			vec4 heights = cell_row(header.z + best.index, header);
 			mask.road_top = mix(heights.x, heights.y, best.along);
 		}
 	}
@@ -405,14 +418,18 @@ CellMask cell_mask(CellFrame frame, vec2 p) {
 		if (index < 0) {
 			continue;
 		}
-		vec4 seg = cell_row(graded_seam_capacity + index, frame.slot);
+		if (!headed) {
+			header = cell_header(frame.slot);
+			headed = true;
+		}
+		vec4 seg = cell_row(header.y + index, header);
 		CellSeamHit hit = cell_segment_at(seg, p, index);
 		if (cell_nearer(hit, edge)) {
 			edge = hit;
 		}
 	}
 	if (edge.index < (1 << 30)) {
-		vec4 seg = cell_row(graded_seam_capacity + edge.index, frame.slot);
+		vec4 seg = cell_row(header.y + edge.index, header);
 		bool inside = edge.signed_distance <= 0.0;
 		float best_d = 1e30;
 		for (int c = 0; c < 4; c++) {
