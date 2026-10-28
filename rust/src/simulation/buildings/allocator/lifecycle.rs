@@ -1098,28 +1098,29 @@ impl BuildingAllocator {
     /// [`Self::repair_road_attachments_after_topology_edit`] with the same visits, in the same
     /// order and with the same results, but only for the buildings whose visit can act: a
     /// parallel read-only pass skips those already on a plausible frontage of their own or of
-    /// their parcel. Returns the visited buildings and the buildings `also` admits as they were
-    /// before the repair, ascending and distinct: one pass serves a caller that needs both.
-    /// `O(B / P)` tests plus the visits.
+    /// their parcel. Tests only `candidates` (ascending, distinct; see
+    /// [`Self::attachment_repair_candidates`]) or, with `None`, the whole city. Returns the
+    /// visited buildings and the buildings `also` admits as they were before the repair,
+    /// ascending and distinct: one pass serves a caller that needs both. `O(candidates / P)`
+    /// tests plus the visits; `O(B / P)` for the whole city.
     pub(crate) fn repair_road_attachments_that_may_act(
         &mut self,
         graph: &RegionGraph,
         zoning: &mut ZoningSystem,
+        candidates: Option<&[usize]>,
         also: impl Fn(&crate::simulation::buildings::allocator::Building) -> bool + Sync,
     ) -> Vec<usize> {
-        let allocator = &*self;
-        let zoning_view = &*zoning;
-        let tested: Vec<(usize, bool)> = crate::thread_pools::install(|| {
-            (0..allocator.buildings.len())
-                .into_par_iter()
-                .filter_map(|building_idx| {
-                    let visit =
-                        allocator.attachment_repair_may_act(building_idx, graph, zoning_view);
-                    (visit || also(&allocator.buildings[building_idx]))
-                        .then_some((building_idx, visit))
-                })
-                .collect()
-        });
+        let tested = self.attachment_repair_admissions(graph, zoning, candidates, &also);
+        // Test builds prove the local test admits what the whole city's admits (`ROAD-68-G`
+        // part 9), except in timing runs.
+        #[cfg(test)]
+        if candidates.is_some() && crate::debug::work::city_checks() {
+            assert_eq!(
+                tested,
+                self.attachment_repair_admissions(graph, zoning, None, &also),
+                "the attachment repair's candidates hold every building the whole city's test admits"
+            );
+        }
         let repaired = tested
             .iter()
             .filter(|&&(building_idx, visit)| {
@@ -1128,6 +1129,105 @@ impl BuildingAllocator {
             .count();
         self.finish_attachment_repair(repaired);
         tested.into_iter().map(|(building_idx, _)| building_idx).collect()
+    }
+
+    // The read-only pass of `repair_road_attachments_that_may_act`: each admitted building of
+    // `candidates` (the whole city with `None`) with whether its visit may act, ascending.
+    fn attachment_repair_admissions(
+        &self,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        candidates: Option<&[usize]>,
+        also: &(impl Fn(&crate::simulation::buildings::allocator::Building) -> bool + Sync),
+    ) -> Vec<(usize, bool)> {
+        let admit = |building_idx: usize| {
+            let visit = self.attachment_repair_may_act(building_idx, graph, zoning);
+            (visit || also(&self.buildings[building_idx])).then_some((building_idx, visit))
+        };
+        crate::thread_pools::install(|| match candidates {
+            Some(candidates) => candidates.par_iter().filter_map(|&idx| admit(idx)).collect(),
+            None => (0..self.buildings.len())
+                .into_par_iter()
+                .filter_map(admit)
+                .collect(),
+        })
+    }
+
+    /// The buildings an attachment repair after an edit whose lane rebuild closure is `edges`
+    /// must test (`ROAD-68-G` part 9), ascending and distinct, with `extra` (in range) among
+    /// them; `None` while the 512 m building chunk index is stale, when the repair tests the
+    /// whole city. They are the buildings indexed in the 512 m chunks within reach of a
+    /// segment of one of the edges: from the largest lot's centre to its frontage, then as far
+    /// as a repair's frontage search or a plausible attachment's tolerance reaches, then the
+    /// edge's frontage offset. The edges' geometry covers what they had before the edit (a
+    /// split keeps both halves in the closure), so a building outside fronts no changed edge
+    /// on an attachment that was plausible and finds none in its search: its visit acts as it
+    /// did after the last repair. Test builds check the admissions against the whole city's.
+    /// `O(segments + chunks + candidates log candidates)`.
+    pub(crate) fn attachment_repair_candidates(
+        &self,
+        graph: &RegionGraph,
+        edges: &std::collections::HashSet<usize>,
+        extra: impl IntoIterator<Item = usize>,
+        zone_cell_m: f32,
+    ) -> Option<Vec<usize>> {
+        if !self.buildings.is_empty() && (self.dirty_index || self.building_chunks.is_empty()) {
+            return None;
+        }
+        let largest_lot_m = self.max_lot_radius_cells * zone_cell_m;
+        // `closest_repair_frontage`'s radius for the largest lot: width / 2 + depth is at most
+        // sqrt(5) times the half-diagonal.
+        let search_m = (largest_lot_m * 5.0_f32.sqrt() + FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M)
+            .max(FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M);
+        let tolerance_m = (zone_cell_m * 2.0).max(FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M);
+        let mut chunks = Vec::new();
+        for &edge_idx in edges {
+            let Some(edge) = graph.get_edge(edge_idx) else {
+                continue;
+            };
+            // A lot's centre, its frontage, the connection the test or the search measures,
+            // the edge's centreline under it.
+            let reach_m =
+                largest_lot_m + search_m.max(tolerance_m) + edge.width * 0.5 + SIDEWALK_WIDTH;
+            let ends;
+            let points = if edge.physical_geometry.len() >= 2 {
+                edge.physical_geometry.as_slice()
+            } else {
+                ends = [graph.node(edge.start_node).pos, graph.node(edge.end_node).pos];
+                ends.as_slice()
+            };
+            for pair in points.windows(2) {
+                let min = Vector3::new(
+                    pair[0].x.min(pair[1].x) - reach_m,
+                    0.0,
+                    pair[0].z.min(pair[1].z) - reach_m,
+                );
+                let max = Vector3::new(
+                    pair[0].x.max(pair[1].x) + reach_m,
+                    0.0,
+                    pair[0].z.max(pair[1].z) + reach_m,
+                );
+                let (min_x, min_z) = RegionGraph::get_chunk_coords(min);
+                let (max_x, max_z) = RegionGraph::get_chunk_coords(max);
+                for x in min_x..=max_x {
+                    chunks.extend((min_z..=max_z).map(|z| (x, z)));
+                }
+            }
+        }
+        chunks.sort_unstable();
+        chunks.dedup();
+        let mut candidates: Vec<usize> = extra
+            .into_iter()
+            .filter(|&idx| idx < self.buildings.len())
+            .collect();
+        for chunk in &chunks {
+            if let Some(indices) = self.building_chunks.get(chunk) {
+                candidates.extend_from_slice(indices);
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        Some(candidates)
     }
 
     // One building's repair visit; true when it counts as a repair.

@@ -219,7 +219,9 @@ impl SimCore {
     // entrances are derived again. The repair's pass also finds the fronting buildings: a
     // building the repair moves is among its visits, so testing the attachment before the
     // repair finds the same set. A cache already stale before the plan (`cache_current`)
-    // rebuilds whole. One parallel `O(B / P)` test plus the local work.
+    // rebuilds whole. A parallel test of the buildings in the 512 m chunks the edit reaches
+    // plus the local work: `O(local)`, independent of the city's size, except while the
+    // building chunk index is stale, when the test is the whole city's `O(B / P)`.
     pub(super) fn repair_commit_entrances(
         &mut self,
         dirty: &HashSet<usize>,
@@ -231,9 +233,20 @@ impl SimCore {
                 &self.region_graph,
                 dirty,
             );
+        // The repair tests the buildings the edit can reach (`ROAD-68-G` part 9).
+        let parcels = &self.zoning.parcels;
+        let candidates = self.allocator.attachment_repair_candidates(
+            &self.region_graph,
+            &closure,
+            lots.reattached
+                .iter()
+                .filter_map(|&parcel| parcels.get(parcel)?.occupied_building()),
+            self.config.zone_cell_m,
+        );
         let mut changed = self.allocator.repair_road_attachments_that_may_act(
             &self.region_graph,
             &mut self.zoning,
+            candidates.as_deref(),
             |building| closure.contains(&building.edge_idx),
         );
         let lanes = &self.transit_network.lane_system;

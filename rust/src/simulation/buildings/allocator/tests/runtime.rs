@@ -373,6 +373,77 @@ fn repair_road_attachments_reprojects_stale_parcel_attachment() {
     assert!((allocator.buildings[0].frontage_t - frontage_t).abs() <= 0.001);
 }
 
+// Two 100 m roads 4 km apart, each with a building `attached` to the given road (0 or 1).
+fn two_distant_roads(attached: [usize; 2]) -> (RegionGraph, ZoningSystem, BuildingAllocator) {
+    use godot::prelude::Vector3;
+
+    let mut network = TransitNetwork::new();
+    let mut graph = RegionGraph::new();
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut allocator = BuildingAllocator::new();
+    let mut edges = Vec::new();
+    for x in [0.0, 4096.0] {
+        network.add_road(
+            &mut graph,
+            vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
+            1,
+            1,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        edges.push(graph.edge_count() - 1);
+    }
+    for (idx, x) in [50.0, 4146.0].into_iter().enumerate() {
+        let mut building =
+            indexed_test_building("test:repair".to_owned(), ZoneType::Residential, idx as i32);
+        building.center_x = x;
+        building.center_y = -20.0;
+        building.parcel_id = 0;
+        building.edge_idx = edges[attached[idx]];
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_zone_index();
+    (graph, zoning, allocator)
+}
+
+// The commit's attachment repair tests the buildings in the chunks its closure reaches, and the
+// whole city while the chunk index is stale (`ROAD-68-G` part 9).
+#[test]
+fn attachment_repair_candidates_follow_the_edited_edges() {
+    let (graph, zoning, mut allocator) = two_distant_roads([0, 1]);
+    let cell_m = zoning.config.zone_cell_m;
+    let closure = std::collections::HashSet::from([0]);
+    assert_eq!(
+        allocator.attachment_repair_candidates(&graph, &closure, std::iter::empty(), cell_m),
+        Some(vec![0])
+    );
+    assert_eq!(
+        allocator.attachment_repair_candidates(&graph, &closure, [1, 7], cell_m),
+        Some(vec![0, 1])
+    );
+    allocator.dirty_index = true;
+    assert_eq!(
+        allocator.attachment_repair_candidates(&graph, &closure, std::iter::empty(), cell_m),
+        None
+    );
+}
+
+// A building attached to an edited edge far from it is outside the candidates; test builds
+// catch it against the whole city's test.
+#[test]
+#[should_panic(expected = "the attachment repair's candidates hold every building")]
+fn attachment_repair_candidates_are_checked_against_the_whole_city() {
+    let (graph, mut zoning, mut allocator) = two_distant_roads([0, 0]);
+    let closure = std::collections::HashSet::from([0]);
+    let candidates = allocator
+        .attachment_repair_candidates(&graph, &closure, std::iter::empty(), zoning.config.zone_cell_m)
+        .unwrap();
+    allocator.repair_road_attachments_that_may_act(&graph, &mut zoning, Some(&candidates), |b| {
+        closure.contains(&b.edge_idx)
+    });
+}
+
 #[test]
 fn test_allocator_tick_does_not_place_founding_buildings() {
     use crate::simulation::network::TransitNetwork;
