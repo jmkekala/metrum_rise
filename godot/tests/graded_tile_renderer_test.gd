@@ -237,6 +237,9 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 				continue
 			_expect(graded._move_block(code, block, Vector2i(int(page["slots"]) * 2, int(page["layers"]))), "level %d block %s starts its move" % [code, block])
 			moving[Vector3i(code, block.x, block.y)] = int(graded._block_target[code][block])
+			# The new page hands out other slot numbers than the old (its slot 0 held back), so an
+			# instance left naming its old slot shows.
+			(graded._pages[graded._block_target[code][block]]["free"] as Array).pop_back()
 	_expect(not moving.is_empty(), "some block holds tiles to move")
 	_expect(await _settle(graded, camera, resident), "the moved blocks settle")
 	_expect(int(graded.counters["page_moves"]) - moves_before == moving.size(), "every block moved once: %d of %d" % [int(graded.counters["page_moves"]) - moves_before, moving.size()])
@@ -248,6 +251,10 @@ func _check_page_growth(graded: GradedTiles, camera: Vector3, resident: Dictiona
 	for key: Vector2i in resident.keys():
 		_check_cells(graded, key, resident)
 	_expect(_partial == 0 and _violations == 0, "no frame of the moves draws a partial set (%d) or a PlaneMesh over listed tiles (%d)" % [_partial, _violations])
+	# The slots held back go back to their pages.
+	for page_id: int in moving.values():
+		if graded._pages.has(page_id):
+			(graded._pages[page_id]["free"] as Array).append(0)
 
 # A run from no residency to settled exercised T53 (a)'s window and kept its rule in every frame.
 func _expect_streamed(label: String) -> void:
@@ -613,6 +620,16 @@ func _check_cells(graded: GradedTiles, key: Vector2i, resident: Dictionary) -> v
 	# wrote stands for it.
 	var counts: Array[int] = cells["counts"]
 	var shown := bool(cells["shown"])
+	# Its graded materials bind the pages its block uses (docs/terrain.md "Pages and the row atlas").
+	for index in GradedTiles.CELL_MESHES:
+		if index == GradedTiles.CELL_BASE:
+			continue
+		var code := index - GradedTiles.CELL_BEHIND if index >= GradedTiles.CELL_BEHIND else index
+		var page: Dictionary = graded._pages.get(graded._patch_page(key, code), {})
+		var material: ShaderMaterial = cells["materials"][index]
+		_expect(material.get_shader_parameter("graded_texels") == page.get("texels", null)
+			and material.get_shader_parameter("graded_atlas") == page.get("atlas", null),
+			"patch %s binds its block's level %d page" % [key, code])
 	_expect(shown == (GradedTiles._graded_cells(counts) > 0), "patch %s: a set draws while a tile of it shows graded" % key)
 	for index in nodes.size():
 		_expect((nodes[index] as GeometryInstance3D).material_override != null if shown else (nodes[index] as GeometryInstance3D).material_override == null,
