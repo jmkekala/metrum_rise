@@ -141,6 +141,22 @@ func run(bench: Node) -> void:
 			str(per_level.call("pages")), str(per_level.call("slots")), str(per_level.call("free")), str(per_level.call("layers")),
 			str(per_level.call("free_layers")), int(pools["pool_bytes"]), int(pools["layer_limit"]), int(pools["block_patches"]),
 			int(pools["pages_created"]), int(pools["page_moves"])])
+	# The road chunks as built (road surfaces have no level of detail): chunks, surfaces (one draw
+	# each where in view) and triangles, what a whole-map view would draw (terrain.md T55).
+	var road_tool: Node = main.get_node_or_null("RoadTool")
+	if road_tool != null:
+		var chunks: Dictionary = road_tool.get("_road_chunk_instances")
+		var surfaces := 0
+		var triangles := 0
+		for instance: Variant in chunks.values():
+			var mesh: Mesh = (instance as MeshInstance3D).mesh if instance is MeshInstance3D else null
+			if mesh == null:
+				continue
+			for surface in mesh.get_surface_count():
+				surfaces += 1
+				var indices: int = mesh.surface_get_array_index_len(surface)
+				triangles += (indices if indices > 0 else int(mesh.surface_get_array_len(surface))) / 3
+		print("[IDLE_BENCH] ROADS chunks=%d surfaces=%d triangles=%d" % [chunks.size(), surfaces, triangles])
 	var load_wait: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 	_report.phases.append({"phase": "world_load", "load_call_ms": load_call_ms,
 		"settle_ms": load_wait.get("elapsed_ms", 0.0), "total_ms": bench._elapsed_ms(load_start_us)})

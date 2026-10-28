@@ -528,7 +528,7 @@ func _first_page(code: int, block: Vector2i) -> int:
 	var page_id := _new_page(code, block, size.x, size.y)
 	if page_id >= 0:
 		_block_page[code][block] = page_id
-		_bind_block(code, block)
+		_bind_block(code, block, false)
 	return page_id
 
 # The first of the page's free atlas runs at least `count` layers long (-1: none). O(runs).
@@ -748,7 +748,7 @@ func _page_emptied(code: int, block: Vector2i, page_id: int) -> void:
 		return
 	_block_page[code].erase(block)
 	_release_page(page_id)
-	_bind_block(code, block)
+	_bind_block(code, block, false)
 
 # Frees every copy of `entry` (installed or preview tile `tile`).
 func _free_copies(tile: Vector2i, entry: Dictionary, is_preview: bool) -> void:
@@ -824,7 +824,9 @@ func _advance_growth() -> void:
 		var complete := true
 		if not bound.is_empty():
 			for tile: Vector2i in bound["tiles"]:
-				if not (installed[tile]["copies"] as Dictionary).has(target):
+				# A tile refused or exhausted at its level since (an error, drawn as its base cell)
+				# is not waited for: it loses this block's copy with the old page.
+				if not (installed[tile]["copies"] as Dictionary).has(target) and not _refused_at_level(tile):
 					complete = false
 					break
 		if complete:
@@ -838,7 +840,14 @@ func _switch_block(code: int, block: Vector2i) -> void:
 	var target := int(_block_target[code][block])
 	var old_id := int(_block_page[code].get(block, -1))
 	_block_target[code].erase(block)
-	_block_page[code][block] = target
+	var moved: Dictionary = _pages[target]
+	if (moved["tiles"] as Dictionary).is_empty() and (moved["previews"] as Dictionary).is_empty():
+		# Every tile left the block meanwhile: neither page holds a copy it draws.
+		_release_page(target)
+		target = -1
+		_block_page[code].erase(block)
+	else:
+		_block_page[code][block] = target
 	if old_id >= 0:
 		var old: Dictionary = _pages[old_id]
 		for tile: Vector2i in (old["tiles"] as Dictionary).keys():
@@ -848,7 +857,7 @@ func _switch_block(code: int, block: Vector2i) -> void:
 		(old["tiles"] as Dictionary).clear()
 		(old["previews"] as Dictionary).clear()
 		_release_page(old_id)
-	_bind_block(code, block)
+	_bind_block(code, block, true)
 	_end_waits(code, block)
 	counters["page_moves"] += 1
 
@@ -858,12 +867,13 @@ func _end_waits(code: int, block: Vector2i) -> void:
 		_wanted[tile] = true
 	_block_waiting[code].erase(block)
 
-# Block `block`'s sets bind its page at level `code` (_bind_page), each of their tiles' instances
-# rewritten (their slots are the page's).
-func _bind_block(code: int, block: Vector2i) -> void:
+# Block `block`'s sets bind its page at level `code` (_bind_page); with `rewrite` (a move: the
+# tiles' slots are the new page's) each of their tiles' instances is rewritten. A block's first
+# page and an emptied page change no instance: no tile shows from either.
+func _bind_block(code: int, block: Vector2i, rewrite: bool) -> void:
 	for key: Vector2i in _block_sets(code, block):
 		var cells: Dictionary = patch_cells[key]
-		if _bind_page(cells, key):
+		if _bind_page(cells, key) and rewrite:
 			for tile: Vector2i in cells["tiles"]:
 				_dirty_cell_tiles[tile] = true
 			_dirty_shown[key] = true
