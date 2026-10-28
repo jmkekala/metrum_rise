@@ -151,6 +151,7 @@ func _run() -> void:
 	for code in 4:
 		_expect(int(counters["free_%d" % code]) == int(counters["slots_%d" % code]), "level %d must free its slots" % code)
 	graded.clear()
+	await _check_exhausted_pools(simulation, host, layout, world_size)
 	await _check_refusals_are_asked_once(host, simulation, layout, world_size)
 	await _check_production_renderer(host, simulation)
 	host.queue_free()
@@ -301,6 +302,48 @@ func _check_refusals_are_asked_once(host: Node3D, simulation: SimulationNode, la
 	_expect(twice, "an edit asks each refused tile once more: %s" % bridge.asked)
 	graded.clear()
 	bridge.queue_free()
+
+# An exhausted pool (T23): with one slot a level, the tiles that find no slot are recorded once,
+# not baked again every frame, and the render settles with every patch drawing (a tile without a
+# slot draws its base cell, a counted error); a freed slot asks them again (`TERRAIN-07-G` round
+# 7: the 100k city's re-asked bakes never settled and starved every farther tile).
+func _check_exhausted_pools(simulation: SimulationNode, host: Node3D, layout: Dictionary, world_size: Vector2) -> void:
+	var graded := GradedTiles.new()
+	graded.setup(simulation, CELL_M, world_size, float(layout["patch_interval_cells"]) * CELL_M, [1, 1, 1, 1])
+	var resident := _resident_patches(host, layout, world_size, 1)
+	_mark_changed(resident)
+	var camera := Vector3(0.0, 40.0, 10.0)
+	_expect(await _settle(graded, camera, resident), "the render settles with exhausted pools")
+	var counters: Dictionary = graded.get_pool_counters()
+	_expect(int(counters["exhausted"]) > 0, "tiles wait for a slot: %s" % counters)
+	_expect(graded.hole_patches() == 0 and graded.plane_violations() == 0, "every patch draws its set or its PlaneMesh")
+	var exhausted_events := int(counters["pool_exhausted"])
+	var uploads := int(counters["uploads"])
+	for frame in 30:
+		_frame(graded, camera, resident)
+		await process_frame
+	counters = graded.get_pool_counters()
+	_expect(int(counters["pool_exhausted"]) == exhausted_events and int(counters["uploads"]) == uploads,
+		"an exhausted tile is not asked again while no slot frees: %s" % counters)
+	# An installed tile of a level with waiting tiles leaves (as an eviction does): its freed slot
+	# asks them again.
+	var freed := Vector2i.ZERO
+	var code := -1
+	for tile: Vector2i in graded.installed.keys():
+		for entry: Array in graded._exhausted.values():
+			if int(entry[0]) == int(graded.installed[tile]["level"]):
+				freed = tile
+				code = int(entry[0])
+	_expect(code >= 0, "a level holds an installed tile and waiting ones")
+	if code >= 0:
+		graded._undesire(freed)
+		var asked := true
+		for tile: Vector2i in graded._exhausted.keys():
+			asked = asked and int(graded._exhausted[tile][0]) != code
+		_expect(asked, "a freed slot asks its level's waiting tiles again")
+	graded.clear()
+	for key: Vector2i in resident.keys():
+		(resident[key]["node"] as Node).queue_free()
 
 # The production renderer (terrain.gd, graded tiles on, as the game runs) over the same roads:
 # every patch it makes resident installs its plain payload, the road's patches included (Rust

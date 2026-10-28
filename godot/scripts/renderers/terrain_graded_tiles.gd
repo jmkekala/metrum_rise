@@ -102,6 +102,13 @@ var patch_lists_requested: Dictionary = {}
 # is counted and logged once instead of being re-asked every frame (round 5's populated save).
 var refused: Dictionary = {}
 var patch_lists_refused: Dictionary = {}
+# Tiles whose level's pool had no free slot (an exhausted pool, the typed error the pool sizes are
+# meant to rule out, T23): tile key -> [level code, request key, token]. Not asked again at that
+# level and token until a slot of the level frees (_free_slot); counted and logged once, drawn as
+# a refused tile is (its base cell) instead of baked again every frame (`TERRAIN-07-G` round 7:
+# the 100k city's saved pose wants more `GL2` tiles than the pool's 2,048 slots, and the re-asked
+# bakes starved every farther tile).
+var _exhausted: Dictionary = {}
 # Patch key -> {root: Node3D (the set's nodes), nodes: Array[MultiMeshInstance3D],
 # materials: Array[ShaderMaterial] (GL0-GL3), watched: Array}.
 var patch_cells: Dictionary = {}
@@ -412,6 +419,7 @@ func clear() -> void:
 	patch_lists_requested.clear()
 	refused.clear()
 	patch_lists_refused.clear()
+	_exhausted.clear()
 	_dirty_walls.clear()
 	_dirty_cell_tiles.clear()
 	_patch_steps.clear()
@@ -876,11 +884,8 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	else:
 		var free: Array[int] = pool["free"]
 		if free.is_empty():
-			# The pool sizes make this impossible within the distance rules; counted, the tile
-			# stays as it was.
-			counters["pool_exhausted"] += 1
-			_wanted[key] = true
-			MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(key)])
+			# The tile stays as it was, recorded (_exhausted) until a slot of the level frees.
+			_exhaust(key, code, "%d,%d,%d,%d" % [key.x, key.y, code, step], token)
 			return
 		slot = free.pop_back()
 	_write_slot(code, slot, tile)
@@ -1022,9 +1027,30 @@ func _dirty_tile(tile: Vector2i, serial: int) -> void:
 		_wanted[tile] = true
 
 func _free_slot(entry: Dictionary) -> void:
-	var pool: Dictionary = pools[int(entry["level"])]
+	var code := int(entry["level"])
+	var pool: Dictionary = pools[code]
 	var free: Array[int] = pool["free"]
 	free.append(int(entry["slot"]))
+	# A freed slot: the tiles that found the level's pool exhausted are asked again, closest first
+	# (_request_tiles); those that still find none are recorded again. O(exhausted tiles), none
+	# while the pools suffice.
+	if _exhausted.is_empty():
+		return
+	for tile: Vector2i in _exhausted.keys():
+		if int(_exhausted[tile][0]) == code:
+			_exhausted.erase(tile)
+			_wanted[tile] = true
+
+# Records that `tile` found level `code`'s pool exhausted at `request_key` and `token`: counted,
+# logged, not asked again until a slot of the level frees, and its patches' sets draw without it
+# (_draw_state). O(1).
+func _exhaust(tile: Vector2i, code: int, request_key: String, token: int) -> void:
+	_wanted.erase(tile)
+	_exhausted[tile] = [code, request_key, token]
+	counters["pool_exhausted"] += 1
+	MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(tile)])
+	for patch_key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
+		_dirty_shown[patch_key] = true
 
 # The patch keys whose rectangle meets `rect`, from the patch grid. O(patches met).
 func _patches_meeting(rect: Rect2) -> Array[Vector2i]:
@@ -1170,6 +1196,7 @@ func _undesire(tile: Vector2i) -> void:
 			_walls_changed(tile)
 	_edit_batch.erase(tile)
 	_edit_staged.erase(tile)
+	_exhausted.erase(tile)
 	for level: Vector2i in LEVEL_STEPS:
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 		requested.erase(request_key)
@@ -1311,6 +1338,16 @@ func _request_tiles() -> void:
 		var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
 		if int(requested.get(request_key, -1)) == token or int(refused.get(request_key, -1)) == token:
 			_wanted.erase(tile)
+			continue
+		var exhausted: Array = _exhausted.get(tile, [])
+		if not exhausted.is_empty() and String(exhausted[1]) == request_key and int(exhausted[2]) == token:
+			_wanted.erase(tile)
+			continue
+		_exhausted.erase(tile)
+		# A new level needs a free slot (a rebake at the installed level rewrites its own).
+		var same_level := not current.is_empty() and int(current["level"]) == level.x
+		if not same_level and (pools[level.x]["free"] as Array).is_empty():
+			_exhaust(tile, level.x, request_key, token)
 			continue
 		wanted.append([_tile_distance(tile), tile, level, token, request_key])
 	if wanted.is_empty():
@@ -1655,7 +1692,9 @@ func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
 # What resident patch `key` draws (T53 (a), decided by the user, 2026-10-28): its PlaneMesh only
 # while its list is known to name no tile and no preview tile lies in it; otherwise its set once
 # the set is built and shows every tile its list names, and nothing until then, so no frame shows
-# the base ground under a graded road or a set with listed tiles missing. A patch whose list has
+# the base ground under a graded road or a set with listed tiles missing. A listed tile that cannot
+# show (refused by contract, or its level's pool exhausted: counted, logged errors) draws its base
+# cell, and a patch none of whose listed tiles can show draws its PlaneMesh. A patch whose list has
 # not arrived draws nothing (the residency margin keeps such patches out of the view). A set that
 # drew once in the patch's residency (`complete`) keeps drawing while its list is refreshed: an
 # edit installs its own tiles in its batch's frame, and a tile the new list adds that the edit did
@@ -1672,23 +1711,30 @@ func _draw_state(key: Vector2i, patch: Dictionary, cells: Dictionary) -> int:
 	var refreshing := not list.is_empty() and int(list["token"]) != int(patch["generation"])
 	if tiles.is_empty() and not (refreshing and graded) and not _previews_in(patch["rect"]):
 		return DRAW_PLANE
-	if not graded:
+	if not built:
 		return DRAW_NONE
-	if bool(cells["complete"]):
+	if graded and bool(cells["complete"]):
 		return DRAW_SET
 	for tile: Vector2i in tiles:
 		if _shown(tile).is_empty() and not _refused_at_level(tile):
 			return DRAW_NONE
-	return DRAW_SET
+	# Every listed tile shows, or none can (refused, or its pool exhausted: errors, drawn as the
+	# base their cells would draw).
+	return DRAW_SET if graded else DRAW_PLANE
 
-# Whether Rust refused `tile` at its desired level and token by contract (T7): it never shows
-# there, and its patch's set draws without it (a base cell, the refusal counted and logged).
+# Whether `tile` cannot show at its desired level and token: Rust refused it by contract (T7) or
+# its level's pool is exhausted (T23). Its patch's set draws without it (a base cell; both are
+# counted and logged errors).
 func _refused_at_level(tile: Vector2i) -> bool:
 	var want: Dictionary = _desired.get(tile, {})
 	if want.is_empty():
 		return false
 	var level: Vector2i = want["level"]
-	return int(refused.get("%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y], -1)) == int(want["token"])
+	var request_key := "%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y]
+	var exhausted: Array = _exhausted.get(tile, [])
+	if not exhausted.is_empty() and String(exhausted[1]) == request_key and int(exhausted[2]) == int(want["token"]):
+		return true
+	return int(refused.get(request_key, -1)) == int(want["token"])
 
 # Patch `key` draws what _draw_state says: its set shown (its meshes and instance uniforms set, its
 # materials bound and synced where its watched parameters moved) or hidden, waiting kept current
@@ -1829,8 +1875,9 @@ func has_pending_work() -> bool:
 	return false
 
 ## Resident patches drawing their PlaneMesh where T53 (a) forbids it: their list has not arrived
-## or names a tile, or a preview tile meets them. Read from the patch nodes, for tests, which
-## check it in every frame: always 0. O(resident patches + preview tiles).
+## or names a tile that can show (not refused, its pool not exhausted), or a preview tile meets
+## them. Read from the patch nodes, for tests, which check it in every frame: always 0.
+## O(resident patches' lists + preview tiles).
 func plane_violations() -> int:
 	var violations := 0
 	for key: Vector2i in _resident.keys():
@@ -1839,8 +1886,10 @@ func plane_violations() -> int:
 		if node == null or is_equal_approx(node.visibility_range_end, HIDDEN_RANGE_M):
 			continue
 		var list: Dictionary = patch_lists.get(key, {})
-		var unknown := list.is_empty() and not patch_lists_refused.has(key)
-		if unknown or not (list.get("tiles", []) as Array).is_empty() or _previews_in(_resident[key]["rect"]):
+		var drawable := list.is_empty() and not patch_lists_refused.has(key)
+		for tile: Vector2i in list.get("tiles", []):
+			drawable = drawable or not _refused_at_level(tile)
+		if drawable or _previews_in(_resident[key]["rect"]):
 			violations += 1
 	return violations
 
@@ -2109,4 +2158,13 @@ func get_pool_counters() -> Dictionary:
 	out["cell_sets_free"] = _cells_pool.size()
 	out["refused"] = refused.size() + patch_lists_refused.size()
 	out["desired"] = _desired.size()
+	# Tiles waiting for a slot of their level's exhausted pool (T23), and the desired tiles per
+	# wanted level code (the pools' demand).
+	out["exhausted"] = _exhausted.size()
+	var demand := [0, 0, 0, 0]
+	for want: Dictionary in _desired.values():
+		var level: Vector2i = want["level"]
+		if level.x >= 0:
+			demand[level.x] += 1
+	out["desired_by_level"] = demand
 	return out
