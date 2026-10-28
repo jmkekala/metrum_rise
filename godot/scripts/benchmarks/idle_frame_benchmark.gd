@@ -60,6 +60,7 @@ var _sun: DirectionalLight3D
 var _sun_angular_distance := 0.0
 var _sun_blend_splits := false
 var _vegetation: Node
+var _grass: Node
 var _water: Node3D
 var _terrain: Node3D
 var _lighting: Node
@@ -72,6 +73,7 @@ func run(bench: Node) -> void:
 	_sun_angular_distance = _sun.light_angular_distance
 	_sun_blend_splits = _sun.directional_shadow_blend_splits
 	_vegetation = main.get_node("Vegetation")
+	_grass = main.get_node("Grass")
 	_water = main.get_node("Water")
 	_terrain = main.get_node("Terrain")
 	_lighting = main.get_node("SceneLighting")
@@ -166,9 +168,11 @@ func run(bench: Node) -> void:
 				return
 			for i in range(warmup_frames):
 				await bench.get_tree().process_frame
+			var activity_before := _activity_counters()
 			var sample := await _capture(bench, viewport_rid, capture_frames)
+			var activity_after := _activity_counters()
 			sample.merge({"pose": pose.name, "variant": variant, "settle_ms": settle.elapsed_ms,
-				"cell_builds": builds})
+				"cell_builds": builds, "graded_activity": _counter_delta(activity_before, activity_after)})
 			# Optional visual baseline: the last captured frame, for before/after image diffs.
 			var screenshot_dir := OS.get_environment("METRUM_IDLE_BENCH_SCREENSHOT_DIR")
 			if not screenshot_dir.is_empty():
@@ -258,8 +262,26 @@ func _capture(bench: Node, viewport_rid: RID, frames: int, step := Callable()) -
 		"render_cpu_ms": _stats(render_cpu_ms), "render_gpu_ms": _stats(render_gpu_ms),
 		"slow_frames": slow_frames, "jitter_ms": _stats(jitter_ms),
 		"frame_ms_series": frame_ms if step.is_valid() else PackedFloat64Array(),
+		"render_gpu_ms_series": render_gpu_ms if OS.get_environment("METRUM_IDLE_BENCH_RECORD_GPU_SERIES") == "1" else PackedFloat64Array(),
 		"draw_calls": draw_calls / frames, "objects": objects / frames, "primitives": primitives / frames,
 	}
+
+func _activity_counters() -> Dictionary:
+	var mask_renders: Variant = _grass.get("mask_renders")
+	var out := {"uploads": 0, "same_level_uploads": 0, "mask_revision_bumps": 0,
+		"grass_mask_renders": int(mask_renders) if mask_renders != null else 0}
+	var graded: Variant = _terrain.get("graded_tiles")
+	if graded != null:
+		var pools: Dictionary = graded.get_pool_counters()
+		for key: String in ["uploads", "same_level_uploads", "mask_revision_bumps"]:
+			out[key] = int(pools.get(key, 0))
+	return out
+
+static func _counter_delta(before: Dictionary, after: Dictionary) -> Dictionary:
+	var out := {}
+	for key: String in before.keys():
+		out[key] = int(after[key]) - int(before[key])
+	return out
 
 func _apply_variant(variant: String) -> void:
 	var minimal := variant == "minimal"

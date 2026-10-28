@@ -170,6 +170,10 @@ var counters := {
 	"materials_created": 0,
 	"multimeshes_created": 0,
 	"uploads": 0,
+	# Uploads that rewrote the tile's existing pool slot at the same level.
+	"same_level_uploads": 0,
+	# Resident patch mask revisions advanced after their graded cell payload changed.
+	"mask_revision_bumps": 0,
 	# Texel and row bytes written into the pools' layers.
 	"upload_bytes": 0,
 	# Polled results (edits, lists, failures, tiles) a frame left to the next one, its budget
@@ -794,10 +798,12 @@ func _upload(key: Vector2i, tile: Dictionary, resident_patches: Dictionary) -> v
 	var token := int(tile["token"])
 	var pool: Dictionary = pools[code]
 	var current: Dictionary = installed.get(key, {})
+	var same_level := not current.is_empty() and int(current["level"]) == code
 	var slot := -1
-	if not current.is_empty() and int(current["level"]) == code:
+	if same_level:
 		# The same pool: the slot is rewritten in place, before this frame draws.
 		slot = int(current["slot"])
+		counters["same_level_uploads"] += 1
 	else:
 		var free: Array[int] = pool["free"]
 		if free.is_empty():
@@ -1338,6 +1344,7 @@ func _mask_changed(tile: Vector2i, resident_patches: Dictionary) -> void:
 	for key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
 		if patch_cells.has(key) and resident_patches.has(key):
 			_cell_mask_revision += 1
+			counters["mask_revision_bumps"] += 1
 			patch_cells[key]["mask_revision"] = _cell_mask_revision
 
 # One tile's instance in a patch's cells (T26): its custom data rewritten in place while its
@@ -1424,6 +1431,7 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 		patch_cells[key] = cells
 	_park(cells, patch["node"])
 	_cell_mask_revision += 1
+	counters["mask_revision_bumps"] += 1
 	cells["mask_revision"] = _cell_mask_revision
 	cells["rect"] = patch["rect"]
 	var step := int(patch["step"])

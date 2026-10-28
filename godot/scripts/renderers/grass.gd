@@ -52,6 +52,9 @@ var _graded_mask_cells: Array[Array] = []
 var _graded_mask_revisions: Array[int] = []
 var _bindings: Array[Dictionary] = []
 var _keys: Array[Vector2i] = []
+# Private mask renders scheduled since setup. The renderer and idle-frame regression read this
+# monotonic counter; steady frames only compare revisions and do not advance it.
+var mask_renders := 0
 
 func _ready() -> void:
 	if not GameSettings.GRASS_ENABLED:
@@ -159,7 +162,7 @@ func _process(_delta: float) -> void:
 			var mask_camera := _masks[slot].get_node("Camera") as Camera3D
 			mask_camera.position = Vector3(source.position.x, 10.0, source.position.z)
 			mask_camera.size = maxf(patch_size.x, patch_size.y)
-			_masks[slot].render_target_update_mode = SubViewport.UPDATE_ONCE
+			_render_mask_once(slot)
 		var mask_size := (_masks[slot].get_node("Camera") as Camera3D).size
 		var mask_bounds := Vector4(source.position.x - mask_size * 0.5,
 			source.position.z - mask_size * 0.5, mask_size, mask_size)
@@ -252,16 +255,18 @@ func _sync_graded_mask(
 ) -> void:
 	var mirrors: Array = _graded_mask_cells[slot]
 	if cells.is_empty():
+		if _graded_mask_revisions[slot] < 0:
+			return
 		for mirror: MultiMeshInstance3D in mirrors:
 			mirror.visible = false
-		if _graded_mask_revisions[slot] >= 0:
-			_graded_mask_revisions[slot] = -1
-			_masks[slot].render_target_update_mode = SubViewport.UPDATE_ONCE
+		_graded_mask_revisions[slot] = -1
+		_render_mask_once(slot)
 		return
 	var revision := int(cells.get("mask_revision", 0))
-	if _graded_mask_revisions[slot] != revision:
-		_graded_mask_revisions[slot] = revision
-		_masks[slot].render_target_update_mode = SubViewport.UPDATE_ONCE
+	if _graded_mask_revisions[slot] == revision:
+		return
+	_graded_mask_revisions[slot] = revision
+	_render_mask_once(slot)
 	var rect: Rect2 = cells["rect"]
 	var rect_hm := Vector4i(
 		int(round(rect.position.x * 2.0)), int(round(rect.position.y * 2.0)),
@@ -287,6 +292,10 @@ func _sync_graded_mask(
 				&"graded_texels", &"graded_rows", &"graded_seam_capacity", &"graded_edge_capacity"
 			]:
 				material.set_shader_parameter(parameter, source_material.get_shader_parameter(parameter))
+
+func _render_mask_once(slot: int) -> void:
+	mask_renders += 1
+	_masks[slot].render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func _clump_mesh() -> ArrayMesh:
 	var vertices := PackedVector3Array()

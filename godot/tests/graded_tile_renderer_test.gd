@@ -10,6 +10,7 @@ extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
 const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
+const GrassRenderer := preload("res://scripts/renderers/grass.gd")
 const TIMEOUT_FRAMES := 900
 const WORLD_M := 1020.0
 const CELL_M := 10.0
@@ -263,7 +264,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	host.add_child(water)
 	var camera := Camera3D.new()
 	host.add_child(camera)
-	camera.position = Vector3(0.0, 120.0, 60.0)
+	camera.position = Vector3(0.0, 40.0, 60.0)
 	camera.rotation_degrees = Vector3(-60.0, 0.0, 0.0)
 	camera.current = true
 	await _acknowledge_network(simulation)
@@ -287,13 +288,32 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(int(graded.get_pool_counters()["refused"]) == 0, "no graded request is refused: %s" % graded.refused)
 	_expect(graded.installed.has(Vector2i(0, 0)), "the junction's tile installs graded")
 	_expect(graded.patch_cells.has(junction_patch) and bool(graded.patch_cells[junction_patch]["shown"]), "the junction's patch draws cells")
+	var grass := GrassRenderer.new()
+	grass.name = "Grass"
+	host.add_child(grass)
+	for frame in 3:
+		await process_frame
+	var idle_before := graded.get_pool_counters()
+	var mask_renders_before := grass.mask_renders
+	for frame in 120:
+		await process_frame
+	var idle_after := graded.get_pool_counters()
+	_expect(int(idle_after["uploads"]) == int(idle_before["uploads"]),
+		"a settled view uploads no tile over 120 frames")
+	_expect(int(idle_after["mask_revision_bumps"]) == int(idle_before["mask_revision_bumps"]),
+		"a settled view advances no mask revision over 120 frames")
+	_expect(grass.mask_renders == mask_renders_before,
+		"a settled view renders no grass mask over 120 frames")
 
 	var edge: int = simulation.get_hovered_edge(0.0, 100.0)
 	_expect(edge >= 0, "the side road has an edge at (0, 100)")
+	var edit_mask_renders_before := grass.mask_renders
 	simulation.set_edge_class(edge, 1)
 	simulation.sculpt_terrain(Vector2(0.0, 42.0), 26.0, -0.25)
 	await _acknowledge_network(simulation)
 	_expect(await _settle_production(terrain, simulation), "the bridge's terrain must settle: %s" % terrain.get_pending_render_work_counts())
+	_expect(grass.mask_renders > edit_mask_renders_before,
+		"a changed payload refreshes the grass mask")
 	var faces := 0
 	for tile: Vector2i in graded.installed.keys():
 		faces += (graded.installed[tile]["walls"] as PackedFloat32Array).size() / GradedTiles.WALL_FACE_FLOATS
@@ -306,6 +326,7 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(int(graded.counters["walls_truncated"]) == 0, "no patch runs out of wall instances")
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused after the bridge: %s" % terrain.patch_payload_refused)
 	print("graded walls: %d faces over %d installed tiles" % [faces, graded.installed.size()])
+	grass.free()
 	terrain.free()
 	camera.free()
 	water.free()
