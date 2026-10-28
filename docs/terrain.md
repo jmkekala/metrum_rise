@@ -3535,6 +3535,93 @@ payload workers (bounded snapshot under `try_lock`, bake off-lock, as terrain pa
 today) or, for the preview, synchronously on the shared pool. Eviction frees the slot and nothing
 is kept; a tile that becomes resident again is baked again.
 
+**Pages and the row atlas** ([T54](#terrain-07-open-questions) (a) and
+[T50](#terrain-07-open-questions) (b), decided by the user 2026-10-28; designed in
+`TERRAIN-07-G` round 8). A level's tiles live in pages, several per level; a page is two
+`Texture2DArray`s, its slot layers (one per tile) and its row atlas (whole layers per tile's
+rows), and every draw of a level binds the one page its patch's block uses. Godot uploads a
+texture a whole layer at a time (`update_layer`; no sub-rectangle update in either renderer), so
+nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded layer is kept.
+
+- **Layer limit `L`.** The device's array depth: `RenderingDevice.limit_get(LIMIT_MAX_TEXTURE_ARRAY_LAYERS)`
+  (2,048 on this machine's AMD driver), 256 without a `RenderingDevice` (the Compatibility
+  renderer and headless runs: what Vulkan and GLES3 both guarantee), and never above 2,048: the
+  slot reaches the shader in a half-float instance channel, exact for integers below 2,048. No
+  page dimension is a constant; each follows from `L` and the inputs below.
+- **Slot layer.** `side x (side + 1)` RGBAF texels: the lattice with apron as before (`side`
+  from `slot_side`), then one header line whose first texel is (the row run's first atlas layer,
+  the edges' first row, the heights' first row, the lists' first row). Rust packs the offsets;
+  Godot writes the run's first layer into the bytes before the upload. 277, 72.9, 20.2 and 1.15
+  KiB at `GL0`-`GL3` (a line more than before).
+- **Row atlas.** Layers of `W` = 256 RGBAF texels by one (4 KiB). A tile's rows, packed
+  compactly (the seams from 0, then the material edges, the seams' heights `(a, b, 0, 0)` and the
+  squares' extra candidate lists, each after the last), take a run of `ceil(n / 256)` whole
+  layers, none for a tile without rows; row `i` is texel `(i mod 256, first + i / 256)`. The seam
+  channel's list offset stays relative to the lists (below 8,191, unchanged), and so do the row
+  indices it and the lists name: only where the rows live moves, not the mask's rule. The seam,
+  edge and list capacities still refuse a tile that exceeds them (`T7`), but they no longer size
+  memory. The atlas holds all of a tile's rows, not only T50 (b)'s lists: paging multiplies the
+  slots, and `GL3`'s fixed seam rows (1,664 seams and their heights, 53 KiB a slot) would cost
+  about 400 MB at the 100k city's 7,489 `GL3` tiles; a list atlas beside a fixed row layer would
+  bind a third sampler (`TERRAIN-07-D` round 2: GLES3 failed to link more), and one atlas per
+  level cannot give 7,489 tiles a run each within `L` layers. `W` trades the run's rounding (half
+  a layer, 2 KiB, a tile on average; the census's mean rows are 455-620 texels, two or three
+  layers) against layers per tile (uploads, and the page's layer budget below).
+- **Blocks.** `GL0` and `GL1` have one block, the world: their distance bands hold at most about
+  16 and 45 tiles at any camera. `GL2` and `GL3` group patches in blocks of `B x B`, `B` the
+  largest with `T(B) = (ceil(B x span / 64 m) + 1)^2 <= L / 4` and at least 1, so a full block's
+  slots and its tiles' mean runs fit one page's `L` layers twice over: `B = 2` (289 tiles a block)
+  at `L = 2,048` on 510 m patches, 1 (81) at 256. A block uses one page per level, and every cell
+  set of its patches binds that page in that level's materials.
+- **Tiles held twice.** A tile meeting patches of two blocks (four at a block corner) is held in
+  each block's page: one bake, installed into every page that wants it in the same frame. A dense
+  city's blocks hold about 14% more copies than tiles at `B = 2` (`17^2` against `15.9^2` tiles a
+  block), each copy its slot layer and run. A page that starts wanting a tile another page holds
+  (a patch of its block became resident, its block took a new page) asks for the tile again: a
+  rebake at the held level and token, since nothing is kept.
+- **Page size.** A block's page is created when the block first needs a slot at the level, sized
+  for the block's listed tiles (the tiles meeting its resident patches that a resident list
+  names: what the block can need at that level at any camera while the lists stand) plus an
+  eighth and 8, rounded up to 32 and at most `T(B)`; its atlas has three layers a slot, at most
+  `L`. `GL0` and `GL1` take their bands' bound, 64 and 192 slots (the memory table), and the most
+  rows a tile can hold, 12 and 9 layers a slot, so they never fill; they are created at setup, the
+  block pages as needed. A page of a block straddling two levels' distances holds the block's
+  listed tiles at both: memory follows the lists, not the camera (the alternative, sizing by the
+  tiles wanted at the level now, migrates as the camera moves).
+- **Allocation and eviction.** A copy takes a slot from its page's free list and a run of layers,
+  first fit over the page's free runs (sorted, neighbours merged when freed). A tile installs in
+  every page its resident patches' blocks use at its level, all or none: a page that cannot place
+  it leaves the tile as it was. A same-level rewrite keeps its slot, and its run while the run is
+  long enough. Eviction frees every copy; a page left without copies is freed into a pool of free
+  pages of its level and size, which a new page takes first.
+- **Growth.** A placement that finds its page full (slots or layers: the block's lists grew, or
+  its tiles' rows average more than three layers) moves the block to a larger page: a new page
+  sized for the block's listed tiles now, and at least twice the dimension that ran out, becomes
+  the block's target; every tile the block holds at that level is asked again (a rebake: nothing
+  is kept on the CPU) and installs into the target too; the block's sets keep binding the old
+  page, whose copies stay current, until the target holds a copy of every tile the block holds
+  there; then the sets bind the target in that frame (their instances rewritten with the target's
+  slots) and the old page is freed. The tile that found the page full stays as it was until then.
+- **When memory runs out.** Pages are created and grown within a budget of graded page bytes
+  (texel and atlas layers of every page, `GRADED_PAGE_BUDGET_MB`), not a page count. A page the
+  budget refuses, or a full page already at `T(B)` slots or `L` layers (the device's limit), leaves
+  the tiles that needed it exhausted: counted (`pool_exhausted`, `exhausted`), logged once and
+  drawn by [T53](#terrain-07-open-questions) (a)'s rule (their base cells; a patch none of whose
+  listed tiles can show draws its `PlaneMesh`), and asked again when a slot of their level frees,
+  as round 7's exhausted record does.
+- **Binding and shader cost.** Two samplers a draw, as before: the page's slot layers and its
+  atlas (`graded_rows` and the capacity uniforms go). A set's level materials take its block's
+  page when the set builds and when the block's page changes; the grass mask's mirrors copy them.
+  Instance data is unchanged: the slot is the page's. A fragment that reads rows (the exact path,
+  and the material class near an edge) fetches the header once more and spends an AND, a shift and
+  an add a row fetch; the list loop's fetches are unchanged; a fragment reading no rows is
+  unchanged.
+- **Complexity.** Install `O(pages wanting the tile (at most 4) x the page's free runs)`; evict
+  `O(copies x free runs)`; a cell's lookup `O(1)` (its patch's block page, the tile's copy by
+  page); a page's creation `O(the block's tiles)` to count its listed tiles; a block's growth
+  `O(its tiles)` rebakes, spread over frames by the request budget. No city scans; no per-frame
+  allocation (one upload image per level and layer shape, free pages pooled).
+
 **Memory bounds.** The spike's 10-25 GB for a dense 20 km city came from storing every tile at
 0.5 m. Residency by level bounds GPU memory by distance, not by city size. Worst case, every tile
 within 8 km graded (rows included):
@@ -3550,7 +3637,13 @@ That is about 190 MB in all. The pools as built (`TERRAIN-07-D`, 64/192/2,048/2,
 `GL0`-`GL2` and 384 at `GL3`) hold 18.9, 17.7, 82.1 and 14.7 MB, 133 MB; with T48 (a)'s list
 capacities and `GL3`'s seam rows (`TERRAIN-07-G` round 4: rows 6,080, 4,480, 3,880 and 4,416 texels)
 23.8, 27.6, 167.3 and 146.8 MB, 366 MB, +232 MB of GPU memory ([T50](#terrain-07-open-questions)). Graded tiles exist only where roads and sites are, so real cities
-use a fraction of `GL2` and `GL3`. Rust holds the in-flight payloads (bounded by the per-frame
+use a fraction of `GL2` and `GL3`. With [pages and the row atlas](#data) (round 8) memory follows
+the resident lists instead: a copy costs its slot layer and its run, about 20.2 + 10 KiB at `GL2`
+and 1.15 + 10 KiB at `GL3`, the world pages of `GL0` and `GL1` 20.7 and 20.9 MiB. Expected at the
+100k city's saved pose (3,011 `GL2` and 7,489 `GL3` tiles, 14% more copies, block pages sized for
+their listed tiles plus an eighth): about 4,000 `GL2` and 9,500 `GL3` slots, 120 + 105 + 42 MiB,
+about 270 MiB for every wanted tile, against 366 MB for 4,096 of them before (measured in the
+round 8 record). Rust holds the in-flight payloads (bounded by the per-frame
 request budget), the preview's staging (the dirty tiles of one pose) and per-worker bake scratch
 (about 300 KB at `GL0`, reused).
 
@@ -3993,20 +4086,27 @@ km.
   and a set starting or stopping to draw rewrites the cells across its sides in the same frame
   ([T53](#terrain-07-open-questions) (a), `TERRAIN-07-G` round 7; before, a side took the
   neighbour tile's installed level even while that patch drew its `PlaneMesh`).
-- **Slot pools.** Per level, a `Texture2DArray` of RGBAF layers for the texels and one for the rows,
-  sized by the [memory table](#data), prewarmed at renderer load as patch resources are today.
-  Each graded level of a patch draws with its own material, which binds that level's two pools,
-  so a draw adds two samplers to the base set (eight failed to link in GLES3, `TERRAIN-07-D`
-  round 2).
-  Residency allocates and eviction frees. An exhausted pool is a typed error, logged and counted:
-  the tile is recorded with its level and token and asked again only when a slot of its level
-  frees (`TERRAIN-07-G` round 7; before, it was asked again every frame, and the bakes that found
-  no slot starved every farther tile). The sizes were meant to make it impossible within the
-  distance rules; the 100k city exceeds them ([T54](#terrain-07-open-questions), open).
-- **Uploads.** `Texture2DArray.update_layer` per dirty slot (as the `TERRAIN-06` mask pages are
-  written) from one pooled `Image` per level, rewritten in place. No texture, material or mesh is
-  created per edit. A tile rebaked at its installed level is rewritten into its own slot before
-  the frame draws, so its instances stay and an edit needs no free slot (`TERRAIN-07-D` round 3).
+- **Pages** ([pages and the row atlas](#data), T54 (a) and T50 (b), `TERRAIN-07-G` round 8;
+  before, one pool of fixed size per level, a `Texture2DArray` for the texels and one for fixed
+  rows, 64/192/2,048/2,048 slots). Each graded level of a patch draws with its own material,
+  which binds its block's page at that level, so a draw adds two samplers to the base set (eight
+  failed to link in GLES3, `TERRAIN-07-D` round 2). The `GL0` and `GL1` world pages are created at
+  setup, a block's `GL2` and `GL3` pages when the block first needs them. Residency allocates in
+  every page its tile's blocks use and eviction frees them; a page that cannot hold its block
+  grows by the move to a larger page described there. An exhausted page (the memory budget, or
+  the device's layer limit) is a typed error, logged and counted: the tile is recorded with its
+  level and token and asked again only when a slot of its level frees (`TERRAIN-07-G` round 7;
+  before, it was asked again every frame, and the bakes that found no slot starved every farther
+  tile). A tile shows in a patch when its block's page holds a copy: a set draws
+  ([T53](#terrain-07-open-questions) (a)) once its listed tiles show there and every installed
+  tile meeting the patch is copied there, so the two halves of a tile across a block border never
+  differ (a border tile's second copy may arrive frames after the first).
+- **Uploads.** `Texture2DArray.update_layer` per dirty slot layer and per atlas layer of its run
+  (as the `TERRAIN-06` mask pages are written), from pooled `Image`s per level, rewritten in
+  place; one result uploads into each page holding the tile. No texture, material or mesh is
+  created per edit. A tile rebaked at its installed level is rewritten into its own slots before
+  the frame draws, so its instances stay and an edit needs no free slot (`TERRAIN-07-D` round 3),
+  only a longer run when its rows outgrow it.
 - **Tokens.** A tile's token is the serial of the last edit that dirtied it while Godot held it
   (installed or in flight); a bake arriving with another token is dropped. Edits reach Godot
   through the residency poll with their dirty tiles per level (`TERRAIN-07-D` item 5).
@@ -4180,6 +4280,10 @@ km.
   over the apron, the exact mask and the material class. Both share the grass and paving includes,
   the baked world noise (`TERRAIN-04`), the patch masks (`TERRAIN-06`), the overlays, the shoreline
   sampling of the water texture and the cloud shadow in `light()`.
+  The mask and the class read a tile's rows from its page's atlas through the slot's header
+  texel (round 8): row `i` at `(i & 255, first + (i >> 8))`, the edges, heights and lists at the
+  header's offsets. `render_tests.rs` ports this addressing over the packed bytes, so
+  `the_exact_mask_equals_coverage` and the bend and cap checks run on what the shader reads.
 - **No plain cells** ([T35](#terrain-07-open-questions) (b), built in `TERRAIN-07-D` round 9,
   reverted in round 11). Drawing the tiles whose samples are none covered, named or painted with
   a variant without the mask was exact and invisible, but took 0.014 ms of the saved pose's
@@ -10234,6 +10338,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       texels of 16 bytes: 4.9 + 9.8 + 85.2 + 31.5 = 131 MB of GPU memory, less the atlases (the
       census's list texels of the resident tiles, a few MB on the reference inputs); `GL3`'s
       seam rows (1,664 capacity, 128 before T48) stay, 113 MB against 13 MB.
+    - **Round 8: designed with T54 (a)** ([pages and the row atlas](#data)). The atlas is
+      per page, not per level (one atlas cannot give 7,489 `GL3` tiles a run each within the
+      device's layer limit), and holds all of a tile's rows, not only its lists (pages multiply
+      the slots, and `GL3`'s fixed seam rows would cost about 400 MB at the 100k city; a list
+      atlas beside fixed rows would be a third sampler). Memory follows the resident lists.
     - **Round 7: (b) decided, not built yet; the plan corrected.** The user decided (b) on
       2026-10-28 (round 6's heap profile left the slot pools as the remaining increase: setup
       +214 MB, GPU +141 MB). Round 7 built T53 (a) and the catch-up bound first, in the brief's
@@ -10402,7 +10511,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       draws](#godot-tile-renderer); the measurements in the [record](#terrain-07-g-record).
 
 54. **T54. The 100k city wants more `GL2` and `GL3` slots than the pools hold (`TERRAIN-07-G`
-    round 7) — open, for the user; blocks the gate.**
+    round 7) — decided by the user, 2026-10-28 (late evening): (a), several pages per level by
+    blocks of patches, a patch's set binding the page its tiles live in, tiles along block
+    borders held twice, designed together with T50 (b).** Designed in round 8:
+    [pages and the row atlas](#data); built and measured in the round 8
+    [record](#terrain-07-g-record).
     - **Evidence** (fresh: the release game, library `f6e9e848`, the round 7 renderer, the 100k
       save at its saved pose, gamescope headless, a diagnostic print of the renderer's state
       every 60 frames, not kept; `$ARTIFACTS/road68/t07g7/memory-diag*`). The resident patches'
