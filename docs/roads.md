@@ -7923,7 +7923,9 @@ its render publication 7.0-8.9 ms.
 `tests/growth_scenario.rs` 4 passed, every Godot script passes with no `SCRIPT ERROR`; skipped
 the shader global probe (headless renderer) and the rendered vegetation tests (Forward+
 display). On `1e8bd3d3`: `cargo clippy --all-targets` reports the baseline's 59 warnings, the
-same set; the debug `cargo test --lib` 1,983 / 0 / 180 (the two new tests). `roadbed/` is
+same set; the debug `cargo test --lib` 1,983 / 0 / 180 (the two new tests); `./run.sh --test`
+the same way, after the session: exit 0, the library 1,983 / 0 / 180, `tests/growth_scenario.rs`
+4 passed, every Godot script passes with no `SCRIPT ERROR`, the same two skips. `roadbed/` is
 untouched (gate E's count, 9,617, stands). The part adds about 100 production lines (the
 candidate search 63, the split admission pass 25, the adoption's call 12) and 71 test lines.
 
