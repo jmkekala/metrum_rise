@@ -8469,7 +8469,9 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     1,836 passed, 0 failed, 176 ignored (the full debug suite), `growth_scenario` 4/0, the Godot
     suites' success lines as round 6's, the graded renderer test with its new checks 0 failures,
     no SCRIPT ERROR or parse error. Skipped as before: the Forward+ vegetation tests (a display)
-    and the headless shader global probe.
+    and the headless shader global probe. Again on the final tree (started on `2e2fb591`, its
+    Godot tests on `e7a5cb5b`'s scripts, which bound the exhausted tiles' order list): exit 0, lib
+    1,836/0/176, `growth_scenario` 4/0, the same success lines, no SCRIPT ERROR.
   - **Line counts.** Production Rust: graded unchanged, `nodes/` 55,428 -> 55,432 (the catch-up
     bound's comment). GDScript: `terrain_graded_tiles.gd` 1,960 -> 2,184 (the draw state, the
     exhausted pools' records, the readiness counters and the two test probes), `input_manager.gd`
