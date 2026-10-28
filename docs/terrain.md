@@ -3581,12 +3581,13 @@ nothing smaller than a layer is ever allocated, and no CPU copy of an uploaded l
   rebake at the held level and token, since nothing is kept.
 - **Page size.** A block's page is created when the block first needs a slot at the level and
   every resident patch of the block has its list (a tile waits for that, as its patches draw
-  nothing before their lists anyway), sized for the block's listed tiles (the tiles meeting its
-  resident patches that a resident list names: what the block can need at that level at any
-  camera while the lists stand) plus an eighth and 8, rounded up to 32 and at most `T(B)`; its
-  atlas has three layers a slot, at most `L`. (Round 8's first measurement sized a page at the
-  block's first install, before its lists were in: the 100k load moved 57 blocks to larger pages,
-  each a rebake of its tiles.) `GL0` and `GL1` take their bands' bound, 64 and 192 slots (the memory table), and the most
+  nothing before their lists anyway), and, while a world load settles, once the patch residency
+  stops growing; it is sized for the block's listed tiles (the tiles its resident patches' lists
+  name: what the block can need at that level at any camera while the lists stand, but for the
+  border tiles only a neighbour's list names) plus an eighth and 8, rounded up to 32 and at most
+  `T(B)`; its atlas has three layers a slot, at most `L`. (Round 8's first measurement sized a
+  page at the block's first install, before its lists and its patches were in: the 100k load
+  moved 44-57 blocks to larger pages, each a rebake of its tiles.) `GL0` and `GL1` take their bands' bound, 64 and 192 slots (the memory table), and the most
   rows a tile can hold, 12 and 9 layers a slot, so they never fill; they are created at setup, the
   block pages as needed. A page of a block straddling two levels' distances holds the block's
   listed tiles at both: memory follows the lists, not the camera (the alternative, sizing by the
@@ -3649,8 +3650,8 @@ the resident lists instead: a copy costs its slot layer and its run, about 20.2 
 and 1.15 + 10 KiB at `GL3`, the world pages of `GL0` and `GL1` 20.7 and 20.9 MiB. Expected at the
 100k city's saved pose (3,011 `GL2` and 7,489 `GL3` tiles, 14% more copies, block pages sized for
 their listed tiles plus an eighth): about 4,000 `GL2` and 9,500 `GL3` slots, 120 + 105 + 42 MiB,
-about 270 MiB for every wanted tile, against 366 MB for 4,096 of them before (measured in the
-round 8 record). Rust holds the in-flight payloads (bounded by the per-frame
+about 270 MiB for every wanted tile, against 366 MB for 4,096 of them before. Measured (round 8
+record): 4,875 and 11,405 slots, 391 MB of pages (the free pooled ones included); Kuopio 60 MB. Rust holds the in-flight payloads (bounded by the per-frame
 request budget), the preview's staging (the dirty tiles of one pose) and per-worker bake scratch
 (about 300 KB at `GL0`, reused).
 
@@ -8475,14 +8476,15 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-Acceptance open after round 7: T53 (a) is built (a patch draws its set or nothing, the load hands
-over on the settled renderer; no patch unready in view on any camera path) and the rendered row
-passes; the catch-up bound is re-measured (two tiles) and the populated drags' frames pass; for
-the user: on Kuopio's steepest strokes a single tile's bake alone exceeds 3.0 ms
-([T27](#terrain-07-open-questions)), Kuopio's load to ready is 0.5-0.6 s longer (its sets now
-built during the load), and the 100k city wants more `GL2` and `GL3` slots than the pools hold
-([T54](#terrain-07-open-questions), found this round: its far graded terrain never installed, in
-every earlier round too); T50 (b)'s list atlas is decided and not built yet.
+Acceptance open after round 8: T54 (a) and T50 (b) are built together (pages by blocks of
+patches with the row atlas): the 100k city installs all 10,500 wanted tiles, none exhausted,
+settled, with no patch unready in view on any camera path; the mask's rule is unchanged (its
+Rust port now reads the packed bytes) and every reference render equals round 7's. For the user:
+the 100k city's video memory is 722 MB above road's, about 560 MB of it not the pages' bytes and
+not attributed yet ([T56](#terrain-07-open-questions)); one 30k undo sample stalls (8.97 ms, the
+control too); on Kuopio's steepest strokes a single tile's bake alone exceeds 3.0 ms
+([T27](#terrain-07-open-questions)); Kuopio's load to ready is about 0.5 s longer than round 6's
+(its sets built during the load). T55 (the whole-map view) is informational.
 None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
@@ -8533,7 +8535,8 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     `GL2` 3,011 and `GL3` 7,489 desired, **0 exhausted**, settled (handed over); pages 1/1/23/48,
     slots 64/192/4,848/10,734 (free 64/192/1,439/2,368), atlas layers 1,536/2,048/14,544/32,202,
     380 MB of pages (the pooled free ones included). Kuopio: 301 tiles, 0 exhausted, pages
-    1/1/5/11, 60 MB. On the final tree: [FINAL-100K].
+    1/1/5/11, 60 MB. On `3af3e609` (`memory-final3`): the same 10,500 installed, 0 exhausted,
+    settled, pages 1/1/23/48, slots 64/192/4,875/11,405, 391 MB, 44 blocks moved during the load.
   - **Memory against road** (the same runs; road `aa20f247`'s deployed library in
     `road68T07D-wt`, fresh, KiB): 100k setup 1,547,780 against 1,350,188, settled maximum
     5,790,460 against 5,754,484, GPU 2,624,388 against 1,901,896; Kuopio 1,546,564 against
@@ -8548,14 +8551,21 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     pools, and the remaining ~460 MB not in the pages' own bytes. The driver reports video memory
     in its allocator's blocks, and a run that creates and frees pages (124 created, 57 moves)
     fragments them; a per-layer measurement read nothing finer than those blocks
-    (`t07g8/vram/`). On the final tree (no load moves): [FINAL-MEM].
+    (`t07g8/vram/`). On `3af3e609`: 100k setup 1,542,580, settled maximum 5,466,020 (288 MB
+    below road's), GPU 2,624,272; Kuopio 1,552,932, 2,228,328, GPU 1,478,156 at the end of the
+    run (its peak 1,484,864-1,742,760 between runs: fdinfo's blocks). The 100k city's GPU figure
+    is the same within 0.1 MB in all three runs whatever their moves: [T56](#terrain-07-open-questions).
+    [FINAL4-MEM]
   - **Load to ready**: 100k 53.9 s (round 7's final tree 32.9 s), Kuopio 5.1 s (6.2 s): the 100k
     city now bakes and installs its 6,404 far tiles round 7 left exhausted, and its load moved 57
-    blocks (fixed). On the final tree: [FINAL-LOAD].
+    blocks. With pages sized from the lists (`3af3e609`) still 59.6 s and 44 moves: the blocks'
+    patches became resident over the load's frames, after their pages were sized; `c95ebda2`
+    holds a load's block pages until the patch residency stops growing. [FINAL4-LOAD]
   - **Residency margin** (idle benchmark camera paths): Kuopio 0 unready patches in view on every
     path; the 100k city on `29f85d11`'s scripts up to 5 a frame on `pan_high` (1,127 frames'
     worth, 22.6 s at worst) and 3 on `pan_low`: the moves' defect above. On the final tree:
-    [FINAL-READY].
+    on `295f59ec` and `3af3e609`: **0 unready patches in the frustum on all five paths, on both
+    inputs** (Kuopio's longest wait 69-75 ms, two frames).
   - **Timing session** (C F F C, four workers, P-cores, 00:33-00:39; C road's `t07f13/bin-tip`, F
     `t07g8/bin-F`, the release test build of `ed42f3c8`, whose Rust is the tip's; cities
     prepared, 2k generated in F's first run). Reference preview, graded p50/p95 and commit:
@@ -8576,11 +8586,17 @@ compared exact with graded, and the matrices cited as gate D's) with the results
   - **Road chunks** (T55): the 100k city 197 chunks, 985 surfaces, 5,557,996 triangles; Kuopio
     26, 139, 102,331 (the idle benchmark's `ROADS` line).
   - **Gate checks.** Clippy `--all-targets` on `ed42f3c8`: 59 warnings, the baseline's set exactly.
-    Missing docs: 0. `./run.sh --test`: [FINAL-RUNSH].
+    Missing docs: 0. `./run.sh --test` (started on `3af3e609`, its Godot tests on `c95ebda2`'s
+    scripts, the Rust identical; DISPLAY and WAYLAND_DISPLAY unset): exit 0, lib 1,836 passed, 0
+    failed, 176 ignored (the full debug suite), `growth_scenario` 4/0, every Godot suite 0
+    failures, the graded renderer test and the graded cells shader test (the real shaders under
+    gamescope, the header and atlas read) among them, the success lines as round 7's; skipped as
+    before: the Forward+ vegetation tests and the headless shader global probe; no SCRIPT ERROR.
   - **Line counts.** Production Rust: `residency.rs` 304 -> 295, `graded_tiles_api.rs` 814 -> 817.
-    GDScript: `terrain_graded_tiles.gd` 2,198 -> [FINAL-LINES] (the pages: allocation, copies,
-    growth and binding, about 600 lines; a split of the page allocator into its own script is
-    named for the next round), `idle_frame_benchmark.gd` + the `GRADED` and `ROADS` lines.
+    GDScript: `terrain_graded_tiles.gd` 2,198 -> 2,878 (the pages: allocation, copies, growth
+    and binding; a split of the page allocator into its own script is named for the next round),
+    `terrain.gd` 3,308 -> 3,309, `idle_frame_benchmark.gd` 395 -> 423 (the `GRADED` and `ROADS`
+    lines), `graded_tile_renderer_test.gd` 681 -> 764.
 - **Round 7 (`TERRAIN-07-G` round 7; branch tip in the handoff).** Fresh unless marked. The
   user decided T53 (a), the catch-up bound and T50 (b) on 2026-10-28 (evening) and amended T53's
   load part (no loading screen; [`UI-08`](roadmap.md) added).
@@ -10689,6 +10705,26 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       km^2 of listed patches scaled to 400 km^2) about 43 million road triangles in about 7,600
       draws, most of them sub-pixel (a 3.5 m lane is about a fifth of a pixel at 13 km). That is
       the starting number for road level-of-detail work.
+
+56. **T56. The 100k city's video memory with every wanted tile held (`TERRAIN-07-G` round 8) —
+    open, for the user; not attributed yet.**
+    - **Evidence** (fresh, the round 8 record's memory runs, release game, round 6's method, video
+      memory from amdgpu's DRM fdinfo): with pages the 100k city holds all 10,500 wanted tiles
+      (round 7: 4,096, the rest drawn as base ground) and its video memory is 2,624 MB against
+      road's 1,902 MB (+722 MB; round 7 +138 MB), the same within 0.1 MB in three runs with 116-124
+      pages created and 44-57 blocks moved. The pages' own bytes are 387-391 MB (round 7's pools:
+      366 MB). Kuopio follows the pages: 1,485 MB against road's 1,677 MB (60 MB of pages for 301
+      tiles against road's 133 MB of pools; round 7 1,823 MB). So about 560 MB at 100k is neither
+      the pages' bytes nor in proportion to them. A probe creating arrays of the round's layer
+      shapes read no change in fdinfo at all (the driver's allocator hands them out of blocks it
+      already holds), so fdinfo cannot see per-array costs below its blocks.
+    - **Options.** (a) Attribute first: `RenderingDevice.get_memory_usage` (textures, buffers,
+      total) and Godot's texture memory counter on both sides at the same pose, then by level and
+      kind (slot layers, atlas layers, cell buffers), before any change. (b) Accept the 100k
+      city's video memory as the price of holding every wanted tile (not recommended before (a):
+      the rise is not the pages' bytes). (c) Shrink what is attributed (for example demand-sized
+      pages, or wider atlas layers if per-layer overhead shows).
+    - **Recommendation.** (a), next round; nothing relaxed meanwhile.
 
 #### Superseded `ROAD-68` questions
 

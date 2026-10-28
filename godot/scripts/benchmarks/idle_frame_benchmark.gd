@@ -141,6 +141,11 @@ func run(bench: Node) -> void:
 			str(per_level.call("pages")), str(per_level.call("slots")), str(per_level.call("free")), str(per_level.call("layers")),
 			str(per_level.call("free_layers")), int(pools["pool_bytes"]), int(pools["layer_limit"]), int(pools["block_patches"]),
 			int(pools["pages_created"]), int(pools["page_moves"])])
+	# Godot's own video memory accounting at the world's ready, by kind (T56's attribution), MiB.
+	print("[IDLE_BENCH] VIDEO_MEMORY textures=%.1f buffers=%.1f total=%.1f" % [
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED) / 1048576.0,
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED) / 1048576.0,
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576.0])
 	# The road chunks as built (road surfaces have no level of detail): chunks, surfaces (one draw
 	# each where in view) and triangles, what a whole-map view would draw (terrain.md T55).
 	var road_tool: Node = main.get_node_or_null("RoadTool")
