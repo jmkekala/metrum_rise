@@ -129,6 +129,18 @@ func run(bench: Node) -> void:
 	_report.phases.append(ready.merged({"phase": "load_to_settled"}))
 	print("[IDLE_BENCH] SETTLED t_us=%d load_to_settled_ms=%.1f frames=%d handed_over=%s" % [
 		Time.get_ticks_usec(), float(ready.ms), int(ready.frames), str(ready.handed_over)])
+	# The graded pages at the world's ready (docs/terrain.md "Pages and the row atlas"): the tiles
+	# installed and exhausted, the desired tiles per level, and per level the pages, slots and
+	# atlas layers with their free parts.
+	var graded_tiles: Variant = _terrain.get("graded_tiles")
+	if graded_tiles != null:
+		var pools: Dictionary = graded_tiles.get_pool_counters()
+		var per_level := func(prefix: String) -> Array: return [0, 1, 2, 3].map(func(code: int) -> int: return int(pools.get("%s_%d" % [prefix, code], 0)))
+		print("[IDLE_BENCH] GRADED installed=%d exhausted=%d pool_exhausted=%d desired_by_level=%s pages=%s slots=%s free=%s layers=%s free_layers=%s pool_bytes=%d layer_limit=%d block_patches=%d pages_created=%d page_moves=%d" % [
+			int(pools["installed"]), int(pools["exhausted"]), int(pools["pool_exhausted"]), str(pools["desired_by_level"]),
+			str(per_level.call("pages")), str(per_level.call("slots")), str(per_level.call("free")), str(per_level.call("layers")),
+			str(per_level.call("free_layers")), int(pools["pool_bytes"]), int(pools["layer_limit"]), int(pools["block_patches"]),
+			int(pools["pages_created"]), int(pools["page_moves"])])
 	var load_wait: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 	_report.phases.append({"phase": "world_load", "load_call_ms": load_call_ms,
 		"settle_ms": load_wait.get("elapsed_ms", 0.0), "total_ms": bench._elapsed_ms(load_start_us)})

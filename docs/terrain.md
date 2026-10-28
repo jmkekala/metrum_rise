@@ -10549,6 +10549,46 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       for memory against road. Until then the 100k city's far graded terrain is base ground,
       counted, and the gate cannot close.
 
+55. **T55. A whole-map view (`TERRAIN-07-G` round 8) — informational, no decision needed; the
+    feature is [`RENDER-29`](roadmap.md), not part of `ROAD-68` or `TERRAIN-07` (the user,
+    2026-10-28).** An analysis of what this design must allow; nothing is built.
+    - **Today.** The farthest zoom is a 1,000 m orbit with a 9 km far plane; graded terrain ends
+      at the 8 km cull distance (residency: patches within `max(8,000 m, 4 x camera height)` plus
+      margins); the default world is 20 x 20 km, 97,656 tiles of 64 m.
+    - **The view.** Framing 20 km at Godot's default 75-degree vertical field of view takes a
+      camera about 13 km above the centre. Every tile is then beyond 12 km, so the distance rule
+      puts every one at `GL3` step 8, and a tile covers about 3 pixels across at 1080p.
+    - **Tiles, pages, memory and residency at the 100k city's density.** The 100k city lists
+      10,500 tiles on 200 listed patches (52 km^2): 83% of their tiles. At that density the world
+      lists about 80,800 tiles; with `B = 2` blocks (400 of them) about 92,000 copies. A `GL3` step
+      8 copy is its slot layer (1.15 KiB) and a run of three atlas layers (the census's mean rows
+      at step 8, 9,920 B, 12 KiB): about 13.2 KiB, so 1.2 GB of pages, 1.36 GB with the pages'
+      eighth of headroom, past the 1 GiB page budget: about a quarter of the far tiles would be
+      exhausted (base ground, counted). The residency would hold the whole world: 1,600 patches
+      of 510 m, their lists and a cell set for each (the sets are already prewarmed one per grid
+      patch). The cells would draw about 10 million triangles (the step-2 `GL3` mesh's 98 per
+      cell, a tile drawn in each patch it meets) at 3 pixels a tile, and nearly every fragment
+      would take the exact path with `GL3` step 8's lists of 600-730 seams (T50): about 0.5
+      billion segment tests a frame. Not affordable as it stands.
+    - **A level beyond `GL3`.** At 3 pixels a tile the seams are sub-pixel: a far product needs no
+      rows, no lists and no exact mask (the road chunks draw over it), only the graded height
+      (pads, cuts, fills) and the material class at the patch's LOD step or coarser. The cheapest
+      form is not per tile at all: the graded delta at the patch's step folded into the patch's
+      own heightmap (an R32F texture with apron, resident already), drawn by the patch's
+      `PlaneMesh`: no cell set, no page, no atlas; about 3-11 KiB a patch, 5-17 MB for the whole
+      world. Rust would bake it from the same inputs (the grading function at the base lattice's
+      step) and an edit would dirty it as it dirties its tiles.
+    - **What this design must not rule out** (kept so by round 8): a distance beyond which a
+      listed patch draws its `PlaneMesh` with the far product (T53 (a)'s rule has one place,
+      `_draw_state`, where a third drawn state can go: today a listed patch draws its set or
+      nothing); a level whose pages hold no atlas (a page's atlas may be empty), and pages kept
+      off the far product (the page budget is for near and mid tiles); the lattice codes' spare
+      code 7 (a base step of 16); and the cell sets' prewarm per grid patch (`T25`), which a whole
+      world resident at once would otherwise multiply.
+    - **Road chunks at that zoom** (road surfaces have no level of detail): see the round 8
+      record for the 100k city's road chunk triangles and draws, the starting number for road
+      level-of-detail work.
+
 #### Superseded `ROAD-68` questions
 
 - **18** (grading envelope cap): carried into [TD5](#product-decisions); the reach is an
