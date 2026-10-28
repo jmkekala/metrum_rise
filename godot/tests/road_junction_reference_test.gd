@@ -319,19 +319,26 @@ func _production_terrain(scene: Node3D) -> Node3D:
 	return terrain
 
 # Waits until the terrain renderer has settled (no pending patch work, graded tile, list, count,
-# edit batch or cell set build), for three frames in a row at the current camera. Then every
-# patch showing a graded tile draws its cells: a patch whose set is still building draws its
-# PlaneMesh, the base ground over the graded road (`TERRAIN-07-G` round 6: this wait's own copy
-# of the signal left out the set builds, and the sloped obliques caught such patches).
+# edit batch, cell set build or patch drawing nothing), for three frames in a row at the current
+# camera. In every frame of the wait, while the residency streams the fixture in and the patches
+# change step with the camera, no patch draws its PlaneMesh where its list names a graded tile
+# (or has not arrived) and no set draws with a listed tile missing (T53 (a)); settled, no patch
+# draws nothing (`TERRAIN-07-G` round 6: the base ground over the graded road in a cut).
 func _settle_terrain(terrain, label: String) -> void:
 	var stable := 0
+	var violations := 0
+	var partial := 0
 	var deadline := Time.get_ticks_msec() + 60000
 	while stable < 3 and Time.get_ticks_msec() < deadline:
 		await process_frame
+		violations = max(violations, terrain.graded_tiles.plane_violations())
+		partial = max(partial, terrain.graded_tiles.partial_sets())
 		stable = stable + 1 if terrain.is_render_settled() else 0
 	_expect(stable >= 3, "%s: the terrain must settle" % label)
-	var waiting: int = terrain.graded_tiles.patches_awaiting_cells()
-	_expect(waiting == 0, "%s: %d patches show graded tiles through their PlaneMesh" % [label, waiting])
+	_expect(violations == 0, "%s: up to %d patches drew their PlaneMesh over listed graded tiles" % [label, violations])
+	_expect(partial == 0, "%s: up to %d sets drew with a listed tile missing" % [label, partial])
+	var holes: int = terrain.graded_tiles.hole_patches()
+	_expect(holes == 0, "%s: %d settled patches draw nothing" % [label, holes])
 
 # The spike's views of one terrain mode, then the distance renders where the fixture asks:
 # oblique, the side arm's two sidewalk edges and a corner from 2.5 m, plan_terrain (counting

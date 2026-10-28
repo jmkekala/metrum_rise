@@ -10,7 +10,14 @@
 ## The Building Inspector helper is always present in the scene and can be
 ## opened by the active selection workflow. With no tool active, a click on an agent opens the
 ## agent inspector instead, which follows the agent with the camera until Esc.
+## A world load hands the game over (camera controls, input, the simulation clock) only once the
+## terrain renderer reports is_render_settled(), the world's "ready" (docs/terrain.md "Godot tile
+## renderer", T53 (a)); until then the screen shows what the renderer draws and the graded work
+## takes the whole frame.
 extends Node
+
+## Emitted when a loaded world is handed over to the player (is_world_ready()).
+signal world_ready
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -46,6 +53,9 @@ const CAMERA_SETTLE_PROCESS_PRIORITY := -200
 
 var _current_save_path := ""
 var _simulation_speed: float = 0.0
+# False from a world load until the terrain renderer settles: no input, no camera control and no
+# clock (set_simulation_speed refuses a running speed) until then.
+var _world_ready := true
 var _selected_industry_resource_id := ""
 var _industry_deposits_overlay_forced := false
 var _industry_previous_overlay_mode := 0
@@ -151,11 +161,32 @@ func _configure_world_camera_policy() -> void:
 	camera.configure_world_camera()
 
 func _process(delta):
+	if not _world_ready:
+		_await_world_ready()
+		return
 	if _ui_captures_keyboard_input():
 		return
 	_handle_camera_controls(delta)
 
+## Whether the loaded world was handed over: false from a load until the terrain renderer settles.
+func is_world_ready() -> bool:
+	return _world_ready
+
+# The load flow's hold (T53 (a)): the world is ready once the terrain renderer has settled, every
+# resident patch drawing its PlaneMesh or its complete graded set. Checked once per frame, before
+# the renderers' frames (this node's process priority), so the frame it hands over in follows a
+# settled one. O(1).
+func _await_world_ready() -> void:
+	if terrain_node != null and not terrain_node.is_render_settled():
+		return
+	if terrain_node != null:
+		terrain_node.set_load_settling(false)
+	_world_ready = true
+	world_ready.emit()
+
 func _input(event):
+	if not _world_ready:
+		return
 	# Godot 4.7.1 dispatches every gesture twice from Input._parse_input_event_impl: once from
 	# its gesture branch and once from the generic dispatch after it. The copy arrives in the
 	# same frame with the same content, and is consumed here so no handler zooms or steps twice.
@@ -212,6 +243,8 @@ func _handle_camera_controls(delta):
 		camera.pan(pan_dir, 1.0, delta)
 
 func _unhandled_input(event):
+	if not _world_ready:
+		return
 	if _ui_captures_keyboard_input():
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -466,6 +499,12 @@ func _refresh_after_world_load():
 	if zoning_overlay: zoning_overlay.full_refresh()
 	if agents_node:
 		agents_node.update_swarm()
+	# The game is handed over once the terrain renderer settles (_await_world_ready); a scene
+	# without one has nothing to wait for.
+	_world_ready = false
+	if terrain_node != null:
+		terrain_node.set_load_settling(true)
+	_await_world_ready()
 
 func _handle_save_game():
 	_ensure_saves_dir()
@@ -519,6 +558,9 @@ func _toggle_pause():
 	set_simulation_speed(speed)
 
 func set_simulation_speed(speed: float):
+	# The clock stays stopped until the loaded world is handed over.
+	if not _world_ready and speed > 0.0:
+		return
 	if not simulation_node.set_simulation_speed(speed):
 		return
 	_simulation_speed = maxf(speed, 0.0)

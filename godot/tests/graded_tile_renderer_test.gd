@@ -6,6 +6,9 @@
 ## material, mesh or MultiMesh (the pool counters): only the installed tiles Rust selects for the
 ## commit rebake, all in one frame, each into its own slot (item 5). Then the production renderer
 ## (terrain.gd) with graded tiles on settles with every patch installed, the road's included.
+## In every frame no patch draws its PlaneMesh where its list names a graded tile or has not
+## arrived, and while patches stream in no set draws with a listed tile missing (T53 (a)); a
+## world load hands the game over only once the production renderer has settled.
 extends SceneTree
 
 const GradedTiles := preload("res://scripts/renderers/terrain_graded_tiles.gd")
@@ -19,6 +22,14 @@ var _failures := 0
 # The resident patch keys changed since the renderer's last frame (terrain.gd's): every key of a
 # rewritten or dropped resident dictionary.
 var _changed := {}
+# T53 (a), over every frame: the most patches drawing their PlaneMesh where their list names a
+# graded tile or has not arrived, the most sets drawing with a listed tile missing (checked while
+# `_check_partial`: an edit's refreshed list may name a tile its edit did not select), and the most
+# patches drawing nothing (the window the rule covers, which a streaming run must exercise).
+var _violations := 0
+var _partial := 0
+var _check_partial := true
+var _unready_seen := 0
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -50,6 +61,7 @@ func _run() -> void:
 	_mark_changed(resident)
 	var camera := Vector3(0.0, 40.0, 10.0)
 	_expect(await _settle(graded, camera, resident), "the junction's tiles must install")
+	_expect_streamed("the first residency")
 	var counters: Dictionary = graded.get_pool_counters()
 	_expect(int(counters["installed"]) > 0, "graded tiles must be installed: %s" % counters)
 	_expect(int(counters["bake_failures"]) == 0 and int(counters["refused"]) == 0, "no bake may fail: %s" % counters)
@@ -72,6 +84,7 @@ func _run() -> void:
 	# the installed ones among them rebake and install together in one frame, each into its own
 	# slot, while the patch lists refresh with the patches' new generations.
 	var before_edit: Dictionary = graded.installed.duplicate(true)
+	_check_partial = false
 	var uploads_before := int(graded.get_pool_counters()["uploads"])
 	var mask_revision_before := graded._cell_mask_revision
 	await _add_road(simulation, [Vector3(-120.0, 0.0, 70.0), Vector3(-10.0, 0.0, 70.0)])
@@ -122,6 +135,8 @@ func _run() -> void:
 
 	await _check_road_preview(graded, simulation, camera, resident)
 	await _check_moving_camera(graded, resident)
+	await _check_streaming(graded, camera, resident)
+	_expect(_violations == 0, "no frame draws a PlaneMesh where its patch's list names a graded tile: up to %d" % _violations)
 
 	# Far away every tile is evicted and every slot freed.
 	var far := _resident_patches(host, layout, world_size, 1)
@@ -171,6 +186,39 @@ func _check_moving_camera(graded: GradedTiles, resident: Dictionary) -> void:
 			_check_cells(graded, key, resident)
 	_expect(exact, "every desired tile has its distance's level in every frame")
 	_expect(levels_seen.has(0) and levels_seen.has(2), "the climb moves tiles between levels: %s" % levels_seen)
+
+# T53 (a) in a streaming run: the patches leave the residency (terrain.gd releases them) and come
+# back over the next frames, as a camera crossing them would bring them. Each draws nothing from
+# its residency until its set shows every tile its list names, never its PlaneMesh over them and
+# never a partial set; settled, every patch draws its set or its PlaneMesh.
+func _check_streaming(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
+	_check_partial = true
+	_unready_seen = 0
+	var away := {}
+	for key: Vector2i in resident.keys():
+		graded.release_patch(key, resident[key]["node"])
+		away[key] = resident[key]
+		resident.erase(key)
+		_changed[key] = true
+	_frame(graded, camera, resident)
+	await process_frame
+	for key: Vector2i in away.keys():
+		resident[key] = away[key]
+		_changed[key] = true
+		_frame(graded, camera, resident)
+		await process_frame
+	_expect(await _settle(graded, camera, resident), "the streamed patches settle")
+	_expect_streamed("the streamed patches")
+	for key: Vector2i in resident.keys():
+		var listed := not (graded.patch_lists.get(key, {}).get("tiles", []) as Array).is_empty()
+		var cells: Dictionary = graded.patch_cells.get(key, {})
+		_expect(not listed or bool(cells.get("shown", false)), "streamed patch %s draws its set" % key)
+
+# A run from no residency to settled exercised T53 (a)'s window and kept its rule in every frame.
+func _expect_streamed(label: String) -> void:
+	_expect(_unready_seen > 0, "%s: patches draw nothing until they are ready" % label)
+	_expect(_violations == 0, "%s: up to %d patches drew their PlaneMesh over listed graded tiles" % [label, _violations])
+	_expect(_partial == 0, "%s: up to %d sets drew with a listed tile missing" % [label, _partial])
 
 # Per cell mesh, the sorted custom data of its instances, with the visible counts.
 func _cell_record(cells: Dictionary) -> Array:
@@ -334,9 +382,52 @@ func _check_production_renderer(host: Node3D, simulation: SimulationNode) -> voi
 	_expect(terrain.patch_payload_refused.is_empty(), "no payload request is refused after the bridge: %s" % terrain.patch_payload_refused)
 	print("graded walls: %d faces over %d installed tiles" % [faces, graded.installed.size()])
 	grass.free()
+	await _check_load_hand_over(simulation, terrain)
 	terrain.free()
 	camera.free()
 	water.free()
+
+# T53 (a): a world load through the load flow (input_manager.gd) hands the game over only once the
+# terrain renderer has settled. Until then the clock refuses to run and the graded work takes the
+# whole frame; the frame it hands over in follows a settled one, every patch drawing.
+func _check_load_hand_over(simulation: SimulationNode, terrain) -> void:
+	var path := OS.get_temp_dir().path_join("metrum_graded_load_%d.sqlite" % OS.get_process_id())
+	_expect(simulation.save_game(path), "the fixture saves")
+	var input_manager = load("res://scripts/core/input_manager.gd").new()
+	# Only the dependencies the load flow uses, without gameplay tools.
+	input_manager.simulation_node = simulation
+	input_manager.terrain_node = terrain
+	_expect(input_manager.menu_load_game_from_path(path), "the fixture loads through the load flow")
+	_expect(not input_manager.is_world_ready(), "the load holds the game while the terrain renders")
+	_expect(terrain.graded_tiles.unbudgeted, "the graded work takes the whole frame while the load waits")
+	var handed := -1
+	var settled := false
+	var held := true
+	for frame in TIMEOUT_FRAMES:
+		await process_frame
+		if simulation.is_network_dirty():
+			simulation.acknowledge_network_render(simulation.get_network_render_generation())
+		# A clock started before the hand-over is refused.
+		input_manager.set_simulation_speed(1.0)
+		held = held and is_zero_approx(input_manager._simulation_speed)
+		input_manager.set_simulation_speed(0.0)
+		# The load flow's per-frame check (input_manager._process, before the renderers' frames).
+		input_manager._await_world_ready()
+		if input_manager.is_world_ready():
+			handed = frame
+			settled = terrain.is_render_settled()
+			break
+	_expect(handed > 0, "the load hands the game over once the terrain settles (frame %d)" % handed)
+	_expect(held, "the clock stays stopped until the hand-over")
+	_expect(settled, "the game is handed over on a settled frame")
+	_expect(terrain.graded_tiles.hole_patches() == 0 and terrain.graded_tiles.plane_violations() == 0,
+		"at the hand-over every patch draws its set or its PlaneMesh")
+	_expect(not terrain.graded_tiles.unbudgeted, "the hand-over returns the graded work to its budget")
+	input_manager.set_simulation_speed(1.0)
+	_expect(is_equal_approx(input_manager._simulation_speed, 1.0), "the clock runs after the hand-over")
+	input_manager.set_simulation_speed(0.0)
+	input_manager.free()
+	DirAccess.remove_absolute(path)
 
 # terrain.gd uploads nothing while the network generation is unacknowledged
 # (network_renderer.gd acknowledges it in the game).
@@ -405,6 +496,10 @@ func _mark_changed(resident: Dictionary) -> void:
 func _frame(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> void:
 	graded.process(camera, resident, _changed, {})
 	_changed.clear()
+	_violations = max(_violations, graded.plane_violations())
+	if _check_partial:
+		_partial = max(_partial, graded.partial_sets())
+	_unready_seen = max(_unready_seen, graded._unready.size())
 
 func _settle(graded: GradedTiles, camera: Vector3, resident: Dictionary) -> bool:
 	var stable := 0

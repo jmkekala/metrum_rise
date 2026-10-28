@@ -510,6 +510,9 @@ func _process_graded_tiles() -> void:
 	if camera == null:
 		return
 	var eye := camera.global_position
+	# The view's reach: the farthest point of the frustum (a far plane corner). An unready patch
+	# within it counts against the residency margin (T53 (a)).
+	graded_tiles.view_far_m = camera.project_position(Vector2.ZERO, camera.far).distance_to(eye)
 	eye.y -= float(simulation_node.get_world_surface_height(Vector2(eye.x, eye.z)))
 	graded_tiles.process(eye, _graded_resident, _graded_changed, _graded_materials_changed)
 	_graded_changed.clear()
@@ -589,12 +592,18 @@ func has_pending_render_work(include_background_cache: bool = true) -> bool:
 
 ## Whether the renderer has settled: no pending patch work (has_pending_render_work without the
 ## background cache) and no graded tile work (requests, lists, counts, deferred results, an edit
-## batch, cell set builds). A capture of what the player sees waits for it: until then a patch
-## may still draw its PlaneMesh where its graded tiles are installed (`TERRAIN-07-G` round 6).
-## The benchmarks keep their own waits (their load phases are measured without the graded
-## work). O(1).
+## batch, cell set builds, a resident patch drawing nothing). A capture of what the player sees
+## waits for it, and a world load hands the game over on it (input_manager.gd): until then a
+## patch whose graded cells are not ready draws nothing (T53 (a)). O(1).
 func is_render_settled() -> bool:
 	return not has_pending_render_work(false) and (graded_tiles == null or not graded_tiles.has_pending_work())
+
+## While a world load waits for is_render_settled() (the load flow holds the game), the graded
+## renderer's work takes the whole frame instead of the streaming budget's spare time; the frame
+## time does not matter then. The load flow turns it off as it hands the game over.
+func set_load_settling(settling: bool) -> void:
+	if graded_tiles != null:
+		graded_tiles.unbudgeted = settling
 
 func get_visibility_cull_far_m(camera: Camera3D) -> float:
 	if camera == null:

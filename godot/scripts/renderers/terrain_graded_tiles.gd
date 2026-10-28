@@ -125,6 +125,21 @@ var _builds: Dictionary = {}
 var _builds_urgent: Dictionary = {}
 # Patches whose set may start or stop drawing.
 var _dirty_shown: Dictionary = {}
+# What a resident patch draws (_draw_state, T53 (a)): its PlaneMesh, its set or nothing.
+const DRAW_PLANE := 0
+const DRAW_SET := 1
+const DRAW_NONE := 2
+# Patch key -> the patch node whose PlaneMesh this renderer collapsed (_set_plane).
+var _collapsed: Dictionary = {}
+# Resident patches drawing nothing (DRAW_NONE) -> Vector2i(msec, process frame) since when.
+var _unready: Dictionary = {}
+## The view's reach in metres (terrain.gd sets it each frame from its camera): an unready patch
+## within it counts in `unready_in_view` (0: none is counted).
+var view_far_m := 0.0
+## While a world load waits for the render to settle (the load flow holds the game until
+## terrain.gd's is_render_settled()), the graded work takes the whole frame, not the streaming
+## install budget's spare time.
+var unbudgeted := false
 var _uniform_names: PackedStringArray = PackedStringArray()
 # Tile key -> {level: Vector2i(code, step), token, bucket}: every tile a resident patch's list
 # names. It follows the changes: a patch entering, leaving or getting a new list adds and
@@ -217,6 +232,13 @@ var counters := {
 	# Cell sets built (_build_tiles), and the patches waiting for one.
 	"cell_builds": 0,
 	"cell_prewarm_ms": 0.0,
+	# T53 (a): the most milliseconds and frames a resident patch drew nothing before it was
+	# ready, and the unready patches within the view distance, summed over frames and the most in
+	# one frame (the residency margin's acceptance: 0 while the camera pans).
+	"ready_ms_max": 0,
+	"ready_frames_max": 0,
+	"unready_in_view": 0,
+	"unready_in_view_max": 0,
 }
 # Per-frame accumulators of the parts the edit frame reports.
 var _frame_sync_us := 0
@@ -395,6 +417,9 @@ func clear() -> void:
 	_patch_steps.clear()
 	for key in patch_cells.keys():
 		release_patch(key, null)
+	for key: Vector2i in _collapsed.keys():
+		_set_plane(key, null, true)
+	_unready.clear()
 	_builds.clear()
 	_builds_urgent.clear()
 	_dirty_shown.clear()
@@ -483,6 +508,7 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 	var cells_us := Time.get_ticks_usec()
 	var wall_patches := _dirty_walls.size()
 	_apply_wall_changes(resident_patches)
+	_count_unready_in_view(resident_patches)
 	var perf := PerfDebug.is_enabled()
 	if batch_tiles > 0 or perf:
 		var end_us := Time.get_ticks_usec()
@@ -524,6 +550,25 @@ func process(camera_position: Vector3, resident_patches: Dictionary, changed_pat
 		counters["edit_install_ms_last"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 		counters["edit_install_ms_max"] = max(float(counters["edit_install_ms_max"]), float(counters["edit_install_ms_last"]))
 
+# The residency margin's check (T53 (a)): the unready patches whose rectangle lies within the
+# view's reach of the camera (horizontally, so a patch above or below it counts too). O(unready
+# patches): none once the residency has caught up.
+func _count_unready_in_view(resident_patches: Dictionary) -> void:
+	if view_far_m <= 0.0 or _unready.is_empty():
+		return
+	var in_view := 0
+	var eye := Vector2(_camera.x, _camera.z)
+	for key: Vector2i in _unready.keys():
+		var patch: Dictionary = resident_patches.get(key, {})
+		if patch.is_empty():
+			continue
+		var rect: Rect2 = patch["rect"]
+		var gap := Vector2(max(rect.position.x - eye.x, eye.x - rect.end.x, 0.0), max(rect.position.y - eye.y, eye.y - rect.end.y, 0.0))
+		if gap.length() < view_far_m:
+			in_view += 1
+	counters["unready_in_view"] += in_view
+	counters["unready_in_view_max"] = max(int(counters["unready_in_view_max"]), in_view)
+
 # A patch-wide change rewrites the patch's cells; every other change rewrites its own tiles'
 # instances in the patches that draw them. O(changed patches' tiles + changed tiles).
 func _apply_cell_changes(resident_patches: Dictionary) -> void:
@@ -537,6 +582,12 @@ func _apply_cell_changes(resident_patches: Dictionary) -> void:
 	for key: Vector2i in _dirty_shown.keys():
 		_apply_shown(key, resident_patches)
 	_dirty_shown.clear()
+	# The cells across the sides of the sets that started or stopped drawing stitch to what those
+	# patches draw now, in this frame; rewriting them changes no patch's draw state (_draw_state
+	# reads no side code).
+	if not _dirty_cell_tiles.is_empty():
+		_update_cell_tiles(resident_patches)
+		_dirty_shown.clear()
 
 func _apply_wall_changes(resident_patches: Dictionary) -> void:
 	for key: Vector2i in _dirty_walls.keys():
@@ -742,15 +793,16 @@ func _take_list(list: Dictionary, resident_patches: Dictionary) -> void:
 	# or evict on their own.
 	if not patch_cells.has(key):
 		_builds[key] = true
-	elif previous.is_empty() != tiles.is_empty():
-		_dirty_shown[key] = true
+	# What the patch draws follows its list (_draw_state): its PlaneMesh, or its set once the set
+	# shows the listed tiles.
+	_dirty_shown[key] = true
 	patch_lists[key] = {"token": int(list["token"]), "tiles": tiles}
 	_recount(key, resident_patches)
 	# A list baked for an older generation is asked again.
 	_lists_wanted[key] = true
 
-static func _over_budget(start_us: int) -> bool:
-	return float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
+func _over_budget(start_us: int) -> bool:
+	return not unbudgeted and float(Time.get_ticks_usec() - start_us) / 1000.0 >= INSTALL_BUDGET_MS
 
 # A failed request: a transient one (busy core, unready site index) is asked again; one Rust
 # refuses by contract is recorded with its token, counted and logged once, and not asked again
@@ -765,6 +817,7 @@ func _failed(failure: Dictionary) -> void:
 			patch_lists_requested.erase(key)
 		if not retry:
 			patch_lists_refused[key] = token
+			_dirty_shown[key] = true
 		_lists_wanted[key] = true
 	else:
 		var tile := Vector2i(keys[0], keys[1])
@@ -773,9 +826,12 @@ func _failed(failure: Dictionary) -> void:
 			requested.erase(request_key)
 		if not retry:
 			refused[request_key] = token
-			# The tile stays as it was; the edit installs without it.
+			# The tile stays as it was; the edit installs without it, and its patches' sets draw
+			# without it (_draw_state).
 			_edit_batch.erase(tile)
 			_edit_staged.erase(tile)
+			for patch_key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):
+				_dirty_shown[patch_key] = true
 		_wanted[tile] = true
 	if not retry:
 		counters["bake_failures"] += 1
@@ -1024,6 +1080,8 @@ func _patch_changed(key: Vector2i, resident_patches: Dictionary) -> void:
 		_lists_wanted.erase(key)
 		return
 	_lists_wanted[key] = true
+	# From residency on, the patch draws what _draw_state says: nothing until its list arrives.
+	_dirty_shown[key] = true
 	# Every resident patch builds its set; a drawing set follows a new step in this frame (the
 	# camera moved), a hidden one is built again off the frame.
 	var cells: Dictionary = patch_cells.get(key, {})
@@ -1288,7 +1346,9 @@ func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, p
 	if side_m != lo and side_m != hi:
 		# The cell is clamped to the patch here: its side is not the tile's.
 		return own
-	# Across the patch border: the neighbour patch's cell (or PlaneMesh) at its own step.
+	# Across the patch border: what the neighbour patch draws (T53 (a)), its set's cell, else its
+	# PlaneMesh at its own step (or nothing, which no side meets). The set's flip rewrites the
+	# cells across its sides (_apply_shown).
 	var probe := (Vector2(neighbour) + Vector2(0.5, 0.5)) * TILE_M
 	if side_m == lo:
 		probe[axis] = lo - 0.5
@@ -1296,7 +1356,10 @@ func _side_code(own: int, _tile: Vector2i, neighbour: Vector2i, side_m: float, p
 		probe[axis] = hi + 0.5
 	for key in _patches_meeting(Rect2(probe, Vector2.ZERO)):
 		if resident_patches.has(key):
-			return max(own, _cell_code(neighbour, int(resident_patches[key]["step"])))
+			var step := int(resident_patches[key]["step"])
+			if bool(patch_cells.get(key, {}).get("shown", false)):
+				return max(own, _cell_code(neighbour, step))
+			return max(own, base_code(step))
 	return own
 
 # The cell MultiMesh a tile draws in: its installed level's (the behind-the-road variant's where
@@ -1465,6 +1528,7 @@ func _begin_build(key: Vector2i, patch: Dictionary) -> Dictionary:
 	cells["last"] = tiles[-1] if not tiles.is_empty() else Vector2i(-1, -1)
 	cells["built"] = 0
 	cells["synced"] = false
+	cells["complete"] = false
 	# What each MultiMesh holds, kept beside it (the per-tile updates move instances by it); a
 	# place not written yet is (-1, -1).
 	var counts: Array[int] = cells["counts"]
@@ -1579,29 +1643,74 @@ func _advance_builds(start_us: int, resident_patches: Dictionary) -> void:
 		_builds_urgent.erase(key)
 		_dirty_shown[key] = true
 
-# Patch `key`'s set draws while it is built and a tile of it shows graded (installed while the
-# patch's list is not empty, or previewed); otherwise the patch draws its PlaneMesh and the set
-# waits, kept current, hidden under the patch's node with no material bound (so a set that never
-# drew holds no instance uniform slot). O(1), the material's parameters when the set starts
-# drawing and the preview's tiles.
+# What resident patch `key` draws (T53 (a), decided by the user, 2026-10-28): its PlaneMesh only
+# while its list is known to name no tile and no preview tile lies in it; otherwise its set once
+# the set is built and shows every tile its list names, and nothing until then, so no frame shows
+# the base ground under a graded road or a set with listed tiles missing. A patch whose list has
+# not arrived draws nothing (the residency margin keeps such patches out of the view). A set that
+# drew once in the patch's residency (`complete`) keeps drawing while its list is refreshed: an
+# edit installs its own tiles in its batch's frame, and a tile the new list adds that the edit did
+# not select renders the base it rendered before. A list being refreshed (of an older generation)
+# counts the set's installed tiles with it, so a commit's tiles draw before the new list arrives.
+# O(the patch's list) while the set is not complete, else O(1), and the preview's tiles.
+func _draw_state(key: Vector2i, patch: Dictionary, cells: Dictionary) -> int:
+	var list: Dictionary = patch_lists.get(key, {})
+	if list.is_empty() and not patch_lists_refused.has(key):
+		return DRAW_NONE
+	var tiles: Array = list.get("tiles", [])
+	var built := not cells.is_empty() and _built(cells)
+	var graded := built and _graded_cells(cells["counts"]) > 0
+	var refreshing := not list.is_empty() and int(list["token"]) != int(patch["generation"])
+	if tiles.is_empty() and not (refreshing and graded) and not _previews_in(patch["rect"]):
+		return DRAW_PLANE
+	if not graded:
+		return DRAW_NONE
+	if bool(cells["complete"]):
+		return DRAW_SET
+	for tile: Vector2i in tiles:
+		if _shown(tile).is_empty() and not _refused_at_level(tile):
+			return DRAW_NONE
+	return DRAW_SET
+
+# Whether Rust refused `tile` at its desired level and token by contract (T7): it never shows
+# there, and its patch's set draws without it (a base cell, the refusal counted and logged).
+func _refused_at_level(tile: Vector2i) -> bool:
+	var want: Dictionary = _desired.get(tile, {})
+	if want.is_empty():
+		return false
+	var level: Vector2i = want["level"]
+	return int(refused.get("%d,%d,%d,%d" % [tile.x, tile.y, level.x, level.y], -1)) == int(want["token"])
+
+# Patch `key` draws what _draw_state says: its set shown (its meshes and instance uniforms set, its
+# materials bound and synced where its watched parameters moved) or hidden, waiting kept current
+# under the patch's node with no material bound (so a set that never drew holds no instance
+# uniform slot), and its PlaneMesh drawn only in DRAW_PLANE. A set starting or stopping to draw
+# changes what the cells across the patch's sides stitch to (_side_code), so they are rewritten in
+# the same frame (_apply_cell_changes). O(_draw_state), and the material's parameters when the set
+# starts drawing.
 func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
-	var cells: Dictionary = patch_cells.get(key, {})
-	if cells.is_empty() or not resident_patches.has(key):
-		return
-	var counts: Array[int] = cells["counts"]
-	var listed: bool = not (patch_lists.get(key, {}).get("tiles", []) as Array).is_empty()
-	var draw := _built(cells) and _graded_cells(counts) > 0 and (listed or _previews_in(cells))
-	if draw == bool(cells["shown"]):
+	if not resident_patches.has(key):
 		return
 	var patch: Dictionary = resident_patches[key]
+	var cells: Dictionary = patch_cells.get(key, {})
+	var state := _draw_state(key, patch, cells)
+	_set_ready(key, state != DRAW_NONE)
 	var patch_node: GeometryInstance3D = patch["node"]
+	_set_plane(key, patch_node, state == DRAW_PLANE)
+	var shown := not cells.is_empty() and bool(cells["shown"])
+	if state == DRAW_PLANE and not cells.is_empty():
+		cells["complete"] = false
+	if (state == DRAW_SET) == shown:
+		return
 	var flip_us := Time.get_ticks_usec()
 	_frame_flips += 1
-	if not draw:
+	_border_changed(key)
+	if shown:
 		_hide_cells(cells)
 		_frame_flip_us += Time.get_ticks_usec() - flip_us
 		return
 	cells["shown"] = true
+	cells["complete"] = true
 	_set_cell_meshes(cells)
 	_bind_materials(cells, true)
 	(cells["nodes"][CELL_BASE] as GeometryInstance3D).material_override = patch["material"]
@@ -1614,36 +1723,61 @@ func _apply_shown(key: Vector2i, resident_patches: Dictionary) -> void:
 	_park(cells, patch_node)
 	(cells["root"] as Node3D).visible = true
 	cells["node_parent"] = patch_node
-	# The PlaneMesh collapses while the cells draw the patch, and is not drawn at all: its
-	# visibility range ends before any camera, so its vertices do not run (TERRAIN-07-D round 5).
-	# It stays visible, since grass and the water reflection read the patch node's visibility.
-	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
-	patch_node.visibility_range_end = HIDDEN_RANGE_M
 	_frame_flip_us += Time.get_ticks_usec() - flip_us
 
-# Whether a preview tile lies in the set's patch. O(preview tiles).
-func _previews_in(cells: Dictionary) -> bool:
-	var first: Vector2i = cells["first"]
-	var last: Vector2i = cells["last"]
+# Patch `key`'s PlaneMesh draws (`drawn`) or not. Collapsed, it is not drawn at all: its
+# visibility range ends before any camera, so its vertices do not run (TERRAIN-07-D round 5). It
+# stays visible, since grass and the water reflection read the patch node's visibility. Drawing
+# again restores the node it collapsed, whatever node the patch holds now: terrain.gd pools its
+# patch nodes, and a pooled node left collapsed draws nothing for the next patch it takes
+# (`TERRAIN-07-E` round 6). O(1).
+func _set_plane(key: Vector2i, patch_node: GeometryInstance3D, drawn: bool) -> void:
+	var held: Variant = _collapsed.get(key)
+	if held != null and (drawn or held != patch_node):
+		_collapsed.erase(key)
+		if is_instance_valid(held):
+			(held as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 0.0)
+			(held as GeometryInstance3D).visibility_range_end = 0.0
+		held = null
+	if drawn or held != null or patch_node == null:
+		return
+	patch_node.set_instance_shader_parameter("cell_mode", 1.0)
+	patch_node.visibility_range_end = HIDDEN_RANGE_M
+	_collapsed[key] = patch_node
+
+# Patch `key` is ready (draws its set or its PlaneMesh) or not (draws nothing). The time and
+# frames from its residency to ready are the residency margin's latency (counters); an unready
+# patch within the view distance counts in each frame (process). O(1).
+func _set_ready(key: Vector2i, ready: bool) -> void:
+	if not ready:
+		if not _unready.has(key):
+			_unready[key] = Vector2i(Time.get_ticks_msec(), Engine.get_process_frames())
+		return
+	var since: Variant = _unready.get(key)
+	if since == null:
+		return
+	_unready.erase(key)
+	counters["ready_ms_max"] = max(int(counters["ready_ms_max"]), Time.get_ticks_msec() - (since as Vector2i).x)
+	counters["ready_frames_max"] = max(int(counters["ready_frames_max"]), Engine.get_process_frames() - (since as Vector2i).y)
+
+# Whether a preview tile meets the patch rectangle `rect`. O(preview tiles).
+func _previews_in(rect: Rect2) -> bool:
+	if preview.is_empty():
+		return false
+	var first := Vector2i((rect.position / TILE_M).floor())
+	var last := Vector2i((rect.end / TILE_M).ceil()) - Vector2i.ONE
 	for tile: Vector2i in preview:
 		if tile.x >= first.x and tile.y >= first.y and tile.x <= last.x and tile.y <= last.y:
 			return true
 	return false
 
 # The set stops drawing: its root hidden (still under the patch's node while the patch is
-# resident), its materials unbound, and the PlaneMesh it collapsed (the node it drew under,
-# whatever node the patch holds now) drawing again: terrain.gd pools its patch nodes, and a pooled
-# node left collapsed draws nothing for the next patch it takes (`TERRAIN-07-E` round 6: the holes
-# after a world load, whose clear() released the sets without their nodes).
+# resident) and its materials unbound; the patch's PlaneMesh is _set_plane's.
 func _hide_cells(cells: Dictionary) -> void:
 	cells["shown"] = false
 	(cells["root"] as Node3D).visible = false
-	var patch_node: Variant = cells["node_parent"]
 	cells["node_parent"] = null
 	_bind_materials(cells, false)
-	if is_instance_valid(patch_node):
-		(patch_node as GeometryInstance3D).set_instance_shader_parameter("cell_mode", 0.0)
-		(patch_node as GeometryInstance3D).visibility_range_end = 0.0
 
 # Puts the set's root under `patch_node` (null: out of the tree), its visibility unchanged. A built
 # set waits under its patch's node, hidden, so starting to draw only shows it (`TERRAIN-07-E` round
@@ -1667,17 +1801,17 @@ func cell_builds_pending() -> int:
 
 ## Whether queued work will change what the graded cells draw without a new input: tile or list
 ## requests in flight or waiting for Rust's in-flight bound, counts, results deferred past a
-## frame's budget, an edit batch waiting for its tiles, and the cell set builds of patches a
-## shown tile waits for or whose list names a tile (a set whose patch lists none stays hidden
-## when built, so its build changes nothing drawn). terrain.gd's is_render_settled includes it: a
-## capture of the settled terrain waits on that one signal (`TERRAIN-07-G` round 6: the
-## reference test's own copy of it left out the set builds and captured patches that showed
-## graded tiles through their PlaneMesh). O(queued builds).
+## frame's budget, an edit batch waiting for its tiles, a resident patch drawing nothing (T53
+## (a)), and the cell set builds of patches a shown tile waits for or whose list names a tile (a
+## set whose patch lists none stays hidden when built, so its build changes nothing drawn).
+## terrain.gd's is_render_settled includes it: a capture of the settled terrain waits on that one
+## signal, and so does a world load's hand-over (`TERRAIN-07-G` round 6: the reference test's own
+## copy of it left out the set builds). O(queued builds).
 func has_pending_work() -> bool:
 	if not (
 		requested.is_empty() and patch_lists_requested.is_empty() and _lists_wanted.is_empty()
 		and _counts.is_empty() and _wanted.is_empty() and _deferred.is_empty()
-		and _edit_batch.is_empty() and _builds_urgent.is_empty()
+		and _edit_batch.is_empty() and _builds_urgent.is_empty() and _unready.is_empty()
 	):
 		return true
 	for key: Vector2i in _builds:
@@ -1685,27 +1819,36 @@ func has_pending_work() -> bool:
 			return true
 	return false
 
-## Resident patches whose list names an installed tile, or which meet a previewed tile, that do
-## not draw their set (it is not built yet), so their PlaneMesh shows the base ground there
-## instead of the graded tile (a tile a patch's list leaves out renders the base there, Rust's
-## graded_tiles_in_rect). For tests: 0 whenever has_pending_work() is false. O(resident
-## patches' tiles).
-func patches_awaiting_cells() -> int:
-	var waiting := 0
+## Resident patches drawing their PlaneMesh where T53 (a) forbids it: their list has not arrived
+## or names a tile, or a preview tile meets them. Read from the patch nodes, for tests, which
+## check it in every frame: always 0. O(resident patches + preview tiles).
+func plane_violations() -> int:
+	var violations := 0
 	for key: Vector2i in _resident.keys():
-		var cells: Dictionary = patch_cells.get(key, {})
-		if bool(cells.get("shown", false)):
+		var node: GeometryInstance3D = _resident[key]["node"]
+		# The node keeps the range as a 32-bit float (hole_patches).
+		if node == null or is_equal_approx(node.visibility_range_end, HIDDEN_RANGE_M):
 			continue
-		var awaits := false
+		var list: Dictionary = patch_lists.get(key, {})
+		var unknown := list.is_empty() and not patch_lists_refused.has(key)
+		if unknown or not (list.get("tiles", []) as Array).is_empty() or _previews_in(_resident[key]["rect"]):
+			violations += 1
+	return violations
+
+## Drawing sets whose list names a tile they do not show (not installed, not previewed and not
+## refused): a partial set. For tests of a streaming run without edits (an edit's refreshed list
+## may name a tile its edit did not select, drawn as the base it was until it installs,
+## _draw_state): always 0 there. O(drawing sets' lists).
+func partial_sets() -> int:
+	var partial := 0
+	for key: Vector2i in _resident.keys():
+		if not bool(patch_cells.get(key, {}).get("shown", false)):
+			continue
 		for tile: Vector2i in patch_lists.get(key, {}).get("tiles", []):
-			awaits = awaits or installed.has(tile)
-		if not awaits and not preview.is_empty():
-			var tiles := _patch_tiles(_resident[key]["rect"])
-			for tile: Vector2i in preview:
-				awaits = awaits or tiles.has(tile)
-		if awaits:
-			waiting += 1
-	return waiting
+			if _shown(tile).is_empty() and not _refused_at_level(tile):
+				partial += 1
+				break
+	return partial
 
 ## Resident patches drawing nothing: their PlaneMesh collapsed with no drawing set of theirs under
 ## it (a hole showing the sky). For tests and the probe; O(resident patches).
@@ -1767,9 +1910,8 @@ func release_patch(key: Vector2i, patch_node: GeometryInstance3D) -> void:
 	_builds.erase(key)
 	_builds_urgent.erase(key)
 	_dirty_shown.erase(key)
-	if patch_node != null:
-		patch_node.set_instance_shader_parameter("cell_mode", 0.0)
-		patch_node.visibility_range_end = 0.0
+	_unready.erase(key)
+	_set_plane(key, patch_node, true)
 	if cells.is_empty():
 		return
 	_hide_cells(cells)
@@ -1883,7 +2025,8 @@ func _new_cells() -> Dictionary:
 		"first": Vector2i.ZERO, "last": Vector2i(-1, -1), "tiles": [] as Array[Vector2i], "step": -1, "rect_hm": Vector4i.ZERO,
 		# The tiles its build has written (-1: not begun), whether it synced its material for
 		# this build and whether it draws its patch.
-		"built": -1, "synced": false, "shown": false, "values": [], "sync_next": 0, "local": false,
+		# and whether it drew complete in its patch's residency (_draw_state).
+		"built": -1, "synced": false, "shown": false, "complete": false, "values": [], "sync_next": 0, "local": false,
 	}
 
 # The patch material parameters whose change means the graded material must be synced: the
