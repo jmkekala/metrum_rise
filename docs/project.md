@@ -493,12 +493,15 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   frontend selector, refined jobs, baked meshes and water clip are deleted; gameplay, references
   and benchmarks are graded-only. The stage, locality and bitwise rows passed before deletion.
   Round 3 found that the earlier bend fix hid its cause: at the plan view's 1 m lattice the edge
-  mask can miss a road-edge segment shorter than the lattice spacing, which leaves single sky
-  pixels at the bend and the road end (`terrain.md` T48, for the user); the Kuopio pixel dates
-  from gate D's withdrawal of the depth push behind roads (T49, for the user); and the release
-  game's settled memory, measured with the saves actually loaded, rises 12.8% at 100k and 18.3%
-  on Kuopio, not yet attributed. No target is relaxed; details are in the
-  [Gate G record](terrain.md#terrain-07-g-record).
+  mask can miss a road-edge segment shorter than the lattice spacing, leaving single sky pixels at
+  the bend and the road end (`terrain.md` T48); the Kuopio pixel dates from gate D's withdrawal of
+  the depth push behind roads (T49). The user decided both on 2026-10-28 (per-square extra mask
+  candidates; a depth-writing variant only for conflict tiles); they are the next round's to
+  build. Round 3 also restored what the deletion had broken: the first road commit after a load
+  or bulk build again stages only its own terrain, and the water reflection reads the ground the
+  water is drawn on again, which removes the retained-memory rise the first valid measurement
+  showed (the game's settled memory is now at or below road's). No target is relaxed; details are
+  in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.

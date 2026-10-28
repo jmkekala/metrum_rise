@@ -7609,11 +7609,12 @@ measures and judges each against its target. A gate landing later adds its own h
    existing path does not execute a user undo, while the small mutation fixture's undo is 0.074 ms.
 8. Measure the release game's peak retained memory before and after `TERRAIN-07-G`, separating
    load/setup peak from the settled world. `TERRAIN-07-G` round 3 (fresh, RSS by phase, both
-   graded, the saves loaded and proved; round 2's comparison loaded no save and is withdrawn):
-   100k city settled maximum 5,783,156 -> 6,521,672 KiB (+12.8%), load peak 5,392,628 ->
-   6,177,764 KiB, setup 1,326,932 -> 1,329,924 KiB; Kuopio settled maximum 1,911,036 ->
-   2,261,608 KiB (+18.3%), load 1,542,408 -> 1,503,112, setup 1,343,832 -> 1,317,344 KiB. A miss
-   for the user, not yet attributed; method in `terrain.md`'s Gate G record.
+   graded, the saves loaded and proved; round 2's comparison loaded no save and is withdrawn;
+   before three runs on road's library, after the tip `d7a3c338`): 100k city settled maximum
+   5,734,064-5,783,156 -> 5,727,764 KiB, load peak 5,322,348-5,392,628 -> 5,339,940 KiB, setup
+   1,302,404-1,337,204 -> 1,324,724 KiB; Kuopio settled maximum 1,911,036-1,924,596 -> 1,897,116
+   KiB, load 1,533,508-1,542,408 -> 1,522,320, setup 1,332,520-1,343,832 -> 1,328,148 KiB. No
+   increase. Method and the round 2 water reflection attribution in `terrain.md`'s Gate G record.
 9. Attribute `PERF-09` separately from terrain query work: the road control already misses the
    frame guards. H records matched control/terrain snapshot and frame shares and does not charge
    that inherited regression to Gate F or relax it.
