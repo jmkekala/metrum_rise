@@ -541,6 +541,23 @@ func _run() -> void:
 		print("network_tool_chunk_renderer_test: PASS")
 	quit(_failures)
 
+func _batch(
+	generation: int,
+	full_replace: bool,
+	chunk_span_m: float,
+	chunks: Array,
+	chunk_origin_x_m: float = 0.0,
+	chunk_origin_z_m: float = 0.0
+) -> Dictionary:
+	return {
+		"surface_generation": generation,
+		"full_replace": full_replace,
+		"chunk_span_m": chunk_span_m,
+		"chunk_origin_x_m": chunk_origin_x_m,
+		"chunk_origin_z_m": chunk_origin_z_m,
+		"chunks": chunks,
+	}
+
 func _test_road_payload_certificate(road_tool: Node) -> void:
 	# The Rust certificate may skip only the per-vertex scan, never the boundary shape checks.
 	var key := Vector2i(1, 1)

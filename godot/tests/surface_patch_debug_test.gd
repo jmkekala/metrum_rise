@@ -116,5 +116,3 @@ func _check_geometry_debug() -> void:
 	_expect(RenderDebug.mesh_label(mesh) == "ArrayMesh surfaces=2 vertices=9", "mesh diagnostics must count all surfaces")
 	_expect(RenderDebug.mesh_label(null) == "null", "absent mesh diagnostics must remain explicit")
 	_expect(RenderDebug.mesh_label(BoxMesh.new()) == "BoxMesh", "primitive meshes must retain their class label")
-	terrain.free()
-	water.free()

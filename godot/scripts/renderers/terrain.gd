@@ -1838,11 +1838,12 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 	var lines: Array[String] = []
 	for index in range(flat_pairs.size() / 2):
 		var key := Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1])
-		var patch_data: Dictionary = _terrain_patch_data_for_key(key, true)
-		if patch_data.is_empty():
-			lines.append("terrain_patch key=(%d,%d) missing=true" % [key.x, key.y])
-			continue
+		# The patch's cached payload: a diagnostic never requests one (as on road before the deletion).
 		var patch: Dictionary = patches.get(key, {})
+		var patch_data: Dictionary = patch.get("last_patch_data", {})
+		if patch_data.is_empty():
+			lines.append("terrain_patch key=(%d,%d) missing_cached_patch_data=true" % [key.x, key.y])
+			continue
 		var node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 		var mesh: Mesh = node.mesh if node != null else null
 		var height_stats := _terrain_patch_height_stats(patch_data)
