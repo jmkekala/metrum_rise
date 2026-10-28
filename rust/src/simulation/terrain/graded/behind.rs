@@ -11,6 +11,7 @@
 //! seam the mask may take in the square (its corners' named rows and its extra candidates).
 
 use super::tile::TilePayload;
+use rayon::prelude::*;
 
 /// Whether `payload`'s drawn terrain rises above the road top along a candidate seam of one of
 /// its squares, with `height(i, j)` the drawn terrain at lattice point `(i, j)` (world metres),
@@ -20,15 +21,20 @@ pub(super) fn rises_above_a_seam(
     payload: &TilePayload,
     (xs, zs): (&[f64], &[f64]),
     origin: [f64; 2],
-    height: impl Fn(usize, usize) -> f64,
+    height: impl Fn(usize, usize) -> f64 + Sync,
 ) -> bool {
     let width = xs.len();
     if width < 4 || zs.len() < 4 {
         return false;
     }
-    let mut squares = payload.square_extras.iter().peekable();
-    for j in 1..zs.len() - 2 {
-        for i in 1..width - 2 {
+    // Rows of squares in parallel on the bake's pool; the answer is one bool, whatever the order.
+    (1..zs.len() - 2).into_par_iter().any(|j| {
+        let row_start = (j * width) as u32;
+        let first_listed = payload
+            .square_extras
+            .partition_point(|&(at, _)| at < row_start);
+        let mut squares = payload.square_extras[first_listed..].iter().peekable();
+        (1..width - 2).any(|i| {
             let point = (j * width + i) as u32;
             let corners = [(i, j), (i + 1, j), (i, j + 1), (i + 1, j + 1)];
             let named = corners.map(|(i, j)| payload.texels[j * width + i][2]);
@@ -39,6 +45,10 @@ pub(super) fn rises_above_a_seam(
                 }
                 _ => (0, 0),
             };
+            // A square without candidates is outside every seam's band.
+            if count == 0 && named.iter().all(|&row| row < 0.0) {
+                return false;
+            }
             let extras = (1..=count).map(|k| payload.extras[first + k / 4][k % 4]);
             let mut rows = named.into_iter().filter(|&row| row >= 0.0).chain(extras);
             let vertices =
@@ -47,19 +57,16 @@ pub(super) fn rises_above_a_seam(
                 [vertices[0], vertices[1], vertices[3]],
                 [vertices[0], vertices[3], vertices[2]],
             ];
-            if rows.any(|row| {
+            rows.any(|row| {
                 let row = row as usize;
                 let [ax, az, bx, bz] = payload.seams[row].map(f64::from);
                 let [ha, hb] = payload.seam_heights[row].map(f64::from);
                 triangles
                     .iter()
                     .any(|triangle| rises_in(triangle, [ax, az], [bx, bz], [ha, hb]))
-            }) {
-                return true;
-            }
-        }
-    }
-    false
+            })
+        })
+    })
 }
 
 // Whether the terrain of `triangle` (tile-local `[x, z, height]` vertices) lies above the road
