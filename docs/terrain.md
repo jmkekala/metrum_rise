@@ -4100,7 +4100,20 @@ km.
   lag of [T27](#terrain-07-open-questions) (d) for a previewed tile, the streaming's otherwise. A
   drawing set whose patch changes step (a camera move) is still rewritten whole in that frame,
   as before. After a world load the builds take the streaming budget's spare time until every
-  resident patch has its set (Kuopio: 1,296 sets, 8-22 s headless).
+  resident patch has its set (Kuopio: 1,296 sets, 8-22 s headless). Until a patch's set draws,
+  its PlaneMesh draws the base ground, also where its graded tiles are installed and a road lies
+  in a cut: open as [T53](#terrain-07-open-questions) (`TERRAIN-07-G` round 6).
+- **Settled** (`TERRAIN-07-G` round 6). `terrain.gd`'s `is_render_settled()` is the one signal a
+  capture of the drawn terrain waits for: no pending patch work and no graded tile work
+  (`terrain_graded_tiles.gd`'s `has_pending_work()`: tile and list requests, counts, results
+  deferred past a frame's budget, an edit batch, and the set builds of patches a shown tile waits
+  for or whose list names a tile; a set whose patch lists none stays hidden when built). The
+  reference test, the edit probe and the renderer test wait on it, and the reference test asserts
+  at every capture that no patch whose list names an installed tile (or that meets a previewed
+  one) draws its PlaneMesh (`patches_awaiting_cells()`; a tile a patch's list leaves out renders
+  the base there); the
+  benchmarks keep their own waits, so their load phases are measured as before. Round 5's
+  flipping sloped obliques were captures taken while cell set builds were still queued.
 - **Instance uniforms.** The cells place themselves from instance uniforms (`cell_mode`, the patch
   rectangle, the lattice anchor), and Godot holds every instance's instance uniforms in one global
   buffer of `rendering/limits/global_shader_variables/buffer_size` vec4 slots, 16 per instance; an
@@ -4443,7 +4456,7 @@ until `TERRAIN-07-G` deletes it ([T10](#terrain-07-open-questions)).
 | `TERRAIN-07-D` | landed (2026-10-27, branch `terrain07-D`, the Load miss accepted by the user, 2026-10-27, [record](#terrain-07-d-record): items 1-4 built in rounds 1-2, item 5 in round 3, round 4 the render defect fixed (Rust refused the plain payload of road-owned patches), refused requests surfacing and the wall meshes; round 5 the renderer works on changes (the idle frame's 4.6 ms of graded work on Kuopio now 0.05 ms), the bridge mouth's dark face fixed at its cause, the plot suites passing in `run.sh --test`, a populated save; round 6 the populated save settles (`GL2`'s edge capacity was below its tiles' rows; capacities from measured maxima, a refusal asked once), no resource created per edit (cell sets prewarmed, T25 for review), the edit install frame within 1.0 ms (residency per changed patch), T24 (a) built; round 7 the matrix judged passed but its graded poses drew with failed instance uniforms (Godot's instance-uniform buffer overflowed; now sized, re-run needed), T24 (a2) built (B plan pinholes 0), the abutment band built, tile levels by camera distance, the moving camera's work attributed (T26); round 8 the matrix re-run valid and its miss attributed and fixed but on `saved` (+0.20 ms, T35), T26 (a), T34 (b) pending the user, the T2 sliver and the water reflection's primitives fixed; round 9 T35 (b) built (0.014 ms) and (c) bounded (none), T35 open for the user, cell sets bind their materials only while drawing, the bridge mouth's dashed line and sky pixels fixed (mouth rows in the mask), T34's fill view; round 10 T35 split by pass and level (the colour pass's `GL1` and `GL2` fragments; no exact lever closes it), the undo test on the swap path, every polled result under the streaming install budget, T38 (a) (the mirror keeps the base ground, for review); round 11 T34 (b) decided and T35 accepted by the user (`saved` +0.17 ms, every other pose at or below), T35 (b) reverted, a list's counts under the streaming budget, the gate checks and the matrix on the gate tip (`saved` +0.21 with (b) reverted, `close` at the exact cut, the rest below); the Load miss accepted by the user, 2026-10-27 ("Slower load time is ok"; Kuopio about +250 ms, saved about +200 ms, the town 1.07 s faster; the budget unchanged); for the user's review: T25 (a)'s memory side, T38 (a), `WATER-05`'s buffer setting; named for `TERRAIN-07-G`: the streaming frame's last result past 1.0 ms) | Residency, payloads and the Godot tile renderer; the game renders graded terrain and answers surface queries from it |
 | `TERRAIN-07-E` | done 2026-10-27 (rounds 1-7, branch `terrain07-E`, [record](#terrain-07-e-record); T27 (f) and T43 (a) the user's exceptions beside the commit row; the background cell-set builds' window accepted by the user, 2026-10-27; four items carried to `ROAD-68-H` by the user, 2026-10-27): poses, commit and undo stage by inputs, bitwise on every fixture; the commit's terrain validation removed; terrain edits refuse roads over 1:3 with an authoritative terrain undo; round 2 T27 (a): row bands, the coverage row span and a cheaper selection, bitwise; round 3: one gather per tile, and spawned work (the routing rebuild among it) on a background pool, which removes the populated drags' 23-47 ms stalls; round 4: rebased onto gate D, T27 (d) (decided by the user) built: a frame stages a bounded share of the pose's tiles, every Kuopio and populated drag frame within 3.0 ms, the shown tiles converging to the commit's bitwise. The converged commit and undo fit 3.0 ms; the click right after a fast drag does not on 6 of 39 Kuopio strokes and the populated tiers' first samples (T27, open for the user). Round 5: the Godot half (each frame's preview tiles drawn from slots of their own at the renderer's levels, T42 for review; the commit's tiles installed through the edit journal, no rebake; the exact cut's preview patches retired; bitwise preview = commit = fresh bake = after save and load in `road_junction_preview_test.gd`), four-row sampling bands; the click's exact parallel lever measured and exhausted (throughput-bound), T27 round 5 for the user. Round 6: T27 (f) decided by the user (the click right after a fast drag may exceed 3.0 ms, exact in its frame; the accepted exception beside the budget); the real-display drag probe (a pose frame up to 17.7 ms building a patch's cell set whole); cell sets built off the frame paths, hidden without slots until they draw, their MultiMesh data on the CPU (no read-back), the commit taking over the preview's slots: under gamescope pose 1.8 ms, catch-up 0.8, commit 0.6, undo 0.8. Round 7: T43 (a) decided by the user; a hole check able to fail and the holes fixed (gate D's on `road` too, shown in renders; the grass on the asphalt and the zoning cells gate D's as well, for `TERRAIN-07-F`); a built set waits hidden under its patch node; the idle-frame matrix judges the steady state, after the background cell-set builds, whose window's cost the user accepted. Final runs on the real display: the drag probe 39 strokes, 0 failures, 0 holes in 13 loads, pose 1.55 ms, catch-up 0.62, fast click 0.82, commit 0.49, undo 0.85; the idle-frame matrix on the steady state (`5972bef8`): Kuopio's poses at the exact cut (`close` +0.01, `overview` -0.00, `ground` -0.02 ms GPU p50), `saved` +0.21 (T35's), `city` -0.41, `city_low` -0.13, 0 overflows. Carried to `ROAD-68-H` by the user, 2026-10-27 ([list](roads.md#road-68-h--acceptance-and-cleanup)): the pose install's 2 of 594 frames over the 1.0 ms share, the probe's 14-20 ms whole frames, the streaming installs' 1.04-1.05 ms (`TERRAIN-07-G`'s), T42 (a) | Preview, commit, undo and load |
 | `TERRAIN-07-F` | done 2026-10-28 (rounds 1-14, branch `terrain07-F`, [record](#terrain-07-f-record); the real-display idle-frame matrix passes every pose): every consumer is re-pointed; the shared-owner query index is restored, and every canonical roadbed publisher now atomically advances its derived index and edit journal. The fresh matched 100k pose/snapshot gaps are +0.322/+0.264 ms, inside the unchanged +0.42/+0.40 ms bars; all 1,101 products match. Round 14 attributes the `city_low` matrix miss to unchanged grass-mask mirrors being rebound every frame, makes the sync revision-driven and proves a settled 120-frame view uploads and renders no mask | Consumers re-pointed |
-| `TERRAIN-07-G` | implementation complete, acceptance open (2026-10-28, branch `terrain07-G`, [record](#terrain-07-g-record)): the exact/CDT surface and its Rust and Godot consumers are deleted and the game is graded-only. Round 1's stage, locality and bitwise rows passed before deletion; round 3 restored the world-scale road change reset round 1 had deleted (the first commit after a load or bulk build staged the whole city) and found no retained-memory increase. Round 4 built T48 (a) and T49 (c) ([T48, T49](#terrain-07-open-questions)): 0 plan pinholes on every fixture. Round 5 measured the tip: the reference preview, converged commits, locality and bitwise rows pass; the populated drags' pose frames (2-7 of 150 over 3.0 ms, a one-tile bake now 2-3.5 ms) and one undo sample miss, and the release game's settled memory rose (+1.3 GB at 100k, +0.28 GB on Kuopio; GPU +0.14 GB); the behind variant's depth guard became the exact far-plane condition; the GPU matrix shows no cost of T49's variant and +0.2-0.35 ms on the saved city's high paths (T48). Open, none relaxed, for the user: [T50, T51, T52](#terrain-07-open-questions). | Acceptance and legacy deletion |
+| `TERRAIN-07-G` | implementation complete, acceptance open (2026-10-28, branch `terrain07-G`, [record](#terrain-07-g-record)): the exact/CDT surface and its Rust and Godot consumers are deleted and the game is graded-only. Round 1's stage, locality and bitwise rows passed before deletion; round 3 restored the world-scale road change reset round 1 had deleted (the first commit after a load or bulk build staged the whole city) and found no retained-memory increase. Round 4 built T48 (a) and T49 (c) ([T48, T49](#terrain-07-open-questions)): 0 plan pinholes on every fixture. Round 5 measured the tip: the reference preview, converged commits, locality and bitwise rows pass; the populated drags' pose frames (2-7 of 150 over 3.0 ms, a one-tile bake now 2-3.5 ms) and one undo sample miss, and the release game's settled memory rose (+1.3 GB at 100k, +0.28 GB on Kuopio; GPU +0.14 GB); the behind variant's depth guard became the exact far-plane condition; the GPU matrix shows no cost of T49's variant and +0.2-0.35 ms on the saved city's high paths (T48). T50 (a), T51 (a) and T52 (a) decided by the user (2026-10-28). Round 6 found round 5's flipping reference views to be captures before the renderer settled (test fixed; the game's window open as [T53](#terrain-07-open-questions)), fixed the memory rise's causes (an unbounded queue of finished tile results, the pools' creation images) and attributed the pose-frame miss to T48's and T49's bake cost ([T52](#terrain-07-open-questions)). None relaxed. | Acceptance and legacy deletion |
 
 #### `TERRAIN-07-A` — grading core and queries, roads only
 
@@ -8301,12 +8314,15 @@ pass; line counts recorded; docs updated.
 
 #### `TERRAIN-07-G` record
 
-Acceptance open after round 5: T48 (a) and T49 (c) are built and the rendered row passes; round
-5's session on the tip passes the reference preview, the converged commits, locality and the
-bitwise rows, and misses the populated drags' pose frames (2-7 of 150 over 3.0 ms) and one undo
-sample, and the release game's memory rose (+23% settled at 100k): [T52](#terrain-07-open-questions),
-with T48's coarse-level cost and T49's scope ([T50, T51](#terrain-07-open-questions)), open for
-the user. None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
+Acceptance open after round 6: T48 (a) and T49 (c) are built (T50 (a), T51 (a) decided by the
+user) and the rendered row passes; round 5's flipping reference views were captures taken before
+the renderer settled (the test fixed; the game's window is [T53](#terrain-07-open-questions), open
+for the user); round 6's session passes the reference preview, the converged commits, the undo,
+locality and the bitwise rows and misses the populated drags' pose frames (0-2 of 150 over 3.0
+ms, T48's and T49's bake cost, [T52](#terrain-07-open-questions)); the memory rise was a defect
+(an unbounded queue of finished tile results, fixed: the 100k city settles below road's), the
+larger slot pools' setup and GPU memory remaining (T50 (b)).
+None relaxed. Round 1 (`c193a165`) deleted the exact/CDT
 surface on the Rust side, round 2 (`154ac169`, committed unverified by the coordinator) the
 frontend selector, refined-patch jobs, baked mesh, water road clip and exact-only test branches.
 The game, reference test and idle-frame benchmark have one terrain mode: graded. Round 3 audited
@@ -8315,6 +8331,74 @@ is listed in `$ARTIFACTS/road68/t07g3/audit.md`) and replaced round 2's unverifi
 fix "without a tolerance", a "known" Kuopio pinhole, a memory comparison that loaded no save and
 compared exact with graded, and the matrices cited as gate D's) with the results below.
 
+- **Round 6 (`TERRAIN-07-G` round 6, a debugging round; branch tip in the handoff).** Fresh
+  unless marked. The user decided T50 (a) (with (b) for memory if the heap profile pointed at the
+  pools), T51 (a) and T52 (a) on 2026-10-28, through the coordinator; none accepts a miss.
+  - **The flipping sloped obliques were captures taken before the renderer settled.**
+    Reproduced on the tip (release library `bfee86ce`, `t` and `city_grid_t`, gamescope): one of
+    the three sloped obliques wrong in 2 of 6 runs, 5 of 6 with a diagnostic (each wrong image
+    18,322-41,000 pixels over 40 levels off round 4's reference; the right ones 0). A read-back
+    at every capture (test-only, not kept): every installed tile's slot layers on the GPU equal
+    its upload, every drawing set's instance data and instance uniforms equal its records, its
+    graded materials equal its patch's, no slot is held twice: no slot reuse, early draw or
+    stale instance data. But 5-25 of the 16 cell sets were still queued: `_settle_terrain`
+    waited on its own copy of the pending work without the set builds, and a patch whose
+    installed tiles had no built set drew its PlaneMesh, the base ground, above the road where
+    the road is in a cut (slopes only). Frozen at the capture, hiding the PlaneMeshes of the
+    patches not drawing their sets removes every wrong pixel, which lie in the one such patch
+    whose list names installed tiles; 120 frames later the views are right in 6 of 6 runs. The game shows the
+    same window after a load and while streaming: [T53](#terrain-07-open-questions), for the
+    user. **Fixed in the test at its cause**: one settled signal ([settled](#godot-tile-renderer))
+    replaces the copies in the reference test, the edit probe and the renderer test, and the
+    reference test asserts at every capture that no patch shows an installed tile through its
+    PlaneMesh. With the old wait restored (the fix reverted) that check fails in 8 of 8 runs and
+    5 of the 8 show a wrong view (`$ARTIFACTS/road68/t07g6/stable-*`, `reverted2-*`); with the fix 10 of 10 runs
+    pass and the three views equal round 4's references (0 pixels over 40 levels; `fixed-*`,
+    `stable2-*`). When it started (six runs each, `$ARTIFACTS/road68/t07g6/bis-*`): road `99a86710` (its graded half) 3
+    of 6, `54a5aac7` 0 of 6, `78f6ce76` 3 of 6, the tip 2 of 6; `c193a165` cannot render the
+    graded views (its frontend's exact half calls a function its Rust removed, and the run hits
+    its 400 s limit). Every fixture on the final tree (`55d94e72`, release library `f6e9e848`,
+    `$ARTIFACTS/road68/t07g6/final2-1`): passes, 0 failures, 0 pinholes in all 33 plan views, and all 197 images
+    equal round 4's references (0 pixels over 40 levels); the Kuopio fixtures settle within the
+    test's 60 s now that the signal counts only the builds that change the drawn cells (with
+    every set build counted they did not, `final-1`).
+  - **Memory ([T52](#terrain-07-open-questions) (a)).** Heaptrack on both sides' 100k run: the
+    after side's peak heap holds 861 MB of tile results' packing buffers queued for Godot's poll
+    (a defect: finished results left the in-flight bound before their poll; T48's capacities made
+    them 2-12 times larger), fixed with a test that fails without it; about +0.3 GB of Godot's
+    own allocations at the peak lie with T49's larger cell sets. The fixed library's native run
+    (`$ARTIFACTS/road68/t07g6/memory-fixed`, library `f6e9e848`, the release build of `9ec50e4f`'s Rust; round 5's
+    method, 100k): setup peak 1,553,948, load peak 5,406,688, settled maximum 5,419,008 KiB, GPU
+    2,042,924 KiB, cell set builds 594 frames, 28.4 s. Against road (round 5, 1,335,164 /
+    5,301,496 / 5,679,140, GPU 1,901,896): settled -260 MB, **within the target**; the setup
+    +214 MB and GPU +141 MB remain, the slot pools' (T50 (b)). Kuopio not re-run.
+  - **Timing session (C F F C, four workers, P-cores, 20:38-20:44; C road's `503a2424` binary
+    `f91126e2`, cities `eedc8f7b`; F the release test build of `9ec50e4f`, `8cd0cea8`, cities
+    prepared before the session, 2k generated in its first run).** Reference preview, graded
+    p50/p95 and commit: `sloped_t` C 1.107/1.399, 0.945 and 1.440/2.454, 0.956; F 1.735/2.085,
+    1.455 and 1.793/2.513, 1.588 ms. `sloped_branch` C 0.875/1.219, 0.964 and 1.267/2.506,
+    1.432; F 1.404/1.867, 1.511 and 1.480/2.217, 1.416 ms: **pass**. Populated drags at
+    0/2k/10k/30k/100k: converged commits at most 2.81 ms (F), **pass**; undo at most 1.45 ms (F;
+    selection 0.78-0.82, adoption 0.58-0.67 ms), **pass**; pose frames (150 per run) F p50
+    1.49/1.45, p95 2.25/2.35, maxima 2.99/3.69 ms, 0 and 2 frames over 3.0 ms (C p50 0.97, p95
+    1.85, max 3.66, 1 over: a 3.33 ms selection), **a miss**: a 10k pose baking one tile (3.69:
+    select 1.12, bake 2.58) and a 100k catch-up frame baking three (3.01). The fast click (the
+    accepted exception) F at most 8.18 ms (C 5.21). Commit breakdown's first-build staging at
+    100k F 8.14/8.16 ms (C 4.55/4.08). Locality (F): products equal while remote edges grow
+    3/147/1,203/4,707, p50 1.32/1.55/1.79/1.70 ms, maxima at most 2.21 ms, **pass**. Bitwise
+    (F): the three tests pass. Logs `$ARTIFACTS/road68/t07g6/{stages,breakdown,drags}-N-{C,F}.log`.
+  - **Pose frames attributed** ([T52](#terrain-07-open-questions)): T48's extra search costs
+    about the sampling's own time in a tile's bake and T49's flag about 40% of it; no
+    product-preserving lever found this round.
+  - **Gate checks.** Clippy `--all-targets`: 59 warnings, the baseline's set exactly. Missing
+    docs: 0. `./run.sh --test` on the tree of `55d94e72` (DISPLAY and WAYLAND_DISPLAY unset)
+    passes to the end, exit 0: lib 1,836 passed, 0 failed, 176 ignored (the full debug suite,
+    `finished_tiles_count_in_flight_until_polled` added), `growth_scenario` 4/0, the same 45
+    success lines as round 5's run, no SCRIPT ERROR or parse error. Skipped as before: the
+    Forward+ vegetation tests (a display; vegetation's) and the headless pass's shader global
+    probe (it runs in the rendered pass).
+  - **Line counts** (production `.rs`, as in round 3): graded 7,947 and terrain 10,824
+    unchanged; `nodes/` 55,353 -> 55,428 (the in-flight accounting and its test).
 - **Round 5 (`TERRAIN-07-G` round 5, measurements on the tip; branch tip in the handoff).** Fresh
   unless marked. The Rust tree is that of round 4's tip `78f6ce76` (no Rust change in round 5);
   round 5 changed the behind variant's shader and the docs.
@@ -9920,7 +10004,11 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** (c), measured on the GPU matrix; (a) if the variant cannot be scoped.
 
 50. **T50. T48 (a)'s cost at the coarse levels: list length, payload, memory (`TERRAIN-07-G`
-    round 4) — open, for the user.**
+    round 4) — decided by the user, 2026-10-28 (through the coordinator, "we go by your
+    recommendation"): (a), T48 (a) at every level, no second rule at `GL3`; for memory (b), one
+    list atlas per level, if the heap profile (T52 (a)) attributes the increase to the slot pools
+    sized by the list capacities** (built only once round 6's sections 1-3 are done; otherwise
+    its build plan and expected saving here). Not an acceptance of any miss.
     - **Evidence.** Round 4 census (`graded_slot_rows_census`, release, every listed tile at
       every level, single-tile bakes on four workers; inputs the Kuopio reference save, the
       14,000-resident populated save and the 100k city; `$ARTIFACTS/road68/t07g4/census3-*.log`),
@@ -9969,7 +10057,29 @@ measures it and the recommendation's condition decides; T2 was decided by the us
     - **Recommendation.** None taken (a change of which levels take the exact path is the
       user's). Measure (a) on the matrix first; if `GL3`'s fragment cost shows, (c) with (b) at
       `GL0`-`GL2`.
-51. **T51. T49 (c)'s flag scope (`TERRAIN-07-G` round 4) — open, for the user.**
+    - **Round 6: what the heap profile attributes, and (b)'s plan** (not built). The release
+      game's retained-memory rise is not the slot pools' (they are GPU memory, +141-146 MB):
+      Heaptrack attributes it to a defect, the finished tile results queued behind Godot's install
+      budget without bound, whose row buffers T48's capacities made 2-12 times larger (fixed;
+      [T52](#terrain-07-open-questions)); with it fixed the 100k city settles 260 MB below road. What
+      the pools cost remains: the setup's +214 MB (creating the arrays from one shared zero image
+      instead of an image per layer left it unchanged, so it is the arrays' creation itself) and
+      +141 MB of GPU memory. (b) is the lever for both; its build waits for the next round. **Plan:** the slot's
+      row layer keeps the seams, edges and heights only (`GL0`-`GL2` 1,280 texels, `GL3` 3,456),
+      and each level gets one list atlas (an RGBAF `Texture2D` per level pool, rows of 2,048
+      texels) allocated by use: a tile's lists take a run of atlas texels at install and free it
+      at eviction (a first-fit free list over runs; an exhausted atlas is the typed error the
+      slot pools have), the run's base kept in one texel of the slot's row and the texel's seam
+      channel keeping its offset within the tile's lists (below 8,191 as now, so the channel stays
+      exact in `f32`); the shader reads the lists at base plus offset from the atlas. A level's
+      atlas is sized by the census (its resident tiles' summed list texels, twice the measured
+      maximum, `T7`'s rule). **Expected saving:** the list part of the
+      pools' rows, `GL0` 64 x 4,800, `GL1` 192 x 3,200, `GL2` 2,048 x 2,600, `GL3` 2,048 x 960
+      texels of 16 bytes: 4.9 + 9.8 + 85.2 + 31.5 = 131 MB of GPU memory, less the atlases (the
+      census's list texels of the resident tiles, a few MB on the reference inputs); `GL3`'s
+      seam rows (1,664 capacity, 128 before T48) stay, 113 MB against 13 MB.
+51. **T51. T49 (c)'s flag scope (`TERRAIN-07-G` round 4) — decided by the user, 2026-10-28
+    (through the coordinator): (a), the flag as built.**
     - **Evidence.** Flagged tiles per level (round 4 census, same inputs): Kuopio (301 tiles)
       `GL0` 148, `GL1` 141, `GL2` 134, `GL3` steps 2/4/8 135/138/137; the populated save (1,580)
       0, 0, 0, 396/76/119; the 100k city (10,500) 0, 134, 127, 3,769/1,676/1,417. The flag is
@@ -9991,7 +10101,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       of T50.
 
 52. **T52. The tip's terrain stage and memory after T48 (a) and T49 (c) (`TERRAIN-07-G` round 5) —
-    open, for the user.** Fresh evidence in the gate G record (round 5).
+    decided by the user, 2026-10-28 (through the coordinator): (a), attribute first (round 6).**
+    The misses stay misses: the gate needs every row to pass. Fresh evidence in the gate G record
+    (round 5); round 6's attribution below.
     - **Evidence.** (1) The populated drags' pose frames: F p95 2.26/2.78 ms (C 1.66/1.97), maxima
       3.53/5.60 ms, 2 and 7 of 150 frames over 3.0 ms (C 0 and 2 of 140, maximum 4.09): T27 (d)'s
       one-tile frame now bakes a `GL0` tile in 2-3.5 ms. One undo sample took 6.99 ms with no
@@ -10008,6 +10120,99 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       the price of 0 pinholes (relaxes the 3.0 ms and memory targets: not recommended, and not
       the agents' to take).
     - **Recommendation.** (a), next round; T50 and T51 are decided by the user with it.
+    - **Round 6: the attribution** (fresh; gate G record, round 6).
+      - **Memory.** Heaptrack on the release game's 100k run, both sides (`$ARTIFACTS/road68/t07g6/memory-heap-*`;
+        under Heaptrack neither frontend finishes its cell set builds in 900 s, so heap peaks,
+        not settled values, are compared). After: peak heap 7.33 GB, of which 861 MB are live
+        `pack_slot` buffers (`residency.rs`, 728 MB of them the row buffers), packed into finished
+        tile results waiting for Godot's poll. Before: 6.81 GB, no such buffer among the live
+        allocations. Cause, a defect: a finished result left `MAX_IN_FLIGHT_TILES`'s count when
+        it was published, not when Godot polled it, so after a load the results queued behind
+        Godot's 1.0 ms install budget grew without bound, and the packing pool kept their
+        buffers after the poll; T48's row capacities made each result's row buffer 2-12 times
+        larger (`GL3` 6 KB to 71 KB, `GL2` 20 to 62 KB, `GL0` 20 to 97 KB). **Fixed**: a result
+        counts in flight until its poll (`finished_tiles_count_in_flight_until_polled`, which
+        fails with the fix reverted, `$ARTIFACTS/road68/t07g6/queue-reverted-test.log`), so Rust holds at most 96
+        results. About +0.3 GB at the heap peak in Godot's own allocations (its stripped binary
+        does not resolve them: 1.20 GB against 0.88 GB) lies with the cell sets' builds: T49
+        (c)'s nine `MultiMesh`es and eight materials per set instead of five and four (T51 (a),
+        as built). The native run with the fix (round 5's method, 100k, library `f6e9e848`):
+        settled maximum 5,419,008 KiB against road's 5,679,140 (round 5's after 6,978,324):
+        **within the target**. The setup's +214 MB (1,553,948 against 1,335,164 KiB) and +141 MB of
+        GPU memory remain, the slot pools' as T48 sized them: creating the arrays from one shared
+        zero image instead of one image per layer (tried in round 6, not kept) left the setup peak
+        unchanged, so it is the arrays' creation itself, not resolvable in Godot's stripped
+        binary. T50 (b)'s list atlas is the lever (its plan and expected saving in T50); open,
+        for the next round.
+      - **Pose frames.** A profile of the populated drags at 2k and 10k (perf with LBR stacks,
+        the tip's Rust, a locating run, not a timing): within a tile's bake the T48 extra
+        candidate search (`square_extras`, `box_distance`, `may_be_nearer`, the list
+        filtering) takes about as much as the lattice sampling itself (`Sampling::rows`,
+        `BaseWindow::bilinear_range`), and T49's flag (`rises_in`, `rises_above_a_seam`) about
+        40% of it, so the two roughly double a `GL0` tile's bake (round 5: 2-3.5 ms against C's
+        about 1 ms). No product-preserving lever was found this round. The session's over-budget
+        frames: one pose baking one tile (3.69 ms: select 1.12, bake 2.58) and one catch-up frame
+        baking three (3.01 ms). Fitting 3.0 ms needs T48's or T49's bake cost cut, which is the
+        user's (options above).
+      - **Undo.** Round 5's 6.99 ms sample (30k, 8 tiles adopted, none baked) ran beside two
+        `CCH` adoption jobs on the background pool, but so did every other undo (all at most
+        2.04 ms), so that does not explain it; the record had no split. The drag record now
+        splits the undo's selection and bake: in round 6's session every undo took at most
+        1.45 ms (selection 0.78-0.82, adoption 0.58-0.67 ms); the stall did not recur.
+53. **T53. What a patch draws before its graded cells draw (`TERRAIN-07-G` round 6) — open, for
+    the user.**
+    - **Evidence.** Round 5's flipping sloped obliques (`t_steep`, `city_grid_t` slope and steep)
+      were captures taken while cell set builds were still queued. A read-back at each capture
+      (a diagnostic, not kept; `$ARTIFACTS/road68/t07g6/tipd-*`): the GPU layers of every
+      installed tile's slot equal its upload (texels and rows), every drawing set's instance data
+      and instance uniforms equal its records, its graded materials equal its patch's, no slot is
+      held twice: 0 inconsistencies. But 5-25 of the 16 sets were still queued, and a patch
+      holding installed tiles (`city_grid_t` steep: `(2, 1)` with tiles `(0, -1)` and `(1, -1)`
+      at `GL1`, its set built 1 of 4 tiles) drew its PlaneMesh: the base ground, which lies above
+      the graded road where the road is in a cut. Frozen at that capture, hiding the PlaneMeshes
+      of the patches not drawing their sets removes every wrong pixel (the area shows the
+      background), and the wrong pixels lie in `(2, 1)`, the one such patch whose list names
+      installed tiles (`$ARTIFACTS/road68/t07g6/fan-*_frozen.png`, `_noplanes.png`); 120 frames later the
+      same view is correct in 6 of 6 runs. Flat fixtures show nothing, the base lying at or under
+      the road there. The fan of streaks on `t_steep`: the unbuilt patch's PlaneMesh and the
+      junction's surface are both planar per facet and meet at nearly the same height at the
+      junction centre, a corner of four patches, so each plane facet crosses the road surface
+      along a line through that point and the facets alternate above and below the road around
+      it: wedges converging on the corner. `t_steep`'s wrong state did not recur in this round's
+      33 runs of the tip without the fix (round 5: 1 of 3), so the fan itself was not read back;
+      every wrong image that was (the city grid's) is that patch's PlaneMesh alone.
+    - **When it started.** The reference test (`t`, `city_grid_t`, six runs each, release
+      libraries, `$ARTIFACTS/road68/t07g6/bis-*`), runs with one of the three views wrong: road
+      `99a86710` (its graded half of the compare mode) 3 of 6, round 1 `c193a165` not renderable (its frontend's exact half calls a function its
+      Rust removed, and the run hits its 400 s limit before the city grid's graded views),
+      round 3 `54a5aac7` 0 of 6, round 4 `78f6ce76` 3 of 6, the tip 2 of 6 (and 5 of 6 in the
+      diagnostic runs). The mechanism is road's: every patch installs its plain payload, road-owned
+      ones included (`TERRAIN-07-D` round 4), and sets are built off the frame paths (`TERRAIN-07-E`
+      round 6); T49 (c)'s variant doubled a set's graded materials and meshes (eight and nine), so
+      its builds take longer (the 100k save's after-load builds 21 to 30 s, round 5).
+    - **In the game.** The same: a patch draws its PlaneMesh from the frame it becomes resident
+      until its graded tiles are baked and installed and its set is built and drawing. After a
+      world load that is every patch (the 100k save: the set builds take 424-653 frames, 21-30
+      s, after the load settles; Kuopio's 1,296 sets 8-22 s headless, the patches a shown tile
+      waits for first); while streaming, a newly resident patch for its list's and bakes'
+      latency plus its set build (frames to tens of frames); an edit's tile in a patch whose set
+      is not built yet (only inside those windows). Also, a drawing set's cell stitches its side
+      across a patch border to the neighbour tile's installed level even while the neighbour
+      patch still draws its PlaneMesh (`_side_code`), so that border does not match until the
+      neighbour's set draws.
+    - **Options.** (a) A resident patch whose list names a graded tile draws nothing until its
+      set draws (no base ground under a graded road, no partial state), with a residency margin
+      so streamed patches are ready before they enter the view, the stitch across a border taken
+      from what the neighbour patch draws, and after a world load the view revealed (the loading
+      screen held) until `is_render_settled()`; a patch not ready in view (a camera jump) shows
+      the background instead of ground. (b) As built: the base ground for those frames, against
+      the no-stale-geometry rule. (c) An awaiting patch's set built whole in the frame its first
+      tile installs: removes the build's share of the window only (the bakes' latency stays), at
+      the frame cost `TERRAIN-07-E` round 6 moved off the frame paths (up to 17.7 ms a pose
+      frame on the real display).
+    - **Recommendation.** (a). The reference test now waits on the settled signal and asserts
+      the capture shows every installed tile, so its references are exact whatever is decided;
+      T27 (d)'s preview lag is unaffected.
 
 #### Superseded `ROAD-68` questions
 

@@ -512,8 +512,17 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   7 ms, and the game holds 1.3 GB more memory at 100k (0.28 GB on Kuopio; 0.14 GB more on the
   GPU). On the user's display the depth-writing variant costs nothing measurable; the extra
   candidates cost 0.2-0.35 ms on the saved city's high camera paths. These are open for the user
-  (`terrain.md` T50-T52); the archive moves are done. No target is relaxed; details are in the
-  [Gate G record](terrain.md#terrain-07-g-record).
+  (`terrain.md` T50-T52); the archive moves are done. The user decided T50, T51 and T52 on
+  2026-10-28 (keep both as built; attribute first). Round 6: the reference views that flipped
+  between runs were captured before the terrain renderer had finished building its cell sets (a
+  patch then draws its ungraded ground over a road in a cut); the test now waits for the
+  renderer to settle, and the same window in the game, after a load and while streaming, is open
+  for the user (`terrain.md` T53). The memory rise was mostly a defect, fixed: finished terrain
+  tiles queued without bound behind the renderer's install budget; the 100k city now settles
+  below road's memory, and what remains is the larger slot pools at setup and on the GPU (the
+  user's planned list atlas, T50). A populated drag's frame still bakes a tile in 2-3.7 ms (0-2 of 150 frames
+  over 3.0 ms), the cost of the two decided mask features (T52). No target is relaxed; details
+  are in the [Gate G record](terrain.md#terrain-07-g-record).
 
 - **Simulation scheduler refactor (`SIM-02`, done 2026-10-22)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
