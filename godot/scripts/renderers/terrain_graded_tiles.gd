@@ -107,9 +107,11 @@ var patch_lists_refused: Dictionary = {}
 # logged once, drawn as a refused tile is (its base cell) instead of baked again every frame
 # (`TERRAIN-07-G` round 7: the 100k city's saved pose wants more `GL2` and `GL3` tiles than the
 # pools' 2,048 slots each, and the re-asked bakes starved every farther tile, T54). A freed slot
-# asks the closest one of its level again (_free_slot), which stays recorded, so its patches draw
-# as they did, until it installs or finds the pool exhausted again.
+# asks one of its level again (_free_slot), which stays recorded, so its patches draw as they did,
+# until it installs or finds the pool exhausted again. Per level, the tiles in the order they were
+# recorded (entries no longer recorded so are skipped as they come up).
 var _exhausted: Dictionary = {}
+var _exhausted_order: Array[Array] = [[], [], [], []]
 # Patch key -> {root: Node3D (the set's nodes), nodes: Array[MultiMeshInstance3D],
 # materials: Array[ShaderMaterial] (GL0-GL3), watched: Array}.
 var patch_cells: Dictionary = {}
@@ -421,6 +423,8 @@ func clear() -> void:
 	refused.clear()
 	patch_lists_refused.clear()
 	_exhausted.clear()
+	for order: Array in _exhausted_order:
+		order.clear()
 	_dirty_walls.clear()
 	_dirty_cell_tiles.clear()
 	_patch_steps.clear()
@@ -1033,22 +1037,17 @@ func _free_slot(entry: Dictionary) -> void:
 	var pool: Dictionary = pools[code]
 	var free: Array[int] = pool["free"]
 	free.append(int(entry["slot"]))
-	# A freed slot asks the closest tile that found the level's pool exhausted again (it stays
-	# recorded until it installs or finds no slot again). O(exhausted tiles), none while the pools
-	# suffice.
-	var closest := Vector2i.ZERO
-	var best := INF
-	for tile: Vector2i in _exhausted.keys():
-		var record: Array = _exhausted[tile]
-		if int(record[0]) != code or bool(record[3]):
+	# A freed slot asks the last tile that found the level's pool exhausted again (it stays recorded
+	# until it installs or finds no slot again). O(1) amortized: each recording is taken once.
+	var order: Array = _exhausted_order[code]
+	while not order.is_empty():
+		var tile: Vector2i = order.pop_back()
+		var record: Array = _exhausted.get(tile, [])
+		if record.is_empty() or int(record[0]) != code or bool(record[3]):
 			continue
-		var distance := _tile_distance(tile)
-		if distance < best:
-			best = distance
-			closest = tile
-	if best < INF:
-		_exhausted[closest][3] = true
-		_wanted[closest] = true
+		record[3] = true
+		_wanted[tile] = true
+		return
 
 # Records that `tile` found level `code`'s pool exhausted at `request_key` and `token`: counted,
 # logged, not asked again until a slot of the level frees, and its patches' sets draw without it
@@ -1056,6 +1055,7 @@ func _free_slot(entry: Dictionary) -> void:
 func _exhaust(tile: Vector2i, code: int, request_key: String, token: int) -> void:
 	_wanted.erase(tile)
 	_exhausted[tile] = [code, request_key, token, false]
+	(_exhausted_order[code] as Array).append(tile)
 	counters["pool_exhausted"] += 1
 	MetrumDebug.log("terrain", "graded pool %d exhausted at tile %s" % [code, str(tile)])
 	for patch_key in _patches_meeting(Rect2(Vector2(tile) * TILE_M, Vector2.ONE * TILE_M)):

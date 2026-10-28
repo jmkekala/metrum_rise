@@ -99,8 +99,9 @@ pub(crate) const POSE_FRAME_TILES: usize = 1;
 
 /// Tiles a catch-up frame stages at most: a frame without a new pose has no selection.
 /// Re-measured with T48 (a)'s extra candidates and T49 (c)'s flag in the bake
-/// (`TERRAIN-07-G` round 7): three tiles took 2.99-3.01 ms in round 6's populated drags, so
-/// two, the largest count that fits 3.0 ms on four workers.
+/// (`TERRAIN-07-G` round 7): on four workers the populated drags' catch-up frames take at most
+/// 2.65 ms with two tiles and 3.03 ms with three, so two. On Kuopio's steepest strokes a single
+/// tile's bake alone takes up to 3.64 ms, so no count fits there (`docs/terrain.md` T27).
 pub(crate) const CATCH_UP_FRAME_TILES: usize = 2;
 
 /// One frame's graded tiles of the road tool's preview: the tiles shown after it, or why the
