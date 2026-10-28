@@ -8332,7 +8332,12 @@ compared exact with graded, and the matrices cited as gate D's) with the results
     `plot_material_lighting_test` failed: it compared frontage paving drawn through the CDT's
     vertex colour tags, which round 3 removed with the deletion (a test of deleted code); ported
     to a graded cell carrying material class 1 or 2 (both plot tests pass in gamescope, every
-    threshold unchanged). The final `run.sh --test` is in the handoff.
+    threshold unchanged). `./run.sh --test` on `a9dc1ddf` (DISPLAY and WAYLAND_DISPLAY unset)
+    passes to the end, exit 0: lib 1,835/0/176, `growth_scenario` 4/0, every Godot bridge,
+    asset, rendered shader and plot script (no SCRIPT ERROR or parse error). Skipped: the
+    Forward+ vegetation tests (`vegetation_level_match`, `vegetation_wind_gate`, a display;
+    vegetation's, not gate G's) and the headless pass's shader global probe (it runs in the
+    rendered pass).
   - **Line counts** (production `.rs`, as in round 3): graded 7,383 -> 7,947 (`extras.rs` 412,
     the extra candidate search with its completeness argument; `behind.rs` 118, the flag; the
     rest in `tile.rs`). Not re-measured this round: the release game's retained memory (the
