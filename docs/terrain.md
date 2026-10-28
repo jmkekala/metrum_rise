@@ -3800,6 +3800,32 @@ draw in their level's behind-the-road MultiMesh with a third material variant
 inside a seam; every other cell keeps (a) and the early depth test. The rule (the mask) is the
 same in both variants; only what the band's ground above the road top does differs.
 
+**The push stays within the depth range** (`TERRAIN-07-G` round 5). The push moves the fragment
+`push_fall / ray_fall` metres along its ray, `push_fall` the ground's rise doubled plus the pixel
+and `ray_fall` the sine of the ray's depression. Rounds 7 and 4 discarded where `ray_fall < 1e-3`,
+a guard neither necessary nor sufficient: for `0 < ray_fall < 1e-3` the push is finite (over
+`1000 * push_fall` metres) and lands beyond the far plane only when the far plane is that close;
+for `ray_fall >= 1e-3` a push of `push_fall / ray_fall` (a 1 m rise at 0.002, 1 km) can pass the
+far plane too. Near `ray_fall = 0` the quotient overflows `f32` (a tiny or flushed denormal
+`ray_fall`), `behind` takes `±inf` or `0 * inf = NaN` and so does `behind_clip.z / behind_clip.w`.
+A depth outside the range is not defined behaviour: Godot's RenderingDevice pipelines leave
+`enable_depth_clamp` false (its default in `rendering_device_commons.h`; neither
+`scene_shader_forward_clustered.cpp` nor `scene_shader_forward_mobile.cpp` sets it, Godot
+4.7-stable) and `DEPTH` is `gl_FragDepth`, so in Vulkan a fragment depth outside the viewport's
+`[minDepth, maxDepth] = [0, 1]` is undefined after the depth clamp step (Vulkan specification,
+"Depth Test", "Depth Clamping and Range Adjustment"); the Compatibility renderer's GLES3 clamps
+`gl_FragDepth` to `[0, 1]` (OpenGL ES 3.0.6, 3.9.2.3 "Shader Outputs"), which puts it on the
+cleared far value. `ray_fall <= 0.0` alone would leave both. The exact condition is the far plane
+itself, from the projection: `far_plane` is the projection's z row (reversed z, Forward+ and
+Mobile) or its w row minus z row (Compatibility), a linear function of the homogeneous view
+position that is zero on the far plane and positive on the camera's side; it drops by
+`far_view = far_plane.xyz . VIEW > 0` per metre away from the camera, so the pushed point stays
+inside iff `push_fall * far_view <= ray_fall * far_plane(VERTEX)`. The shader discards where that
+fails, in place of the guard (one condition replacing one): it needs no division, fails every ray
+that does not fall, and bounds the push before the division. Ground whose push would leave the
+range is discarded as before; ground the old guard discarded at `0 < ray_fall < 1e-3` with a push
+inside the range is now kept behind the road.
+
 The material class uses the same pattern with the material edges: away from an edge the nearest
 sample's class; near one, the class of a surrounding sample on the fragment's side of the nearest
 edge. A hidden edge inside another surface then has the same class on both sides and draws nothing.
@@ -9814,6 +9840,20 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       MB and `GL3` 15 -> 147 MB. Bake: the round 4 session measured the serial first build at
       three times road's preview bake (see the gate G record); in parallel the reference
       preview is under 3.0 ms (short runs), the populated tiers are not re-measured.
+    - **GPU matrix on the tip (fresh, the coordinator's, 2026-10-28 18:08-18:19,
+      `$ARTIFACTS/road68/gpu-matrix/run-20261028T1808-g`):** tip `78f6ce76` (library `fcf28fe5`,
+      built in a detached worktree) against road's `aa20f247` (library `155fd81a`), the user's
+      real display, two rounds, graded on both sides. GPU p50, tip minus road, per input:
+
+      | Input | Poses and paths, tip - road GPU p50 |
+      | --- | --- |
+      | Kuopio (T49 flags about half its near tiles) | close -0.04, ground -0.03, overview -0.05, camera paths -0.02 to -0.05 ms |
+      | saved (Kuopio terrain save) | orbit_high +0.34, zoom_in +0.35, pan_high +0.20, orbit_low +0.06, pan_low +0.02, the saved pose +0.10 ms |
+      | town | city +0.08, city_low +0.12, zoom_in +0.26 (noisy rounds), pan_high +0.12, orbit_high -0.19, the rest within ±0.01 ms |
+      | Load (total ms, two rounds) | town tip 4,558/4,048 against road 3,872/3,748; Kuopio and saved equal |
+      The high camera paths over the saved city (+0.20 to +0.35 ms, about 12%) are T48's far-view
+      cost by the coordinator's reading (far views, where `GL2`-`GL3` cells carry the long lists);
+      the matrix does not split it by level. Kuopio's near poses do not move.
     - **Options.** (a) Keep it as built at every level, the `GL3` loop's cost measured on the
       matrix. (b) One list atlas per level shared by its slots (memory follows use, not the worst
       tile times the slots); the `GL3` list length stays. (c) The exact path's candidates at
@@ -9836,6 +9876,9 @@ measures it and the recommendation's condition decides; T2 was decided by the us
       matches what (a) would discard there, but a pinhole needs the road's raster to miss a pixel
       the `f32` mask puts inside (about 1e-4 m at 1 km), which beyond 2 km is a fraction of a
       pixel of 1-4 m.
+    - **GPU matrix on the tip** (fresh, the coordinator's run in T50's evidence): Kuopio, where
+      the variant draws about half the near tiles, is 0.02-0.05 ms faster than road on every
+      pose and path; no cost of the variant shows on the matrix.
     - **Options.** (a) As built, the variant's cost measured on the matrix. (b) The flag at
       `GL0`-`GL2` only (a second rule at distance). (c) T49 (a) (the variant everywhere).
     - **Recommendation.** Measure (a) on the matrix (coordinator); decide with the `GL3` part

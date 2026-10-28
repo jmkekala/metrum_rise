@@ -608,8 +608,7 @@ void fragment() {
 	// fallen below the road top by more than the ground's rise plus the pixel, so any road
 	// fragment of the pixel hides it and it shows only where none is drawn (T24 (a2), a drawing
 	// rule only; the geometry and queries stay exact). Pushed along the pass's own ray, the
-	// shadow and depth passes keep it behind the road too. A ray that does not fall cannot pass
-	// behind the road top, and that ground stays discarded.
+	// shadow and depth passes keep it behind the road too.
 	DEPTH = FRAGCOORD.z;
 	if (cell_mask_here.sdf < 0.0) {
 		if (cell_mask_here.sdf <= -cell_pixel_m || cell_mask_here.road_top < -1e29) {
@@ -617,11 +616,33 @@ void fragment() {
 		}
 		float rise = var_world_pos.y - cell_mask_here.road_top;
 		if (rise > 0.0) {
+			// The push: `push_fall` metres of fall along the ray away from the camera, which the
+			// ray covers in `push_fall / ray_fall` metres (`ray_fall`, the sine of its
+			// depression, in [-1, 1]).
 			float ray_fall = -(INV_VIEW_MATRIX * vec4(-VIEW, 0.0)).y;
-			if (ray_fall < 1e-3) {
+			float push_fall = 2.0 * rise + cell_pixel_m;
+			// The pushed point must stay within the depth range, at or before the far plane:
+			// a written depth outside it is undefined in Vulkan (no depth clamp in Godot's scene
+			// pipelines) and clamped onto the far plane in GLES3 (docs/terrain.md, "Behind the
+			// road"). `far_plane` is the far plane as a linear function of the homogeneous view
+			// position, from the projection's rows, >= 0 on the camera's side: clip z (reversed z,
+			// Forward+ and Mobile) or clip w - z (Compatibility). Away from the camera it drops by
+			// `far_view` (> 0) per metre of the ray, so the pushed point stays inside iff
+			// push_fall / ray_fall * far_view <= far_plane(VERTEX), multiplied out below with no
+			// division: a ray that does not fall (ray_fall <= 0) fails it, as does one falling so
+			// slowly that the pushed point would pass the far plane, and the division after it is
+			// bounded. That ground stays discarded.
+			mat4 projection_rows = transpose(PROJECTION_MATRIX);
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+			vec4 far_plane = projection_rows[3] - projection_rows[2];
+#else
+			vec4 far_plane = projection_rows[2];
+#endif
+			float far_view = dot(far_plane.xyz, VIEW);
+			if (push_fall * far_view > ray_fall * dot(far_plane, vec4(VERTEX, 1.0))) {
 				discard;
 			}
-			vec3 behind = VERTEX - VIEW * ((2.0 * rise + cell_pixel_m) / ray_fall);
+			vec3 behind = VERTEX - VIEW * (push_fall / ray_fall);
 			vec4 behind_clip = PROJECTION_MATRIX * vec4(behind, 1.0);
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 			DEPTH = behind_clip.z / behind_clip.w * 0.5 + 0.5;
