@@ -7529,6 +7529,11 @@ These apply in road-and-terrain mode on the reference machine and settings, to `
 - **Locality.** With the edited neighbourhood held fixed, grow remote buildings, parcels, agents
   and roads from 0 to 100k. Local products stay bitwise identical and per-pose timings stay flat.
   Context refresh is reported separately.
+- **Separate tracks.** A miss attributed to the CPU-bound render frame (`RENDER-27`, for example
+  vegetation patch installs), to agent draw distance (`RENDER-28`) or to a region seen for the
+  first time on a camera turn (`CODE-12`) is reported with its attribution and does not block a
+  `ROAD-68` or `TERRAIN-07` gate (the user, 2026-10-28). A miss without such an attribution still
+  blocks.
 
 ### Method
 
