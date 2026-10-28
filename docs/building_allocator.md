@@ -324,6 +324,13 @@ Important invariant:
 - live road splits and `repair_road_attachments_after_topology_edit()` instead preserve the placed
   world pose and `support_height_m`, changing attachment references rather than moving the site;
   entrance caches then rebuild against those repaired references
+- a road commit repairs only the buildings it can reach (`ROAD-68-G` part 9,
+  [`roads.md`](roads.md#commit-stages-part-9-road-68-g-2026-10-28)):
+  `attachment_repair_candidates()` takes the buildings indexed in the 512 m chunks within the
+  largest lot's frontage reach, the repair search radius and the edge's frontage offset of each
+  segment of the lane rebuild closure, and `repair_road_attachments_that_may_act()` tests only
+  those (the whole city while the chunk index is stale); test builds compare the admitted set
+  with the whole city's test
 - `RoadEditPlan` captures nearby site footprints/support heights through the prepared building index
   and grades against final planned roads. Readiness never rebuilds that index; changed local sites
   invalidate the plan, and adoption checks the site set again after topology changes.

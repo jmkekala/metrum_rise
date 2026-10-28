@@ -104,7 +104,13 @@ plan and moves the adoption tick a frame after a commit that deferred its lots (
 58, taken pending the user's review): adoption frames take 0.3-2.3 ms; first commits 14.9-17.9
 ms, three of twelve populated first samples still over 16.7 ms. Its populated-map locality
 check keeps the commit's products bitwise from 0 to 100k remote sites, but at 100k the commit
-costs about 3 ms more and the adoption's attachment repair 3-6 ms more, so locality stays open. The same session attributed the economy contract's baseline-30k rise to
+costs about 3 ms more and the adoption's attachment repair 3-6 ms more, so locality stays open. Part 9
+(2026-10-28, branch `road68-G9`, WIP) rebases parts 7 and 8 onto gate E and makes the adoption's
+attachment repair test only the buildings in the 512 m chunks its edit reaches, checked against
+the whole city's test in test builds: flat from 0 to 100k remote sites (0.07-0.17 ms, 2.8-8.1
+before). First commits 14.4-18.2 ms (control 24.5-32.3), three of twelve populated first samples
+still over 16.7 ms; the agent passes and the graph copy still grow with the city (roads.md
+questions 59 and 60, open). The same session attributed the economy contract's baseline-30k rise to
 code before `ROAD-68` and found two supplier work-count limits that fail only on `ROAD-68`
 cities (open question 20). Its attribution (2026-10-25) found no road defect: the counts follow
 the city, whose 10k census needs fewer closure passes, and both scale within the limit per
